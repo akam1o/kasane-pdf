@@ -513,6 +513,111 @@ fn clip_with_cm_changes_clip_region() {
     assert_eq!(px(&r, 40, 50), [255, 255, 255, 255]);
 }
 
+// --- W/W* timing (§8.5.4) ------------------------------------------
+// The clip installs when the *path is consumed* — a painting op paints
+// under the pre-W clip first, then the clip updates. These cases
+// distinguish deferred install (correct) from immediate install.
+
+#[test]
+fn w_then_paint_paints_under_old_clip() {
+    // `W S`: clip to right half, then stroke a 20-wide line spanning
+    // the full width. The stroke paints under the *pre-W* clip (the
+    // whole page), so the left half is painted too.
+    let r = render(b"20 w 0 0 0 RG 50 0 50 100 re W 0 50 m 100 50 l S").unwrap();
+    assert_eq!(px(&r, 25, 50), [0, 0, 0, 255]); // left half painted
+    assert_eq!(px(&r, 75, 50), [0, 0, 0, 255]); // right half painted
+}
+
+#[test]
+fn w_n_installs_then_next_paint_is_clipped() {
+    // `W n` installs the clip; a *subsequent* stroke is clipped.
+    let r = render(b"20 w 0 0 0 RG 50 0 50 100 re W n 0 50 m 100 50 l S").unwrap();
+    assert_eq!(px(&r, 25, 50), [255, 255, 255, 255]); // clipped
+    assert_eq!(px(&r, 75, 50), [0, 0, 0, 255]); // inside clip
+}
+
+#[test]
+fn wstar_clip_then_fill_is_clipped() {
+    // `W* n` installs the even-odd clip; a *second* path's fill is
+    // clipped. (A `re` after `W*` joins the same current path — W does
+    // not consume it — so the paint and clip operands must be separate
+    // paths to observe clipping of later painting.)
+    let r = render(b"10 10 80 80 re W* n 0 0 0 rg 0 0 100 100 re f").unwrap();
+    let black = r
+        .pixmap
+        .data()
+        .chunks_exact(4)
+        .filter(|p| p[0] < 128)
+        .count();
+    assert_eq!(black, 6400);
+    assert_eq!(px(&r, 50, 50), [0, 0, 0, 255]);
+    assert_eq!(px(&r, 5, 50), [255, 255, 255, 255]);
+}
+
+#[test]
+fn w_does_not_consume_path() {
+    // `re W* re f`: W* marks but does not consume; the second `re`
+    // appends to the same path. `f` paints *both* rects under the
+    // pre-clip, then installs the combined path as the clip.
+    // Winding fill of (10,10,80,80)+(0,0,100,100) covers the page.
+    let r = render(b"10 10 80 80 re W* 0 0 0 rg 0 0 100 100 re f").unwrap();
+    let black = r
+        .pixmap
+        .data()
+        .chunks_exact(4)
+        .filter(|p| p[0] < 128)
+        .count();
+    assert_eq!(black, 10000);
+}
+
+// --- Singular / extreme CTM ----------------------------------------
+// §8.4.3 requires a *finite* CTM; singular (det = 0) matrices are
+// not given defined behaviour by ISO 32000-1. Kasane-pdf does not
+// special-case them: a singular CTM collapses the path to zero area
+// and the paint op becomes a no-op (the backend rasterizes an empty
+// or degenerate path). Poppler warns "matrix not invertible" and
+// still paints a fallback; both are unspecified, ours is a
+// documented safe choice.
+
+#[test]
+fn singular_ctm_paints_nothing() {
+    // Zero-scale x: every x collapses to 50 — fill has zero area.
+    let r = render(b"0 0 0 0 50 50 cm 0 0 0 rg 10 10 20 20 re f").unwrap();
+    assert!(r
+        .pixmap
+        .data()
+        .chunks_exact(4)
+        .all(|p| p == [255, 255, 255, 255] || p == [255, 255, 255, 0]));
+}
+
+// --- q/Q and the current path --------------------------------------
+// §8.4.1: the current path is *not* part of the graphics state that
+// `q`/`Q` save and restore. A path started before `Q` is still the
+// current path after `Q`; it is painted under the *restored* CTM.
+
+#[test]
+fn path_survives_q_restore() {
+    // Build a path, change the CTM inside q…Q, then paint after Q.
+    // The path (user-space) is painted under the *original* CTM.
+    let r = render(b"4 w 0 0 0 RG 10 10 m 40 10 l 40 40 l h q 2 0 0 2 0 0 cm Q S").unwrap();
+    // Under the restored identity CTM the path strokes at user
+    // coords (10,10)-(40,40) → pixmap x∈[10,40], y∈[60,90].
+    assert_ne!(px(&r, 25, 75), [255, 255, 255, 255]);
+    // Had the 2x CTM applied the path would reach y=80 user →
+    // pixmap y=20. Check that region stayed white.
+    assert_eq!(px(&r, 25, 20), [255, 255, 255, 255]);
+}
+
+#[test]
+fn extreme_anisotropic_ctm_is_not_refused() {
+    // Finite but hugely anisotropic (1000× in x, 0.001× in y): the
+    // transform is invertible; we do not epsilon-reject it. The
+    // mapped rect ends up off-page, so nothing is painted — but no
+    // error either.
+    let r = render(b"1000 0 0 0.001 0 0 cm 0 0 0 rg 10 10 20 20 re f").unwrap();
+    let _ = r; // any pixmap is fine — the point is "rendered, not refused"
+}
+
 // -------------------------------------------------------------------
 // Page geometry
 // -------------------------------------------------------------------

@@ -171,14 +171,16 @@ types used everywhere.
   the same paint transform so non-uniform scales and shears distort
   the stroke correctly.
 
-- **`W`/`W*` install the clip immediately at the operator.** Per
-  §8.5.4 a `W`/`W*` intersects the *current* path with the clipping
-  path — the path itself is preserved for painting, so consecutive
-  `W`s see an accumulating path (matching the spec's "current path"
-  semantics). The clip is a pixmap-sized `tiny_skia::Mask` that
-  `q`/`Q` save/restore; a second `W` in the same state intersects via
+- **`W`/`W*` mark the path; the clip installs when the path is
+  consumed.** §8.5.4 defines `W`/`W*` as clipping-path operators that
+  modify the *clip* when the current path ends — at a painting op the
+  path is painted under the *pre-W* clip first, then the new clip
+  takes effect; `W` followed by `n` installs the clip without
+  painting. The clip is a pixmap-sized `tiny_skia::Mask` that
+  `q`/`Q` save/restore; a second `W` in a later path intersects via
   `Mask::intersect_path` (premultiply of two AA masks — edges may
-  darken slightly where they overlap).
+  darken slightly where they overlap). `W` on an empty path empties
+  the clip.
 
 - **Page geometry is exact.** The user→pixmap transform composes
   CropBox offset, `/Rotate` (clockwise as displayed), dpi/72 scaling

@@ -22,15 +22,19 @@
 //! text-state operators (`Tc`/`Tw`/`Tz`/`TL`/`Tr`/`Ts`/`Td`/`TD`/`Tm`/
 //! `T*`) — they only matter once a text-showing op runs.
 //!
-//! Path model (§8.4.3.1): each path element is transformed by the CTM
-//! *at the time it is appended*, so paths are accumulated in pixmap
-//! space (`CTM × page→pixmap` applied per element); a `cm` mid-path
-//! only affects later elements.
+//! Path model (§8.4.3.1): path elements are stored in *user space*
+//! (untransformed) and the paint-time `CTM × page→pixmap` is applied
+//! when the path is consumed — so a `cm` between construction and
+//! painting moves the whole current path, matching poppler and the
+//! spec's wording that a path is transformed by the CTM "in effect
+//! when it is painted".
 //!
-//! Clipping: `W`/`W*` intersect the *current* path with the clip at
-//! the next painting op (§8.5.4). The clip is stored as a `Mask`
-//! (rasterized at pixmap size); `q`/`Q` save/restore it. Intersecting
-//! clips are supported via `Mask::intersect_path`.
+//! Clipping (§8.5.4): `W`/`W*` mark the path as a clip operand; the
+//! clip is installed when the path is consumed — at a painting op
+//! (where the path is painted *under the pre-W clip* first, then the
+//! clip updates) or at `n`. The clip is a pixmap-sized `tiny_skia::Mask`;
+//! `q`/`Q` save/restore it; nested clips intersect via
+//! `Mask::intersect_path`.
 
 use crate::content::Operation;
 use crate::document::Document;
@@ -39,7 +43,7 @@ use crate::limits::Limits;
 use crate::matrix::Matrix;
 use crate::object::{Name, Object};
 use crate::page::Page;
-use tiny_skia::{FillRule, Mask, Paint, Path, PathBuilder, Pixmap, Stroke, StrokeDash, Transform};
+use tiny_skia::{FillRule, Mask, Paint, PathBuilder, Pixmap, Stroke, StrokeDash, Transform};
 
 /// Graphics-state parameters saved/restored by `q`/`Q` (§8.4.1).
 /// The path under construction is *not* part of the state.
@@ -152,15 +156,9 @@ impl CurrentPath {
         self.elements == 0
     }
 
-    /// Finish the path in *user space*. Returns `None` for an empty or
-    /// degenerate path (which tiny-skia would also skip).
-    fn finish(&mut self) -> Result<Option<Path>, Error> {
-        let path = std::mem::replace(&mut self.builder, PathBuilder::new()).finish();
-        Ok(path)
-    }
-
-    /// Reset after a painting op. `pending_clip` is *not* cleared here —
-    /// painting consumes it, `n` clears the path without installing it.
+    /// Reset after a painting op or `n`. A pending `W`/`W*` clip is
+    /// installed by the caller before this runs (§8.5.4), so resetting
+    /// here just drops the path elements.
     fn reset(&mut self) {
         self.builder = PathBuilder::new();
         self.has_open_subpath = false;
@@ -554,25 +552,25 @@ impl<'a> Renderer<'a> {
                 self.paint_path(PaintKind::FillStroke(FillRule::EvenOdd))?
             }
             Operation::EndPath => {
-                // `n` ends the path without painting; the clip (if any
-                // W/W* preceded it) was already installed at the W.
+                // `n` ends the path without painting; a pending W/W*
+                // clip is still installed (the path was the clip
+                // operand).
+                if self.path.pending_clip.is_some() {
+                    self.install_clip()?;
+                }
                 self.path.reset();
             }
 
             // ---- clipping -----------------------------------------
-            // §8.5.4: W/W* intersect the current path with the clipping
-            // path immediately — the path itself is preserved for the
-            // next painting op (or `n`). Each W sees the path at its
-            // own point in the sequence, so consecutive W ops each
-            // intersect their own current-path snapshot.
-            Operation::Clip => {
-                self.path.pending_clip = Some(FillRule::Winding);
-                self.install_clip()?;
-            }
-            Operation::ClipEvenOdd => {
-                self.path.pending_clip = Some(FillRule::EvenOdd);
-                self.install_clip()?;
-            }
+            // §8.5.4: W/W* mark the current path as a clip operand;
+            // the clip is *installed* when the path is consumed —
+            // at a painting op or at `n`. The path itself is not
+            // consumed by W, so a following paint op paints it under
+            // the *pre-W* clip and then the new clip takes effect for
+            // subsequent painting. A `W`+`n` sequence installs the clip
+            // without painting.
+            Operation::Clip => self.path.pending_clip = Some(FillRule::Winding),
+            Operation::ClipEvenOdd => self.path.pending_clip = Some(FillRule::EvenOdd),
 
             // ---- colour --------------------------------------------
             Operation::SetGrayStroke(g) => {
@@ -831,16 +829,16 @@ impl<'a> Renderer<'a> {
         Ok(())
     }
 
-    /// Install the pending `W`/`W*` clip at the `W`/`W*` operator
-    /// itself: rasterize the current path (in user space, transformed
-    /// by the current CTM) to a pixmap-sized mask and intersect with
-    /// the existing clip. The path itself is preserved — `n` or the
-    /// next painting op consumes it.
+    /// Install the pending `W`/`W*` clip (§8.5.4). The clip is
+    /// rasterized under the paint-time CTM into a pixmap-sized mask and
+    /// intersected with the existing clip. `W` on an empty path makes
+    /// the clip empty. The path is *not* consumed here — the caller
+    /// (`n` or a painting op) resets it separately.
     fn install_clip(&mut self) -> Result<(), Error> {
         let rule = self.path.pending_clip.take().unwrap();
         let ts = self.paint_ts()?;
         let Some(new_path) = self.path.builder.clone().finish() else {
-            // W with an empty path empties the clip.
+            // W on an empty path empties the clip.
             self.gs.clip = Some(
                 Mask::new(self.pixmap.width(), self.pixmap.height())
                     .ok_or_else(|| Error::Structure("clip mask allocation failed".into()))?,
@@ -860,12 +858,10 @@ impl<'a> Renderer<'a> {
     }
 
     fn paint_path(&mut self, kind: PaintKind) -> Result<(), Error> {
-        // Install a pending W/W* clip first: §8.5.4 — the path is
-        // intersected into the clip before it is painted.
-        if self.path.pending_clip.is_some() {
-            self.install_clip()?;
-        }
-        if self.path.is_empty() {
+        // §8.5.4: the clip is intersected *after* the path is painted.
+        // So we paint first (under the pre-W clip), then install the
+        // pending clip for subsequent painting.
+        if self.path.is_empty() && self.path.pending_clip.is_none() {
             self.path.reset();
             return Ok(());
         }
@@ -874,7 +870,11 @@ impl<'a> Renderer<'a> {
         // the path are transformed together (§8.4.3.2/§8.4.4: line
         // width and dash lengths are in user units).
         let ts = self.paint_ts()?;
-        let Some(path) = self.path.finish()? else {
+        let Some(path) = self.path.builder.clone().finish() else {
+            // Empty path — still consume a pending clip if present.
+            if self.path.pending_clip.is_some() {
+                self.install_clip()?;
+            }
             self.path.reset();
             return Ok(());
         };
@@ -925,6 +925,12 @@ impl<'a> Renderer<'a> {
                 self.pixmap
                     .stroke_path(&path, &paint, &stroke, ts, self.gs.clip.as_ref());
             }
+        }
+        // §8.5.4: the clip is updated *after* the path is painted.
+        // Install a pending W/W* clip now that the path has been
+        // painted under the pre-W clip.
+        if self.path.pending_clip.is_some() {
+            self.install_clip()?;
         }
         self.path.reset();
         Ok(())
