@@ -22,12 +22,21 @@
 //! text-state operators (`Tc`/`Tw`/`Tz`/`TL`/`Tr`/`Ts`/`Td`/`TD`/`Tm`/
 //! `T*`) — they only matter once a text-showing op runs.
 //!
-//! Path model (§8.4.3.1): path elements are stored in *user space*
+//! Path model: path elements are stored in *user space*
 //! (untransformed) and the paint-time `CTM × page→pixmap` is applied
-//! when the path is consumed — so a `cm` between construction and
-//! painting moves the whole current path, matching poppler and the
-//! spec's wording that a path is transformed by the CTM "in effect
-//! when it is painted".
+//! when the path is consumed. Keeping the path in user space is an
+//! implementation choice; the observable result must match the CTM
+//! in effect at paint time.
+//!
+//! Placement rules (§8.2 Figure 9): inside a *path object* only
+//! path-construction ops, `W`/`W*`, and the terminating painting op
+//! are allowed — `cm`/`q`/`Q`, colour ops, marked content, text ops
+//! etc. are out of order there and are rejected with
+//! `Error::Structure`. `W`/`W*` additionally must come after the
+//! *last* path-construction op (§8.5.4), so a construction op after
+//! `W`/`W*` and a second `W`/`W*` in the same path are also rejected.
+//! The parse-only API (`page_operations`) still accepts these
+//! sequences — placement is a *render-time* restriction.
 //!
 //! Clipping (§8.5.4): `W`/`W*` mark the path as a clip operand; the
 //! clip is installed when the path is consumed — at a painting op
@@ -124,19 +133,29 @@ impl GraphicsState {
 
 /// A pending path being built by path-construction operators.
 ///
-/// Stored in *user space* (untransformed): per §8.4.3.1 and ISO
-/// 32000-1 §8.4.3.1's note, a `cm` between path construction and
-/// painting applies to the whole current path — elements are not
-/// fixed at append time. The path is transformed once by
-/// `CTM_paint × page→pixmap` when it is consumed.
+/// Stored in *user space* (untransformed): the path is transformed
+/// once by `CTM_paint × page→pixmap` when it is consumed (an
+/// implementation choice — the spec does not mandate an internal
+/// representation, only that the painted result match the CTM in
+/// effect at painting time).
+///
+/// Placement rules (§8.2 Figure 9, §8.5.4): inside a *path object*
+/// only path-construction operators and `W`/`W*` are allowed; `W`/`W*`
+/// may appear only after the last path-construction operator.
+/// `in_progress` tracks whether we're inside a path object so the
+/// renderer can reject out-of-place operators with a typed error
+/// rather than guessing at unspecified behaviour.
 #[derive(Default)]
 struct CurrentPath {
     builder: PathBuilder,
     has_open_subpath: bool,
     elements: usize,
     /// `W`/`W*` mark the path as a clip operand; the clip is installed
-    /// at the *next* painting operator per §8.5.4.
+    /// when the path is consumed per §8.5.4.
     pending_clip: Option<FillRule>,
+    /// True while a path object is open (first construction op seen,
+    /// not yet painted/`n`-ed).
+    in_progress: bool,
 }
 
 impl CurrentPath {
@@ -163,7 +182,18 @@ impl CurrentPath {
         self.builder = PathBuilder::new();
         self.has_open_subpath = false;
         self.elements = 0;
+        self.in_progress = false;
+        self.pending_clip = None;
     }
+}
+
+/// Reject an operator that §8.2 Figure 9 does not allow inside a path
+/// object. Only path-construction operators, `W`/`W*`, and the
+/// painting/`n` ops that end the path are permitted there.
+fn placement_err(what: &str) -> Error {
+    Error::Structure(format!(
+        "{what} is not allowed inside a path object (§8.2 Figure 9)"
+    ))
 }
 
 /// Options for [`render_page`].
@@ -441,6 +471,16 @@ impl<'a> Renderer<'a> {
     }
 
     fn execute(&mut self, op: &Operation) -> Result<(), Error> {
+        // §8.2 Figure 9 placement: inside a path object (after a path
+        // construction op, before the painting/`n` that ends it) only
+        // path-construction ops, W/W*, and the terminating painting
+        // op are allowed. Everything else — graphics-state ops,
+        // colour ops, marked content, text, XObjects — is out of
+        // order and rejected rather than interpreted under undefined
+        // semantics.
+        if self.path.in_progress && !op.is_path_level() {
+            return Err(placement_err(op.name()));
+        }
         match op {
             // ---- graphics state stack ---------------------------
             Operation::SaveState => {
@@ -482,16 +522,35 @@ impl<'a> Renderer<'a> {
             // Path elements are stored in user space and transformed by
             // `CTM_paint × page→pixmap` when consumed (§8.4.3.1).
             Operation::MoveTo(x, y) => {
+                if self.path.pending_clip.is_some() {
+                    return Err(placement_err("m after W/W*"));
+                }
                 self.path.bump_elements(self.limits)?;
                 self.path.builder.move_to(*x as f32, *y as f32);
                 self.path.has_open_subpath = true;
+                self.path.in_progress = true;
             }
             Operation::LineTo(x, y) => {
+                if self.path.pending_clip.is_some() {
+                    return Err(placement_err("l after W/W*"));
+                }
+                if !self.path.has_open_subpath {
+                    return Err(Error::Structure(
+                        "l without a preceding m/re (no current point)".into(),
+                    ));
+                }
                 self.path.bump_elements(self.limits)?;
                 self.path.builder.line_to(*x as f32, *y as f32);
-                self.path.has_open_subpath = true;
             }
             Operation::CurveTo(x1, y1, x2, y2, x3, y3) => {
+                if self.path.pending_clip.is_some() {
+                    return Err(placement_err("c after W/W*"));
+                }
+                if !self.path.has_open_subpath {
+                    return Err(Error::Structure(
+                        "c without a preceding m/re (no current point)".into(),
+                    ));
+                }
                 self.path.bump_elements(self.limits)?;
                 self.path.builder.cubic_to(
                     *x1 as f32, *y1 as f32, *x2 as f32, *y2 as f32, *x3 as f32, *y3 as f32,
@@ -499,6 +558,14 @@ impl<'a> Renderer<'a> {
                 self.path.has_open_subpath = true;
             }
             Operation::CurveToV(x2, y2, x3, y3) => {
+                if self.path.pending_clip.is_some() {
+                    return Err(placement_err("v after W/W*"));
+                }
+                if !self.path.has_open_subpath {
+                    return Err(Error::Structure(
+                        "v without a preceding m/re (no current point)".into(),
+                    ));
+                }
                 self.path.bump_elements(self.limits)?;
                 self.path.builder.cubic_to(
                     *x2 as f32, *y2 as f32, *x2 as f32, *y2 as f32, *x3 as f32, *y3 as f32,
@@ -506,6 +573,14 @@ impl<'a> Renderer<'a> {
                 self.path.has_open_subpath = true;
             }
             Operation::CurveToY(x1, y1, x3, y3) => {
+                if self.path.pending_clip.is_some() {
+                    return Err(placement_err("y after W/W*"));
+                }
+                if !self.path.has_open_subpath {
+                    return Err(Error::Structure(
+                        "y without a preceding m/re (no current point)".into(),
+                    ));
+                }
                 self.path.bump_elements(self.limits)?;
                 self.path.builder.cubic_to(
                     *x1 as f32, *y1 as f32, *x3 as f32, *y3 as f32, *x3 as f32, *y3 as f32,
@@ -513,11 +588,22 @@ impl<'a> Renderer<'a> {
                 self.path.has_open_subpath = true;
             }
             Operation::ClosePath => {
+                if self.path.pending_clip.is_some() {
+                    return Err(placement_err("h after W/W*"));
+                }
+                // `h` with no open subpath is a no-op (nothing to
+                // close); most readers accept it.
+                if !self.path.has_open_subpath {
+                    return Ok(());
+                }
                 self.path.bump_elements(self.limits)?;
                 self.path.builder.close();
                 self.path.has_open_subpath = false;
             }
             Operation::Rectangle(x, y, w, h) => {
+                if self.path.pending_clip.is_some() {
+                    return Err(placement_err("re after W/W*"));
+                }
                 self.path.bump_elements(self.limits)?;
                 self.path.builder.move_to(*x as f32, *y as f32);
                 self.path.builder.line_to((*x + *w) as f32, *y as f32);
@@ -527,6 +613,7 @@ impl<'a> Renderer<'a> {
                 self.path.builder.line_to(*x as f32, (*y + *h) as f32);
                 self.path.builder.close();
                 self.path.has_open_subpath = false;
+                self.path.in_progress = true;
             }
 
             // ---- painting ---------------------------------------
@@ -569,8 +656,20 @@ impl<'a> Renderer<'a> {
             // the *pre-W* clip and then the new clip takes effect for
             // subsequent painting. A `W`+`n` sequence installs the clip
             // without painting.
-            Operation::Clip => self.path.pending_clip = Some(FillRule::Winding),
-            Operation::ClipEvenOdd => self.path.pending_clip = Some(FillRule::EvenOdd),
+            Operation::Clip => {
+                if self.path.pending_clip.is_some() {
+                    // §8.5.4: one clipping op per path object — a
+                    // second W in the same path is out of order.
+                    return Err(placement_err("second W/W* in the same path object"));
+                }
+                self.path.pending_clip = Some(FillRule::Winding);
+            }
+            Operation::ClipEvenOdd => {
+                if self.path.pending_clip.is_some() {
+                    return Err(placement_err("second W/W* in the same path object"));
+                }
+                self.path.pending_clip = Some(FillRule::EvenOdd);
+            }
 
             // ---- colour --------------------------------------------
             Operation::SetGrayStroke(g) => {
@@ -737,9 +836,40 @@ impl<'a> Renderer<'a> {
     /// `CTM × page→pixmap`. Path elements were built in user space and
     /// are transformed once by this when the path is consumed
     /// (§8.4.3.1).
+    ///
+    /// A CTM that is finite but *singular* (determinant 0 — e.g.
+    /// `0 0 0 0 e f cm`) collapses every point onto a line or a point;
+    /// ISO 32000-1 does not define the behaviour of a non-invertible
+    /// CTM and tiny-skia would silently rasterize a degenerate path.
+    /// Rather than emit nothing for a page that asked to be drawn, we
+    /// refuse it: painting under a singular CTM is a transform we
+    /// cannot honour.
     fn paint_ts(&self) -> Result<Transform, Error> {
-        let ctm_ts = ctm_to_transform(&self.gs.ctm)
-            .ok_or_else(|| Error::Structure("non-finite CTM".into()))?;
+        let ctm = &self.gs.ctm;
+        if !ctm.is_finite() {
+            return Err(Error::Structure("non-finite CTM".into()));
+        }
+        // det = a·d − b·c. Exact zero means non-invertible; we do not
+        // epsilon-reject near-singular matrices (anisotropic and
+        // tiny-scale transforms are still renderable).
+        let det = ctm.a * ctm.d - ctm.b * ctm.c;
+        if det == 0.0 {
+            return Err(Error::Unsupported {
+                feature: "singular CTM (determinant 0)",
+                detail: format!(
+                    "CTM {ctm} is not invertible — painting under a degenerate \
+                     transform is not supported"
+                ),
+            });
+        }
+        let ctm_ts = Transform::from_row(
+            ctm.a as f32,
+            ctm.b as f32,
+            ctm.c as f32,
+            ctm.d as f32,
+            ctm.e as f32,
+            ctm.f as f32,
+        );
         Ok(ctm_ts.post_concat(self.user_to_pix))
     }
 
@@ -997,15 +1127,6 @@ fn ts_color(c: Color) -> tiny_skia::Color {
 
 fn show_name(n: &Name) -> String {
     String::from_utf8_lossy(n).into_owned()
-}
-
-fn ctm_to_transform(m: &Matrix) -> Option<Transform> {
-    if !m.is_finite() {
-        return None;
-    }
-    Some(Transform::from_row(
-        m.a as f32, m.b as f32, m.c as f32, m.d as f32, m.e as f32, m.f as f32,
-    ))
 }
 
 /// PDF line width 0 is a hairline — "as thin as can be rendered"

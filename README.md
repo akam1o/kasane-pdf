@@ -47,6 +47,10 @@ What works today:
 - `render_page()` rendering pages that use only basic drawing (paths,
   clipping, DeviceGray/RGB/CMYK colours) to a pixmap, honouring
   `MediaBox`/`CropBox`/`Rotate` and DPI; PNG output via `pixmap_to_png`.
+  Operator placement is checked per ISO 32000-1 §8.2 Figure 9 —
+  out-of-order sequences inside a path object (e.g. `cm`, `q`/`Q`,
+  colour ops between path construction and painting, or path
+  construction after `W`/`W*`) are refused with a typed error.
 - A `kasane-pdf` CLI (`info` mode + `contents`, `operations` and
   `render` subcommands).
 
@@ -66,6 +70,8 @@ never a partial result presented as success):
 - Rendering of text (`Tf`/`Tj`/`TJ`/`'`/`"`), XObjects (`Do`), shading
   (`sh`), extended graphics state (`gs`), pattern colours, non-device
   colour spaces, annotations, `/UserUnit` ≠ 1
+- Painting under a singular (non-invertible) CTM — refused with
+  `Error::Unsupported`
 - Editing, writing
 
 ## Requirements
