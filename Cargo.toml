@@ -1,0 +1,10 @@
+[package]
+name = "kasane-pdf"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.70"
+authors = ["akam1o <5158577+akam1o@users.noreply.github.com>"]
+description = "A PDF parsing/processing engine written in Rust (early development)"
+publish = false
+# License is intentionally undecided. Until decided, all rights reserved.
+# See docs/design.md for the dependency licensing policy.
