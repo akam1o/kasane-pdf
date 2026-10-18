@@ -53,6 +53,18 @@ impl ObjectStream {
             .ok_or_else(|| {
                 Error::Structure("object stream /First is missing or out of range".into())
             })? as usize;
+        if first > limits.max_objstm_bytes {
+            return Err(Error::LimitExceeded {
+                limit: "max_objstm_bytes (header region)",
+                max: limits.max_objstm_bytes as u64,
+            });
+        }
+        if decoded.len() > limits.max_objstm_bytes {
+            return Err(Error::LimitExceeded {
+                limit: "max_objstm_bytes (decoded body)",
+                max: limits.max_objstm_bytes as u64,
+            });
+        }
 
         // Parse the header: N pairs of (objnum, offset), read from the
         // first `first` bytes of the decoded stream.

@@ -131,9 +131,17 @@ pub(crate) fn read_xref_chain(
         }
 
         // A classic trailer may point at an additional xref stream with
-        // compressed entries (§7.5.8.4 hybrid-reference files). Those
-        // entries only fill gaps — the classic chain is authoritative
-        // for objects it already defines.
+        // compressed entries (§7.5.8.4 hybrid-reference files). Within the
+        // same update section, the xref stream *replaces* entries seen in
+        // the classic table: the table is a fallback for pre-1.5 readers,
+        // while the stream carries the authoritative view (including
+        // type-2 compressed objects a table cannot express).
+        // Per the qpdf implementation notes (consistent with §7.5.8.4):
+        //   "read the xref table first; then replace any object that it
+        //    has already seen with any defined in the xref stream".
+        // `/Prev` in the *xref stream* is ignored (the classic trailer's
+        // /Prev drives the chain; a stream's /Prev would only matter for
+        // a non-hybrid chain, which `read_one_section` already handles).
         if let Some(xrefstm) = trailer_dict.get(b"XRefStm".as_slice()) {
             let pos = match xrefstm {
                 Object::Integer(i) if *i >= 0 => *i as u64,
@@ -149,7 +157,8 @@ pub(crate) fn read_xref_chain(
                 )));
             }
             read_one_section(input, limits, pos, &mut |key, entry| {
-                entries.entry(key).or_insert(entry);
+                // XRefStm overrides classic entries from *this* section.
+                entries.insert(key, entry);
             })?;
         }
 
