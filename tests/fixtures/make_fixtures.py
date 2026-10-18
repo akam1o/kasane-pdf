@@ -238,6 +238,227 @@ def truncated():
     write("truncated.pdf", full[: len(full) // 3])
 
 
+# --------------------------------------------------------------------
+# M1 fixtures
+# --------------------------------------------------------------------
+
+
+def flate_contents():
+    """1 page whose /Contents is a FlateDecode'd stream."""
+    raw = b"q 1 0 0 1 0 0 cm BT /F1 12 Tf (compressed page) Tj ET Q"
+    comp = zlib.compress(raw)
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(comp)).encode()
+            + b" /Filter /FlateDecode >>\nstream\n" + comp + b"\nendstream"),
+    ]
+    write("flate_contents.pdf", build_pdf(objects))
+
+
+def contents_array():
+    """1 page whose /Contents is an array of two streams."""
+    a = b"q 1 0 0 1 0 0 cm"
+    b_ = b"BT /F1 12 Tf (part two) Tj ET"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Contents [4 0 R 5 0 R] >>"),
+        (4, b"<< /Length " + str(len(a)).encode() + b" >>\nstream\n" + a + b"\nendstream"),
+        (5, b"<< /Length " + str(len(b_)).encode() + b" /Filter /FlateDecode >>\nstream\n"
+            + zlib.compress(b_) + b"\nendstream"),
+    ]
+    write("contents_array.pdf", build_pdf(objects))
+
+
+def contents_none():
+    """1 page with no /Contents at all."""
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>"),
+    ]
+    write("contents_none.pdf", build_pdf(objects))
+
+
+def flate_bad_data():
+    """Truncated zlib data inside a FlateDecode stream."""
+    raw = b"BT /F1 12 Tf (truncated) Tj ET"
+    comp = zlib.compress(raw)[:8]  # cut mid-stream
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(comp)).encode()
+            + b" /Filter /FlateDecode >>\nstream\n" + comp + b"\nendstream"),
+    ]
+    write("flate_bad_data.pdf", build_pdf(objects))
+
+
+def flate_predictor():
+    """/FlateDecode with /Predictor 15 (PNG optimum) on a small image."""
+    # 3x1 RGB image, each row prefixed by filter byte 0.
+    row = b"\x00" + b"\x11\x22\x33" * 3  # filter 0 + 9 bytes
+    comp = zlib.compress(row)
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(comp)).encode()
+            + b" /Filter /FlateDecode /DecodeParms << /Predictor 15 /Colors 3 /BitsPerComponent 8 /Columns 3 >> >>\nstream\n"
+            + comp + b"\nendstream"),
+    ]
+    write("flate_predictor.pdf", build_pdf(objects))
+
+
+def flate_predictor_bad():
+    """/Predictor 16 is out of range -> Unsupported."""
+    row = b"\x00" + b"\x11\x22\x33" * 3
+    comp = zlib.compress(row)
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(comp)).encode()
+            + b" /Filter /FlateDecode /DecodeParms << /Predictor 16 >> >>\nstream\n"
+            + comp + b"\nendstream"),
+    ]
+    write("flate_predictor_bad.pdf", build_pdf(objects))
+
+
+def unsupported_filter():
+    """Stream with a filter we don't implement (/LZWDecode)."""
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Contents 4 0 R >>"),
+        (4, b"<< /Length 10 /Filter /LZWDecode >>\nstream\n" + b"\x00" * 10 + b"\nendstream"),
+    ]
+    write("unsupported_filter.pdf", build_pdf(objects))
+
+
+def objstm():
+    """Page tree where the page object is inside an /ObjStm (object 5).
+    Object 4 is the ObjStm; the page (5) is compressed inside it.
+    Object 6 is the page's /Contents stream (regular object).
+    The xref stream is used so entry types 1 and 2 can coexist."""
+    page_dict = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 6 0 R >>"
+    header = b"5 0"  # objnum 5 at offset 0
+    body = page_dict
+    first = len(header) + 1  # header + one space separator
+    data = header + b" " + body
+    comp = zlib.compress(data)
+    contents_stream = b"q 1 0 0 1 10 10 cm Q"
+
+    out = bytearray()
+    out += b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n"
+    offsets = {}
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [5 0 R] /Count 1 /MediaBox [0 0 612 792] >>"),
+        (4, b"<< /Type /ObjStm /N 1 /First " + str(first).encode()
+            + b" /Length " + str(len(comp)).encode()
+            + b" /Filter /FlateDecode >>\nstream\n" + comp + b"\nendstream"),
+        (6, b"<< /Length " + str(len(contents_stream)).encode() + b" >>\nstream\n"
+            + contents_stream + b"\nendstream"),
+    ]
+    for num, body in objs:
+        offsets[num] = len(out)
+        out += f"{num} 0 obj\n".encode() + body + b"\nendobj\n"
+    # xref stream at object 7
+    xref_obj_pos = len(out)
+    W = [1, 4, 2]
+    entry_len = sum(W)
+    # Entries for 0..7
+    entries = [
+        (0, 0, 0, 65535),                  # free
+        (1, 1, offsets[1], 0),
+        (2, 1, offsets[2], 0),
+        (3, 0, 0, 0),                      # obj 3 unused
+        (4, 1, offsets[4], 0),             # ObjStm
+        (5, 2, 4, 0),                      # page inside ObjStm 4, index 0
+        (6, 1, offsets[6], 0),             # contents
+        (7, 1, xref_obj_pos, 0),           # xref stream itself
+    ]
+    data2 = bytearray()
+    for (_num, t, f2, f3) in entries:
+        data2.append(t)
+        data2 += f2.to_bytes(W[1], "big")
+        data2 += f3.to_bytes(W[2], "big")
+    out += b"7 0 obj\n"
+    out += (
+        b"<< /Type /XRef /Length " + str(len(data2)).encode()
+        + b" /W [" + " ".join(str(w) for w in W).encode() + b"]"
+        + b" /Size 8 /Root 1 0 R >>\nstream\n"
+    )
+    out += data2 + b"\nendstream\nendobj\n"
+    out += b"startxref\n" + str(xref_obj_pos).encode() + b"\n%%EOF\n"
+    write("objstm.pdf", bytes(out))
+
+
+def hybrid():
+    """Hybrid-reference file: classic xref + /XRefStm stream."""
+    out = bytearray()
+    out += b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n"
+    offsets = {}
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 500 500] >>"),
+    ]
+    for num, body in objs:
+        offsets[num] = len(out)
+        out += f"{num} 0 obj\n".encode() + body + b"\nendobj\n"
+    # Classic xref at offset X.
+    xref_pos = len(out)
+    out += b"xref\n0 4\n"
+    out += b"0000000000 65535 f \n"
+    for n in range(1, 4):
+        out += f"{offsets[n]:010d} 00000 n \n".encode()
+    # The classic trailer says /XRefStm points at object 4.  The xref
+    # stream itself is written next, so its offset is the current length
+    # *after* the trailer placeholder is expanded to its final width.
+    trailer_placeholder = b"trailer\n<< /Size 5 /Root 1 0 R /XRefStm     >>\n"
+    out += trailer_placeholder
+    xrefstm_obj_pos = len(out)
+    # Patch the trailer with the real offset (same byte length).
+    trailer_real = trailer_placeholder.replace(
+        b"    ", str(xrefstm_obj_pos).encode().rjust(5, b" ")
+    )
+    out = bytearray(out[: len(out) - len(trailer_placeholder)]) + trailer_real
+    W = [1, 4, 2]
+    entry_len = sum(W)
+    data = bytearray()
+    # Entries: 0=f,1,2,3=n,4=n(xref stream itself)
+    entries = [
+        (0, 0, 0, 65535),
+        (1, 1, offsets[1], 0),
+        (2, 1, offsets[2], 0),
+        (3, 1, offsets[3], 0),
+        (4, 1, xrefstm_obj_pos, 0),
+    ]
+    for (_num, t, f2, f3) in entries:
+        data.append(t)
+        data += f2.to_bytes(W[1], "big")
+        data += f3.to_bytes(W[2], "big")
+    out += b"4 0 obj\n"
+    out += (
+        b"<< /Type /XRef /Length " + str(len(data)).encode()
+        + b" /W [" + " ".join(str(w) for w in W).encode() + b"]"
+        + b" /Size 5 /Root 1 0 R >>\nstream\n"
+    )
+    out += data + b"\nendstream\nendobj\n"
+    out += b"startxref\n" + str(xref_pos).encode() + b"\n%%EOF\n"
+    write("hybrid.pdf", bytes(out))
+
+
 if __name__ == "__main__":
     hello()
     pages()
@@ -248,3 +469,13 @@ if __name__ == "__main__":
     missing_ref()
     cyclic_pages()
     truncated()
+    # M1
+    flate_contents()
+    contents_array()
+    contents_none()
+    flate_bad_data()
+    flate_predictor()
+    flate_predictor_bad()
+    unsupported_filter()
+    objstm()
+    hybrid()
