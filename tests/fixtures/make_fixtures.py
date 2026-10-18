@@ -404,7 +404,10 @@ def objstm():
 
 
 def hybrid():
-    """Hybrid-reference file: classic xref + /XRefStm stream."""
+    """Hybrid-reference file: classic xref + /XRefStm stream.
+    Both name the same objects (1,2,3 in-use); the stream additionally
+    marks object 3 free — per §7.5.8.4 the stream wins in the same
+    update section, so resolving object 3 must fail."""
     out = bytearray()
     out += b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n"
     offsets = {}
@@ -436,12 +439,14 @@ def hybrid():
     W = [1, 4, 2]
     entry_len = sum(W)
     data = bytearray()
-    # Entries: 0=f,1,2,3=n,4=n(xref stream itself)
+    # Stream entries: objects 0,1,2 agree with the table; object 3 is
+    # marked free (overriding the table's in-use entry), object 4 is the
+    # stream itself.
     entries = [
         (0, 0, 0, 65535),
         (1, 1, offsets[1], 0),
         (2, 1, offsets[2], 0),
-        (3, 1, offsets[3], 0),
+        (3, 0, 0, 0),                  # free: overrides classic InUse
         (4, 1, xrefstm_obj_pos, 0),
     ]
     for (_num, t, f2, f3) in entries:
@@ -457,6 +462,193 @@ def hybrid():
     out += data + b"\nendstream\nendobj\n"
     out += b"startxref\n" + str(xref_pos).encode() + b"\n%%EOF\n"
     write("hybrid.pdf", bytes(out))
+
+
+def hybrid_compressed():
+    """Hybrid file where the classic table marks object 5 free and the
+    /XRefStm stream marks it compressed inside object stream 4."""
+    page_dict = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] >>"
+    header = b"5 0"
+    first = len(header) + 1
+    data = header + b" " + page_dict
+    comp = zlib.compress(data)
+
+    out = bytearray()
+    out += b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n"
+    offsets = {}
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [5 0 R] /Count 1 >>"),
+        (4, b"<< /Type /ObjStm /N 1 /First " + str(first).encode()
+            + b" /Length " + str(len(comp)).encode()
+            + b" /Filter /FlateDecode >>\nstream\n" + comp + b"\nendstream"),
+    ]
+    for num, body in objs:
+        offsets[num] = len(out)
+        out += f"{num} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref_pos = len(out)
+    out += b"xref\n0 5\n"  # classic: 0..4
+    out += b"0000000000 65535 f \n"
+    for n in range(1, 5):
+        if n in offsets:
+            out += f"{offsets[n]:010d} 00000 n \n".encode()
+        else:
+            out += b"0000000000 00000 f \n"
+    trailer_placeholder = b"trailer\n<< /Size 7 /Root 1 0 R /XRefStm     >>\n"
+    out += trailer_placeholder
+    xrefstm_obj_pos = len(out)
+    trailer_real = trailer_placeholder.replace(
+        b"    ", str(xrefstm_obj_pos).encode().rjust(5, b" ")
+    )
+    out = bytearray(out[: len(out) - len(trailer_placeholder)]) + trailer_real
+    W = [1, 4, 2]
+    data2 = bytearray()
+    entries = [
+        (0, 0, 0, 65535),
+        (1, 1, offsets[1], 0),
+        (2, 1, offsets[2], 0),
+        (3, 0, 0, 0),
+        (4, 1, offsets[4], 0),        # the ObjStm itself
+        (5, 2, 4, 0),                 # compressed in ObjStm 4, index 0
+        (6, 1, xrefstm_obj_pos, 0),   # the xref stream
+    ]
+    for (_num, t, f2, f3) in entries:
+        data2.append(t)
+        data2 += f2.to_bytes(W[1], "big")
+        data2 += f3.to_bytes(W[2], "big")
+    out += b"6 0 obj\n"
+    out += (
+        b"<< /Type /XRef /Length " + str(len(data2)).encode()
+        + b" /W [" + " ".join(str(w) for w in W).encode() + b"]"
+        + b" /Size 7 /Root 1 0 R >>\nstream\n"
+    )
+    out += data2 + b"\nendstream\nendobj\n"
+    out += b"startxref\n" + str(xref_pos).encode() + b"\n%%EOF\n"
+    write("hybrid_compressed.pdf", bytes(out))
+
+
+def hybrid_gap():
+    """Hybrid file where the classic table marks object 5 free but the
+    /XRefStm stream supplies it as in-use -> the stream wins."""
+    out = bytearray()
+    out += b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n"
+    offsets = {}
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [5 0 R] /Count 1 >>"),
+        (5, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] >>"),
+    ]
+    for num, body in objs:
+        offsets[num] = len(out)
+        out += f"{num} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref_pos = len(out)
+    out += b"xref\n0 4\n"  # classic table knows only 0..3
+    out += b"0000000000 65535 f \n"
+    for n in range(1, 4):
+        if n in offsets:
+            out += f"{offsets[n]:010d} 00000 n \n".encode()
+        else:
+            out += b"0000000000 00000 f \n"
+    trailer_placeholder = b"trailer\n<< /Size 6 /Root 1 0 R /XRefStm     >>\n"
+    out += trailer_placeholder
+    xrefstm_obj_pos = len(out)
+    trailer_real = trailer_placeholder.replace(
+        b"    ", str(xrefstm_obj_pos).encode().rjust(5, b" ")
+    )
+    out = bytearray(out[: len(out) - len(trailer_placeholder)]) + trailer_real
+    W = [1, 4, 2]
+    data = bytearray()
+    # Stream covers objects 0..5; object 5 is in-use in the stream
+    # (filling the gap left by the classic table).
+    entries = [
+        (0, 0, 0, 65535),
+        (1, 1, offsets[1], 0),
+        (2, 1, offsets[2], 0),
+        (3, 0, 0, 0),
+        (4, 1, xrefstm_obj_pos, 0),
+        (5, 1, offsets[5], 0),
+    ]
+    for (_num, t, f2, f3) in entries:
+        data.append(t)
+        data += f2.to_bytes(W[1], "big")
+        data += f3.to_bytes(W[2], "big")
+    out += b"4 0 obj\n"
+    out += (
+        b"<< /Type /XRef /Length " + str(len(data)).encode()
+        + b" /W [" + " ".join(str(w) for w in W).encode() + b"]"
+        + b" /Size 6 /Root 1 0 R >>\nstream\n"
+    )
+    out += data + b"\nendstream\nendobj\n"
+    out += b"startxref\n" + str(xref_pos).encode() + b"\n%%EOF\n"
+    write("hybrid_gap.pdf", bytes(out))
+
+
+def prev_chain():
+    """Two classic sections via /Prev; newer overrides an object."""
+    out = bytearray()
+    out += b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n"
+    offsets = {}
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 500 500] >>"),
+    ]
+    for num, body in objs:
+        offsets[num] = len(out)
+        out += f"{num} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref1 = len(out)
+    out += b"xref\n0 4\n"
+    out += b"0000000000 65535 f \n"
+    for n in range(1, 4):
+        out += f"{offsets[n]:010d} 00000 n \n".encode()
+    out += b"trailer\n<< /Size 4 /Root 1 0 R >>\n"
+    # Update section redefines obj 3 with a different MediaBox.
+    off3 = len(out)
+    out += b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 999 999] >>\nendobj\n"
+    xref2 = len(out)
+    out += b"xref\n3 1\n"
+    out += f"{off3:010d} 00000 n \n".encode()
+    out += b"trailer\n<< /Size 4 /Root 1 0 R /Prev " + str(xref1).encode() + b" >>\n"
+    out += b"startxref\n" + str(xref2).encode() + b"\n%%EOF\n"
+    write("prev_chain.pdf", bytes(out))
+
+
+def xref_stream_bad_type():
+    """xref stream with an invalid entry type (9)."""
+    out = bytearray()
+    out += b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n"
+    offsets = {}
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>"),
+    ]
+    for num, body in objs:
+        offsets[num] = len(out)
+        out += f"{num} 0 obj\n".encode() + body + b"\nendobj\n"
+    xref_obj_pos = len(out)
+    W = [1, 4, 2]
+    data = bytearray()
+    entries = [
+        (0, 0, 0, 65535),
+        (1, 1, offsets[1], 0),
+        (2, 1, offsets[2], 0),
+        (3, 9, offsets[3], 0),  # bad type 9
+        (4, 1, xref_obj_pos, 0),
+    ]
+    for (_num, t, f2, f3) in entries:
+        data.append(t)
+        data += f2.to_bytes(W[1], "big")
+        data += f3.to_bytes(W[2], "big")
+    out += b"4 0 obj\n"
+    out += (
+        b"<< /Type /XRef /Length " + str(len(data)).encode()
+        + b" /W [" + " ".join(str(w) for w in W).encode() + b"]"
+        + b" /Size 5 /Root 1 0 R >>\nstream\n"
+    )
+    out += data + b"\nendstream\nendobj\n"
+    out += b"startxref\n" + str(xref_obj_pos).encode() + b"\n%%EOF\n"
+    write("xref_stream_bad_type.pdf", bytes(out))
 
 
 if __name__ == "__main__":
@@ -479,3 +671,8 @@ if __name__ == "__main__":
     unsupported_filter()
     objstm()
     hybrid()
+    # M1.1
+    hybrid_compressed()
+    hybrid_gap()
+    prev_chain()
+    xref_stream_bad_type()
