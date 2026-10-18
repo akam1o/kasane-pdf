@@ -198,7 +198,8 @@ fn predictor_parms(parms: Option<&Dict>) -> Result<Option<PredictorParms>, Error
     if predictor == 1 {
         return Ok(None);
     }
-    if !(2..=15).contains(&predictor) {
+    // Valid predictors: 2 (TIFF) and 10–15 (PNG).  3–9 are reserved.
+    if predictor != 2 && !(10..=15).contains(&predictor) {
         return Err(Error::Unsupported {
             feature: "FlateDecode predictor",
             detail: format!("/Predictor {predictor}"),
