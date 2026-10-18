@@ -105,10 +105,19 @@ anything else fails with `Error::Unsupported` and produces no output.
 
 | Feature | Status | Notes |
 |---|---|---|
-| `q`/`Q`/`cm` | ✅ | paths are built in user space and transformed by `CTM × page→pixmap` at paint time (§8.4.3.1) — a `cm` between construction and painting moves the whole current path; the current path is not part of the saved state |
-| `m` `l` `c` `v` `y` `h` `re` | ✅ | accumulate in the current (user-space) path |
+| `q`/`Q`/`cm` | ✅ | *special graphics state* ops (§8.2 Table 51), allowed at page description level only — inside a path object they are `Error::Structure` (§8.2 Figure 9). Paths are built in user space; `CTM × page→pixmap` is applied at paint time |
+| `m` `l` `c` `v` `y` `h` `re` | ✅ | accumulate in the current (user-space) path; `m`/`re` begin a path object |
 | `S` `s` `f` `F` `f*` `B` `B*` `b` `b*` `n` | ✅ | nonzero-winding and even-odd rules; open subpaths are implicitly closed for filling |
-| `W` `W*` | ✅ | mark the current path as the clip operand; the clip is installed when the path is *consumed* — at a painting op the path is painted under the **pre-W** clip first, then the clip updates; `W`+`n` installs without painting; `W` on an empty path empties the clip; restored by `q`/`Q` (§8.5.4) |
+| `W` `W*` | ✅ | mark the current path as the clip operand (must follow the *last* construction op — §8.5.4); the clip installs when the path is *consumed*: a paint op draws under the **pre-W** clip first, then the clip updates; `W`+`n` installs without painting; `W` on an empty path empties the clip; `q`/`Q` save/restore |
+
+**Placement enforcement** (§8.2 Figure 9, §8.5.4): inside a path
+object only path-construction ops, `W`/`W*`, and the terminating
+painting/`n` op are allowed. The renderer rejects out-of-order
+operators with `Error::Structure` — e.g. `cm`, `q`/`Q`, colour ops,
+`m`/`l`/`re` after `W`/`W*`, a second `W`/`W*` in the same path, or
+`l`/`c`/`v`/`y` without a current point. The parse-only
+`page_operations()` API still returns these sequences; placement is
+a *render-time* restriction, not a parsing one.
 | `w` `J` `j` `M` `d` `i` | ✅ | line width 0 → 1-device-pixel hairline (§8.4.3.2) |
 | `G` `g` `RG` `rg` `K` `k` | ✅ | DeviceGray/RGB/CMYK |
 | `CS` `cs` + `SC` `sc` | ✅ | `DeviceGray`/`DeviceRGB`/`DeviceCMYK` and `DefaultGray`/`DefaultRGB`/`DefaultCMYK` |
@@ -145,17 +154,22 @@ content-level `cm` operator.
 ### Singular / non-finite transforms
 
 - **Non-finite `cm` operands** → `Error::Structure` ("cm operands must
-  be finite"). Note PDF number syntax cannot express `1e999`, so such
+  be finite"). PDF number syntax cannot express `1e999`, so such
   input is rejected at the lexer before `cm` runs; the check is a
   defensive guard.
-- **Singular CTM** (finite elements, determinant 0): ISO 32000-1 does
-  not define behaviour for non-invertible matrices. We do not reject
-  or special-case them — the transform collapses the path to zero
-  area, so paint ops become no-ops. Poppler warns "matrix not
-  invertible" and paints a fallback; both render something
-  unspecified. Verified: `0 0 0 0 50 50 cm` renders nothing in ours.
-- **Extreme but invertible CTM** (e.g. `1000 0 0 0.001`): rendered
-  normally — no epsilon cutoff.
+- **Singular CTM** (finite elements, determinant exactly 0 — e.g.
+  `0 0 0 0 e f cm`): ISO 32000-1 does not define painting under a
+  non-invertible transform. We **refuse the page** with
+  `Error::Unsupported` at paint time rather than silently producing
+  nothing — a degenerate transform cannot be honoured faithfully.
+  Poppler warns "matrix not invertible" and paints a fallback; both
+  are unspecified-behaviour choices.
+- **Near-singular but invertible CTM** (e.g. det = 1e-9, or
+  `1000 0 0 0.001` anisotropic): rendered normally — we only reject
+  the exact `det == 0` case, no epsilon cutoff.
+- The check runs on the content-level CTM (`cm` accumulation), not
+  the fixed page→pixmap transform — page geometry is built
+  separately and is always invertible for valid page boxes.
 
 ## Robustness
 

@@ -161,26 +161,41 @@ types used everywhere.
   dictionary) are all refused — the latter because visibility is
   document-level state we cannot evaluate honestly.
 
-- **Paths are kept in user space and transformed at paint time.** Per
-  §8.4.3.1 the path is built in user space and the paint-time
-  `CTM × page→pixmap` is applied when the path is consumed — so a `cm`
-  between construction and painting moves the whole current path, and
-  a `cm` mid-path means subsequent elements join the same user-space
-  path under the new CTM. Stroke parameters (width, dash, miter limit)
-  are user-space values; tiny-skia transforms the stroke outline under
-  the same paint transform so non-uniform scales and shears distort
-  the stroke correctly.
+- **Paths are kept in user space and transformed at paint time.** The
+  internal representation is an implementation choice (the spec does
+  not mandate one); what matters is that the painted result matches
+  the CTM in effect at paint time. We store elements untransformed
+  and apply `CTM × page→pixmap` once when the path is consumed.
+  Stroke parameters (width, dash, miter limit) are user-space values;
+  tiny-skia transforms the stroke outline under the same paint
+  transform so non-uniform scales and shears distort the stroke
+  correctly.
 
 - **`W`/`W*` mark the path; the clip installs when the path is
-  consumed.** §8.5.4 defines `W`/`W*` as clipping-path operators that
-  modify the *clip* when the current path ends — at a painting op the
-  path is painted under the *pre-W* clip first, then the new clip
-  takes effect; `W` followed by `n` installs the clip without
-  painting. The clip is a pixmap-sized `tiny_skia::Mask` that
-  `q`/`Q` save/restore; a second `W` in a later path intersects via
-  `Mask::intersect_path` (premultiply of two AA masks — edges may
-  darken slightly where they overlap). `W` on an empty path empties
-  the clip.
+  consumed.** §8.5.4: `W`/`W*` come *after the last path-construction
+  operator and before the painting op*; they modify the clip not at
+  their own position but after the path is painted — the paint op
+  draws under the *pre-W* clip, then the new clip takes effect for
+  subsequent painting. `W`+`n` installs the clip without painting.
+  The clip is a pixmap-sized `tiny_skia::Mask` that `q`/`Q`
+  save/restore; a later `W` in a new path intersects via
+  `Mask::intersect_path`. `W` on an empty path empties the clip.
+
+- **Placement is enforced at render time.** §8.2 Figure 9 restricts
+  a *path object* to path-construction ops, `W`/`W*`, and the
+  terminating painting op. `cm`, `q`/`Q`, colour ops, marked content
+  etc. inside a path object — and `m`/`l`/`re` after `W`/`W*` or a
+  second `W`/`W*` in the same path — are rejected with
+  `Error::Structure`. The parse-only `page_operations()` API still
+  accepts such sequences: placement is a render-time restriction,
+  not a parsing error. Poppler tolerates many of these placements;
+  we report them instead of guessing at unspecified semantics.
+
+- **Singular CTM is refused.** A `cm` sequence whose accumulated CTM
+  has determinant exactly 0 (finite elements, non-invertible) makes
+  painting undefinable; we return `Error::Unsupported` at paint time
+  rather than emit nothing. Near-singular but invertible matrices
+  (large anisotropy, tiny determinant) are still rendered.
 
 - **Page geometry is exact.** The user→pixmap transform composes
   CropBox offset, `/Rotate` (clockwise as displayed), dpi/72 scaling

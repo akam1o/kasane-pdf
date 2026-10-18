@@ -161,25 +161,39 @@ fn q_restores_color_and_path_is_not_saved() {
     assert_eq!(px(&r, 20, 80), [0, 0, 0, 255]);
 }
 
+// --- CTM / transform ----------------------------------------------
+// A `cm` before any path construction is conforming and applies to
+// everything painted after it.
+
 #[test]
-fn cm_before_painting_transforms_whole_path() {
-    // §8.4.3.1: the path is built in user space and the *paint-time*
-    // CTM applies to all elements — a cm after construction still
-    // moves earlier points. Path m(10,10)-l(10,40) under a +50 x
-    // shift lands at pixmap x=60 (both points shifted).
-    let r = render(b"10 w 0 0 0 RG 10 10 m 10 40 l 1 0 0 1 50 0 cm S").unwrap();
-    assert_ne!(px(&r, 60, 75), [255, 255, 255, 255]);
-    // The unshifted position stays white.
-    assert_eq!(px(&r, 15, 75), [255, 255, 255, 255]);
+fn cm_before_path_transforms_following_paint() {
+    // Conforming placement: cm at page level, then the path object.
+    // 2x scale: user rect (10,10)-(20,20) → pixmap (20,20)-(40,40).
+    let r = render(b"2 0 0 2 0 0 cm 0 0 0 rg 10 10 10 10 re f").unwrap();
+    assert_eq!(px(&r, 25, 75), [0, 0, 0, 255]);
 }
 
 #[test]
-fn cm_between_ops_uses_new_ctm_for_later_elements() {
-    // After `cm`, later path ops use the new CTM; the existing
-    // subpath is also painted under it (user-space path model).
-    // m(10,10) then translate+30 then l(10,10) → both become x=40.
-    let r = render(b"4 w 0 0 0 RG 10 10 m 1 0 0 1 30 0 cm 10 10 l 10 40 l S").unwrap();
-    assert_ne!(px(&r, 40, 75), [255, 255, 255, 255]);
+fn cm_mid_path_is_rejected() {
+    // `cm` inside a path object is out of order (§8.2 Figure 9: only
+    // path-construction and W/W* ops are allowed there). We refuse
+    // rather than guess at unspecified semantics.
+    let err = render(b"0 0 0 rg 10 10 m 1 0 0 1 30 0 cm 10 10 l 10 40 l S").unwrap_err();
+    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
+}
+
+#[test]
+fn q_or_cm_inside_path_object_is_rejected() {
+    for s in [
+        &b"10 10 m 1 0 0 1 10 0 cm 20 20 l S"[..],
+        &b"10 10 m q 20 20 l S"[..],
+        &b"10 10 m Q 20 20 l S"[..],
+        &b"10 10 m 2 w 20 20 l S"[..],
+        &b"10 10 m 0 1 0 rg 20 20 l S"[..],
+    ] {
+        let err = render(s).unwrap_err();
+        assert!(matches!(err, Error::Structure(_)), "{s:?}: {err:?}");
+    }
 }
 
 #[test]
@@ -520,12 +534,47 @@ fn clip_with_cm_changes_clip_region() {
 
 #[test]
 fn w_then_paint_paints_under_old_clip() {
-    // `W S`: clip to right half, then stroke a 20-wide line spanning
-    // the full width. The stroke paints under the *pre-W* clip (the
-    // whole page), so the left half is painted too.
-    let r = render(b"20 w 0 0 0 RG 50 0 50 100 re W 0 50 m 100 50 l S").unwrap();
-    assert_eq!(px(&r, 25, 50), [0, 0, 0, 255]); // left half painted
-    assert_eq!(px(&r, 75, 50), [0, 0, 0, 255]); // right half painted
+    // Conforming placement per §8.5.4: the W comes *after* the last
+    // path-construction op and *before* the painting op.
+    //   20 w  20 20 60 60 re  W  S
+    // The 20-unit stroke of the rect extends 10 units outside the
+    // clip rect on every side; because the stroke paints under the
+    // *pre-W* clip (the whole page), those outer pixels are painted —
+    // an immediate-install implementation would clip them away.
+    let r = render(b"20 w 0 0 0 RG 20 20 60 60 re W S").unwrap();
+    // The stroke's outer edge: rect x∈[20,80], half-width 10 →
+    // stroke spans x∈[10,30] at the left edge … x∈[70,90] right.
+    // Pixmap y for user y∈[20,80] is y∈[20,80].
+    assert_eq!(px(&r, 15, 50), [0, 0, 0, 255]); // left of clip, painted
+    assert_eq!(px(&r, 85, 50), [0, 0, 0, 255]); // right of clip, painted
+                                                // After the paint op the clip (rect) is installed — verify with a
+                                                // second path that the clip now restricts painting.
+    let r = render(b"20 w 0 0 0 RG 20 20 60 60 re W S n 0 0 0 rg 0 0 100 100 re f").unwrap();
+    assert_eq!(px(&r, 5, 50), [255, 255, 255, 255]); // outside clip
+    assert_eq!(px(&r, 50, 50), [0, 0, 0, 255]); // inside clip
+}
+
+#[test]
+fn path_construction_after_w_is_rejected() {
+    // §8.5.4: W/W* come after the *last* path-construction op. A
+    // `re`/`m`/`l` after W is out of order.
+    for s in [
+        &b"10 10 20 20 re W 0 0 10 10 re f"[..],
+        &b"10 10 m W 20 20 l S"[..],
+        &b"10 10 m 20 20 l W* 30 30 l S"[..],
+    ] {
+        let err = render(s).unwrap_err();
+        assert!(matches!(err, Error::Structure(_)), "{s:?}: {err:?}");
+    }
+}
+
+#[test]
+fn second_w_in_same_path_is_rejected() {
+    // §8.5.4 allows one clipping op per path object; `re W re` is
+    // already rejected as construction-after-W, and `re W W f` is a
+    // second clipping op on the same path.
+    let err = render(b"10 10 20 20 re W W f").unwrap_err();
+    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
 }
 
 #[test]
@@ -555,57 +604,41 @@ fn wstar_clip_then_fill_is_clipped() {
 }
 
 #[test]
-fn w_does_not_consume_path() {
-    // `re W* re f`: W* marks but does not consume; the second `re`
-    // appends to the same path. `f` paints *both* rects under the
-    // pre-clip, then installs the combined path as the clip.
-    // Winding fill of (10,10,80,80)+(0,0,100,100) covers the page.
-    let r = render(b"10 10 80 80 re W* 0 0 0 rg 0 0 100 100 re f").unwrap();
-    let black = r
-        .pixmap
-        .data()
-        .chunks_exact(4)
-        .filter(|p| p[0] < 128)
-        .count();
-    assert_eq!(black, 10000);
+fn pending_clip_cleared_after_path_consumed() {
+    // After `W n` the pending clip is consumed; a later `n` on an
+    // empty path does not re-apply or empty the clip.
+    let r = render(b"50 0 50 100 re W n n 0 0 0 rg 0 0 100 100 re f").unwrap();
+    assert_eq!(px(&r, 75, 50), [0, 0, 0, 255]); // inside clip
+    assert_eq!(px(&r, 25, 50), [255, 255, 255, 255]); // outside clip
 }
 
 // --- Singular / extreme CTM ----------------------------------------
-// §8.4.3 requires a *finite* CTM; singular (det = 0) matrices are
-// not given defined behaviour by ISO 32000-1. Kasane-pdf does not
-// special-case them: a singular CTM collapses the path to zero area
-// and the paint op becomes a no-op (the backend rasterizes an empty
-// or degenerate path). Poppler warns "matrix not invertible" and
-// still paints a fallback; both are unspecified, ours is a
-// documented safe choice.
+// ISO 32000-1 does not define rendering under a non-invertible CTM
+// (a singular `cm` collapses the plane onto a line/point). Since a
+// degenerate transform cannot be honoured faithfully we refuse the
+// page with `Error::Unsupported` rather than silently painting
+// nothing. Near-singular but invertible matrices are still rendered —
+// we only reject the exact `det == 0` case.
 
 #[test]
-fn singular_ctm_paints_nothing() {
-    // Zero-scale x: every x collapses to 50 — fill has zero area.
-    let r = render(b"0 0 0 0 50 50 cm 0 0 0 rg 10 10 20 20 re f").unwrap();
-    assert!(r
-        .pixmap
-        .data()
-        .chunks_exact(4)
-        .all(|p| p == [255, 255, 255, 255] || p == [255, 255, 255, 0]));
+fn singular_ctm_is_unsupported() {
+    // det = 0·0 − 0·0 = 0 → non-invertible.
+    let err = render(b"0 0 0 0 50 50 cm 0 0 0 rg 10 10 20 20 re f").unwrap_err();
+    assert!(
+        matches!(err, Error::Unsupported { feature, .. } if feature.contains("singular")),
+        "got: {err:?}"
+    );
+    // A singular CTM that only affects stroke (no fill) is still
+    // rejected at paint time.
+    let err = render(b"0 0 0 0 0 0 cm 0 0 0 RG 10 10 m 90 90 l S").unwrap_err();
+    assert!(matches!(err, Error::Unsupported { .. }), "got: {err:?}");
 }
 
-// --- q/Q and the current path --------------------------------------
-// §8.4.1: the current path is *not* part of the graphics state that
-// `q`/`Q` save and restore. A path started before `Q` is still the
-// current path after `Q`; it is painted under the *restored* CTM.
-
 #[test]
-fn path_survives_q_restore() {
-    // Build a path, change the CTM inside q…Q, then paint after Q.
-    // The path (user-space) is painted under the *original* CTM.
-    let r = render(b"4 w 0 0 0 RG 10 10 m 40 10 l 40 40 l h q 2 0 0 2 0 0 cm Q S").unwrap();
-    // Under the restored identity CTM the path strokes at user
-    // coords (10,10)-(40,40) → pixmap x∈[10,40], y∈[60,90].
-    assert_ne!(px(&r, 25, 75), [255, 255, 255, 255]);
-    // Had the 2x CTM applied the path would reach y=80 user →
-    // pixmap y=20. Check that region stayed white.
-    assert_eq!(px(&r, 25, 20), [255, 255, 255, 255]);
+fn near_singular_but_invertible_ctm_renders() {
+    // det = 1·1e-9 − 0 ≈ 1e-9 ≠ 0: invertible, must not be refused.
+    let r = render(b"1 0 0 0.000000001 0 0 cm 0 0 0 rg 10 10 20 20 re f").unwrap();
+    let _ = r; // rendered without error
 }
 
 #[test]
@@ -616,6 +649,24 @@ fn extreme_anisotropic_ctm_is_not_refused() {
     // error either.
     let r = render(b"1000 0 0 0.001 0 0 cm 0 0 0 rg 10 10 20 20 re f").unwrap();
     let _ = r; // any pixmap is fine — the point is "rendered, not refused"
+}
+
+// --- q/Q and the current path --------------------------------------
+// §8.4.1: the current path is *not* part of the graphics state that
+// `q`/`Q` save and restore — but §8.2 Figure 9 forbids `q`/`Q` inside
+// a path object anyway, so the only conforming sequences keep the
+// path entirely inside or outside a q…Q pair.
+
+#[test]
+fn path_inside_q_paints_then_q_restores() {
+    // Conforming: the path object sits entirely inside q…Q; the paint
+    // happens under the *inner* CTM, then Q restores the clip/state.
+    let r = render(b"q 2 0 0 2 0 0 cm 0 0 0 rg 10 10 10 10 re f Q").unwrap();
+    // 2x scale: user rect (10,10)-(20,20) → pixmap (20,20)-(40,40).
+    assert_eq!(px(&r, 25, 75), [0, 0, 0, 255]);
+    // A path started *before* q and painted *after* Q is out of
+    // order — `q` mid-path is rejected (see
+    // q_or_cm_inside_path_object_is_rejected).
 }
 
 // -------------------------------------------------------------------

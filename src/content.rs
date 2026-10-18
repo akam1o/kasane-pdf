@@ -232,6 +232,113 @@ pub enum Operation {
     },
 }
 
+impl Operation {
+    /// Whether this operator may legally appear *inside* a path object
+    /// — i.e. between a path-construction op and the painting/`n` op
+    /// that terminates it (§8.2 Figure 9, §8.5.4). Only
+    /// path-construction ops, `W`/`W*`, and the painting ops are
+    /// allowed there; everything else is out of order.
+    ///
+    /// This is a *placement* predicate, not a parsing one — the lexer
+    /// still accepts the full grammar; `render_page` uses this to
+    /// refuse out-of-order operator sequences with a typed error.
+    pub fn is_path_level(&self) -> bool {
+        matches!(
+            self,
+            Operation::MoveTo(..)
+                | Operation::LineTo(..)
+                | Operation::CurveTo(..)
+                | Operation::CurveToV(..)
+                | Operation::CurveToY(..)
+                | Operation::ClosePath
+                | Operation::Rectangle(..)
+                | Operation::Stroke
+                | Operation::CloseAndStroke
+                | Operation::Fill
+                | Operation::FillEvenOdd
+                | Operation::FillAndStroke
+                | Operation::FillAndStrokeEvenOdd
+                | Operation::CloseFillAndStroke
+                | Operation::CloseFillAndStrokeEvenOdd
+                | Operation::EndPath
+                | Operation::Clip
+                | Operation::ClipEvenOdd
+        )
+    }
+
+    /// The PDF operator name for diagnostics.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Operation::SaveState => "q",
+            Operation::RestoreState => "Q",
+            Operation::ConcatMatrix(_) => "cm",
+            Operation::SetLineWidth(_) => "w",
+            Operation::SetLineCap(_) => "J",
+            Operation::SetLineJoin(_) => "j",
+            Operation::SetMiterLimit(_) => "M",
+            Operation::SetDash { .. } => "d",
+            Operation::SetRenderingIntent(_) => "ri",
+            Operation::SetFlatness(_) => "i",
+            Operation::SetExtGState(_) => "gs",
+            Operation::MoveTo(..) => "m",
+            Operation::LineTo(..) => "l",
+            Operation::CurveTo(..) => "c",
+            Operation::CurveToV(..) => "v",
+            Operation::CurveToY(..) => "y",
+            Operation::ClosePath => "h",
+            Operation::Rectangle(..) => "re",
+            Operation::Stroke => "S",
+            Operation::CloseAndStroke => "s",
+            Operation::Fill => "f",
+            Operation::FillEvenOdd => "f*",
+            Operation::FillAndStroke => "B",
+            Operation::FillAndStrokeEvenOdd => "B*",
+            Operation::CloseFillAndStroke => "b",
+            Operation::CloseFillAndStrokeEvenOdd => "b*",
+            Operation::EndPath => "n",
+            Operation::Clip => "W",
+            Operation::ClipEvenOdd => "W*",
+            Operation::SetGrayStroke(_) => "G",
+            Operation::SetGrayFill(_) => "g",
+            Operation::SetRgbStroke(..) => "RG",
+            Operation::SetRgbFill(..) => "rg",
+            Operation::SetCmykStroke(..) => "K",
+            Operation::SetCmykFill(..) => "k",
+            Operation::SetColorSpaceStroke(_) => "CS",
+            Operation::SetColorSpaceFill(_) => "cs",
+            Operation::SetColorStroke(_) => "SC/SCN",
+            Operation::SetColorFill(_) => "sc/scn",
+            Operation::BeginText => "BT",
+            Operation::EndText => "ET",
+            Operation::SetCharSpacing(_) => "Tc",
+            Operation::SetWordSpacing(_) => "Tw",
+            Operation::SetHorizontalScaling(_) => "Tz",
+            Operation::SetTextLeading(_) => "TL",
+            Operation::SetTextFont { .. } => "Tf",
+            Operation::SetTextRenderingMode(_) => "Tr",
+            Operation::SetTextRise(_) => "Ts",
+            Operation::MoveTextPosition(..) => "Td",
+            Operation::MoveTextPositionAndSetLeading(..) => "TD",
+            Operation::SetTextMatrix(_) => "Tm",
+            Operation::NextLine => "T*",
+            Operation::ShowText(_) => "Tj",
+            Operation::ShowTextAdjusted(_) => "TJ",
+            Operation::NextLineShowText(_) => "'",
+            Operation::SetSpacingNextLineShowText { .. } => "\"",
+            Operation::Do(_) => "Do",
+            Operation::Shading(_) => "sh",
+            Operation::MarkedContentPoint(_) => "MP",
+            Operation::DesignatedMarkedContentPoint { .. } => "DP",
+            Operation::BeginMarkedContent(_) => "BMC",
+            Operation::BeginMarkedContentWithProps { .. } => "BDC",
+            Operation::EndMarkedContent => "EMC",
+            Operation::BeginCompatibility => "BX",
+            Operation::EndCompatibility => "EX",
+            Operation::Unknown { .. } => "unknown",
+        }
+    }
+}
+
 /// Parse the concatenated `/Contents` streams into operations.
 ///
 /// `contents` is the decoded stream bodies in order (as returned by
