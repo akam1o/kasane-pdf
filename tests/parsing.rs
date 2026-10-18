@@ -83,12 +83,12 @@ fn incremental_update_uses_newest_section() {
 }
 
 #[test]
-fn xref_stream_is_reported_as_unsupported() {
-    let err = Document::from_bytes(&fixture("xref_stream.pdf")).unwrap_err();
-    assert!(
-        matches!(err, Error::Unsupported { feature, .. } if feature == "xref stream"),
-        "expected Unsupported(xref stream), got: {err:?}"
-    );
+fn xref_stream_parses_as_supported() {
+    // M1: xref streams are supported; the fixture must now parse.
+    let doc = Document::from_bytes(&fixture("xref_stream.pdf"))
+        .expect("xref_stream.pdf should parse in M1");
+    assert_eq!(doc.page_count(), 1);
+    assert_eq!(doc.pages()[0].media_box().urx, 612.0);
 }
 
 #[test]
