@@ -156,20 +156,29 @@ types used everywhere.
   everything else is `Error::Unsupported` and produces no output —
   never a half-rendered page passed off as success. Text, XObjects,
   shadings, ExtGState, patterns, non-device colour spaces,
-  annotations and `/UserUnit` ≠ 1 are all refused.
+  annotations, `/UserUnit` ≠ 1 and Optional Content (`/OC` or `/OCMD`
+  marked content whose `/Properties` entry resolves to an OCG/OCMD
+  dictionary) are all refused — the latter because visibility is
+  document-level state we cannot evaluate honestly.
 
-- **Paths live in pixmap space, transformed per element.** Because
-  §8.4.3.1 applies the CTM at the moment each path element is added,
-  `cm` mid-path must not retroactively move earlier elements. We
-  therefore transform each point by `CTM × page→pixmap` at append
-  time, rather than building a user-space path and transforming once
-  at paint time.
+- **Paths are kept in user space and transformed at paint time.** Per
+  §8.4.3.1 the path is built in user space and the paint-time
+  `CTM × page→pixmap` is applied when the path is consumed — so a `cm`
+  between construction and painting moves the whole current path, and
+  a `cm` mid-path means subsequent elements join the same user-space
+  path under the new CTM. Stroke parameters (width, dash, miter limit)
+  are user-space values; tiny-skia transforms the stroke outline under
+  the same paint transform so non-uniform scales and shears distort
+  the stroke correctly.
 
-- **`W`/`W*` clip at path-consumption time.** Per §8.5.4 the clip is
-  installed when the path is consumed — at the next painting op or at
-  `n`. The clip is stored as a pixmap-sized `tiny_skia::Mask`;
-  `q`/`Q` save and restore it. Intersecting clips combine via
-  `Mask::intersect_path`.
+- **`W`/`W*` install the clip immediately at the operator.** Per
+  §8.5.4 a `W`/`W*` intersects the *current* path with the clipping
+  path — the path itself is preserved for painting, so consecutive
+  `W`s see an accumulating path (matching the spec's "current path"
+  semantics). The clip is a pixmap-sized `tiny_skia::Mask` that
+  `q`/`Q` save/restore; a second `W` in the same state intersects via
+  `Mask::intersect_path` (premultiply of two AA masks — edges may
+  darken slightly where they overlap).
 
 - **Page geometry is exact.** The user→pixmap transform composes
   CropBox offset, `/Rotate` (clockwise as displayed), dpi/72 scaling

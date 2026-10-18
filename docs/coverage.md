@@ -108,7 +108,7 @@ anything else fails with `Error::Unsupported` and produces no output.
 | `q`/`Q`/`cm` | ✅ | path elements are transformed by the CTM *at append time* (§8.4.3.1); the current path is not part of the saved state |
 | `m` `l` `c` `v` `y` `h` `re` | ✅ | built into a pixmap-space path |
 | `S` `s` `f` `F` `f*` `B` `B*` `b` `b*` `n` | ✅ | nonzero-winding and even-odd rules; open subpaths are implicitly closed for filling |
-| `W` `W*` | ✅ | installed at the next painting op or at `n`; intersected with the existing clip; saved/restored by `q`/`Q` |
+| `W` `W*` | ✅ | the current path is intersected with the clip at the `W`/`W*` itself (the path is not consumed — a subsequent painting op still paints it); consecutive `W`/`W*` in the same path accumulate; `W`+`n` installs the clip without painting; restored by `q`/`Q` |
 | `w` `J` `j` `M` `d` `i` | ✅ | line width 0 → 1-device-pixel hairline (§8.4.3.2) |
 | `G` `g` `RG` `rg` `K` `k` | ✅ | DeviceGray/RGB/CMYK |
 | `CS` `cs` + `SC` `sc` | ✅ | `DeviceGray`/`DeviceRGB`/`DeviceCMYK` and `DefaultGray`/`DefaultRGB`/`DefaultCMYK` |
@@ -117,7 +117,9 @@ anything else fails with `Error::Unsupported` and produces no output.
 | text ops `Tf` `Tj` `TJ` `'` `"` | ❌ | `Error::Unsupported` — font loading is M4 |
 | text-state ops `Tc` `Tw` `Tz` `TL` `Tr` `Ts` `Td` `TD` `Tm` `T*` | ✅ | harmless state ops inside `BT`/`ET` (never reach a glyph) |
 | `Do` `sh` `gs` | ❌ | `Error::Unsupported` |
-| `BMC` `BDC` `EMC` `MP` `DP` `BX` `EX` `Unknown` | ✅ | metadata/compatibility — no raster effect (§10.5, §7.8.2) |
+| `BMC` `BDC` `EMC` `MP` `DP` | ✅ | plain marked content — metadata only (§10.5) |
+| `/OC` `/OCMD` marked content | ❌ | `Error::Unsupported` — OCG/OCMD visibility evaluation is not implemented; a `/Properties` name that does not resolve to an OCG/OCMD dict is treated as plain marked content; unresolvable names error |
+| `BX` `EX` `Unknown` | ✅ | §7.8.2 compatibility — ignored |
 | page annotations (`/Annots`) | ❌ | `Error::Unsupported` — page is refused, not drawn without them |
 | `/UserUnit` ≠ 1 | ❌ | `Error::Unsupported` |
 | `MediaBox`/`CropBox`/`Rotate` | ✅ | `CropBox` defaults to `MediaBox`; Rotate 0/90/180/270; non-zero origins; `/Rotate` is clockwise on display |

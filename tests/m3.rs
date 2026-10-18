@@ -162,12 +162,24 @@ fn q_restores_color_and_path_is_not_saved() {
 }
 
 #[test]
-fn cm_mid_path_only_moves_later_elements() {
-    // §8.4.3.1: a cm after a `m` does not move the existing point.
-    // Path: m at (10,10), then cm translate +50, then l to (0,0) →
-    // the line runs from pixmap (10,90) toward (50,100)-ish.
-    let r = render(b"10 w 0 0 0 RG 10 10 m 1 0 0 1 50 0 cm 0 10 l S").unwrap();
-    assert_ne!(px(&r, 15, 85), [255, 255, 255, 255]);
+fn cm_before_painting_transforms_whole_path() {
+    // §8.4.3.1: the path is built in user space and the *paint-time*
+    // CTM applies to all elements — a cm after construction still
+    // moves earlier points. Path m(10,10)-l(10,40) under a +50 x
+    // shift lands at pixmap x=60 (both points shifted).
+    let r = render(b"10 w 0 0 0 RG 10 10 m 10 40 l 1 0 0 1 50 0 cm S").unwrap();
+    assert_ne!(px(&r, 60, 75), [255, 255, 255, 255]);
+    // The unshifted position stays white.
+    assert_eq!(px(&r, 15, 75), [255, 255, 255, 255]);
+}
+
+#[test]
+fn cm_between_ops_uses_new_ctm_for_later_elements() {
+    // After `cm`, later path ops use the new CTM; the existing
+    // subpath is also painted under it (user-space path model).
+    // m(10,10) then translate+30 then l(10,10) → both become x=40.
+    let r = render(b"4 w 0 0 0 RG 10 10 m 1 0 0 1 30 0 cm 10 10 l 10 40 l S").unwrap();
+    assert_ne!(px(&r, 40, 75), [255, 255, 255, 255]);
 }
 
 #[test]
@@ -287,6 +299,218 @@ fn annotated_page_is_refused() {
 fn marked_content_and_compat_are_noops() {
     let r = render(b"/Tag BMC 0 0 0 rg 10 10 20 20 re f EMC BX 1 2 UnknownOp EX").unwrap();
     assert_eq!(px(&r, 20, 80), [0, 0, 0, 255]);
+}
+
+// -------------------------------------------------------------------
+// Optional Content (§8.11) — detection, not visibility evaluation
+// -------------------------------------------------------------------
+
+/// Build a 1-page PDF with an optional `/Properties` resource dict.
+fn pdf_with_oc(stream: &[u8], props: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"%PDF-1.4\n");
+    let mut offsets = Vec::new();
+    let page = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+         /Resources << /Properties << /OC1 5 0 R >> >> /Contents 4 0 R >>"
+        .to_string();
+    let bodies = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, page.into_bytes()),
+        (
+            4,
+            [
+                format!("<< /Length {} >>\nstream\n", stream.len()).into_bytes(),
+                stream.to_vec(),
+                b"\nendstream".to_vec(),
+            ]
+            .concat(),
+        ),
+        (5, props.as_bytes().to_vec()),
+    ];
+    for (n, b) in &bodies {
+        offsets.push((*n, out.len()));
+        out.extend_from_slice(format!("{n} 0 obj\n").as_bytes());
+        out.extend_from_slice(b);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    out.extend_from_slice(b"xref\n0 6\n");
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for (_n, off) in &offsets {
+        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(b"trailer\n<< /Size 6 /Root 1 0 R >>\n");
+    out.extend_from_slice(format!("startxref\n{xref}\n%%EOF\n").as_bytes());
+    out
+}
+
+fn render_oc(stream: &[u8], props: &str) -> Result<kasane_pdf::RenderedPage, Error> {
+    let pdf = pdf_with_oc(stream, props);
+    let doc = Document::from_bytes(&pdf)?;
+    render_page(&doc, &doc.pages()[0], &RenderOptions::default())
+}
+
+#[test]
+fn plain_marked_content_renders() {
+    // Non-OC tag on a BDC → plain marked content, page renders.
+    let r = render_oc(
+        b"/Span <</MCID 0>> BDC 0 0 0 rg 10 10 20 20 re f EMC",
+        "<< /Type /OCG >>",
+    )
+    .unwrap();
+    assert_eq!(px(&r, 20, 80), [0, 0, 0, 255]);
+}
+
+#[test]
+fn ocg_marked_content_is_unsupported() {
+    // /OC /OC1 BDC where OC1 resolves to an OCG dict → Unsupported.
+    let err = render_oc(
+        b"/OC /OC1 BDC 0 0 0 rg 10 10 20 20 re f EMC",
+        "<< /Type /OCG >>",
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::Unsupported { feature, .. } if feature.contains("optional content")),
+        "got: {err:?}"
+    );
+}
+
+#[test]
+fn ocmd_marked_content_is_unsupported() {
+    let err = render_oc(
+        b"/OC /OC1 BDC 0 0 0 rg 10 10 20 20 re f EMC",
+        "<< /Type /OCMD >>",
+    )
+    .unwrap_err();
+    assert!(matches!(err, Error::Unsupported { .. }), "got: {err:?}");
+}
+
+#[test]
+fn oc_properties_name_must_resolve() {
+    // /OC /Missing BDC — the name is not in /Properties → error.
+    let err = render_oc(
+        b"/OC /Missing BDC 0 0 0 rg 10 10 20 20 re f EMC",
+        "<< /Type /OCG >>",
+    )
+    .unwrap_err();
+    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
+}
+
+#[test]
+fn oc_tag_with_non_oc_property_dict_is_plain_mc() {
+    // /OC /OC1 BDC where OC1 resolves to a non-OC dict → treated as
+    // ordinary marked content.
+    let r = render_oc(
+        b"/OC /OC1 BDC 0 0 0 rg 10 10 20 20 re f EMC",
+        "<< /Type /Something >>",
+    )
+    .unwrap();
+    assert_eq!(px(&r, 20, 80), [0, 0, 0, 255]);
+}
+
+#[test]
+fn oc_name_without_properties_entry_is_error() {
+    // No /Properties resource at all → the name can't resolve.
+    let mut out = Vec::new();
+    out.extend_from_slice(b"%PDF-1.4\n");
+    let mut offsets = Vec::new();
+    let bodies = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >>".to_vec(),
+        ),
+        (
+            4,
+            b"<< /Length 40 >>\nstream\n/OC /OC1 BDC 0 0 0 rg 10 10 20 20 re f EMC\nendstream"
+                .to_vec(),
+        ),
+    ];
+    for (n, b) in &bodies {
+        offsets.push((*n, out.len()));
+        out.extend_from_slice(format!("{n} 0 obj\n").as_bytes());
+        out.extend_from_slice(b);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    out.extend_from_slice(b"xref\n0 5\n");
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for (_n, off) in &offsets {
+        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(b"trailer\n<< /Size 5 /Root 1 0 R >>\n");
+    out.extend_from_slice(format!("startxref\n{xref}\n%%EOF\n").as_bytes());
+    let doc = Document::from_bytes(&out).unwrap();
+    let err = render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap_err();
+    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
+}
+
+// -------------------------------------------------------------------
+// Clipping (§8.5.4)
+// -------------------------------------------------------------------
+
+#[test]
+fn nested_clips_intersect() {
+    // `W … n` consumes the clip path; a second `W` after `n` intersects
+    // the new clip with the existing one. Clip1 = right half, clip2 =
+    // top half → only top-right quadrant paints.
+    let r = render(b"50 0 50 100 re W n 0 50 100 50 re W n 0 0 0 rg 0 0 100 100 re f").unwrap();
+    assert_eq!(px(&r, 75, 25), [0, 0, 0, 255]); // top-right
+    assert_eq!(px(&r, 25, 25), [255, 255, 255, 255]); // top-left
+    assert_eq!(px(&r, 75, 75), [255, 255, 255, 255]); // bottom-right
+    assert_eq!(px(&r, 25, 75), [255, 255, 255, 255]); // bottom-left
+}
+
+#[test]
+fn clip_with_empty_path_empties_clip() {
+    // W on an empty path makes the clip empty → nothing painted.
+    let r = render(b"0 0 0 rg W n 10 10 20 20 re f").unwrap();
+    assert_eq!(px(&r, 20, 80), [255, 255, 255, 255]);
+}
+
+#[test]
+fn clip_then_paint_then_clip() {
+    // W1 paints right half, W2 then restricts further to top.
+    let r = render(b"q 50 0 50 100 re W n 0 0 0 rg 0 0 100 100 re f Q").unwrap();
+    assert_eq!(px(&r, 75, 50), [0, 0, 0, 255]);
+    assert_eq!(px(&r, 25, 50), [255, 255, 255, 255]);
+}
+
+#[test]
+fn clip_is_installed_at_n_not_at_paint() {
+    // `W … n` ends the path but still installs the clip before the
+    // next painting op sees it.
+    let r = render(b"50 0 50 100 re W n 0 0 0 rg 0 0 100 100 re f").unwrap();
+    assert_eq!(px(&r, 75, 50), [0, 0, 0, 255]);
+    assert_eq!(px(&r, 25, 50), [255, 255, 255, 255]);
+}
+
+#[test]
+fn clip_survives_q_and_restores_by_q() {
+    // q W fill Q → the clip is gone after Q; a following fill paints
+    // everywhere.
+    let r = render(
+        b"q 50 0 50 100 re W n 0 0 0 rg 0 0 100 100 re f Q \
+          0 0 0 rg 0 0 100 100 re f",
+    )
+    .unwrap();
+    // Both halves painted (clip restored away).
+    assert_eq!(px(&r, 25, 50), [0, 0, 0, 255]);
+    assert_eq!(px(&r, 75, 50), [0, 0, 0, 255]);
+}
+
+#[test]
+fn clip_with_cm_changes_clip_region() {
+    // Clip is a pixmap-space path; a cm after W (before next paint)
+    // does not retroactively move the clip, but elements after cm are
+    // under the new CTM.
+    let r = render(b"q 50 0 50 100 re W n 1 0 0 1 -30 0 cm 0 0 0 rg 0 0 100 100 re f Q").unwrap();
+    // The clip is right-half in pixmap x≥50; the shifted fill covers
+    // user x∈[30,130) → pixmap x∈[30,80] region is clipped to ≥50.
+    assert_eq!(px(&r, 60, 50), [0, 0, 0, 255]);
+    assert_eq!(px(&r, 40, 50), [255, 255, 255, 255]);
 }
 
 // -------------------------------------------------------------------
