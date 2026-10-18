@@ -5,6 +5,7 @@
 //! a fully consistent [`Document`] or an error — partial parse results
 //! are never exposed. All limits come from [`Limits`].
 
+use crate::content::{self, Operation};
 use crate::error::{Error, MissingReference};
 use crate::filter;
 use crate::limits::Limits;
@@ -298,6 +299,77 @@ impl Document {
             out.push(self.decode_stream(dict, raw)?);
         }
         Ok(out)
+    }
+
+    /// Parse the page's `/Contents` into typed operations (M2).
+    ///
+    /// Calls [`page_contents`](Self::page_contents) then parses the
+    /// concatenated streams as one logical sequence. Errors:
+    /// * `Error::Unsupported` — inline images (`BI`/`ID`/`EI`)
+    /// * `Error::Parse` — unknown operator, wrong arity/types
+    /// * `Error::Structure` — unbalanced `q`/`Q`, `BT`/`ET`, `BX`/`EX`,
+    ///   `BMC`/`BDC`/`EMC`
+    /// * `Error::LimitExceeded` — too many operations or operands
+    ///
+    /// Parsing never returns a partial operation list: any error
+    /// discards all operations parsed so far.
+    pub fn page_operations(&self, page: &Page) -> Result<Vec<Operation>, Error> {
+        let contents = self.page_contents(page)?;
+        content::parse_content_stream(&contents, &self.limits)
+    }
+
+    // ---------------------------------------------------------------
+    // Page resources (M2)
+    // ---------------------------------------------------------------
+
+    /// Resolve a named entry inside one of a page's resource
+    /// categories (ISO 32000-1:2008, §7.8.3).
+    ///
+    /// `category` is a top-level `/Resources` key such as `"Font"`,
+    /// `"XObject"`, `"ExtGState"`, `"ColorSpace"`, `"Pattern"`,
+    /// `"Shading"` or `"Properties"`; `name` is the resource name
+    /// without the leading `/` (e.g. `b"F1"` for `/F1`).
+    ///
+    /// The page's effective resources are used — `/Resources` is an
+    /// inheritable attribute (Table 30), so a page that omits it uses
+    /// the nearest ancestor's dictionary *as a whole*; there is no
+    /// per-key merge. The category sub-dictionary is resolved one
+    /// level, then `name` is looked up and the result resolved one
+    /// level and returned as the raw object — fonts, XObjects and the
+    /// like are **not** interpreted or executed.
+    ///
+    /// Returns:
+    /// * `Ok(Some(obj))` — the entry's value (resolved if indirect).
+    /// * `Ok(None)` — no resources, no such category, or no such
+    ///   name (or the entry is `null`).
+    /// * `Err(Error::Structure)` — the resources or the category is
+    ///   not a dictionary.
+    /// * `Err(Error::MissingReference)` — an indirect reference in the
+    ///   path is undefined.
+    pub fn page_resource(
+        &self,
+        page: &Page,
+        category: &str,
+        name: &[u8],
+    ) -> Result<Option<Object>, Error> {
+        let resources = match page.resources() {
+            None => return Ok(None),
+            Some(r) => self.deref(r)?,
+        };
+        let res_dict = resources
+            .as_dict()
+            .ok_or_else(|| Error::Structure("page /Resources is not a dictionary".into()))?;
+        let category_obj = match res_dict.get(category.as_bytes()) {
+            None => return Ok(None),
+            Some(c) => self.deref(c)?,
+        };
+        let cat_dict = category_obj.as_dict().ok_or_else(|| {
+            Error::Structure(format!("page /Resources /{category} is not a dictionary"))
+        })?;
+        match cat_dict.get(name) {
+            None => Ok(None),
+            Some(entry) => Ok(Some(self.deref(entry)?)),
+        }
     }
 
     // ---------------------------------------------------------------

@@ -1,0 +1,69 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> /XObject << /Im1 6 0 R >> /ExtGState << /GS1 7 0 R >> /ColorSpace << /CS1 8 0 R >> /Shading << /Sh1 9 0 R >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 528 >>
+stream
+q
+2 w 1 J 0 j 10 M [3 2] 0 d /RelativeColorimetric ri 1 i /GS1 gs
+1 0 0 1 50 60 cm
+10 20 m 30 40 l 1 2 3 4 5 6 c 7 8 9 10 v 11 12 13 14 y h
+100 100 50 30 re
+S s f F f* B B* b b* n W W*
+0.5 G 0.2 g 0.1 0.2 0.3 RG 0.4 0.5 0.6 rg
+0 1 0 0 K 0 0 1 0 k
+/CS1 CS /CS2 cs 0.5 0.5 SC 0.1 0.2 sc
+BT /F1 12 Tf 0.5 Tc 1.5 Tw 110 Tz 14 TL 2 Tr 3 Ts
+10 20 Td 1 2 TD 1 0 0 1 30 40 Tm T*
+(abc) Tj [(a) -250 (b) 30] TJ (c) ' 0.5 0.25 (d) "
+ET
+/Im1 Do /Sh1 sh
+/Tag MP /Tag << /K 1 >> DP
+/Tag BMC /Tag2 << /K (v) >> BDC EMC EMC
+BX /Foo 1 2 Bar EX
+Q
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+6 0 obj
+<< /Subtype /Form /BBox [0 0 10 10] /Length 0 >>
+stream
+
+endstream
+endobj
+7 0 obj
+<< /Type /ExtGState /CA 0.5 >>
+endobj
+8 0 obj
+/DeviceRGB
+endobj
+9 0 obj
+<< /ShadingType 2 /ColorSpace /DeviceRGB >>
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000121 00000 n 
+0000000356 00000 n 
+0000000935 00000 n 
+0000001005 00000 n 
+0000001087 00000 n 
+0000001133 00000 n 
+0000001159 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R >>
+startxref
+1218
+%%EOF

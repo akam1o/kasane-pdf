@@ -12,7 +12,7 @@ The long-term consumer is a Flutter-based macOS/iPadOS app ("Kakomi"),
 but kasane-pdf is developed as a standalone Rust library + CLI. A
 C-compatible API and Apple packaging are future concerns, not M0.
 
-## Module map (M1)
+## Module map (M2)
 
 ```
 src/
@@ -27,19 +27,24 @@ src/
                /XRefStm (hybrid) merging
   filter.rs    stream /Filter decoding: FlateDecode + predictors
   objstm.rs    /ObjStm parsing (header, bounds, member objects)
+  matrix.rs    Matrix [a b c d e f] affine transform (§8.3)
+  content.rs   content-stream parser → Vec<Operation> (§7.8, §8–§9)
   document.rs  Document: load pipeline + lazy resolve() + page tree walk
-               + page_contents() + decoded-bytes budget + ObjStm cache
+               + page_contents() + page_operations() + page_resource()
+               + decoded-bytes budget + ObjStm cache
   page.rs      Page, Rect value types
-  main.rs      kasane-pdf CLI (info + contents subcommand)
+  main.rs      kasane-pdf CLI (info + contents + operations subcommands)
 tests/
   fixtures/    hand-crafted PDFs + make_fixtures.py generator
   parsing.rs   M0 integration tests (kept)
   m1.rs        M1 integration tests
+  m2.rs        M2 integration tests
 ```
 
 Layering is one-directional: `lexer` < `parser` < `xref` < `document`.
-`filter` and `objstm` sit beside `xref` and are used only by `document`.
-`object`, `error`, `limits`, `page` are leaf types used everywhere.
+`filter`, `objstm`, `matrix` and `content` sit beside `parser`/`xref`
+and are used only by `document` (and `main`). `object`, `error`,
+`limits`, `page` are leaf types used everywhere.
 
 ## Key decisions
 
@@ -87,7 +92,60 @@ Layering is one-directional: `lexer` < `parser` < `xref` < `document`.
   machine-readable category for automation.
 
 - **Partial results are never returned.** Any error aborts
-  `Document::from_bytes`; there is no "best-effort document".
+  `Document::from_bytes`; there is no "best-effort document". The same
+  rule applies to `page_operations` — an error discards the whole
+  operation list, it is never returned truncated.
+
+- **Content streams are parsed postfix-style into `Operation`s, not
+  executed.** `content.rs` collects operands until an operator token
+  arrives, validates count and type against the operator tables in
+  §8–§9, and emits a typed `Operation`. Rendering, text Unicode
+  mapping and XObject execution are explicitly out of M2.
+
+- **`/Contents` arrays are one logical stream.** §7.8.1 says a
+  Contents array "shall be as if the stream objects were
+  concatenated", so `ContentParser` carries the operand stack,
+  `q`/`Q` depth, `BT`/`ET`/`BX`/`EX`/marked-content state across
+  element boundaries. Splitting an operand list or a `q…Q` pair
+  across two streams is therefore accepted.
+
+- **Content operands are direct objects only.** The object-file parser
+  accepts `n g R` and `stream` bodies; in a content stream those are
+  illegal, so `content.rs` has its own operand collector over the
+  shared `Lexer` (numbers, names, literal/hex strings, `[` arrays,
+  `<< >>` dicts, `true`/`false`/`null`). A word that is not one of
+  those primitives is an operator — this is how `10 0 R` becomes the
+  unknown-operator error for `R` instead of an `Object::Ref`.
+
+- **Structure state is validated, not interpreted.** `q`/`Q` depth is
+  bounded by `max_gsave_depth`, `Q` underflow and unclosed `q`,
+  `BT`/`ET`, `BX`/`EX` and `BMC`/`BDC`/`EMC` at end of input are
+  `Error::Structure`. Inside `BX … EX`, unknown operators produce
+  `Operation::Unknown` rather than an error (§7.8.2). `BI`/`ID`/`EI`
+  are `Error::Unsupported` — the image data between `ID` and `EI` is
+  binary and cannot be tokenized by scanning for `EI`.
+
+- **`SC`/`SCN`/`sc`/`scn` keep their operands uninterpreted.** Their
+  arity depends on the active colour space (which needs resources
+  resolved), so the parser only enforces the syntactic bound: 0–4
+  numbers plus, for the `N` forms, an optional trailing pattern name.
+  A later stage can validate against the resolved colour space.
+
+- **`Matrix::concat` is PDF `cm` order.** The `cm` operand
+  concatenates to the *left* of the CTM, so `existing.concat(cm)`
+  computes `cm × existing`. `transform` applies
+  `x' = a·x + c·y + e`, `y' = b·x + d·y + f`. Concatenation is
+  non-commutative and tested for it. `Matrix` is a value type; the
+  page-level `CropBox`/`Rotate` → device mapping is a separate,
+  still-unimplemented, concern.
+
+- **Resource names stay symbolic until needed.** `Tf`/`Do`/`gs`/`CS`/
+  `cs`/`sh` and `DP`/`BDC` properties keep their `Name`s. They can be
+  resolved on demand through `Document::page_resource`, which uses the
+  page's effective (inherited) `/Resources` per Table 30 — the
+  nearest ancestor's dictionary is used *whole*, never merged
+  per-key. Only the requested category/name is resolved; unused
+  resources are not fetched or interpreted.
 
 ## Safety / hostile input
 
@@ -105,6 +163,7 @@ Every unbounded operation has a `Limits` bound:
 | `max_total_decoded_bytes` | cumulative *work* (bytes decoded) across all streams in a Document; cached ObjStm reuse does not re-charge |
 | `max_filter_chain` | filters applied to one stream |
 | `max_objstm_entries` / `max_objstm_bytes` | `/N` and `/First`+body bounds in object streams |
+| `max_operations` / `max_operand_stack` / `max_gsave_depth` | parsed ops per page, pending operands, `q` stack depth |
 | (xref) section & entry counts | `/Prev` chains and subsection loops |
 
 Additionally: cycle detection on reference chains, the `/Prev` chain,
@@ -135,6 +194,9 @@ decoded-bytes cost. `unsafe` is not used anywhere.
 1. Parsing — object streams, xref streams, hybrid-reference files,
    stream filters (`FlateDecode` + PNG/TIFF predictors). *(M1 done;
    other filters still unsupported.)*
+   - M2 done: content-stream parsing into typed `Operation`s, `Matrix`
+     type, page-resource lookup. Still unsupported: inline images,
+     Unicode mapping, the remaining filters.
 2. Rendering — CTM/graphics state, paths, text, images, Form XObjects,
    clipping, transparency, color spaces.
 3. Text extraction — font encodings, CMaps, ToUnicode, CJK + vertical
