@@ -298,22 +298,7 @@ impl<'a> Parser<'a> {
 
         // Determine the end of stream data. Prefer a consistent direct
         // /Length; otherwise scan for the "endstream" keyword.
-        let data_end = match self.find_stream_end(&dict, data_start) {
-            Ok(e) => e,
-            Err(e) => {
-                // An indirect /Length plus absent endstream means the
-                // extent is unresolvable without dereferencing; surface
-                // the limitation instead of guessing.
-                let indirect_len = matches!(dict.get(b"Length".as_slice()), Some(Object::Ref(_)));
-                if indirect_len {
-                    return Err(Error::Unsupported {
-                        feature: "stream with indirect /Length and no endstream marker",
-                        detail: format!("stream starting near byte {data_start}"),
-                    });
-                }
-                return Err(e);
-            }
-        };
+        let data_end = self.find_stream_end(&dict, data_start)?;
 
         self.lexer.seek(data_end);
         // Consume the endstream keyword; an EOL may precede it.
@@ -501,13 +486,13 @@ impl<'a> Parser<'a> {
             ))
         })?;
         let generation = parse_u64_digits(&gen_tok)
-            .filter(|&g| g <= u16::MAX as u64)
+            .filter(|&g| g <= u32::MAX as u64)
             .ok_or_else(|| {
                 Error::Parse(format!(
                     "bad xref entry generation '{}'",
                     String::from_utf8_lossy(&gen_tok)
                 ))
-            })? as u16;
+            })? as u32;
         if kind_tok.len() != 1 {
             return Err(Error::Parse(format!(
                 "bad xref entry type '{}'",
@@ -526,7 +511,9 @@ impl<'a> Parser<'a> {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct XrefLine {
     pub(crate) offset: u64,
-    pub(crate) generation: u16,
+    /// Free entries use the full 5-digit range (0–65535) per spec, but
+    /// some writers emit 65536; accept u32 and let the caller decide.
+    pub(crate) generation: u32,
     /// `b'n'` (in-use) or `b'f'` (free); validated by the caller.
     pub(crate) kind: u8,
 }

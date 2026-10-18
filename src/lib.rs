@@ -39,9 +39,11 @@
 
 mod document;
 mod error;
+mod filter;
 mod lexer;
 mod limits;
 mod object;
+mod objstm;
 mod page;
 mod parser;
 mod xref;

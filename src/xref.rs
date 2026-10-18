@@ -1,18 +1,18 @@
-//! Classic cross-reference table and trailer parsing
-//! (ISO 32000-1:2008, §7.5.4–7.5.5).
+//! Cross-reference table and trailer parsing (ISO 32000-1:2008,
+//! §7.5.4–7.5.5 for classic sections, §7.5.8 for xref streams and
+//! hybrid-reference files).
 //!
 //! Supported: plain `xref` sections (with multiple subsections), the
-//! `trailer` dictionary, and `/Prev` chains of classic sections — which
-//! is how incremental updates appear in otherwise-M0-format files.
+//! `trailer` dictionary, `/Prev` chains of classic sections, xref streams,
+//! and hybrid-reference files (`/XRefStm` in a classic trailer).
 //!
-//! Not supported (reported as [`Error::Unsupported`]):
-//! * xref streams (`startxref` pointing at `n g obj` with `/Type /XRef`)
-//! * hybrid-reference files (trailer `/XRefStm`)
-//! * object streams (xref-stream files; classic files referencing
-//!   `/ObjStm` objects are rejected at resolution time)
+//! Entries are stored as a map `(obj, gen) -> entry`. Newest section wins;
+//! older `/Prev` sections only fill gaps. In hybrid files the classic
+//! table (and its `/Prev` chain) is primary; `/XRefStm` supplies entries
+//! only for objects not covered by a newer classic section.
 //!
-//! Entries are stored as a map `(obj, gen) -> byte offset`. Both `n` and
-//! `f` entry types are recorded; only `n` entries resolve.
+//! Object streams: xref-stream entries of type 2 are recorded as
+//! `Compressed` and resolved via the document layer.
 
 use crate::error::Error;
 use crate::limits::Limits;
@@ -33,6 +33,13 @@ pub(crate) enum XrefEntry {
     Free {
         /// The "next free object" field of the xref line.
         next_free: u32,
+    },
+    /// Compressed object inside an object stream (type 2).
+    Compressed {
+        /// Object number of the containing `/ObjStm`.
+        objstm: u32,
+        /// Index of the object within the object stream's `/N` list.
+        index: u32,
     },
 }
 
@@ -60,6 +67,15 @@ impl XrefTable {
     pub(crate) fn offset_of(&self, r: IndirectRef) -> Option<u64> {
         match self.entries.get(&(r.number, r.generation)) {
             Some(XrefEntry::InUse { offset }) => Some(*offset),
+            _ => None,
+        }
+    }
+
+    /// Object stream location for a compressed object, if `r` is stored
+    /// inside one.
+    pub(crate) fn compressed_location(&self, r: IndirectRef) -> Option<(u32, u32)> {
+        match self.entries.get(&(r.number, r.generation)) {
+            Some(XrefEntry::Compressed { objstm, index }) => Some((*objstm, *index)),
             _ => None,
         }
     }
@@ -114,6 +130,29 @@ pub(crate) fn read_xref_chain(
             trailer.entry(k.clone()).or_insert_with(|| v.clone());
         }
 
+        // A classic trailer may point at an additional xref stream with
+        // compressed entries (§7.5.8.4 hybrid-reference files). Those
+        // entries only fill gaps — the classic chain is authoritative
+        // for objects it already defines.
+        if let Some(xrefstm) = trailer_dict.get(b"XRefStm".as_slice()) {
+            let pos = match xrefstm {
+                Object::Integer(i) if *i >= 0 => *i as u64,
+                _ => {
+                    return Err(Error::Structure(
+                        "trailer /XRefStm is not a non-negative integer".into(),
+                    ))
+                }
+            };
+            if pos as usize > input.len() {
+                return Err(Error::Parse(format!(
+                    "/XRefStm offset {pos} is beyond end of input"
+                )));
+            }
+            read_one_section(input, limits, pos, &mut |key, entry| {
+                entries.entry(key).or_insert(entry);
+            })?;
+        }
+
         current = next_prev(&trailer_dict)?;
     }
 
@@ -156,10 +195,7 @@ fn read_one_section(
                 .map(|n| n == b"XRef")
                 .unwrap_or(false);
             if is_xref_stream {
-                Err(Error::Unsupported {
-                    feature: "xref stream",
-                    detail: format!("object {} at byte {offset}", ind.object_ref),
-                })
+                read_xref_stream_section(&ind, limits, on_entry)
             } else {
                 Err(Error::Parse(format!(
                     "expected 'xref' at byte {offset}, found object {}",
@@ -171,6 +207,153 @@ fn read_one_section(
             "expected 'xref' keyword at byte {offset}"
         ))),
     }
+}
+
+/// Parse an xref stream's `/W`/`/Index` fields and emit entries.
+///
+/// `ind` is the already-parsed `n g obj` wrapper around the stream.
+fn read_xref_stream_section(
+    ind: &crate::parser::IndirectObject,
+    limits: &Limits,
+    on_entry: &mut dyn FnMut((u32, u16), XrefEntry),
+) -> Result<Dict, Error> {
+    let (dict, data) = ind
+        .object
+        .as_stream()
+        .ok_or_else(|| Error::Parse(format!("object {} is not a stream", ind.object_ref)))?;
+
+    // /W: three integer widths, each 0..=8 (enough for 8-byte fields).
+    let w_obj = dict
+        .get(b"W".as_slice())
+        .ok_or_else(|| Error::Structure("xref stream has no /W".into()))?;
+    let w_arr = w_obj
+        .as_array()
+        .ok_or_else(|| Error::Structure("xref stream /W is not an array".into()))?;
+    if w_arr.len() != 3 {
+        return Err(Error::Structure(
+            "xref stream /W must have 3 elements".into(),
+        ));
+    }
+    let mut w = [0usize; 3];
+    for (i, o) in w_arr.iter().enumerate() {
+        let v = o
+            .as_i64()
+            .ok_or_else(|| Error::Structure("xref stream /W entries must be integers".into()))?;
+        if !(0..=8).contains(&v) {
+            return Err(Error::Unsupported {
+                feature: "xref stream field width",
+                detail: format!("/W[{i}] = {v}"),
+            });
+        }
+        w[i] = v as usize;
+    }
+    let entry_len = w[0] + w[1] + w[2];
+    if entry_len == 0 {
+        return Err(Error::Structure("xref stream entry size is zero".into()));
+    }
+
+    // /Index: array of [first count] pairs; default [0 /Size].
+    let index_pairs: Vec<(u32, u32)> = match dict.get(b"Index".as_slice()) {
+        Some(Object::Array(a)) => {
+            if a.len() % 2 != 0 {
+                return Err(Error::Structure(
+                    "xref stream /Index must have an even number of entries".into(),
+                ));
+            }
+            let mut v = Vec::with_capacity(a.len() / 2);
+            for pair in a.chunks_exact(2) {
+                let first = pair[0]
+                    .as_i64()
+                    .filter(|i| *i >= 0 && *i <= u32::MAX as i64)
+                    .ok_or_else(|| Error::Structure("bad /Index first object".into()))?
+                    as u32;
+                let count = pair[1]
+                    .as_i64()
+                    .filter(|i| *i >= 0 && *i <= u32::MAX as i64)
+                    .ok_or_else(|| Error::Structure("bad /Index count".into()))?
+                    as u32;
+                v.push((first, count));
+            }
+            v
+        }
+        Some(_) => {
+            return Err(Error::Structure(
+                "xref stream /Index is not an array".into(),
+            ))
+        }
+        None => {
+            let size = dict
+                .get(b"Size".as_slice())
+                .and_then(|o| o.as_i64())
+                .filter(|i| *i >= 0 && *i <= u32::MAX as i64)
+                .ok_or_else(|| {
+                    Error::Structure("xref stream missing /Size for default /Index".into())
+                })? as u32;
+            vec![(0, size)]
+        }
+    };
+
+    let total_entries: u64 = index_pairs.iter().map(|&(_, c)| c as u64).sum();
+    if total_entries > limits.max_array_elements as u64 {
+        return Err(Error::LimitExceeded {
+            limit: "xref stream entry count",
+            max: limits.max_array_elements as u64,
+        });
+    }
+    let needed = total_entries as usize * entry_len;
+    if data.len() < needed {
+        return Err(Error::UnexpectedEof {
+            offset: data.len(),
+            context: "xref stream data",
+        });
+    }
+
+    let mut cursor = 0usize;
+    for &(first, count) in &index_pairs {
+        for i in 0..count {
+            let obj_num = first
+                .checked_add(i)
+                .ok_or_else(|| Error::Structure("xref stream object number overflow".into()))?;
+            let entry = parse_xref_stream_entry(&data[cursor..cursor + entry_len], w)?;
+            cursor += entry_len;
+            // Compressed objects are always generation 0 in the key;
+            // their /ObjStm index is stored in the entry itself.
+            on_entry((obj_num, 0), entry);
+        }
+    }
+
+    // The trailer is the xref stream's own dictionary.
+    Ok(dict.clone())
+}
+
+/// Decode one xref stream entry of `entry_len` bytes with field widths `w`.
+fn parse_xref_stream_entry(buf: &[u8], w: [usize; 3]) -> Result<XrefEntry, Error> {
+    let f1 = read_field(&buf[0..w[0]]);
+    let f2 = read_field(&buf[w[0]..w[0] + w[1]]);
+    let f3 = read_field(&buf[w[0] + w[1]..]);
+
+    // Field widths of 0 imply the default value (§7.5.8.2 Table 17).
+    let entry_type = if w[0] == 0 { 1 } else { f1 };
+    match entry_type {
+        0 => Ok(XrefEntry::Free {
+            next_free: f2 as u32,
+        }),
+        1 => Ok(XrefEntry::InUse { offset: f2 }),
+        2 => Ok(XrefEntry::Compressed {
+            objstm: f2 as u32,
+            index: f3 as u32,
+        }),
+        other => Err(Error::Parse(format!("bad xref stream entry type {other}"))),
+    }
+}
+
+/// Read an unsigned big-endian field of up to 8 bytes (width 0 -> 0).
+fn read_field(bytes: &[u8]) -> u64 {
+    let mut v: u64 = 0;
+    for &b in bytes {
+        v = (v << 8) | b as u64;
+    }
+    v
 }
 
 /// Read `xref` subsections + `trailer` at the current position
@@ -245,7 +428,7 @@ fn read_classic_section(
                             )))
                         }
                     };
-                    on_entry((obj_num, line.generation), entry);
+                    on_entry((obj_num, line.generation as u16), entry);
                 }
             }
         }

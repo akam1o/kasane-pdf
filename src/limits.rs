@@ -39,6 +39,20 @@ pub struct Limits {
     /// single object definition.
     /// Default: 512.
     pub max_nesting_depth: u32,
+    /// Maximum decoded size of a single stream (before and after each
+    /// filter stage). Default: 256 MiB.
+    pub max_stream_bytes: u64,
+    /// Maximum cumulative decoded bytes across all streams decoded by a
+    /// single [`Document`](crate::Document). Guards against many small
+    /// streams exhausting memory. Default: 1 GiB.
+    pub max_total_decoded_bytes: u64,
+    /// Maximum number of filters in a `/Filter` array. Default: 8.
+    pub max_filter_chain: usize,
+    /// Maximum entries in a single object stream (`/N`). Default: 10,000.
+    pub max_objstm_entries: usize,
+    /// Maximum byte range of an object stream's object list (`/First` +
+    /// header + body). Default: 64 MiB.
+    pub max_objstm_bytes: usize,
 }
 
 impl Default for Limits {
@@ -52,6 +66,11 @@ impl Default for Limits {
             max_dict_entries: 100_000,
             max_string_bytes: 64 * 1024 * 1024,
             max_nesting_depth: 512,
+            max_stream_bytes: 256 * 1024 * 1024,
+            max_total_decoded_bytes: 1024 * 1024 * 1024,
+            max_filter_chain: 8,
+            max_objstm_entries: 10_000,
+            max_objstm_bytes: 64 * 1024 * 1024,
         }
     }
 }

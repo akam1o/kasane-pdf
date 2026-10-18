@@ -6,12 +6,14 @@
 //! are never exposed. All limits come from [`Limits`].
 
 use crate::error::{Error, MissingReference};
+use crate::filter;
 use crate::limits::Limits;
 use crate::object::{Dict, IndirectRef, Object};
+use crate::objstm::ObjectStream;
 use crate::page::{Page, Rect};
 use crate::parser::Parser;
 use crate::xref::{self, XrefTable};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// Inheritable page attributes accumulated down the page tree
 /// (ISO 32000-1:2008, Table 30).
@@ -38,6 +40,12 @@ pub struct Document {
     limits: Limits,
     /// Remaining indirect-reference resolution budget.
     ref_budget: std::cell::Cell<u64>,
+    /// Remaining cumulative decoded-bytes budget (shared across all
+    /// streams decoded via this document).
+    decoded_budget: std::cell::Cell<u64>,
+    /// Cache of decoded object streams, keyed by object-stream number.
+    /// Bounded implicitly by the decoded-bytes budget.
+    objstm_cache: std::cell::RefCell<HashMap<u32, ObjectStream>>,
 }
 
 impl Document {
@@ -77,14 +85,6 @@ impl Document {
         if xref.trailer.contains_key(b"Encrypt".as_slice()) {
             return Err(Error::Encrypted);
         }
-        // Hybrid-reference files also carry an xref stream we would
-        // silently ignore; reject them instead of reading a stale view.
-        if xref.trailer.contains_key(b"XRefStm".as_slice()) {
-            return Err(Error::Unsupported {
-                feature: "hybrid-reference file",
-                detail: "trailer contains /XRefStm".to_string(),
-            });
-        }
 
         let mut doc = Document {
             data: data.to_vec(),
@@ -92,6 +92,8 @@ impl Document {
             catalog: Dict::new(),
             pages: Vec::new(),
             ref_budget: std::cell::Cell::new(limits.max_reference_depth),
+            decoded_budget: std::cell::Cell::new(limits.max_total_decoded_bytes),
+            objstm_cache: std::cell::RefCell::new(HashMap::new()),
             limits,
         };
 
@@ -127,6 +129,11 @@ impl Document {
             }
             self.ref_budget.set(self.ref_budget.get() - 1);
 
+            if let Some((objstm_num, index)) = self.xref.compressed_location(current) {
+                // Type-2 entry: resolve via the object stream.
+                return self.resolve_compressed(current, objstm_num, index);
+            }
+
             let offset = self.xref.offset_of(current).ok_or({
                 Error::MissingReference(MissingReference {
                     reference: current,
@@ -160,6 +167,75 @@ impl Document {
         }
     }
 
+    /// Resolve an object stored inside an object stream (xref type 2).
+    fn resolve_compressed(
+        &self,
+        want: IndirectRef,
+        objstm_num: u32,
+        index: u32,
+    ) -> Result<Object, Error> {
+        if !self.objstm_cache.borrow().contains_key(&objstm_num) {
+            let objstm_ref = IndirectRef::new(objstm_num, 0);
+            let objstm_obj = self.resolve_indirect_no_ref_follow(objstm_ref)?;
+            let (dict, raw) = objstm_obj.as_stream().ok_or_else(|| {
+                Error::Structure(format!("object stream {objstm_num} is not a stream"))
+            })?;
+            if dict.get(b"Type".as_slice()).and_then(|o| o.as_name()) != Some(b"ObjStm") {
+                return Err(Error::Structure(format!(
+                    "stream {objstm_num} is not /Type /ObjStm"
+                )));
+            }
+            let decoded = self.decode_stream(dict, raw)?;
+            let parsed = ObjectStream::parse(&decoded, dict, (want.number, index), &self.limits)?;
+            self.objstm_cache.borrow_mut().insert(objstm_num, parsed);
+        }
+        let cache = self.objstm_cache.borrow();
+        let os = cache.get(&objstm_num).unwrap();
+        os.get(want.number).cloned().ok_or({
+            Error::MissingReference(MissingReference {
+                reference: want,
+                context: "object stream member",
+            })
+        })
+    }
+
+    /// Resolve one level of indirection without following `Ref` chains
+    /// (used for the object-stream container itself).
+    fn resolve_indirect_no_ref_follow(&self, r: IndirectRef) -> Result<Object, Error> {
+        let offset = self.xref.offset_of(r).ok_or({
+            Error::MissingReference(MissingReference {
+                reference: r,
+                context: "object stream",
+            })
+        })?;
+        let mut parser = Parser::new(&self.data, &self.limits);
+        parser.seek(offset as usize);
+        parser
+            .parse_indirect_object()?
+            .map(|io| io.object)
+            .ok_or_else(|| {
+                Error::Parse(format!(
+                    "no indirect object at xref offset {offset} (for {r})"
+                ))
+            })
+    }
+
+    /// Decode a stream body according to its dictionary's `/Filter` and
+    /// `/DecodeParms`, bounded by `max_stream_bytes` and the shared
+    /// `decoded_budget`.
+    fn decode_stream(&self, dict: &Dict, raw: &[u8]) -> Result<Vec<u8>, Error> {
+        let out = filter::decode_stream(dict, raw, &self.limits)?;
+        let cost = out.len() as u64;
+        if cost > self.decoded_budget.get() {
+            return Err(Error::LimitExceeded {
+                limit: "max_total_decoded_bytes",
+                max: self.limits.max_total_decoded_bytes,
+            });
+        }
+        self.decoded_budget.set(self.decoded_budget.get() - cost);
+        Ok(out)
+    }
+
     /// Resolve `obj` if it is a reference; pass other values through.
     pub fn deref(&self, obj: &Object) -> Result<Object, Error> {
         match obj {
@@ -186,6 +262,42 @@ impl Document {
     /// Number of pages in the document.
     pub fn page_count(&self) -> usize {
         self.pages.len()
+    }
+
+    // ---------------------------------------------------------------
+    // Page contents (M1)
+    // ---------------------------------------------------------------
+
+    /// Fetch the decoded contents of `page` (the page's `/Contents`
+    /// stream or array of streams).
+    ///
+    /// - `/Contents` absent → `Ok(vec![])` (empty content).
+    /// - Single stream or an array of streams → decoded bodies in order.
+    /// - Each entry must be a stream object (indirect or direct); other
+    ///   shapes are `Error::Structure`/`Error::MissingReference`.
+    /// - Unsupported filters or decode failures are reported when (and
+    ///   only when) the contents are actually requested — a document
+    ///   with e.g. an unsupported image filter still parses and reports
+    ///   pages normally.
+    pub fn page_contents(&self, page: &Page) -> Result<Vec<Vec<u8>>, Error> {
+        let contents = match page.contents() {
+            None => return Ok(Vec::new()),
+            Some(c) => c.clone(),
+        };
+        let resolved = self.deref(&contents)?;
+        let items: Vec<Object> = match resolved {
+            Object::Array(a) => a,
+            other => vec![other],
+        };
+        let mut out = Vec::with_capacity(items.len());
+        for item in items {
+            let obj = self.deref(&item)?;
+            let (dict, raw) = obj
+                .as_stream()
+                .ok_or_else(|| Error::Structure("page /Contents entry is not a stream".into()))?;
+            out.push(self.decode_stream(dict, raw)?);
+        }
+        Ok(out)
     }
 
     // ---------------------------------------------------------------
