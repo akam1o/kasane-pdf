@@ -8,7 +8,7 @@
 //! dump file data. Exit code 0 on success, 1 on any error (the error
 //! is printed with its category).
 
-use kasane_pdf::{Document, Error, Object};
+use kasane_pdf::{pixmap_to_png, render_page, Document, Error, Limits, Object, RenderOptions};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -16,7 +16,7 @@ fn main() -> ExitCode {
     let prog = args.first().map(String::as_str).unwrap_or("kasane-pdf");
 
     match args.get(1).map(String::as_str) {
-        Some(cmd @ ("contents" | "operations")) => {
+        Some(cmd @ ("contents" | "operations" | "render")) => {
             let (path, page_no) = match (args.get(2), args.get(3)) {
                 (Some(p), Some(n)) => (p, n),
                 _ => {
@@ -31,10 +31,11 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
-            let result = if cmd == "contents" {
-                run_contents(path, page_no)
-            } else {
-                run_operations(path, page_no)
+            let result = match cmd {
+                "contents" => run_contents(path, page_no),
+                "operations" => run_operations(path, page_no),
+                "render" => run_render(path, page_no, &args[4..]),
+                _ => unreachable!(),
             };
             match result {
                 Ok(()) => ExitCode::SUCCESS,
@@ -55,6 +56,9 @@ fn main() -> ExitCode {
             eprintln!("usage: {prog} <file.pdf>");
             eprintln!("       {prog} contents <file.pdf> <page-number>");
             eprintln!("       {prog} operations <file.pdf> <page-number>");
+            eprintln!(
+                "       {prog} render <file.pdf> <page-number> --output <file.png> [--dpi <dpi>]"
+            );
             ExitCode::from(2)
         }
     }
@@ -150,5 +154,57 @@ fn run_operations(path: &str, page_no: usize) -> Result<(), Error> {
             ops.len() - MAX_PRINTED_OPERATIONS
         );
     }
+    Ok(())
+}
+
+/// `render` subcommand: `render <file.pdf> <page> --output <png> [--dpi <d>]`.
+/// The output PNG is written only on success — a failed render never
+/// leaves a partial file. An existing file is overwritten.
+fn run_render(path: &str, page_no: usize, args: &[String]) -> Result<(), Error> {
+    let mut output: Option<String> = None;
+    let mut dpi: f64 = 72.0;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--output" => {
+                output = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--dpi" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| Error::Structure("--dpi requires a value".into()))?;
+                dpi = v
+                    .parse::<f64>()
+                    .map_err(|_| Error::Structure(format!("invalid --dpi value '{v}'")))?;
+                i += 2;
+            }
+            other => {
+                eprintln!("error: unknown render option '{other}'");
+                return Err(Error::Structure(format!("unknown option '{other}'")));
+            }
+        }
+    }
+    let output =
+        output.ok_or_else(|| Error::Structure("render requires --output <file.png>".into()))?;
+
+    let data = std::fs::read(path)?;
+    let doc = Document::from_bytes(&data)?;
+    let page = doc
+        .pages()
+        .get(page_no - 1)
+        .ok_or_else(|| Error::Structure(format!("page {page_no} does not exist")))?;
+
+    let opts = RenderOptions {
+        dpi,
+        limits: Limits::default(),
+    };
+    let rendered = render_page(&doc, page, &opts)?;
+    let png = pixmap_to_png(&rendered.pixmap)?;
+    std::fs::write(&output, png)?;
+    println!(
+        "rendered page {} -> {} ({}x{} px, {} pts, dpi {})",
+        page_no, output, rendered.width, rendered.height, rendered.page_size_pts.0, rendered.dpi
+    );
     Ok(())
 }

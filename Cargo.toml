@@ -13,3 +13,10 @@ publish = false
 # FlateDecode (zlib/DEFLATE). flate2 = MIT or Apache-2.0; the default
 # rust_backend uses miniz_oxide (MIT). No copyleft code is linked.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+
+# 2D raster backend for M3 rendering. BSD-3-Clause.
+# Used only to rasterize paths/fills; all PDF interpretation is ours.
+tiny-skia = "0.12"
+
+# PNG encoding for M3 render output. MIT or Apache-2.0.
+png = "0.18"

@@ -880,10 +880,19 @@ impl<'a> ContentParser<'a> {
         Ok(out)
     }
 
-    /// `SC`/`SCN`/`sc`/`scn`: operand count is 0–4 numbers, plus for the
-    /// `N` forms an optional trailing pattern name. The real arity is
-    /// determined by the active colour space, which the parser does not
-    /// resolve — this is the syntactic bound only.
+    /// `SC`/`SCN`/`sc`/`scn` operand validation.
+    ///
+    /// - `SC`/`sc`: only numeric components (no trailing name).
+    /// - `SCN`/`scn`: numeric components plus an *optional* trailing
+    ///   pattern name (the pattern name is what the `N` in the operator
+    ///   name refers to — §8.6.8 Table 74–75).
+    ///
+    /// The component count itself is *not* bounded at this stage:
+    /// DeviceN colour spaces may take more than 4 components, and the
+    /// real arity depends on the resolved colour space. `DeviceN`
+    /// rendering is currently `Error::Unsupported`, but parsing is not
+    /// — the operand list is kept intact for a later stage to validate.
+    /// The only bound is the generic `max_operand_stack` limit.
     fn validate_color_operands(
         &self,
         ops: &[Object],
@@ -895,13 +904,6 @@ impl<'a> ContentParser<'a> {
             Some((last @ Object::Name(_), rest)) if allow_name => (rest, Some(last)),
             _ => (ops, None),
         };
-        if comps.len() > 4 {
-            return Err(Error::Parse(format!(
-                "operator '{}' takes at most 4 colour components ({} given) at byte {offset}",
-                String::from_utf8_lossy(op),
-                comps.len()
-            )));
-        }
         for c in comps {
             if !matches!(c, Object::Integer(_) | Object::Real(_)) {
                 return Err(Error::Parse(format!(

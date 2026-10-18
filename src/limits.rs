@@ -62,6 +62,18 @@ pub struct Limits {
     /// Maximum `q` (gsave) stack depth in a content stream.
     /// Default: 1,024.
     pub max_gsave_depth: usize,
+    /// Maximum rendered output dimension (width or height) in pixels.
+    /// Default: 16,384.
+    pub max_render_pixels: u32,
+    /// Maximum total rendered pixels (width × height). Default: 64 Mi.
+    pub max_render_total_pixels: u64,
+    /// Maximum bytes for the rendered pixel buffer (RGBA8).
+    /// Default: 256 MiB.
+    pub max_render_buffer_bytes: u64,
+    /// Maximum number of path construction elements (m/l/c/v/y/h/re
+    /// segment endpoints) accumulated in one painting path. Guards
+    /// against pathological path input. Default: 100,000.
+    pub max_path_elements: usize,
 }
 
 impl Default for Limits {
@@ -83,6 +95,10 @@ impl Default for Limits {
             max_operations: 1_000_000,
             max_operand_stack: 1_000,
             max_gsave_depth: 1_024,
+            max_render_pixels: 16_384,
+            max_render_total_pixels: 67_108_864,
+            max_render_buffer_bytes: 256 * 1024 * 1024,
+            max_path_elements: 100_000,
         }
     }
 }

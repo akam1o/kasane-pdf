@@ -533,8 +533,29 @@ fn tj_rejects_non_string_non_number_elements() {
 }
 
 #[test]
-fn scn_rejects_too_many_components() {
-    let err = ops_of(b"1 2 3 4 5 SC").unwrap_err();
+fn scn_accepts_more_than_4_components() {
+    // DeviceN colour spaces can exceed 4 components; the parser keeps
+    // the operands and a later stage validates arity against the space.
+    let ops = ops_of(b"1 2 3 4 5 6 SCN").unwrap();
+    assert_eq!(
+        ops,
+        vec![Operation::SetColorStroke(vec![
+            Object::Integer(1),
+            Object::Integer(2),
+            Object::Integer(3),
+            Object::Integer(4),
+            Object::Integer(5),
+            Object::Integer(6),
+        ])]
+    );
+}
+
+#[test]
+fn sc_rejects_non_numeric_operands() {
+    // `SC` (not `SCN`) may not take a trailing pattern name.
+    let err = ops_of(b"0.5 /P1 SC").unwrap_err();
+    assert!(matches!(err, Error::Parse(_)), "got: {err:?}");
+    let err = ops_of(b"(abc) SC").unwrap_err();
     assert!(matches!(err, Error::Parse(_)), "got: {err:?}");
 }
 
