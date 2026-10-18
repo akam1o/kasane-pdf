@@ -17,7 +17,7 @@ restricted
 | `trailer` dictionary | ✅ | merged across `/Prev` chain |
 | `/Prev` chains (incremental updates in classic format) | ✅ | newest section wins; cycles → `Error::CycleDetected` |
 | xref streams (`/Type /XRef`) | ✅ | `/W` (0–8 bytes/field), `/Index` (default `[0 /Size]`), types 0/1/2; bad type → `Error::Parse`, bad width → `Error::Unsupported` |
-| Hybrid-reference files (`/XRefStm`) | ✅ | classic chain primary; xref-stream entries fill gaps only |
+| Hybrid-reference files (`/XRefStm`) | ✅ | within one update section the stream *replaces* classic entries (§7.5.8.4); across `/Prev` sections the newer section wins |
 | Object streams (`/Type /ObjStm`) | ✅ | `/N`/`/First` validated; index↔number consistency checked; decoded bodies cached per Document |
 | Encrypted files (`/Encrypt`) | ❌ | `Error::Encrypted` |
 | Linearized ("fast web view") files | ⚠️ | parsed like normal files; the linearization dict is ignored, not validated |
@@ -45,10 +45,10 @@ restricted
 | `/Filter` as name or array | ✅ | array order applied sequentially |
 | `/DecodeParms` dict/array/null | ✅ | positional match with `/Filter` |
 | `/Length` direct or indirect | ✅ | indirect `/Length` resolved at decode time |
-| PNG predictors 10–15 | ✅ | `/Colors` 1–4, `/BitsPerComponent` 8 only; other values → `Error::Unsupported` |
+| PNG predictors 10–15 | ✅ | `/Colors` 1–4, `/BitsPerComponent` 8 only; 10–14 fix the row filter, 15 = per-row optimum; other values → `Error::Unsupported` |
 | TIFF predictor 2 | ✅ | `/BitsPerComponent` 8 only; other values → `Error::Unsupported` |
 | `/Predictor` 1 | ✅ | no-op |
-| Other `/Predictor` values | ❌ | `Error::Unsupported` |
+| `/Predictor` 3–9, 16+ | ❌ | `Error::Unsupported` (reserved/undefined in spec) |
 | Other filters (`/LZWDecode`, `/DCTDecode`, `/ASCIIHexDecode`, `/ASCII85Decode`, `/RunLengthDecode`, `/CCITTFaxDecode`, `/JBIG2Decode`, `/JPXDecode`, `/Crypt`, unknown) | ❌ | `Error::Unsupported` when the stream is requested; document still loads |
 
 ## Document layer

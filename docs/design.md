@@ -56,14 +56,16 @@ Layering is one-directional: `lexer` < `parser` < `xref` < `document`.
   only fill gaps. Trailer dicts merge the same way, which is how `/Info`
   and `/Root` survive an incremental update.
 
-- **Hybrid-reference (`/XRefStm`) precedence.** When a classic trailer
-  names an xref stream, that stream is consulted *after* the classic
-  section (and any `/Prev` chain). Entries are again merged
-  newest-first, so the classic table wins for objects it covers; the
-  stream supplies the compressed (type 2) entries that classic syntax
-  cannot express. This follows §7.5.8.4: the classic table is a
-  fallback for readers without xref-stream support, so it is
-  authoritative where the two disagree.
+- **Hybrid-reference (`/XRefStm`) precedence.** Within a *single* update
+  section the `/XRefStm` stream *replaces* entries seen in the classic
+  table. This matches both the intent of §7.5.8.4 (the classic table is
+  a fallback for pre-1.5 readers) and the qpdf implementation note:
+  "read the xref table first; then replace any object that it has
+  already seen with any defined in the xref stream". Across update
+  sections the normal newest-first `/Prev` merge applies, so a newer
+  section still overrides an older one regardless of format. A `/Prev`
+  key inside an `/XRefStm` dictionary is ignored — the classic
+  trailer's `/Prev` drives the chain.
 
 - **The page tree is walked eagerly at load time.** It is small,
   security-sensitive (cycles, depth), and needed by every later
@@ -99,10 +101,10 @@ Every unbounded operation has a `Limits` bound:
 | `max_array_elements` / `max_dict_entries` | single-object collection size |
 | `max_string_bytes` | name/string length |
 | `max_nesting_depth` | `[[[…]]]` / `<<…>>` recursion and `(` nesting |
-| `max_stream_bytes` | decoded size of a single stream (per filter stage) |
-| `max_total_decoded_bytes` | cumulative decoded bytes across all streams in a Document |
+| `max_stream_bytes` | decoded size of a single stream (checked after each filter stage) |
+| `max_total_decoded_bytes` | cumulative *work* (bytes decoded) across all streams in a Document; cached ObjStm reuse does not re-charge |
 | `max_filter_chain` | filters applied to one stream |
-| `max_objstm_entries` / `max_objstm_bytes` | `/N` and `/First` bounds in object streams |
+| `max_objstm_entries` / `max_objstm_bytes` | `/N` and `/First`+body bounds in object streams |
 | (xref) section & entry counts | `/Prev` chains and subsection loops |
 
 Additionally: cycle detection on reference chains, the `/Prev` chain,
