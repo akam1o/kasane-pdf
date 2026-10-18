@@ -1,8 +1,9 @@
 # kasane-pdf
 
 A PDF parsing/processing engine written in Rust. Early development —
-currently at milestone **M0**: lexical parsing, classic cross-reference
-tables, indirect-reference resolution, and page-tree reading.
+currently at milestone **M1**: lexical parsing, classic and stream
+cross-reference tables, indirect-reference resolution, stream decoding
+(`FlateDecode` + predictors), object streams, and page-tree reading.
 
 This is **not** a wrapper around an existing PDF engine (PDFium, MuPDF,
 Poppler are not used). The syntax parser, document model, and (future)
@@ -10,30 +11,42 @@ renderer and writer are implemented here.
 
 ## Status
 
-**M0 is complete.** See [`docs/coverage.md`](docs/coverage.md) for the
+**M1 is complete.** See [`docs/coverage.md`](docs/coverage.md) for the
 detailed support matrix and [`docs/design.md`](docs/design.md) for
 architecture and licensing notes.
 
 What works today:
 
 - PDF basic objects: null, bool, integer, real, name (with `#xx`
-  escapes), literal and hexadecimal strings, arrays, dictionaries,
-  stream markers (raw data captured, not decoded).
-- Classic `xref` tables with subsections and `trailer` dictionaries.
-- `/Prev` chains (incremental updates that stay in classic format).
+  escapes), literal and hexadecimal strings, arrays, dictionaries.
+- Classic `xref` tables with subsections, `trailer` dictionaries, and
+  `/Prev` chains (incremental updates in classic format).
+- xref streams (`/Type /XRef`) with `/W`, `/Index`, and entries of type
+  0, 1, and 2.
+- Hybrid-reference files (classic table + `/XRefStm` stream).
+- Object streams (`/Type /ObjStm`) with cached decoding.
 - Indirect reference resolution with cycle detection and a resolution
   budget.
+- Stream decoding: no filter, `/FlateDecode` (zlib/DEFLATE), multiple
+  filters in order, `/DecodeParms`, PNG predictors 10–15 and TIFF
+  predictor 2 for 8-bit components.
 - Document catalog and page tree with inherited `MediaBox`, `CropBox`,
   `Rotate`, `Resources`.
-- A `kasane-pdf` CLI that prints page count and page sizes.
+- `Document::page_contents()` returning decoded content streams in
+  order.
+- A `kasane-pdf` CLI (`info` mode + `contents` subcommand).
 
 What is deliberately **not** supported yet (produces a distinct error,
 never a partial result presented as success):
 
-- xref streams, hybrid-reference files, object streams
 - Encrypted documents
-- Stream decoding (`/FlateDecode`, …), content streams, rendering,
-  text extraction, editing, writing
+- Stream filters other than `/FlateDecode` (`/LZWDecode`, `/DCTDecode`,
+  `/ASCIIHexDecode`, `/ASCII85Decode`, `/RunLengthDecode`,
+  `/CCITTFaxDecode`, `/JBIG2Decode`, `/JPXDecode`, `/Crypt`)
+- PNG predictors for components other than 8-bit, and unknown predictor
+  values (e.g. `/Predictor 16`)
+- Content stream interpretation, rendering, text extraction, editing,
+  writing
 
 ## Requirements
 
@@ -63,10 +76,16 @@ pages: 3
   page 1: media box [0 0 612 792] (612 x 792 pts), rotate 90  (3 0 R)
   page 2: media box [0 0 400 400] (400 x 400 pts)  (6 0 R)
   page 3: media box [0 0 200 100] (200 x 100 pts)  (7 0 R)
+
+$ cargo run -- contents tests/fixtures/flate_contents.pdf 1
+file: tests/fixtures/flate_contents.pdf
+page: 1 (1 content stream(s))
+--- stream 1 (52 bytes) ---
+q 1 0 0 1 0 0 cm BT /F1 12 Tf (compressed page) Tj ET Q
 ```
 
 Errors are printed with a stable category in brackets, e.g.
-`error [unsupported feature]: unsupported PDF feature: xref stream (…)`.
+`error [unsupported feature]: unsupported PDF feature: stream filter (/LZWDecode)`.
 
 ## Testing
 
