@@ -1,9 +1,10 @@
 # kasane-pdf
 
 A PDF parsing/processing engine written in Rust. Early development —
-currently at milestone **M1**: lexical parsing, classic and stream
+currently at milestone **M2**: lexical parsing, classic and stream
 cross-reference tables, indirect-reference resolution, stream decoding
-(`FlateDecode` + predictors), object streams, and page-tree reading.
+(`FlateDecode` + predictors), object streams, page-tree reading, and
+content-stream parsing into typed drawing instructions.
 
 This is **not** a wrapper around an existing PDF engine (PDFium, MuPDF,
 Poppler are not used). The syntax parser, document model, and (future)
@@ -11,7 +12,7 @@ renderer and writer are implemented here.
 
 ## Status
 
-**M1 is complete.** See [`docs/coverage.md`](docs/coverage.md) for the
+**M2 is complete.** See [`docs/coverage.md`](docs/coverage.md) for the
 detailed support matrix and [`docs/design.md`](docs/design.md) for
 architecture and licensing notes.
 
@@ -34,7 +35,16 @@ What works today:
   `Rotate`, `Resources`.
 - `Document::page_contents()` returning decoded content streams in
   order.
-- A `kasane-pdf` CLI (`info` mode + `contents` subcommand).
+- `Document::page_operations()` parsing content streams into typed
+  operations (`Operation`) — graphics state, paths, painting, colour,
+  text, XObject/shading invocation, marked content — with balanced
+  `q`/`Q`, `BT`/`ET`, `BX`/`EX`, `BMC`/`BDC`/`EMC` checks. Concatenated
+  `/Contents` arrays are parsed as one logical stream.
+- `Document::page_resource()` resolving named entries in a page's
+  (inherited) `/Resources` dictionary: `Font`, `XObject`, `ExtGState`,
+  `ColorSpace`, `Pattern`, `Shading`, `Properties`, …
+- A `kasane-pdf` CLI (`info` mode + `contents` and `operations`
+  subcommands).
 
 What is deliberately **not** supported yet (produces a distinct error,
 never a partial result presented as success):
@@ -45,8 +55,12 @@ never a partial result presented as success):
   `/CCITTFaxDecode`, `/JBIG2Decode`, `/JPXDecode`, `/Crypt`)
 - PNG predictors for components other than 8-bit, and unknown predictor
   values (e.g. `/Predictor 16`)
-- Content stream interpretation, rendering, text extraction, editing,
-  writing
+- Inline images (`BI`/`ID`/`EI`) — the binary image data cannot be
+  tokenized reliably, so the construct is rejected outright rather than
+  guessed
+- Unicode conversion of text-showing strings, text extraction
+- Rendering, editing, writing (M2 only *parses* drawing instructions;
+  it does not execute them)
 
 ## Requirements
 
@@ -82,6 +96,15 @@ file: tests/fixtures/flate_contents.pdf
 page: 1 (1 content stream(s))
 --- stream 1 (52 bytes) ---
 q 1 0 0 1 0 0 cm BT /F1 12 Tf (compressed page) Tj ET Q
+
+$ cargo run -- operations tests/fixtures/hello.pdf 1
+file: tests/fixtures/hello.pdf
+page: 1 (5 operation(s))
+    0  BT
+    1  /F1 24 Tf
+    2  72 720 Td
+    3  ("Hello, PDF!") Tj
+    4  ET
 ```
 
 Errors are printed with a stable category in brackets, e.g.
@@ -110,8 +133,9 @@ lengths, nesting depth. Malformed input returns a typed
 
 Not yet decided. Until it is, the source is all rights reserved.
 The dependency policy (permissive licenses only, no AGPL/GPL engine
-cores) is documented in [`docs/design.md`](docs/design.md); there are
-currently **zero** external crate dependencies.
+cores) is documented in [`docs/design.md`](docs/design.md); the only
+dependency is `flate2` (MIT/Apache-2.0, `rust_backend`) for
+`/FlateDecode`.
 
 ## Naming
 

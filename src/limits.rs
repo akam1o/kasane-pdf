@@ -53,6 +53,15 @@ pub struct Limits {
     /// Maximum byte range of an object stream's object list (`/First` +
     /// header + body). Default: 64 MiB.
     pub max_objstm_bytes: usize,
+    /// Maximum number of parsed content-stream operations per page.
+    /// Default: 1,000,000.
+    pub max_operations: usize,
+    /// Maximum operands waiting for an operator in the content-stream
+    /// operand stack. Default: 1,000.
+    pub max_operand_stack: usize,
+    /// Maximum `q` (gsave) stack depth in a content stream.
+    /// Default: 1,024.
+    pub max_gsave_depth: usize,
 }
 
 impl Default for Limits {
@@ -71,6 +80,9 @@ impl Default for Limits {
             max_filter_chain: 8,
             max_objstm_entries: 10_000,
             max_objstm_bytes: 64 * 1024 * 1024,
+            max_operations: 1_000_000,
+            max_operand_stack: 1_000,
+            max_gsave_depth: 1_024,
         }
     }
 }

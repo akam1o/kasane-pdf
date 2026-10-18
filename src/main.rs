@@ -1,11 +1,12 @@
-//! `kasane-pdf` command-line interface (M0 + M1).
+//! `kasane-pdf` command-line interface (M0–M2).
 //!
 //! Loads a PDF file and prints basic document information: page count,
-//! per-page sizes, and the trailer `/Info` dictionary keys. A separate
-//! `contents` subcommand prints a page's decoded content stream(s) —
-//! kept behind a subcommand so normal inspection doesn't dump file data.
-//! Exit code 0 on success, 1 on any error (the error is printed with
-//! its category).
+//! per-page sizes, and the trailer `/Info` dictionary keys. Two
+//! subcommands inspect a single page: `contents` prints the decoded
+//! content stream(s) and `operations` prints the parsed typed
+//! operations — kept behind subcommands so normal inspection doesn't
+//! dump file data. Exit code 0 on success, 1 on any error (the error
+//! is printed with its category).
 
 use kasane_pdf::{Document, Error, Object};
 use std::process::ExitCode;
@@ -15,11 +16,11 @@ fn main() -> ExitCode {
     let prog = args.first().map(String::as_str).unwrap_or("kasane-pdf");
 
     match args.get(1).map(String::as_str) {
-        Some("contents") => {
+        Some(cmd @ ("contents" | "operations")) => {
             let (path, page_no) = match (args.get(2), args.get(3)) {
                 (Some(p), Some(n)) => (p, n),
                 _ => {
-                    eprintln!("usage: {prog} contents <file.pdf> <page-number>");
+                    eprintln!("usage: {prog} {cmd} <file.pdf> <page-number>");
                     return ExitCode::from(2);
                 }
             };
@@ -30,7 +31,12 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             };
-            match run_contents(path, page_no) {
+            let result = if cmd == "contents" {
+                run_contents(path, page_no)
+            } else {
+                run_operations(path, page_no)
+            };
+            match result {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("error [{}]: {e}", e.kind());
@@ -48,6 +54,7 @@ fn main() -> ExitCode {
         _ => {
             eprintln!("usage: {prog} <file.pdf>");
             eprintln!("       {prog} contents <file.pdf> <page-number>");
+            eprintln!("       {prog} operations <file.pdf> <page-number>");
             ExitCode::from(2)
         }
     }
@@ -116,6 +123,32 @@ fn run_contents(path: &str, page_no: usize) -> Result<(), Error> {
         if body.len() > 512 {
             println!("... ({} more bytes)", body.len() - 512);
         }
+    }
+    Ok(())
+}
+
+/// Maximum operations printed by the `operations` subcommand; longer
+/// pages are truncated with a summary line so output stays bounded.
+const MAX_PRINTED_OPERATIONS: usize = 10_000;
+
+fn run_operations(path: &str, page_no: usize) -> Result<(), Error> {
+    let data = std::fs::read(path)?;
+    let doc = Document::from_bytes(&data)?;
+    let page = doc
+        .pages()
+        .get(page_no - 1)
+        .ok_or_else(|| Error::Structure(format!("page {page_no} does not exist")))?;
+    let ops = doc.page_operations(page)?;
+    println!("file: {path}");
+    println!("page: {page_no} ({} operation(s))", ops.len());
+    for (i, op) in ops.iter().take(MAX_PRINTED_OPERATIONS).enumerate() {
+        println!("{i:5}  {op}");
+    }
+    if ops.len() > MAX_PRINTED_OPERATIONS {
+        println!(
+            "... ({} more operation(s))",
+            ops.len() - MAX_PRINTED_OPERATIONS
+        );
     }
     Ok(())
 }

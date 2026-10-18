@@ -9,6 +9,8 @@ computed, not guessed. Regenerate with:
 Fixtures produced:
 
   hello.pdf            Minimal 1-page document, ASCII-only content stream.
+  content_ops.pdf      Content stream exercising graphics-state, path,
+                       colour, text and marked-content operators.
   pages.pdf            3 pages in a 2-level page tree; inherited MediaBox
                        on the root, a nested Pages node overriding it,
                        a Rotate on one page, a shared (indirect) MediaBox,
@@ -651,8 +653,57 @@ def xref_stream_bad_type():
     write("xref_stream_bad_type.pdf", bytes(out))
 
 
+# --------------------------------------------------------------------
+# M2 fixtures
+# --------------------------------------------------------------------
+
+
+def content_ops():
+    """Content stream covering the operators M2 parses, incl. a
+    compatibility section, marked content, XObject/ExtGState names and
+    a TJ array with kerning numbers."""
+    stream = (
+        b"q\n"
+        b"2 w 1 J 0 j 10 M [3 2] 0 d /RelativeColorimetric ri 1 i /GS1 gs\n"
+        b"1 0 0 1 50 60 cm\n"
+        b"10 20 m 30 40 l 1 2 3 4 5 6 c 7 8 9 10 v 11 12 13 14 y h\n"
+        b"100 100 50 30 re\n"
+        b"S s f F f* B B* b b* n W W*\n"
+        b"0.5 G 0.2 g 0.1 0.2 0.3 RG 0.4 0.5 0.6 rg\n"
+        b"0 1 0 0 K 0 0 1 0 k\n"
+        b"/CS1 CS /CS2 cs 0.5 0.5 SC 0.1 0.2 sc\n"
+        b"BT /F1 12 Tf 0.5 Tc 1.5 Tw 110 Tz 14 TL 2 Tr 3 Ts\n"
+        b"10 20 Td 1 2 TD 1 0 0 1 30 40 Tm T*\n"
+        b"(abc) Tj [(a) -250 (b) 30] TJ (c) ' 0.5 0.25 (d) \"\n"
+        b"ET\n"
+        b"/Im1 Do /Sh1 sh\n"
+        b"/Tag MP /Tag << /K 1 >> DP\n"
+        b"/Tag BMC /Tag2 << /K (v) >> BDC EMC EMC\n"
+        b"BX /Foo 1 2 Bar EX\n"
+        b"Q"
+    )
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 5 0 R >> "
+            b"/XObject << /Im1 6 0 R >> /ExtGState << /GS1 7 0 R >> "
+            b"/ColorSpace << /CS1 8 0 R >> /Shading << /Sh1 9 0 R >> >> "
+            b"/Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+        (5, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
+        (6, b"<< /Subtype /Form /BBox [0 0 10 10] /Length 0 >>\nstream\n\nendstream"),
+        (7, b"<< /Type /ExtGState /CA 0.5 >>"),
+        (8, b"/DeviceRGB"),
+        (9, b"<< /ShadingType 2 /ColorSpace /DeviceRGB >>"),
+    ]
+    write("content_ops.pdf", build_pdf(objects))
+
+
 if __name__ == "__main__":
     hello()
+    content_ops()
     pages()
     incremental()
     xref_stream()
