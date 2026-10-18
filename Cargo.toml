@@ -8,3 +8,8 @@ description = "A PDF parsing/processing engine written in Rust (early developmen
 publish = false
 # License is intentionally undecided. Until decided, all rights reserved.
 # See docs/design.md for the dependency licensing policy.
+
+[dependencies]
+# FlateDecode (zlib/DEFLATE). flate2 = MIT or Apache-2.0; the default
+# rust_backend uses miniz_oxide (MIT). No copyleft code is linked.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
