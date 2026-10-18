@@ -12,7 +12,7 @@ The long-term consumer is a Flutter-based macOS/iPadOS app ("Kakomi"),
 but kasane-pdf is developed as a standalone Rust library + CLI. A
 C-compatible API and Apple packaging are future concerns, not M0.
 
-## Module map (M0)
+## Module map (M1)
 
 ```
 src/
@@ -23,17 +23,22 @@ src/
   lexer.rs     byte-level tokens: words, names, strings, delimiters
   parser.rs    recursive-descent objects, indirect objects, stream
                capture, header/startxref location
-  xref.rs      classic xref sections, trailer, /Prev chain merging,
-               xref-stream detection → Unsupported
+  xref.rs      classic + stream xref sections, trailer, /Prev and
+               /XRefStm (hybrid) merging
+  filter.rs    stream /Filter decoding: FlateDecode + predictors
+  objstm.rs    /ObjStm parsing (header, bounds, member objects)
   document.rs  Document: load pipeline + lazy resolve() + page tree walk
+               + page_contents() + decoded-bytes budget + ObjStm cache
   page.rs      Page, Rect value types
-  main.rs      kasane-pdf CLI
+  main.rs      kasane-pdf CLI (info + contents subcommand)
 tests/
   fixtures/    hand-crafted PDFs + make_fixtures.py generator
-  parsing.rs   integration tests over fixtures
+  parsing.rs   M0 integration tests (kept)
+  m1.rs        M1 integration tests
 ```
 
 Layering is one-directional: `lexer` < `parser` < `xref` < `document`.
+`filter` and `objstm` sit beside `xref` and are used only by `document`.
 `object`, `error`, `limits`, `page` are leaf types used everywhere.
 
 ## Key decisions
@@ -51,17 +56,27 @@ Layering is one-directional: `lexer` < `parser` < `xref` < `document`.
   only fill gaps. Trailer dicts merge the same way, which is how `/Info`
   and `/Root` survive an incremental update.
 
+- **Hybrid-reference (`/XRefStm`) precedence.** When a classic trailer
+  names an xref stream, that stream is consulted *after* the classic
+  section (and any `/Prev` chain). Entries are again merged
+  newest-first, so the classic table wins for objects it covers; the
+  stream supplies the compressed (type 2) entries that classic syntax
+  cannot express. This follows §7.5.8.4: the classic table is a
+  fallback for readers without xref-stream support, so it is
+  authoritative where the two disagree.
+
 - **The page tree is walked eagerly at load time.** It is small,
   security-sensitive (cycles, depth), and needed by every later
   feature. Everything else — contents, resources, annotations — stays
   lazily resolved through `Document::resolve`.
 
-- **Streams are captured raw.** `/Filter` decoding is out of M0 scope;
-  `Object::Stream` carries `dict` + encoded `data` so no information is
-  lost and future decoding needs no re-discovery. Extent uses a
+- **Streams are captured raw; decoding is lazy.** `Object::Stream`
+  carries `dict` + encoded `data`. Decoding happens only through
+  `Document::decode_stream` (used by `page_contents` and object-stream
+  resolution), so a document whose contents use an unsupported filter
+  still parses and reports pages normally. Stream extent uses a
   consistent direct `/Length` when available, else an `endstream` scan;
-  an indirect `/Length` without a marker is `Unsupported` rather than a
-  guess.
+  an indirect `/Length` is fine because the scan is used.
 
 - **Failures are categorical.** `Error::Unsupported` and
   `Error::Encrypted` are distinct from `Parse`/`Structure` so callers
@@ -84,10 +99,16 @@ Every unbounded operation has a `Limits` bound:
 | `max_array_elements` / `max_dict_entries` | single-object collection size |
 | `max_string_bytes` | name/string length |
 | `max_nesting_depth` | `[[[…]]]` / `<<…>>` recursion and `(` nesting |
+| `max_stream_bytes` | decoded size of a single stream (per filter stage) |
+| `max_total_decoded_bytes` | cumulative decoded bytes across all streams in a Document |
+| `max_filter_chain` | filters applied to one stream |
+| `max_objstm_entries` / `max_objstm_bytes` | `/N` and `/First` bounds in object streams |
 | (xref) section & entry counts | `/Prev` chains and subsection loops |
 
 Additionally: cycle detection on reference chains, the `/Prev` chain,
-and page-tree node revisits. `unsafe` is not used anywhere.
+and page-tree node revisits. Object-stream bodies are decoded once per
+Document and cached, so repeated member access does not multiply the
+decoded-bytes cost. `unsafe` is not used anywhere.
 
 ## Licensing policy
 
@@ -96,7 +117,8 @@ and page-tree node revisits. `unsafe` is not used anywhere.
   developer). Until decided: all rights reserved, `publish = false`.
 - Dependencies: only permissive licenses (MIT / Apache-2.0 / BSD /
   Zlib-style). No copyleft code may be linked into the engine.
-  Currently there are **zero** external dependencies.
+  Current dependencies: `flate2` (MIT or Apache-2.0) with the
+  `rust_backend` (`miniz_oxide`, MIT) for `/FlateDecode`.
 - Acceptable building blocks per the project brief: compression,
   image decoding, font handling, generic 2D rasterization — e.g.
   `flate2`/`miniz_oxide` (MIT), `freetype`/`fontdue`, `tiny-skia`
@@ -108,8 +130,9 @@ and page-tree node revisits. `unsafe` is not used anywhere.
 
 ## Future milestones (long-term roadmap)
 
-1. Parsing — object streams, xref streams, full incremental update
-   semantics, stream filters. *(M0 covers classic format only.)*
+1. Parsing — object streams, xref streams, hybrid-reference files,
+   stream filters (`FlateDecode` + PNG/TIFF predictors). *(M1 done;
+   other filters still unsupported.)*
 2. Rendering — CTM/graphics state, paths, text, images, Form XObjects,
    clipping, transparency, color spaces.
 3. Text extraction — font encodings, CMaps, ToUnicode, CJK + vertical
