@@ -12,7 +12,7 @@ The long-term consumer is a Flutter-based macOS/iPadOS app ("Kakomi"),
 but kasane-pdf is developed as a standalone Rust library + CLI. A
 C-compatible API and Apple packaging are future concerns, not M0.
 
-## Module map (M2)
+## Module map (M3)
 
 ```
 src/
@@ -29,22 +29,25 @@ src/
   objstm.rs    /ObjStm parsing (header, bounds, member objects)
   matrix.rs    Matrix [a b c d e f] affine transform (§8.3)
   content.rs   content-stream parser → Vec<Operation> (§7.8, §8–§9)
+  render.rs    page → Pixmap rasterizer + PNG encoder (§8 drawing)
   document.rs  Document: load pipeline + lazy resolve() + page tree walk
                + page_contents() + page_operations() + page_resource()
                + decoded-bytes budget + ObjStm cache
   page.rs      Page, Rect value types
-  main.rs      kasane-pdf CLI (info + contents + operations subcommands)
+  main.rs      kasane-pdf CLI (info + contents + operations + render)
 tests/
   fixtures/    hand-crafted PDFs + make_fixtures.py generator
   parsing.rs   M0 integration tests (kept)
   m1.rs        M1 integration tests
   m2.rs        M2 integration tests
+  m3.rs        M3 integration tests
 ```
 
-Layering is one-directional: `lexer` < `parser` < `xref` < `document`.
-`filter`, `objstm`, `matrix` and `content` sit beside `parser`/`xref`
-and are used only by `document` (and `main`). `object`, `error`,
-`limits`, `page` are leaf types used everywhere.
+Layering is one-directional: `lexer` < `parser` < `xref` < `document`
+< `render` < `main`. `filter`, `objstm`, `matrix`, `content` sit
+beside `parser`/`xref`; `render` uses `document` + `content` +
+`matrix` + `limits`. `object`, `error`, `limits`, `page` are leaf
+types used everywhere.
 
 ## Key decisions
 
@@ -147,6 +150,39 @@ and are used only by `document` (and `main`). `object`, `error`,
   per-key. Only the requested category/name is resolved; unused
   resources are not fetched or interpreted.
 
+- **Rendering is a separate, opt-in layer.** `render.rs` executes the
+  parsed `Operation`s against `tiny_skia::Pixmap`. It supports only
+  the basic-drawing subset (paths, clipping, Device colours);
+  everything else is `Error::Unsupported` and produces no output —
+  never a half-rendered page passed off as success. Text, XObjects,
+  shadings, ExtGState, patterns, non-device colour spaces,
+  annotations and `/UserUnit` ≠ 1 are all refused.
+
+- **Paths live in pixmap space, transformed per element.** Because
+  §8.4.3.1 applies the CTM at the moment each path element is added,
+  `cm` mid-path must not retroactively move earlier elements. We
+  therefore transform each point by `CTM × page→pixmap` at append
+  time, rather than building a user-space path and transforming once
+  at paint time.
+
+- **`W`/`W*` clip at path-consumption time.** Per §8.5.4 the clip is
+  installed when the path is consumed — at the next painting op or at
+  `n`. The clip is stored as a pixmap-sized `tiny_skia::Mask`;
+  `q`/`Q` save and restore it. Intersecting clips combine via
+  `Mask::intersect_path`.
+
+- **Page geometry is exact.** The user→pixmap transform composes
+  CropBox offset, `/Rotate` (clockwise as displayed), dpi/72 scaling
+  and the y-up→y-down flip. Pixel dims use checked arithmetic and the
+  render limits are validated before allocation.
+
+- **Colour conversion is device-space only.** `DeviceGray`/`DeviceRGB`
+  map directly; `DeviceCMYK` uses the naive `1 − min(1, c + k)`
+  formula (§10.4.3 note) — explicitly *not* colour-managed.
+  `DefaultGray`/`DefaultRGB`/`DefaultCMYK` substitute the matching
+  device space (§8.6.5.3). Out-of-range colour values clamp to [0,1]
+  at output (the device clips them).
+
 ## Safety / hostile input
 
 Every unbounded operation has a `Limits` bound:
@@ -164,6 +200,8 @@ Every unbounded operation has a `Limits` bound:
 | `max_filter_chain` | filters applied to one stream |
 | `max_objstm_entries` / `max_objstm_bytes` | `/N` and `/First`+body bounds in object streams |
 | `max_operations` / `max_operand_stack` / `max_gsave_depth` | parsed ops per page, pending operands, `q` stack depth |
+| `max_render_pixels` / `max_render_total_pixels` / `max_render_buffer_bytes` | output pixmap size |
+| `max_path_elements` | path-construction commands per painted path |
 | (xref) section & entry counts | `/Prev` chains and subsection loops |
 
 Additionally: cycle detection on reference chains, the `/Prev` chain,
@@ -195,10 +233,12 @@ decoded-bytes cost. `unsafe` is not used anywhere.
    stream filters (`FlateDecode` + PNG/TIFF predictors). *(M1 done;
    other filters still unsupported.)*
    - M2 done: content-stream parsing into typed `Operation`s, `Matrix`
-     type, page-resource lookup. Still unsupported: inline images,
-     Unicode mapping, the remaining filters.
-2. Rendering — CTM/graphics state, paths, text, images, Form XObjects,
-   clipping, transparency, color spaces.
+     type, page-resource lookup.
+   - M3 done: basic raster rendering (paths, clipping, Device colours)
+     to PNG via tiny-skia. Still unsupported: inline images, Unicode
+     mapping, the remaining filters.
+2. Rendering — text, images, Form XObjects, transparency, patterns,
+   ICC colour.
 3. Text extraction — font encodings, CMaps, ToUnicode, CJK + vertical
    writing, positioned extraction, search.
 4. Editing & saving — page/annotation/link editing, full rewrite output.

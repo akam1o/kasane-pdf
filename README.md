@@ -1,10 +1,11 @@
 # kasane-pdf
 
 A PDF parsing/processing engine written in Rust. Early development —
-currently at milestone **M2**: lexical parsing, classic and stream
+currently at milestone **M3**: lexical parsing, classic and stream
 cross-reference tables, indirect-reference resolution, stream decoding
-(`FlateDecode` + predictors), object streams, page-tree reading, and
-content-stream parsing into typed drawing instructions.
+(`FlateDecode` + predictors), object streams, page-tree reading,
+content-stream parsing into typed drawing instructions, and basic
+raster rendering to PNG.
 
 This is **not** a wrapper around an existing PDF engine (PDFium, MuPDF,
 Poppler are not used). The syntax parser, document model, and (future)
@@ -12,7 +13,7 @@ renderer and writer are implemented here.
 
 ## Status
 
-**M2 is complete.** See [`docs/coverage.md`](docs/coverage.md) for the
+**M3 is complete.** See [`docs/coverage.md`](docs/coverage.md) for the
 detailed support matrix and [`docs/design.md`](docs/design.md) for
 architecture and licensing notes.
 
@@ -43,8 +44,11 @@ What works today:
 - `Document::page_resource()` resolving named entries in a page's
   (inherited) `/Resources` dictionary: `Font`, `XObject`, `ExtGState`,
   `ColorSpace`, `Pattern`, `Shading`, `Properties`, …
-- A `kasane-pdf` CLI (`info` mode + `contents` and `operations`
-  subcommands).
+- `render_page()` rendering pages that use only basic drawing (paths,
+  clipping, DeviceGray/RGB/CMYK colours) to a pixmap, honouring
+  `MediaBox`/`CropBox`/`Rotate` and DPI; PNG output via `pixmap_to_png`.
+- A `kasane-pdf` CLI (`info` mode + `contents`, `operations` and
+  `render` subcommands).
 
 What is deliberately **not** supported yet (produces a distinct error,
 never a partial result presented as success):
@@ -59,8 +63,10 @@ never a partial result presented as success):
   tokenized reliably, so the construct is rejected outright rather than
   guessed
 - Unicode conversion of text-showing strings, text extraction
-- Rendering, editing, writing (M2 only *parses* drawing instructions;
-  it does not execute them)
+- Rendering of text (`Tf`/`Tj`/`TJ`/`'`/`"`), XObjects (`Do`), shading
+  (`sh`), extended graphics state (`gs`), pattern colours, non-device
+  colour spaces, annotations, `/UserUnit` ≠ 1
+- Editing, writing
 
 ## Requirements
 
@@ -105,6 +111,9 @@ page: 1 (5 operation(s))
     2  72 720 Td
     3  ("Hello, PDF!") Tj
     4  ET
+
+$ cargo run -- render tests/fixtures/render_rects.pdf 1 --output out.png --dpi 144
+rendered page 1 -> out.png (400x400 px, 200 pts, dpi 144)
 ```
 
 Errors are printed with a stable category in brackets, e.g.
@@ -133,9 +142,10 @@ lengths, nesting depth. Malformed input returns a typed
 
 Not yet decided. Until it is, the source is all rights reserved.
 The dependency policy (permissive licenses only, no AGPL/GPL engine
-cores) is documented in [`docs/design.md`](docs/design.md); the only
-dependency is `flate2` (MIT/Apache-2.0, `rust_backend`) for
-`/FlateDecode`.
+cores) is documented in [`docs/design.md`](docs/design.md). Current
+dependencies: `flate2` (MIT/Apache-2.0, `rust_backend`) for
+`/FlateDecode`, `tiny-skia` (BSD-3-Clause) as the raster backend,
+`png` (MIT/Apache-2.0) for PNG encoding.
 
 ## Naming
 

@@ -1,6 +1,6 @@
 //! # kasane-pdf
 //!
-//! A PDF engine written in Rust (early development, milestone M2).
+//! A PDF engine written in Rust (early development, milestone M3).
 //!
 //! Scope so far (see `docs/coverage.md` for the full support matrix):
 //!
@@ -14,11 +14,17 @@
 //!   attributes (`MediaBox`, `CropBox`, `Rotate`, `Resources`).
 //! - Parse page `/Contents` into typed [`Operation`]s and look up
 //!   named entries in page `/Resources`.
+//! - Render pages that use only basic drawing (paths, clipping,
+//!   Device colours) to a pixel buffer via [`render_page`] and encode
+//!   as PNG via [`pixmap_to_png`].
 //!
 //! Explicitly **not** supported yet (reported as [`Error::Unsupported`]
 //! or [`Error::Encrypted`]): stream filters other than `/FlateDecode`,
-//! inline images, encrypted files, rendering (operations are parsed,
-//! not executed), Unicode text mapping, text extraction, editing.
+//! inline images, encrypted files, text drawing (`Tf`/`Tj`/`TJ`/`'`/`"`),
+//! XObjects (`Do`), shading (`sh`), extended graphics state (`gs`),
+//! pattern colours (`SCN`/`scn` name operands), non-device colour
+//! spaces, page annotations, `/UserUnit` ≠ 1, Unicode text mapping,
+//! editing.
 //!
 //! # Safety-oriented design
 //!
@@ -52,10 +58,12 @@ mod object;
 mod objstm;
 mod page;
 mod parser;
+mod render;
 mod xref;
 
 pub use content::{Operation, TJItem};
 pub use matrix::Matrix;
+pub use render::{pixmap_to_png, render_page, Color, RenderOptions, RenderedPage};
 
 pub use document::Document;
 pub use error::Error;

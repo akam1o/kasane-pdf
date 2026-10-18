@@ -11,6 +11,10 @@ Fixtures produced:
   hello.pdf            Minimal 1-page document, ASCII-only content stream.
   content_ops.pdf      Content stream exercising graphics-state, path,
                        colour, text and marked-content operators.
+  render_rects.pdf     Renderable page: rectangles, strokes, fills,
+                       clipping, cm, q/Q — no text/XObject/gs.
+  render_annot.pdf     Page with /Annots — render must refuse.
+  render_text.pdf      Page with Tj — render must refuse (text is M4+).
   pages.pdf            3 pages in a 2-level page tree; inherited MediaBox
                        on the root, a nested Pages node overriding it,
                        a Rotate on one page, a shared (indirect) MediaBox,
@@ -701,9 +705,78 @@ def content_ops():
     write("content_ops.pdf", build_pdf(objects))
 
 
+# --------------------------------------------------------------------
+# M3 fixtures
+# --------------------------------------------------------------------
+
+
+def render_rects():
+    """A page using only supported drawing ops: two overlapping
+    rectangles (fill + stroke), a clipping rect, a cm transform, q/Q
+    colour restore, DeviceGray/RGB/CMYK colours, dash."""
+    stream = (
+        # Page 200x200pt. White bg.
+        b"q\n"
+        b"0 0 0.8 RG\n"                       # stroke blue-ish
+        b"0.5 g\n"                            # fill mid-gray
+        b"20 20 60 60 re B\n"                 # fill+stroke rect
+        b"Q\n"
+        # After Q colours revert to black.
+        b"2 w 1 0 0 RG 0 1 0 rg 60 60 80 40 re B\n"
+        # cm transform: rotate 45° about (100,100) via translate+rotate.
+        b"q 1 0 0 1 100 100 cm 0.7071 0.7071 -0.7071 0.7071 0 0 cm\n"
+        b"1 0 0 0 k\n"                        # cyan fill
+        b"-10 -10 20 20 re f\n"
+        b"Q\n"
+        # Clipping: clip to right half, fill should be clipped.
+        b"100 0 100 200 re W n\n"
+        b"1 0 0 rg 0 0 200 200 re f\n"
+    )
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
+            b"/Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    write("render_rects.pdf", build_pdf(objects))
+
+
+def render_annot():
+    """Page carrying an /Annots array — render must refuse."""
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Annots [5 0 R] /Contents 4 0 R >>"),
+        (4, b"<< /Length 10 >>\nstream\n" + b"0 0 10 10 re" + b"\nendstream"),
+        (5, b"<< /Subtype /Text /Rect [0 0 10 10] /Contents (note) >>"),
+    ]
+    write("render_annot.pdf", build_pdf(objects))
+
+
+def render_text():
+    """Page with a Tj — render must refuse (text is out of M3)."""
+    stream = b"BT /F1 12 Tf 10 50 Td (hi) Tj ET"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+        (5, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
+    ]
+    write("render_text.pdf", build_pdf(objects))
+
+
 if __name__ == "__main__":
     hello()
     content_ops()
+    render_rects()
+    render_annot()
+    render_text()
     pages()
     incremental()
     xref_stream()

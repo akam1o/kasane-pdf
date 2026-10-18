@@ -1,6 +1,6 @@
 # kasane-pdf support matrix
 
-Milestone: **M2**. Everything not listed as supported below is
+Milestone: **M3**. Everything not listed as supported below is
 unsupported and reported as a typed error — never silently skipped or
 returned as a partial result.
 
@@ -83,7 +83,8 @@ all parsed operations — no partial results.
 | `m` `l` `c` `v` `y` `h` `re` | ✅ | operands taken in postfix order |
 | `S` `s` `f` `F` `f*` `B` `B*` `b` `b*` `n` `W` `W*` | ✅ | |
 | `G` `g` `RG` `rg` `K` `k` `CS` `cs` | ✅ | `CS`/`cs` keep the colour-space *name* |
-| `SC` `SCN` `sc` `scn` | ✅ | 0–4 numeric components + optional trailing pattern name (`SCN`/`scn`); the real arity depends on the current colour space, which is not resolved at this stage |
+| `SC` `sc` | ✅ | any number of numeric components; arity checked at colour-space resolution (M3: DeviceN parsing supported, rendering `Unsupported`) |
+| `SCN` `scn` | ✅ | numeric components + optional trailing pattern name; patterns → `Error::Unsupported` at render |
 | `BT` `ET` | ✅ | nesting and balance checked |
 | `Tc` `Tw` `Tz` `TL` `Tf` `Tr` `Ts` `Td` `TD` `Tm` `T*` | ✅ | `Tf` keeps the font resource *name* |
 | `Tj` `TJ` `'` `"` | ✅ | `TJ` items: `TJItem::Text` (raw bytes) / `TJItem::Kern` (number); non-string/number items → `Error::Parse` |
@@ -95,21 +96,49 @@ all parsed operations — no partial results.
 | Wrong operand count / type, leftover operands at EOF | ❌ | `Error::Parse` |
 | Rendering / executing operations | ❌ | out of M2 scope — operations are data, not executed |
 
+## Rendering (ISO 32000-1 §8, §9)
+
+`render_page` executes supported operations into a `Pixmap`
+(`tiny_skia`) over a white background; `pixmap_to_png` encodes it.
+Only pages whose operations all fall inside this subset render —
+anything else fails with `Error::Unsupported` and produces no output.
+
+| Feature | Status | Notes |
+|---|---|---|
+| `q`/`Q`/`cm` | ✅ | path elements are transformed by the CTM *at append time* (§8.4.3.1); the current path is not part of the saved state |
+| `m` `l` `c` `v` `y` `h` `re` | ✅ | built into a pixmap-space path |
+| `S` `s` `f` `F` `f*` `B` `B*` `b` `b*` `n` | ✅ | nonzero-winding and even-odd rules; open subpaths are implicitly closed for filling |
+| `W` `W*` | ✅ | installed at the next painting op or at `n`; intersected with the existing clip; saved/restored by `q`/`Q` |
+| `w` `J` `j` `M` `d` `i` | ✅ | line width 0 → 1-device-pixel hairline (§8.4.3.2) |
+| `G` `g` `RG` `rg` `K` `k` | ✅ | DeviceGray/RGB/CMYK |
+| `CS` `cs` + `SC` `sc` | ✅ | `DeviceGray`/`DeviceRGB`/`DeviceCMYK` and `DefaultGray`/`DefaultRGB`/`DefaultCMYK` |
+| `SCN` `scn` pattern name | ❌ | `Error::Unsupported` — patterns not rendered |
+| `CS`/`cs` non-device space | ❌ | `Error::Unsupported` — no ICCBased/Separation/DeviceN/Pattern |
+| text ops `Tf` `Tj` `TJ` `'` `"` | ❌ | `Error::Unsupported` — font loading is M4 |
+| text-state ops `Tc` `Tw` `Tz` `TL` `Tr` `Ts` `Td` `TD` `Tm` `T*` | ✅ | harmless state ops inside `BT`/`ET` (never reach a glyph) |
+| `Do` `sh` `gs` | ❌ | `Error::Unsupported` |
+| `BMC` `BDC` `EMC` `MP` `DP` `BX` `EX` `Unknown` | ✅ | metadata/compatibility — no raster effect (§10.5, §7.8.2) |
+| page annotations (`/Annots`) | ❌ | `Error::Unsupported` — page is refused, not drawn without them |
+| `/UserUnit` ≠ 1 | ❌ | `Error::Unsupported` |
+| `MediaBox`/`CropBox`/`Rotate` | ✅ | `CropBox` defaults to `MediaBox`; Rotate 0/90/180/270; non-zero origins; `/Rotate` is clockwise on display |
+| DPI scaling | ✅ | any positive finite dpi; pixel dims = pts × dpi/72 |
+
+### Colour conversion notes
+
+- `DeviceCMYK` → RGB uses the naive subtractive form
+  `1 − min(1, c + k)` (§10.4.3 note). It is **not** colour-managed;
+  ICC profile conversion is out of scope.
+- Colour values are clamped to [0,1] for output encoding; out-of-range
+  input saturates rather than erroring (the spec clamps at the device).
+
 ## Matrices (ISO 32000-1 §8.3)
 
 `Matrix` is a `[a b c d e f]` affine transform with `transform`,
 `concat` (PDF `cm` order: `existing.concat(cm)` = `cm × existing`),
-`translate`/`scale`/`rotate` helpers, and `is_finite` checking. Page
-`CropBox`/`Rotate` → device-space mapping is *not* built yet and is
-unrelated to the content-level `cm` operator.
-
-## Rendering / text / editing / writing
-
-Rendering is ❌ — M2 parses operations but does not execute them. Text
-extraction (Unicode mapping, `ToUnicode` CMaps) is also future work.
-The redaction (墨消し) feature is a long-term goal with its own design
-constraints, recorded in
-[`design.md`](design.md#redaction-design-constraints).
+`translate`/`scale`/`rotate` helpers, and `is_finite` checking. The
+page-level `CropBox`/`Rotate` → pixmap mapping is built inside
+`render_page` (see `src/render.rs`), not to be confused with the
+content-level `cm` operator.
 
 ## Robustness
 
@@ -123,6 +152,10 @@ budget, page-tree depth/nodes, array/dict sizes, string/name length,
 container nesting, xref entry count, `/Prev` chain length, decoded
 stream size (per stream and cumulative), filter chain length, object
 stream entry count and byte range, parsed-operation count
-(`max_operations`), pending operand stack (`max_operand_stack`), and
-`q`/`Q` depth (`max_gsave_depth`). The M1 decoded-byte budget counts
-decode *work*; the M2 operation limits bound the retained structure.
+(`max_operations`), pending operand stack (`max_operand_stack`),
+`q`/`Q` depth (`max_gsave_depth`), rendered output dimensions and
+total pixels (`max_render_pixels`, `max_render_total_pixels`,
+`max_render_buffer_bytes`), and path complexity
+(`max_path_elements`). The M1 decoded-byte budget counts decode
+*work*; the M2 operation limits bound the retained structure; the M3
+render limits bound the output.
