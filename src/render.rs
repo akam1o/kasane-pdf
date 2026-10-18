@@ -118,8 +118,13 @@ impl GraphicsState {
     }
 }
 
-/// A pending path being built by path-construction operators, already
-/// transformed to pixmap space.
+/// A pending path being built by path-construction operators.
+///
+/// Stored in *user space* (untransformed): per §8.4.3.1 and ISO
+/// 32000-1 §8.4.3.1's note, a `cm` between path construction and
+/// painting applies to the whole current path — elements are not
+/// fixed at append time. The path is transformed once by
+/// `CTM_paint × page→pixmap` when it is consumed.
 #[derive(Default)]
 struct CurrentPath {
     builder: PathBuilder,
@@ -140,6 +145,18 @@ impl CurrentPath {
             });
         }
         Ok(())
+    }
+
+    /// Whether the path is empty (no elements).
+    fn is_empty(&self) -> bool {
+        self.elements == 0
+    }
+
+    /// Finish the path in *user space*. Returns `None` for an empty or
+    /// degenerate path (which tiny-skia would also skip).
+    fn finish(&mut self) -> Result<Option<Path>, Error> {
+        let path = std::mem::replace(&mut self.builder, PathBuilder::new()).finish();
+        Ok(path)
     }
 
     /// Reset after a painting op. `pending_clip` is *not* cleared here —
@@ -264,6 +281,8 @@ pub fn render_page(
     let ops = doc.page_operations(page)?;
     let mut renderer = Renderer {
         limits,
+        doc,
+        page,
         pixmap: &mut pixmap,
         user_to_pix,
         gs: GraphicsState::new(),
@@ -404,6 +423,8 @@ fn build_page_transform(
 
 struct Renderer<'a> {
     limits: &'a Limits,
+    doc: &'a Document,
+    page: &'a Page,
     pixmap: &'a mut Pixmap,
     /// page→pixmap transform (crop offset, rotate, dpi scale, y flip).
     user_to_pix: Transform,
@@ -441,6 +462,11 @@ impl<'a> Renderer<'a> {
                 // NB: the current path is NOT part of graphics state.
             }
             Operation::ConcatMatrix(m) => {
+                if !m.is_finite() {
+                    return Err(Error::Structure(
+                        "cm operands must be finite numbers".into(),
+                    ));
+                }
                 // PDF: CTM' = cm × CTM ⇒ existing.concat(cm).
                 self.gs.ctm = self.gs.ctm.concat(*m);
             }
@@ -455,44 +481,37 @@ impl<'a> Renderer<'a> {
             }
 
             // ---- path construction ------------------------------
+            // Path elements are stored in user space and transformed by
+            // `CTM_paint × page→pixmap` when consumed (§8.4.3.1).
             Operation::MoveTo(x, y) => {
                 self.path.bump_elements(self.limits)?;
-                let p = self.user_pt(*x, *y);
-                self.path.builder.move_to(p.0, p.1);
+                self.path.builder.move_to(*x as f32, *y as f32);
                 self.path.has_open_subpath = true;
             }
             Operation::LineTo(x, y) => {
                 self.path.bump_elements(self.limits)?;
-                let p = self.user_pt(*x, *y);
-                self.path.builder.line_to(p.0, p.1);
+                self.path.builder.line_to(*x as f32, *y as f32);
                 self.path.has_open_subpath = true;
             }
             Operation::CurveTo(x1, y1, x2, y2, x3, y3) => {
                 self.path.bump_elements(self.limits)?;
-                let p1 = self.user_pt(*x1, *y1);
-                let p2 = self.user_pt(*x2, *y2);
-                let p3 = self.user_pt(*x3, *y3);
-                self.path
-                    .builder
-                    .cubic_to(p1.0, p1.1, p2.0, p2.1, p3.0, p3.1);
+                self.path.builder.cubic_to(
+                    *x1 as f32, *y1 as f32, *x2 as f32, *y2 as f32, *x3 as f32, *y3 as f32,
+                );
                 self.path.has_open_subpath = true;
             }
             Operation::CurveToV(x2, y2, x3, y3) => {
                 self.path.bump_elements(self.limits)?;
-                let p2 = self.user_pt(*x2, *y2);
-                let p3 = self.user_pt(*x3, *y3);
-                self.path
-                    .builder
-                    .cubic_to(p2.0, p2.1, p2.0, p2.1, p3.0, p3.1);
+                self.path.builder.cubic_to(
+                    *x2 as f32, *y2 as f32, *x2 as f32, *y2 as f32, *x3 as f32, *y3 as f32,
+                );
                 self.path.has_open_subpath = true;
             }
             Operation::CurveToY(x1, y1, x3, y3) => {
                 self.path.bump_elements(self.limits)?;
-                let p1 = self.user_pt(*x1, *y1);
-                let p3 = self.user_pt(*x3, *y3);
-                self.path
-                    .builder
-                    .cubic_to(p1.0, p1.1, p3.0, p3.1, p3.0, p3.1);
+                self.path.builder.cubic_to(
+                    *x1 as f32, *y1 as f32, *x3 as f32, *y3 as f32, *x3 as f32, *y3 as f32,
+                );
                 self.path.has_open_subpath = true;
             }
             Operation::ClosePath => {
@@ -502,14 +521,12 @@ impl<'a> Renderer<'a> {
             }
             Operation::Rectangle(x, y, w, h) => {
                 self.path.bump_elements(self.limits)?;
-                let p1 = self.user_pt(*x, *y);
-                let p2 = self.user_pt(*x + *w, *y);
-                let p3 = self.user_pt(*x + *w, *y + *h);
-                let p4 = self.user_pt(*x, *y + *h);
-                self.path.builder.move_to(p1.0, p1.1);
-                self.path.builder.line_to(p2.0, p2.1);
-                self.path.builder.line_to(p3.0, p3.1);
-                self.path.builder.line_to(p4.0, p4.1);
+                self.path.builder.move_to(*x as f32, *y as f32);
+                self.path.builder.line_to((*x + *w) as f32, *y as f32);
+                self.path
+                    .builder
+                    .line_to((*x + *w) as f32, (*y + *h) as f32);
+                self.path.builder.line_to(*x as f32, (*y + *h) as f32);
                 self.path.builder.close();
                 self.path.has_open_subpath = false;
             }
@@ -537,21 +554,25 @@ impl<'a> Renderer<'a> {
                 self.paint_path(PaintKind::FillStroke(FillRule::EvenOdd))?
             }
             Operation::EndPath => {
-                // `n` ends the path; a pending W/W* clip is still
-                // installed (the path was the clip operand).
-                if self.path.pending_clip.is_some() {
-                    self.install_clip()?;
-                }
+                // `n` ends the path without painting; the clip (if any
+                // W/W* preceded it) was already installed at the W.
                 self.path.reset();
             }
 
             // ---- clipping -----------------------------------------
             // §8.5.4: W/W* intersect the current path with the clipping
-            // path. The intersection is installed when the path is
-            // consumed — at a painting op *or* at `n` (a path used only
-            // for clipping is still consumed and must install the clip).
-            Operation::Clip => self.path.pending_clip = Some(FillRule::Winding),
-            Operation::ClipEvenOdd => self.path.pending_clip = Some(FillRule::EvenOdd),
+            // path immediately — the path itself is preserved for the
+            // next painting op (or `n`). Each W sees the path at its
+            // own point in the sequence, so consecutive W ops each
+            // intersect their own current-path snapshot.
+            Operation::Clip => {
+                self.path.pending_clip = Some(FillRule::Winding);
+                self.install_clip()?;
+            }
+            Operation::ClipEvenOdd => {
+                self.path.pending_clip = Some(FillRule::EvenOdd);
+                self.install_clip()?;
+            }
 
             // ---- colour --------------------------------------------
             Operation::SetGrayStroke(g) => {
@@ -645,30 +666,83 @@ impl<'a> Renderer<'a> {
                 })
             }
 
-            // ---- no-ops -------------------------------------------
-            Operation::MarkedContentPoint(_)
-            | Operation::DesignatedMarkedContentPoint { .. }
-            | Operation::BeginMarkedContent(_)
-            | Operation::BeginMarkedContentWithProps { .. }
-            | Operation::EndMarkedContent
-            | Operation::BeginCompatibility
-            | Operation::EndCompatibility
-            | Operation::Unknown { .. } => {
-                // §10.5 marked content is metadata; §7.8.2 unknown ops
-                // inside BX/EX may be ignored. Both are no-ops here.
+            // ---- marked content / compatibility -----------------
+            Operation::MarkedContentPoint(_) => {
+                // §10.5.2: MP takes a tag only; it is metadata with no
+                // rendering effect.
+            }
+            Operation::DesignatedMarkedContentPoint { tag, properties }
+            | Operation::BeginMarkedContentWithProps { tag, properties } => {
+                self.marked_content(tag, properties)?;
+            }
+            Operation::BeginMarkedContent(_) | Operation::EndMarkedContent => {
+                // Tag-only BMC/EMC have no rendering effect.
+            }
+            Operation::BeginCompatibility | Operation::EndCompatibility => {}
+            Operation::Unknown { .. } => {
+                // §7.8.2: inside BX/EX unknown ops may be ignored.
             }
         }
         Ok(())
     }
 
-    /// User-space point → pixmap point (CTM then page transform).
-    /// Applied per path element at append time (§8.4.3.1).
-    fn user_pt(&self, x: f64, y: f64) -> (f32, f32) {
-        let (ux, uy) = self.gs.ctm.transform(x, y);
-        (
-            ux as f32 * self.user_to_pix.sx + uy as f32 * self.user_to_pix.kx + self.user_to_pix.tx,
-            ux as f32 * self.user_to_pix.ky + uy as f32 * self.user_to_pix.sy + self.user_to_pix.ty,
-        )
+    /// A `DP`/`BDC` tag+properties operand: decide whether this is
+    /// ordinary marked content (ignored) or Optional Content that we
+    /// cannot evaluate. `/OC` and `/OCMD` mark Optional Content
+    /// membership (§8.11); other tags are plain marked content.
+    ///
+    /// The `properties` operand may be a name (resolved against the
+    /// page's `/Properties` resource subdictionary) or a direct
+    /// dictionary. Names that resolve to an OCG/OCMD dictionary make
+    /// the whole block optional-content — we refuse to render the
+    /// page rather than silently draw members that may be hidden.
+    fn marked_content(&self, tag: &[u8], properties: &Object) -> Result<(), Error> {
+        // Resolve a `/Properties` name through the page's resources.
+        let resolved = match properties {
+            Object::Name(n) => {
+                // /OC/OCMD tags are only meaningful when they actually
+                // resolve to an optional-content dictionary; other
+                // names are treated as plain marked content.
+                if tag != b"OC" && tag != b"OCMD" {
+                    return Ok(());
+                }
+                let props = self.doc.page_resource(self.page, "Properties", n)?;
+                match props {
+                    Some(o) => o,
+                    None => {
+                        return Err(Error::Structure(format!(
+                            "marked-content /Properties entry /{} is undefined",
+                            show_name(n)
+                        )))
+                    }
+                }
+            }
+            obj @ Object::Dict(_) => obj.clone(),
+            _ => return Ok(()), // other operand types: treated as inert
+        };
+
+        let dict = resolved.as_dict().ok_or_else(|| {
+            Error::Structure("marked-content properties is not a dictionary".into())
+        })?;
+        // OCG/OCMD membership is indicated by a /Type of /OCG or /OCMD.
+        match dict.get(b"Type".as_slice()).and_then(|t| t.as_name()) {
+            Some(b"OCG") | Some(b"OCMD") => Err(Error::Unsupported {
+                feature: "optional content (/OC or /OCMD marked content)",
+                detail: "OCG/OCMD membership requires visibility evaluation, not implemented in M3"
+                    .into(),
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// The combined user→pixmap transform used at paint time:
+    /// `CTM × page→pixmap`. Path elements were built in user space and
+    /// are transformed once by this when the path is consumed
+    /// (§8.4.3.1).
+    fn paint_ts(&self) -> Result<Transform, Error> {
+        let ctm_ts = ctm_to_transform(&self.gs.ctm)
+            .ok_or_else(|| Error::Structure("non-finite CTM".into()))?;
+        Ok(ctm_ts.post_concat(self.user_to_pix))
     }
 
     fn close_open_subpath(&mut self) {
@@ -757,20 +831,30 @@ impl<'a> Renderer<'a> {
         Ok(())
     }
 
-    /// Install the pending `W`/`W*` clip: rasterize the current path
-    /// to a pixmap-sized mask and intersect it with the existing clip.
+    /// Install the pending `W`/`W*` clip at the `W`/`W*` operator
+    /// itself: rasterize the current path (in user space, transformed
+    /// by the current CTM) to a pixmap-sized mask and intersect with
+    /// the existing clip. The path itself is preserved — `n` or the
+    /// next painting op consumes it.
     fn install_clip(&mut self) -> Result<(), Error> {
         let rule = self.path.pending_clip.take().unwrap();
-        let new_path = self
-            .path
-            .builder
-            .clone()
-            .finish()
-            .ok_or_else(|| Error::Structure("clip path construction failed".into()))?;
-        let mask = self.clip_for_path(&new_path, rule)?;
+        let ts = self.paint_ts()?;
+        let Some(new_path) = self.path.builder.clone().finish() else {
+            // W with an empty path empties the clip.
+            self.gs.clip = Some(
+                Mask::new(self.pixmap.width(), self.pixmap.height())
+                    .ok_or_else(|| Error::Structure("clip mask allocation failed".into()))?,
+            );
+            return Ok(());
+        };
         match &mut self.gs.clip {
-            None => self.gs.clip = Some(mask),
-            Some(existing) => existing.intersect_path(&new_path, rule, true, Transform::identity()),
+            None => {
+                let mut mask = Mask::new(self.pixmap.width(), self.pixmap.height())
+                    .ok_or_else(|| Error::Structure("clip mask allocation failed".into()))?;
+                mask.fill_path(&new_path, rule, true, ts);
+                self.gs.clip = Some(mask);
+            }
+            Some(existing) => existing.intersect_path(&new_path, rule, true, ts),
         }
         Ok(())
     }
@@ -781,16 +865,19 @@ impl<'a> Renderer<'a> {
         if self.path.pending_clip.is_some() {
             self.install_clip()?;
         }
-        if self.path.elements == 0 {
+        if self.path.is_empty() {
             self.path.reset();
             return Ok(());
         }
-        let path = self
-            .path
-            .builder
-            .clone()
-            .finish()
-            .ok_or_else(|| Error::Structure("path construction failed".into()))?;
+        // The path is in user space; the combined `CTM × page→pixmap`
+        // transform is passed to fill/stroke so the stroke outline and
+        // the path are transformed together (§8.4.3.2/§8.4.4: line
+        // width and dash lengths are in user units).
+        let ts = self.paint_ts()?;
+        let Some(path) = self.path.finish()? else {
+            self.path.reset();
+            return Ok(());
+        };
 
         let mut paint = Paint {
             anti_alias: true,
@@ -822,53 +909,25 @@ impl<'a> Renderer<'a> {
         match kind {
             PaintKind::Stroke => {
                 paint.set_color(ts_color(self.gs.stroke_color));
-                self.pixmap.stroke_path(
-                    &path,
-                    &paint,
-                    &stroke,
-                    Transform::identity(),
-                    self.gs.clip.as_ref(),
-                );
+                self.pixmap
+                    .stroke_path(&path, &paint, &stroke, ts, self.gs.clip.as_ref());
             }
             PaintKind::Fill(rule) => {
                 paint.set_color(ts_color(self.gs.fill_color));
-                self.pixmap.fill_path(
-                    &path,
-                    &paint,
-                    rule,
-                    Transform::identity(),
-                    self.gs.clip.as_ref(),
-                );
+                self.pixmap
+                    .fill_path(&path, &paint, rule, ts, self.gs.clip.as_ref());
             }
             PaintKind::FillStroke(rule) => {
                 paint.set_color(ts_color(self.gs.fill_color));
-                self.pixmap.fill_path(
-                    &path,
-                    &paint,
-                    rule,
-                    Transform::identity(),
-                    self.gs.clip.as_ref(),
-                );
+                self.pixmap
+                    .fill_path(&path, &paint, rule, ts, self.gs.clip.as_ref());
                 paint.set_color(ts_color(self.gs.stroke_color));
-                self.pixmap.stroke_path(
-                    &path,
-                    &paint,
-                    &stroke,
-                    Transform::identity(),
-                    self.gs.clip.as_ref(),
-                );
+                self.pixmap
+                    .stroke_path(&path, &paint, &stroke, ts, self.gs.clip.as_ref());
             }
         }
         self.path.reset();
         Ok(())
-    }
-
-    /// Rasterize a clip path to a pixmap-sized alpha mask.
-    fn clip_for_path(&self, path: &Path, rule: FillRule) -> Result<Mask, Error> {
-        let mut mask = Mask::new(self.pixmap.width(), self.pixmap.height())
-            .ok_or_else(|| Error::Structure("clip mask allocation failed".into()))?;
-        mask.fill_path(path, rule, true, Transform::identity());
-        Ok(mask)
     }
 }
 
@@ -934,8 +993,19 @@ fn show_name(n: &Name) -> String {
     String::from_utf8_lossy(n).into_owned()
 }
 
+fn ctm_to_transform(m: &Matrix) -> Option<Transform> {
+    if !m.is_finite() {
+        return None;
+    }
+    Some(Transform::from_row(
+        m.a as f32, m.b as f32, m.c as f32, m.d as f32, m.e as f32, m.f as f32,
+    ))
+}
+
 /// PDF line width 0 is a hairline — "as thin as can be rendered"
-/// (§8.4.3.2). Since paths live in pixmap space, that is 1 px.
+/// (§8.4.3.2). tiny-skia treats `Stroke.width == 0` as a hairline
+/// automatically, so the value here is a nominal width that will be
+/// replaced by the hairline path anyway.
 fn hairline_width() -> f32 {
-    1.0
+    0.0
 }
