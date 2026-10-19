@@ -260,6 +260,21 @@ impl Document {
         &self.catalog
     }
 
+    /// Start an annotation-edit session over this document. The
+    /// session borrows `&self` — the original bytes and this
+    /// `Document` are never mutated; additions accumulate in the
+    /// session's overlay until [`crate::edit::Edit::rewrite`] writes a
+    /// new file.
+    pub fn edit(&self) -> Result<crate::edit::Edit<'_>, Error> {
+        crate::edit::Edit::new(self, self.limits.clone())
+    }
+
+    /// Like [`Self::edit`] but with explicit `Limits` — used by tests
+    /// and callers that cap edit resources below the defaults.
+    pub fn edit_with_limits(&self, limits: Limits) -> Result<crate::edit::Edit<'_>, Error> {
+        crate::edit::Edit::new(self, limits)
+    }
+
     /// The `%PDF-M.m` header version — `None` on malformed input.
     pub(crate) fn header_version(&self) -> Option<(u8, u8)> {
         self.header_version

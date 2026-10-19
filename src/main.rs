@@ -32,6 +32,20 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("annotate-rect") => {
+            // annotate-rect <file.pdf> <page> --rect x0 y0 x1 y1
+            //   --color r g b --width w --output out.pdf
+            // (rect = lower-left x,y + upper-right x,y in PDF user
+            //  space; color = RGB 0..1; width = stroke width, >0)
+            let result = run_annotate_rect(&args[2..]);
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error [{}]: {e}", e.kind());
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some(cmd @ ("contents" | "operations" | "render" | "text")) => {
             let (path, page_no) = match (args.get(2), args.get(3)) {
                 (Some(p), Some(n)) => (p, n),
@@ -157,17 +171,141 @@ fn run_contents(path: &str, page_no: usize) -> Result<(), Error> {
 /// until the new bytes are complete. Input and output may not be the
 /// same file (symlinks resolved before comparison).
 fn run_rewrite(input: &str, output: &str) -> Result<(), Error> {
-    // Refuse identical input/output — canonicalize so `./a.pdf`,
-    // `a/./a.pdf` and symlinks all compare equal. On Unix we also
-    // compare (dev, ino) so hardlinks with different names are still
-    // caught; on non-Unix we rely on canonicalize alone (no portable
-    // file identity is available — this is the documented limit).
+    refuse_same_file(input, output)?;
+    let data = std::fs::read(input)?;
+    let doc = Document::from_bytes(&data)?;
+    let bytes = kasane_pdf::rewrite(&doc)?;
+    write_atomic(
+        &bytes,
+        &format!("{output}.kasane-tmp-{}", std::process::id()),
+        output,
+    )?;
+    println!("rewrote {input} -> {output} ({} bytes)", bytes.len());
+    Ok(())
+}
+
+/// `annotate-rect` subcommand:
+/// `annotate-rect <in.pdf> <page> --rect x0 y0 x1 y1 --color r g b
+///  --width w --output <out.pdf>`.
+///
+/// `rect` is lower-left x,y then upper-right x,y in un-rotated PDF
+/// user space (+y up, CropBox/Rotate not applied) — the same space
+/// M6.1 extraction reports. Page is 1-based like `contents`.
+fn run_annotate_rect(args: &[String]) -> Result<(), Error> {
+    // args[0]=input args[1]=page  then flag/value pairs.
+    if args.len() < 2 {
+        return Err(Error::Structure(annotate_usage()));
+    }
+    let input = &args[0];
+    let page: usize = args[1]
+        .parse()
+        .ok()
+        .filter(|&n| n >= 1)
+        .ok_or_else(|| Error::Structure(format!("invalid page number '{}'", args[1])))?;
+    // Parse --rect x0 y0 x1 y1, --color r g b, --width w, --output f.
+    let mut rect: Option<[f64; 4]> = None;
+    let mut color: Option<[f64; 3]> = None;
+    let mut width: Option<f64> = None;
+    let mut output: Option<&str> = None;
+    let mut i = 2;
+    while i < args.len() {
+        let need = |n: usize| -> Result<(), Error> {
+            if i + n < args.len() {
+                Ok(())
+            } else {
+                Err(Error::Structure(format!(
+                    "flag '{}' expects {n} value(s)\n{}",
+                    args[i],
+                    annotate_usage()
+                )))
+            }
+        };
+        let num = |s: &str| -> Result<f64, Error> {
+            s.parse::<f64>()
+                .map_err(|_| Error::Structure(format!("expected a number, got '{s}'")))
+        };
+        match args[i].as_str() {
+            "--rect" => {
+                need(4)?;
+                rect = Some([
+                    num(&args[i + 1])?,
+                    num(&args[i + 2])?,
+                    num(&args[i + 3])?,
+                    num(&args[i + 4])?,
+                ]);
+                i += 5;
+            }
+            "--color" => {
+                need(3)?;
+                color = Some([num(&args[i + 1])?, num(&args[i + 2])?, num(&args[i + 3])?]);
+                i += 4;
+            }
+            "--width" => {
+                need(1)?;
+                width = Some(num(&args[i + 1])?);
+                i += 2;
+            }
+            "--output" => {
+                need(1)?;
+                output = Some(&args[i + 1]);
+                i += 2;
+            }
+            other => {
+                return Err(Error::Structure(format!(
+                    "unknown flag '{other}'\n{}",
+                    annotate_usage()
+                )))
+            }
+        }
+    }
+    let (rect, color, width, output) = match (rect, color, width, output) {
+        (Some(r), Some(c), Some(w), Some(o)) => (r, c, w, o),
+        _ => return Err(Error::Structure(annotate_usage())),
+    };
+
+    refuse_same_file(input, output)?;
+    let data = std::fs::read(input)?;
+    let doc = Document::from_bytes(&data)?;
+    let mut e = doc.edit()?;
+    e.add_square(
+        page - 1,
+        kasane_pdf::Rect {
+            llx: rect[0],
+            lly: rect[1],
+            urx: rect[2],
+            ury: rect[3],
+        },
+        color,
+        width,
+    )?;
+    let bytes = e.rewrite()?;
+    write_atomic(
+        &bytes,
+        &format!("{output}.kasane-tmp-{}", std::process::id()),
+        output,
+    )?;
+    println!(
+        "annotated {input} page {page} -> {output} ({} bytes)",
+        bytes.len()
+    );
+    Ok(())
+}
+
+fn annotate_usage() -> String {
+    "usage: kasane-pdf annotate-rect <in.pdf> <page> --rect x0 y0 x1 y1 \
+     --color r g b --width w --output <out.pdf>\n  rect: lower-left x y \
+     then upper-right x y in PDF user space (1/72in, +y up)\n  color: R \
+     G B each 0..1;  width: stroke width > 0"
+        .into()
+}
+
+/// Refuse when `input` and `output` resolve to the same file —
+/// canonicalize + Unix (dev, ino) so relative paths, `.`/`..`,
+/// symlinks and hardlinks all compare equal.
+fn refuse_same_file(input: &str, output: &str) -> Result<(), Error> {
     let in_path = std::fs::canonicalize(input)
         .map_err(|e| Error::Structure(format!("cannot canonicalize input '{input}': {e}")))?;
     let out_path = std::fs::canonicalize(output).unwrap_or_else(|_| {
-        // Output doesn't exist yet — canonicalize the parent and
-        // reattach the filename so `nonexistent/../out.pdf` still
-        // compares correctly.
         std::path::Path::new(output)
             .parent()
             .and_then(|p| std::fs::canonicalize(p).ok())
@@ -179,18 +317,6 @@ fn run_rewrite(input: &str, output: &str) -> Result<(), Error> {
             "rewrite input and output are the same file".into(),
         ));
     }
-
-    let data = std::fs::read(input)?;
-    let doc = Document::from_bytes(&data)?;
-    let bytes = kasane_pdf::rewrite(&doc)?;
-
-    // Write to a fresh temp file in the same directory — create_new
-    // fails if the name already exists (collision or symlink), so we
-    // never overwrite a leftover or an attacker's file. Rename over
-    // the target only after the bytes are fully flushed.
-    let tmp = format!("{output}.kasane-tmp-{}", std::process::id());
-    write_atomic(&bytes, &tmp, output)?;
-    println!("rewrote {input} -> {output} ({} bytes)", bytes.len());
     Ok(())
 }
 

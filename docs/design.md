@@ -333,6 +333,15 @@ decoded-bytes cost. `unsafe` is not used anywhere.
       extracted for unit tests (create_new collision/symlink/rename
       failure). `scripts/verify_rewrite.sh` runs qpdf on all
       well-formed fixtures — exit 0, zero warnings required.
+   - M9: minimal edit — `Document::edit()` returns an `Edit` session
+      holding `/Square` additions as synthetic objects in a reserved
+      number space (u32::MAX−1M+). `Edit::rewrite()` runs the normal
+      rewrite path through an `(obj,gen) → body` overlay consulted
+      before `doc.resolve`, so added annotations and the edited page
+      dict/`/Annots` arrays land in a normal single-revision file.
+      A page's `/Annots` is always materialised into a fresh array —
+      shared arrays are never mutated, so annotating one page cannot
+      change another. Original bytes are read-only throughout.
 2. Rendering — transparency, patterns, ICC colour, masks
    (`/SMask`, `/ImageMask`), Type 0/CID + non-embedded fonts,
    remaining filters.

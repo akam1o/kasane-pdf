@@ -13,20 +13,22 @@ renderer and writer are implemented here.
 
 ## Status
 
-**M8 / M8.1 / M8.2 are complete.** Rewrite any loaded document to a
-fresh single-revision PDF via `kasane-pdf rewrite in.pdf --output
-out.pdf` or the `rewrite(&Document)` API — preserving page tree,
-contents, fonts, text and basic links. M8.1 tightened the write
-guarantees (named destinations refused; output version =
-`max(header, catalog /Version)`, 2.0+ refused; canonicalize+inode
-identity check; `create_new` + `sync_data` + `rename` save path).
-M8.2 completed validation: a malformed `%PDF-M.m` header or catalog
-`/Version` is refused rather than guessed, and `scripts/
-verify_rewrite.sh` runs `qpdf --check` (12.4.2) on every well-formed
-fixture — exit 0, zero warnings. See [`docs/coverage.md`](
-docs/coverage.md) for the detailed support matrix and
-[`docs/design.md`](docs/design.md) for architecture and licensing
-notes.
+**M8 / M8.1 / M8.2 / M9 are complete.** Rewrite any loaded document
+to a fresh single-revision PDF via `kasane-pdf rewrite in.pdf
+--output out.pdf` or the `rewrite(&Document)` API — preserving page
+tree, contents, fonts, text and basic links. M8.1/M8.2 tightened and
+validated the write guarantees; `scripts/verify_rewrite.sh` runs
+`qpdf --check` (12.4.2) on every well-formed fixture — exit 0, zero
+warnings.
+
+**M9 adds `/Square` annotation editing.** `Document::edit()` opens a
+session; `add_square(page, rect, rgb, width)` queues an annotation;
+`rewrite()` emits a normal single-revision file. CLI:
+`kasane-pdf annotate-rect in.pdf 1 --rect 20 30 120 80 --color 1 0 0
+--width 2 --output out.pdf` (`rect` = lower-left x,y then upper-right
+x,y in un-rotated PDF user space). See [`docs/coverage.md`](
+docs/coverage.md) for the matrix and [`docs/design.md`](
+docs/design.md) for architecture and licensing notes.
 
 What works today:
 
@@ -88,7 +90,11 @@ What works today:
   Unicode a page can emit (UTF-8 bytes, counted per emitted code
   so repeated/split strings cannot evade it).
 - A `kasane-pdf` CLI (`info` mode + `contents`, `operations`,
-  `render` and `text` subcommands).
+  `render`, `text`, `rewrite` and `annotate-rect` subcommands).
+- Adding `/Subtype /Square` rectangle annotations to a page via an
+  [`Edit`] session — opaque RGB stroke, positive width, generated
+  `/AP` appearance, existing annots/links preserved, shared `/Annots`
+  arrays never mutated in place.
 
 What is deliberately **not** supported yet (produces a distinct error,
 never a partial result presented as success):
@@ -120,7 +126,8 @@ never a partial result presented as success):
   `/UserUnit` ≠ 1
 - Painting under a singular (non-invertible) CTM — refused with
   `Error::Unsupported`
-- Editing, writing
+- Annotation subtypes other than `/Square`; editing or deleting
+  existing annotations, page edits, flattening, redaction
 
 ## Requirements
 

@@ -49,6 +49,7 @@
 
 mod content;
 mod document;
+pub mod edit;
 mod error;
 mod filter;
 mod font;
@@ -72,8 +73,9 @@ pub use render::{pixmap_to_png, render_page, Color, RenderOptions, RenderedPage}
 pub use text_extract::{extract_text, CharInfo, ExtractedText, ResolveKind};
 
 pub use document::Document;
+pub use edit::Edit;
 pub use error::Error;
 pub use limits::Limits;
-pub use object::{IndirectRef, Object};
+pub use object::{Dict, IndirectRef, Object};
 pub use page::{Page, Rect};
 pub use rewrite::{rewrite, rewrite_with_limits};
