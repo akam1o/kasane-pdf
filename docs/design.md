@@ -368,6 +368,14 @@ decoded-bytes cost. `unsafe` is not used anywhere.
       synthetics. Together this guarantees a malformed `(n, 0)` ref
       fails as `MissingReference` both before and after edit, and a
       valid `(n, 1)` object is preserved verbatim.
+
+   - M10: `inspect` CLI — read-only structural dump of a single
+      page (inherited MediaBox/CropBox/Rotate, `/Annots` count,
+      per-category `/Resources` counts, `/Contents` ref(s),
+      `/UserUnit`). Fixed line order; malformed structure
+      (non-array `/Annots`, non-dict `/Resources`, non-ref
+      `/Contents`, non-numeric `/UserUnit`) is a typed error, not
+      coerced — inspect reports the file as it is or fails.
 2. Rendering — transparency, patterns, ICC colour, masks
    (`/SMask`, `/ImageMask`), Type 0/CID + non-embedded fonts,
    remaining filters.

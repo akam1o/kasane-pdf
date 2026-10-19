@@ -294,6 +294,31 @@ External check: `qpdf --check` clean; `pdftoppm -hide-annotations`
 output is byte-identical to the un-annotated input (only the
 annotation differs); the change is confined to the Rect bounds.
 
+## Page structure inspection (M10, CLI `inspect`)
+
+`kasane-pdf inspect <file.pdf> <page>` — a read-only diagnostic dump
+of a single page's structure. Fixed line order, no rendering, no
+editing, no text extraction. The file must contain exactly one page;
+`page` selects it (1-based).
+
+| Line | Source | Default when absent |
+|---|---|---|
+| `page <n>` | 1-based page index | — |
+| `mediabox <llx> <lly> <urx> <ury>` | inherited `/MediaBox` | — (required) |
+| `cropbox <llx> <lly> <urx> <ury>` | inherited `/CropBox` | `/MediaBox` |
+| `rotation <deg>` | inherited `/Rotate` | `0` |
+| `annotations <count>` | `/Annots` array length | `0` |
+| `fonts` `xobjects` `colorspaces` `patterns` `shadings` `extgstates` `procsets` `properties` | direct entry counts of each `/Resources` sub-dict/array | `0` each |
+| `contents <ref>` `contents [<ref> ...]` `contents absent` | `/Contents` | `contents absent` |
+| `userunit <v>` `userunit absent` | `/UserUnit` | `userunit absent` |
+
+Errors are typed (`Error::Structure`/`MissingReference`): a
+non-1-page file (the count is reported), a non-array/unresolvable
+`/Annots`, a non-dict/unresolvable `/Resources`, a `/Contents` that is
+neither a ref nor an array of refs, or a non-numeric `/UserUnit`.
+Nothing is silently coerced — inspect explains the structure as it
+is, or fails.
+
 ## Robustness
 
 Guaranteed (tested): bad xref offset, missing referenced objects, cyclic

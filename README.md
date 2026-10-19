@@ -37,6 +37,12 @@ number is treated as a dangling ref — never silently resolved to a
 synthetic body. See [`docs/coverage.md`](docs/coverage.md) for the
 matrix and [`docs/design.md`](docs/design.md) for notes.
 
+**M10 adds an `inspect` command** — `kasane-pdf inspect file.pdf 1`
+prints a fixed-order structural summary of a single page (MediaBox,
+CropBox, rotation, annotation count, per-category resource counts,
+`/Contents` reference(s), `/UserUnit`). Diagnostic only — it never
+renders, edits or extracts. The file must contain exactly one page.
+
 What works today:
 
 - PDF basic objects: null, bool, integer, real, name (with `#xx`
