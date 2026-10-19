@@ -1474,8 +1474,101 @@ def text_clip():
     write("text_clip.pdf", build_pdf(objs))
 
 
+def text_extended_chars():
+    """WinAnsi 0x80+ range: Euro, quotes, accents — exercises the
+    encoding table's upper half."""
+    stream = (b"BT /F1 20 Tf 10 80 Td "
+              b"(\\x80\\x93\\x94\\xA9\\xC4\\xE9) Tj ET")
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_extended_chars.pdf", build_pdf(objs))
+
+
+def text_tj_split():
+    """TJ splitting 'AB' into separate strings vs. plain 'AB' — same
+    output expected."""
+    stream = (b"BT /F1 20 Tf 10 80 Td [(A) (B)] TJ ET "
+              b"BT /F1 20 Tf 10 50 Td (AB) Tj ET")
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_tj_split.pdf", build_pdf(objs))
+
+
+def text_empty_string():
+    """() Tj — empty string advances nothing, draws nothing."""
+    stream = b"BT /F1 20 Tf 10 80 Td () Tj (A) Tj ET"
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_empty_string.pdf", build_pdf(objs))
+
+
+def text_tj_consecutive_numbers():
+    """TJ with consecutive numbers — no strings between them."""
+    stream = b"BT /F1 20 Tf 10 80 Td [(A) -50 -50 (B)] TJ ET"
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_tj_consecutive_numbers.pdf", build_pdf(objs))
+
+
+def text_missing_font_ref():
+    """Tf references a name not in /Font — Structure error."""
+    stream = b"BT /F9 20 Tf 10 80 Td (A) Tj ET"
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_missing_font_ref.pdf", build_pdf(objs))
+
+
+def text_no_font_tj():
+    """Tj before any Tf — Structure error."""
+    stream = b"BT 10 80 Td (A) Tj ET"
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_no_font_tj.pdf", build_pdf(objs))
+
+
 def text_widths_override():
-    """Widths differ from the font's advance — PDF widths win."""
     stream = b"BT /F1 20 Tf 10 60 Td (AB) Tj ET"
     objs = [
         (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
@@ -1575,3 +1668,9 @@ if __name__ == "__main__":
     text_scaled()
     text_clip()
     text_widths_override()
+    text_extended_chars()
+    text_tj_split()
+    text_empty_string()
+    text_tj_consecutive_numbers()
+    text_missing_font_ref()
+    text_no_font_tj()

@@ -77,9 +77,12 @@ struct GraphicsState {
     text: TextState,
 }
 
-/// Text-state parameters (Table 104) and the two text-object matrices
-/// (`Tm`, `Tlm`). The state is saved/restored with the rest of the
-/// graphics state; `Tm`/`Tlm` are *reinitialized* by `BT` per §9.4.1.
+/// Text-state parameters (Table 104) — the parts that live in the
+/// graphics state and are saved/restored by `q`/`Q`.
+///
+/// `Tm` and `Tlm` are **not** here: they belong to the *text object*
+/// (§9.4.1), are reinitialized by `BT`, and are not part of the
+/// graphics state — `q`/`Q` inside a text object does not save them.
 #[derive(Clone)]
 struct TextState {
     /// Character spacing `Tc` (unscaled text-space units).
@@ -102,10 +105,6 @@ struct TextState {
     render_mode: i64,
     /// Text rise `Trise` (unscaled text-space units).
     rise: f64,
-    /// Text matrix `Tm` and text line matrix `Tlm` — per-`BT`/`ET`,
-    /// *not* part of `q`/`Q`.
-    tm: Matrix,
-    tlm: Matrix,
 }
 
 impl Default for TextState {
@@ -120,8 +119,6 @@ impl Default for TextState {
             font_size: 0.0,
             render_mode: 0,
             rise: 0.0,
-            tm: Matrix::IDENTITY,
-            tlm: Matrix::IDENTITY,
         }
     }
 }
@@ -377,6 +374,9 @@ pub fn render_page(
         xobject_depth: 0,
         xobject_invocations: 0,
         xobject_stack: Vec::new(),
+        text_tm: Matrix::IDENTITY,
+        text_tlm: Matrix::IDENTITY,
+        text_codes: 0,
     };
     renderer.run(&ops)?;
 
@@ -532,6 +532,15 @@ struct Renderer<'a> {
     /// recursion. Same form used at different spots is fine; a form
     /// that (transitively) invokes itself is not.
     xobject_stack: Vec<IndirectRef>,
+    /// Text-object matrices (§9.4.1) — *not* part of `q`/`Q`; reset by
+    /// `BT` and discarded by `ET`. Kept on the renderer, not in
+    /// `GraphicsState`.
+    text_tm: Matrix,
+    text_tlm: Matrix,
+    /// Cumulative count of character codes processed this page —
+    /// bounds total glyph work regardless of how strings are split
+    /// across `Tj`/`TJ`/forms.
+    text_codes: u64,
 }
 
 impl<'a> Renderer<'a> {
@@ -784,8 +793,8 @@ impl<'a> Renderer<'a> {
                 }
                 self.in_text = true;
                 // §9.4.1: BT resets Tm and Tlm to identity.
-                self.gs.text.tm = Matrix::IDENTITY;
-                self.gs.text.tlm = Matrix::IDENTITY;
+                self.text_tm = Matrix::IDENTITY;
+                self.text_tlm = Matrix::IDENTITY;
             }
             Operation::EndText => {
                 if !self.in_text {
@@ -828,25 +837,25 @@ impl<'a> Renderer<'a> {
             Operation::MoveTextPosition(tx, ty) => {
                 // Tm = Tlm = [1 0 0 1 tx ty] × Tlm
                 let t = Matrix::new(1.0, 0.0, 0.0, 1.0, *tx, *ty);
-                self.gs.text.tlm = t.concat(self.gs.text.tlm);
-                self.gs.text.tm = self.gs.text.tlm;
+                self.text_tlm = t.concat(self.text_tlm);
+                self.text_tm = self.text_tlm;
             }
             Operation::MoveTextPositionAndSetLeading(tx, ty) => {
                 // −ty TL ; tx ty Td
                 self.gs.text.leading = -*ty;
                 let t = Matrix::new(1.0, 0.0, 0.0, 1.0, *tx, *ty);
-                self.gs.text.tlm = t.concat(self.gs.text.tlm);
-                self.gs.text.tm = self.gs.text.tlm;
+                self.text_tlm = t.concat(self.text_tlm);
+                self.text_tm = self.text_tlm;
             }
             Operation::SetTextMatrix(m) => {
-                self.gs.text.tm = *m;
-                self.gs.text.tlm = *m;
+                self.text_tm = *m;
+                self.text_tlm = *m;
             }
             Operation::NextLine => {
                 // T* ≡ 0 -Tl Td
                 let t = Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.gs.text.leading);
-                self.gs.text.tlm = t.concat(self.gs.text.tlm);
-                self.gs.text.tm = self.gs.text.tlm;
+                self.text_tlm = t.concat(self.text_tlm);
+                self.text_tm = self.text_tlm;
             }
             // Showing.
             Operation::ShowText(s) => self.show_text(s)?,
@@ -854,8 +863,8 @@ impl<'a> Renderer<'a> {
             Operation::NextLineShowText(s) => {
                 // ' ≡ T* string Tj
                 let t = Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.gs.text.leading);
-                self.gs.text.tlm = t.concat(self.gs.text.tlm);
-                self.gs.text.tm = self.gs.text.tlm;
+                self.text_tlm = t.concat(self.text_tlm);
+                self.text_tm = self.text_tlm;
                 self.show_text(s)?;
             }
             Operation::SetSpacingNextLineShowText {
@@ -867,8 +876,8 @@ impl<'a> Renderer<'a> {
                 self.gs.text.word_spacing = *word_spacing;
                 self.gs.text.char_spacing = *char_spacing;
                 let t = Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.gs.text.leading);
-                self.gs.text.tlm = t.concat(self.gs.text.tlm);
-                self.gs.text.tm = self.gs.text.tlm;
+                self.text_tlm = t.concat(self.text_tlm);
+                self.text_tm = self.text_tlm;
                 self.show_text(text)?;
             }
 
@@ -1732,6 +1741,8 @@ impl<'a> Renderer<'a> {
     }
 
     /// `TJ [item …]`: strings and numeric adjustments interleaved.
+    /// A number shifts the *next* glyph — the sign is such that a
+    /// positive number moves left (§9.4.3).
     fn show_text_adjusted(&mut self, items: &[crate::content::TJItem]) -> Result<(), Error> {
         if !self.in_text {
             return Err(Error::Structure("TJ outside a text object".into()));
@@ -1758,7 +1769,7 @@ impl<'a> Renderer<'a> {
                     // following glyph.
                     let tx = -*n / 1000.0;
                     let t = Matrix::new(1.0, 0.0, 0.0, 1.0, tx, 0.0);
-                    self.gs.text.tm = t.concat(self.gs.text.tm);
+                    self.text_tm = t.concat(self.text_tm);
                 }
             }
         }
@@ -1777,6 +1788,21 @@ impl<'a> Renderer<'a> {
         code: u8,
         tj_adjust: f64,
     ) -> Result<(), Error> {
+        // Cumulative per-page budget for character codes — a long
+        // string, many strings, and Form-embedded text all count
+        // here. Checked before any glyph work so even .notdef and
+        // outline-less glyphs are accounted for.
+        self.text_codes = self.text_codes.checked_add(1).ok_or(Error::LimitExceeded {
+            limit: "max_text_codes",
+            max: self.limits.max_text_codes,
+        })?;
+        if self.text_codes > self.limits.max_text_codes {
+            return Err(Error::LimitExceeded {
+                limit: "max_text_codes",
+                max: self.limits.max_text_codes,
+            });
+        }
+
         let gs = &mut self.gs;
         let t = &mut gs.text;
 
@@ -1798,7 +1824,7 @@ impl<'a> Renderer<'a> {
             if let Some(path) = gp.finish() {
                 // Text→render matrix (§9.4.4 note 2).
                 let trm = Matrix::new(t.font_size * t.h_scale, 0.0, 0.0, t.font_size, 0.0, t.rise)
-                    .concat(t.tm)
+                    .concat(self.text_tm)
                     .concat(gs.ctm);
                 let trm_ts = Transform::from_row(
                     trm.a as f32,
@@ -1846,7 +1872,7 @@ impl<'a> Renderer<'a> {
         let tx =
             ((w0 / 1000.0 - tj_adjust / 1000.0) * t.font_size + t.char_spacing + tw) * t.h_scale;
         let adv = Matrix::new(1.0, 0.0, 0.0, 1.0, tx, 0.0);
-        t.tm = adv.concat(t.tm);
+        self.text_tm = adv.concat(self.text_tm);
         Ok(())
     }
 
