@@ -189,32 +189,47 @@ fn run_rewrite(input: &str, output: &str) -> Result<(), Error> {
     // never overwrite a leftover or an attacker's file. Rename over
     // the target only after the bytes are fully flushed.
     let tmp = format!("{output}.kasane-tmp-{}", std::process::id());
+    write_atomic(&bytes, &tmp, output)?;
+    println!("rewrote {input} -> {output} ({} bytes)", bytes.len());
+    Ok(())
+}
+
+/// Write `bytes` to `tmp` (a name that must not already exist) and
+/// then `rename` it over `output`. `create_new(true)` makes the
+/// open fail on any existing name — regular file *or* symlink — so a
+/// leftover tmp or a planted link is never followed or clobbered.
+/// `sync_data` flushes before the rename; on any failure only `tmp`
+/// (the file we created) is removed — `output` is never touched.
+///
+/// This is *atomic replace* plus best-effort durability: the rename
+/// is atomic, but a power loss between rename and a later fsync of
+/// the parent directory can still lose the update. That bound is
+/// documented, not hidden.
+fn write_atomic(bytes: &[u8], tmp: &str, output: &str) -> Result<(), Error> {
+    use std::io::Write;
+    let mut f = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(tmp)
     {
-        use std::io::Write;
-        let mut f = match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)
-        {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(Error::Structure(format!(
-                    "temporary output name '{tmp}' already exists — refusing to proceed"
-                )));
-            }
-            Err(e) => return Err(e.into()),
-        };
-        if let Err(e) = f.write_all(&bytes).and_then(|_| f.sync_data()) {
-            drop(f);
-            let _ = std::fs::remove_file(&tmp);
-            return Err(e.into());
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(Error::Structure(format!(
+                "temporary output name '{tmp}' already exists — refusing to proceed"
+            )));
         }
-    }
-    if let Err(e) = std::fs::rename(&tmp, output) {
-        let _ = std::fs::remove_file(&tmp);
+        Err(e) => return Err(e.into()),
+    };
+    if let Err(e) = f.write_all(bytes).and_then(|_| f.sync_data()) {
+        drop(f);
+        let _ = std::fs::remove_file(tmp);
         return Err(e.into());
     }
-    println!("rewrote {input} -> {output} ({} bytes)", bytes.len());
+    drop(f);
+    if let Err(e) = std::fs::rename(tmp, output) {
+        let _ = std::fs::remove_file(tmp);
+        return Err(e.into());
+    }
     Ok(())
 }
 
@@ -430,5 +445,75 @@ fn print_lines(t: &kasane_pdf::ExtractedText) {
             "... ({} more character(s) omitted — output capped at {MAX_TEXT_ENTRIES})",
             t.chars.len() - shown
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Unit tests for the atomic-write helper — the CLI-level
+    //! behaviour is covered by `tests/m8_cli.rs`; here we pin down
+    //! `create_new` semantics that a PID-named child can't hit
+    //! deterministically.
+
+    use super::write_atomic;
+    use std::fs;
+
+    fn tmp(name: &str) -> (std::path::PathBuf, String, String) {
+        let dir = std::env::temp_dir().join(format!("kasane-atomic-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let tmp = dir.join("out.kasane-tmp");
+        let out = dir.join("out");
+        (
+            dir,
+            tmp.to_string_lossy().into_owned(),
+            out.to_string_lossy().into_owned(),
+        )
+    }
+
+    #[test]
+    fn atomic_write_refuses_existing_tmp() {
+        let (_dir, tmp, out) = tmp("exists");
+        fs::write(&tmp, b"pre-existing").unwrap();
+        // Even valid bytes must fail — we never overwrite a leftover.
+        let r = write_atomic(b"payload", &tmp, &out);
+        assert!(r.is_err());
+        assert_eq!(fs::read(&tmp).unwrap(), b"pre-existing");
+        assert!(!std::path::Path::new(&out).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_refuses_tmp_symlink() {
+        let (_dir, tmp, out) = tmp("symlink");
+        let victim = std::path::Path::new(&tmp).with_file_name("victim");
+        fs::write(&victim, b"IMPORTANT").unwrap();
+        std::os::unix::fs::symlink(&victim, &tmp).unwrap();
+        let r = write_atomic(b"payload", &tmp, &out);
+        assert!(r.is_err());
+        // The symlink target was never written to.
+        assert_eq!(fs::read(&victim).unwrap(), b"IMPORTANT");
+        assert!(!std::path::Path::new(&out).exists());
+    }
+
+    #[test]
+    fn atomic_write_happy_path() {
+        let (_dir, tmp, out) = tmp("ok");
+        write_atomic(b"payload", &tmp, &out).unwrap();
+        assert_eq!(fs::read(&out).unwrap(), b"payload");
+        assert!(!std::path::Path::new(&tmp).exists(), "tmp not cleaned up");
+    }
+
+    #[test]
+    fn atomic_write_rename_failure_cleans_tmp() {
+        // Output path is a directory → rename fails; tmp is removed,
+        // the directory is untouched.
+        let (dir, tmp, _out) = tmp("rename-fail");
+        let dirpath = dir.join("outdir");
+        fs::create_dir(&dirpath).unwrap();
+        let r = write_atomic(b"payload", &tmp, dirpath.to_str().unwrap());
+        assert!(r.is_err());
+        assert!(!std::path::Path::new(&tmp).exists());
+        assert!(dirpath.is_dir());
     }
 }

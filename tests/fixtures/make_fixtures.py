@@ -100,7 +100,7 @@ def pages():
         (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
         # Root Pages: inherited MediaBox letter, Kids = one leaf + subtree.
         (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 3 "
-            b"/MediaBox [0 0 612 792] >>"),
+            b"/MediaBox [0 0 612 792] /Resources << >> >>"),
         # Page 1: inherits MediaBox from root; own Rotate.
         (3, b"<< /Type /Page /Parent 2 0 R /Rotate 90 /Contents 8 0 R >>"),
         # (object 4 is the shared MediaBox)
@@ -131,7 +131,8 @@ def incremental():
     objs = [
         (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
         (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
-        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox 4 0 R >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox 4 0 R "
+            b"/Resources << >> >>"),
         (4, b"[0 0 612 792]"),
         (5, b"<< /Producer (fixture-gen) >>"),
     ]
@@ -164,7 +165,8 @@ def xref_stream():
     objs = [
         (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
         (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
-        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << >> >>"),
     ]
     offsets = {}
     for num, body in objs:
@@ -272,7 +274,7 @@ def contents_array():
         (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
         (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
         (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            b"/Contents [4 0 R 5 0 R] >>"),
+            b"/Resources << >> /Contents [4 0 R 5 0 R] >>"),
         (4, b"<< /Length " + str(len(a)).encode() + b" >>\nstream\n" + a + b"\nendstream"),
         (5, b"<< /Length " + str(len(b_)).encode() + b" /Filter /FlateDecode >>\nstream\n"
             + zlib.compress(b_) + b"\nendstream"),
@@ -355,7 +357,8 @@ def objstm():
     Object 4 is the ObjStm; the page (5) is compressed inside it.
     Object 6 is the page's /Contents stream (regular object).
     The xref stream is used so entry types 1 and 2 can coexist."""
-    page_dict = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 6 0 R >>"
+    page_dict = (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] "
+                 b"/Resources << >> /Contents 6 0 R >>")
     header = b"5 0"  # objnum 5 at offset 0
     body = page_dict
     first = len(header) + 1  # header + one space separator
@@ -473,7 +476,8 @@ def hybrid():
 def hybrid_compressed():
     """Hybrid file where the classic table marks object 5 free and the
     /XRefStm stream marks it compressed inside object stream 4."""
-    page_dict = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] >>"
+    page_dict = (b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] "
+                 b"/Resources << >> >>")
     header = b"5 0"
     first = len(header) + 1
     data = header + b" " + page_dict
@@ -542,7 +546,8 @@ def hybrid_gap():
     objs = [
         (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
         (2, b"<< /Type /Pages /Kids [5 0 R] /Count 1 >>"),
-        (5, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] >>"),
+        (5, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 400] "
+            b"/Resources << >> >>"),
     ]
     for num, body in objs:
         offsets[num] = len(out)
@@ -736,7 +741,7 @@ def render_rects():
         (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
         (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
         (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] "
-            b"/Contents 4 0 R >>"),
+            b"/Resources << >> /Contents 4 0 R >>"),
         (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
             + stream + b"\nendstream"),
     ]

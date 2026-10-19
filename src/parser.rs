@@ -18,30 +18,44 @@ use crate::lexer::{Lexer, Token};
 use crate::limits::Limits;
 use crate::object::{Dict, IndirectRef, Object};
 
-/// Parse `M.m` after a `%PDF-` marker; defaults to `(1, 7)` on any
-/// malformed text (we never refuse a file over its version label —
-/// the value is recorded for the writer only).
-fn parse_version(after: &[u8]) -> (u8, u8) {
-    let mut major = 0u8;
-    let mut minor = 0u8;
-    let mut dot = false;
+/// Parse `M.m` after a `%PDF-` marker. Returns `Some((major, minor))`
+/// for a well-formed version (`1.0` … `2.0`, up to two-digit minors
+/// per §7.5.2); `None` when the bytes after the marker are not a
+/// valid `digit(s).digit(s)` token — the file may still be a PDF the
+/// *reader* can load, but the *writer* must not guess a version.
+fn parse_version(after: &[u8]) -> Option<(u8, u8)> {
     let mut i = 0;
+    let mut major: u32 = 0;
+    let mut saw_major_digit = false;
     while i < after.len() && after[i].is_ascii_digit() {
-        major = major.saturating_mul(10).saturating_add(after[i] - b'0');
+        major = major
+            .saturating_mul(10)
+            .saturating_add((after[i] - b'0') as u32);
+        saw_major_digit = true;
         i += 1;
     }
-    if i < after.len() && after[i] == b'.' {
-        dot = true;
-        i += 1;
-        while i < after.len() && after[i].is_ascii_digit() {
-            minor = minor.saturating_mul(10).saturating_add(after[i] - b'0');
-            i += 1;
-        }
+    if !saw_major_digit || i >= after.len() || after[i] != b'.' {
+        return None;
     }
-    if major == 0 && !dot {
-        (1, 7)
-    } else {
-        (major, minor)
+    i += 1;
+    let mut minor: u32 = 0;
+    let mut saw_minor_digit = false;
+    while i < after.len() && after[i].is_ascii_digit() {
+        minor = minor
+            .saturating_mul(10)
+            .saturating_add((after[i] - b'0') as u32);
+        saw_minor_digit = true;
+        i += 1;
+    }
+    if !saw_minor_digit {
+        return None;
+    }
+    // Only 1.x and 2.0 are real PDF versions; anything else is a
+    // malformed header the writer must not fabricate a version for.
+    match (major, minor) {
+        (1, m) if m <= 9 => Some((1, m as u8)),
+        (2, 0) => Some((2, 0)),
+        _ => None,
     }
 }
 
@@ -83,12 +97,12 @@ impl<'a> Parser<'a> {
     /// files may carry a short binary prefix, so we accept it within the
     /// first 1024 bytes (common reader behaviour).
     ///
-    /// Returns the declared `(major, minor)` version — `%PDF-1.7` →
-    /// `(1, 7)` — parsed from the bytes after the marker, defaulting
-    /// to `(1, 7)` when the version text is malformed (the file still
-    /// parses; the version is only used to *declare* the output and
-    /// never to gate features).
-    pub(crate) fn check_header(&mut self) -> Result<(u8, u8), Error> {
+    /// Returns `Some((major, minor))` for a well-formed `M.m` token
+    /// after the marker — `%PDF-1.7` → `Some((1, 7))` — and `None`
+    /// when the token is malformed. `None` is *not* a parse failure:
+    /// the file still loads, but a rewrite must refuse rather than
+    /// guess a version to declare (see `rewrite::effective_version`).
+    pub(crate) fn check_header(&mut self) -> Result<Option<(u8, u8)>, Error> {
         const SEARCH_WINDOW: usize = 1024;
         let input = self.lexer.input;
         let end = SEARCH_WINDOW.min(input.len());

@@ -803,6 +803,62 @@ fn catalog_version_below_header_stays_high() {
     assert!(out.starts_with(b"%PDF-1.7"));
 }
 
+#[test]
+fn malformed_header_version_refused() {
+    // `%PDF-9.x` is a malformed version token — the file still loads
+    // (header check finds `%PDF-` and moves on), but rewrite must
+    // refuse rather than emit a fabricated `%PDF-1.7`.
+    let mut src = pdf_with(1, "", "");
+    src.splice(0..8, b"%PDF-9.x\n".iter().cloned());
+    let doc = Document::from_bytes(&src).unwrap();
+    match rewrite(&doc) {
+        Err(Error::Unsupported { feature, .. }) => assert_eq!(feature, "PDF version"),
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+}
+
+#[test]
+fn malformed_header_version_no_dot_refused() {
+    let mut src = pdf_with(1, "", "");
+    src.splice(0..8, b"%PDF-abc\n".iter().cloned());
+    let doc = Document::from_bytes(&src).unwrap();
+    match rewrite(&doc) {
+        Err(Error::Unsupported { feature, .. }) => assert_eq!(feature, "PDF version"),
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+}
+
+#[test]
+fn catalog_version_non_name_refused() {
+    // /Version as an integer is malformed — refuse, don't ignore.
+    let p = pdf_with(1, "/Version 17", "");
+    let doc = Document::from_bytes(&p).unwrap();
+    match rewrite(&doc) {
+        Err(Error::Unsupported { feature, .. }) => assert_eq!(feature, "PDF version"),
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+}
+
+#[test]
+fn catalog_version_no_dot_refused() {
+    let p = pdf_with(1, "/Version /17", "");
+    let doc = Document::from_bytes(&p).unwrap();
+    match rewrite(&doc) {
+        Err(Error::Unsupported { feature, .. }) => assert_eq!(feature, "PDF version"),
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+}
+
+#[test]
+fn catalog_version_nonnumeric_minor_refused() {
+    let p = pdf_with(1, "/Version /1.x", "");
+    let doc = Document::from_bytes(&p).unwrap();
+    match rewrite(&doc) {
+        Err(Error::Unsupported { feature, .. }) => assert_eq!(feature, "PDF version"),
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+}
+
 // ------------------------------------------------------------------
 // §8  ObjStm input
 // ------------------------------------------------------------------

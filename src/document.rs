@@ -39,8 +39,10 @@ pub struct Document {
     catalog: Dict,
     pages: Vec<Page>,
     limits: Limits,
-    /// `%PDF-M.m` header version from the input file.
-    header_version: (u8, u8),
+    /// `%PDF-M.m` header version from the input file —
+    /// `None` when the token after `%PDF-` was malformed (the file
+    /// still parses; the writer must refuse rather than guess).
+    header_version: Option<(u8, u8)>,
     /// Remaining indirect-reference resolution budget.
     ref_budget: std::cell::Cell<u64>,
     /// Remaining cumulative decoded-bytes budget (shared across all
@@ -258,8 +260,8 @@ impl Document {
         &self.catalog
     }
 
-    /// The `%PDF-M.m` header version from the input file.
-    pub(crate) fn header_version(&self) -> (u8, u8) {
+    /// The `%PDF-M.m` header version — `None` on malformed input.
+    pub(crate) fn header_version(&self) -> Option<(u8, u8)> {
         self.header_version
     }
 
