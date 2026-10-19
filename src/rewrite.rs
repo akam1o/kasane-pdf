@@ -63,11 +63,27 @@ pub fn rewrite(doc: &Document) -> Result<Vec<u8>, Error> {
 /// Like [`rewrite`] but with explicit output limits — the traversal
 /// budget, emitted-byte cap and walk depth come from `limits`.
 pub fn rewrite_with_limits(doc: &Document, limits: &Limits) -> Result<Vec<u8>, Error> {
+    rewrite_overlay(doc, &HashMap::new(), limits)
+}
+
+/// Rewrite with an *overlay*: `(old obj num, gen) → replacement body`.
+/// When the collector reaches a reference present in `overlay`, the
+/// overlay body is used instead of `doc.resolve` — this is how the
+/// editor injects new or modified objects without touching the
+/// original bytes. Overlay bodies are walked like any other, so refs
+/// inside them get renumbered too. Refusal checks run against the
+/// *original* document plus overlay-independent checks.
+pub(crate) fn rewrite_overlay(
+    doc: &Document,
+    overlay: &HashMap<(u32, u16), Object>,
+    limits: &Limits,
+) -> Result<Vec<u8>, Error> {
     check_refusals(doc)?;
 
     // ---- Phase 1: collect reachable objects, assign new numbers ----
     let mut c = Collector {
         doc,
+        overlay,
         limits,
         map: HashMap::new(),
         bodies: HashMap::new(),
@@ -160,6 +176,8 @@ pub fn rewrite_with_limits(doc: &Document, limits: &Limits) -> Result<Vec<u8>, E
 
 struct Collector<'a> {
     doc: &'a Document,
+    /// `(obj, gen) → replacement body` consulted before `doc.resolve`.
+    overlay: &'a HashMap<(u32, u16), Object>,
     limits: &'a Limits,
     /// `(old number, old gen) → new number`.
     map: HashMap<(u32, u16), u32>,
@@ -200,7 +218,11 @@ impl<'a> Collector<'a> {
         self.map.insert(key, new_num);
         self.kinds.insert(new_num, kind);
 
-        let mut obj = self.doc.resolve(old_ref)?;
+        let mut obj = match self.overlay.get(&key) {
+            // Overlay wins — the editor's synthetic/replaced body.
+            Some(o) => o.clone(),
+            None => self.doc.resolve(old_ref)?,
+        };
         self.scan_and_collect(&mut obj, depth)?;
         self.bodies.insert(new_num, obj);
         Ok(())

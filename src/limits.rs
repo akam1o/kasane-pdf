@@ -119,6 +119,21 @@ pub struct Limits {
     /// bounds pathological *direct* container nesting (arrays of
     /// arrays of refs). Default: 512.
     pub max_rewrite_walk_depth: usize,
+    /// Maximum annotations an [`crate::edit::Edit`] session may queue.
+    /// Bounds the pending list before any object is materialised.
+    /// Default: 10,000.
+    pub max_edit_annots: u64,
+    /// Maximum synthetic objects an [`crate::edit::Edit`] session may
+    /// create (annotation dicts, appearance streams, copied `/Annots`
+    /// arrays and edited page dicts). Each `/Square` costs three
+    /// objects (annot + appearance + array) plus one edited page.
+    /// Default: 40,000.
+    pub max_edit_objects: u64,
+    /// Maximum cumulative bytes of generated appearance-stream bodies
+    /// an [`crate::edit::Edit`] session may hold. A `/Square`
+    /// appearance is ~80 bytes; this cap stops an unbounded add loop
+    /// from growing memory without limit. Default: 16 MiB.
+    pub max_edit_annot_bytes: u64,
 }
 
 impl Default for Limits {
@@ -154,6 +169,9 @@ impl Default for Limits {
             max_output_objects: 200_000,
             max_output_bytes: 2 * 1024 * 1024 * 1024,
             max_rewrite_walk_depth: 512,
+            max_edit_annots: 10_000,
+            max_edit_objects: 40_000,
+            max_edit_annot_bytes: 16 * 1024 * 1024,
         }
     }
 }

@@ -127,6 +127,14 @@ impl Object {
         }
     }
 
+    /// Mutable access to the elements of an `Array` object.
+    pub(crate) fn as_array_mut(&mut self) -> Option<&mut Vec<Object>> {
+        match self {
+            Object::Array(a) => Some(a),
+            _ => None,
+        }
+    }
+
     /// Returns the dictionary if this is a `Dict` object.
     pub fn as_dict(&self) -> Option<&Dict> {
         match self {
