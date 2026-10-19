@@ -524,6 +524,8 @@ fn cli_inspect_single_page_full() {
         "properties 0",
         "contents 8 0 R",
         "userunit 2",
+        "annot 0 Text rect 0 0 9 9 /Rect=[0 0 9 9] /Subtype=/Text /Type=/Annot",
+        "annot 1 Text rect 9 9 18 18 /Rect=[9 9 18 18] /Subtype=/Text /Type=/Annot",
     ];
     let got: Vec<&str> = s.lines().collect();
     assert_eq!(got, expected, "mismatch:\n{s}");
@@ -599,4 +601,157 @@ fn cli_inspect_bad_annots_is_error() {
     fs::write(&src, parts.concat()).unwrap();
     let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
     assert!(!out.status.success(), "bad /Annots type must fail");
+}
+
+// ------------------------------------------------------------------
+// M11 — `inspect` annotation dump
+// ------------------------------------------------------------------
+
+/// A 1-page PDF with two annotations exercising every value type:
+/// a Link with a dict /A and an array /Border, a Square with a ref
+/// /AP and a string /Contents.
+fn annot_inspect_pdf() -> Vec<u8> {
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+          /Annots [4 0 R 5 0 R] /Contents 6 0 R /Resources << >> >>",
+    );
+    push(
+        4,
+        b"<< /Type /Annot /Subtype /Link /Rect [10 10 50 20] \
+          /A << /S /URI /URI (https://a/) >> /Border [0 0 0] /F 4 >>",
+    );
+    push(
+        5,
+        b"<< /Type /Annot /Subtype /Square /Rect [20 30 100 80] \
+          /AP << /N 7 0 R >> /BS << /S /S /W 2 >> /C [1 0 0] \
+          /Contents (comment) /F 4 /P 3 0 R >>",
+    );
+    push(6, b"<< /Length 4 >>\nstream\nABCD\nendstream");
+    push(
+        7,
+        b"<< /Type /XObject /Subtype /Form /BBox [0 0 80 50] /Length 0 >>\nstream\n\nendstream",
+    );
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 8\n0000000000 65535 f \n".to_vec());
+    for n in 1..8u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 8 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    parts.concat()
+}
+
+#[test]
+fn cli_inspect_annot_lines() {
+    let dir = tmpdir("inspect-annot");
+    let src = dir.join("in.pdf");
+    fs::write(&src, annot_inspect_pdf()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    let a0 = s
+        .lines()
+        .find(|l| l.starts_with("annot 0 "))
+        .expect("no annot 0 line");
+    assert_eq!(
+        a0,
+        "annot 0 Link rect 10 10 50 20 /A=<< /S /URI /URI (https://a/) >> \
+         /Border=[0 0 0] /F=4 /Rect=[10 10 50 20] /Subtype=/Link /Type=/Annot",
+        "annot 0 mismatch:\n{a0}"
+    );
+    let a1 = s
+        .lines()
+        .find(|l| l.starts_with("annot 1 "))
+        .expect("no annot 1 line");
+    assert_eq!(
+        a1,
+        "annot 1 Square rect 20 30 100 80 /AP=<< /N 7 0 R >> \
+         /BS=<< /S /S /W 2 >> /C=[1 0 0] /Contents=(comment) /F=4 /P=3 0 R \
+         /Rect=[20 30 100 80] /Subtype=/Square /Type=/Annot",
+        "annot 1 mismatch:\n{a1}"
+    );
+}
+
+#[test]
+fn cli_inspect_annot_missing_rect_errors() {
+    // Annot without /Rect → error, not a guessed box.
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] /Annots [4 0 R] >>",
+    );
+    push(4, b"<< /Type /Annot /Subtype /Text >>");
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 5\n0000000000 65535 f \n".to_vec());
+    for n in 1..5u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 5 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    let dir = tmpdir("inspect-annot-norect");
+    let src = dir.join("in.pdf");
+    fs::write(&src, parts.concat()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(!out.status.success(), "missing /Rect must fail");
+}
+
+#[test]
+fn cli_inspect_annot_dangling_ref_errors() {
+    // /Annots [4 0 R] where object 4 does not exist → MissingReference.
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] /Annots [4 0 R] >>",
+    );
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 4\n0000000000 65535 f \n".to_vec());
+    for n in 1..4u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 4 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    let dir = tmpdir("inspect-annot-dangle");
+    let src = dir.join("in.pdf");
+    fs::write(&src, parts.concat()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(!out.status.success(), "dangling annot ref must fail");
 }

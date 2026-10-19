@@ -348,12 +348,17 @@ fn annotate_usage() -> String {
 /// properties <count>
 /// contents <ref> | contents [<ref>, <ref>, ...] | contents absent
 /// userunit <v> | userunit absent
+/// annot <i> <subtype> rect <llx> <lly> <urx> <ury> [/<k>=<v> ...]
 /// ```
 ///
 /// MediaBox/CropBox/Rotate are the *inherited* values the page tree
 /// already computed. `/Annots` must be an array (or a ref to one);
 /// `/Contents` a ref or an array of refs; `/UserUnit` a number —
 /// anything else is a structural error, not silently coerced.
+/// Each `annot` line dumps the annotation dict: every key in
+/// byte-order, values formatted recursively (refs verbatim `n g R`,
+/// streams as `<stream>`, strings `(text)` with non-ASCII escaped
+/// `\xNN`).
 fn run_inspect(path: &str, page_no: usize) -> Result<(), Error> {
     let data = std::fs::read(path)?;
     let doc = Document::from_bytes(&data)?;
@@ -399,21 +404,20 @@ fn run_inspect(path: &str, page_no: usize) -> Result<(), Error> {
     let page_dict = page_obj
         .as_dict()
         .ok_or_else(|| Error::Structure("page object is not a dictionary".into()))?;
-    let annots = match page_dict.get(b"Annots".as_slice()) {
-        None => 0,
-        Some(o) => {
-            let resolved = doc.deref(o)?;
-            match resolved {
-                Object::Array(a) => a.len(),
-                other => {
-                    return Err(Error::Structure(format!(
-                        "page /Annots is not an array ({other:?})"
-                    )))
-                }
-            }
+    let annots_obj = match page_dict.get(b"Annots".as_slice()) {
+        None => None,
+        Some(o) => Some(doc.deref(o)?),
+    };
+    let annots: Vec<Object> = match annots_obj {
+        None => Vec::new(),
+        Some(Object::Array(a)) => a,
+        Some(other) => {
+            return Err(Error::Structure(format!(
+                "page /Annots is not an array ({other:?})"
+            )))
         }
     };
-    println!("annotations {annots}");
+    println!("annotations {}", annots.len());
 
     // Resource categories — count direct entries of each sub-dict.
     // /Resources may be absent (all zero) but if present must
@@ -513,7 +517,106 @@ fn run_inspect(path: &str, page_no: usize) -> Result<(), Error> {
             }
         }
     }
+
+    // One line per annotation, in /Annots order. Each entry must be
+    // an indirect ref resolving to a dict with a /Subtype name and a
+    // valid /Rect — anything else is a structural error.
+    for (i, entry) in annots.iter().enumerate() {
+        let aref = entry.as_ref().ok_or_else(|| {
+            Error::Structure(format!(
+                "annotation {i} is not an indirect reference ({entry:?})"
+            ))
+        })?;
+        let aobj = doc.resolve(aref)?;
+        let adict = aobj
+            .as_dict()
+            .ok_or_else(|| Error::Structure(format!("annotation {i} is not a dictionary")))?;
+        let subtype = adict
+            .get(b"Subtype".as_slice())
+            .and_then(|o| o.as_name())
+            .ok_or_else(|| {
+                Error::Structure(format!("annotation {i} /Subtype is missing or not a name"))
+            })?;
+        let subtype = String::from_utf8_lossy(subtype).into_owned();
+        let rect = match adict.get(b"Rect".as_slice()) {
+            Some(Object::Array(a)) if a.len() == 4 => {
+                let v: Vec<f64> = a.iter().filter_map(|o| o.as_number()).collect();
+                if v.len() == 4 {
+                    [v[0], v[1], v[2], v[3]]
+                } else {
+                    return Err(Error::Structure(format!(
+                        "annotation {i} /Rect is not 4 numbers"
+                    )));
+                }
+            }
+            _ => {
+                return Err(Error::Structure(format!(
+                    "annotation {i} /Rect is missing or not a 4-number array"
+                )))
+            }
+        };
+        let mut line = format!(
+            "annot {i} {subtype} rect {} {} {} {}",
+            fmt_num(rect[0]),
+            fmt_num(rect[1]),
+            fmt_num(rect[2]),
+            fmt_num(rect[3])
+        );
+        // Every remaining key in BTreeMap (lexicographic byte) order —
+        // /Rect and /Subtype appear again here per the spec example.
+        for (k, v) in adict.iter() {
+            line.push_str(&format!(
+                " /{}={}",
+                String::from_utf8_lossy(k),
+                fmt_value(v)
+            ));
+        }
+        println!("{line}");
+    }
     Ok(())
+}
+
+/// Render one `Object` for the inspect annot dump. Refs are shown
+/// verbatim (`n g R`); streams as `<stream n g>` placeholders —
+/// their dicts are not expanded. Strings are `(text)` with non-ASCII
+/// or non-printing bytes escaped as `\xNN`.
+fn fmt_value(o: &Object) -> String {
+    match o {
+        Object::Null => "null".into(),
+        Object::Bool(b) => b.to_string(),
+        Object::Integer(i) => i.to_string(),
+        Object::Real(r) => fmt_num(*r),
+        Object::Name(n) => format!("/{}", escape_bytes(n)),
+        Object::String(s) => format!("({})", escape_bytes(s)),
+        Object::Array(items) => {
+            let inner: Vec<String> = items.iter().map(fmt_value).collect();
+            format!("[{}]", inner.join(" "))
+        }
+        Object::Dict(d) => {
+            let mut parts = Vec::with_capacity(d.len());
+            for (k, v) in d.iter() {
+                parts.push(format!("/{} {}", escape_bytes(k), fmt_value(v)));
+            }
+            format!("<< {} >>", parts.join(" "))
+        }
+        Object::Stream { .. } => "<stream>".into(),
+        Object::Ref(r) => r.to_string(),
+    }
+}
+
+/// Render a byte string for display inside `(…)`: printable ASCII
+/// passes through, `(` `)` and `\` are escaped as `\xNN` so the
+/// surrounding parens stay balanced, everything else is `\xNN`.
+fn escape_bytes(b: &[u8]) -> String {
+    let mut out = String::with_capacity(b.len());
+    for &c in b {
+        if (0x20..=0x7e).contains(&c) && c != b'(' && c != b')' && c != b'\\' {
+            out.push(c as char);
+        } else {
+            out.push_str(&format!("\\x{c:02X}"));
+        }
+    }
+    out
 }
 
 /// Format a number like the PDF spec writes it: integers without a

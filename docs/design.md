@@ -376,6 +376,15 @@ decoded-bytes cost. `unsafe` is not used anywhere.
       (non-array `/Annots`, non-dict `/Resources`, non-ref
       `/Contents`, non-numeric `/UserUnit`) is a typed error, not
       coerced — inspect reports the file as it is or fails.
+
+   - M11: `inspect` annotation dump — after the fixed page lines,
+      one `annot <i> <subtype> rect …` line per `/Annots` element in
+      array order. Each element must be an indirect ref to a dict
+      with a valid `/Rect` and name `/Subtype`; every remaining key
+      is printed in byte order with values formatted recursively
+      (refs verbatim, streams as `<stream>`, strings escaped).
+      Refs inside annot values are shown, never resolved — inspect
+      does not chase into `/AP`, `/A`, etc.
 2. Rendering — transparency, patterns, ICC colour, masks
    (`/SMask`, `/ImageMask`), Type 0/CID + non-embedded fonts,
    remaining filters.
