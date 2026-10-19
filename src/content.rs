@@ -350,17 +350,35 @@ pub(crate) fn parse_content_stream(
     contents: &[Vec<u8>],
     limits: &Limits,
 ) -> Result<Vec<Operation>, Error> {
+    let (ops, _tokens) = parse_content_stream_counted(contents, limits)?;
+    Ok(ops)
+}
+
+/// Like [`parse_content_stream`] but also returns the total number of
+/// *lexer tokens* consumed across all streams — operands *and*
+/// operators, so `tokens >= ops`. Used by `inspect` to report the
+/// raw token count separately from the operation count.
+pub(crate) fn parse_content_stream_counted(
+    contents: &[Vec<u8>],
+    limits: &Limits,
+) -> Result<(Vec<Operation>, usize), Error> {
     let mut parser = ContentParser::new(limits);
     for stream in contents {
         parser.parse_stream(stream)?;
     }
-    parser.finish()
+    let tokens = parser.tokens_seen;
+    let ops = parser.finish()?;
+    Ok((ops, tokens))
 }
 
 struct ContentParser<'a> {
     limits: &'a Limits,
     operands: Vec<Object>,
     ops: Vec<Operation>,
+    /// Total lexer tokens consumed across all parsed streams —
+    /// operands and operators combined. `inspect` reports this as
+    /// the raw token count.
+    tokens_seen: usize,
     /// `q`/`Q` graphics-state stack depth.
     gsave_depth: usize,
     /// Inside `BT`/`ET`.
@@ -377,6 +395,7 @@ impl<'a> ContentParser<'a> {
             limits,
             operands: Vec::new(),
             ops: Vec::new(),
+            tokens_seen: 0,
             gsave_depth: 0,
             in_text: false,
             in_compat: false,
@@ -389,7 +408,10 @@ impl<'a> ContentParser<'a> {
         loop {
             match lexer.next_token()? {
                 None => break,
-                Some(tok) => self.handle_token(&mut lexer, tok)?,
+                Some(tok) => {
+                    self.tokens_seen += 1;
+                    self.handle_token(&mut lexer, tok)?;
+                }
             }
             if self.ops.len() > self.limits.max_operations {
                 return Err(Error::LimitExceeded {

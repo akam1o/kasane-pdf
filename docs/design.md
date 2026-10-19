@@ -387,6 +387,14 @@ decoded-bytes cost. `unsafe` is not used anywhere.
       (refs verbatim, streams as `<stream>`, strings escaped).
       Refs inside annot values are shown, never resolved — inspect
       does not chase into `/AP`, `/A`, etc.
+
+   - M12: `inspect` content statistics — between the `/Resources`
+      counts and the `contents` line, `tokens` (every lexer token,
+      operands + operators), `operators` (parsed op count), and
+      `opstats` (per-name tallies, byte order) describe the
+      concatenated `/Contents` streams. Absent `/Contents` → all
+      zeros; a malformed stream is a typed error, not a partial
+      count.
 2. Rendering — transparency, patterns, ICC colour, masks
    (`/SMask`, `/ImageMask`), Type 0/CID + non-embedded fonts,
    remaining filters.

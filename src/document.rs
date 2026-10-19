@@ -354,6 +354,16 @@ impl Document {
         content::parse_content_stream(&contents, &self.limits)
     }
 
+    /// Like [`page_operations`](Self::page_operations) but also returns
+    /// the total number of lexer tokens consumed — operands *and*
+    /// operators, so `tokens >= ops.len()`. Used by `inspect` to
+    /// report the raw token count separately from the operation
+    /// count.
+    pub fn page_operations_counted(&self, page: &Page) -> Result<(Vec<Operation>, usize), Error> {
+        let contents = self.page_contents(page)?;
+        content::parse_content_stream_counted(&contents, &self.limits)
+    }
+
     // ---------------------------------------------------------------
     // Page resources (M2)
     // ---------------------------------------------------------------

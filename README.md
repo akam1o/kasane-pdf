@@ -42,7 +42,8 @@ matrix and [`docs/design.md`](docs/design.md) for notes.
 (MediaBox, CropBox, rotation, annotation count, per-category
 resource counts, `/Contents` reference(s), `/UserUnit`), then one
 `annot <i> <subtype> rect …` line per annotation dumping its full
-dictionary. Diagnostic only — never renders, edits or extracts. The
+dictionary, plus `tokens`/`operators`/`opstats` content-stream
+statistics. Diagnostic only — never renders, edits or extracts. The
 file must contain exactly one page.
 
 What works today:
