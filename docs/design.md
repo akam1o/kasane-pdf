@@ -411,6 +411,16 @@ decoded-bytes cost. `unsafe` is not used anywhere.
       no recursion into nested resource dicts. A resource that
       resolves to a non-dict (font/ExtGState) or non-stream
       (XObject) is a typed error.
+
+   - M14: `inspect` document info — after the annot lines, a
+      trailing `document`/`info`/`key` block dumps the trailer
+      `/Info` dictionary: `document` marks the section, `info`
+      reports the entry count, and `key <name> <type>` lists each
+      key in byte order with its PDF type name (`string`, `name`,
+      `int`, `real`, `bool`, `array`, `dict`, `stream`, `ref`,
+      `null`) — values are never resolved or shown, so a dangling
+      `/Info` is a typed error while a `Producer 6 0 R` value prints
+      `ref` without chasing it.
 2. Rendering — transparency, patterns, ICC colour, masks
    (`/SMask`, `/ImageMask`), Type 0/CID + non-embedded fonts,
    remaining filters.
