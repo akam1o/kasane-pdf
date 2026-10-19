@@ -1153,3 +1153,74 @@ fn cli_inspect_resource_prefix_consistency() {
         );
     }
 }
+
+// ------------------------------------------------------------------
+// M13.2 — `inspect` resource-category order
+// ------------------------------------------------------------------
+
+/// The resource section lists categories in the canonical order a
+/// PDF reader walks them — Font, XObject, ColorSpace, Pattern,
+/// Shading, ExtGState — each as a (count line, then its enumerated
+/// names) block. `ProcSet`/`Properties` trail last, counts only.
+/// This pins that order against `resources_pdf` which populates
+/// every category.
+#[test]
+fn cli_inspect_resource_category_order() {
+    let dir = tmpdir("inspect-order");
+    let src = dir.join("in.pdf");
+    fs::write(&src, resources_pdf()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    // Slice out the resource block: from "resources fonts" to the
+    // line before "tokens".
+    let lines: Vec<&str> = s.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.starts_with("resources "))
+        .unwrap();
+    let end = lines.iter().position(|l| l.starts_with("tokens ")).unwrap();
+    let block: Vec<&str> = lines[start..end].to_vec();
+    // Category headers must appear in canonical order.
+    let heads: Vec<&str> = block
+        .iter()
+        .filter(|l| {
+            l.starts_with("resources fonts")
+                || l.starts_with("xobjects")
+                || l.starts_with("colorspaces")
+                || l.starts_with("patterns")
+                || l.starts_with("shadings")
+                || l.starts_with("extgstates")
+                || l.starts_with("procsets")
+                || l.starts_with("properties")
+        })
+        .copied()
+        .collect();
+    assert_eq!(
+        heads,
+        vec![
+            "resources fonts 2",
+            "xobjects 2",
+            "colorspaces 1",
+            "patterns 1",
+            "shadings 1",
+            "extgstates 1",
+            "procsets 0",
+            "properties 0",
+        ],
+        "category order wrong:\n{}",
+        block.join("\n")
+    );
+    // Each enumeration line sits inside its own block, right after
+    // the category count: font lines between 'resources fonts' and
+    // 'xobjects', xobject lines between 'xobjects' and 'colorspaces'.
+    let pos = |needle: &str| block.iter().position(|l| l.starts_with(needle)).unwrap();
+    assert!(pos("font F1") < pos("xobjects"));
+    assert!(pos("font F2") < pos("xobjects"));
+    assert!(pos("xobject Fm1") < pos("colorspaces"));
+    assert!(pos("xobject Im1") < pos("colorspaces"));
+    assert!(pos("colorspace Cs1") < pos("patterns"));
+    assert!(pos("pattern P1") < pos("shadings"));
+    assert!(pos("shading Sh1") < pos("extgstates"));
+    assert!(pos("extgstate GS1") < pos("procsets"));
+}
