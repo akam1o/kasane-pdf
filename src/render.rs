@@ -52,6 +52,7 @@ use crate::limits::Limits;
 use crate::matrix::Matrix;
 use crate::object::{Dict, IndirectRef, Name, Object};
 use crate::page::Page;
+use std::rc::Rc;
 use tiny_skia::{FillRule, Mask, Paint, PathBuilder, Pixmap, Stroke, StrokeDash, Transform};
 
 /// Graphics-state parameters saved/restored by `q`/`Q` (§8.4.1).
@@ -72,6 +73,57 @@ struct GraphicsState {
     /// Current clip as a pixmap-space alpha mask; `None` = page bounds
     /// only. Stacked clips intersect via `Mask::intersect_path`.
     clip: Option<Mask>,
+    /// Text state (§9.3) — per-object, not part of `q`/`Q` save.
+    text: TextState,
+}
+
+/// Text-state parameters (Table 104) and the two text-object matrices
+/// (`Tm`, `Tlm`). The state is saved/restored with the rest of the
+/// graphics state; `Tm`/`Tlm` are *reinitialized* by `BT` per §9.4.1.
+#[derive(Clone)]
+struct TextState {
+    /// Character spacing `Tc` (unscaled text-space units).
+    char_spacing: f64,
+    /// Word spacing `Tw` — applied only to the space character (0x20)
+    /// for the single-byte fonts we support.
+    word_spacing: f64,
+    /// Horizontal scaling `Th` as a *factor* (`Tz / 100`).
+    h_scale: f64,
+    /// Leading `Tl` (unscaled text-space units).
+    leading: f64,
+    /// Current font — `None` until `Tf` selects one.
+    font: Option<Rc<crate::font::SimpleFont>>,
+    /// Font resource name of `font`, kept for error messages.
+    font_name: Vec<u8>,
+    /// Font size `Tfs` (unscaled text-space units).
+    font_size: f64,
+    /// Rendering mode `Tmode` — 0 fill, 1 stroke, 2 fill+stroke, 3
+    /// invisible, 4–7 clip variants (M5: refused).
+    render_mode: i64,
+    /// Text rise `Trise` (unscaled text-space units).
+    rise: f64,
+    /// Text matrix `Tm` and text line matrix `Tlm` — per-`BT`/`ET`,
+    /// *not* part of `q`/`Q`.
+    tm: Matrix,
+    tlm: Matrix,
+}
+
+impl Default for TextState {
+    fn default() -> Self {
+        TextState {
+            char_spacing: 0.0,
+            word_spacing: 0.0,
+            h_scale: 1.0,
+            leading: 0.0,
+            font: None,
+            font_name: Vec::new(),
+            font_size: 0.0,
+            render_mode: 0,
+            rise: 0.0,
+            tm: Matrix::IDENTITY,
+            tlm: Matrix::IDENTITY,
+        }
+    }
 }
 
 /// Device colour space actually selected (after `Default*` mapping).
@@ -127,6 +179,7 @@ impl GraphicsState {
             stroke_color: Color::BLACK,
             fill_color: Color::BLACK,
             clip: None,
+            text: TextState::default(),
         }
     }
 }
@@ -725,35 +778,98 @@ impl<'a> Renderer<'a> {
             Operation::SetColorFill(ops) => self.set_color(ops, false)?,
 
             // ---- text ---------------------------------------------
-            Operation::BeginText => self.in_text = true,
-            Operation::EndText => self.in_text = false,
-            // State-only text ops are harmless until a show op runs.
-            Operation::SetCharSpacing(_)
-            | Operation::SetWordSpacing(_)
-            | Operation::SetHorizontalScaling(_)
-            | Operation::SetTextLeading(_)
-            | Operation::SetTextRenderingMode(_)
-            | Operation::SetTextRise(_)
-            | Operation::MoveTextPosition(_, _)
-            | Operation::MoveTextPositionAndSetLeading(_, _)
-            | Operation::SetTextMatrix(_)
-            | Operation::NextLine => {
-                let _ = self.in_text;
+            Operation::BeginText => {
+                if self.in_text {
+                    return Err(Error::Structure("BT inside a text object".into()));
+                }
+                self.in_text = true;
+                // §9.4.1: BT resets Tm and Tlm to identity.
+                self.gs.text.tm = Matrix::IDENTITY;
+                self.gs.text.tlm = Matrix::IDENTITY;
             }
-            Operation::SetTextFont { .. } => {
-                return Err(Error::Unsupported {
-                    feature: "text font selection (Tf)",
-                    detail: "font loading and text rendering are not implemented in M3".into(),
-                })
+            Operation::EndText => {
+                if !self.in_text {
+                    return Err(Error::Structure("ET without a matching BT".into()));
+                }
+                self.in_text = false;
             }
-            Operation::ShowText(_)
-            | Operation::ShowTextAdjusted(_)
-            | Operation::NextLineShowText(_)
-            | Operation::SetSpacingNextLineShowText { .. } => {
-                return Err(Error::Unsupported {
-                    feature: "text drawing (Tj/TJ/'/\" )",
-                    detail: "text rendering is not implemented in M3".into(),
-                })
+            // Text-state operators — usable both inside and outside
+            // BT/ET (their values persist across text objects).
+            Operation::SetCharSpacing(v) => self.gs.text.char_spacing = *v,
+            Operation::SetWordSpacing(v) => self.gs.text.word_spacing = *v,
+            Operation::SetHorizontalScaling(v) => self.gs.text.h_scale = *v / 100.0,
+            Operation::SetTextLeading(v) => self.gs.text.leading = *v,
+            Operation::SetTextRenderingMode(m) => {
+                if *m < 0 || *m > 7 {
+                    return Err(Error::Structure(format!("Tr {m} out of range 0..=7")));
+                }
+                if *m >= 4 {
+                    return Err(Error::Unsupported {
+                        feature: "text rendering mode",
+                        detail: format!("{m} — clipping modes 4–7 are not implemented"),
+                    });
+                }
+                self.gs.text.render_mode = *m;
+            }
+            Operation::SetTextRise(v) => self.gs.text.rise = *v,
+            Operation::SetTextFont { font, size } => {
+                if !(size.is_finite() && *size > 0.0) {
+                    return Err(Error::Structure(format!(
+                        "Tf size {size} is not a positive finite number"
+                    )));
+                }
+                let f =
+                    crate::font::load_simple_font(self.doc, &self.resources, font, self.limits)?;
+                self.gs.text.font = Some(f);
+                self.gs.text.font_name = font.clone();
+                self.gs.text.font_size = *size;
+            }
+            // Positioning — Tm/Tlm updates per §9.4.2.
+            Operation::MoveTextPosition(tx, ty) => {
+                // Tm = Tlm = [1 0 0 1 tx ty] × Tlm
+                let t = Matrix::new(1.0, 0.0, 0.0, 1.0, *tx, *ty);
+                self.gs.text.tlm = t.concat(self.gs.text.tlm);
+                self.gs.text.tm = self.gs.text.tlm;
+            }
+            Operation::MoveTextPositionAndSetLeading(tx, ty) => {
+                // −ty TL ; tx ty Td
+                self.gs.text.leading = -*ty;
+                let t = Matrix::new(1.0, 0.0, 0.0, 1.0, *tx, *ty);
+                self.gs.text.tlm = t.concat(self.gs.text.tlm);
+                self.gs.text.tm = self.gs.text.tlm;
+            }
+            Operation::SetTextMatrix(m) => {
+                self.gs.text.tm = *m;
+                self.gs.text.tlm = *m;
+            }
+            Operation::NextLine => {
+                // T* ≡ 0 -Tl Td
+                let t = Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.gs.text.leading);
+                self.gs.text.tlm = t.concat(self.gs.text.tlm);
+                self.gs.text.tm = self.gs.text.tlm;
+            }
+            // Showing.
+            Operation::ShowText(s) => self.show_text(s)?,
+            Operation::ShowTextAdjusted(items) => self.show_text_adjusted(items)?,
+            Operation::NextLineShowText(s) => {
+                // ' ≡ T* string Tj
+                let t = Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.gs.text.leading);
+                self.gs.text.tlm = t.concat(self.gs.text.tlm);
+                self.gs.text.tm = self.gs.text.tlm;
+                self.show_text(s)?;
+            }
+            Operation::SetSpacingNextLineShowText {
+                word_spacing,
+                char_spacing,
+                text,
+            } => {
+                // " ≡ aw Tw ac Tc string '
+                self.gs.text.word_spacing = *word_spacing;
+                self.gs.text.char_spacing = *char_spacing;
+                let t = Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.gs.text.leading);
+                self.gs.text.tlm = t.concat(self.gs.text.tlm);
+                self.gs.text.tm = self.gs.text.tlm;
+                self.show_text(text)?;
             }
 
             // ---- XObject / shading / ExtGState --------------------
@@ -1587,6 +1703,150 @@ impl<'a> Renderer<'a> {
                 buf[i + 3] = 255;
             }
         }
+        Ok(())
+    }
+
+    // ----------------------------------------------------------------
+    // Text rendering (§9.4)
+    // ----------------------------------------------------------------
+
+    /// `Tj string`: paint each byte's glyph at the current text
+    /// position, advancing `Tm` per §9.4.4.
+    fn show_text(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        if !self.in_text {
+            return Err(Error::Structure("Tj outside a text object".into()));
+        }
+        let font = self
+            .gs
+            .text
+            .font
+            .clone()
+            .ok_or_else(|| Error::Structure("Tj before Tf — no font selected".into()))?;
+        if !(self.gs.text.font_size.is_finite() && self.gs.text.font_size > 0.0) {
+            return Err(Error::Structure("Tj before Tf — no font size".into()));
+        }
+        for &b in bytes {
+            self.show_glyph(&font, b, 0.0)?;
+        }
+        Ok(())
+    }
+
+    /// `TJ [item …]`: strings and numeric adjustments interleaved.
+    fn show_text_adjusted(&mut self, items: &[crate::content::TJItem]) -> Result<(), Error> {
+        if !self.in_text {
+            return Err(Error::Structure("TJ outside a text object".into()));
+        }
+        let font = self
+            .gs
+            .text
+            .font
+            .clone()
+            .ok_or_else(|| Error::Structure("TJ before Tf — no font selected".into()))?;
+        if !(self.gs.text.font_size.is_finite() && self.gs.text.font_size > 0.0) {
+            return Err(Error::Structure("TJ before Tf — no font size".into()));
+        }
+        for item in items {
+            match item {
+                crate::content::TJItem::Text(bytes) => {
+                    for &b in bytes {
+                        self.show_glyph(&font, b, 0.0)?;
+                    }
+                }
+                crate::content::TJItem::Kern(n) => {
+                    // A number shifts the *next* glyph: t_j = n/1000 in
+                    // text-space units — applied to Tm *before* the
+                    // following glyph.
+                    let tx = -*n / 1000.0;
+                    let t = Matrix::new(1.0, 0.0, 0.0, 1.0, tx, 0.0);
+                    self.gs.text.tm = t.concat(self.gs.text.tm);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Paint a single char code's glyph at the current Tm origin,
+    /// then advance Tm per §9.4.4:
+    ///   tx = ((w0 − Tj/1000) × Tfs + Tc + Tw) × Th
+    /// where w0 is the glyph's PDF width (from `/Widths`), `Tj` the
+    /// TJ-array number for this glyph (0 for plain `Tj`), `Tw` applies
+    /// only to the space character.
+    fn show_glyph(
+        &mut self,
+        font: &Rc<crate::font::SimpleFont>,
+        code: u8,
+        tj_adjust: f64,
+    ) -> Result<(), Error> {
+        let gs = &mut self.gs;
+        let t = &mut gs.text;
+
+        // Resolve code → glyph.
+        let glyph = font.glyph_id(code)?;
+        let Some(gid) = glyph else { return Ok(()) }; // truly absent
+
+        // Build the glyph path in glyph space, then transform to
+        // device space via:
+        //   glyph → text:   scale(1/1000 em)
+        //   text → render:  Trm = [Tfs·Th 0 0 Tfs 0 Trise] × Tm
+        //   render → page:  CTM
+        //   page → pixmap:  user_to_pix
+        let units = font.units_per_em()?;
+        let mut gp = crate::font::GlyphPath::new(units);
+        let has_outline = font.outline(gid, &mut gp)?;
+
+        if has_outline {
+            if let Some(path) = gp.finish() {
+                // Text→render matrix (§9.4.4 note 2).
+                let trm = Matrix::new(t.font_size * t.h_scale, 0.0, 0.0, t.font_size, 0.0, t.rise)
+                    .concat(t.tm)
+                    .concat(gs.ctm);
+                let trm_ts = Transform::from_row(
+                    trm.a as f32,
+                    trm.b as f32,
+                    trm.c as f32,
+                    trm.d as f32,
+                    trm.e as f32,
+                    trm.f as f32,
+                );
+                let full = trm_ts.post_concat(self.user_to_pix);
+                match t.render_mode {
+                    0 | 2 => {
+                        // fill (mode 2 also strokes below)
+                        let mut p = Paint::default();
+                        let c = gs.fill_color;
+                        p.set_color(tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a));
+                        p.anti_alias = true;
+                        self.pixmap
+                            .fill_path(&path, &p, FillRule::Winding, full, gs.clip.as_ref());
+                    }
+                    _ => {}
+                }
+                if t.render_mode == 1 || t.render_mode == 2 {
+                    // stroke
+                    let mut p = Paint::default();
+                    let c = gs.stroke_color;
+                    p.set_color(tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a));
+                    p.anti_alias = true;
+                    let stroke = tiny_skia::Stroke {
+                        width: (gs.line_width * t.font_size / 1000.0) as f32,
+                        ..Default::default()
+                    };
+                    self.pixmap
+                        .stroke_path(&path, &p, &stroke, full, gs.clip.as_ref());
+                }
+                // mode 3: invisible — paint nothing, still advance.
+            }
+        }
+
+        // Advance the text matrix (§9.4.4). w0 is the char's width in
+        // 1/1000-em units → glyph displacement in text space is
+        // w0/1000 × Tfs (plus spacing) × Th.
+        let w0 = font.width(code);
+        let tw = if code == 0x20 { t.word_spacing } else { 0.0 };
+        let tx =
+            ((w0 / 1000.0 - tj_adjust / 1000.0) * t.font_size + t.char_spacing + tw) * t.h_scale;
+        let adv = Matrix::new(1.0, 0.0, 0.0, 1.0, tx, 0.0);
+        t.tm = adv.concat(t.tm);
         Ok(())
     }
 

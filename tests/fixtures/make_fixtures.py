@@ -1118,6 +1118,398 @@ def xobject_unused_bad():
     write("xobject_unused_bad.pdf", build_pdf(objects))
 
 
+# ---------------------------------------------------------------------
+# M5: embedded TrueType text
+# ---------------------------------------------------------------------
+
+def _font_objects(ttf_bytes, widths):
+    """Return (font dict, descriptor, file2) objects for the TTF.
+    `widths` is a list of (char_code, width) covering FirstChar..LastChar."""
+    return ttf_bytes, widths
+
+
+def font_ttf():
+    """Load the test TTF produced by make_font.py."""
+    with open(os.path.join(HERE, "KasaneTest.ttf"), "rb") as f:
+        return f.read()
+
+
+def _mk_font(objs, num_font, num_fd, num_ff, ttf_bytes,
+             first=32, last=255, widths=None, encoding=b"/WinAnsiEncoding",
+             flags=32):
+    """Append a font dict + descriptor + flate-encoded FontFile2."""
+    if widths is None:
+        widths = [600] * (last - first + 1)
+        widths[0] = 250  # space
+    warr = b"[" + b" ".join(str(w).encode() for w in widths) + b"]"
+    enc = zlib.compress(ttf_bytes)
+    objs.append((num_ff,
+        b"<< /Length " + str(len(enc)).encode()
+        + b" /Filter /FlateDecode /Length1 " + str(len(ttf_bytes)).encode()
+        + b" >>\nstream\n" + enc + b"\nendstream"))
+    objs.append((num_fd,
+        b"<< /Type /FontDescriptor /FontName /KasaneTest-Regular "
+        b"/Flags " + str(flags).encode()
+        + b" /FontBBox [0 -200 600 800] /ItalicAngle 0 "
+        b"/Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 "
+        b"/FontFile2 " + str(num_ff).encode() + b" 0 R >>"))
+    objs.append((num_font,
+        b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest-Regular "
+        b"/Encoding " + encoding
+        + b" /FirstChar " + str(first).encode()
+        + b" /LastChar " + str(last).encode()
+        + b" /Widths " + warr
+        + b" /FontDescriptor " + str(num_fd).encode() + b" 0 R >>"))
+
+
+def text_basic():
+    """BT /F1 24 Tf 20 60 Td (ABC) Tj ET — three A/B/C glyphs."""
+    stream = b"BT /F1 24 Tf 20 60 Td (ABC) Tj ET"
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_basic.pdf", build_pdf(objs))
+
+
+def text_tj():
+    """TJ with positioning adjustments."""
+    stream = b"BT /F1 20 Tf 10 50 Td [(A) -120 (B) 60 (C)] TJ ET"
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_tj.pdf", build_pdf(objs))
+
+
+def text_quote_ops():
+    """' and \" operators — both take the string as their operand."""
+    stream = (b"BT /F1 20 Tf 14 TL 10 80 Td (First) Tj "
+              b"(Second) ' 5 5 (Third) \" ET")
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_quote_ops.pdf", build_pdf(objs))
+
+
+def text_tc_tw_tz_ts():
+    """Tc, Tw, Tz, Ts applied."""
+    stream = (b"BT /F1 20 Tf 10 50 Td "
+              b"2 Tc 5 Tw (A B) Tj "
+              b"-2 Tc -5 Tw "
+              b"50 Tz 0 -20 Td (XY) Tj "
+              b"100 Tz 5 Ts 0 -20 Td (Z) Tj ET")
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_tc_tw_tz_ts.pdf", build_pdf(objs))
+
+
+def text_render_modes():
+    """Tr 0/1/2/3 — fill, stroke, fill+stroke, invisible."""
+    stream = (b"BT /F1 20 Tf 10 80 Td 0 Tr (F) Tj ET "
+              b"BT /F1 20 Tf 10 60 Td 1 Tr (S) Tj ET "
+              b"BT /F1 20 Tf 10 40 Td 2 Tr (B) Tj ET "
+              b"BT /F1 20 Tf 10 20 Td 3 Tr (I) Tj ET")
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_render_modes.pdf", build_pdf(objs))
+
+
+def text_mode4_refused():
+    """Tr 4 — clip-fill mode is out of M5 scope."""
+    stream = b"BT /F1 20 Tf 10 50 Td 4 Tr (X) Tj ET"
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_mode4_refused.pdf", build_pdf(objs))
+
+
+def text_in_form():
+    """Form containing text — the form's own /Font must be used."""
+    form_stream = b"BT /F2 20 Tf 0 0 Td (XY) Tj ET"
+    page_stream = b"/FmT Do"
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /XObject << /FmT 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+        (5, b"<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] "
+            b"/Resources << /Font << /F2 6 0 R >> >> "
+            b"/Matrix [1 0 0 1 50 20] "
+            b"/Length " + str(len(form_stream)).encode() + b" >>\nstream\n"
+            + form_stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 6, 7, 8, font_ttf())
+    write("text_in_form.pdf", build_pdf(objs))
+
+
+def text_same_name_two_resources():
+    """Page and Form each define /F1 — the form's must win inside
+    the form; the page's must be used outside."""
+    page_stream = b"BT /F1 20 Tf 10 80 Td (Pg) Tj ET /FmN Do"
+    form_stream = b"BT /F1 20 Tf 0 0 Td (Fm) Tj ET"
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> "
+            b"/XObject << /FmN 8 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+    ]
+    # Page's F1: first char widths different so we can tell apart
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    # Form's F1 — same name, different dict (e.g. different FirstChar)
+    objs.append((8,
+        b"<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] "
+        b"/Resources << /Font << /F1 9 0 R >> >> "
+        b"/Matrix [1 0 0 1 100 10] "
+        b"/Length " + str(len(form_stream)).encode() + b" >>\nstream\n"
+        + form_stream + b"\nendstream"))
+    _mk_font(objs, 9, 10, 11, font_ttf())
+    write("text_same_name_two_resources.pdf", build_pdf(objs))
+
+
+def text_unsupported_type1():
+    """Font with /Subtype /Type1 — refused."""
+    stream = b"BT /F1 20 Tf 10 50 Td (X) Tj ET"
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+        (5, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
+            b"/Encoding /WinAnsiEncoding >>"),
+    ]
+    write("text_unsupported_type1.pdf", build_pdf(objs))
+
+
+def text_differences_encoding():
+    """Encoding dictionary with Differences over WinAnsi."""
+    stream = b"BT /F1 24 Tf 20 60 Td (AB) Tj ET"
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    # Encoding dict: BaseEncoding WinAnsi, code 65 → /B (swap A and B)
+    enc = b"<< /Type /Encoding /BaseEncoding /WinAnsiEncoding " \
+          b"/Differences [65 /B 66 /A] >>"
+    objs.append((9, enc))
+    # Manually construct font so we can reference the encoding dict
+    first, last = 32, 255
+    widths = [600] * (last - first + 1)
+    widths[0] = 250
+    warr = b"[" + b" ".join(str(w).encode() for w in widths) + b"]"
+    ttf = font_ttf()
+    enc_stream = zlib.compress(ttf)
+    objs.append((7,
+        b"<< /Length " + str(len(enc_stream)).encode()
+        + b" /Filter /FlateDecode /Length1 " + str(len(ttf)).encode()
+        + b" >>\nstream\n" + enc_stream + b"\nendstream"))
+    objs.append((6,
+        b"<< /Type /FontDescriptor /FontName /KasaneTest-Regular "
+        b"/Flags 32 /FontBBox [0 -200 600 800] /ItalicAngle 0 "
+        b"/Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 "
+        b"/FontFile2 7 0 R >>"))
+    objs.append((5,
+        b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest-Regular "
+        b"/Encoding 9 0 R "
+        b"/FirstChar " + str(first).encode()
+        + b" /LastChar " + str(last).encode()
+        + b" /Widths " + warr
+        + b" /FontDescriptor 6 0 R >>"))
+    write("text_differences_encoding.pdf", build_pdf(objs))
+
+
+def text_notdef():
+    """Char code with no encoding entry → .notdef glyph."""
+    stream = b"BT /F1 24 Tf 20 60 Td (A\\x01Z) Tj ET"  # 0x01 undefined
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_notdef.pdf", build_pdf(objs))
+
+
+def text_unsupported_encoding():
+    """Encoding /MacRomanEncoding — refused."""
+    stream = b"BT /F1 24 Tf 20 60 Td (A) Tj ET"
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf(), encoding=b"/MacRomanEncoding")
+    write("text_unsupported_encoding.pdf", build_pdf(objs))
+
+
+def text_symbolic_refused():
+    """Symbolic flag set — refused."""
+    stream = b"BT /F1 24 Tf 20 60 Td (A) Tj ET"
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf(), flags=4)  # symbolic
+    write("text_symbolic_refused.pdf", build_pdf(objs))
+
+
+def text_composite_glyph():
+    """WinAnsi 0xC4 = Ä — exercises the composite glyph."""
+    stream = b"BT /F1 24 Tf 20 60 Td (\\xC4) Tj ET"
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_composite_glyph.pdf", build_pdf(objs))
+
+
+def text_rotated():
+    """cm-rotated text — Tm composes with CTM."""
+    import math
+    c, s = math.cos(math.radians(90)), math.sin(math.radians(90))
+    stream = (b"q " + f"{c:.4f} {s:.4f} {-s:.4f} {c:.4f} 20 60 cm".encode()
+              + b" BT /F1 20 Tf (Hi) Tj ET Q")
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_rotated.pdf", build_pdf(objs))
+
+
+def text_scaled():
+    """Non-uniform cm scale on text."""
+    stream = b"q 2 0 0 0.5 10 50 cm BT /F1 20 Tf (Hi) Tj ET Q"
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_scaled.pdf", build_pdf(objs))
+
+
+def text_clip():
+    """Clipped text — only part of the glyph shows."""
+    stream = (b"q 0 0 30 30 re W n "
+              b"BT /F1 24 Tf 10 40 Td (Hi) Tj ET Q")
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    _mk_font(objs, 5, 6, 7, font_ttf())
+    write("text_clip.pdf", build_pdf(objs))
+
+
+def text_widths_override():
+    """Widths differ from the font's advance — PDF widths win."""
+    stream = b"BT /F1 20 Tf 10 60 Td (AB) Tj ET"
+    objs = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] "
+            b"/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    # Widths: A=1000 (wider than font's 600), B=200
+    first, last = 65, 66
+    widths = [1000, 200]
+    warr = b"[1000 200]"
+    ttf = font_ttf()
+    enc_stream = zlib.compress(ttf)
+    objs.append((7,
+        b"<< /Length " + str(len(enc_stream)).encode()
+        + b" /Filter /FlateDecode /Length1 " + str(len(ttf)).encode()
+        + b" >>\nstream\n" + enc_stream + b"\nendstream"))
+    objs.append((6,
+        b"<< /Type /FontDescriptor /FontName /KasaneTest-Regular "
+        b"/Flags 32 /FontBBox [0 -200 600 800] /ItalicAngle 0 "
+        b"/Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 "
+        b"/FontFile2 7 0 R >>"))
+    objs.append((5,
+        b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest-Regular "
+        b"/Encoding /WinAnsiEncoding "
+        b"/FirstChar " + str(first).encode()
+        + b" /LastChar " + str(last).encode()
+        + b" /Widths " + warr
+        + b" /FontDescriptor 6 0 R >>"))
+    write("text_widths_override.pdf", build_pdf(objs))
+
+
 if __name__ == "__main__":
     hello()
     content_ops()
@@ -1164,3 +1556,22 @@ if __name__ == "__main__":
     xobject_unknown_subtype()
     xobject_missing()
     xobject_unused_bad()
+    # M5
+    text_basic()
+    text_tj()
+    text_quote_ops()
+    text_tc_tw_tz_ts()
+    text_render_modes()
+    text_mode4_refused()
+    text_in_form()
+    text_same_name_two_resources()
+    text_unsupported_type1()
+    text_differences_encoding()
+    text_notdef()
+    text_unsupported_encoding()
+    text_symbolic_refused()
+    text_composite_glyph()
+    text_rotated()
+    text_scaled()
+    text_clip()
+    text_widths_override()
