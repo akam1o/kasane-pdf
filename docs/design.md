@@ -342,6 +342,17 @@ decoded-bytes cost. `unsafe` is not used anywhere.
       A page's `/Annots` is always materialised into a fresh array —
       shared arrays are never mutated, so annotating one page cannot
       change another. Original bytes are read-only throughout.
+
+   - M9.1: annotation geometry corrected — the annotation Rect is
+      the outer bounding box (border drawn *inside* per §12.5.5 +
+      "Border Styles"). The appearance form uses BBox [0 0 w h] +
+      Matrix [1 0 0 1 llx lly] so the transformed box equals Rect
+      (A = identity → AA is a pure translate; stroke width is never
+      rescaled) and strokes the *inner* rect inset by half-width.
+      Synthetic object numbers are allocated downward from u32::MAX
+      skipping any (num,0) present in the input xref or already
+      taken — a synthetic ref can never alias a real object.
+      Exhaustion and max_edit_objects are typed errors.
 2. Rendering — transparency, patterns, ICC colour, masks
    (`/SMask`, `/ImageMask`), Type 0/CID + non-embedded fonts,
    remaining filters.

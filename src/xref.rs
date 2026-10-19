@@ -79,6 +79,16 @@ impl XrefTable {
             _ => None,
         }
     }
+
+    /// Whether `(num, gen)` is a live (in-use or compressed) object in
+    /// the input — used by the edit session to avoid reusing a real
+    /// object number for a synthetic one.
+    pub(crate) fn contains(&self, num: u32, gen: u16) -> bool {
+        matches!(
+            self.entries.get(&(num, gen)),
+            Some(XrefEntry::InUse { .. } | XrefEntry::Compressed { .. })
+        )
+    }
 }
 
 /// Read the whole xref chain starting at `startxref`.

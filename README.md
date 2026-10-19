@@ -21,14 +21,18 @@ validated the write guarantees; `scripts/verify_rewrite.sh` runs
 `qpdf --check` (12.4.2) on every well-formed fixture — exit 0, zero
 warnings.
 
-**M9 adds `/Square` annotation editing.** `Document::edit()` opens a
-session; `add_square(page, rect, rgb, width)` queues an annotation;
-`rewrite()` emits a normal single-revision file. CLI:
+**M9 / M9.1 adds `/Square` annotation editing.** `Document::edit()`
+opens a session; `add_square(page, rect, rgb, width)` queues an
+annotation; `rewrite()` emits a normal single-revision file. CLI:
 `kasane-pdf annotate-rect in.pdf 1 --rect 20 30 120 80 --color 1 0 0
---width 2 --output out.pdf` (`rect` = lower-left x,y then upper-right
-x,y in un-rotated PDF user space). See [`docs/coverage.md`](
-docs/coverage.md) for the matrix and [`docs/design.md`](
-docs/design.md) for architecture and licensing notes.
+--width 2 --output out.pdf`. `rect` = lower-left x,y then upper-right
+x,y in un-rotated PDF user space, and is the annotation's *outer*
+bounding box (the stroke is drawn inside it). M9.1 corrected the
+appearance transform (BBox `[0 0 w h]` + `Matrix` translate so the
+stroke width is never rescaled) and hardened the synthetic
+object-number allocator to never alias a real object. See
+[`docs/coverage.md`](docs/coverage.md) for the matrix and
+[`docs/design.md`](docs/design.md) for notes.
 
 What works today:
 
