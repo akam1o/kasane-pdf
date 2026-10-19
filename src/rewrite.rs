@@ -30,7 +30,7 @@ use crate::document::Document;
 use crate::error::Error;
 use crate::object::{IndirectRef, Object};
 use crate::serialize::write_indirect_object;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::limits::Limits;
 
@@ -63,7 +63,7 @@ pub fn rewrite(doc: &Document) -> Result<Vec<u8>, Error> {
 /// Like [`rewrite`] but with explicit output limits — the traversal
 /// budget, emitted-byte cap and walk depth come from `limits`.
 pub fn rewrite_with_limits(doc: &Document, limits: &Limits) -> Result<Vec<u8>, Error> {
-    rewrite_overlay(doc, &HashMap::new(), limits)
+    rewrite_overlay(doc, &HashMap::new(), &HashSet::new(), limits)
 }
 
 /// Rewrite with an *overlay*: `(old obj num, gen) → replacement body`.
@@ -73,9 +73,17 @@ pub fn rewrite_with_limits(doc: &Document, limits: &Limits) -> Result<Vec<u8>, E
 /// original bytes. Overlay bodies are walked like any other, so refs
 /// inside them get renumbered too. Refusal checks run against the
 /// *original* document plus overlay-independent checks.
+///
+/// `synth_numbers` is the set of `(num, gen)` the edit session
+/// allocated as *new* synthetic objects. A reference that originates
+/// from an *input* body is never allowed to resolve to a synthetic —
+/// that would let a malformed/dangling input ref silently succeed.
+/// Refs inside overlay bodies *are* edit refs and may resolve to
+/// synthetics (the new `/Annots` array points at them).
 pub(crate) fn rewrite_overlay(
     doc: &Document,
     overlay: &HashMap<(u32, u16), Object>,
+    synth_numbers: &HashSet<(u32, u16)>,
     limits: &Limits,
 ) -> Result<Vec<u8>, Error> {
     check_refusals(doc)?;
@@ -84,6 +92,7 @@ pub(crate) fn rewrite_overlay(
     let mut c = Collector {
         doc,
         overlay,
+        synth_numbers,
         limits,
         map: HashMap::new(),
         bodies: HashMap::new(),
@@ -101,7 +110,7 @@ pub(crate) fn rewrite_overlay(
         root_refs.push((r, RootKind::Info));
     }
     for (r, kind) in root_refs {
-        c.walk(r, kind, 0)?;
+        c.walk(r, kind, 0, false)?;
     }
 
     // ---- Phase 2: emit, in new-number order ----
@@ -178,6 +187,10 @@ struct Collector<'a> {
     doc: &'a Document,
     /// `(obj, gen) → replacement body` consulted before `doc.resolve`.
     overlay: &'a HashMap<(u32, u16), Object>,
+    /// `(num, gen)` the edit session allocated as *new* synthetic
+    /// objects. An *input* reference to one of these is a dangling
+    /// ref, not an edit ref — it must not resolve to a synthetic body.
+    synth_numbers: &'a HashSet<(u32, u16)>,
     limits: &'a Limits,
     /// `(old number, old gen) → new number`.
     map: HashMap<(u32, u16), u32>,
@@ -194,7 +207,20 @@ impl<'a> Collector<'a> {
     /// recursively renumber every ref inside the body, then store it.
     /// Shared refs and genuine indirect cycles both hit the `map`
     /// early-return — no stack needed for correctness.
-    fn walk(&mut self, old_ref: IndirectRef, kind: RootKind, depth: usize) -> Result<(), Error> {
+    ///
+    /// `ref_from_overlay` is true when the reference was found inside
+    /// an overlay (edit-created) body — those are edit refs and may
+    /// resolve to synthetic objects. A reference found in an *input*
+    /// body that happens to land on a synthetic number is a dangling
+    /// input ref, not an edit ref: it must go through `doc.resolve`
+    /// and fail rather than silently resolve to a synthetic body.
+    fn walk(
+        &mut self,
+        old_ref: IndirectRef,
+        kind: RootKind,
+        depth: usize,
+        ref_from_overlay: bool,
+    ) -> Result<(), Error> {
         if depth > self.limits.max_rewrite_walk_depth {
             return Err(Error::LimitExceeded {
                 limit: "max_rewrite_walk_depth",
@@ -218,12 +244,22 @@ impl<'a> Collector<'a> {
         self.map.insert(key, new_num);
         self.kinds.insert(new_num, kind);
 
-        let mut obj = match self.overlay.get(&key) {
-            // Overlay wins — the editor's synthetic/replaced body.
-            Some(o) => o.clone(),
-            None => self.doc.resolve(old_ref)?,
+        // Guard: an input-side ref to a synthetic number is a dangling
+        // input reference — resolve via the document only (→ the
+        // MissingReference it should be), never via the overlay.
+        let overlay_body = if ref_from_overlay {
+            self.overlay.get(&key)
+        } else if self.synth_numbers.contains(&key) {
+            None // dangling input ref — do not repair via overlay
+        } else {
+            self.overlay.get(&key)
         };
-        self.scan_and_collect(&mut obj, depth)?;
+        let (mut obj, from_overlay) = match overlay_body {
+            // Overlay wins — the editor's synthetic/replaced body.
+            Some(o) => (o.clone(), true),
+            None => (self.doc.resolve(old_ref)?, false),
+        };
+        self.scan_and_collect(&mut obj, depth, from_overlay)?;
         self.bodies.insert(new_num, obj);
         Ok(())
     }
@@ -232,16 +268,26 @@ impl<'a> Collector<'a> {
     /// number — the `Ref` itself is left untouched; the serializer's
     /// `remap` performs the old→new translation at write time.
     /// Doing the rewrite here *and* in `remap` would double-translate.
-    fn scan_and_collect(&mut self, obj: &mut Object, depth: usize) -> Result<(), Error> {
+    ///
+    /// `from_overlay` is true while scanning an overlay (edit-created)
+    /// body: refs inside it are edit refs and may resolve to
+    /// synthetics. Refs inside an *input* body are input refs — one
+    /// landing on a synthetic number is a dangling input ref.
+    fn scan_and_collect(
+        &mut self,
+        obj: &mut Object,
+        depth: usize,
+        from_overlay: bool,
+    ) -> Result<(), Error> {
         match obj {
             Object::Array(items) => {
                 for item in items.iter_mut() {
-                    self.scan_and_collect(item, depth + 1)?;
+                    self.scan_and_collect(item, depth + 1, from_overlay)?;
                 }
             }
             Object::Dict(d) => {
                 for v in d.values_mut() {
-                    self.scan_and_collect(v, depth + 1)?;
+                    self.scan_and_collect(v, depth + 1, from_overlay)?;
                 }
             }
             Object::Stream { dict, .. } => {
@@ -256,11 +302,11 @@ impl<'a> Collector<'a> {
                     if k.as_slice() == b"Length" {
                         continue;
                     }
-                    self.scan_and_collect(v, depth + 1)?;
+                    self.scan_and_collect(v, depth + 1, from_overlay)?;
                 }
             }
             Object::Ref(r) => {
-                self.walk(*r, RootKind::Ordinary, depth + 1)?;
+                self.walk(*r, RootKind::Ordinary, depth + 1, from_overlay)?;
             }
             _ => {}
         }

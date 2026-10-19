@@ -279,7 +279,8 @@ overlay plus the live document through the normal rewrite path.
 | Existing annots / links | ✅ | preserved verbatim in the new array |
 | `/UserUnit` ≠ 1 | ❌ | `Error::Unsupported` — the rect is in default user units and a scaled page would misplace it |
 | Refusals | ✅ | all M8 rewrite refusals still apply (encryption, signatures, version, named dests, malformed structure, limits) |
-| Synthetic object numbers | ✅ | allocated downward from `u32::MAX` skipping any `(num,0)` that exists in the input xref or is already taken — a synthetic ref can never alias a real or prior synthetic object; exhaustion and `max_edit_objects` are typed errors |
+| Synthetic object numbers | ✅ | allocated downward from `u32::MAX` skipping any number *reserved* by the input xref at **any generation or entry type** (in-use, free, compressed), any already-allocated synthetic, or any overlay key — a synthetic ref can never alias a real, reserved, or prior synthetic number; exhaustion and `max_edit_objects` are typed errors |
+| Input-ref integrity | ✅ | a reference found in an *input* body that lands on a synthetic number is treated as a dangling input ref and resolved via the document only — never silently resolved to a synthetic body; overlay (edit) refs may resolve to synthetics |
 | Out-of-range page / non-finite rect / bad colour / bad width | ❌ | `Error::Structure`, no partial state |
 | Reversed rect (llx>urx or lly>ury) | ❌ | refused — not silently normalized |
 

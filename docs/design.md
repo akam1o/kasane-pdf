@@ -353,6 +353,21 @@ decoded-bytes cost. `unsafe` is not used anywhere.
       skipping any (num,0) present in the input xref or already
       taken — a synthetic ref can never alias a real object.
       Exhaustion and max_edit_objects are typed errors.
+
+   - M9.2: synthetic-number collision hardened against generation
+      mismatches and dangling input refs. Per §7.5.2 a
+      `(number, generation)` pair identifies an object, so a number
+      known to the input xref at *any* generation or entry type
+      (in-use, free, compressed) is *reserved* — the allocator skips
+      it rather than reissue it at generation 0. Separately, the
+      collector records which `(num, gen)` were allocated as
+      synthetics; a reference found in an *input* body that lands on
+      such a number is a dangling input ref and is resolved via the
+      document only — never silently resolved to a synthetic body.
+      Refs inside overlay (edit-created) bodies may resolve to
+      synthetics. Together this guarantees a malformed `(n, 0)` ref
+      fails as `MissingReference` both before and after edit, and a
+      valid `(n, 1)` object is preserved verbatim.
 2. Rendering — transparency, patterns, ICC colour, masks
    (`/SMask`, `/ImageMask`), Type 0/CID + non-embedded fonts,
    remaining filters.

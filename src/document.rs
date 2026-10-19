@@ -280,11 +280,15 @@ impl Document {
         self.header_version
     }
 
-    /// Whether `(num, gen)` is a live object in the input file —
-    /// used by the edit session to avoid colliding synthetic numbers
-    /// with real ones (in-use *or* compressed counts).
-    pub(crate) fn object_exists(&self, num: u32, gen: u16) -> bool {
-        self.xref.contains(num, gen)
+    /// Whether object number `num` is *reserved* by the input — the
+    /// xref holds an entry for it at any generation and of any type
+    /// (in-use, free or compressed). A synthetic number must never
+    /// reuse a reserved number: per §7.5.2 `(number, generation)`
+    /// identifies an object, so allocating `(num, 0)` while the file
+    /// knows `(num, g)` would let a malformed `(num, 0)` reference
+    /// silently resolve to the synthetic instead of failing.
+    pub(crate) fn number_reserved(&self, num: u32) -> bool {
+        self.xref.number_used(num)
     }
 
     /// Pages in document order, with inherited attributes applied.

@@ -80,14 +80,23 @@ impl XrefTable {
         }
     }
 
-    /// Whether `(num, gen)` is a live (in-use or compressed) object in
-    /// the input — used by the edit session to avoid reusing a real
-    /// object number for a synthetic one.
-    pub(crate) fn contains(&self, num: u32, gen: u16) -> bool {
-        matches!(
-            self.entries.get(&(num, gen)),
-            Some(XrefEntry::InUse { .. } | XrefEntry::Compressed { .. })
-        )
+    /// Whether the input xref has *any* entry for object number `num`,
+    /// regardless of generation or entry type (in-use, free or
+    /// compressed). The edit session uses this to *reserve* a number:
+    /// per §7.5.2 a `(number, generation)` pair identifies an object,
+    /// so a number known to the file at one generation must never be
+    /// reissued at another as a synthetic — a dangling input ref to
+    /// that number at generation 0 could otherwise silently resolve
+    /// to a synthetic object instead of failing.
+    ///
+    /// `entries` is keyed `(num, gen)` in a `BTreeMap`, so
+    /// `range((num,0)..=(num,u16::MAX))` finds every entry for `num`
+    /// in one probe without scanning the table.
+    pub(crate) fn number_used(&self, num: u32) -> bool {
+        self.entries
+            .range((num, 0)..=(num, u16::MAX))
+            .next()
+            .is_some()
     }
 }
 
