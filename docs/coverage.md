@@ -1,6 +1,6 @@
 # kasane-pdf support matrix
 
-Milestone: **M6**. Everything not listed as supported below is
+Milestone: **M6.1**. Everything not listed as supported below is
 unsupported and reported as a typed error — never silently skipped or
 returned as a partial result.
 
@@ -126,11 +126,12 @@ a *render-time* restriction, not a parsing one.
 | `CS`/`cs` non-device space | ❌ | `Error::Unsupported` — no ICCBased/Separation/DeviceN/Pattern |
 | text ops `Tf` `Tj` `TJ` `'` `"` | ✅ | embedded `/TrueType` + `/FontFile2` + `WinAnsiEncoding`; `BT`/`ET` init `Tm`/`Tlm`; `Tc`/`Tw`/`Tz`/`TL`/`Tr`/`Ts` honoured; modes 0–3 painted (4–7 → `Unsupported`); `/Widths` used for advance, font metrics never consulted for positioning |
 | text-state ops `Tc` `Tw` `Tz` `TL` `Tr` `Ts` `Td` `TD` `Tm` `T*` | ✅ | state persists across text objects; `Tm`/`Tlm` reinitialized by `BT` |
+| `extract_text` (§9.10) | ✅ | one `CharInfo` per character code, content order incl. Form XObjects (each invocation at its call site); `/ToUnicode` CMap (1-byte codespace, `bfchar`, `bfrange` sequential + array, UTF-16BE/surrogates/multi-scalar) → WinAnsi glyph-name→AGL→Unicode fallback → `Unresolved`; `/Span` `/ActualText` and `/OC` membership → `Error::Unsupported`; headless — no rasterizing, clip masks, or image decoding; user-space coords (`/Rotate` not applied); budgets: `max_text_codes`, `max_extracted_unicode_bytes` |
 | `Do` | ✅ | Form XObject (§8.10): gs saved, `/Matrix` concatenated, clipped to `/BBox`, form content runs under its own `/Resources`, gs restored; nested forms and recursion detection bounded by `max_xobject_depth`/`max_xobject_invocations`. Image XObject (§8.9): `/DeviceGray`/`/DeviceRGB` 8-bit only, raw/`FlateDecode`/`DCTDecode`, `/Decode`, `/Interpolate` (nearest-neighbour — spec permits ignoring interpolation). `/ImageMask`, `/Mask`, `/SMask`, `/SMaskInData` ≠ 0, `/OC`, `/Group`, `/Ref`, non-8-bit, non-device colour spaces → `Error::Unsupported` |
 | `sh` | ❌ | `Error::Unsupported` — shading not rendered |
 | `gs` | ❌ | `Error::Unsupported` |
-| `BMC` `BDC` `EMC` `MP` `DP` | ✅ | plain marked content — metadata only (§10.5) |
-| `/OC` `/OCMD` marked content | ❌ | `Error::Unsupported` — OCG/OCMD visibility evaluation is not implemented; a `/Properties` name that does not resolve to an OCG/OCMD dict is treated as plain marked content; unresolvable names error |
+| `BMC` `BDC` `EMC` `MP` `DP` | ✅ | plain marked content — metadata only (§10.5); `/Span` property lists carrying `/ActualText` (§14.9.4) are refused in render and extraction |
+| `/OC` `/OCMD` marked content | ❌ | `Error::Unsupported` — OCG/OCMD visibility evaluation is not implemented; only `/OC` tags whose property list is an OCG/OCMD dict count (spec 8.11.2); `/OCMD` without a membership dict is plain marked content; unresolvable `/Properties` names error |
 | `BX` `EX` `Unknown` | ✅ | §7.8.2 compatibility — ignored |
 | page annotations (`/Annots`) | ❌ | `Error::Unsupported` — page is refused, not drawn without them |
 | `/UserUnit` ≠ 1 | ❌ | `Error::Unsupported` |

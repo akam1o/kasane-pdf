@@ -9,17 +9,38 @@
 //!
 //! # Coordinates
 //!
-//! - `origin` — the page-space (PDF user-space) point at which the
-//!   character's glyph is drawn, in PDF points. The origin is the
-//!   *glyph* origin: the point where the character's baseline begins,
-//!   before any glyph-specific offset.
-//! - `advance` — the vector from this character's origin to the
-//!   next character's origin, in page space. For horizontal text it
-//!   points right (+x); its length is the glyph's advance width.
-//! - `bounds` — the axis-aligned bounding box of the glyph's
-//!   outline in page space, or `None` if the font has no outline for
-//!   the glyph (e.g. space, or a `.notdef` with no shape). A
-//!   zero-area glyph produces a degenerate bbox, not `None`.
+//! All geometry is in **PDF user space** — the coordinate system the
+//! page's content stream operates in:
+//!
+//! - Unit: the default user-space unit, 1/72 inch ("PDF points").
+//! - Origin and axes: the page's device-independent coordinate system;
+//!   +x points right, +y points up.
+//! - `MediaBox`/`CropBox`: coordinates are *not* rebased — a page
+//!   cropped to `[100 100 300 200]` still reports a glyph at (120,140)
+//!   as (120,140). The visible region simply starts at the CropBox's
+//!   lower-left corner.
+//! - `/Rotate`: **not applied**. The same page at Rotate 0/90/180/270
+//!   yields identical coordinates — rotation only changes display.
+//! - Form XObjects: the form's `/Matrix` is concatenated into the CTM,
+//!   so text inside a form reports true user-space positions.
+//! - `Trm`/`Tm`, `Tz` (horizontal scaling) and `Ts` (text rise) are all
+//!   reflected in `origin`, `advance` and `bounds`.
+//! - Independent of render DPI: no pixels are involved.
+//!
+//! Fields:
+//!
+//! - `origin` — the glyph's origin point (baseline start) in user
+//!   space, i.e. the current text position when the code was shown.
+//! - `advance` — the displacement vector from this glyph's origin to
+//!   the next character's origin, in user space. It carries no
+//!   translation of its own: it is the transform of the text-space
+//!   advance point minus the transform of the origin, so it is already
+//!   in user-space units and directions.
+//! - `bounds` — the axis-aligned bounding box of the glyph's *outline*
+//!   in user space, computed from the transformed outline's four
+//!   corners (correct under rotation/shear), or `None` when the glyph
+//!   has no outline (e.g. space). It is the ink boundary — **not** a
+//!   selection rectangle, which this API does not provide.
 //!
 //! # Resolution
 //!
@@ -63,15 +84,15 @@ pub struct CharInfo {
     pub unicode: Option<String>,
     /// How `unicode` was resolved.
     pub resolved_via: ResolveKind,
-    /// Glyph origin in page space (PDF points, CropBox-relative
-    /// after `/Rotate` and `/UserUnit` are applied).
+    /// Glyph origin in PDF user space (points; +x right, +y up;
+    /// `/Rotate` not applied — see module docs).
     pub origin: (f64, f64),
     /// Advance vector — the displacement from this origin to the
-    /// next character's origin, in page space.
+    /// next character's origin, in user space (no translation).
     pub advance: (f64, f64),
-    /// Bounding box of the glyph's outline in page space, or `None`
-    /// if the glyph has no outline. Axis-aligned; not the selection
-    /// rectangle.
+    /// Axis-aligned bounding box of the glyph's *outline* in user
+    /// space `(minX, minY, maxX, maxY)`, or `None` if the glyph has
+    /// no outline (e.g. space). Ink boundary, not a selection rect.
     pub bounds: Option<(f64, f64, f64, f64)>,
     /// Text rendering mode in effect (0–7; 3 = invisible).
     pub render_mode: u8,
@@ -112,17 +133,20 @@ pub struct ExtractedText {
 
 /// Extract positioned text from `page` in content order.
 ///
-/// Runs the same content interpreter as `render_page` but records
-/// [`CharInfo`] instead of rasterising. The pixmap is still built
-/// (M6 does not add a headless mode); call `render_page` for pixels.
+/// Runs the same content interpreter as `render_page` in headless
+/// mode: every operator executes (text state, resources, marked
+/// content checks, limits behave identically) but nothing is
+/// rasterised, clipped, or image-decoded.
+///
+/// Fails — returning no partial result — on malformed input,
+/// unsupported constructs (e.g. `/ActualText` replacement or Optional
+/// Content in the executed stream), and resource limits. Unresolved
+/// characters are part of a *successful* result, distinct from `Err`.
 pub fn extract_text(doc: &Document, page: &Page, limits: &Limits) -> Result<ExtractedText, Error> {
-    // Reuse the render machinery: we run the content stream but
-    // divert each character to the `extract` buffer.
     let opts = crate::render::RenderOptions {
-        dpi: 72.0, // coordinates are page-space; dpi only affects pixmap size
+        dpi: 72.0, // unused — extraction reports user space, no pixels
         limits: limits.clone(),
     };
-    // We need a Renderer with `extract` set — add a thin wrapper.
     let ops = doc.page_operations(page)?;
     let mut r = Renderer::for_extraction(doc, page, &opts)?;
     r.run(&ops)?;

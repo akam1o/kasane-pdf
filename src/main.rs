@@ -253,16 +253,35 @@ fn run_text(path: &str, page_no: usize, args: &[String]) -> Result<(), Error> {
     Ok(())
 }
 
+/// CLI output caps — the `text` command prints at most this many
+/// entries and caps each unicode string; truncation is always stated.
+const MAX_TEXT_ENTRIES: usize = 50_000;
+const MAX_TEXT_UNICODE_CHARS: usize = 512;
+
+fn clip_unicode(s: &str) -> (String, bool) {
+    if s.chars().count() <= MAX_TEXT_UNICODE_CHARS {
+        return (s.to_string(), false);
+    }
+    (s.chars().take(MAX_TEXT_UNICODE_CHARS).collect(), true)
+}
+
 fn print_json(t: &kasane_pdf::ExtractedText) {
+    let shown = t.chars.len().min(MAX_TEXT_ENTRIES);
     let mut out = String::from("[\n");
-    for (i, c) in t.chars.iter().enumerate() {
+    for (i, c) in t.chars.iter().take(shown).enumerate() {
         if i > 0 {
             out.push_str(",\n");
         }
         out.push_str("  {");
         out.push_str(&format!("\"code\": {}, ", c.code));
         match &c.unicode {
-            Some(s) => out.push_str(&format!("\"unicode\": {:?}, ", s)),
+            Some(s) => {
+                let (u, clipped) = clip_unicode(s);
+                out.push_str(&format!("\"unicode\": {:?}, ", u));
+                if clipped {
+                    out.push_str("\"truncated\": true, ");
+                }
+            }
             None => out.push_str("\"unicode\": null, "),
         }
         out.push_str(&format!("\"via\": {:?}, ", c.resolved_via));
@@ -283,16 +302,32 @@ fn print_json(t: &kasane_pdf::ExtractedText) {
         ));
         out.push('}');
     }
+    if shown < t.chars.len() {
+        if shown > 0 {
+            out.push_str(",\n");
+        }
+        out.push_str(&format!(
+            "  {{\"_omitted\": {}, \"_note\": \"output capped at {MAX_TEXT_ENTRIES} entries\"}}",
+            t.chars.len() - shown
+        ));
+    }
     out.push_str("\n]\n");
     print!("{out}");
 }
 
 fn print_lines(t: &kasane_pdf::ExtractedText) {
-    for c in &t.chars {
+    let shown = t.chars.len().min(MAX_TEXT_ENTRIES);
+    for c in t.chars.iter().take(shown) {
         let u = c.unicode.as_deref().unwrap_or("<unresolved>");
         println!(
             "0x{:02X} {:?} at ({:.1},{:.1}) adv({:.1},{:.1}) mode={} size={:.1}",
             c.code, u, c.origin.0, c.origin.1, c.advance.0, c.advance.1, c.render_mode, c.font_size
+        );
+    }
+    if shown < t.chars.len() {
+        println!(
+            "... ({} more character(s) omitted — output capped at {MAX_TEXT_ENTRIES})",
+            t.chars.len() - shown
         );
     }
 }

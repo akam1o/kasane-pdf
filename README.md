@@ -1,7 +1,7 @@
 # kasane-pdf
 
 A PDF parsing/processing engine written in Rust. Early development —
-currently at milestone **M6**: lexical parsing, classic and stream
+currently at milestone **M6.1**: lexical parsing, classic and stream
 cross-reference tables, indirect-reference resolution, stream decoding
 (`FlateDecode` + predictors), object streams, page-tree reading,
 content-stream parsing into typed drawing instructions, raster
@@ -13,7 +13,7 @@ renderer and writer are implemented here.
 
 ## Status
 
-**M6 is complete.** See [`docs/coverage.md`](docs/coverage.md) for the
+**M6.1 is complete.** See [`docs/coverage.md`](docs/coverage.md) for the
 detailed support matrix and [`docs/design.md`](docs/design.md) for
 architecture and licensing notes.
 
@@ -64,8 +64,20 @@ What works today:
   out-of-order sequences inside a path object (e.g. `cm`, `q`/`Q`,
   colour ops between path construction and painting, or path
   construction after `W`/`W*`) are refused with a typed error.
-- A `kasane-pdf` CLI (`info` mode + `contents`, `operations` and
-  `render` subcommands).
+- `extract_text()` positioned text extraction (`CharInfo` per
+  character code, content order): `/ToUnicode` CMap (`bfchar`,
+  `bfrange` sequential + array, UTF-16BE incl. surrogate pairs,
+  multi-scalar mappings) with WinAnsi-name→AGL→Unicode fallback;
+  unresolved codes report `None`, never a guess. `/UseCMap`,
+  `usecmap`/`usefont`, non-1-byte codespaces → `Error::Unsupported`.
+  Extraction is headless — no rasterising, clip masks, or image
+  decoding — `/Span` `/ActualText` or `/OC` membership in the
+  executed stream is refused rather than silently ignored, and a
+  cumulative `max_extracted_unicode_bytes` budget bounds the
+  Unicode a page can emit (UTF-8 bytes, counted per emitted code
+  so repeated/split strings cannot evade it).
+- A `kasane-pdf` CLI (`info` mode + `contents`, `operations`,
+  `render` and `text` subcommands).
 
 What is deliberately **not** supported yet (produces a distinct error,
 never a partial result presented as success):
@@ -80,7 +92,11 @@ never a partial result presented as success):
 - Inline images (`BI`/`ID`/`EI`) — the binary image data cannot be
   tokenized reliably, so the construct is rejected outright rather than
   guessed
-- Unicode conversion of text-showing strings, text extraction
+- Text extraction for fonts other than simple TrueType +
+  WinAnsiEncoding; `/ActualText` replacement, Optional Content
+  membership (`/OC`/`/OCMD` blocks, form `/OC`), and `/UseCMap`-chained
+  or multi-byte-codespace ToUnicode CMaps — refused with
+  `Error::Unsupported`, not silently ignored
 - Rendering of text with non-TrueType fonts, Type 0 / CID fonts,
   Type 3 fonts, non-embedded fonts, symbolic fonts, non-WinAnsi
   encodings, text clipping modes (`Tr` 4–7), or any shaping/ligature

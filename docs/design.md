@@ -12,7 +12,7 @@ The long-term consumer is a Flutter-based macOS/iPadOS app ("Kakomi"),
 but kasane-pdf is developed as a standalone Rust library + CLI. A
 C-compatible API and Apple packaging are future concerns, not M0.
 
-## Module map (M6)
+## Module map (M6.1)
 
 ```
 src/
@@ -29,18 +29,31 @@ src/
   objstm.rs    /ObjStm parsing (header, bounds, member objects)
   matrix.rs    Matrix [a b c d e f] affine transform (§8.3)
   content.rs   content-stream parser → Vec<Operation> (§7.8, §8–§9)
-  render.rs    page → Pixmap rasterizer + PNG encoder (§8 drawing)
+  render.rs    page → Pixmap rasterizer + PNG encoder (§8 drawing);
+               also runs headless for extract_text (extraction_only:
+               no path rasterising, clip masks, or image decode;
+               ActualText/OC detection shared with render)
+  font.rs      embedded TrueType program: /FontFile2 + WinAnsi +
+               /Differences → code→glyph-name→gid; /Widths advance
+  tounicode.rs ToUnicode CMap parser (§9.10.3): 1-byte codespaces,
+               bfchar, bfrange sequential + array → UTF-16BE
+  text_extract.rs extract_text → ExtractedText: positioned Unicode
+               per character code, user-space origin/advance/bounds
   document.rs  Document: load pipeline + lazy resolve() + page tree walk
                + page_contents() + page_operations() + page_resource()
                + decoded-bytes budget + ObjStm cache
   page.rs      Page, Rect value types
-  main.rs      kasane-pdf CLI (info + contents + operations + render)
+  main.rs      kasane-pdf CLI (info + contents + operations + render
+               + text)
 tests/
   fixtures/    hand-crafted PDFs + make_fixtures.py generator
   parsing.rs   M0 integration tests (kept)
   m1.rs        M1 integration tests
   m2.rs        M2 integration tests
   m3.rs        M3 integration tests
+  m5.rs        M5/M5.1 text-rendering tests
+  m6.rs        M6 ToUnicode + extraction tests
+  m6_1.rs      M6.1 ActualText/OC refusal, budgets, coordinates
 ```
 
 Layering is one-directional: `lexer` < `parser` < `xref` < `document`
