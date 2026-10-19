@@ -1,6 +1,6 @@
 # kasane-pdf support matrix
 
-Milestone: **M7**. Everything not listed as supported below is
+Milestone: **M7.1**. Everything not listed as supported below is
 unsupported and reported as a typed error — never silently skipped or
 returned as a partial result.
 
@@ -137,6 +137,14 @@ a *render-time* restriction, not a parsing one.
 | `/UserUnit` ≠ 1 | ❌ | `Error::Unsupported` |
 | `MediaBox`/`CropBox`/`Rotate` | ✅ | `CropBox` defaults to `MediaBox`; Rotate 0/90/180/270; non-zero origins; `/Rotate` is clockwise on display |
 | DPI scaling | ✅ | any positive finite dpi; pixel dims = pts × dpi/72 |
+
+### Test fixtures (font provenance)
+
+| File | Provenance | Licence |
+|---|---|---|
+| `KasaneTest.ttf` | 5-glyph synthetic font drawn via fontTools by `make_fixtures.py` — no real typeface data | none (generated) |
+| `KasaneCIDTest.ttf` | 6-glyph synthetic font (`make_cid_font.py`) — .notdef/box/tri/bar/circle/hole at non-identity GIDs | none (generated) |
+| `KasaneJP.ttf` | 17-glyph subset of **Noto Sans JP** (`NotoSansJP-VF.ttf`, notofonts/noto-cjk `Sans2.004`) via `make_jp_font.py`; TrueType `glyf`, UPM=1000, renamed to avoid the OFL Reserved Font Name 'Source' | SIL Open Font License 1.1 — © 2014-2021 Adobe; subsetting/redistribution permitted |
 
 ### Colour conversion notes
 

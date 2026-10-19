@@ -1,7 +1,7 @@
 # kasane-pdf
 
 A PDF parsing/processing engine written in Rust. Early development —
-currently at milestone **M7**: lexical parsing, classic and stream
+currently at milestone **M7.1**: lexical parsing, classic and stream
 cross-reference tables, indirect-reference resolution, stream decoding
 (`FlateDecode` + predictors), object streams, page-tree reading,
 content-stream parsing into typed drawing instructions, raster
@@ -13,7 +13,7 @@ renderer and writer are implemented here.
 
 ## Status
 
-**M7 is complete.** See [`docs/coverage.md`](docs/coverage.md) for the
+**M7.1 is complete.** See [`docs/coverage.md`](docs/coverage.md) for the
 detailed support matrix and [`docs/design.md`](docs/design.md) for
 architecture and licensing notes.
 
