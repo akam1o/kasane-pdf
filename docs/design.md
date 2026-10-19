@@ -12,7 +12,7 @@ The long-term consumer is a Flutter-based macOS/iPadOS app ("Kakomi"),
 but kasane-pdf is developed as a standalone Rust library + CLI. A
 C-compatible API and Apple packaging are future concerns, not M0.
 
-## Module map (M4)
+## Module map (M5)
 
 ```
 src/
@@ -246,7 +246,8 @@ decoded-bytes cost. `unsafe` is not used anywhere.
   `rust_backend` (`miniz_oxide`, MIT) for `/FlateDecode`; `tiny-skia`
   (BSD-3-Clause) for rasterization; `png` (MIT or Apache-2.0) for PNG
   encoding; `jpeg-decoder` 0.3 (MIT or Apache-2.0, `rayon` disabled)
-  for `DCTDecode` image data.
+  for `DCTDecode` image data; `ttf-parser` 0.25 (MIT or Apache-2.0,
+  `std` + `glyph-names` only) for embedded TrueType outlines.
 - Acceptable building blocks per the project brief: compression,
   image decoding, font handling, generic 2D rasterization — e.g.
   `flate2`/`miniz_oxide` (MIT), `freetype`/`fontdue`, `tiny-skia`
@@ -268,8 +269,13 @@ decoded-bytes cost. `unsafe` is not used anywhere.
    - M4 done: Form and Image XObjects (`Do`) — form `/Matrix`/`BBox`/
      own-`Resources` handling, 8-bit DeviceGray/RGB images with raw/
      Flate/DCTDecode, recursion and resource limits.
-2. Rendering — text, transparency, patterns, ICC colour, masks
-   (`/SMask`, `/ImageMask`), remaining filters.
+   - M5 done: embedded TrueType text — `/FontFile2`, `WinAnsiEncoding`
+     (plus `Differences`), `Tj`/`TJ`/`'`/`"`, rendering modes 0–3.
+     No shaping, kerning, or hinting. Other font types, other
+     encodings, and non-embedded fonts remain unsupported.
+2. Rendering — transparency, patterns, ICC colour, masks
+   (`/SMask`, `/ImageMask`), Type 0/CID + non-embedded fonts,
+   remaining filters.
 3. Text extraction — font encodings, CMaps, ToUnicode, CJK + vertical
    writing, positioned extraction, search.
 4. Editing & saving — page/annotation/link editing, full rewrite output.

@@ -1,7 +1,7 @@
 # kasane-pdf
 
 A PDF parsing/processing engine written in Rust. Early development —
-currently at milestone **M4**: lexical parsing, classic and stream
+currently at milestone **M5**: lexical parsing, classic and stream
 cross-reference tables, indirect-reference resolution, stream decoding
 (`FlateDecode` + predictors), object streams, page-tree reading,
 content-stream parsing into typed drawing instructions, raster
@@ -13,7 +13,7 @@ renderer and writer are implemented here.
 
 ## Status
 
-**M4 is complete.** See [`docs/coverage.md`](docs/coverage.md) for the
+**M5 is complete.** See [`docs/coverage.md`](docs/coverage.md) for the
 detailed support matrix and [`docs/design.md`](docs/design.md) for
 architecture and licensing notes.
 
@@ -54,6 +54,12 @@ What works today:
   `DCTDecode`, `/Decode`, `/Interpolate`, clipping). Unsupported
   attributes (`/ImageMask`, `/Mask`, `/SMask`, `/SMaskInData` ≠ 0,
   `/OC`, `/Group`, `/Ref`, unknown subtypes) are refused explicitly.
+- Text rendering with embedded TrueType fonts: `/Subtype /TrueType`
+  + `/FontFile2` + `WinAnsiEncoding` (named or via an `/Encoding`
+  dictionary's `/BaseEncoding`/`/Differences`). `BT`/`ET`, `Tf`,
+  `Tc`/`Tw`/`Tz`/`TL`/`Tr`/`Ts`, `Tm`/`Td`/`TD`/`T*`,
+  `Tj`/`TJ`/`'`/`"`, rendering modes 0–3. Positioning uses the PDF
+  `/Widths` array — never the font's own advance widths.
   Operator placement is checked per ISO 32000-1 §8.2 Figure 9 —
   out-of-order sequences inside a path object (e.g. `cm`, `q`/`Q`,
   colour ops between path construction and painting, or path
@@ -75,10 +81,13 @@ never a partial result presented as success):
   tokenized reliably, so the construct is rejected outright rather than
   guessed
 - Unicode conversion of text-showing strings, text extraction
-- Rendering of text (`Tf`/`Tj`/`TJ`/`'`/`"`), shading (`sh`), extended
-  graphics state (`gs`), pattern colours, non-device colour spaces
-  beyond DeviceGray/RGB, `/ImageMask`/`/Mask`/`/SMask`, transparency
-  groups, annotations, `/UserUnit` ≠ 1
+- Rendering of text with non-TrueType fonts, Type 0 / CID fonts,
+  Type 3 fonts, non-embedded fonts, symbolic fonts, non-WinAnsi
+  encodings, text clipping modes (`Tr` 4–7), or any shaping/ligature
+  behaviour; shading (`sh`), extended graphics state (`gs`), pattern
+  colours, non-device colour spaces beyond DeviceGray/RGB,
+  `/ImageMask`/`/Mask`/`/SMask`, transparency groups, annotations,
+  `/UserUnit` ≠ 1
 - Painting under a singular (non-invertible) CTM — refused with
   `Error::Unsupported`
 - Editing, writing

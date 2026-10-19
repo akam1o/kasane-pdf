@@ -25,3 +25,8 @@ png = "0.18"
 # MIT OR Apache-2.0; `rayon` parallelism is disabled to keep the
 # dependency tree small.
 jpeg-decoder = { version = "0.3", default-features = false }
+
+# TrueType glyph extraction for embedded font programs.
+# MIT OR Apache-2.0, zero dependencies; only glyph outlines and the
+# cmap/post tables are used — no shaping (HarfBuzz is not required).
+ttf-parser = { version = "0.25", default-features = false, features = ["std", "glyph-names"] }

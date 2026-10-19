@@ -1,6 +1,6 @@
 # kasane-pdf support matrix
 
-Milestone: **M4**. Everything not listed as supported below is
+Milestone: **M5**. Everything not listed as supported below is
 unsupported and reported as a typed error — never silently skipped or
 returned as a partial result.
 
@@ -63,7 +63,7 @@ restricted
 | `/Contents` single stream | ✅ | decoded via `Document::page_contents()` |
 | `/Contents` array of streams | ✅ | order preserved; each decoded |
 | `/Contents` wrong type / missing ref | ✅ | `Error::Structure` / `Error::MissingReference` at call time |
-| `/Resources` | ✅ | inherited per Table 30 (nearest ancestor's dict used *whole* — no per-key merge); named entries in `Font`, `XObject`, `ExtGState`, `ColorSpace`, `Pattern`, `Shading`, `Properties`, … resolvable via `Document::page_resource()`; wrong type → `Error::Structure`, missing → `Ok(None)`; targets not interpreted |
+| `/Resources` | ✅ | inherited per Table 30; `/Font` entries resolved via `load_simple_font` (TrueType/FontFile2/WinAnsiEncoding only — other subtypes or missing `FontFile2` → `Error::Unsupported`) (nearest ancestor's dict used *whole* — no per-key merge); named entries in `Font`, `XObject`, `ExtGState`, `ColorSpace`, `Pattern`, `Shading`, `Properties`, … resolvable via `Document::page_resource()`; wrong type → `Error::Structure`, missing → `Ok(None)`; targets not interpreted |
 | annotations, outlines, names, metadata, forms | ❌ | not read; keys are preserved in the parsed dictionaries only |
 
 ## Content streams (ISO 32000-1 §7.8)
@@ -124,8 +124,8 @@ a *render-time* restriction, not a parsing one.
 | `CS` `cs` + `SC` `sc` | ✅ | `DeviceGray`/`DeviceRGB`/`DeviceCMYK` and `DefaultGray`/`DefaultRGB`/`DefaultCMYK` |
 | `SCN` `scn` pattern name | ❌ | `Error::Unsupported` — patterns not rendered |
 | `CS`/`cs` non-device space | ❌ | `Error::Unsupported` — no ICCBased/Separation/DeviceN/Pattern |
-| text ops `Tf` `Tj` `TJ` `'` `"` | ❌ | `Error::Unsupported` — font loading is M5 |
-| text-state ops `Tc` `Tw` `Tz` `TL` `Tr` `Ts` `Td` `TD` `Tm` `T*` | ✅ | harmless state ops inside `BT`/`ET` (never reach a glyph) |
+| text ops `Tf` `Tj` `TJ` `'` `"` | ✅ | embedded `/TrueType` + `/FontFile2` + `WinAnsiEncoding`; `BT`/`ET` init `Tm`/`Tlm`; `Tc`/`Tw`/`Tz`/`TL`/`Tr`/`Ts` honoured; modes 0–3 painted (4–7 → `Unsupported`); `/Widths` used for advance, font metrics never consulted for positioning |
+| text-state ops `Tc` `Tw` `Tz` `TL` `Tr` `Ts` `Td` `TD` `Tm` `T*` | ✅ | state persists across text objects; `Tm`/`Tlm` reinitialized by `BT` |
 | `Do` | ✅ | Form XObject (§8.10): gs saved, `/Matrix` concatenated, clipped to `/BBox`, form content runs under its own `/Resources`, gs restored; nested forms and recursion detection bounded by `max_xobject_depth`/`max_xobject_invocations`. Image XObject (§8.9): `/DeviceGray`/`/DeviceRGB` 8-bit only, raw/`FlateDecode`/`DCTDecode`, `/Decode`, `/Interpolate` (nearest-neighbour — spec permits ignoring interpolation). `/ImageMask`, `/Mask`, `/SMask`, `/SMaskInData` ≠ 0, `/OC`, `/Group`, `/Ref`, non-8-bit, non-device colour spaces → `Error::Unsupported` |
 | `sh` | ❌ | `Error::Unsupported` — shading not rendered |
 | `gs` | ❌ | `Error::Unsupported` |

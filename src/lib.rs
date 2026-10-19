@@ -51,6 +51,7 @@ mod content;
 mod document;
 mod error;
 mod filter;
+mod font;
 mod lexer;
 mod limits;
 mod matrix;

@@ -270,15 +270,17 @@ fn clip_is_restored_by_q() {
 // -------------------------------------------------------------------
 
 #[test]
-fn text_page_is_refused() {
+fn text_page_with_missing_font_is_structure_error() {
+    // M5 implements text; an undefined /Font name is a Structure
+    // error, not Unsupported.
     let err = render(b"BT /F1 12 Tf 10 10 Td (x) Tj ET").unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "got: {err:?}");
+    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
 }
 
 #[test]
-fn tf_alone_is_refused() {
+fn tf_with_missing_font_is_structure_error() {
     let err = render(b"BT /F1 12 Tf ET").unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "got: {err:?}");
+    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
 }
 
 #[test]
