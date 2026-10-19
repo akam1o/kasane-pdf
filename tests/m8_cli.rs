@@ -531,6 +531,8 @@ fn cli_inspect_single_page_full() {
         "userunit 2",
         "annot 0 Text rect 0 0 9 9 /Rect=[0 0 9 9] /Subtype=/Text /Type=/Annot",
         "annot 1 Text rect 9 9 18 18 /Rect=[9 9 18 18] /Subtype=/Text /Type=/Annot",
+        "document",
+        "info 0",
     ];
     let got: Vec<&str> = s.lines().collect();
     assert_eq!(got, expected, "mismatch:\n{s}");
@@ -1223,4 +1225,90 @@ fn cli_inspect_resource_category_order() {
     assert!(pos("pattern P1") < pos("shadings"));
     assert!(pos("shading Sh1") < pos("extgstates"));
     assert!(pos("extgstate GS1") < pos("procsets"));
+}
+
+// ------------------------------------------------------------------
+// M14 — `inspect` /Info dump
+// ------------------------------------------------------------------
+
+/// A 1-page PDF with a populated /Info dict — every value type
+/// appears so `key …` lines exercise all type names.
+fn info_pdf() -> Vec<u8> {
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] /Contents 4 0 R >>",
+    );
+    push(4, b"<< /Length 4 >>\nstream\nq Q\nendstream");
+    push(
+        5,
+        b"<< /Title (Test Doc) /Author (me) /CreationDate (D:2024) \
+          /Producer 6 0 R /Keywords [/a /b] /Trapped /False \
+          /Count 3 /Ratio 1.5 /Draft true >>",
+    );
+    push(6, b"<< /Subtype /Type1 >>");
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 7\n0000000000 65535 f \n".to_vec());
+    for n in 1..7u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 7 /Root 1 0 R /Info 5 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    parts.concat()
+}
+
+#[test]
+fn cli_inspect_info_dump() {
+    let dir = tmpdir("inspect-info");
+    let src = dir.join("in.pdf");
+    fs::write(&src, info_pdf()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    // The document block trails the page output.
+    let doc_pos = s.lines().position(|l| l == "document").unwrap();
+    let after: Vec<&str> = s.lines().skip(doc_pos).collect();
+    let expected = [
+        "document",
+        "info 9",
+        "key Author string",
+        "key Count int",
+        "key CreationDate string",
+        "key Draft bool",
+        "key Keywords array",
+        "key Producer ref",
+        "key Ratio real",
+        "key Title string",
+        "key Trapped name",
+    ];
+    assert_eq!(&after[..expected.len()], expected, "info block:\n{s}");
+}
+
+#[test]
+fn cli_inspect_info_absent() {
+    let dir = tmpdir("inspect-info-none");
+    let src = dir.join("in.pdf");
+    fs::write(&src, minimal_pdf()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.lines().any(|l| l == "document"));
+    assert!(s.lines().any(|l| l == "info 0"));
+    // No key lines when /Info is absent.
+    assert!(!s.lines().any(|l| l.starts_with("key ")));
 }

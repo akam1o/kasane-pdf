@@ -762,7 +762,52 @@ fn run_inspect(path: &str, page_no: usize) -> Result<(), Error> {
         }
         println!("{line}");
     }
+
+    // ---- document info (/Info) ----
+    // Trailing section: the trailer's /Info dict, one `key <name>
+    // <type>` line per entry in BTreeMap (byte) order. Values are
+    // *not* resolved — only their type names are shown (`string`,
+    // `ref`, `dict`, …); a dangling /Info is MissingReference.
+    println!("document");
+    let info_obj = match doc.trailer().get(b"Info".as_slice()) {
+        None => None,
+        Some(o) => Some(doc.deref(o)?),
+    };
+    let info_dict = match info_obj {
+        None => None,
+        Some(Object::Dict(d)) => Some(d),
+        Some(other) => {
+            return Err(Error::Structure(format!(
+                "trailer /Info is not a dictionary ({other:?})"
+            )))
+        }
+    };
+    let info_count = info_dict.as_ref().map_or(0, |d| d.len());
+    println!("info {info_count}");
+    if let Some(d) = info_dict {
+        for (k, v) in d.iter() {
+            println!("key {} {}", String::from_utf8_lossy(k), type_name(v));
+        }
+    }
     Ok(())
+}
+
+/// The PDF type name `inspect` reports for an `/Info` value — never
+/// the value itself. `ref` covers any indirect reference without
+/// chasing it.
+fn type_name(o: &Object) -> &'static str {
+    match o {
+        Object::Null => "null",
+        Object::Bool(_) => "bool",
+        Object::Integer(_) => "int",
+        Object::Real(_) => "real",
+        Object::Name(_) => "name",
+        Object::String(_) => "string",
+        Object::Array(_) => "array",
+        Object::Dict(_) => "dict",
+        Object::Stream { .. } => "stream",
+        Object::Ref(_) => "ref",
+    }
 }
 
 /// Render one `Object` for the inspect annot dump. Refs are shown
