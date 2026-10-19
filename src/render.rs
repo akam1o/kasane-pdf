@@ -52,7 +52,6 @@ use crate::limits::Limits;
 use crate::matrix::Matrix;
 use crate::object::{Dict, IndirectRef, Name, Object};
 use crate::page::Page;
-use std::rc::Rc;
 use tiny_skia::{FillRule, Mask, Paint, PathBuilder, Pixmap, Stroke, StrokeDash, Transform};
 
 /// Graphics-state parameters saved/restored by `q`/`Q` (§8.4.1).
@@ -95,7 +94,7 @@ struct TextState {
     /// Leading `Tl` (unscaled text-space units).
     leading: f64,
     /// Current font — `None` until `Tf` selects one.
-    font: Option<Rc<crate::font::SimpleFont>>,
+    font: Option<crate::font::Font>,
     /// Font resource name of `font`, kept for error messages.
     font_name: Vec<u8>,
     /// Font size `Tfs` (unscaled text-space units).
@@ -894,8 +893,7 @@ impl<'a> Renderer<'a> {
                         "Tf size {size} is not a positive finite number"
                     )));
                 }
-                let f =
-                    crate::font::load_simple_font(self.doc, &self.resources, font, self.limits)?;
+                let f = crate::font::load_font(self.doc, &self.resources, font, self.limits)?;
                 self.gs.text.font = Some(f);
                 self.gs.text.font_name = font.clone();
                 self.gs.text.font_size = *size;
@@ -1831,15 +1829,20 @@ impl<'a> Renderer<'a> {
         if !(self.gs.text.font_size.is_finite() && self.gs.text.font_size > 0.0) {
             return Err(Error::Structure("Tj before Tf — no font size".into()));
         }
-        for &b in bytes {
-            self.show_glyph(&font, b, 0.0)?;
+        let mut pos = 0;
+        while pos < bytes.len() {
+            let (code, len) = font.read_code(bytes, pos)?;
+            pos += len;
+            self.show_glyph(&font, code, 0.0)?;
         }
         Ok(())
     }
 
     /// `TJ [item …]`: strings and numeric adjustments interleaved.
     /// A number shifts the *next* glyph — the sign is such that a
-    /// positive number moves left (§9.4.3).
+    /// positive number moves left (§9.4.3). Codes never span array
+    /// items — a 2-byte code cut by a `TJ` boundary is a structure
+    /// error, never silently joined.
     fn show_text_adjusted(&mut self, items: &[crate::content::TJItem]) -> Result<(), Error> {
         if !self.in_text {
             return Err(Error::Structure("TJ outside a text object".into()));
@@ -1856,15 +1859,24 @@ impl<'a> Renderer<'a> {
         for item in items {
             match item {
                 crate::content::TJItem::Text(bytes) => {
-                    for &b in bytes {
-                        self.show_glyph(&font, b, 0.0)?;
+                    let mut pos = 0;
+                    while pos < bytes.len() {
+                        let (code, len) = font.read_code(bytes, pos)?;
+                        pos += len;
+                        self.show_glyph(&font, code, 0.0)?;
                     }
                 }
                 crate::content::TJItem::Kern(n) => {
-                    // A number shifts the *next* glyph: t_j = n/1000 in
-                    // text-space units — applied to Tm *before* the
-                    // following glyph.
-                    let tx = -*n / 1000.0;
+                    // A number shifts the *next* glyph: §9.4.4's tx
+                    // term is −Tj/1000 in glyph-space (1/1000-em)
+                    // units — mapped through Trm it scales by Tfs·Th
+                    // before landing on Tm's page-space e. We keep
+                    // Tm's e in the same units a Td operand uses
+                    // (unscaled), so the shift added here must be
+                    // pre-multiplied by Tfs·Th — matching the
+                    // glyph-advance path in show_glyph.
+                    let t = &self.gs.text;
+                    let tx = -*n / 1000.0 * t.font_size * t.h_scale;
                     let t = Matrix::new(1.0, 0.0, 0.0, 1.0, tx, 0.0);
                     self.text_tm = t.concat(self.text_tm);
                 }
@@ -1881,8 +1893,8 @@ impl<'a> Renderer<'a> {
     /// only to the space character.
     fn show_glyph(
         &mut self,
-        font: &Rc<crate::font::SimpleFont>,
-        code: u8,
+        font: &crate::font::Font,
+        code: u32,
         tj_adjust: f64,
     ) -> Result<(), Error> {
         // Cumulative per-page budget for character codes — a long
@@ -1904,8 +1916,7 @@ impl<'a> Renderer<'a> {
         let t = &mut gs.text;
 
         // Resolve code → glyph.
-        let glyph = font.glyph_id(code)?;
-        let Some(gid) = glyph else { return Ok(()) }; // truly absent
+        let gid = font.glyph_id(code)?;
 
         // Build the glyph path in glyph space, then transform to
         // device space via:
@@ -1969,12 +1980,19 @@ impl<'a> Renderer<'a> {
         // what we are about to add.
         if let Some(buf) = &mut self.extract {
             let w0 = font.width(code);
-            let tw = if code == 0x20 { t.word_spacing } else { 0.0 };
-            // §9.4.4's tx in *text space* — the value that gets
-            // multiplied by Trm's Tfs·Th when mapped to page space:
-            //   tx = (w0/1000 − Tj/1000) + Tc + Tw   [text units]
-            // Trm then applies × Tfs·Th horizontally, × Tfs vertically.
-            let tx_text = w0 / 1000.0 - tj_adjust / 1000.0 + t.char_spacing + tw;
+            let tw = if font.is_space_code(code) {
+                t.word_spacing
+            } else {
+                0.0
+            };
+            // §9.4.4's tx mapped into Trm's glyph-space units. The
+            // advance matrix applies ×Tfs·Th, so unscaled spacing
+            // (Tc, Tw — which join tx *after* the ×Tfs) must be
+            // divided by Tfs here to land at the right page-space
+            // distance:
+            //   page_tx = (w0/1000 − Tj/1000)·Tfs·Th + (Tc + Tw)·Th
+            //           = (w0/1000 − Tj/1000 + (Tc + Tw)/Tfs)·Tfs·Th
+            let tx_text = w0 / 1000.0 - tj_adjust / 1000.0 + (t.char_spacing + tw) / t.font_size;
             let trm = Matrix::new(t.font_size * t.h_scale, 0.0, 0.0, t.font_size, 0.0, t.rise)
                 .concat(self.text_tm)
                 .concat(gs.ctm);
@@ -2033,7 +2051,11 @@ impl<'a> Renderer<'a> {
         // 1/1000-em units → glyph displacement in text space is
         // w0/1000 × Tfs (plus spacing) × Th.
         let w0 = font.width(code);
-        let tw = if code == 0x20 { t.word_spacing } else { 0.0 };
+        let tw = if font.is_space_code(code) {
+            t.word_spacing
+        } else {
+            0.0
+        };
         let tx =
             ((w0 / 1000.0 - tj_adjust / 1000.0) * t.font_size + t.char_spacing + tw) * t.h_scale;
         let adv = Matrix::new(1.0, 0.0, 0.0, 1.0, tx, 0.0);

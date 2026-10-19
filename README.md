@@ -1,7 +1,7 @@
 # kasane-pdf
 
 A PDF parsing/processing engine written in Rust. Early development —
-currently at milestone **M6.1**: lexical parsing, classic and stream
+currently at milestone **M7**: lexical parsing, classic and stream
 cross-reference tables, indirect-reference resolution, stream decoding
 (`FlateDecode` + predictors), object streams, page-tree reading,
 content-stream parsing into typed drawing instructions, raster
@@ -13,7 +13,7 @@ renderer and writer are implemented here.
 
 ## Status
 
-**M6.1 is complete.** See [`docs/coverage.md`](docs/coverage.md) for the
+**M7 is complete.** See [`docs/coverage.md`](docs/coverage.md) for the
 detailed support matrix and [`docs/design.md`](docs/design.md) for
 architecture and licensing notes.
 
@@ -93,15 +93,18 @@ never a partial result presented as success):
   tokenized reliably, so the construct is rejected outright rather than
   guessed
 - Text extraction for fonts other than simple TrueType +
-  WinAnsiEncoding; `/ActualText` replacement, Optional Content
-  membership (`/OC`/`/OCMD` blocks, form `/OC`), and `/UseCMap`-chained
-  or multi-byte-codespace ToUnicode CMaps — refused with
-  `Error::Unsupported`, not silently ignored
-- Rendering of text with non-TrueType fonts, Type 0 / CID fonts,
-  Type 3 fonts, non-embedded fonts, symbolic fonts, non-WinAnsi
-  encodings, text clipping modes (`Tr` 4–7), or any shaping/ligature
-  behaviour; shading (`sh`), extended graphics state (`gs`), pattern
-  colours, non-device colour spaces beyond DeviceGray/RGB,
+  WinAnsiEncoding or Type0+Identity-H+CIDFontType2; `/ActualText`
+  replacement, Optional Content membership (`/OC`/`/OCMD` blocks,
+  form `/OC`), and `/UseCMap`-chained or multi-byte-codespace
+  ToUnicode CMaps — refused with `Error::Unsupported`, not silently
+  ignored
+- Rendering of text with non-TrueType fonts, Type 0 fonts with
+  non-Identity-H encodings (Identity-V, CMap streams, predefined
+  CMaps like UniJIS-*/90ms-*), CIDFontType0/CFF, Type 1, Type 3,
+  non-embedded fonts, symbolic fonts, non-WinAnsi simple encodings,
+  text clipping modes (`Tr` 4–7), or any shaping/ligature behaviour;
+  shading (`sh`), extended graphics state (`gs`), pattern colours,
+  non-device colour spaces beyond DeviceGray/RGB,
   `/ImageMask`/`/Mask`/`/SMask`, transparency groups, annotations,
   `/UserUnit` ≠ 1
 - Painting under a singular (non-invertible) CTM — refused with
