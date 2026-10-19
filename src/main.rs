@@ -467,12 +467,169 @@ fn run_inspect(path: &str, page_no: usize) -> Result<(), Error> {
         }
     };
     let c = res_counts(res_dict.as_ref())?;
-    println!("fonts {}", c[0]);
+    // Enumerate named resources after each count line — `font F1
+    // Type1 /Helvetica`, `xobject Im1 Form /BBox=[…]`, etc. Only the
+    // top-level dict entries are listed; we do not recurse into
+    // nested resource dicts.
+    println!("resources fonts {}", c[0]);
+    if let Some(d) = &res_dict {
+        if let Some(v) = d.get(b"Font".as_slice()) {
+            let res = doc.deref(v)?;
+            if let Object::Dict(fonts) = res {
+                for (name, fref) in fonts.iter() {
+                    let fobj = doc.deref(fref)?;
+                    let fdict = fobj.as_dict().ok_or_else(|| {
+                        Error::Structure(format!(
+                            "font resource /{} is not a dictionary",
+                            String::from_utf8_lossy(name)
+                        ))
+                    })?;
+                    let subtype = fdict
+                        .get(b"Subtype".as_slice())
+                        .and_then(|o| o.as_name())
+                        .map(|n| String::from_utf8_lossy(n).into_owned())
+                        .unwrap_or_else(|| "unknown".into());
+                    let base = fdict
+                        .get(b"BaseFont".as_slice())
+                        .and_then(|o| o.as_name())
+                        .map(|n| format!(" /{}", String::from_utf8_lossy(n)))
+                        .unwrap_or_default();
+                    println!("font {} {}{}", String::from_utf8_lossy(name), subtype, base);
+                }
+            }
+        }
+    }
     println!("xobjects {}", c[1]);
+    if let Some(d) = &res_dict {
+        if let Some(v) = d.get(b"XObject".as_slice()) {
+            let res = doc.deref(v)?;
+            if let Object::Dict(xos) = res {
+                for (name, xref) in xos.iter() {
+                    let xobj = doc.deref(xref)?;
+                    let (dict, _) = xobj.as_stream().ok_or_else(|| {
+                        Error::Structure(format!(
+                            "XObject resource /{} is not a stream",
+                            String::from_utf8_lossy(name)
+                        ))
+                    })?;
+                    let subtype = dict
+                        .get(b"Subtype".as_slice())
+                        .and_then(|o| o.as_name())
+                        .map(|n| String::from_utf8_lossy(n).into_owned())
+                        .unwrap_or_else(|| "unknown".into());
+                    let extra = match subtype.as_str() {
+                        "Form" => dict
+                            .get(b"BBox".as_slice())
+                            .map(|o| format!(" /BBox={}", fmt_value(o)))
+                            .unwrap_or_default(),
+                        "Image" => {
+                            let w = dict
+                                .get(b"Width".as_slice())
+                                .map(|o| format!(" /Width={}", fmt_value(o)))
+                                .unwrap_or_default();
+                            let h = dict
+                                .get(b"Height".as_slice())
+                                .map(|o| format!(" /Height={}", fmt_value(o)))
+                                .unwrap_or_default();
+                            format!("{w}{h}")
+                        }
+                        _ => String::new(),
+                    };
+                    println!(
+                        "xobject {} {}{}",
+                        String::from_utf8_lossy(name),
+                        subtype,
+                        extra
+                    );
+                }
+            }
+        }
+    }
     println!("colorspaces {}", c[2]);
+    if let Some(d) = &res_dict {
+        if let Some(v) = d.get(b"ColorSpace".as_slice()) {
+            let res = doc.deref(v)?;
+            if let Object::Dict(css) = res {
+                for (name, cref) in css.iter() {
+                    let cobj = doc.deref(cref)?;
+                    let csname = match &cobj {
+                        Object::Name(n) => format!("/{}", String::from_utf8_lossy(n)),
+                        Object::Array(a) => a
+                            .first()
+                            .and_then(|o| o.as_name())
+                            .map(|n| format!("/{}", String::from_utf8_lossy(n)))
+                            .unwrap_or_else(|| "unknown".into()),
+                        Object::Dict(d2) => d2
+                            .get(b"Subtype".as_slice())
+                            .or_else(|| d2.get(b"Base".as_slice()))
+                            .and_then(|o| o.as_name())
+                            .map(|n| format!("/{}", String::from_utf8_lossy(n)))
+                            .unwrap_or_else(|| "unknown".into()),
+                        _ => "unknown".into(),
+                    };
+                    println!("colorspace {} {}", String::from_utf8_lossy(name), csname);
+                }
+            }
+        }
+    }
     println!("patterns {}", c[3]);
+    if let Some(d) = &res_dict {
+        if let Some(v) = d.get(b"Pattern".as_slice()) {
+            let res = doc.deref(v)?;
+            if let Object::Dict(pats) = res {
+                for (name, pref) in pats.iter() {
+                    let pobj = doc.deref(pref)?;
+                    let ptype = match &pobj {
+                        Object::Dict(d2) | Object::Stream { dict: d2, .. } => d2
+                            .get(b"PatternType".as_slice())
+                            .and_then(|o| o.as_number())
+                            .map(fmt_num)
+                            .unwrap_or_else(|| "unknown".into()),
+                        _ => "unknown".into(),
+                    };
+                    println!("pattern {} {}", String::from_utf8_lossy(name), ptype);
+                }
+            }
+        }
+    }
     println!("shadings {}", c[4]);
+    if let Some(d) = &res_dict {
+        if let Some(v) = d.get(b"Shading".as_slice()) {
+            let res = doc.deref(v)?;
+            if let Object::Dict(shs) = res {
+                for (name, sref) in shs.iter() {
+                    let sobj = doc.deref(sref)?;
+                    let stype = match &sobj {
+                        Object::Dict(d2) | Object::Stream { dict: d2, .. } => d2
+                            .get(b"ShadingType".as_slice())
+                            .and_then(|o| o.as_number())
+                            .map(fmt_num)
+                            .unwrap_or_else(|| "unknown".into()),
+                        _ => "unknown".into(),
+                    };
+                    println!("shading {} {}", String::from_utf8_lossy(name), stype);
+                }
+            }
+        }
+    }
     println!("extgstates {}", c[5]);
+    if let Some(d) = &res_dict {
+        if let Some(v) = d.get(b"ExtGState".as_slice()) {
+            let res = doc.deref(v)?;
+            if let Object::Dict(egs) = res {
+                for (name, eref) in egs.iter() {
+                    let eobj = doc.deref(eref)?;
+                    let etype = eobj
+                        .as_dict()
+                        .and_then(|d2| d2.get(b"Type".as_slice()))
+                        .and_then(|o| o.as_name())
+                        .map(|n| format!("/{}", String::from_utf8_lossy(n)))
+                        .unwrap_or_else(|| "unknown".into());
+                    println!("extgstate {} {}", String::from_utf8_lossy(name), etype);
+                }
+            }
+        }
+    }
     println!("procsets {}", c[6]);
     println!("properties {}", c[7]);
 

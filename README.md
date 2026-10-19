@@ -39,12 +39,13 @@ matrix and [`docs/design.md`](docs/design.md) for notes.
 
 **M10 / M11 add an `inspect` command** — `kasane-pdf inspect file.pdf
 1` prints a fixed-order structural summary of a single page
-(MediaBox, CropBox, rotation, annotation count, per-category
-resource counts, `/Contents` reference(s), `/UserUnit`), then one
-`annot <i> <subtype> rect …` line per annotation dumping its full
-dictionary, plus `tokens`/`operators`/`opstats` content-stream
-statistics. Diagnostic only — never renders, edits or extracts. The
-file must contain exactly one page.
+(MediaBox, CropBox, rotation, annotation count, `/Contents`
+reference(s), `/UserUnit`), enumerates named resources per category
+(`font F1 Type1 /Helvetica`, `xobject Im1 Form /BBox=[…]`, …), dumps
+`tokens`/`operators`/`opstats` content-stream statistics, then one
+`annot <i> <subtype> rect …` line per annotation. Diagnostic only —
+never renders, edits or extracts. The file must contain exactly one
+page.
 
 What works today:
 
