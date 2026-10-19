@@ -39,6 +39,8 @@ pub struct Document {
     catalog: Dict,
     pages: Vec<Page>,
     limits: Limits,
+    /// `%PDF-M.m` header version from the input file.
+    header_version: (u8, u8),
     /// Remaining indirect-reference resolution budget.
     ref_budget: std::cell::Cell<u64>,
     /// Remaining cumulative decoded-bytes budget (shared across all
@@ -77,7 +79,7 @@ impl Document {
         }
 
         let mut parser = Parser::new(data, &limits);
-        parser.check_header()?;
+        let header_version = parser.check_header()?;
         let startxref = parser.find_startxref()?;
 
         let xref = xref::read_xref_chain(data, &limits, startxref)?;
@@ -92,6 +94,7 @@ impl Document {
             xref,
             catalog: Dict::new(),
             pages: Vec::new(),
+            header_version,
             ref_budget: std::cell::Cell::new(limits.max_reference_depth),
             decoded_budget: std::cell::Cell::new(limits.max_total_decoded_bytes),
             objstm_cache: std::cell::RefCell::new(HashMap::new()),
@@ -253,6 +256,11 @@ impl Document {
     /// The document catalog dictionary (already resolved).
     pub fn catalog(&self) -> &Dict {
         &self.catalog
+    }
+
+    /// The `%PDF-M.m` header version from the input file.
+    pub(crate) fn header_version(&self) -> (u8, u8) {
+        self.header_version
     }
 
     /// Pages in document order, with inherited attributes applied.

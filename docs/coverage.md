@@ -191,6 +191,14 @@ renumbering 1..N, classic xref + trailer emitted. No original bytes,
 `/Prev` history or ObjStm containers are carried over — only the
 reachable object graph.
 
+"Reachable" means objects the DFS can reach through `/Ref`s starting
+at `/Root`/`/Info`. Keys *inside* a reachable dictionary are kept
+verbatim — including keys M8 does not understand. That is distinct
+from *unreferenced* objects elsewhere in the file: unreferenced
+objects are simply never walked and never emitted (the only
+deliberate exception is an indirect stream `/Length`, whose slot is
+skipped at collection and recomputed at write time).
+
 | Feature | Status | Notes |
 |---|---|---|
 | object collection & renumbering | ✅ | dense 1..N; shared refs share the new number; /Parent cycles terminate via the map |
@@ -200,16 +208,28 @@ reachable object graph.
 | object streams (input) | ✅ | objects inside `/ObjStm` are resolved and emitted as normal indirect objects |
 | incremental input | ✅ | xref-chain merge already yields the latest revision |
 | link annots | ✅ | `/Subtype /Link` `/Rect`, `/A` `/URI`/`/GoTo`, `/D` dest arrays — refs remapped |
+| direct destination arrays | ✅ | `[page /XYZ …]`, `[page /Fit]` — refs remapped |
+| **named destinations** | ❌ | `Error::Unsupported` — `/Dests`, `/Names /Dests`, link `/Dest` name/string, `GoTo` `/D` name/string, `OpenAction` `/D` name/string are all refused (name trees are not resolved) |
 | encrypted input | ❌ | refused at `Document::from_bytes` |
 | `/Perms` `/DocMDP`/`/UR`/`/UR3`, filled `/Sig` fields | ❌ | `Error::Unsupported` — a signature cannot survive a rewrite; blank unsigned fields pass |
 | `/AcroForm` `/XFA`, `/OCProperties`, `/RichMedia`, `/AA` | ❌ | `Error::Unsupported` — outside the profile |
 | output xref format | — | classic table only; xref-stream/ObjStm output is not implemented |
-| PDF version | ✅ | `%PDF-1.7` header; catalog `/Version` ≥ base is honoured |
+| stream `/Length` | ✅ | always emitted as a direct integer recomputed from the emitted bytes; an *indirect* `/Length` ref is never walked from the stream dict (would emit an orphan), but the same object is still collected if referenced elsewhere |
+| PDF version | ✅ | output = `max(header_version, catalog /Version)`; `1.x` passes through, `2.0`+ is `Error::Unsupported` (M8 never claims 1.7 for 2.0-only content, never emits a 2.x header) |
 
 **Not a sanitizer.** A full rewrite does *not* remove unreferenced
 history in a guaranteed way (only reachable objects are emitted, but
 anything reachable — including `/Info`, metadata and embedded data —
 is preserved verbatim). Do not present a rewrite as redaction.
+
+**Preserve ≠ guarantee ≠ inspect.** The rewrite preserves every
+reachable dictionary key verbatim — including keys whose *feature*
+M8 does not implement (colour management, transparency, patterns,
+optional content inside content streams, etc.). "Preserved" means the
+bytes are carried over; it does **not** mean the feature works, is
+validated, or is safe. The refusal list above is exactly the set M8
+inspects — a payload hidden in a key not listed is preserved, not
+removed. Do not widen this to a sanitizing claim.
 
 ## Robustness
 

@@ -158,7 +158,10 @@ fn run_contents(path: &str, page_no: usize) -> Result<(), Error> {
 /// same file (symlinks resolved before comparison).
 fn run_rewrite(input: &str, output: &str) -> Result<(), Error> {
     // Refuse identical input/output — canonicalize so `./a.pdf`,
-    // `a/./a.pdf` and symlinks all compare equal.
+    // `a/./a.pdf` and symlinks all compare equal. On Unix we also
+    // compare (dev, ino) so hardlinks with different names are still
+    // caught; on non-Unix we rely on canonicalize alone (no portable
+    // file identity is available — this is the documented limit).
     let in_path = std::fs::canonicalize(input)
         .map_err(|e| Error::Structure(format!("cannot canonicalize input '{input}': {e}")))?;
     let out_path = std::fs::canonicalize(output).unwrap_or_else(|_| {
@@ -171,7 +174,7 @@ fn run_rewrite(input: &str, output: &str) -> Result<(), Error> {
             .map(|p| p.join(std::path::Path::new(output).file_name().unwrap_or_default()))
             .unwrap_or_else(|| std::path::PathBuf::from(output))
     });
-    if in_path == out_path {
+    if in_path == out_path || same_file(&in_path, &out_path) {
         return Err(Error::Structure(
             "rewrite input and output are the same file".into(),
         ));
@@ -181,13 +184,31 @@ fn run_rewrite(input: &str, output: &str) -> Result<(), Error> {
     let doc = Document::from_bytes(&data)?;
     let bytes = kasane_pdf::rewrite(&doc)?;
 
-    // Write to a temp file in the same directory, then rename over
-    // the target — a failure mid-write can't corrupt an existing
-    // output, and readers never see a partial file.
+    // Write to a fresh temp file in the same directory — create_new
+    // fails if the name already exists (collision or symlink), so we
+    // never overwrite a leftover or an attacker's file. Rename over
+    // the target only after the bytes are fully flushed.
     let tmp = format!("{output}.kasane-tmp-{}", std::process::id());
-    if let Err(e) = std::fs::write(&tmp, &bytes) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e.into());
+    {
+        use std::io::Write;
+        let mut f = match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)
+        {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(Error::Structure(format!(
+                    "temporary output name '{tmp}' already exists — refusing to proceed"
+                )));
+            }
+            Err(e) => return Err(e.into()),
+        };
+        if let Err(e) = f.write_all(&bytes).and_then(|_| f.sync_data()) {
+            drop(f);
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.into());
+        }
     }
     if let Err(e) = std::fs::rename(&tmp, output) {
         let _ = std::fs::remove_file(&tmp);
@@ -377,6 +398,22 @@ fn print_json(t: &kasane_pdf::ExtractedText) {
     }
     out.push_str("\n]\n");
     print!("{out}");
+}
+
+/// Unix-only file identity — (dev, ino) identifies the inode, so two
+/// hardlink names resolve to the same pair. Returns false on any
+/// metadata failure (the path may not exist yet for the output).
+#[cfg(unix)]
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(ma), Ok(mb)) => (ma.dev(), ma.ino()) == (mb.dev(), mb.ino()),
+        _ => false,
+    }
+}
+#[cfg(not(unix))]
+fn same_file(_a: &std::path::Path, _b: &std::path::Path) -> bool {
+    false
 }
 
 fn print_lines(t: &kasane_pdf::ExtractedText) {
