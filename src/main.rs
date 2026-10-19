@@ -346,7 +346,7 @@ fn annotate_usage() -> String {
 /// extgstates <count>
 /// procsets <count>
 /// properties <count>
-/// contents <ref> | contents [<ref> ...] | contents absent
+/// contents <ref> | contents [<ref>, <ref>, ...] | contents absent
 /// userunit <v> | userunit absent
 /// ```
 ///
@@ -489,7 +489,7 @@ fn run_inspect(path: &str, page_no: usize) -> Result<(), Error> {
                     }
                 }
             }
-            println!("contents [{}]", parts.join(" "));
+            println!("contents [{}]", parts.join(", "));
         }
         Some(other) => {
             return Err(Error::Structure(format!(

@@ -548,7 +548,12 @@ fn cli_inspect_contents_array_and_absent() {
     fs::write(&src, fs::read(fixture("contents_array.pdf")).unwrap()).unwrap();
     let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
     assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stdout).contains("contents ["));
+    let s = String::from_utf8_lossy(&out.stdout);
+    // Exact array line: comma-separated refs inside brackets.
+    assert!(
+        s.lines().any(|l| l == "contents [4 0 R, 5 0 R]"),
+        "expected 'contents [4 0 R, 5 0 R]', got:\n{s}"
+    );
 
     // contents_none fixture: no /Contents at all.
     let src2 = dir.join("n.pdf");
