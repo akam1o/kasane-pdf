@@ -321,7 +321,7 @@ editing, no text extraction. The file must contain exactly one page;
 | `contents <ref>` `contents [<ref>, <ref>, ...]` `contents absent` | `/Contents` | `contents absent` |
 | `userunit <v>` `userunit absent` | `/UserUnit` | `userunit absent` |
 | `annot <i> <subtype> rect <llx> <lly> <urx> <ury> [/<k>=<v> ...]` | one line per `/Annots` element, in array order | — |
-| `document` `info <count>` `key <name> <type>` | trailer `/Info` — `document` opens the trailing section, `info` reports the entry count, `key` lists each key with its PDF type name (`string`, `name`, `int`, `real`, `bool`, `array`, `dict`, `stream`, `ref`, `null`) — values are never shown | `info 0` when `/Info` absent |
+| `document` `version <major>.<minor>` `info <count>` `key <name> <type>` | document section — `version` reports the effective declared PDF version (the larger of the `%PDF-M.m` header and the catalog `/Version` name; malformed header or malformed `/Version` is a typed error, never a guess); `info`/`key` list the trailer `/Info` dictionary — values are never shown | `info 0` when `/Info` absent |
 
 Each `annot` line dumps the annotation dictionary: `/Subtype` and
 `/Rect` first (validated — the element may be an indirect ref *or*

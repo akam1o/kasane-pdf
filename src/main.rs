@@ -764,11 +764,24 @@ fn run_inspect(path: &str, page_no: usize) -> Result<(), Error> {
     }
 
     // ---- document info (/Info) ----
-    // Trailing section: the trailer's /Info dict, one `key <name>
-    // <type>` line per entry in BTreeMap (byte) order. Values are
-    // *not* resolved — only their type names are shown (`string`,
-    // `ref`, `dict`, …); a dangling /Info is MissingReference.
+    // Trailing section: PDF version, then the trailer's /Info dict.
+    // `version` reports the effective declared version — the larger
+    // of the `%PDF-M.m` header and the catalog `/Version` name. A
+    // malformed header (None) or malformed /Version is a typed error,
+    // not a guess.
     println!("document");
+    let version = {
+        let hdr = doc.header_version().ok_or_else(|| Error::Unsupported {
+            feature: "PDF version",
+            detail: "header %PDF- token is malformed — cannot determine version".to_string(),
+        })?;
+        let cat = doc.catalog_version()?;
+        match cat {
+            Some(c) if c > hdr => c,
+            _ => hdr,
+        }
+    };
+    println!("version {}.{}", version.0, version.1);
     let info_obj = match doc.trailer().get(b"Info".as_slice()) {
         None => None,
         Some(o) => Some(doc.deref(o)?),

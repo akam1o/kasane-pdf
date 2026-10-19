@@ -413,10 +413,13 @@ decoded-bytes cost. `unsafe` is not used anywhere.
       (XObject) is a typed error.
 
    - M14: `inspect` document info — after the annot lines, a
-      trailing `document`/`info`/`key` block dumps the trailer
-      `/Info` dictionary: `document` marks the section, `info`
-      reports the entry count, and `key <name> <type>` lists each
-      key in byte order with its PDF type name (`string`, `name`,
+      trailing `document`/`version`/`info`/`key` block dumps the
+      document-level state: `version` reports the effective PDF
+      version (the larger of the `%PDF-M.m` header and the catalog
+      `/Version` name; a malformed header or a malformed `/Version`
+      is a typed error, never a guess), `info` reports the trailer
+      `/Info` entry count, and `key <name> <type>` lists each key
+      in byte order with its PDF type name (`string`, `name`,
       `int`, `real`, `bool`, `array`, `dict`, `stream`, `ref`,
       `null`) — values are never resolved or shown, so a dangling
       `/Info` is a typed error while a `Producer 6 0 R` value prints

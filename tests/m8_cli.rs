@@ -532,6 +532,7 @@ fn cli_inspect_single_page_full() {
         "annot 0 Text rect 0 0 9 9 /Rect=[0 0 9 9] /Subtype=/Text /Type=/Annot",
         "annot 1 Text rect 9 9 18 18 /Rect=[9 9 18 18] /Subtype=/Text /Type=/Annot",
         "document",
+        "version 1.4",
         "info 0",
     ];
     let got: Vec<&str> = s.lines().collect();
@@ -1285,6 +1286,7 @@ fn cli_inspect_info_dump() {
     let after: Vec<&str> = s.lines().skip(doc_pos).collect();
     let expected = [
         "document",
+        "version 1.4",
         "info 9",
         "key Author string",
         "key Count int",
@@ -1311,4 +1313,141 @@ fn cli_inspect_info_absent() {
     assert!(s.lines().any(|l| l == "info 0"));
     // No key lines when /Info is absent.
     assert!(!s.lines().any(|l| l.starts_with("key ")));
+}
+
+// ------------------------------------------------------------------
+// M15 — `inspect` PDF version line
+// ------------------------------------------------------------------
+
+/// A minimal 1-page PDF with a given header version and optional
+/// catalog /Version — the `version` line reports the *effective*
+/// (max) version.
+fn version_pdf(header: &[u8], cat_version: Option<&[u8]>) -> Vec<u8> {
+    let mut parts: Vec<Vec<u8>> = vec![header.to_vec(), b"\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    let cat = match cat_version {
+        Some(v) => format!(
+            "<< /Type /Catalog /Pages 2 0 R /Version /{} >>",
+            String::from_utf8_lossy(v)
+        ),
+        None => "<< /Type /Catalog /Pages 2 0 R >>".into(),
+    };
+    push(1, cat.as_bytes());
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] >>");
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 4\n0000000000 65535 f \n".to_vec());
+    for n in 1..4u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 4 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    parts.concat()
+}
+
+#[test]
+fn cli_inspect_version_header_only() {
+    let dir = tmpdir("inspect-ver-hdr");
+    let src = dir.join("in.pdf");
+    fs::write(&src, version_pdf(b"%PDF-1.4", None)).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|l| l == "version 1.4"));
+}
+
+#[test]
+fn cli_inspect_version_catalog_wins() {
+    // Header 1.4 + catalog /Version /1.7 → max = 1.7.
+    let dir = tmpdir("inspect-ver-cat");
+    let src = dir.join("in.pdf");
+    fs::write(&src, version_pdf(b"%PDF-1.4", Some(b"1.7"))).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|l| l == "version 1.7"));
+
+    // Header 1.7 + catalog /Version /1.4 → max = 1.7.
+    let src2 = dir.join("in2.pdf");
+    fs::write(&src2, version_pdf(b"%PDF-1.7", Some(b"1.4"))).unwrap();
+    let out = bin()
+        .args(["inspect"])
+        .arg(&src2)
+        .arg("1")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .any(|l| l == "version 1.7"));
+}
+
+#[test]
+fn cli_inspect_version_bad_catalog_errors() {
+    // /Version not a name → error, not "ignore it".
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R /Version (1.7) >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] >>");
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 4\n0000000000 65535 f \n".to_vec());
+    for n in 1..4u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 4 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    let dir = tmpdir("inspect-ver-bad");
+    let src = dir.join("in.pdf");
+    fs::write(&src, parts.concat()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(!out.status.success(), "bad /Version type must fail");
+}
+
+#[test]
+fn cli_inspect_version_malformed_name_errors() {
+    // /Version /2 (name but not M.m) → error.
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R /Version /2 >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] >>");
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 4\n0000000000 65535 f \n".to_vec());
+    for n in 1..4u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 4 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    let dir = tmpdir("inspect-ver-badname");
+    let src = dir.join("in.pdf");
+    fs::write(&src, parts.concat()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(!out.status.success(), "malformed /Version name must fail");
 }

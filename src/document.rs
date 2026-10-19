@@ -276,8 +276,46 @@ impl Document {
     }
 
     /// The `%PDF-M.m` header version — `None` on malformed input.
-    pub(crate) fn header_version(&self) -> Option<(u8, u8)> {
+    /// Used by the writer to refuse rather than guess, and by
+    /// `inspect` to report the declared version.
+    pub fn header_version(&self) -> Option<(u8, u8)> {
         self.header_version
+    }
+
+    /// Catalog `/Version` as `(major, minor)`.
+    /// `Ok(None)` when `/Version` is absent.
+    /// `Err(Unsupported)` when `/Version` is present but malformed —
+    /// a malformed version is not "no version" and must not be
+    /// silently dropped (shared by the writer's `effective_version`
+    /// check and `inspect`'s version report).
+    pub fn catalog_version(&self) -> Result<Option<(u8, u8)>, Error> {
+        let name = match self.catalog().get(b"Version".as_slice()) {
+            Some(o) => o,
+            None => return Ok(None),
+        };
+        // Spec §7.5.2: /Version is a name, e.g. /1.7. Anything else is
+        // malformed input we must not pretend is absent.
+        let raw = name.as_name().ok_or_else(|| Error::Unsupported {
+            feature: "PDF version",
+            detail: "catalog /Version is not a name object".to_string(),
+        })?;
+        let s = std::str::from_utf8(raw).map_err(|_| Error::Unsupported {
+            feature: "PDF version",
+            detail: "catalog /Version is not valid UTF-8".to_string(),
+        })?;
+        let (maj, min) = s.split_once('.').ok_or_else(|| Error::Unsupported {
+            feature: "PDF version",
+            detail: format!("catalog /Version /{s} is not M.m form"),
+        })?;
+        let maj: u8 = maj.parse().map_err(|_| Error::Unsupported {
+            feature: "PDF version",
+            detail: format!("catalog /Version /{s} has non-numeric major"),
+        })?;
+        let min: u8 = min.parse().map_err(|_| Error::Unsupported {
+            feature: "PDF version",
+            detail: format!("catalog /Version /{s} has non-numeric minor"),
+        })?;
+        Ok(Some((maj, min)))
     }
 
     /// Whether object number `num` is *reserved* by the input — the
