@@ -486,11 +486,13 @@ fn run_inspect(path: &str, page_no: usize) -> Result<(), Error> {
             println!("opstats");
         }
         Some(_) => {
-            let (ops, tokens) = doc.page_operations_counted(page)?;
-            let mut stats: std::collections::BTreeMap<&'static str, usize> =
+            let (ops, op_names, tokens) = doc.page_operations_named(page)?;
+            let mut stats: std::collections::BTreeMap<String, usize> =
                 std::collections::BTreeMap::new();
-            for op in &ops {
-                *stats.entry(op.name()).or_insert(0) += 1;
+            for name in &op_names {
+                *stats
+                    .entry(String::from_utf8_lossy(name).into_owned())
+                    .or_insert(0) += 1;
             }
             println!("tokens {tokens}");
             println!("operators {}", ops.len());

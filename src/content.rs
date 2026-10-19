@@ -371,6 +371,30 @@ pub(crate) fn parse_content_stream_counted(
     Ok((ops, tokens))
 }
 
+/// The three results `inspect` needs from a content-stream parse:
+/// the operations, the raw operator token behind each, and the
+/// total lexer-token count.
+pub(crate) type NamedOps = (Vec<Operation>, Vec<Vec<u8>>, usize);
+
+/// Like [`parse_content_stream_counted`] but also returns the exact
+/// operator token for every parsed `Operation` — the bytes as they
+/// appear in the stream (`SC` vs `SCN`, `sc` vs `scn`, or the real
+/// name behind `Unknown`). Used by `inspect`'s `opstats`, which must
+/// report spec operator names, not grouped display names.
+pub(crate) fn parse_content_stream_named(
+    contents: &[Vec<u8>],
+    limits: &Limits,
+) -> Result<NamedOps, Error> {
+    let mut parser = ContentParser::new(limits);
+    for stream in contents {
+        parser.parse_stream(stream)?;
+    }
+    let tokens = parser.tokens_seen;
+    let names = parser.op_names.clone();
+    let ops = parser.finish()?;
+    Ok((ops, names, tokens))
+}
+
 struct ContentParser<'a> {
     limits: &'a Limits,
     operands: Vec<Object>,
@@ -379,6 +403,11 @@ struct ContentParser<'a> {
     /// operands and operators combined. `inspect` reports this as
     /// the raw token count.
     tokens_seen: usize,
+    /// The exact operator bytes behind every entry in `ops`, parallel
+    /// to it — `SC` vs `SCN`, `sc` vs `scn`, or the real name an
+    /// `Unknown` op parsed. `inspect` reports these, not the grouped
+    /// `Operation::name` labels.
+    op_names: Vec<Vec<u8>>,
     /// `q`/`Q` graphics-state stack depth.
     gsave_depth: usize,
     /// Inside `BT`/`ET`.
@@ -396,6 +425,7 @@ impl<'a> ContentParser<'a> {
             operands: Vec::new(),
             ops: Vec::new(),
             tokens_seen: 0,
+            op_names: Vec::new(),
             gsave_depth: 0,
             in_text: false,
             in_compat: false,
@@ -994,6 +1024,7 @@ impl<'a> ContentParser<'a> {
                 }
             }
         };
+        self.op_names.push(op.to_vec());
         self.ops.push(result);
         Ok(())
     }

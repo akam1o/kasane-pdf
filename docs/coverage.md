@@ -311,7 +311,7 @@ editing, no text extraction. The file must contain exactly one page;
 | `fonts` `xobjects` `colorspaces` `patterns` `shadings` `extgstates` `procsets` `properties` | direct entry counts of each `/Resources` sub-dict/array | `0` each |
 | `tokens <count>` | lexer tokens across `/Contents` (operands + operators) | `0` when `/Contents` absent |
 | `operators <count>` | parsed operations | `0` when `/Contents` absent |
-| `opstats [<name>:<count> ...]` | per-operator tallies, name order | `opstats` (bare) when absent |
+| `opstats [<name>:<count> ...]` | per-operator tallies using the *actual* stream token (`SC` vs `SCN`, `sc` vs `scn`, or the real name an `Unknown` op parsed — never a grouped label) | `opstats` (bare) when absent |
 | `contents <ref>` `contents [<ref>, <ref>, ...]` `contents absent` | `/Contents` | `contents absent` |
 | `userunit <v>` `userunit absent` | `/UserUnit` | `userunit absent` |
 | `annot <i> <subtype> rect <llx> <lly> <urx> <ury> [/<k>=<v> ...]` | one line per `/Annots` element, in array order | — |
@@ -330,10 +330,13 @@ resolved — an `annot` value never re-fetches another object.
 
 `tokens` counts every lexer token consumed (operands *and*
 operators), so `tokens >= operators` always. `opstats` aggregates
-by operator name (`BT`, `re`, `S`, `Tj`…) in byte order. A
-malformed content stream — a `/Contents` that isn't a ref or ref
-array, a stream that fails to decode, or a syntax/balance error the
-M2 parser rejects — is a typed error, not silently skipped.
+by the *actual* operator token as it appears in the stream — `SC`
+and `SCN` are counted separately (never the grouped `SC/SCN`
+label), `sc`/`scn` likewise, and an `Unknown` op is reported under
+its real name, not `unknown`. Order is byte order. A malformed
+content stream — a `/Contents` that isn't a ref or ref array, a
+stream that fails to decode, or a syntax/balance error the M2
+parser rejects — is a typed error, not silently skipped.
 
 Errors are typed (`Error::Structure`/`MissingReference`/`Parse`): a
 non-1-page file (the count is reported), a non-array/unresolvable
