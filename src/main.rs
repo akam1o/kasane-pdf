@@ -8,7 +8,9 @@
 //! dump file data. Exit code 0 on success, 1 on any error (the error
 //! is printed with its category).
 
-use kasane_pdf::{pixmap_to_png, render_page, Document, Error, Limits, Object, RenderOptions};
+use kasane_pdf::{
+    pixmap_to_png, render_page, Dict, Document, Error, Limits, Object, RenderOptions,
+};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -39,6 +41,30 @@ fn main() -> ExitCode {
             //  space; color = RGB 0..1; width = stroke width, >0)
             let result = run_annotate_rect(&args[2..]);
             match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error [{}]: {e}", e.kind());
+                    ExitCode::FAILURE
+                }
+            }
+        }
+        Some("inspect") => {
+            // inspect <file.pdf> <page> — describe one page's structure.
+            let (path, page_no) = match (args.get(2), args.get(3)) {
+                (Some(p), Some(n)) => (p, n),
+                _ => {
+                    eprintln!("usage: {prog} inspect <file.pdf> <page-number>");
+                    return ExitCode::from(2);
+                }
+            };
+            let page_no: usize = match page_no.parse() {
+                Ok(n) if n >= 1 => n,
+                _ => {
+                    eprintln!("error: <page-number> must be a positive integer");
+                    return ExitCode::from(2);
+                }
+            };
+            match run_inspect(path, page_no) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(e) => {
                     eprintln!("error [{}]: {e}", e.kind());
@@ -92,6 +118,7 @@ fn main() -> ExitCode {
             );
             eprintln!("       {prog} text <file.pdf> <page-number> [--format json|lines]");
             eprintln!("       {prog} rewrite <file.pdf> --output <out.pdf>");
+            eprintln!("       {prog} inspect <file.pdf> <page-number>");
             ExitCode::from(2)
         }
     }
@@ -297,6 +324,206 @@ fn annotate_usage() -> String {
      then upper-right x y in PDF user space (1/72in, +y up)\n  color: R \
      G B each 0..1;  width: stroke width > 0"
         .into()
+}
+
+/// `inspect` subcommand: `inspect <file.pdf> <page-number>`.
+///
+/// Describe a single page's structure — a diagnostic aid for bug
+/// reports. The file must contain exactly one page; `page-number`
+/// selects it (1-based). Prints a fixed line order:
+///
+/// ```text
+/// page <n>
+/// mediabox <llx> <lly> <urx> <ury>
+/// cropbox  <llx> <lly> <urx> <ury>
+/// rotation <deg>
+/// annotations <count>
+/// fonts <count>
+/// xobjects <count>
+/// colorspaces <count>
+/// patterns <count>
+/// shadings <count>
+/// extgstates <count>
+/// procsets <count>
+/// properties <count>
+/// contents <ref> | contents [<ref> ...] | contents absent
+/// userunit <v> | userunit absent
+/// ```
+///
+/// MediaBox/CropBox/Rotate are the *inherited* values the page tree
+/// already computed. `/Annots` must be an array (or a ref to one);
+/// `/Contents` a ref or an array of refs; `/UserUnit` a number —
+/// anything else is a structural error, not silently coerced.
+fn run_inspect(path: &str, page_no: usize) -> Result<(), Error> {
+    let data = std::fs::read(path)?;
+    let doc = Document::from_bytes(&data)?;
+    if doc.page_count() != 1 {
+        return Err(Error::Structure(format!(
+            "inspect expects a 1-page PDF, found {} pages",
+            doc.page_count()
+        )));
+    }
+    let page = doc
+        .pages()
+        .get(page_no - 1)
+        .ok_or_else(|| Error::Structure(format!("page {page_no} does not exist")))?;
+
+    let mb = page.media_box();
+    let cb = page.crop_box();
+    println!("page {}", page_no);
+    println!(
+        "mediabox {} {} {} {}",
+        fmt_num(mb.llx),
+        fmt_num(mb.lly),
+        fmt_num(mb.urx),
+        fmt_num(mb.ury)
+    );
+    println!(
+        "cropbox {} {} {} {}",
+        fmt_num(cb.llx),
+        fmt_num(cb.lly),
+        fmt_num(cb.urx),
+        fmt_num(cb.ury)
+    );
+    println!("rotation {}", page.rotate());
+
+    // /Annots: must be an array or an indirect ref to one.
+    let page_obj = match page.object_ref() {
+        Some(r) => doc.resolve(r)?,
+        None => {
+            return Err(Error::Structure(
+                "page has no indirect reference — cannot read its dictionary".into(),
+            ))
+        }
+    };
+    let page_dict = page_obj
+        .as_dict()
+        .ok_or_else(|| Error::Structure("page object is not a dictionary".into()))?;
+    let annots = match page_dict.get(b"Annots".as_slice()) {
+        None => 0,
+        Some(o) => {
+            let resolved = doc.deref(o)?;
+            match resolved {
+                Object::Array(a) => a.len(),
+                other => {
+                    return Err(Error::Structure(format!(
+                        "page /Annots is not an array ({other:?})"
+                    )))
+                }
+            }
+        }
+    };
+    println!("annotations {annots}");
+
+    // Resource categories — count direct entries of each sub-dict.
+    // /Resources may be absent (all zero) but if present must
+    // resolve to a dictionary.
+    let res_counts = |dict: Option<&Dict>| -> Result<[usize; 8], Error> {
+        let d = match dict {
+            None => return Ok([0; 8]),
+            Some(d) => d,
+        };
+        let mut out = [0usize; 8];
+        for (i, key) in [
+            b"Font".as_slice(),
+            b"XObject".as_slice(),
+            b"ColorSpace".as_slice(),
+            b"Pattern".as_slice(),
+            b"Shading".as_slice(),
+            b"ExtGState".as_slice(),
+            b"ProcSet".as_slice(),
+            b"Properties".as_slice(),
+        ]
+        .iter()
+        .enumerate()
+        {
+            if let Some(v) = d.get(*key) {
+                let res = doc.deref(v)?;
+                out[i] = match res {
+                    Object::Dict(dd) => dd.len(),
+                    Object::Array(a) => a.len(),
+                    _ => 0,
+                };
+            }
+        }
+        Ok(out)
+    };
+    let res_dict = match page.resources() {
+        None => None,
+        Some(o) => {
+            let resolved = doc.deref(o)?;
+            match resolved {
+                Object::Dict(d) => Some(d.clone()),
+                other => {
+                    return Err(Error::Structure(format!(
+                        "page /Resources is not a dictionary ({other:?})"
+                    )))
+                }
+            }
+        }
+    };
+    let c = res_counts(res_dict.as_ref())?;
+    println!("fonts {}", c[0]);
+    println!("xobjects {}", c[1]);
+    println!("colorspaces {}", c[2]);
+    println!("patterns {}", c[3]);
+    println!("shadings {}", c[4]);
+    println!("extgstates {}", c[5]);
+    println!("procsets {}", c[6]);
+    println!("properties {}", c[7]);
+
+    // /Contents: ref, array of refs, or absent. `page.contents()`
+    // is already single-level resolved — a `Ref` or an array of `Ref`s.
+    match page.contents() {
+        None => println!("contents absent"),
+        Some(Object::Ref(r)) => println!("contents {r}"),
+        Some(Object::Array(items)) => {
+            let mut parts = Vec::with_capacity(items.len());
+            for it in items {
+                match it {
+                    Object::Ref(r) => parts.push(r.to_string()),
+                    other => {
+                        return Err(Error::Structure(format!(
+                            "page /Contents element is not an indirect reference ({other:?})"
+                        )))
+                    }
+                }
+            }
+            println!("contents [{}]", parts.join(" "));
+        }
+        Some(other) => {
+            return Err(Error::Structure(format!(
+                "page /Contents is not a reference or an array ({other:?})"
+            )))
+        }
+    }
+
+    // /UserUnit: absent or a number.
+    match page_dict.get(b"UserUnit".as_slice()) {
+        None => println!("userunit absent"),
+        Some(o) => {
+            let resolved = doc.deref(o)?;
+            match resolved.as_number() {
+                Some(v) => println!("userunit {}", fmt_num(v)),
+                None => {
+                    return Err(Error::Structure(format!(
+                        "page /UserUnit is not a number ({resolved:?})"
+                    )))
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Format a number like the PDF spec writes it: integers without a
+/// decimal point, everything else with full precision.
+fn fmt_num(n: f64) -> String {
+    if n.fract() == 0.0 && n.abs() < 1e15 {
+        format!("{}", n as i64)
+    } else {
+        format!("{n}")
+    }
 }
 
 /// Refuse when `input` and `output` resolve to the same file —

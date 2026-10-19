@@ -449,3 +449,149 @@ fn cli_annotate_rect_failure_preserves_output() {
     assert!(!st.success());
     assert_eq!(fs::read(&dst).unwrap(), b"PREVIOUS");
 }
+
+// ------------------------------------------------------------------
+// M10 — `inspect` subcommand
+// ------------------------------------------------------------------
+
+/// A 1-page PDF whose page carries every field inspect prints:
+/// MediaBox/CropBox, /Annots (2), /Resources with Font+XObject,
+/// a single /Contents ref, and /UserUnit.
+fn inspect_pdf() -> Vec<u8> {
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+          /CropBox [10 20 600 780] /Rotate 90 \
+          /Annots [4 0 R 5 0 R] \
+          /Resources << /Font << /F1 6 0 R >> /XObject << /Im1 7 0 R >> >> \
+          /Contents 8 0 R /UserUnit 2 >>",
+    );
+    push(4, b"<< /Type /Annot /Subtype /Text /Rect [0 0 9 9] >>");
+    push(5, b"<< /Type /Annot /Subtype /Text /Rect [9 9 18 18] >>");
+    push(6, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+    push(
+        7,
+        b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 >>",
+    );
+    push(8, b"<< /Length 4 >>\nstream\nABCD\nendstream");
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 9\n0000000000 65535 f \n".to_vec());
+    for n in 1..9u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 9 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    parts.concat()
+}
+
+#[test]
+fn cli_inspect_single_page_full() {
+    let dir = tmpdir("inspect-full");
+    let src = dir.join("in.pdf");
+    fs::write(&src, inspect_pdf()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    let expected = [
+        "page 1",
+        "mediabox 0 0 612 792",
+        "cropbox 10 20 600 780",
+        "rotation 90",
+        "annotations 2",
+        "fonts 1",
+        "xobjects 1",
+        "colorspaces 0",
+        "patterns 0",
+        "shadings 0",
+        "extgstates 0",
+        "procsets 0",
+        "properties 0",
+        "contents 8 0 R",
+        "userunit 2",
+    ];
+    let got: Vec<&str> = s.lines().collect();
+    assert_eq!(got, expected, "mismatch:\n{s}");
+}
+
+#[test]
+fn cli_inspect_rejects_multi_page() {
+    let dir = tmpdir("inspect-multi");
+    let src = dir.join("in.pdf");
+    fs::write(&src, fs::read(fixture("pages.pdf")).unwrap()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(!out.status.success());
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(e.contains("3 pages"), "error must name the page count: {e}");
+}
+
+#[test]
+fn cli_inspect_contents_array_and_absent() {
+    // contents_array fixture: /Contents is an array of refs.
+    let dir = tmpdir("inspect-arr");
+    let src = dir.join("a.pdf");
+    fs::write(&src, fs::read(fixture("contents_array.pdf")).unwrap()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("contents ["));
+
+    // contents_none fixture: no /Contents at all.
+    let src2 = dir.join("n.pdf");
+    fs::write(&src2, fs::read(fixture("contents_none.pdf")).unwrap()).unwrap();
+    let out = bin()
+        .args(["inspect"])
+        .arg(&src2)
+        .arg("1")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("contents absent"));
+}
+
+#[test]
+fn cli_inspect_bad_annots_is_error() {
+    // /Annots that is a number — malformed, must error not print 0.
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] /Annots 42 >>",
+    );
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 4\n0000000000 65535 f \n".to_vec());
+    for n in 1..4u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 4 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    let dir = tmpdir("inspect-badannots");
+    let src = dir.join("in.pdf");
+    fs::write(&src, parts.concat()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(!out.status.success(), "bad /Annots type must fail");
+}
