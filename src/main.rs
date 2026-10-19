@@ -476,6 +476,29 @@ fn run_inspect(path: &str, page_no: usize) -> Result<(), Error> {
     println!("procsets {}", c[6]);
     println!("properties {}", c[7]);
 
+    // Content-stream statistics: token count (operands + operators),
+    // operator count, and per-operator tallies in name order.
+    // `contents absent` → all zeros.
+    match page.contents() {
+        None => {
+            println!("tokens 0");
+            println!("operators 0");
+            println!("opstats");
+        }
+        Some(_) => {
+            let (ops, tokens) = doc.page_operations_counted(page)?;
+            let mut stats: std::collections::BTreeMap<&'static str, usize> =
+                std::collections::BTreeMap::new();
+            for op in &ops {
+                *stats.entry(op.name()).or_insert(0) += 1;
+            }
+            println!("tokens {tokens}");
+            println!("operators {}", ops.len());
+            let stats_str: Vec<String> = stats.iter().map(|(n, c)| format!("{n}:{c}")).collect();
+            println!("opstats {}", stats_str.join(" "));
+        }
+    }
+
     // /Contents: ref, array of refs, or absent. `page.contents()`
     // is already single-level resolved — a `Ref` or an array of `Ref`s.
     match page.contents() {

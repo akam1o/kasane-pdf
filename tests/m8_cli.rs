@@ -483,7 +483,7 @@ fn inspect_pdf() -> Vec<u8> {
         7,
         b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 >>",
     );
-    push(8, b"<< /Length 4 >>\nstream\nABCD\nendstream");
+    push(8, b"<< /Length 3 >>\nstream\nq Q\nendstream");
     let xref: usize = parts.iter().map(|p| p.len()).sum();
     parts.push(b"xref\n0 9\n0000000000 65535 f \n".to_vec());
     for n in 1..9u32 {
@@ -522,6 +522,9 @@ fn cli_inspect_single_page_full() {
         "extgstates 0",
         "procsets 0",
         "properties 0",
+        "tokens 2",
+        "operators 2",
+        "opstats Q:1 q:1",
         "contents 8 0 R",
         "userunit 2",
         "annot 0 Text rect 0 0 9 9 /Rect=[0 0 9 9] /Subtype=/Text /Type=/Annot",
@@ -544,10 +547,37 @@ fn cli_inspect_rejects_multi_page() {
 
 #[test]
 fn cli_inspect_contents_array_and_absent() {
-    // contents_array fixture: /Contents is an array of refs.
+    // A /Contents array of two valid streams — the inspect line is
+    // the ref array, and the stats aggregate across both streams.
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] \
+          /Contents [4 0 R 5 0 R] >>",
+    );
+    push(4, b"<< /Length 4 >>\nstream\nq Q\nendstream");
+    push(5, b"<< /Length 4 >>\nstream\nq Q\nendstream");
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 6\n0000000000 65535 f \n".to_vec());
+    for n in 1..6u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 6 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
     let dir = tmpdir("inspect-arr");
     let src = dir.join("a.pdf");
-    fs::write(&src, fs::read(fixture("contents_array.pdf")).unwrap()).unwrap();
+    fs::write(&src, parts.concat()).unwrap();
     let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
     assert!(out.status.success());
     let s = String::from_utf8_lossy(&out.stdout);
@@ -556,6 +586,10 @@ fn cli_inspect_contents_array_and_absent() {
         s.lines().any(|l| l == "contents [4 0 R, 5 0 R]"),
         "expected 'contents [4 0 R, 5 0 R]', got:\n{s}"
     );
+    // Two `q Q` streams → tokens 4, operators 4, opstats Q:2 q:2.
+    assert!(s.lines().any(|l| l == "tokens 4"), "tokens:\n{s}");
+    assert!(s.lines().any(|l| l == "operators 4"), "ops:\n{s}");
+    assert!(s.lines().any(|l| l == "opstats Q:2 q:2"), "opstats:\n{s}");
 
     // contents_none fixture: no /Contents at all.
     let src2 = dir.join("n.pdf");
@@ -567,7 +601,11 @@ fn cli_inspect_contents_array_and_absent() {
         .output()
         .unwrap();
     assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stdout).contains("contents absent"));
+    let s2 = String::from_utf8_lossy(&out.stdout);
+    assert!(s2.lines().any(|l| l == "contents absent"));
+    assert!(s2.lines().any(|l| l == "tokens 0"));
+    assert!(s2.lines().any(|l| l == "operators 0"));
+    assert!(s2.lines().any(|l| l == "opstats"));
 }
 
 #[test]
@@ -637,7 +675,7 @@ fn annot_inspect_pdf() -> Vec<u8> {
           /AP << /N 7 0 R >> /BS << /S /S /W 2 >> /C [1 0 0] \
           /Contents (comment) /F 4 /P 3 0 R >>",
     );
-    push(6, b"<< /Length 4 >>\nstream\nABCD\nendstream");
+    push(6, b"<< /Length 3 >>\nstream\nq Q\nendstream");
     push(
         7,
         b"<< /Type /XObject /Subtype /Form /BBox [0 0 80 50] /Length 0 >>\nstream\n\nendstream",
@@ -839,4 +877,126 @@ fn cli_inspect_annot_bad_element_errors() {
         !out.status.success(),
         "non-ref/dict annot element must fail"
     );
+}
+
+// ------------------------------------------------------------------
+// M12 — `inspect` content-stream statistics
+// ------------------------------------------------------------------
+
+/// A 1-page PDF whose /Contents is exactly `q 2 w 10 10 90 70 re S Q`
+/// — 6 operators, 14 lexer tokens (q,2,w,10,10,90,70,re,S,Q = wait:
+/// the *operators* are q,w,re,S,Q and operands are 2,10,10,90,70).
+/// tokens = 5 operators + 5 operands = 10? No — count every token:
+/// q(1) 2(2) w(3) 10(4) 10(5) 90(6) 70(7) re(8) S(9) Q(10) = 10.
+fn tokens_pdf() -> Vec<u8> {
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] \
+          /Contents 4 0 R /Resources << >> >>",
+    );
+    push(
+        4,
+        b"<< /Length 22 >>\nstream\nq 2 w 10 10 90 70 re S Q\nendstream",
+    );
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 5\n0000000000 65535 f \n".to_vec());
+    for n in 1..5u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 5 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    parts.concat()
+}
+
+#[test]
+fn cli_inspect_tokens_operators_opstats() {
+    let dir = tmpdir("inspect-tokens");
+    let src = dir.join("in.pdf");
+    fs::write(&src, tokens_pdf()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    for line in ["tokens 10", "operators 5", "opstats Q:1 S:1 q:1 re:1 w:1"] {
+        assert!(s.lines().any(|l| l == line), "missing '{line}':\n{s}");
+    }
+}
+
+#[test]
+fn cli_inspect_tokens_zero_when_no_contents() {
+    let dir = tmpdir("inspect-tokens-none");
+    let src = dir.join("in.pdf");
+    fs::write(&src, fs::read(fixture("contents_none.pdf")).unwrap()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    for line in ["tokens 0", "operators 0", "opstats"] {
+        assert!(s.lines().any(|l| l == line), "missing '{line}':\n{s}");
+    }
+}
+
+#[test]
+fn cli_inspect_tokens_counts_array_streams() {
+    // Two `q Q` streams in /Contents — tokens and operators aggregate.
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] \
+          /Contents [4 0 R 5 0 R] >>",
+    );
+    push(4, b"<< /Length 4 >>\nstream\nq Q\nendstream");
+    push(5, b"<< /Length 4 >>\nstream\nq Q\nendstream");
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 6\n0000000000 65535 f \n".to_vec());
+    for n in 1..6u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 6 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    let dir = tmpdir("inspect-tokens-arr");
+    let src = dir.join("in.pdf");
+    fs::write(&src, parts.concat()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    let toks: usize = s
+        .lines()
+        .find_map(|l| l.strip_prefix("tokens "))
+        .unwrap()
+        .parse()
+        .unwrap();
+    let ops: usize = s
+        .lines()
+        .find_map(|l| l.strip_prefix("operators "))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(toks > 0 && ops > 0, "expected nonzero counts:\n{s}");
+    assert!(toks >= ops, "tokens {toks} must be >= operators {ops}");
 }

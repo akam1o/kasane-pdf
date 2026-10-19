@@ -309,6 +309,9 @@ editing, no text extraction. The file must contain exactly one page;
 | `rotation <deg>` | inherited `/Rotate` | `0` |
 | `annotations <count>` | `/Annots` array length | `0` |
 | `fonts` `xobjects` `colorspaces` `patterns` `shadings` `extgstates` `procsets` `properties` | direct entry counts of each `/Resources` sub-dict/array | `0` each |
+| `tokens <count>` | lexer tokens across `/Contents` (operands + operators) | `0` when `/Contents` absent |
+| `operators <count>` | parsed operations | `0` when `/Contents` absent |
+| `opstats [<name>:<count> ...]` | per-operator tallies, name order | `opstats` (bare) when absent |
 | `contents <ref>` `contents [<ref>, <ref>, ...]` `contents absent` | `/Contents` | `contents absent` |
 | `userunit <v>` `userunit absent` | `/UserUnit` | `userunit absent` |
 | `annot <i> <subtype> rect <llx> <lly> <urx> <ury> [/<k>=<v> ...]` | one line per `/Annots` element, in array order | — |
@@ -325,12 +328,20 @@ arrays `[v0 v1 …]`, dicts `<< /k v … >>`, refs verbatim `n g R`,
 streams as `<stream>` (dict not expanded). Refs are shown, not
 resolved — an `annot` value never re-fetches another object.
 
-Errors are typed (`Error::Structure`/`MissingReference`): a
+`tokens` counts every lexer token consumed (operands *and*
+operators), so `tokens >= operators` always. `opstats` aggregates
+by operator name (`BT`, `re`, `S`, `Tj`…) in byte order. A
+malformed content stream — a `/Contents` that isn't a ref or ref
+array, a stream that fails to decode, or a syntax/balance error the
+M2 parser rejects — is a typed error, not silently skipped.
+
+Errors are typed (`Error::Structure`/`MissingReference`/`Parse`): a
 non-1-page file (the count is reported), a non-array/unresolvable
 `/Annots`, a non-dict/unresolvable `/Resources`, a `/Contents` that is
-neither a ref nor an array of refs, a non-numeric `/UserUnit`, or a
-malformed annotation element. Nothing is silently coerced — inspect
-explains the structure as it is, or fails.
+neither a ref nor an array of refs, an undecodable or unbalanced
+content stream, a non-numeric `/UserUnit`, or a malformed annotation
+element. Nothing is silently coerced — inspect explains the
+structure as it is, or fails.
 
 ## Robustness
 
