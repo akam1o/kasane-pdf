@@ -280,6 +280,13 @@ impl Document {
         self.header_version
     }
 
+    /// Whether `(num, gen)` is a live object in the input file —
+    /// used by the edit session to avoid colliding synthetic numbers
+    /// with real ones (in-use *or* compressed counts).
+    pub(crate) fn object_exists(&self, num: u32, gen: u16) -> bool {
+        self.xref.contains(num, gen)
+    }
+
     /// Pages in document order, with inherited attributes applied.
     pub fn pages(&self) -> &[Page] {
         &self.pages

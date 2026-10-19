@@ -200,21 +200,164 @@ fn appearance_stream_structure() {
         dict.get(b"Subtype".as_slice()).unwrap().as_name().unwrap(),
         b"Form"
     );
-    // BBox is the Rect padded by half the stroke width (2/2 = 1).
+    // BBox = [0 0 w h] (form space); Matrix translates to Rect.ll.
     let bb = dict.get(b"BBox".as_slice()).unwrap().as_array().unwrap();
     assert_eq!(
         bb.iter()
             .map(|o| o.as_number().unwrap())
             .collect::<Vec<_>>(),
-        vec![9.0, 9.0, 101.0, 81.0]
+        vec![0.0, 0.0, 90.0, 70.0]
     );
-    // Body strokes the rect in the annot's colour and width.
+    let m = dict.get(b"Matrix".as_slice()).unwrap().as_array().unwrap();
+    assert_eq!(
+        m.iter().map(|o| o.as_number().unwrap()).collect::<Vec<_>>(),
+        vec![1.0, 0.0, 0.0, 1.0, 10.0, 10.0]
+    );
+    // Body strokes the *inner* rect (centreline inset by half width=1).
     let body = String::from_utf8_lossy(data);
     assert!(body.contains("1 0 0 RG"), "no stroke colour: {body}");
     assert!(body.contains("2 w"), "no line width: {body}");
-    assert!(body.contains("10 10 90 70 re"), "no rect path: {body}");
+    assert!(body.contains("1 1 88 68 re"), "no inner rect: {body}");
     assert!(body.contains("S"), "no stroke op: {body}");
     assert!(body.starts_with("q\n") && body.trim_end().ends_with("Q"));
+}
+
+/// Fetch Rect, appearance BBox and Matrix for a page's first annot
+/// and return them as `Vec<f64>` for the transform checks.
+fn appearance_geometry(d: &Document, page_index: usize) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let annots = annots_of(d, page_index);
+    let a = annot_dict(d, &annots[0]);
+    let rect = a
+        .get(b"Rect".as_slice())
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o.as_number().unwrap())
+        .collect::<Vec<_>>();
+    let ap = a.get(b"AP".as_slice()).unwrap().as_dict().unwrap();
+    let n_ref = ap.get(b"N".as_slice()).unwrap().as_ref().unwrap();
+    let n_obj = d.resolve(n_ref).unwrap();
+    let (dict, _) = n_obj.as_stream().unwrap();
+    let bb = dict
+        .get(b"BBox".as_slice())
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o.as_number().unwrap())
+        .collect::<Vec<_>>();
+    let m = dict
+        .get(b"Matrix".as_slice())
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o.as_number().unwrap())
+        .collect::<Vec<_>>();
+    (rect, bb, m)
+}
+
+#[test]
+fn appearance_transform_preserves_geometry() {
+    // Rect [10 10 100 80] w=2: AA maps inner rect [1 1 89 69] to
+    // [11 11 99 79]; stroke outer edge == Rect; width unscaled.
+    let out = square_on(0, &page_pdf(""));
+    let d = reparse(&out);
+    let (rect, _bb, m) = appearance_geometry(&d, 0);
+    // Transformed BBox == Rect, so A = identity and AA = Matrix:
+    // a pure translate + unit scale.
+    let tx = |x: f64| m[4] + x * m[0];
+    let ty = |y: f64| m[5] + y * m[3];
+    assert_eq!(m[0], 1.0, "x scale must be 1");
+    assert_eq!(m[3], 1.0, "y scale must be 1");
+    // Inner stroked rect [1 1 89 69] maps inside Rect.
+    assert_eq!((tx(1.0), ty(1.0)), (11.0, 11.0));
+    assert_eq!((tx(89.0), ty(69.0)), (99.0, 79.0));
+    // Outer stroke edge (half width=1 out) coincides with Rect.
+    let half = 1.0;
+    assert_eq!(tx(1.0) - half, rect[0]);
+    assert_eq!(ty(1.0) - half, rect[1]);
+    assert_eq!(tx(89.0) + half, rect[2]);
+    assert_eq!(ty(69.0) + half, rect[3]);
+}
+
+/// Run one add+rewrite and return (rect, appearance BBox, Matrix).
+fn geom(rect: Rect, width: f64) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let d = doc(&page_pdf(""));
+    let mut e = d.edit().unwrap();
+    e.add_square(0, rect, [0.0, 0.0, 0.0], width).unwrap();
+    let out = e.rewrite().unwrap();
+    let d2 = reparse(&out);
+    appearance_geometry(&d2, 0)
+}
+
+#[test]
+fn appearance_geometry_wide_tall_thick() {
+    // Wide rect + thick stroke: inner rect must stay valid and the
+    // outer edge still == Rect (stroke never exceeds the border).
+    let (rect, _bb, m) = geom(
+        Rect {
+            llx: 0.0,
+            lly: 0.0,
+            urx: 200.0,
+            ury: 40.0,
+        },
+        8.0,
+    );
+    let tx = |x: f64| m[4] + x * m[0];
+    let ty = |y: f64| m[5] + y * m[3];
+    let half = 4.0;
+    // inner centreline rect [4 4 196 36] maps to page [4 4 196 36].
+    assert_eq!((tx(4.0), ty(4.0)), (4.0, 4.0));
+    assert_eq!((tx(196.0), ty(36.0)), (196.0, 36.0));
+    assert_eq!(tx(4.0) - half, rect[0]);
+    assert_eq!(tx(196.0) + half, rect[2]);
+    assert_eq!(ty(4.0) - half, rect[1]);
+    assert_eq!(ty(36.0) + half, rect[3]);
+}
+
+#[test]
+fn appearance_geometry_tall_thin() {
+    // Tall thin rect: same invariants in the other aspect.
+    let (rect, _bb, m) = geom(
+        Rect {
+            llx: 0.0,
+            lly: 0.0,
+            urx: 40.0,
+            ury: 200.0,
+        },
+        1.0,
+    );
+    let tx = |x: f64| m[4] + x * m[0];
+    let ty = |y: f64| m[5] + y * m[3];
+    let half = 0.5;
+    assert_eq!(tx(0.5) - half, rect[0]);
+    assert_eq!(tx(39.5) + half, rect[2]);
+    assert_eq!(ty(0.5) - half, rect[1]);
+    assert_eq!(ty(199.5) + half, rect[3]);
+}
+
+#[test]
+fn appearance_geometry_negative_origin() {
+    // Rect with negative llx/lly — Matrix just translates to it; the
+    // inner-rect invariant is unchanged.
+    let (rect, _bb, m) = geom(
+        Rect {
+            llx: -50.0,
+            lly: -30.0,
+            urx: 50.0,
+            ury: 30.0,
+        },
+        2.0,
+    );
+    let tx = |x: f64| m[4] + x * m[0];
+    let ty = |y: f64| m[5] + y * m[3];
+    let half = 1.0;
+    assert_eq!(tx(1.0) - half, rect[0], "{rect:?}");
+    assert_eq!(tx(99.0) + half, rect[2]);
+    assert_eq!(ty(1.0) - half, rect[1]);
+    assert_eq!(ty(59.0) + half, rect[3]);
 }
 
 #[test]
@@ -803,4 +946,174 @@ fn synthetic_object_limit() {
     )
     .unwrap();
     assert!(matches!(e.rewrite(), Err(Error::LimitExceeded { .. })));
+}
+
+// ------------------------------------------------------------------
+// §6  synthetic-number collision handling (M9.1)
+// ------------------------------------------------------------------
+
+#[test]
+fn synthetic_skips_real_object_at_synth_top() {
+    // u32::MAX-1 is the first candidate; put a real object there
+    // (reachable via /Annots so it survives rewrite's reachability
+    // filter — an orphan would legitimately be dropped anyway).
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    // Page's /Annots references the high object, so it IS reachable.
+    push(
+        3,
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [{} 0 R] >>",
+            u32::MAX - 1
+        )
+        .as_bytes(),
+    );
+    push(
+        u32::MAX - 1,
+        b"<< /Type /Annot /Subtype /Text /Rect [1 1 2 2] /Contents (keep) >>",
+    );
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 4\n0000000000 65535 f \n".to_vec());
+    for n in 1..4u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    if let Some((_, o)) = offs.iter().find(|(on, _)| *on == u32::MAX - 1) {
+        parts.push(format!("{} 1\n{o:010} 00000 n \n", u32::MAX - 1).into_bytes());
+    }
+    parts.push(format!("trailer\n<< /Size {} /Root 1 0 R >>\n", u32::MAX).into_bytes());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    let src = parts.concat();
+    let d = doc(&src);
+    let mut e = d.edit().unwrap();
+    e.add_square(
+        0,
+        Rect {
+            llx: 1.0,
+            lly: 1.0,
+            urx: 50.0,
+            ury: 50.0,
+        },
+        [1.0, 0.0, 0.0],
+        1.0,
+    )
+    .unwrap();
+    let out = e.rewrite().unwrap();
+    let d2 = reparse(&out);
+    let annots = annots_of(&d2, 0);
+    // Original annot + new square, in that order.
+    assert_eq!(annots.len(), 2);
+    let first = annot_dict(&d2, &annots[0]);
+    assert_eq!(
+        first.get(b"Subtype".as_slice()).unwrap().as_name().unwrap(),
+        b"Text"
+    );
+    let second = annot_dict(&d2, &annots[1]);
+    assert_eq!(
+        second
+            .get(b"Subtype".as_slice())
+            .unwrap()
+            .as_name()
+            .unwrap(),
+        b"Square"
+    );
+    // The pre-existing annot's body is preserved verbatim.
+    assert_eq!(
+        first.get(b"Contents".as_slice()).unwrap(),
+        &Object::String(b"keep".to_vec())
+    );
+}
+
+#[test]
+fn alloc_skips_existing_and_prior_synthetic() {
+    // Deterministic unit check on the allocator through the public
+    // API: three squares on one page share one /Annots array but each
+    // get distinct synthetic numbers — none equal to a real object.
+    let d = doc(&page_pdf(""));
+    let mut e = d.edit().unwrap();
+    for _ in 0..3 {
+        e.add_square(
+            0,
+            Rect {
+                llx: 0.0,
+                lly: 0.0,
+                urx: 9.0,
+                ury: 9.0,
+            },
+            [0.0; 3],
+            1.0,
+        )
+        .unwrap();
+    }
+    let out = e.rewrite().unwrap();
+    let d2 = reparse(&out);
+    // 3 annots + 3 appearances + 1 array + 1 page dict = 8 synthetic.
+    // The page's /Annots must point at the single new array.
+    let annots = annots_of(&d2, 0);
+    assert_eq!(annots.len(), 3);
+}
+
+#[test]
+fn input_dangling_ref_not_resolved_to_synthetic() {
+    // A page whose /Annots references an object number that happens to
+    // equal the synthetic base — but the object doesn't exist. The
+    // pre-existing dangling ref is an input bug; annotate must not
+    // silently "fix" it by landing a synthetic object there.
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    // Page references u32::MAX-1 0 R as its /Annots — dangling.
+    push(
+        3,
+        format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots {} 0 R >>",
+            u32::MAX - 1
+        )
+        .as_bytes(),
+    );
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 4\n0000000000 65535 f \n".to_vec());
+    for n in 1..4u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 4 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    let src = parts.concat();
+    let d = doc(&src);
+    // The dangling ref is an input defect — adding an annot must
+    // surface it, not mask it. The edit copies the page dict and
+    // reads /Annots; resolving the dangling ref must fail.
+    let mut e = d.edit().unwrap();
+    e.add_square(
+        0,
+        Rect {
+            llx: 0.0,
+            lly: 0.0,
+            urx: 9.0,
+            ury: 9.0,
+        },
+        [0.0; 3],
+        1.0,
+    )
+    .unwrap();
+    let r = e.rewrite();
+    assert!(r.is_err(), "dangling input ref must fail, got {r:?}");
 }

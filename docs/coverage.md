@@ -266,11 +266,12 @@ overlay plus the live document through the normal rewrite path.
 | Feature | Status | Notes |
 |---|---|---|
 | `/Subtype /Square` on a page | ✅ | `add_square(page, rect, rgb, width)` |
+| Rect meaning | ✅ | **the annotation's outer bounding box** — the stroke's outer edge, not the path centreline (§12.5.5 + "Border Styles": border drawn *inside* the Rect) |
 | Rect space | ✅ | un-rotated PDF user space (+x right, +y up); CropBox/Rotate not applied — same space M6.1 reports |
 | Stroke colour | ✅ | `/C` `[r g b]`, each channel validated finite `0..=1` — out-of-range is an error, never clamped |
 | Line width | ✅ | `/BS << /S /S /W w >>`; finite and `> 0`, and `< min(rect w,h)` so the stroke can't invert |
 | Fill | — | interior is unfilled (`S` stroke only); no `/IC` emitted |
-| Appearance stream | ✅ | generated `/AP << /N >>` Form XObject — `q`, `RG`, `w`, `re`, `S`, `Q`; `/BBox` = Rect + half-width padding so the stroke is never clipped; no `/Resources` needed (no named resources used) |
+| Appearance stream | ✅ | generated `/AP << /N >>` Form XObject — `BBox [0 0 w h]`, `Matrix [1 0 0 1 llx lly]`, body `q RG w re S Q` stroking the *inner* rect `[w/2 w/2 w-w/2 h-w/2]`; transformed BBox coincides with Rect so the annotation mapping (`AA = Matrix × A`) is a pure translate and the stroke width is never rescaled or clipped |
 | Flags | ✅ | `/F 4` (Print) — visible on screen and on paper |
 | Page link | ✅ | `/P` set to the page's indirect ref |
 | Multiple annots | ✅ | per page and across pages; each page's `/Annots` array is materialised once |
@@ -278,6 +279,7 @@ overlay plus the live document through the normal rewrite path.
 | Existing annots / links | ✅ | preserved verbatim in the new array |
 | `/UserUnit` ≠ 1 | ❌ | `Error::Unsupported` — the rect is in default user units and a scaled page would misplace it |
 | Refusals | ✅ | all M8 rewrite refusals still apply (encryption, signatures, version, named dests, malformed structure, limits) |
+| Synthetic object numbers | ✅ | allocated downward from `u32::MAX` skipping any `(num,0)` that exists in the input xref or is already taken — a synthetic ref can never alias a real or prior synthetic object; exhaustion and `max_edit_objects` are typed errors |
 | Out-of-range page / non-finite rect / bad colour / bad width | ❌ | `Error::Structure`, no partial state |
 | Reversed rect (llx>urx or lly>ury) | ❌ | refused — not silently normalized |
 
