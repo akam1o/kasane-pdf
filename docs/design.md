@@ -324,6 +324,15 @@ decoded-bytes cost. `unsafe` is not used anywhere.
       the indirect ref slot is skipped at collection; CLI same-file
       check uses canonicalize + Unix (dev,ino); temp file uses
       `create_new(true)` + `sync_data` + `rename`. See coverage.md.
+   - M8.2: rewrite validation — header-version parse failure no longer
+      falls back to 1.7 (returned as `None`, rewrite refuses);
+      catalog `/Version` present-but-malformed refuses rather than
+      being ignored. Fixture `/Resources` added where legitimately
+      absent (blank pages); adversarial inputs kept as-is. CLI
+      integration tests via `CARGO_BIN_EXE`; `write_atomic` helper
+      extracted for unit tests (create_new collision/symlink/rename
+      failure). `scripts/verify_rewrite.sh` runs qpdf on all
+      well-formed fixtures — exit 0, zero warnings required.
 2. Rendering — transparency, patterns, ICC colour, masks
    (`/SMask`, `/ImageMask`), Type 0/CID + non-embedded fonts,
    remaining filters.

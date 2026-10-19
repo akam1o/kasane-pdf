@@ -13,16 +13,20 @@ renderer and writer are implemented here.
 
 ## Status
 
-**M8 / M8.1 are complete.** Rewrite any loaded document to a fresh
-single-revision PDF via `kasane-pdf rewrite in.pdf --output out.pdf`
-or the `rewrite(&Document)` API — preserving page tree, contents,
-fonts, text and basic links. M8.1 tightened the write guarantees:
-named destinations are refused outright, the output version is
-`max(header, catalog /Version)` with 2.0+ refused, and the CLI save
-path canonicalize+inode-checks identity, writes a `create_new` temp
-file, `sync_data`s and renames. See [`docs/coverage.md`](docs/coverage.md)
-for the detailed support matrix and [`docs/design.md`](docs/design.md)
-for architecture and licensing notes.
+**M8 / M8.1 / M8.2 are complete.** Rewrite any loaded document to a
+fresh single-revision PDF via `kasane-pdf rewrite in.pdf --output
+out.pdf` or the `rewrite(&Document)` API — preserving page tree,
+contents, fonts, text and basic links. M8.1 tightened the write
+guarantees (named destinations refused; output version =
+`max(header, catalog /Version)`, 2.0+ refused; canonicalize+inode
+identity check; `create_new` + `sync_data` + `rename` save path).
+M8.2 completed validation: a malformed `%PDF-M.m` header or catalog
+`/Version` is refused rather than guessed, and `scripts/
+verify_rewrite.sh` runs `qpdf --check` (12.4.2) on every well-formed
+fixture — exit 0, zero warnings. See [`docs/coverage.md`](
+docs/coverage.md) for the detailed support matrix and
+[`docs/design.md`](docs/design.md) for architecture and licensing
+notes.
 
 What works today:
 

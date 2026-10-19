@@ -247,40 +247,75 @@ impl<'a> Collector<'a> {
 }
 
 /// The effective input version: `max(header_version, catalog_version)`.
-/// `2.0` and above are refused (M8 never writes a 2.x header — it does
-/// not translate 2.0 features down, so we cannot claim 1.7 either;
-/// 2.0-only features would silently break).
+///
+/// Guarantees we can write: the file's declared version is only
+/// emitted when we actually know it. `None` on the header (malformed
+/// `%PDF-M.m`) is a **refusal**, not a silent `1.7` — the writer
+/// must not fabricate a version for a file whose own declaration it
+/// could not read. A catalog `/Version` that is present but not a
+/// valid `M.m` name is likewise refused rather than ignored.
+/// `2.0` and above are refused: M8 does not translate 2.0-only
+/// features down, so claiming `1.7` would silently break them.
 fn effective_version(doc: &Document) -> Result<String, Error> {
-    let (maj, min) = doc.header_version();
-    let cat = catalog_version_num(doc);
-    // Effective = max of the two (the catalog's /Version overrides the
-    // header upward only — §7.5.2 note: it may be *higher* than the
-    // header, never lower).
+    let hdr = doc.header_version().ok_or_else(|| Error::Unsupported {
+        feature: "PDF version",
+        detail: "header %PDF- token is malformed — cannot determine ".to_string()
+            + "the version to declare on output",
+    })?;
+
+    // Catalog /Version: absent → use header; present but not a valid
+    // name token → refuse (a malformed version is not "no version").
+    let cat = catalog_version_num(doc)?;
     let effective = match cat {
-        Some((cmaj, cmin)) if cmaj > maj || (cmaj == maj && cmin > min) => (cmaj, cmin),
-        _ => (maj, min),
+        Some(c) if c > hdr => c,
+        _ => hdr,
     };
     // Guaranteed-write ceiling: 1.7. Anything above is Unsupported.
     if effective > BASE_VERSION {
         return Err(Error::Unsupported {
             feature: "PDF version",
             detail: format!(
-                "document declares PDF {effective:?} — cannot rewrite as ≤{}.{}",
-                BASE_VERSION.0, BASE_VERSION.1
+                "document declares PDF {}.{} — cannot rewrite as ≤{}.{}",
+                effective.0, effective.1, BASE_VERSION.0, BASE_VERSION.1
             ),
         });
     }
     Ok(format!("{}.{}", effective.0, effective.1))
 }
 
-/// Catalog `/Version` as `(major, minor)` — `None` if absent/malformed.
-fn catalog_version_num(doc: &Document) -> Option<(u8, u8)> {
-    let name = doc.catalog().get(b"Version".as_slice())?.as_name()?;
-    let s = std::str::from_utf8(name).ok()?;
-    let (maj, min) = s.split_once('.')?;
-    let maj = maj.trim().parse::<u8>().ok()?;
-    let min = min.trim().parse::<u8>().ok()?;
-    Some((maj, min))
+/// Catalog `/Version` as `(major, minor)`.
+/// `Ok(None)` when `/Version` is absent.
+/// `Err(Unsupported)` when `/Version` is present but malformed — the
+/// value is a real dictionary entry we cannot silently drop, and an
+/// unparseable version cannot be compared to the header.
+fn catalog_version_num(doc: &Document) -> Result<Option<(u8, u8)>, Error> {
+    let name = match doc.catalog().get(b"Version".as_slice()) {
+        Some(o) => o,
+        None => return Ok(None),
+    };
+    // Spec §7.5.2: /Version is a name, e.g. /1.7. Anything else is
+    // malformed input we must not pretend is absent.
+    let raw = name.as_name().ok_or_else(|| Error::Unsupported {
+        feature: "PDF version",
+        detail: "catalog /Version is not a name object".to_string(),
+    })?;
+    let s = std::str::from_utf8(raw).map_err(|_| Error::Unsupported {
+        feature: "PDF version",
+        detail: "catalog /Version is not valid UTF-8".to_string(),
+    })?;
+    let (maj, min) = s.split_once('.').ok_or_else(|| Error::Unsupported {
+        feature: "PDF version",
+        detail: format!("catalog /Version /{s} is not M.m form"),
+    })?;
+    let maj: u8 = maj.parse().map_err(|_| Error::Unsupported {
+        feature: "PDF version",
+        detail: format!("catalog /Version /{s} has non-numeric major"),
+    })?;
+    let min: u8 = min.parse().map_err(|_| Error::Unsupported {
+        feature: "PDF version",
+        detail: format!("catalog /Version /{s} has non-numeric minor"),
+    })?;
+    Ok(Some((maj, min)))
 }
 
 /// Scan every reachable `/Annots` entry and `/OpenAction`/`/GoTo`
