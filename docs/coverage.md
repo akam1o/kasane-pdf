@@ -1,6 +1,6 @@
 # kasane-pdf support matrix
 
-Milestone: **M5**. Everything not listed as supported below is
+Milestone: **M6**. Everything not listed as supported below is
 unsupported and reported as a typed error — never silently skipped or
 returned as a partial result.
 

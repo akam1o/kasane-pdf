@@ -377,6 +377,7 @@ pub fn render_page(
         text_tm: Matrix::IDENTITY,
         text_tlm: Matrix::IDENTITY,
         text_codes: 0,
+        extract: None,
     };
     renderer.run(&ops)?;
 
@@ -509,7 +510,7 @@ fn build_page_transform(
 // The interpreter
 // --------------------------------------------------------------------
 
-struct Renderer<'a> {
+pub(crate) struct Renderer<'a> {
     limits: &'a Limits,
     doc: &'a Document,
     pixmap: &'a mut Pixmap,
@@ -541,10 +542,83 @@ struct Renderer<'a> {
     /// bounds total glyph work regardless of how strings are split
     /// across `Tj`/`TJ`/forms.
     text_codes: u64,
+    /// If `Some`, text-showing ops also record an [`ExtractedChar`]
+    /// per character code — used by [`crate::text_extract`].
+    extract: Option<Vec<crate::text_extract::CharInfo>>,
 }
 
 impl<'a> Renderer<'a> {
-    fn run(&mut self, ops: &[Operation]) -> Result<(), Error> {
+    /// Build a renderer that records extracted characters instead of
+    /// painting them. The pixmap is still allocated (to satisfy the
+    /// struct's invariants) but `extract` captures the text stream.
+    pub(crate) fn for_extraction(
+        doc: &'a Document,
+        page: &Page,
+        opts: &'a RenderOptions,
+    ) -> Result<Renderer<'a>, Error> {
+        // We still validate page geometry — extraction runs the same
+        // code path as painting.
+        let limits = &opts.limits;
+        if let Some(annots) = page_dict_entry(doc, page, b"Annots")? {
+            if !is_empty_array(&annots) {
+                return Err(Error::Unsupported {
+                    feature: "page annotations (/Annots)",
+                    detail: "page has annotations; annotation rendering is not implemented".into(),
+                });
+            }
+        }
+        let crop = page.crop_box();
+        if !rect_is_finite(&crop) {
+            return Err(Error::Structure("CropBox has non-finite values".into()));
+        }
+        let rotate = page.rotate().rem_euclid(360);
+        let scale = opts.dpi / 72.0;
+        let w_pts = crop.width();
+        let h_pts = crop.height();
+        let width = checked_px(w_pts, scale, limits)?;
+        let height = checked_px(h_pts, scale, limits)?;
+        if width as u64 * height as u64 > limits.max_render_total_pixels {
+            return Err(Error::LimitExceeded {
+                limit: "max_render_total_pixels",
+                max: limits.max_render_total_pixels,
+            });
+        }
+        let user_to_pix = build_page_transform(&crop, rotate, scale)?;
+        // Minimal pixmap — content isn't painted, but the struct
+        // requires a live buffer. 1×1 suffices.
+        let mut pixmap = Pixmap::new(1, 1)
+            .ok_or_else(|| Error::Structure("cannot allocate extraction pixmap".into()))?;
+        pixmap.fill(ts_color(Color::WHITE));
+        let resources = page
+            .resources()
+            .cloned()
+            .unwrap_or(Object::Dict(Default::default()));
+        Ok(Renderer {
+            limits,
+            doc,
+            pixmap: Box::leak(Box::new(pixmap)),
+            user_to_pix,
+            gs: GraphicsState::new(),
+            gs_stack: Vec::new(),
+            path: CurrentPath::default(),
+            in_text: false,
+            resources,
+            xobject_depth: 0,
+            xobject_invocations: 0,
+            xobject_stack: Vec::new(),
+            text_tm: Matrix::IDENTITY,
+            text_tlm: Matrix::IDENTITY,
+            text_codes: 0,
+            extract: Some(Vec::new()),
+        })
+    }
+
+    /// Take the extracted character buffer (extraction mode only).
+    pub(crate) fn take_extracted(&mut self) -> Option<Vec<crate::text_extract::CharInfo>> {
+        self.extract.take()
+    }
+
+    pub(crate) fn run(&mut self, ops: &[Operation]) -> Result<(), Error> {
         for op in ops {
             self.execute(op)?;
         }
@@ -1862,6 +1936,73 @@ impl<'a> Renderer<'a> {
                 }
                 // mode 3: invisible — paint nothing, still advance.
             }
+        }
+
+        // Record the extraction event before advancing — the char's
+        // origin is the *current* Tm translation, and its advance is
+        // what we are about to add.
+        if let Some(buf) = &mut self.extract {
+            let w0 = font.width(code);
+            let tw = if code == 0x20 { t.word_spacing } else { 0.0 };
+            // §9.4.4's tx in *text space* — the value that gets
+            // multiplied by Trm's Tfs·Th when mapped to page space:
+            //   tx = (w0/1000 − Tj/1000) + Tc + Tw   [text units]
+            // Trm then applies × Tfs·Th horizontally, × Tfs vertically.
+            let tx_text = w0 / 1000.0 - tj_adjust / 1000.0 + t.char_spacing + tw;
+            let trm = Matrix::new(t.font_size * t.h_scale, 0.0, 0.0, t.font_size, 0.0, t.rise)
+                .concat(self.text_tm)
+                .concat(gs.ctm);
+            let origin = trm.transform(0.0, 0.0);
+            let (ax, ay) = trm.transform(tx_text, 0.0);
+            let advance = (ax - origin.0, ay - origin.1);
+            // Glyph bounds: outline in page space, or None if the
+            // glyph has no outline (e.g. space).
+            let bounds = if has_outline {
+                let mut gp2 = crate::font::GlyphPath::new(units);
+                if font.outline(gid, &mut gp2).unwrap_or(false) {
+                    gp2.finish().map(|p| {
+                        let b = p.bounds();
+                        let trm2 = Matrix::new(
+                            t.font_size * t.h_scale,
+                            0.0,
+                            0.0,
+                            t.font_size,
+                            0.0,
+                            t.rise,
+                        )
+                        .concat(self.text_tm)
+                        .concat(gs.ctm);
+                        let (x0, y0) = trm2.transform(b.left() as f64, b.top() as f64);
+                        let (x1, y1) = trm2.transform(b.right() as f64, b.bottom() as f64);
+                        let (x2, y2) = trm2.transform(b.left() as f64, b.bottom() as f64);
+                        let (x3, y3) = trm2.transform(b.right() as f64, b.top() as f64);
+                        (
+                            x0.min(x1).min(x2).min(x3),
+                            y0.min(y1).min(y2).min(y3),
+                            x0.max(x1).max(x2).max(x3),
+                            y0.max(y1).max(y2).max(y3),
+                        )
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            let (unicode, resolved_via) = crate::text_extract::resolve_unicode(font, code);
+            buf.push(crate::text_extract::CharInfo {
+                code,
+                unicode,
+                resolved_via,
+                origin,
+                advance,
+                bounds,
+                render_mode: t.render_mode as u8,
+                font_size: t.font_size,
+                rise: t.rise,
+                tj_adjust,
+                in_text: true,
+            });
         }
 
         // Advance the text matrix (§9.4.4). w0 is the char's width in

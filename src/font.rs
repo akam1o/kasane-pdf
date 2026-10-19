@@ -51,6 +51,8 @@ pub(crate) struct SimpleFont {
     encoding: [Option<&'static str>; 256],
     /// Glyph advances in PDF 1/1000-em units, indexed by char code.
     widths: [f64; 256],
+    /// `/ToUnicode` CMap — `None` if the font lacks one.
+    tounicode: Option<crate::tounicode::ToUnicode>,
     /// `Face` built over `program`. `Face<'a>` borrows, so we keep
     /// it behind `Rc<RefCell>` built lazily per page render.
     face: RefCell<Option<Face<'static>>>,
@@ -182,10 +184,14 @@ pub(crate) fn load_simple_font(
         });
     }
 
+    // ---- ToUnicode (optional) ------------------------------------
+    let tounicode = crate::tounicode::load_tounicode(doc, dict, limits)?;
+
     Ok(Rc::new(SimpleFont {
         program,
         encoding,
         widths,
+        tounicode,
         face: RefCell::new(None),
     }))
 }
@@ -416,6 +422,35 @@ impl SimpleFont {
     ) -> Result<bool, Error> {
         let face = self.face()?;
         Ok(face.outline_glyph(glyph, builder).is_some())
+    }
+
+    /// Resolve `code` to a Unicode string, in the priority order of
+    /// §9.10.2:
+    /// 1. `/ToUnicode` CMap — if present and the code maps.
+    /// 2. WinAnsi glyph name → AGL → Unicode — the encoding fallback
+    ///    for our non-symbolic TrueType fonts.
+    ///
+    /// Returns `None` when *neither* path resolves — the caller
+    /// distinguishes this from a mapped empty string or U+FFFD.
+    pub(crate) fn unicode(&self, code: u8) -> Option<String> {
+        if let Some(tu) = &self.tounicode {
+            if let Some(s) = tu.decode(code) {
+                return Some(s);
+            }
+            // ToUnicode present but no entry → no fallback per spec
+            // ("If these methods fail, there is no way to determine").
+            return None;
+        }
+        // Fallback: encoding glyph name → AGL → Unicode.
+        let name = self.glyph_name(code)?;
+        let u = name_to_unicode(name)?;
+        char::from_u32(u).map(|c| c.to_string())
+    }
+
+    /// `true` when the font carries a `/ToUnicode` CMap — used by
+    /// the extractor to report how a code was resolved.
+    pub(crate) fn has_tounicode(&self) -> bool {
+        self.tounicode.is_some()
     }
 
     /// Units per em of the font program (normally 1000 or 2048).
