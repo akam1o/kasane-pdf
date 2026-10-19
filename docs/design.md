@@ -379,9 +379,11 @@ decoded-bytes cost. `unsafe` is not used anywhere.
 
    - M11: `inspect` annotation dump — after the fixed page lines,
       one `annot <i> <subtype> rect …` line per `/Annots` element in
-      array order. Each element must be an indirect ref to a dict
-      with a valid `/Rect` and name `/Subtype`; every remaining key
-      is printed in byte order with values formatted recursively
+      array order. An element may be an indirect ref to a dict (the
+      usual form) or a direct dict — real files embed annotations
+      inline; both resolve to the dict for dumping. A valid `/Rect`
+      (4 numbers) and name `/Subtype` are required; every remaining
+      key is printed in byte order with values formatted recursively
       (refs verbatim, streams as `<stream>`, strings escaped).
       Refs inside annot values are shown, never resolved — inspect
       does not chase into `/AP`, `/A`, etc.
