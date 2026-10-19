@@ -12,7 +12,7 @@ The long-term consumer is a Flutter-based macOS/iPadOS app ("Kakomi"),
 but kasane-pdf is developed as a standalone Rust library + CLI. A
 C-compatible API and Apple packaging are future concerns, not M0.
 
-## Module map (M7.1)
+## Module map (M8)
 
 ```
 src/
@@ -61,6 +61,9 @@ tests/
                validation, 2-byte codes, CIDToGIDMap, DW/W, ToUnicode,
                Tw rule, exact §9.4.4 advance arithmetic, real Noto
                Sans JP (OFL) subset glyphs, regression targets
+  m8.rs        M8 rewrite round-trip: object collection, ref remap,
+               refusal conditions, link/annot preservation, ObjStm
+               and incremental input, determinism
 ```
 
 Layering is one-directional: `lexer` < `parser` < `xref` < `document`
@@ -308,6 +311,11 @@ decoded-bytes cost. `unsafe` is not used anywhere.
      fixes (TJ ×Tfs·Th; extraction Tc/Tw ÷Tfs). Remaining:
      Identity-V/vertical writing, CIDFontType0/CFF, arbitrary
      Encoding CMaps, `/UseCMap`, non-embedded fonts, shaping.
+   - M8 done: full rewrite (`rewrite` API + CLI) — DFS from the
+     trailer /Root (plus /Info), dense renumbering, classic xref
+     output, /Length recomputed, stream bytes verbatim, links and
+     annots carried; signed/XFA/OCProperties/RichMedia/AA refused.
+     Not an editor, redactor or sanitizer — see coverage.md.
 2. Rendering — transparency, patterns, ICC colour, masks
    (`/SMask`, `/ImageMask`), Type 0/CID + non-embedded fonts,
    remaining filters.

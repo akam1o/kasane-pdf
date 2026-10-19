@@ -16,6 +16,22 @@ fn main() -> ExitCode {
     let prog = args.first().map(String::as_str).unwrap_or("kasane-pdf");
 
     match args.get(1).map(String::as_str) {
+        Some("rewrite") => {
+            let (input, output) = match (args.get(2), args.get(4)) {
+                (Some(i), Some(o)) if args.get(3).map(|s| s.as_str()) == Some("--output") => (i, o),
+                _ => {
+                    eprintln!("usage: {prog} rewrite <file.pdf> --output <out.pdf>");
+                    return ExitCode::from(2);
+                }
+            };
+            match run_rewrite(input, output) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error [{}]: {e}", e.kind());
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some(cmd @ ("contents" | "operations" | "render" | "text")) => {
             let (path, page_no) = match (args.get(2), args.get(3)) {
                 (Some(p), Some(n)) => (p, n),
@@ -61,6 +77,7 @@ fn main() -> ExitCode {
                 "       {prog} render <file.pdf> <page-number> --output <file.png> [--dpi <dpi>]"
             );
             eprintln!("       {prog} text <file.pdf> <page-number> [--format json|lines]");
+            eprintln!("       {prog} rewrite <file.pdf> --output <out.pdf>");
             ExitCode::from(2)
         }
     }
@@ -130,6 +147,53 @@ fn run_contents(path: &str, page_no: usize) -> Result<(), Error> {
             println!("... ({} more bytes)", body.len() - 512);
         }
     }
+    Ok(())
+}
+
+/// `rewrite` subcommand: `rewrite <file.pdf> --output <out.pdf>`.
+///
+/// The output is written only on success — a failed rewrite never
+/// leaves a partial file, and a pre-existing output is never touched
+/// until the new bytes are complete. Input and output may not be the
+/// same file (symlinks resolved before comparison).
+fn run_rewrite(input: &str, output: &str) -> Result<(), Error> {
+    // Refuse identical input/output — canonicalize so `./a.pdf`,
+    // `a/./a.pdf` and symlinks all compare equal.
+    let in_path = std::fs::canonicalize(input)
+        .map_err(|e| Error::Structure(format!("cannot canonicalize input '{input}': {e}")))?;
+    let out_path = std::fs::canonicalize(output).unwrap_or_else(|_| {
+        // Output doesn't exist yet — canonicalize the parent and
+        // reattach the filename so `nonexistent/../out.pdf` still
+        // compares correctly.
+        std::path::Path::new(output)
+            .parent()
+            .and_then(|p| std::fs::canonicalize(p).ok())
+            .map(|p| p.join(std::path::Path::new(output).file_name().unwrap_or_default()))
+            .unwrap_or_else(|| std::path::PathBuf::from(output))
+    });
+    if in_path == out_path {
+        return Err(Error::Structure(
+            "rewrite input and output are the same file".into(),
+        ));
+    }
+
+    let data = std::fs::read(input)?;
+    let doc = Document::from_bytes(&data)?;
+    let bytes = kasane_pdf::rewrite(&doc)?;
+
+    // Write to a temp file in the same directory, then rename over
+    // the target — a failure mid-write can't corrupt an existing
+    // output, and readers never see a partial file.
+    let tmp = format!("{output}.kasane-tmp-{}", std::process::id());
+    if let Err(e) = std::fs::write(&tmp, &bytes) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    if let Err(e) = std::fs::rename(&tmp, output) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    println!("rewrote {input} -> {output} ({} bytes)", bytes.len());
     Ok(())
 }
 
