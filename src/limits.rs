@@ -91,6 +91,11 @@ pub struct Limits {
     /// Maximum decoded bytes for a single image's sample data.
     /// Default: 256 MiB.
     pub max_image_bytes: u64,
+    /// Maximum total character codes processed by text-showing
+    /// operators on one page — `Tj`/`TJ`/`'`/`"` all count here, so a
+    /// single huge string or many small strings both hit the cap.
+    /// Default: 1,000,000.
+    pub max_text_codes: u64,
 }
 
 impl Default for Limits {
@@ -121,6 +126,7 @@ impl Default for Limits {
             max_image_dimension: 16_384,
             max_image_total_samples: 67_108_864,
             max_image_bytes: 256 * 1024 * 1024,
+            max_text_codes: 1_000_000,
         }
     }
 }
