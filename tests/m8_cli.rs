@@ -883,11 +883,9 @@ fn cli_inspect_annot_bad_element_errors() {
 // M12 — `inspect` content-stream statistics
 // ------------------------------------------------------------------
 
-/// A 1-page PDF whose /Contents is exactly `q 2 w 10 10 90 70 re S Q`
-/// — 6 operators, 14 lexer tokens (q,2,w,10,10,90,70,re,S,Q = wait:
-/// the *operators* are q,w,re,S,Q and operands are 2,10,10,90,70).
-/// tokens = 5 operators + 5 operands = 10? No — count every token:
-/// q(1) 2(2) w(3) 10(4) 10(5) 90(6) 70(7) re(8) S(9) Q(10) = 10.
+/// A 1-page PDF whose /Contents exercises SC vs SCN, sc vs scn, and
+/// an Unknown operator inside BX/EX — opstats must report the *real*
+/// operator names, not grouped labels.
 fn tokens_pdf() -> Vec<u8> {
     let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
     let mut offs: Vec<(u32, usize)> = Vec::new();
@@ -904,9 +902,12 @@ fn tokens_pdf() -> Vec<u8> {
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] \
           /Contents 4 0 R /Resources << >> >>",
     );
+    // Operators: q,w,re,S,Q + SCN + scn + BX,Bar,EX = 10 ops.
+    // tokens: q,2,w,10,10,90,70,re,S,Q=10; +1,0,0,SCN=4; +0,0,1,scn=4;
+    //         +BX,Bar,EX=3 → 21 tokens.
     push(
         4,
-        b"<< /Length 22 >>\nstream\nq 2 w 10 10 90 70 re S Q\nendstream",
+        b"<< /Length 60 >>\nstream\nq 2 w 10 10 90 70 re S Q\n1 0 0 SCN\n0 0 1 scn\nBX Bar EX\nendstream",
     );
     let xref: usize = parts.iter().map(|p| p.len()).sum();
     parts.push(b"xref\n0 5\n0000000000 65535 f \n".to_vec());
@@ -932,7 +933,11 @@ fn cli_inspect_tokens_operators_opstats() {
         String::from_utf8_lossy(&out.stderr)
     );
     let s = String::from_utf8_lossy(&out.stdout);
-    for line in ["tokens 10", "operators 5", "opstats Q:1 S:1 q:1 re:1 w:1"] {
+    for line in [
+        "tokens 21",
+        "operators 10",
+        "opstats BX:1 Bar:1 EX:1 Q:1 S:1 SCN:1 q:1 re:1 scn:1 w:1",
+    ] {
         assert!(s.lines().any(|l| l == line), "missing '{line}':\n{s}");
     }
 }

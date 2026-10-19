@@ -395,6 +395,13 @@ decoded-bytes cost. `unsafe` is not used anywhere.
       concatenated `/Contents` streams. Absent `/Contents` → all
       zeros; a malformed stream is a typed error, not a partial
       count.
+
+   - M12.1: `opstats` reports *actual* operator tokens, not the
+      grouped `Operation::name` labels — `SC` and `SCN` are counted
+      separately (never `SC/SCN`), `sc`/`scn` likewise, and an
+      `Unknown` op inside `BX…EX` appears under its real name.
+      `parse_content_stream_named` records each operator's bytes
+      alongside the parsed `Operation`.
 2. Rendering — transparency, patterns, ICC colour, masks
    (`/SMask`, `/ImageMask`), Type 0/CID + non-embedded fonts,
    remaining filters.

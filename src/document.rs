@@ -364,6 +364,16 @@ impl Document {
         content::parse_content_stream_counted(&contents, &self.limits)
     }
 
+    /// Like [`page_operations_counted`](Self::page_operations_counted)
+    /// but also returns the exact operator token behind every
+    /// `Operation` — `SC` vs `SCN`, `sc` vs `scn`, or the real name
+    /// an `Unknown` op parsed. `inspect`'s `opstats` reports spec
+    /// operator names, not grouped display labels.
+    pub fn page_operations_named(&self, page: &Page) -> Result<crate::content::NamedOps, Error> {
+        let contents = self.page_contents(page)?;
+        content::parse_content_stream_named(&contents, &self.limits)
+    }
+
     // ---------------------------------------------------------------
     // Page resources (M2)
     // ---------------------------------------------------------------
