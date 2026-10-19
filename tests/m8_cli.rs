@@ -1100,3 +1100,56 @@ fn cli_inspect_resource_enumeration() {
         assert!(s.lines().any(|l| l == line), "missing '{line}':\n{s}");
     }
 }
+
+// ------------------------------------------------------------------
+// M13.1 — `inspect` resource-line prefix consistency
+// ------------------------------------------------------------------
+
+/// The resource block opens with `resources fonts <n>` — `resources`
+/// marks the start of the section — then every other category uses
+/// its plain name (`xobjects`, `colorspaces`, …). Enumeration lines
+/// (`font`, `xobject`, …) carry no prefix either. This pins that
+/// exact shape so a stray `resources` never drifts in or out.
+#[test]
+fn cli_inspect_resource_prefix_consistency() {
+    let dir = tmpdir("inspect-prefix");
+    let src = dir.join("in.pdf");
+    fs::write(&src, resources_pdf()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    let lines: Vec<&str> = s.lines().collect();
+    // Exactly one line starts with "resources " — the fonts header.
+    let res_lines: Vec<&&str> = lines
+        .iter()
+        .filter(|l| l.starts_with("resources "))
+        .collect();
+    assert_eq!(res_lines.len(), 1, "expected one 'resources ' line:\n{s}");
+    assert_eq!(*res_lines[0], "resources fonts 2");
+    // Every other category header has NO prefix.
+    for h in [
+        "xobjects 2",
+        "colorspaces 1",
+        "patterns 1",
+        "shadings 1",
+        "extgstates 1",
+    ] {
+        assert!(lines.contains(&h), "missing plain header '{h}':\n{s}");
+    }
+    // Enumeration lines start with the singular category name.
+    for e in [
+        "font F1 ",
+        "font F2 ",
+        "xobject Fm1 ",
+        "xobject Im1 ",
+        "colorspace Cs1 ",
+        "pattern P1 ",
+        "shading Sh1 ",
+        "extgstate GS1 ",
+    ] {
+        assert!(
+            lines.iter().any(|l| l.starts_with(e)),
+            "missing enum line '{e}…':\n{s}"
+        );
+    }
+}

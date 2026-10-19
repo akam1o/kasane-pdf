@@ -308,7 +308,7 @@ editing, no text extraction. The file must contain exactly one page;
 | `cropbox <llx> <lly> <urx> <ury>` | inherited `/CropBox` | `/MediaBox` |
 | `rotation <deg>` | inherited `/Rotate` | `0` |
 | `annotations <count>` | `/Annots` array length | `0` |
-| `resources fonts <count>` + `font <name> <subtype> [/<BaseFont>]` | `/Resources /Font` entries | `0` |
+| `resources fonts <count>` + `font <name> <subtype> [/<BaseFont>]` | `/Resources /Font` entries — `resources` opens the section (this is the only line with that prefix) | `0` |
 | `xobjects <count>` + `xobject <name> <subtype> [extra]` | `/Resources /XObject` entries — `Form` shows `/BBox=[…]`, `Image` shows `/Width=… /Height=…` | `0` |
 | `colorspaces <count>` + `colorspace <name> <csname>` | `/Resources /ColorSpace` entries — the space's name (`/DeviceRGB`), array's first name, or dict `/Subtype`/`/Base` | `0` |
 | `patterns <count>` + `pattern <name> <type>` | `/Resources /Pattern` entries — `/PatternType` (1 tiling, 2 shading) | `0` |
