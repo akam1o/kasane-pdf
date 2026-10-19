@@ -1,6 +1,6 @@
 # kasane-pdf support matrix
 
-Milestone: **M7.1**. Everything not listed as supported below is
+Milestone: **M8**. Everything not listed as supported below is
 unsupported and reported as a typed error — never silently skipped or
 returned as a partial result.
 
@@ -182,6 +182,34 @@ content-level `cm` operator.
 - The check runs on the content-level CTM (`cm` accumulation), not
   the fixed page→pixmap transform — page geometry is built
   separately and is always invertible for valid page boxes.
+
+## Rewrite output (M8, ISO 32000-1 §7.5)
+
+`rewrite(&Document)` rebuilds a loaded document as a fresh
+single-revision PDF: DFS from trailer `/Root` (plus `/Info`), dense
+renumbering 1..N, classic xref + trailer emitted. No original bytes,
+`/Prev` history or ObjStm containers are carried over — only the
+reachable object graph.
+
+| Feature | Status | Notes |
+|---|---|---|
+| object collection & renumbering | ✅ | dense 1..N; shared refs share the new number; /Parent cycles terminate via the map |
+| `/Info` dictionary | ✅ | carried when trailer references it |
+| `/ID`, `/Prev`, `/XRefStm` | — | dropped by design (single-revision file) |
+| stream bodies | ✅ | encoded bytes verbatim; `/Length` recomputed from emitted bytes; `/Filter`/`/DecodeParms` kept consistent |
+| object streams (input) | ✅ | objects inside `/ObjStm` are resolved and emitted as normal indirect objects |
+| incremental input | ✅ | xref-chain merge already yields the latest revision |
+| link annots | ✅ | `/Subtype /Link` `/Rect`, `/A` `/URI`/`/GoTo`, `/D` dest arrays — refs remapped |
+| encrypted input | ❌ | refused at `Document::from_bytes` |
+| `/Perms` `/DocMDP`/`/UR`/`/UR3`, filled `/Sig` fields | ❌ | `Error::Unsupported` — a signature cannot survive a rewrite; blank unsigned fields pass |
+| `/AcroForm` `/XFA`, `/OCProperties`, `/RichMedia`, `/AA` | ❌ | `Error::Unsupported` — outside the profile |
+| output xref format | — | classic table only; xref-stream/ObjStm output is not implemented |
+| PDF version | ✅ | `%PDF-1.7` header; catalog `/Version` ≥ base is honoured |
+
+**Not a sanitizer.** A full rewrite does *not* remove unreferenced
+history in a guaranteed way (only reachable objects are emitted, but
+anything reachable — including `/Info`, metadata and embedded data —
+is preserved verbatim). Do not present a rewrite as redaction.
 
 ## Robustness
 
