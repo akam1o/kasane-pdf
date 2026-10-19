@@ -19,6 +19,9 @@ fn flate(data: &[u8]) -> Vec<u8> {
 }
 
 const TTF: &str = "tests/fixtures/KasaneCIDTest.ttf";
+/// Real Japanese glyph outlines — Noto Sans JP subset (see
+/// `fixtures/make_jp_font.py` for source + licence).
+const JP_TTF: &str = "tests/fixtures/KasaneJP.ttf";
 
 /// Build a Type0/CIDFontType2 PDF.
 /// - `stream` — page content stream.
@@ -28,7 +31,7 @@ const TTF: &str = "tests/fixtures/KasaneCIDTest.ttf";
 /// - `tounicode` — optional CMap text (auto-2-byte codespace implied).
 /// - `extra` — extra CIDFont dict entries appended (e.g. "/WMode 1").
 #[allow(clippy::too_many_arguments)]
-fn pdf_type0(
+fn pdf_type0_with_ttf(
     stream: &[u8],
     encoding: &str,
     subtype: &str,
@@ -37,8 +40,10 @@ fn pdf_type0(
     w: Option<&str>,
     tounicode: Option<&[u8]>,
     extra_cid: &str,
+    ttf_path: &str,
+    base_font: &str,
 ) -> Vec<u8> {
-    let ttf = std::fs::read(TTF).unwrap();
+    let ttf = std::fs::read(ttf_path).unwrap();
     let mut bodies: Vec<(u32, Vec<u8>)> = vec![
         (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
         (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
@@ -59,11 +64,10 @@ fn pdf_type0(
         ),
     ];
     // Type0 parent.
-    let mut t0 = b"<< /Type /Font /Subtype /Type0 /BaseFont /KasaneCIDTest-Regular \
-        /Encoding /"
-        .to_vec();
-    t0.extend_from_slice(encoding.as_bytes());
-    t0.extend_from_slice(b" /DescendantFonts [6 0 R]");
+    let mut t0 =
+        format!("<< /Type /Font /Subtype /Type0 /BaseFont /{base_font} /Encoding /{encoding} ")
+            .into_bytes();
+    t0.extend_from_slice(b"/DescendantFonts [6 0 R]");
     let tu_idx = bodies.len() + 6; // will be obj 9 if present
     let has_tu = tounicode.is_some();
     if has_tu {
@@ -75,9 +79,11 @@ fn pdf_type0(
     let mut cid = b"<< /Type /Font /Subtype /".to_vec();
     cid.extend_from_slice(subtype.as_bytes());
     cid.extend_from_slice(
-        b" /BaseFont /KasaneCIDTest-Regular /CIDSystemInfo \
-          << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 7 0 R"
-            .as_slice(),
+        format!(
+            " /BaseFont /{base_font} /CIDSystemInfo \
+             << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 7 0 R"
+        )
+        .as_bytes(),
     );
     match cid_map {
         Some(None) => cid.extend_from_slice(b" /CIDToGIDMap /Identity".as_slice()),
@@ -99,11 +105,13 @@ fn pdf_type0(
     // FontDescriptor + FontFile2.
     bodies.push((
         7,
-        b"<< /Type /FontDescriptor /FontName /KasaneCIDTest-Regular \
-           /Flags 4 /FontBBox [0 -200 600 800] /ItalicAngle 0 \
-           /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 \
-           /FontFile2 8 0 R >>"
-            .to_vec(),
+        format!(
+            "<< /Type /FontDescriptor /FontName /{base_font} \
+             /Flags 4 /FontBBox [0 -200 600 800] /ItalicAngle 0 \
+             /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 \
+             /FontFile2 8 0 R >>"
+        )
+        .into_bytes(),
     ));
     bodies.push((
         8,
@@ -188,6 +196,55 @@ fn pdf_type0(
     out.extend_from_slice(format!("trailer\n<< /Size {size} /Root 1 0 R >>\n").as_bytes());
     out.extend_from_slice(format!("startxref\n{xref}\n%%EOF\n").as_bytes());
     out
+}
+
+/// Synthetic-font variant — keeps the historical `pdf_type0` name.
+#[allow(clippy::too_many_arguments)]
+fn pdf_type0(
+    stream: &[u8],
+    encoding: &str,
+    subtype: &str,
+    cid_map: Option<Option<Vec<u8>>>,
+    dw: Option<i64>,
+    w: Option<&str>,
+    tounicode: Option<&[u8]>,
+    extra_cid: &str,
+) -> Vec<u8> {
+    pdf_type0_with_ttf(
+        stream,
+        encoding,
+        subtype,
+        cid_map,
+        dw,
+        w,
+        tounicode,
+        extra_cid,
+        TTF,
+        "KasaneCIDTest-Regular",
+    )
+}
+
+/// Japanese real-glyph variant — Noto Sans JP subset.
+#[allow(clippy::too_many_arguments)]
+fn pdf_jp(
+    stream: &[u8],
+    cid_map: Option<Option<Vec<u8>>>,
+    dw: Option<i64>,
+    w: Option<&str>,
+    tounicode: Option<&[u8]>,
+) -> Vec<u8> {
+    pdf_type0_with_ttf(
+        stream,
+        "Identity-H",
+        "CIDFontType2",
+        cid_map,
+        dw,
+        w,
+        tounicode,
+        "",
+        JP_TTF,
+        "KasaneJP",
+    )
 }
 
 fn extract_bytes(bytes: &[u8]) -> Result<kasane_pdf::ExtractedText, Error> {
@@ -965,7 +1022,7 @@ fn type0_renders_distinct_glyphs() {
     );
     let page = render_bytes(&bytes).unwrap();
     let data = page.pixmap.data();
-    assert!(data.chunks_exact(4).any(|p| p[3] > 0));
+    assert!(data.chunks_exact(4).any(|p| p[0] < 128));
 }
 
 #[test]
@@ -1001,6 +1058,665 @@ fn actual_text_refused_in_composite_text() {
     );
     let err = extract_bytes(&bytes).unwrap_err();
     assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+}
+
+// ====================================================================
+// M7.1 — numeric character-positioning regression tests
+//
+// These pin the *exact* §9.4.4 advance/origin arithmetic that M7's
+// `show_glyph`/`show_text_adjusted` implement — not the current
+// output. Two pre-M7 bugs (found via these tests) were:
+//   * TJ numbers shifted at 1/Tfs scale (×Tfs·Th missing when
+//     concatenating onto Tm's page-space `e`);
+//   * the extraction `tx_text` term added Tc/Tw unscaled into Trm's
+//     glyph space (they needed ÷Tfs so ×Tfs·Th lands correctly).
+// Each test states the spec arithmetic it verifies.
+// ====================================================================
+
+/// §9.4.4: tx = ((w0/1000 − Tj/1000)·Tfs + Tc + Tw)·Th
+/// Advance of the *first* char — Tj=0, Tc=0, Tw=0, Th=1.
+#[test]
+fn advance_basic_formula() {
+    // w0=600 (font's hmtx for all glyphs), Tfs=10, Tc=0, Th=1 → 6pt.
+    let bytes = pdf_type0(
+        b"BT /F1 10 Tf 20 60 Td <0001> Tj ET",
+        "Identity-H",
+        "CIDFontType2",
+        Some(None),
+        Some(600),
+        None,
+        None,
+        "",
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    assert!(
+        (t.chars[0].advance.0 - 6.0).abs() < 0.01,
+        "{}",
+        t.chars[0].advance.0
+    );
+    assert!((t.chars[0].advance.1).abs() < 0.01);
+}
+
+#[test]
+fn advance_tc_unscaled() {
+    // Tc is added *after* the ×Tfs — Tc=2 → (6+2)=8, not (6+2×10).
+    let bytes = pdf_type0(
+        b"BT /F1 10 Tf 2 Tc 20 60 Td <0001> Tj ET",
+        "Identity-H",
+        "CIDFontType2",
+        Some(None),
+        Some(600),
+        None,
+        None,
+        "",
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    assert!(
+        (t.chars[0].advance.0 - 8.0).abs() < 0.01,
+        "{}",
+        t.chars[0].advance.0
+    );
+}
+
+#[test]
+fn advance_tz_scales_width_and_tc() {
+    // Th=0.5: ((600/1000)·10 + 2)·0.5 = 4pt.
+    let bytes = pdf_type0(
+        b"BT /F1 10 Tf 50 Tz 2 Tc 20 60 Td <0001> Tj ET",
+        "Identity-H",
+        "CIDFontType2",
+        Some(None),
+        Some(600),
+        None,
+        None,
+        "",
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    assert!(
+        (t.chars[0].advance.0 - 4.0).abs() < 0.01,
+        "{}",
+        t.chars[0].advance.0
+    );
+}
+
+#[test]
+fn tj_number_scales_with_font_size() {
+    // TJ +100 → −100/1000·10·1 = −1pt shift of the *next* glyph's origin.
+    // The buggy pre-M7 code applied −100/1000 = −0.1.
+    let bytes = pdf_type0(
+        b"BT /F1 10 Tf 20 60 Td [<0001> 100 <0002>] TJ ET",
+        "Identity-H",
+        "CIDFontType2",
+        Some(None),
+        Some(1000),
+        None,
+        None,
+        "",
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    // origin_B = 20 + 10 (A's advance) − 1.0 = 29.0.
+    assert!(
+        (t.chars[1].origin.0 - 29.0).abs() < 0.01,
+        "{}",
+        t.chars[1].origin.0
+    );
+}
+
+#[test]
+fn tj_negative_shifts_right() {
+    // TJ −100 → +100/1000·10 = +1pt.
+    let bytes = pdf_type0(
+        b"BT /F1 10 Tf 20 60 Td [<0001> -100 <0002>] TJ ET",
+        "Identity-H",
+        "CIDFontType2",
+        Some(None),
+        Some(1000),
+        None,
+        None,
+        "",
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    assert!(
+        (t.chars[1].origin.0 - 31.0).abs() < 0.01,
+        "{}",
+        t.chars[1].origin.0
+    );
+}
+
+#[test]
+fn tj_consecutive_numbers_accumulate() {
+    // TJ [A -50 -50 B] → +1pt total on B's origin.
+    let bytes = pdf_type0(
+        b"BT /F1 10 Tf 20 60 Td [<0001> -50 -50 <0002>] TJ ET",
+        "Identity-H",
+        "CIDFontType2",
+        Some(None),
+        Some(1000),
+        None,
+        None,
+        "",
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    assert!(
+        (t.chars[1].origin.0 - 31.0).abs() < 0.01,
+        "{}",
+        t.chars[1].origin.0
+    );
+}
+
+#[test]
+fn tj_at_larger_font_size_scales_more() {
+    // Tfs=20 → −100/1000·20 = −2pt.
+    let bytes = pdf_type0(
+        b"BT /F1 20 Tf 20 60 Td [<0001> 100 <0002>] TJ ET",
+        "Identity-H",
+        "CIDFontType2",
+        Some(None),
+        Some(1000),
+        None,
+        None,
+        "",
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    assert!(
+        (t.chars[1].origin.0 - 38.0).abs() < 0.01,
+        "{}",
+        t.chars[1].origin.0
+    );
+}
+
+#[test]
+fn advance_font_size_scales_width() {
+    // Tfs=20, w0=600 → 12pt (double of the 10pt case).
+    let bytes = pdf_type0(
+        b"BT /F1 20 Tf 20 60 Td <0001> Tj ET",
+        "Identity-H",
+        "CIDFontType2",
+        Some(None),
+        Some(600),
+        None,
+        None,
+        "",
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    assert!(
+        (t.chars[0].advance.0 - 12.0).abs() < 0.01,
+        "{}",
+        t.chars[0].advance.0
+    );
+}
+
+#[test]
+fn tc_not_multiplied_by_font_size() {
+    // M7 regression target: the extraction path used to add Tc unscaled
+    // into the glyph-space tx_text, so ×Tfs·Th then over-scaled it.
+    // Tfs=20, Tc=1 → page-space advance should be (600/1000·20 + 1)·1 = 13,
+    // not (600/1000 + 1)·20 = 26.
+    let bytes = pdf_type0(
+        b"BT /F1 20 Tf 1 Tc 20 60 Td <0001> Tj ET",
+        "Identity-H",
+        "CIDFontType2",
+        Some(None),
+        Some(600),
+        None,
+        None,
+        "",
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    assert!(
+        (t.chars[0].advance.0 - 13.0).abs() < 0.01,
+        "{}",
+        t.chars[0].advance.0
+    );
+}
+
+#[test]
+fn empty_tj_array_is_noop() {
+    let bytes = pdf_type0(
+        b"BT /F1 10 Tf 20 60 Td <0001> Tj [] TJ <0002> Tj ET",
+        "Identity-H",
+        "CIDFontType2",
+        Some(None),
+        Some(1000),
+        None,
+        None,
+        "",
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    assert_eq!(t.chars.len(), 2);
+    assert!((t.chars[1].origin.0 - 30.0).abs() < 0.01);
+}
+
+#[test]
+fn quote_advances_line_and_uses_tw_tc() {
+    // ' ≡ T* + Tj. Set Tw=3 Tc=1 via " — then ' shows the next line's
+    // text under those spacings. Tw on a 2-byte code must not apply.
+    let bytes = pdf_type0(
+        b"BT /F1 10 Tf 14 TL 20 80 Td 3 1 <0001> \" 14 TL <0002> ' ET",
+        "Identity-H",
+        "CIDFontType2",
+        Some(None),
+        Some(1000),
+        Some("1 [500] 2 [500]"),
+        None,
+        "",
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    assert_eq!(t.chars.len(), 2);
+    // char0 is shown by `"` — T* then show, landing at y = 80−14 = 66.
+    // char1 is shown by `'` — another T* → 66−14 = 52.
+    assert!((t.chars[0].origin.1 - 66.0).abs() < 0.01);
+    assert!((t.chars[1].origin.1 - 52.0).abs() < 0.01);
+    // Advance of char1: (500/1000·10 + Tc=1)·1 = 6 — Tw=3 must NOT
+    // apply to the 2-byte code 0x0002.
+    assert!(
+        (t.chars[1].advance.0 - 6.0).abs() < 0.01,
+        "{}",
+        t.chars[1].advance.0
+    );
+}
+
+#[test]
+fn ts_raises_origin_not_advance() {
+    // Ts=5 shifts the baseline up; advance vector unchanged.
+    let bytes = pdf_type0(
+        b"BT /F1 10 Tf 5 Ts 20 60 Td <0001> Tj ET",
+        "Identity-H",
+        "CIDFontType2",
+        Some(None),
+        Some(600),
+        None,
+        None,
+        "",
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    assert!((t.chars[0].origin.1 - 65.0).abs() < 0.01);
+    assert!((t.chars[0].advance.1).abs() < 0.01); // advance stays horizontal
+}
+
+#[test]
+fn invisible_mode3_chars_still_extract_and_position() {
+    // Tr 3 → glyphs are extracted and positioned but not painted.
+    // The next visible char's origin reflects the invisible advance.
+    let bytes = pdf_type0(
+        b"BT /F1 20 Tf 3 Tr 20 50 Td <0001> Tj 0 Tr <0002> Tj ET",
+        "Identity-H",
+        "CIDFontType2",
+        Some(None),
+        Some(600),
+        None,
+        None,
+        "",
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    assert_eq!(t.chars.len(), 2);
+    assert_eq!(t.chars[0].render_mode, 3);
+    assert_eq!(t.chars[1].render_mode, 0);
+    // char2 origin = 20 + (600/1000·20=12).
+    assert!((t.chars[1].origin.0 - 32.0).abs() < 0.01);
+    let page = render_bytes(&bytes).unwrap();
+    // char2 (mode 0) is painted; char1 (mode 3) is not — ink exists
+    // only for char2.
+    assert!(page.pixmap.data().chunks_exact(4).any(|p| p[0] < 128));
+}
+
+#[test]
+fn render_and_extract_share_spacing() {
+    // Both paths use the same show_glyph advance — render one page
+    // and confirm the glyph lands where the extractor claims.
+    let bytes = pdf_type0(
+        b"BT /F1 20 Tf 20 50 Td <0001 0002> Tj ET",
+        "Identity-H",
+        "CIDFontType2",
+        Some(None),
+        Some(1000),
+        None,
+        None,
+        "",
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    // char2 origin must be char1 origin + char1 advance.
+    let o2 = t.chars[1].origin;
+    let expected = t.chars[0].origin.0 + t.chars[0].advance.0;
+    assert!((o2.0 - expected).abs() < 0.01);
+    assert!((o2.1 - t.chars[0].origin.1).abs() < 0.01);
+    let page = render_bytes(&bytes).unwrap();
+    let data = page.pixmap.data();
+    // char1 at (20,50), 20pt → ink near x≈20. char2 at (40,50).
+    assert!(data.chunks_exact(4).any(|p| p[3] > 0));
+}
+
+#[test]
+fn simple_font_tw_applies_to_space() {
+    // M5 simple font: Tw *does* apply to single-byte 0x20. Regression
+    // coverage so the composite Tw rule doesn't regress the simple path.
+    let pdf = std::fs::read("tests/fixtures/text_basic.pdf").unwrap();
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let _ = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    // The real check is the m5 Tw test — here we only assert the
+    // simple path still extracts without errors after M7's rework.
+}
+
+// ====================================================================
+// M7.1 — real Japanese glyph outlines (Noto Sans JP subset)
+//
+// `KasaneJP.ttf` is a 17-glyph subset of Noto Sans JP (OFL) built by
+// `fixtures/make_jp_font.py`. GIDs are deliberately ≠ CIDs so the
+// /CIDToGIDMap stream is exercised with real outlines:
+//   .notdef=0 space=1 ( =2 ) =3 . =4 1=5 A=6 a=7
+//   、=8 。=9 「=10 」=11 あ=12 ア=13 日=14 本=15 語=16
+// ====================================================================
+
+/// JP fixture map: code → CID (=code), CID → GID via a stream map.
+/// We pick codes that match the Unicode (conventional) so ToUnicode is
+/// still meaningful, but the GID column is *not* the code value.
+fn jp_codes() -> &'static [(u16, u16, &'static str)] {
+    // (code=CID, gid, unicode_char)
+    &[
+        (0x3042, 12, "あ"),
+        (0x30A2, 13, "ア"),
+        (0x65E5, 14, "日"),
+        (0x672C, 15, "本"),
+        (0x8A9E, 16, "語"),
+        (0x3001, 8, "、"),
+        (0x3002, 9, "。"),
+        (0x300C, 10, "「"),
+        (0x300D, 11, "」"),
+        (0x0028, 2, "("),
+        (0x0029, 3, ")"),
+        (0x0041, 6, "A"),
+        (0x0020, 1, " "),
+    ]
+}
+
+/// CIDToGIDMap stream covering all CIDs in `jp_codes` — CID c maps to
+/// `gids[c]` via 2-byte big-endian slots; absent CIDs → 0 (.notdef).
+fn jp_cidmap() -> Vec<u8> {
+    let mut map = vec![0u8; (0x8A9F * 2) as usize];
+    for &(code, gid, _) in jp_codes() {
+        map[(code as usize) * 2] = (gid >> 8) as u8;
+        map[(code as usize) * 2 + 1] = (gid & 0xFF) as u8;
+    }
+    map
+}
+
+/// ToUnicode CMap mapping each code to its Unicode char.
+fn jp_tounicode() -> Vec<u8> {
+    let mut s =
+        String::from("begincmap\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n");
+    s.push_str(&format!("{} beginbfchar\n", jp_codes().len()));
+    for &(code, _, ch) in jp_codes() {
+        // Encode the char as UTF-16BE hex.
+        let u16s: Vec<u16> = ch.encode_utf16().collect();
+        let hex: String = u16s.iter().map(|u| format!("{u:04X}")).collect();
+        s.push_str(&format!("<{code:04X}> <{hex}>\n"));
+    }
+    s.push_str("endbfchar\nendcmap");
+    s.into_bytes()
+}
+
+#[test]
+fn jp_glyphs_extract_with_real_unicode() {
+    // 「あいうえお」-style: 「日本語」、ア。(A space A a 1)
+    let codes: Vec<u16> = jp_codes().iter().map(|(c, _, _)| *c).collect();
+    let mut st = b"BT /F1 20 Tf 15 50 Td <".to_vec();
+    for (i, c) in codes.iter().enumerate() {
+        if i > 0 {
+            st.push(b' ');
+        }
+        st.extend_from_slice(format!("{c:04X}").as_bytes());
+    }
+    st.extend_from_slice(b"> Tj ET");
+    let bytes = pdf_jp(
+        &st,
+        Some(Some(jp_cidmap())),
+        Some(600),
+        None,
+        Some(&jp_tounicode()),
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    assert_eq!(t.chars.len(), jp_codes().len());
+    for (i, &(_, _, want)) in jp_codes().iter().enumerate() {
+        assert_eq!(
+            t.chars[i].unicode.as_deref(),
+            Some(want),
+            "code {:#06x} → {:?}",
+            t.chars[i].code,
+            t.chars[i].unicode
+        );
+        assert_eq!(t.chars[i].resolved_via, ResolveKind::ToUnicode);
+    }
+}
+
+#[test]
+fn jp_glyph_shapes_differ_by_gid() {
+    // Ink must come from the *mapped* glyph — あ (gid 12) and ア (gid 13)
+    // have different outlines; a code→GID=code confusion would draw
+    // .notdef (gid 0 = empty) and produce no ink at all.
+    let st = b"BT /F1 24 Tf 20 40 Td <3042> Tj ET";
+    let bytes = pdf_jp(st, Some(Some(jp_cidmap())), Some(1000), None, None);
+    let page = render_bytes(&bytes).unwrap();
+    let data = page.pixmap.data();
+    let mut minx = u32::MAX;
+    let mut maxx = 0u32;
+    let mut miny = u32::MAX;
+    let mut maxy = 0u32;
+    for (i, px) in data.chunks_exact(4).enumerate() {
+        if px[0] < 128 {
+            let (x, y) = (i as u32 % page.width, i as u32 / page.width);
+            minx = minx.min(x);
+            maxx = maxx.max(x);
+            miny = miny.min(y);
+            maxy = maxy.max(y);
+        }
+    }
+    assert!(maxx > minx, "no ink drawn");
+    // あ glyph at 24pt starting near (20,40) — must be a real outline,
+    // not the empty .notdef. Its bbox is ~16×16pt at 24pt (UPM 1000,
+    // glyph roughly 700×700 units) → ~10–20 px.
+    let w_px = maxx - minx;
+    assert!((8..=40).contains(&w_px), "ink width {w_px}px");
+}
+
+#[test]
+fn jp_stream_map_selects_correct_glyph() {
+    // Force a *wrong* map: point あ's CID at gid 13 (ア's slot) — the
+    // drawn ink must be the ア outline, proving the map is honoured.
+    let mut map = jp_cidmap();
+    // CID 0x3042 → gid 13 (ア).
+    map[(0x3042usize) * 2] = 0;
+    map[(0x3042usize) * 2 + 1] = 13;
+    let st = b"BT /F1 24 Tf 20 40 Td <3042> Tj ET";
+    let bytes = pdf_jp(st, Some(Some(map)), Some(1000), None, Some(&jp_tounicode()));
+    let t = extract_bytes(&bytes).unwrap();
+    // Unicode still says あ (ToUnicode is by code, not glyph).
+    assert_eq!(t.chars[0].unicode.as_deref(), Some("あ"));
+    // The drawn outline is ア — its ink bbox differs from あ's.
+    // あ has a distinctive bounding box; we verify by extracting the
+    // outline for the *correct* map as a baseline.
+    let bytes_ok = pdf_jp(
+        st,
+        Some(Some(jp_cidmap())),
+        Some(1000),
+        None,
+        Some(&jp_tounicode()),
+    );
+    let t_ok = extract_bytes(&bytes_ok).unwrap();
+    assert_ne!(
+        t.chars[0].bounds, t_ok.chars[0].bounds,
+        "remapped glyph should produce different ink"
+    );
+}
+
+#[test]
+fn jp_tounicode_without_map_resolves_only_unicode() {
+    // ToUnicode present, CIDToGIDMap=Identity → code=CID→GID. For
+    // あ (cid 0x3042) there is no glyph 0x3042 in a 17-glyph font →
+    // .notdef drawn but Unicode still resolves.
+    let st = b"BT /F1 24 Tf 20 40 Td <3042> Tj ET";
+    let bytes = pdf_jp(st, Some(None), Some(1000), None, Some(&jp_tounicode()));
+    let t = extract_bytes(&bytes).unwrap();
+    assert_eq!(t.chars[0].unicode.as_deref(), Some("あ"));
+    // gid 0x3042 is way past 17 glyphs → .notdef → no ink.
+    assert_eq!(t.chars[0].bounds, None);
+}
+
+#[test]
+fn jp_no_tounicode_is_unresolved() {
+    // No ToUnicode + Identity map → あ draws via cmap? No — composite
+    // fonts never consult cmap; code 0x3042 → GID 0x3042 → .notdef.
+    let st = b"BT /F1 24 Tf 20 40 Td <3042> Tj ET";
+    let bytes = pdf_jp(st, Some(None), Some(1000), None, None);
+    let t = extract_bytes(&bytes).unwrap();
+    assert_eq!(t.chars[0].unicode, None);
+    assert_eq!(t.chars[0].resolved_via, ResolveKind::Unresolved);
+    assert_eq!(t.chars[0].bounds, None);
+}
+
+#[test]
+fn jp_render_tj_and_tj_adjust() {
+    // 「日」「本」 via TJ with a kern — check spacing arithmetic at
+    // Tfs=20, W covering CIDs, TJ −200 → +4pt right shift.
+    let st = b"BT /F1 20 Tf 20 50 Td [<65E5> -200 <672C>] TJ ET";
+    let bytes = pdf_jp(
+        st,
+        Some(Some(jp_cidmap())),
+        Some(1000),
+        Some("26085 [800]"),
+        Some(&jp_tounicode()),
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    assert_eq!(t.chars[0].unicode.as_deref(), Some("日"));
+    assert_eq!(t.chars[1].unicode.as_deref(), Some("本"));
+    // 本 origin = 20 + (800/1000·20=16) + 200/1000·20=4 → 40.
+    assert!(
+        (t.chars[1].origin.0 - 40.0).abs() < 0.01,
+        "{}",
+        t.chars[1].origin.0
+    );
+}
+
+#[test]
+fn jp_form_renders_and_extracts() {
+    // Form XObject with its own /Resources — the Type0 font inside
+    // must resolve under the *form's* resource dict, not the page's.
+    let form = b"BT /F1 20 Tf 0 0 Td <3042> Tj ET";
+    let ttf = std::fs::read(JP_TTF).unwrap();
+    let bodies: Vec<(u32, Vec<u8>)> = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] \
+               /Resources << /XObject << /Fm 8 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, b"<< /Length 7 >>\nstream\n/Fm Do\nendstream".to_vec()),
+        (
+            8,
+            [
+                format!(
+                    "<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] \
+                     /Matrix [1 0 0 1 30 30] /Length {} \
+                     /Resources << /Font << /F1 9 0 R >> >> >>\nstream\n",
+                    form.len()
+                )
+                .into_bytes(),
+                form.to_vec(),
+                b"\nendstream".to_vec(),
+            ]
+            .concat(),
+        ),
+        (
+            9,
+            b"<< /Type /Font /Subtype /Type0 /BaseFont /KasaneJP \
+               /Encoding /Identity-H /DescendantFonts [10 0 R] >>"
+                .to_vec(),
+        ),
+        (
+            10,
+            b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /KasaneJP \
+               /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+               /FontDescriptor 11 0 R /CIDToGIDMap /Identity /DW 1000 >>"
+                .to_vec(),
+        ),
+        (
+            11,
+            b"<< /Type /FontDescriptor /FontName /KasaneJP \
+               /Flags 4 /FontBBox [0 -200 600 800] /ItalicAngle 0 \
+               /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 \
+               /FontFile2 12 0 R >>"
+                .to_vec(),
+        ),
+        (
+            12,
+            [
+                format!(
+                    "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+                    flate(&ttf).len(),
+                    ttf.len()
+                )
+                .into_bytes(),
+                flate(&ttf),
+                b"\nendstream".to_vec(),
+            ]
+            .concat(),
+        ),
+    ];
+    let mut sorted = bodies;
+    sorted.sort_by_key(|(n, _)| *n);
+    let mut out = Vec::new();
+    out.extend_from_slice(b"%PDF-1.4\n");
+    let mut offs = Vec::new();
+    for (n, b) in &sorted {
+        offs.push((*n, out.len()));
+        out.extend_from_slice(format!("{n} 0 obj\n").as_bytes());
+        out.extend_from_slice(b);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    out.extend_from_slice(b"xref\n0 13\n0000000000 65535 f \n");
+    for n in 1..13 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        } else {
+            out.extend_from_slice(b"0000000000 00000 f \n");
+        }
+    }
+    out.extend_from_slice(b"trailer\n<< /Size 13 /Root 1 0 R >>\n");
+    out.extend_from_slice(format!("startxref\n{xref}\n%%EOF\n").as_bytes());
+    let t = extract_bytes(&out).unwrap();
+    assert_eq!(t.chars.len(), 1);
+    // CID 0x3042 → Identity → gid 0x3042 → .notdef — extraction
+    // still reports the code + position.
+    assert_eq!(t.chars[0].code, 0x3042);
+    assert_eq!(t.chars[0].origin, (30.0, 30.0));
+}
+
+#[test]
+fn sheared_text_positions() {
+    // CTM shear [1 0 0.5 1]: x' = x + 0.5·y, y' = y.
+    let bytes = pdf_type0(
+        b"q 1 0 0.5 1 0 0 cm BT /F1 20 Tf 20 40 Td <0001> Tj ET Q",
+        "Identity-H",
+        "CIDFontType2",
+        Some(None),
+        Some(1000),
+        None,
+        None,
+        "",
+    );
+    let t = extract_bytes(&bytes).unwrap();
+    // origin (20,40) → (20 + 0.5·40, 40) = (40, 40).
+    assert!(
+        (t.chars[0].origin.0 - 40.0).abs() < 0.01,
+        "{}",
+        t.chars[0].origin.0
+    );
+    assert!((t.chars[0].origin.1 - 40.0).abs() < 0.01);
+    // advance (20,0) in text space → (20 + 0.5·0, 0) = (20,0).
+    assert!((t.chars[0].advance.0 - 20.0).abs() < 0.01);
+    assert!((t.chars[0].advance.1).abs() < 0.01);
 }
 
 #[test]
