@@ -308,7 +308,13 @@ editing, no text extraction. The file must contain exactly one page;
 | `cropbox <llx> <lly> <urx> <ury>` | inherited `/CropBox` | `/MediaBox` |
 | `rotation <deg>` | inherited `/Rotate` | `0` |
 | `annotations <count>` | `/Annots` array length | `0` |
-| `fonts` `xobjects` `colorspaces` `patterns` `shadings` `extgstates` `procsets` `properties` | direct entry counts of each `/Resources` sub-dict/array | `0` each |
+| `resources fonts <count>` + `font <name> <subtype> [/<BaseFont>]` | `/Resources /Font` entries | `0` |
+| `xobjects <count>` + `xobject <name> <subtype> [extra]` | `/Resources /XObject` entries — `Form` shows `/BBox=[…]`, `Image` shows `/Width=… /Height=…` | `0` |
+| `colorspaces <count>` + `colorspace <name> <csname>` | `/Resources /ColorSpace` entries — the space's name (`/DeviceRGB`), array's first name, or dict `/Subtype`/`/Base` | `0` |
+| `patterns <count>` + `pattern <name> <type>` | `/Resources /Pattern` entries — `/PatternType` (1 tiling, 2 shading) | `0` |
+| `shadings <count>` + `shading <name> <type>` | `/Resources /Shading` entries — `/ShadingType` (1–7) | `0` |
+| `extgstates <count>` + `extgstate <name> <type>` | `/Resources /ExtGState` entries — `/Type` (usually `/ExtGState`) | `0` |
+| `procsets` `properties` | direct entry counts (not enumerated) | `0` |
 | `tokens <count>` | lexer tokens across `/Contents` (operands + operators) | `0` when `/Contents` absent |
 | `operators <count>` | parsed operations | `0` when `/Contents` absent |
 | `opstats [<name>:<count> ...]` | per-operator tallies using the *actual* stream token (`SC` vs `SCN`, `sc` vs `scn`, or the real name an `Unknown` op parsed — never a grouped label) | `opstats` (bare) when absent |

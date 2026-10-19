@@ -402,6 +402,15 @@ decoded-bytes cost. `unsafe` is not used anywhere.
       `Unknown` op inside `BX…EX` appears under its real name.
       `parse_content_stream_named` records each operator's bytes
       alongside the parsed `Operation`.
+
+   - M13: `inspect` resource enumeration — after each `/Resources`
+      category count, the named entries are listed one per line:
+      `font F1 Type1 /Helvetica`, `xobject Im1 Form /BBox=[…]`,
+      `colorspace Cs1 /DeviceRGB`, `pattern P1 1`, `shading Sh1 2`,
+      `extgstate GS1 /ExtGState`. Only the top-level dict entries —
+      no recursion into nested resource dicts. A resource that
+      resolves to a non-dict (font/ExtGState) or non-stream
+      (XObject) is a typed error.
 2. Rendering — transparency, patterns, ICC colour, masks
    (`/SMask`, `/ImageMask`), Type 0/CID + non-embedded fonts,
    remaining filters.

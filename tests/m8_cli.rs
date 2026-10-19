@@ -481,7 +481,7 @@ fn inspect_pdf() -> Vec<u8> {
     push(6, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
     push(
         7,
-        b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 >>",
+        b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /Length 0 >>\nstream\n\nendstream",
     );
     push(8, b"<< /Length 3 >>\nstream\nq Q\nendstream");
     let xref: usize = parts.iter().map(|p| p.len()).sum();
@@ -514,8 +514,10 @@ fn cli_inspect_single_page_full() {
         "cropbox 10 20 600 780",
         "rotation 90",
         "annotations 2",
-        "fonts 1",
+        "resources fonts 1",
+        "font F1 Type1 /Helvetica",
         "xobjects 1",
+        "xobject Im1 Image /Width=1 /Height=1",
         "colorspaces 0",
         "patterns 0",
         "shadings 0",
@@ -1004,4 +1006,97 @@ fn cli_inspect_tokens_counts_array_streams() {
         .unwrap();
     assert!(toks > 0 && ops > 0, "expected nonzero counts:\n{s}");
     assert!(toks >= ops, "tokens {toks} must be >= operators {ops}");
+}
+
+// ------------------------------------------------------------------
+// M13 — `inspect` resource name enumeration
+// ------------------------------------------------------------------
+
+/// A 1-page PDF with every enumerable resource category populated:
+/// a Type1 font, a Form XObject, a DeviceRGB colorspace, a tiling
+/// pattern, an axial shading, and an ExtGState.
+fn resources_pdf() -> Vec<u8> {
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] \
+          /Resources << \
+            /Font << /F1 4 0 R /F2 5 0 R >> \
+            /XObject << /Fm1 6 0 R /Im1 7 0 R >> \
+            /ColorSpace << /Cs1 8 0 R >> \
+            /Pattern << /P1 9 0 R >> \
+            /Shading << /Sh1 10 0 R >> \
+            /ExtGState << /GS1 11 0 R >> \
+          >> \
+          /Contents 12 0 R >>",
+    );
+    push(4, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+    push(
+        5,
+        b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest >>",
+    );
+    push(
+        6,
+        b"<< /Type /XObject /Subtype /Form /BBox [0 0 80 50] /Length 0 >>\nstream\n\nendstream",
+    );
+    push(
+        7,
+        b"<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /Length 0 >>\nstream\n\nendstream",
+    );
+    push(8, b"/DeviceRGB");
+    push(9, b"<< /Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 8 8] /XStep 8 /YStep 8 /Length 0 >>\nstream\n\nendstream");
+    push(10, b"<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 1 1] /Function << /FunctionType 2 /Domain [0 1] /C0 [0 0 0] /C1 [1 1 1] /N 1 >> >>");
+    push(11, b"<< /Type /ExtGState /LW 2 >>");
+    push(12, b"<< /Length 4 >>\nstream\nq Q\nendstream");
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 13\n0000000000 65535 f \n".to_vec());
+    for n in 1..13u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 13 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    parts.concat()
+}
+
+#[test]
+fn cli_inspect_resource_enumeration() {
+    let dir = tmpdir("inspect-res");
+    let src = dir.join("in.pdf");
+    fs::write(&src, resources_pdf()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    for line in [
+        "resources fonts 2",
+        "font F1 Type1 /Helvetica",
+        "font F2 TrueType /KasaneTest",
+        "xobjects 2",
+        "xobject Fm1 Form /BBox=[0 0 80 50]",
+        "xobject Im1 Image /Width=8 /Height=8",
+        "colorspaces 1",
+        "colorspace Cs1 /DeviceRGB",
+        "patterns 1",
+        "pattern P1 1",
+        "shadings 1",
+        "shading Sh1 2",
+        "extgstates 1",
+        "extgstate GS1 /ExtGState",
+    ] {
+        assert!(s.lines().any(|l| l == line), "missing '{line}':\n{s}");
+    }
 }
