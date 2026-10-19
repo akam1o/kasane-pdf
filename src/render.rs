@@ -1945,6 +1945,10 @@ impl<'a> Renderer<'a> {
                     trm.e as f32,
                     trm.f as f32,
                 );
+                // tiny-skia `post_concat` composes `other` *around*
+                // self: `a.post_concat(b)` builds `b × a` — `b` runs
+                // first for points. Pipeline order glyph → Trm → page
+                // → pixmap therefore wants `trm.post_concat(upx)`.
                 let full = trm_ts.post_concat(self.user_to_pix);
                 match t.render_mode {
                     0 | 2 => {
