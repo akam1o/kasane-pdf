@@ -21,7 +21,7 @@ use crate::limits::Limits;
 use crate::object::{Dict, IndirectRef, Object};
 use crate::page::Rect;
 use crate::rewrite;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Synthetic indirect-object numbers are allocated downward from
 /// `u32::MAX` generation 0 — far above any realistic object count —
@@ -62,6 +62,11 @@ pub struct Edit<'a> {
     appearance_bytes: u64,
     /// Cumulative count of synthetic objects created.
     synth_objects: u64,
+    /// `(num, gen)` of every synthetic ref handed out — passed to the
+    /// collector so an *input* reference landing on a synthetic number
+    /// is still treated as the dangling reference it is, never
+    /// silently resolved to a synthetic body.
+    synth_numbers: HashSet<(u32, u16)>,
     limits: Limits,
 }
 
@@ -75,15 +80,18 @@ impl<'a> Edit<'a> {
             annots_by_page: HashMap::new(),
             appearance_bytes: 0,
             synth_objects: 0,
+            synth_numbers: HashSet::new(),
             limits,
         })
     }
 
     /// Allocate the next free synthetic object number.
     ///
-    /// Walks `next_synth` downward, skipping any `(num, 0)` that
-    /// already exists in the input xref or was already allocated, so
-    /// a synthetic ref can never alias a real object. A candidate
+    /// Walks `next_synth` downward, skipping any number that is
+    /// *reserved* — present in the input xref at any generation or
+    /// type (`Document::number_reserved`), already allocated as a
+    /// synthetic, or replaced by an overlay body — so a synthetic ref
+    /// can never alias a real or reserved input number. A candidate
     /// region is exhausted (input filled `SYNTH_TOP`…`0`) only in a
     /// pathological file; hitting `max_edit_objects` or `0` is a typed
     /// `LimitExceeded`/`Unsupported` error, never a wraparound.
@@ -95,9 +103,6 @@ impl<'a> Edit<'a> {
                 max: self.limits.max_edit_objects,
             });
         }
-        // Probe downward; the overlay insert in callers marks a number
-        // as used for the next allocation via the `object_exists` check
-        // plus the overlay `contains` check below.
         let mut n = self.next_synth;
         loop {
             if n == 0 {
@@ -106,14 +111,18 @@ impl<'a> Edit<'a> {
                     detail: "synthetic object-number space exhausted".into(),
                 });
             }
-            let taken = self.doc.object_exists(n, 0) || self.overlay.contains_key(&(n, 0));
+            let taken = self.doc.number_reserved(n)
+                || self.synth_numbers.contains(&(n, 0))
+                || self.overlay.contains_key(&(n, 0));
             if !taken {
                 break;
             }
             n -= 1;
         }
         self.next_synth = n - 1;
-        Ok(IndirectRef::new(n, 0))
+        let r = IndirectRef::new(n, 0);
+        self.synth_numbers.insert((r.number, r.generation));
+        Ok(r)
     }
 
     /// Add a `/Subtype /Square` rectangle annotation to page
@@ -221,7 +230,7 @@ impl<'a> Edit<'a> {
     /// a failure leaves the underlying `Document` untouched.
     pub fn rewrite(mut self) -> Result<Vec<u8>, Error> {
         self.commit()?;
-        rewrite::rewrite_overlay(self.doc, &self.overlay, &self.limits)
+        rewrite::rewrite_overlay(self.doc, &self.overlay, &self.synth_numbers, &self.limits)
     }
 
     /// Build the annotation dicts + appearance streams and splice them
@@ -466,31 +475,34 @@ mod tests {
     use super::*;
     use crate::limits::Limits;
 
-    /// A `Document` stub whose `object_exists` reports a fixed set.
-    /// We can't build a real Document without parsing, so these tests
-    /// exercise `alloc` through the public `Edit` API against real
-    /// fixtures that place objects at the synthetic boundary instead.
+    /// These tests exercise `alloc` through the public `Edit` API
+    /// against real fixtures that place objects at the synthetic
+    /// boundary — the allocator itself is not a public interface.
     fn doc(bytes: &[u8]) -> Document {
         Document::from_bytes(bytes).unwrap()
     }
 
-    fn base_pdf(extra: &[(u32, &[u8])]) -> Vec<u8> {
+    /// Build a minimal 1-page PDF plus extra objects declared at
+    /// `(num, gen)` — gen may be non-zero to reproduce the M9.2
+    /// generation-mismatch cases.
+    fn base_pdf(extra: &[(u32, u16, &[u8])]) -> Vec<u8> {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
-        let mut offs: Vec<(u32, usize)> = Vec::new();
-        let mut push = |n: u32, body: &[u8]| {
-            offs.push((n, parts.iter().map(|p| p.len()).sum()));
-            parts.push(format!("{n} 0 obj\n").into_bytes());
+        let mut offs: Vec<(u32, u16, usize)> = Vec::new();
+        let mut push = |n: u32, g: u16, body: &[u8]| {
+            offs.push((n, g, parts.iter().map(|p| p.len()).sum()));
+            parts.push(format!("{n} {g} obj\n").into_bytes());
             parts.push(body.to_vec());
             parts.push(b"\nendobj\n".to_vec());
         };
-        push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
-        push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push(1, 0, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push(2, 0, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
         push(
             3,
+            0,
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] >>",
         );
-        for (n, b) in extra {
-            push(*n, b);
+        for (n, g, b) in extra {
+            push(*n, *g, b);
         }
         let xref: usize = parts.iter().map(|p| p.len()).sum();
         // object 0 free + entries for each declared object via its own
@@ -498,13 +510,13 @@ mod tests {
         parts.push(b"xref\n".to_vec());
         parts.push(b"0 4\n0000000000 65535 f \n".to_vec());
         for n in 1..4u32 {
-            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            if let Some((_, _, o)) = offs.iter().find(|(on, _, _)| *on == n) {
                 parts.push(format!("{o:010} 00000 n \n").into_bytes());
             }
         }
-        for (n, _) in extra {
-            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == *n) {
-                parts.push(format!("{n} 1\n{o:010} 00000 n \n").into_bytes());
+        for (n, g, _) in extra {
+            if let Some((_, _, o)) = offs.iter().find(|(on, og, _)| *on == *n && *og == *g) {
+                parts.push(format!("{n} 1\n{o:010} {g:05} n \n").into_bytes());
             }
         }
         parts.push(format!("trailer\n<< /Size {} /Root 1 0 R >>\n", u32::MAX).into_bytes());
@@ -515,7 +527,7 @@ mod tests {
     #[test]
     fn alloc_skips_existing_input_object() {
         // Real object exactly at SYNTH_TOP — allocator must skip it.
-        let src = base_pdf(&[(u32::MAX - 1, b"0")]);
+        let src = base_pdf(&[(u32::MAX - 1, 0, b"0")]);
         let d = doc(&src);
         let mut e = Edit::new(&d, Limits::default()).unwrap();
         let r = e.alloc().unwrap();
@@ -525,9 +537,9 @@ mod tests {
     #[test]
     fn alloc_skips_run_of_existing() {
         let src = base_pdf(&[
-            (u32::MAX - 1, b"0"),
-            (u32::MAX - 2, b"0"),
-            (u32::MAX - 3, b"0"),
+            (u32::MAX - 1, 0, b"0"),
+            (u32::MAX - 2, 0, b"0"),
+            (u32::MAX - 3, 0, b"0"),
         ]);
         let d = doc(&src);
         let mut e = Edit::new(&d, Limits::default()).unwrap();
@@ -563,5 +575,234 @@ mod tests {
         .unwrap();
         e.alloc().unwrap();
         assert!(matches!(e.alloc(), Err(Error::LimitExceeded { .. })));
+    }
+
+    // --- M9.2: generation mismatch / dangling-ref protection ---
+
+    /// A: input has a *valid* object at (n, 1) and a *bad* ref to
+    /// (n, 0). The bad ref is an input defect; it must fail, not be
+    /// resolved to a synthetic. The allocator must not pick n either.
+    #[test]
+    fn alloc_skips_number_reserved_at_other_generation() {
+        // (u32::MAX-1, gen 1) is a real object; (u32::MAX-1, 0) is a
+        // dangling ref inside the page dict — M9.2 scenario.
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, u16, usize)> = Vec::new();
+        let mut push = |n: u32, g: u16, body: &[u8]| {
+            offs.push((n, g, parts.iter().map(|p| p.len()).sum()));
+            parts.push(format!("{n} {g} obj\n").into_bytes());
+            parts.push(body.to_vec());
+            parts.push(b"\nendobj\n".to_vec());
+        };
+        push(1, 0, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push(2, 0, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        // Page /Annots references (u32::MAX-1, 0) — that entry does NOT
+        // exist (only gen 1 does). A dangling input ref.
+        push(
+            3,
+            0,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots {} 0 R >>",
+                u32::MAX - 1
+            )
+            .as_bytes(),
+        );
+        push(
+            u32::MAX - 1,
+            1,
+            b"<< /Type /Annot /Subtype /Text /Rect [1 1 2 2] /Contents (gen1) >>",
+        );
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 4\n0000000000 65535 f \n".to_vec());
+        for n in 1..4u32 {
+            if let Some((_, _, o)) = offs.iter().find(|(on, _, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            }
+        }
+        if let Some((_, _, o)) = offs
+            .iter()
+            .find(|(on, og, _)| *on == u32::MAX - 1 && *og == 1)
+        {
+            parts.push(format!("{} 1\n{o:010} 00001 n \n", u32::MAX - 1).into_bytes());
+        }
+        parts.push(format!("trailer\n<< /Size {} /Root 1 0 R >>\n", u32::MAX).into_bytes());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let src = parts.concat();
+        let d = doc(&src);
+        // The edit must fail — the dangling (n,0) ref is an input bug,
+        // and a synthetic must not land on the reserved number n.
+        let mut e = Edit::new(&d, Limits::default()).unwrap();
+        e.add_square(
+            0,
+            Rect {
+                llx: 0.0,
+                lly: 0.0,
+                urx: 9.0,
+                ury: 9.0,
+            },
+            [0.0; 3],
+            1.0,
+        )
+        .unwrap();
+        let r = e.rewrite();
+        assert!(r.is_err(), "dangling (n,0) ref must fail, got {r:?}");
+    }
+
+    /// B: a *valid* (n, 1) object referenced correctly — annotate and
+    /// the object must survive rewrite unchanged.
+    #[test]
+    fn valid_nonzero_generation_object_survives() {
+        // (u32::MAX-1, 1) is a real annot referenced by the page's
+        // /Annots — perfectly valid, just a nonzero generation.
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, u16, usize)> = Vec::new();
+        let mut push = |n: u32, g: u16, body: &[u8]| {
+            offs.push((n, g, parts.iter().map(|p| p.len()).sum()));
+            parts.push(format!("{n} {g} obj\n").into_bytes());
+            parts.push(body.to_vec());
+            parts.push(b"\nendobj\n".to_vec());
+        };
+        push(1, 0, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push(2, 0, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push(
+            3,
+            0,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [{} 1 R] >>",
+                u32::MAX - 1
+            )
+            .as_bytes(),
+        );
+        push(
+            u32::MAX - 1,
+            1,
+            b"<< /Type /Annot /Subtype /Text /Rect [1 1 2 2] /Contents (gen1) >>",
+        );
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 4\n0000000000 65535 f \n".to_vec());
+        for n in 1..4u32 {
+            if let Some((_, _, o)) = offs.iter().find(|(on, _, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            }
+        }
+        if let Some((_, _, o)) = offs
+            .iter()
+            .find(|(on, og, _)| *on == u32::MAX - 1 && *og == 1)
+        {
+            parts.push(format!("{} 1\n{o:010} 00001 n \n", u32::MAX - 1).into_bytes());
+        }
+        parts.push(format!("trailer\n<< /Size {} /Root 1 0 R >>\n", u32::MAX).into_bytes());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let src = parts.concat();
+        let d = doc(&src);
+        let mut e = Edit::new(&d, Limits::default()).unwrap();
+        e.add_square(
+            0,
+            Rect {
+                llx: 0.0,
+                lly: 0.0,
+                urx: 9.0,
+                ury: 9.0,
+            },
+            [0.0; 3],
+            1.0,
+        )
+        .unwrap();
+        let out = e.rewrite().unwrap();
+        let d2 = doc(&out);
+        // Reach the page dict through the catalog — after renumbering
+        // the page's own object_ref() may not carry the new number,
+        // so resolve via /Pages /Kids.
+        let catalog = d2.catalog();
+        let pages_ref = catalog.get(b"Pages".as_slice()).unwrap().as_ref().unwrap();
+        let pages_obj = d2.resolve(pages_ref).unwrap();
+        let kids = pages_obj
+            .as_dict()
+            .unwrap()
+            .get(b"Kids".as_slice())
+            .unwrap()
+            .as_array()
+            .unwrap();
+        let page_ref = kids[0].as_ref().unwrap();
+        let page_obj = d2.resolve(page_ref).unwrap();
+        let annots_obj = page_obj
+            .as_dict()
+            .unwrap()
+            .get(b"Annots".as_slice())
+            .unwrap()
+            .clone();
+        // /Annots may be a direct array or an indirect ref.
+        let annots: Vec<Object> = match &annots_obj {
+            Object::Array(a) => a.clone(),
+            Object::Ref(r) => d2.resolve(*r).unwrap().as_array().unwrap().to_vec(),
+            other => panic!("unexpected /Annots: {other:?}"),
+        };
+        assert_eq!(annots.len(), 2, "original + new square");
+        // Original (n,1) annot preserved verbatim.
+        let first_obj = d2.resolve(annots[0].as_ref().unwrap()).unwrap();
+        let first = first_obj.as_dict().unwrap().clone();
+        assert_eq!(
+            first.get(b"Subtype".as_slice()).unwrap().as_name().unwrap(),
+            b"Text"
+        );
+        assert_eq!(
+            first.get(b"Contents".as_slice()).unwrap(),
+            &Object::String(b"gen1".to_vec())
+        );
+    }
+
+    /// C: a dangling ref to a number *absent* from the xref that
+    /// coincides with a synthetic candidate — must still fail, never
+    /// resolve to the synthetic body.
+    #[test]
+    fn dangling_ref_to_absent_number_not_repaired() {
+        // Page /Annots refs (u32::MAX-1, 0) which doesn't exist in the
+        // input xref at all — a true dangling ref.
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        let mut push = |n: u32, body: &[u8]| {
+            offs.push((n, parts.iter().map(|p| p.len()).sum()));
+            parts.push(format!("{n} 0 obj\n").into_bytes());
+            parts.push(body.to_vec());
+            parts.push(b"\nendobj\n".to_vec());
+        };
+        push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push(
+            3,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots {} 0 R >>",
+                u32::MAX - 1
+            )
+            .as_bytes(),
+        );
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 4\n0000000000 65535 f \n".to_vec());
+        for n in 1..4u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            }
+        }
+        parts.push(format!("trailer\n<< /Size {} /Root 1 0 R >>\n", u32::MAX).into_bytes());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let src = parts.concat();
+        let d = doc(&src);
+        let mut e = Edit::new(&d, Limits::default()).unwrap();
+        e.add_square(
+            0,
+            Rect {
+                llx: 0.0,
+                lly: 0.0,
+                urx: 9.0,
+                ury: 9.0,
+            },
+            [0.0; 3],
+            1.0,
+        )
+        .unwrap();
+        let r = e.rewrite();
+        // Must fail — resolving the dangling ref must not silently
+        // succeed because a synthetic landed on that number.
+        assert!(r.is_err(), "dangling ref must fail, got {r:?}");
     }
 }

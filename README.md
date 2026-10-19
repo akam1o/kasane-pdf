@@ -30,9 +30,12 @@ x,y in un-rotated PDF user space, and is the annotation's *outer*
 bounding box (the stroke is drawn inside it). M9.1 corrected the
 appearance transform (BBox `[0 0 w h]` + `Matrix` translate so the
 stroke width is never rescaled) and hardened the synthetic
-object-number allocator to never alias a real object. See
-[`docs/coverage.md`](docs/coverage.md) for the matrix and
-[`docs/design.md`](docs/design.md) for notes.
+object-number allocator to never alias a real object. M9.2 extended
+that: a number present in the input xref at *any* generation or entry
+type is reserved, and an input reference landing on a synthetic
+number is treated as a dangling ref — never silently resolved to a
+synthetic body. See [`docs/coverage.md`](docs/coverage.md) for the
+matrix and [`docs/design.md`](docs/design.md) for notes.
 
 What works today:
 
