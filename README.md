@@ -1,11 +1,11 @@
 # kasane-pdf
 
 A PDF parsing/processing engine written in Rust. Early development —
-currently at milestone **M3**: lexical parsing, classic and stream
+currently at milestone **M4**: lexical parsing, classic and stream
 cross-reference tables, indirect-reference resolution, stream decoding
 (`FlateDecode` + predictors), object streams, page-tree reading,
-content-stream parsing into typed drawing instructions, and basic
-raster rendering to PNG.
+content-stream parsing into typed drawing instructions, raster
+rendering to PNG, and Form/Image XObject painting.
 
 This is **not** a wrapper around an existing PDF engine (PDFium, MuPDF,
 Poppler are not used). The syntax parser, document model, and (future)
@@ -13,7 +13,7 @@ renderer and writer are implemented here.
 
 ## Status
 
-**M3 is complete.** See [`docs/coverage.md`](docs/coverage.md) for the
+**M4 is complete.** See [`docs/coverage.md`](docs/coverage.md) for the
 detailed support matrix and [`docs/design.md`](docs/design.md) for
 architecture and licensing notes.
 
@@ -44,9 +44,16 @@ What works today:
 - `Document::page_resource()` resolving named entries in a page's
   (inherited) `/Resources` dictionary: `Font`, `XObject`, `ExtGState`,
   `ColorSpace`, `Pattern`, `Shading`, `Properties`, …
-- `render_page()` rendering pages that use only basic drawing (paths,
-  clipping, DeviceGray/RGB/CMYK colours) to a pixmap, honouring
-  `MediaBox`/`CropBox`/`Rotate` and DPI; PNG output via `pixmap_to_png`.
+- `render_page()` rendering pages that use basic drawing (paths,
+  clipping, DeviceGray/RGB/CMYK colours) plus Form and Image XObjects
+  to a pixmap, honouring `MediaBox`/`CropBox`/`Rotate` and DPI; PNG
+  output via `pixmap_to_png`.
+- `Do` invocation: Form XObjects (own `/Matrix`, `/BBox` clipping,
+  own `/Resources`, nesting, recursion detection) and Image XObjects
+  (8-bit `/DeviceGray`/`/DeviceRGB`, raw + `FlateDecode` +
+  `DCTDecode`, `/Decode`, `/Interpolate`, clipping). Unsupported
+  attributes (`/ImageMask`, `/Mask`, `/SMask`, `/SMaskInData` ≠ 0,
+  `/OC`, `/Group`, `/Ref`, unknown subtypes) are refused explicitly.
   Operator placement is checked per ISO 32000-1 §8.2 Figure 9 —
   out-of-order sequences inside a path object (e.g. `cm`, `q`/`Q`,
   colour ops between path construction and painting, or path
@@ -58,18 +65,20 @@ What is deliberately **not** supported yet (produces a distinct error,
 never a partial result presented as success):
 
 - Encrypted documents
-- Stream filters other than `/FlateDecode` (`/LZWDecode`, `/DCTDecode`,
-  `/ASCIIHexDecode`, `/ASCII85Decode`, `/RunLengthDecode`,
-  `/CCITTFaxDecode`, `/JBIG2Decode`, `/JPXDecode`, `/Crypt`)
+- Stream filters other than `/FlateDecode` and `/DCTDecode` (images
+  only) — `/LZWDecode`, `/ASCIIHexDecode`, `/ASCII85Decode`,
+  `/RunLengthDecode`, `/CCITTFaxDecode`, `/JBIG2Decode`, `/JPXDecode`,
+  `/Crypt`
 - PNG predictors for components other than 8-bit, and unknown predictor
   values (e.g. `/Predictor 16`)
 - Inline images (`BI`/`ID`/`EI`) — the binary image data cannot be
   tokenized reliably, so the construct is rejected outright rather than
   guessed
 - Unicode conversion of text-showing strings, text extraction
-- Rendering of text (`Tf`/`Tj`/`TJ`/`'`/`"`), XObjects (`Do`), shading
-  (`sh`), extended graphics state (`gs`), pattern colours, non-device
-  colour spaces, annotations, `/UserUnit` ≠ 1
+- Rendering of text (`Tf`/`Tj`/`TJ`/`'`/`"`), shading (`sh`), extended
+  graphics state (`gs`), pattern colours, non-device colour spaces
+  beyond DeviceGray/RGB, `/ImageMask`/`/Mask`/`/SMask`, transparency
+  groups, annotations, `/UserUnit` ≠ 1
 - Painting under a singular (non-invertible) CTM — refused with
   `Error::Unsupported`
 - Editing, writing

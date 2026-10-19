@@ -282,9 +282,11 @@ fn tf_alone_is_refused() {
 }
 
 #[test]
-fn do_xobject_is_refused() {
+fn do_xobject_missing_is_structure_error() {
+    // Do is implemented in M4; a name that doesn't resolve is
+    // Structure (not Unsupported) — the operator itself works.
     let err = render(b"/Im1 Do").unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "got: {err:?}");
+    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
 }
 
 #[test]

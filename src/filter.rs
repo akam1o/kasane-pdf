@@ -57,7 +57,7 @@ pub(crate) fn decode_stream(dict: &Dict, data: &[u8], limits: &Limits) -> Result
 
 /// `/Filter` may be a name, an array of names, or absent. Returns the
 /// list of filter names in application order.
-fn normalize_filters(obj: Option<&Object>) -> Result<Vec<Vec<u8>>, Error> {
+pub(crate) fn normalize_filters(obj: Option<&Object>) -> Result<Vec<Vec<u8>>, Error> {
     match obj {
         None | Some(Object::Null) => Ok(Vec::new()),
         Some(Object::Name(n)) => Ok(vec![n.clone()]),
@@ -82,7 +82,7 @@ fn normalize_filters(obj: Option<&Object>) -> Result<Vec<Vec<u8>>, Error> {
 /// `/DecodeParms` may be a dict (single filter), an array aligned with
 /// the filter array, or absent. Each element may be `null` or a dict.
 /// Returns a Vec of `Option<&Dict>` aligned with `filters`.
-fn normalize_decode_parms(
+pub(crate) fn normalize_decode_parms(
     obj: Option<&Object>,
     n_filters: usize,
 ) -> Result<Vec<Option<Dict>>, Error> {
@@ -232,7 +232,11 @@ fn predictor_parms(parms: Option<&Dict>) -> Result<Option<PredictorParms>, Error
 }
 
 /// Apply TIFF (2) or PNG (10–15) predictor reconstruction.
-fn apply_predictor(data: Vec<u8>, parms: Option<&Dict>, limits: &Limits) -> Result<Vec<u8>, Error> {
+pub(crate) fn apply_predictor(
+    data: Vec<u8>,
+    parms: Option<&Dict>,
+    limits: &Limits,
+) -> Result<Vec<u8>, Error> {
     let p = match predictor_parms(parms)? {
         None => return Ok(data),
         Some(p) => p,

@@ -12,7 +12,7 @@ The long-term consumer is a Flutter-based macOS/iPadOS app ("Kakomi"),
 but kasane-pdf is developed as a standalone Rust library + CLI. A
 C-compatible API and Apple packaging are future concerns, not M0.
 
-## Module map (M3)
+## Module map (M4)
 
 ```
 src/
@@ -243,7 +243,10 @@ decoded-bytes cost. `unsafe` is not used anywhere.
 - Dependencies: only permissive licenses (MIT / Apache-2.0 / BSD /
   Zlib-style). No copyleft code may be linked into the engine.
   Current dependencies: `flate2` (MIT or Apache-2.0) with the
-  `rust_backend` (`miniz_oxide`, MIT) for `/FlateDecode`.
+  `rust_backend` (`miniz_oxide`, MIT) for `/FlateDecode`; `tiny-skia`
+  (BSD-3-Clause) for rasterization; `png` (MIT or Apache-2.0) for PNG
+  encoding; `jpeg-decoder` 0.3 (MIT or Apache-2.0, `rayon` disabled)
+  for `DCTDecode` image data.
 - Acceptable building blocks per the project brief: compression,
   image decoding, font handling, generic 2D rasterization — e.g.
   `flate2`/`miniz_oxide` (MIT), `freetype`/`fontdue`, `tiny-skia`
@@ -261,10 +264,12 @@ decoded-bytes cost. `unsafe` is not used anywhere.
    - M2 done: content-stream parsing into typed `Operation`s, `Matrix`
      type, page-resource lookup.
    - M3 done: basic raster rendering (paths, clipping, Device colours)
-     to PNG via tiny-skia. Still unsupported: inline images, Unicode
-     mapping, the remaining filters.
-2. Rendering — text, images, Form XObjects, transparency, patterns,
-   ICC colour.
+     to PNG via tiny-skia.
+   - M4 done: Form and Image XObjects (`Do`) — form `/Matrix`/`BBox`/
+     own-`Resources` handling, 8-bit DeviceGray/RGB images with raw/
+     Flate/DCTDecode, recursion and resource limits.
+2. Rendering — text, transparency, patterns, ICC colour, masks
+   (`/SMask`, `/ImageMask`), remaining filters.
 3. Text extraction — font encodings, CMaps, ToUnicode, CJK + vertical
    writing, positioned extraction, search.
 4. Editing & saving — page/annotation/link editing, full rewrite output.

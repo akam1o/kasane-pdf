@@ -74,6 +74,23 @@ pub struct Limits {
     /// segment endpoints) accumulated in one painting path. Guards
     /// against pathological path input. Default: 100,000.
     pub max_path_elements: usize,
+    /// Maximum depth of `Do`-invoked Form XObjects (a Form that `Do`s
+    /// another Form counts one level). Guards self-referential and
+    /// deeply nested forms. Default: 32.
+    pub max_xobject_depth: u32,
+    /// Maximum total number of `Do` invocations processed while
+    /// rendering one page (Forms and images together). Bounds sibling
+    /// fan-out that a depth cap alone cannot stop. Default: 10,000.
+    pub max_xobject_invocations: u64,
+    /// Maximum width or height of an image XObject in samples.
+    /// Default: 16,384.
+    pub max_image_dimension: u32,
+    /// Maximum total samples (width × height) of a single image.
+    /// Default: 64 Mi.
+    pub max_image_total_samples: u64,
+    /// Maximum decoded bytes for a single image's sample data.
+    /// Default: 256 MiB.
+    pub max_image_bytes: u64,
 }
 
 impl Default for Limits {
@@ -99,6 +116,11 @@ impl Default for Limits {
             max_render_total_pixels: 67_108_864,
             max_render_buffer_bytes: 256 * 1024 * 1024,
             max_path_elements: 100_000,
+            max_xobject_depth: 32,
+            max_xobject_invocations: 10_000,
+            max_image_dimension: 16_384,
+            max_image_total_samples: 67_108_864,
+            max_image_bytes: 256 * 1024 * 1024,
         }
     }
 }

@@ -771,6 +771,353 @@ def render_text():
     write("render_text.pdf", build_pdf(objects))
 
 
+# ---------------------------------------------------------------------
+# M4: Form XObjects and images
+# ---------------------------------------------------------------------
+
+def xobject_form_basic():
+    """Form XObject with identity Matrix, no own Resources, painting a
+    50x50 red square. Page paints it at (10,10) via cm."""
+    form_stream = b"1 0 0 rg 0 0 50 50 re f"
+    page_stream = b"q 1 0 0 1 10 10 cm /Fm1 Do Q"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /XObject << /Fm1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+        (5, b"<< /Type /XObject /Subtype /Form /BBox [0 0 50 50] "
+            b"/Length " + str(len(form_stream)).encode() + b" >>\nstream\n"
+            + form_stream + b"\nendstream"),
+    ]
+    write("xobject_form_basic.pdf", build_pdf(objects))
+
+
+def xobject_form_matrix():
+    """Form with a translation Matrix: painted content is shifted."""
+    form_stream = b"0 0 1 rg 0 0 10 10 re f"
+    page_stream = b"/Fm2 Do"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /XObject << /Fm2 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+        (5, b"<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] "
+            b"/Matrix [1 0 0 1 40 40] "
+            b"/Length " + str(len(form_stream)).encode() + b" >>\nstream\n"
+            + form_stream + b"\nendstream"),
+    ]
+    write("xobject_form_matrix.pdf", build_pdf(objects))
+
+
+def xobject_form_bbox_clip():
+    """Form's BBox clips its content: a 20x20 form drawn where the page
+    expects only the BBox to show."""
+    form_stream = b"1 0 0 rg 0 0 100 100 re f"  # bigger than BBox
+    page_stream = b"/Fm3 Do"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /XObject << /Fm3 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+        (5, b"<< /Type /XObject /Subtype /Form /BBox [10 10 30 30] "
+            b"/Length " + str(len(form_stream)).encode() + b" >>\nstream\n"
+            + form_stream + b"\nendstream"),
+    ]
+    write("xobject_form_bbox_clip.pdf", build_pdf(objects))
+
+
+def xobject_form_own_resources():
+    """Form with its own /Resources defining a color-op XObject; the
+    page's resources must NOT leak into the form."""
+    # Form fills with whatever /CS its own Resources define — we keep it
+    # simple: form uses rg directly but declares an empty Resources dict
+    # to prove replacement.
+    form_stream = b"0 1 0 rg 5 5 15 15 re f"
+    page_stream = b"/Fm4 Do"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /XObject << /Fm4 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+        (5, b"<< /Type /XObject /Subtype /Form /BBox [0 0 25 25] "
+            b"/Resources << >> "
+            b"/Length " + str(len(form_stream)).encode() + b" >>\nstream\n"
+            + form_stream + b"\nendstream"),
+    ]
+    write("xobject_form_own_resources.pdf", build_pdf(objects))
+
+
+def xobject_form_nested():
+    """Form A invokes form B (nested Do)."""
+    inner_stream = b"0 0 1 rg 0 0 10 10 re f"
+    outer_stream = b"q 1 0 0 1 20 20 cm /FmIn Do Q"
+    page_stream = b"/FmOut Do"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /XObject << /FmOut 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+        (5, b"<< /Type /XObject /Subtype /Form /BBox [0 0 40 40] "
+            b"/Resources << /XObject << /FmIn 6 0 R >> >> "
+            b"/Length " + str(len(outer_stream)).encode() + b" >>\nstream\n"
+            + outer_stream + b"\nendstream"),
+        (6, b"<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] "
+            b"/Length " + str(len(inner_stream)).encode() + b" >>\nstream\n"
+            + inner_stream + b"\nendstream"),
+    ]
+    write("xobject_form_nested.pdf", build_pdf(objects))
+
+
+def xobject_form_self_recursive():
+    """Form that invokes itself — must be rejected (cycle)."""
+    form_stream = b"/FmSelf Do"
+    page_stream = b"/FmSelf Do"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /XObject << /FmSelf 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+        (5, b"<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] "
+            b"/Resources << /XObject << /FmSelf 5 0 R >> >> "
+            b"/Length " + str(len(form_stream)).encode() + b" >>\nstream\n"
+            + form_stream + b"\nendstream"),
+    ]
+    write("xobject_form_self_recursive.pdf", build_pdf(objects))
+
+
+def xobject_form_group():
+    """Form with /Group (transparency group) — must be refused."""
+    form_stream = b"0 0 0 rg 0 0 10 10 re f"
+    page_stream = b"/FmG Do"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /XObject << /FmG 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+        (5, b"<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] "
+            b"/Group << /S /Transparency /CS /DeviceRGB >> "
+            b"/Length " + str(len(form_stream)).encode() + b" >>\nstream\n"
+            + form_stream + b"\nendstream"),
+    ]
+    write("xobject_form_group.pdf", build_pdf(objects))
+
+
+def xobject_image_gray_raw():
+    """4x4 DeviceGray image, raw bytes, placed 10..50 via cm."""
+    # 4x4 grayscale: gradient 0x00,0x40,0x80,0xFF per row
+    img = bytes(range(0, 256, 16))[:16]
+    page_stream = b"q 40 0 0 40 10 10 cm /Im1 Do Q"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+        (5, b"<< /Type /XObject /Subtype /Image /Width 4 /Height 4 "
+            b"/BitsPerComponent 8 /ColorSpace /DeviceGray "
+            b"/Length " + str(len(img)).encode() + b" >>\nstream\n"
+            + img + b"\nendstream"),
+    ]
+    write("xobject_image_gray_raw.pdf", build_pdf(objects))
+
+
+def xobject_image_rgb_flate():
+    """4x4 DeviceRGB image, FlateDecode."""
+    img = bytes([
+        255,0,0,   0,255,0,   0,0,255,   255,255,0,   # row 0
+        0,255,255, 255,0,255, 128,128,128, 0,0,0,     # row 1
+        255,255,255, 64,64,64, 192,192,192, 32,32,32, # row 2
+        255,128,0,   0,128,255, 128,0,128, 255,0,0,   # row 3
+    ])
+    enc = zlib.compress(img)
+    page_stream = b"q 30 0 0 30 20 20 cm /Im2 Do Q"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /XObject << /Im2 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+        (5, b"<< /Type /XObject /Subtype /Image /Width 4 /Height 4 "
+            b"/BitsPerComponent 8 /ColorSpace /DeviceRGB "
+            b"/Filter /FlateDecode "
+            b"/Length " + str(len(enc)).encode() + b" >>\nstream\n"
+            + enc + b"\nendstream"),
+    ]
+    write("xobject_image_rgb_flate.pdf", build_pdf(objects))
+
+
+def xobject_image_decode_invert():
+    """Image with /Decode [1 0] — inverts gray."""
+    img = bytes([0, 128, 255, 64])
+    page_stream = b"q 20 0 0 20 10 10 cm /Im3 Do Q"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /XObject << /Im3 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+        (5, b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 "
+            b"/BitsPerComponent 8 /ColorSpace /DeviceGray "
+            b"/Decode [1 0] "
+            b"/Length " + str(len(img)).encode() + b" >>\nstream\n"
+            + img + b"\nendstream"),
+    ]
+    write("xobject_image_decode_invert.pdf", build_pdf(objects))
+
+
+def xobject_image_mask():
+    """Image with /ImageMask true — must be refused."""
+    img = bytes([0xFF])
+    page_stream = b"/ImM Do"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /XObject << /ImM 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+        (5, b"<< /Type /XObject /Subtype /Image /Width 8 /Height 1 "
+            b"/BitsPerComponent 1 /ImageMask true "
+            b"/Length " + str(len(img)).encode() + b" >>\nstream\n"
+            + img + b"\nendstream"),
+    ]
+    write("xobject_image_mask.pdf", build_pdf(objects))
+
+
+def xobject_image_smask():
+    """Image with /SMask — must be refused."""
+    img = bytes([255, 0, 0, 0, 255, 0])
+    page_stream = b"/ImS Do"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /XObject << /ImS 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+        (5, b"<< /Type /XObject /Subtype /Image /Width 2 /Height 1 "
+            b"/BitsPerComponent 8 /ColorSpace /DeviceRGB "
+            b"/SMask 6 0 R "
+            b"/Length " + str(len(img)).encode() + b" >>\nstream\n"
+            + img + b"\nendstream"),
+        (6, b"<< /Type /XObject /Subtype /Image /Width 2 /Height 1 "
+            b"/BitsPerComponent 8 /ColorSpace /DeviceGray "
+            b"/Length 2 >>\nstream\n\xff\xff\nendstream"),
+    ]
+    write("xobject_image_smask.pdf", build_pdf(objects))
+
+
+def xobject_image_dct():
+    """Image XObject with DCTDecode — real JPEG bytes generated via PIL."""
+    try:
+        from PIL import Image
+        import io
+        # 8x8 RGB JPEG, deterministic gradient
+        img = Image.new("RGB", (8, 8))
+        px = img.load()
+        for y in range(8):
+            for x in range(8):
+                px[x, y] = (x * 32, y * 32, 128)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=90)
+        enc = buf.getvalue()
+    except ImportError:
+        # Fallback: embed a pre-made minimal baseline JPEG.
+        # A 1x1 black JPEG (JFIF), ~160 bytes, well-formed.
+        enc = bytes.fromhex(
+            "ffd8ffe000104a46494600010100000100010000"
+            "ffdb004300" + "08" * 64 +
+            "ffc0000b080001000101011100"
+            "ffc40014000100000000000000000000000000000000000000"
+            "ffc40014010100000000000000000000000000000000000000"
+            "ffda0008010100003f00d2cf20ffd9"
+        )
+    page_stream = b"q 40 0 0 40 10 10 cm /ImJ Do Q"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /XObject << /ImJ 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+        (5, b"<< /Type /XObject /Subtype /Image /Width 8 /Height 8 "
+            b"/BitsPerComponent 8 /ColorSpace /DeviceRGB "
+            b"/Filter /DCTDecode "
+            b"/Length " + str(len(enc)).encode() + b" >>\nstream\n"
+            + enc + b"\nendstream"),
+    ]
+    write("xobject_image_dct.pdf", build_pdf(objects))
+
+
+def xobject_unknown_subtype():
+    """XObject with /Subtype /PS — must be refused."""
+    stream = b"%!PS\n"
+    page_stream = b"/PS1 Do"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /XObject << /PS1 5 0 R >> >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+        (5, b"<< /Type /XObject /Subtype /PS "
+            b"/Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+    ]
+    write("xobject_unknown_subtype.pdf", build_pdf(objects))
+
+
+def xobject_missing():
+    """Do referencing an undefined XObject name — Structure error."""
+    page_stream = b"/NoSuch Do"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << >> /Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(page_stream)).encode() + b" >>\nstream\n"
+            + page_stream + b"\nendstream"),
+    ]
+    write("xobject_missing.pdf", build_pdf(objects))
+
+
+def xobject_unused_bad():
+    """Page has an unsupported /Subtype /PS XObject in resources but
+    never invokes it — page must render fine (unused is OK)."""
+    stream = b"0 0 1 rg 0 0 10 10 re f"
+    ps_stream = b"%!PS junk\n"
+    objects = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] "
+            b"/Resources << /XObject << /Unused 5 0 R >> >> "
+            b"/Contents 4 0 R >>"),
+        (4, b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n"
+            + stream + b"\nendstream"),
+        (5, b"<< /Type /XObject /Subtype /PS "
+            b"/Length " + str(len(ps_stream)).encode() + b" >>\nstream\n"
+            + ps_stream + b"\nendstream"),
+    ]
+    write("xobject_unused_bad.pdf", build_pdf(objects))
+
+
 if __name__ == "__main__":
     hello()
     content_ops()
@@ -800,3 +1147,20 @@ if __name__ == "__main__":
     hybrid_gap()
     prev_chain()
     xref_stream_bad_type()
+    # M4
+    xobject_form_basic()
+    xobject_form_matrix()
+    xobject_form_bbox_clip()
+    xobject_form_own_resources()
+    xobject_form_nested()
+    xobject_form_self_recursive()
+    xobject_form_group()
+    xobject_image_gray_raw()
+    xobject_image_rgb_flate()
+    xobject_image_decode_invert()
+    xobject_image_mask()
+    xobject_image_smask()
+    xobject_image_dct()
+    xobject_unknown_subtype()
+    xobject_missing()
+    xobject_unused_bad()
