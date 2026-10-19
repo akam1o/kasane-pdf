@@ -1,14 +1,19 @@
 //! Font handling for text rendering (ISO 32000-1 §9).
 //!
-//! M5 covers **embedded TrueType simple fonts** only:
+//! M5 covers **embedded TrueType simple fonts**:
 //! `/Subtype /TrueType` + `/FontDescriptor /FontFile2` + a
 //! `WinAnsiEncoding` (or an encoding dictionary with a
 //! `WinAnsiEncoding`/`MacRomanEncoding` `BaseEncoding` plus an
-//! optional `Differences` array). Everything else — Type 0 / CID
-//! fonts, Type 1, Type 3, CFF (`FontFile3`), non-embedded fonts,
-//! and any encoding setup we do not implement — is refused with
-//! [`Error::Unsupported`] or [`Error::Structure`], never silently
-//! rendered with a substitute.
+//! optional `Differences` array).
+//!
+//! M7 adds **composite Type 0 fonts** — `/Subtype /Type0` with
+//! `/Encoding /Identity-H`, exactly one `/DescendantFonts` entry of
+//! `/CIDFontType2`, and a `/FontFile2` TrueType program. String bytes
+//! are read as 2-byte big-endian codes → CID (= code) →
+//! `/CIDToGIDMap` → GID. Widths come from `/DW`/`/W` (never the
+//! font's `hmtx`). `Identity-V`, CIDFontType0/CFF, other encodings,
+//! non-embedded programs and `/FontFile3` are refused, never silently
+//! substituted.
 //!
 //! The pipeline is deliberately split into three steps (§9.4.3,
 //! §9.6.6):
@@ -56,6 +61,60 @@ pub(crate) struct SimpleFont {
     /// `Face` built over `program`. `Face<'a>` borrows, so we keep
     /// it behind `Rc<RefCell>` built lazily per page render.
     face: RefCell<Option<Face<'static>>>,
+}
+
+/// The resolved font behind a `Tf` selection — a simple TrueType
+/// font (M5) or a composite Type 0 / CIDFontType2 font (M7).
+/// Both share the TrueType program, outline extraction, and the
+/// §9.4 text-state machinery; they differ in how string bytes become
+/// codes, how codes become glyph ids, and where widths come from.
+#[derive(Clone)]
+pub(crate) enum Font {
+    Simple(Rc<SimpleFont>),
+    Composite(Rc<CompositeFont>),
+}
+
+/// Resolve `name` in `/Resources /Font` — dispatch on `/Subtype`:
+/// `/TrueType` → [`SimpleFont`], `/Type0` → [`CompositeFont`]
+/// (CIDFontType2 + Identity-H only).
+pub(crate) fn load_font(
+    doc: &Document,
+    resources: &Object,
+    name: &[u8],
+    limits: &Limits,
+) -> Result<Font, Error> {
+    // Peek at the subtype to pick the loader; each loader re-resolves.
+    let obj = doc
+        .resolve_resource(resources, "Font", name)?
+        .ok_or_else(|| {
+            Error::Structure(format!(
+                "/Font /{} is not defined in the current resources",
+                String::from_utf8_lossy(name)
+            ))
+        })?;
+    let dict = obj.as_dict().ok_or_else(|| {
+        Error::Structure(format!(
+            "/Font /{} is not a dictionary",
+            String::from_utf8_lossy(name)
+        ))
+    })?;
+    match dict.get(b"Subtype".as_slice()).and_then(|o| o.as_name()) {
+        Some(b"TrueType") => Ok(Font::Simple(load_simple_font(
+            doc, resources, name, limits,
+        )?)),
+        Some(b"Type0") => Ok(Font::Composite(load_composite_font(doc, dict, limits)?)),
+        Some(other) => Err(Error::Unsupported {
+            feature: "font subtype",
+            detail: format!(
+                "/{} — only /TrueType and /Type0 (CIDFontType2, Identity-H) are supported",
+                String::from_utf8_lossy(other)
+            ),
+        }),
+        None => Err(Error::Structure(format!(
+            "/Font /{} has no /Subtype",
+            String::from_utf8_lossy(name)
+        ))),
+    }
 }
 
 /// Resolve `name` in `/Resources /Font`, load it as a simple
@@ -434,7 +493,7 @@ impl SimpleFont {
     /// distinguishes this from a mapped empty string or U+FFFD.
     pub(crate) fn unicode(&self, code: u8) -> Option<String> {
         if let Some(tu) = &self.tounicode {
-            if let Some(s) = tu.decode(code) {
+            if let Some(s) = tu.decode(code as u32) {
                 return Some(s);
             }
             // ToUnicode present but no entry → no fallback per spec
@@ -451,6 +510,13 @@ impl SimpleFont {
     /// the extractor to report how a code was resolved.
     pub(crate) fn has_tounicode(&self) -> bool {
         self.tounicode.is_some()
+    }
+
+    /// `true` when `code` is the font's word-space code for `Tw`
+    /// purposes — the single-byte code 32 (§9.3.3). Composite fonts
+    /// have no single-byte codes, so `Tw` never applies there.
+    pub(crate) fn is_space_code(&self, code: u32) -> bool {
+        code == 0x20
     }
 
     /// Units per em of the font program (normally 1000 or 2048).
@@ -492,6 +558,496 @@ fn name_to_unicode(name: &str) -> Option<u32> {
 /// WinAnsi; `None` for anything else.
 fn mac_roman_code(name: &str) -> Option<u8> {
     MAC_ROMAN.iter().find(|(n, _)| *n == name).map(|(_, c)| *c)
+}
+
+// --------------------------------------------------------------------
+// Composite font (Type 0 / CIDFontType2 / Identity-H) — M7
+// --------------------------------------------------------------------
+
+/// A Type 0 composite font: 2-byte big-endian codes → CID →
+/// CIDToGIDMap → GID. Only `Identity-H` encoding, `CIDFontType2`
+/// descendants, and `/FontFile2` TrueType programs are supported.
+/// Vertical writing (`Identity-V`, `WMode`, `DW2`/`W2`) is refused.
+pub(crate) struct CompositeFont {
+    /// Decoded `/FontFile2` of the descendant CIDFont.
+    program: Vec<u8>,
+    /// CID → GID map: `None` = Identity, `Some(v)` = big-endian
+    /// 2-byte-per-CID lookup (`v[2c]<<8|v[2c+1]`).
+    cid_to_gid: Option<Vec<u8>>,
+    /// Default glyph width (1/1000 em), from `/DW`. Default 1000.
+    dw: f64,
+    /// Width overrides from `/W` — sorted, non-expanded ranges.
+    /// Each entry is `(first_cid, last_cid, width)`.
+    w: Vec<(u32, u32, f64)>,
+    /// `/ToUnicode` CMap — `None` if absent.
+    tounicode: Option<crate::tounicode::ToUnicode>,
+    /// `Face` over `program` — same lazy-borrow pattern as
+    /// `SimpleFont`.
+    face: RefCell<Option<Face<'static>>>,
+}
+
+/// Load a Type 0 font dictionary: `/Encoding` must be `/Identity-H`,
+/// `/DescendantFonts` must hold exactly one CIDFontType2 with a
+/// `/FontFile2` TrueType program. `Identity-V`, CIDFontType0 (CFF),
+/// non-embedded programs and arbitrary CMap names are refused.
+fn load_composite_font(
+    doc: &Document,
+    dict: &Dict,
+    limits: &Limits,
+) -> Result<Rc<CompositeFont>, Error> {
+    // ---- /Encoding /Identity-H -----------------------------------
+    match dict.get(b"Encoding".as_slice()) {
+        Some(Object::Name(n)) if n.as_slice() == b"Identity-H" => {}
+        Some(Object::Name(n)) if n.as_slice() == b"Identity-V" => {
+            return Err(Error::Unsupported {
+                feature: "vertical writing (/Encoding /Identity-V)",
+                detail: "only horizontal Identity-H is implemented".into(),
+            })
+        }
+        Some(Object::Name(other)) => {
+            return Err(Error::Unsupported {
+                feature: "Type 0 font encoding",
+                detail: format!(
+                    "/{} — only Identity-H is supported",
+                    String::from_utf8_lossy(other)
+                ),
+            })
+        }
+        Some(Object::Dict(_)) | Some(Object::Stream { .. }) => {
+            // A CMap stream/name — arbitrary encodings are out of
+            // scope.
+            return Err(Error::Unsupported {
+                feature: "Type 0 font /Encoding CMap",
+                detail: "only the predefined Identity-H CMap is supported".into(),
+            });
+        }
+        Some(_) => {
+            return Err(Error::Structure(
+                "/Encoding must be the name Identity-H (or a CMap — unsupported)".into(),
+            ))
+        }
+        None => return Err(Error::Structure("/Type0 font has no /Encoding".into())),
+    }
+
+    // ---- /DescendantFonts — exactly one CIDFont -------------------
+    let df_obj = dict
+        .get(b"DescendantFonts".as_slice())
+        .ok_or_else(|| Error::Structure("/Type0 font has no /DescendantFonts".into()))?;
+    let df = doc.deref(df_obj)?;
+    let df_arr = df
+        .as_array()
+        .ok_or_else(|| Error::Structure("/DescendantFonts is not an array".into()))?;
+    if df_arr.len() != 1 {
+        return Err(Error::Unsupported {
+            feature: "Type 0 font with multiple descendant fonts",
+            detail: format!("/DescendantFonts has {} entries", df_arr.len()),
+        });
+    }
+    let cid_obj = doc.deref(&df_arr[0])?;
+    let cid_dict = cid_obj
+        .as_dict()
+        .ok_or_else(|| Error::Structure("/DescendantFonts[0] is not a dictionary".into()))?;
+    match cid_dict
+        .get(b"Subtype".as_slice())
+        .and_then(|o| o.as_name())
+    {
+        Some(b"CIDFontType2") => {}
+        Some(b"CIDFontType0") => {
+            return Err(Error::Unsupported {
+                feature: "CIDFontType0 (CFF/Type 1) descendant",
+                detail: "only CIDFontType2 (TrueType) is implemented".into(),
+            })
+        }
+        Some(other) => {
+            return Err(Error::Unsupported {
+                feature: "CIDFont subtype",
+                detail: format!("/{other:?} — only /CIDFontType2 is supported"),
+            })
+        }
+        None => {
+            return Err(Error::Structure(
+                "/DescendantFonts[0] has no /Subtype".into(),
+            ))
+        }
+    }
+    // CIDSystemInfo is required but its values are free-form for
+    // Identity-H; validate presence and shape only.
+    match cid_dict.get(b"CIDSystemInfo".as_slice()) {
+        Some(o) => {
+            let info = doc.deref(o)?;
+            let d = info
+                .as_dict()
+                .ok_or_else(|| Error::Structure("/CIDSystemInfo is not a dictionary".into()))?;
+            for key in [&b"Registry"[..], &b"Ordering"[..]] {
+                match d.get(key) {
+                    Some(Object::String(_)) | None => {}
+                    _ => {
+                        return Err(Error::Structure(format!(
+                            "/CIDSystemInfo /{} must be a string",
+                            String::from_utf8_lossy(key)
+                        )))
+                    }
+                }
+            }
+        }
+        None => return Err(Error::Structure("CIDFont has no /CIDSystemInfo".into())),
+    }
+
+    // ---- /FontDescriptor → /FontFile2 -----------------------------
+    let fd_obj = cid_dict
+        .get(b"FontDescriptor".as_slice())
+        .ok_or_else(|| Error::Structure("CIDFont has no /FontDescriptor".into()))?;
+    let fd = doc.deref(fd_obj)?;
+    let fd_dict = fd
+        .as_dict()
+        .ok_or_else(|| Error::Structure("/FontDescriptor is not a dictionary".into()))?;
+    // CFF/Type1 programs are refused explicitly.
+    if fd_dict.get(b"FontFile3".as_slice()).is_some() {
+        return Err(Error::Unsupported {
+            feature: "CIDFontType0 /FontFile3 (CFF)",
+            detail: "only /FontFile2 TrueType programs are supported".into(),
+        });
+    }
+    let ff2_obj = fd_dict
+        .get(b"FontFile2".as_slice())
+        .ok_or_else(|| Error::Unsupported {
+            feature: "non-embedded CIDFont",
+            detail: "/FontFile2 is required; OS substitution is not performed".into(),
+        })?;
+    let ff2 = doc.deref(ff2_obj)?;
+    let (ff2_dict, ff2_raw) = ff2
+        .as_stream()
+        .ok_or_else(|| Error::Structure("/FontFile2 is not a stream".into()))?;
+    let program = doc.decode_stream(ff2_dict, ff2_raw)?;
+    if program.len() as u64 > limits.max_stream_bytes {
+        return Err(Error::LimitExceeded {
+            limit: "max_stream_bytes (embedded CID font)",
+            max: limits.max_stream_bytes,
+        });
+    }
+
+    // ---- /CIDToGIDMap ---------------------------------------------
+    let cid_to_gid = match cid_dict.get(b"CIDToGIDMap".as_slice()) {
+        None | Some(Object::Null) => None, // default: Identity
+        Some(Object::Name(n)) if n.as_slice() == b"Identity" => None,
+        Some(o) => {
+            let s = doc.deref(o)?;
+            let (sd, raw) = s
+                .as_stream()
+                .ok_or_else(|| Error::Structure("/CIDToGIDMap is not a stream".into()))?;
+            let bytes = doc.decode_stream(sd, raw)?;
+            if bytes.len() as u64 > limits.max_stream_bytes {
+                return Err(Error::LimitExceeded {
+                    limit: "max_stream_bytes (CIDToGIDMap)",
+                    max: limits.max_stream_bytes,
+                });
+            }
+            if bytes.len() % 2 != 0 {
+                return Err(Error::Structure(
+                    "/CIDToGIDMap stream has odd length — GIDs are 2-byte".into(),
+                ));
+            }
+            Some(bytes)
+        }
+    };
+
+    // ---- /DW ------------------------------------------------------
+    let dw = match cid_dict.get(b"DW".as_slice()) {
+        None | Some(Object::Null) => 1000.0,
+        Some(o) => {
+            let w = o
+                .as_number()
+                .ok_or_else(|| Error::Structure("/DW is not a number".into()))?;
+            if !(w.is_finite() && w >= 0.0) {
+                return Err(Error::Structure("/DW is not a non-negative number".into()));
+            }
+            w
+        }
+    };
+
+    // ---- /W — two group forms; stored unexpanded ------------------
+    let mut w: Vec<(u32, u32, f64)> = Vec::new();
+    if let Some(w_obj) = cid_dict.get(b"W".as_slice()) {
+        let arr = doc.deref(w_obj)?;
+        let arr = arr
+            .as_array()
+            .ok_or_else(|| Error::Structure("/W is not an array".into()))?;
+        let mut i = 0usize;
+        while i < arr.len() {
+            let c0 = arr[i]
+                .as_i64()
+                .ok_or_else(|| Error::Structure(format!("/W[{i}] must be an integer CID")))?;
+            if !(0..=0xFFFF).contains(&c0) {
+                return Err(Error::Structure(format!("/W[{i}] CID {c0} out of range")));
+            }
+            i += 1;
+            if i >= arr.len() {
+                return Err(Error::Structure("/W array ends mid-group".into()));
+            }
+            match &arr[i] {
+                Object::Array(ws) => {
+                    // c [w1 w2 … wn] — consecutive CIDs each with own width.
+                    let base = c0 as u32;
+                    for (k, e) in ws.iter().enumerate() {
+                        let wv = e.as_number().ok_or_else(|| {
+                            Error::Structure("/W sub-array entries must be numbers".into())
+                        })?;
+                        if !(wv.is_finite() && wv >= 0.0) {
+                            return Err(Error::Structure(
+                                "/W width is not a non-negative number".into(),
+                            ));
+                        }
+                        let cid = base
+                            .checked_add(k as u32)
+                            .ok_or_else(|| Error::Structure("/W CID overflow".into()))?;
+                        if cid > 0xFFFF {
+                            return Err(Error::Structure("/W CID exceeds 0xFFFF".into()));
+                        }
+                        w.push((cid, cid, wv));
+                    }
+                    i += 1;
+                }
+                _ => {
+                    // cfirst clast w — one width for a range.
+                    let clast = arr[i].as_i64().ok_or_else(|| {
+                        Error::Structure("/W range bound must be an integer".into())
+                    })?;
+                    let wv = arr
+                        .get(i + 1)
+                        .and_then(|o| o.as_number())
+                        .ok_or_else(|| Error::Structure("/W range needs a width".into()))?;
+                    if !(wv.is_finite() && wv >= 0.0) {
+                        return Err(Error::Structure(
+                            "/W width is not a non-negative number".into(),
+                        ));
+                    }
+                    if clast < c0 || clast > 0xFFFF {
+                        return Err(Error::Structure(format!(
+                            "/W range {c0}..{clast} is invalid"
+                        )));
+                    }
+                    w.push((c0 as u32, clast as u32, wv));
+                    i += 2;
+                }
+            }
+        }
+        w.sort_unstable_by_key(|(a, _, _)| *a);
+    }
+
+    // ---- /ToUnicode -----------------------------------------------
+    let tounicode = crate::tounicode::load_tounicode(doc, dict, limits)?;
+    if let Some(t) = &tounicode {
+        if t.code_len() != 2 {
+            return Err(Error::Unsupported {
+                feature: "ToUnicode codespace",
+                detail: format!(
+                    "Type 0 ToUnicode must use 2-byte codes; got {}-byte",
+                    t.code_len()
+                ),
+            });
+        }
+    }
+
+    Ok(Rc::new(CompositeFont {
+        program,
+        cid_to_gid,
+        dw,
+        w,
+        tounicode,
+        face: RefCell::new(None),
+    }))
+}
+
+impl CompositeFont {
+    /// Lazily parsed `Face` over `program` — same pattern as
+    /// `SimpleFont::face`.
+    fn face(&self) -> Result<std::cell::Ref<'_, Face<'static>>, Error> {
+        {
+            let mut slot = self.face.borrow_mut();
+            if slot.is_none() {
+                let face = Face::parse(&self.program, 0)
+                    .map_err(|e| Error::Structure(format!("TrueType font program: {e:?}")))?;
+                let face: Face<'static> = unsafe { std::mem::transmute(face) };
+                *slot = Some(face);
+            }
+        }
+        Ok(std::cell::Ref::map(self.face.borrow(), |o| {
+            o.as_ref().unwrap()
+        }))
+    }
+
+    /// CID for `code` — Identity-H maps code→CID identically.
+    fn cid(&self, code: u32) -> u32 {
+        code
+    }
+
+    /// GID for `code`: code → CID → CIDToGIDMap. Identity is the
+    /// default and also explicit `/Identity`. A missing stream entry
+    /// (or a GID past the font's glyph count) yields `.notdef` (gid 0)
+    /// per the .notdef convention, not an error.
+    pub(crate) fn glyph_id(&self, code: u32) -> Result<GlyphId, Error> {
+        let cid = self.cid(code);
+        let gid = match &self.cid_to_gid {
+            None => cid,
+            Some(map) => {
+                let off = (cid as usize) * 2;
+                if off + 2 > map.len() {
+                    0 // CID beyond map → .notdef
+                } else {
+                    ((map[off] as u32) << 8) | map[off + 1] as u32
+                }
+            }
+        };
+        // Validate against the font's glyph count — a map entry naming
+        // a nonexistent glyph is .notdef, not an out-of-bounds read.
+        let face = self.face()?;
+        let n = face.number_of_glyphs();
+        Ok(if gid < n as u32 {
+            GlyphId(gid as u16)
+        } else {
+            GlyphId(0)
+        })
+    }
+
+    /// Width of `code` in 1/1000-em units, per `/W` (first match) or
+    /// `/DW` (default 1000).
+    pub(crate) fn width(&self, code: u32) -> f64 {
+        let cid = self.cid(code);
+        // Linear scan — W groups are sorted; binary search by first.
+        let mut lo = 0usize;
+        let mut hi = self.w.len();
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            let (a, b, _) = self.w[mid];
+            if cid < a {
+                hi = mid;
+            } else if cid > b {
+                lo = mid + 1;
+            } else {
+                return self.w[mid].2;
+            }
+        }
+        self.dw
+    }
+
+    /// Extract the glyph outline into `builder` (font units).
+    /// `false` = empty outline (space) — caller still advances.
+    pub(crate) fn outline(
+        &self,
+        glyph: GlyphId,
+        builder: &mut dyn OutlineBuilder,
+    ) -> Result<bool, Error> {
+        let face = self.face()?;
+        Ok(face.outline_glyph(glyph, builder).is_some())
+    }
+
+    /// Resolve `code` via `/ToUnicode` only — composite fonts have no
+    /// AGL fallback (their codes are CIDs, not character names).
+    pub(crate) fn unicode(&self, code: u32) -> Option<String> {
+        self.tounicode.as_ref()?.decode(code)
+    }
+
+    /// `true` when the font carries a `/ToUnicode` CMap.
+    pub(crate) fn has_tounicode(&self) -> bool {
+        self.tounicode.is_some()
+    }
+
+    /// Identity-H has no single-byte codes, so `Tw` never applies —
+    /// §9.3.3 limits `Tw` to "occurrences of the single-byte
+    /// character code 32", and a composite font's codes are all
+    /// 2-byte.
+    pub(crate) fn is_space_code(&self, _code: u32) -> bool {
+        false
+    }
+
+    /// Units per em of the font program.
+    pub(crate) fn units_per_em(&self) -> Result<f64, Error> {
+        Ok(self.face()?.units_per_em() as f64)
+    }
+}
+
+impl Font {
+    /// Decode one code at `bytes` big-endian. Returns `(code,
+    /// consumed_bytes)` or `Err` for a truncated tail (odd trailing
+    /// byte on a 2-byte font). Codes never span string boundaries.
+    pub(crate) fn read_code(&self, bytes: &[u8], pos: usize) -> Result<(u32, usize), Error> {
+        match self {
+            Font::Simple(_) => Ok((bytes[pos] as u32, 1)),
+            Font::Composite(_) => {
+                if pos + 1 >= bytes.len() {
+                    return Err(Error::Structure(
+                        "string ends mid-code — composite fonts require 2-byte codes".into(),
+                    ));
+                }
+                Ok((((bytes[pos] as u32) << 8) | bytes[pos + 1] as u32, 2))
+            }
+        }
+    }
+
+    /// `true` when `Tw` applies to this code — only single-byte
+    /// code 32 on a simple font (§9.3.3).
+    pub(crate) fn is_space_code(&self, code: u32) -> bool {
+        match self {
+            Font::Simple(f) => f.is_space_code(code),
+            Font::Composite(f) => f.is_space_code(code),
+        }
+    }
+
+    /// Code → glyph advance (1/1000 em) from the font's PDF width
+    /// table — `/Widths` for simple, `/DW`/`/W` for composite.
+    pub(crate) fn width(&self, code: u32) -> f64 {
+        match self {
+            Font::Simple(f) => f.width(code as u8),
+            Font::Composite(f) => f.width(code),
+        }
+    }
+
+    /// Code → glyph id — `.notdef` (0) when unresolvable. Never
+    /// `None`: a code always produces a glyph slot.
+    pub(crate) fn glyph_id(&self, code: u32) -> Result<GlyphId, Error> {
+        match self {
+            Font::Simple(f) => Ok(f.glyph_id(code as u8)?.unwrap_or(GlyphId(0))),
+            Font::Composite(f) => f.glyph_id(code),
+        }
+    }
+
+    /// Extract `glyph`'s outline (font units). `false` = empty.
+    pub(crate) fn outline(
+        &self,
+        glyph: GlyphId,
+        builder: &mut dyn OutlineBuilder,
+    ) -> Result<bool, Error> {
+        match self {
+            Font::Simple(f) => f.outline(glyph, builder),
+            Font::Composite(f) => f.outline(glyph, builder),
+        }
+    }
+
+    /// Code → Unicode string, or `None` when unresolvable.
+    /// ToUnicode first for both kinds; simple fonts fall back to
+    /// the encoding-name→AGL path, composites do not.
+    pub(crate) fn unicode(&self, code: u32) -> Option<String> {
+        match self {
+            Font::Simple(f) => f.unicode(code as u8),
+            Font::Composite(f) => f.unicode(code),
+        }
+    }
+
+    /// `true` when the font has a `/ToUnicode` CMap.
+    pub(crate) fn has_tounicode(&self) -> bool {
+        match self {
+            Font::Simple(f) => f.has_tounicode(),
+            Font::Composite(f) => f.has_tounicode(),
+        }
+    }
+
+    /// Units per em.
+    pub(crate) fn units_per_em(&self) -> Result<f64, Error> {
+        match self {
+            Font::Simple(f) => f.units_per_em(),
+            Font::Composite(f) => f.units_per_em(),
+        }
+    }
 }
 
 /// Builder that converts ttf-parser outline segments into a

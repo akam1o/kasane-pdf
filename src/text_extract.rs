@@ -45,12 +45,12 @@
 //! # Resolution
 //!
 //! `unicode` is `Some` when the character resolved via the font's
-//! `/ToUnicode` CMap or, failing that, via the font's
-//! `WinAnsiEncoding` glyph name → AGL → Unicode fallback
+//! `/ToUnicode` CMap or, failing that and only for simple fonts, via
+//! the font's `WinAnsiEncoding` glyph name → AGL → Unicode fallback
 //! (§9.10.2). It is `None` when neither path produces a value —
-//! for example, a `.notdef` glyph with no encoding entry. A
-//! mapped-to-U+FFFD produces `Some("\u{FFFD}")` — distinct from
-//! unresolved `None`.
+//! including *every* code on a composite font without `/ToUnicode`
+//! (Identity-H carries no Unicode guess). A mapped-to-U+FFFD produces
+//! `Some("\u{FFFD}")` — distinct from unresolved `None`.
 //!
 //! # Scoping
 //!
@@ -67,18 +67,18 @@
 
 use crate::document::Document;
 use crate::error::Error;
-use crate::font::SimpleFont;
+use crate::font::Font;
 use crate::limits::Limits;
 use crate::page::Page;
 use crate::render::Renderer;
-use std::rc::Rc;
 
 /// One extracted character — a single PDF character code with its
 /// resolved Unicode value and page-space geometry.
 #[derive(Debug, Clone)]
 pub struct CharInfo {
-    /// The raw character code (0–255 for simple fonts).
-    pub code: u8,
+    /// The raw character code — 0–255 for simple fonts, 0–65535
+    /// (2-byte big-endian) for composite fonts.
+    pub code: u32,
     /// Resolved Unicode string, or `None` if unresolvable.
     /// May hold multiple scalars (e.g. a ligature mapping).
     pub unicode: Option<String>,
@@ -157,7 +157,7 @@ pub fn extract_text(doc: &Document, page: &Page, limits: &Limits) -> Result<Extr
 /// Resolve `code` through the font — used by the renderer's
 /// extraction hook. Public for `render.rs`; not part of the
 /// crate's public API.
-pub(crate) fn resolve_unicode(font: &Rc<SimpleFont>, code: u8) -> (Option<String>, ResolveKind) {
+pub(crate) fn resolve_unicode(font: &Font, code: u32) -> (Option<String>, ResolveKind) {
     match font.unicode(code) {
         Some(s) if font.has_tounicode() => (Some(s), ResolveKind::ToUnicode),
         Some(s) => (Some(s), ResolveKind::EncodingFallback),

@@ -12,7 +12,7 @@ The long-term consumer is a Flutter-based macOS/iPadOS app ("Kakomi"),
 but kasane-pdf is developed as a standalone Rust library + CLI. A
 C-compatible API and Apple packaging are future concerns, not M0.
 
-## Module map (M6.1)
+## Module map (M7)
 
 ```
 src/
@@ -33,10 +33,13 @@ src/
                also runs headless for extract_text (extraction_only:
                no path rasterising, clip masks, or image decode;
                ActualText/OC detection shared with render)
-  font.rs      embedded TrueType program: /FontFile2 + WinAnsi +
-               /Differences → code→glyph-name→gid; /Widths advance
-  tounicode.rs ToUnicode CMap parser (§9.10.3): 1-byte codespaces,
-               bfchar, bfrange sequential + array → UTF-16BE
+  font.rs      Font enum: Simple (embedded TrueType + /FontFile2 +
+               WinAnsi + /Differences → code→glyph-name→gid) and
+               Composite (Type0 + Identity-H + CIDFontType2 + /FontFile2:
+               2-byte BE codes → CID → CIDToGIDMap → GID; /DW//W widths)
+  tounicode.rs ToUnicode CMap parser (§9.10.3): 1- or 2-byte
+               codespaces (uniform width required), bfchar, bfrange
+               sequential + array → UTF-16BE
   text_extract.rs extract_text → ExtractedText: positioned Unicode
                per character code, user-space origin/advance/bounds
   document.rs  Document: load pipeline + lazy resolve() + page tree walk
@@ -54,6 +57,8 @@ tests/
   m5.rs        M5/M5.1 text-rendering tests
   m6.rs        M6 ToUnicode + extraction tests
   m6_1.rs      M6.1 ActualText/OC refusal, budgets, coordinates
+  m7.rs        M7 Type0/CIDFontType2/Identity-H: dict validation,
+               2-byte codes, CIDToGIDMap, DW/W, ToUnicode, Tw rule
 ```
 
 Layering is one-directional: `lexer` < `parser` < `xref` < `document`
@@ -284,8 +289,18 @@ decoded-bytes cost. `unsafe` is not used anywhere.
      Flate/DCTDecode, recursion and resource limits.
    - M5 done: embedded TrueType text — `/FontFile2`, `WinAnsiEncoding`
      (plus `Differences`), `Tj`/`TJ`/`'`/`"`, rendering modes 0–3.
-     No shaping, kerning, or hinting. Other font types, other
-     encodings, and non-embedded fonts remain unsupported.
+     No shaping, kerning, or hinting.
+   - M6 done: `/ToUnicode` CMap parsing + positioned `extract_text`.
+   - M6.1 done: ActualText/OC refusal, Unicode output budget,
+     headless extraction, documented coordinate semantics.
+   - M7 done: Type 0 composite fonts — `/Encoding /Identity-H`,
+     CIDFontType2 descendant, `/FontFile2` TrueType program,
+     `/CIDToGIDMap` (Identity / stream / absent → Identity),
+     `/DW`/`/W` widths (both group forms, unexpanded), 2-byte
+     ToUnicode (uniform 2-byte codespace; mixed-width refused).
+     `Tw` never applies (no single-byte code 32 exists). Remaining:
+     Identity-V/vertical writing, CIDFontType0/CFF, arbitrary
+     Encoding CMaps, `/UseCMap`, non-embedded fonts, shaping.
 2. Rendering — transparency, patterns, ICC colour, masks
    (`/SMask`, `/ImageMask`), Type 0/CID + non-embedded fonts,
    remaining filters.

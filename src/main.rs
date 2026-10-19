@@ -320,7 +320,7 @@ fn print_lines(t: &kasane_pdf::ExtractedText) {
     for c in t.chars.iter().take(shown) {
         let u = c.unicode.as_deref().unwrap_or("<unresolved>");
         println!(
-            "0x{:02X} {:?} at ({:.1},{:.1}) adv({:.1},{:.1}) mode={} size={:.1}",
+            "0x{:04X} {:?} at ({:.1},{:.1}) adv({:.1},{:.1}) mode={} size={:.1}",
             c.code, u, c.origin.0, c.origin.1, c.advance.0, c.advance.1, c.render_mode, c.font_size
         );
     }

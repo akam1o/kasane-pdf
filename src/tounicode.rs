@@ -39,22 +39,30 @@ use crate::Document;
 /// UTF-16BE string mappings.
 #[derive(Debug, Clone)]
 pub(crate) struct ToUnicode {
-    /// Sorted by `code`. At most 256 entries for 1-byte codespaces.
+    /// Codespace width: 1 for simple fonts, 2 for Identity-H
+    /// composites. Mixed-width codespaces are refused at parse time.
+    code_len: u8,
+    /// Sorted by `code`. Bound by `max_text_codes`.
     entries: Vec<Mapping>,
 }
 
 #[derive(Debug, Clone)]
 struct Mapping {
-    /// The 1-byte source character code.
-    code: u8,
+    /// The source character code (fits in `code_len` bytes).
+    code: u32,
     /// The decoded UTF-16BE string. May be empty (a valid mapping
     /// to the empty string per §9.10.3 — *not* "unresolved").
     utf16be: Vec<u16>,
 }
 
 impl ToUnicode {
+    /// Source code width in bytes (1 or 2).
+    pub(crate) fn code_len(&self) -> u8 {
+        self.code_len
+    }
+
     /// Look up `code`; `None` if the CMap has no entry for it.
-    pub(crate) fn lookup(&self, code: u8) -> Option<&[u16]> {
+    pub(crate) fn lookup(&self, code: u32) -> Option<&[u16]> {
         self.entries
             .iter()
             .find(|m| m.code == code)
@@ -65,7 +73,7 @@ impl ToUnicode {
     /// `None` for unmapped codes; `Some("")` for a mapping to the
     /// empty string. Lone surrogates produce `None` — they are
     /// malformed UTF-16BE.
-    pub(crate) fn decode(&self, code: u8) -> Option<String> {
+    pub(crate) fn decode(&self, code: u32) -> Option<String> {
         let u16s = self.lookup(code)?;
         // UTF-16BE → String; lone surrogates make it invalid.
         String::from_utf16(u16s).ok()
@@ -88,6 +96,7 @@ impl ToUnicode {
             depth: 0,
         };
         let mut out = ToUnicode {
+            code_len: 0, // set by begincodespacerange
             entries: Vec::new(),
         };
         let mut seen_codespace = false;
@@ -104,7 +113,20 @@ impl ToUnicode {
                     let op = p.next_token()?;
                     match op {
                         Tok::BareWord(b"begincodespacerange") => {
-                            p.parse_codespace(n, limits)?;
+                            let len = p.parse_codespace(n, limits)?;
+                            // Mixed-width codespaces are outside M7 —
+                            // every declared range must share one byte
+                            // length.
+                            match out.code_len {
+                                0 => out.code_len = len,
+                                l if l == len => {}
+                                _ => {
+                                    return Err(Error::Unsupported {
+                                        feature: "ToUnicode mixed code lengths",
+                                        detail: "codespace ranges with different byte lengths are not supported".into(),
+                                    })
+                                }
+                            }
                             seen_codespace = true;
                         }
                         Tok::BareWord(b"beginbfchar") => {
@@ -348,12 +370,14 @@ impl<'a> Parser<'a> {
         }
     }
 
-    /// `n begincodespacerange … endcodespacerange` — we require a
-    /// single 1-byte code range covering all 256 values.
-    fn parse_codespace(&mut self, n: i64, _limits: &Limits) -> Result<(), Error> {
+    /// `n begincodespacerange … endcodespacerange` — returns the code
+    /// byte length (1 or 2). Mixed lengths within one CMap are
+    /// rejected by the caller.
+    fn parse_codespace(&mut self, n: i64, _limits: &Limits) -> Result<u8, Error> {
         if n < 1 {
             return Err(Error::Structure("begincodespacerange count < 1".into()));
         }
+        let mut len: Option<u8> = None;
         for _ in 0..n {
             let lo = self.next_token()?;
             let hi = self.next_token()?;
@@ -365,31 +389,42 @@ impl<'a> Parser<'a> {
                     ))
                 }
             };
-            // 1-byte codespace: each hex string is 2 digits.
-            if lo_bytes.len() != 2 || hi_bytes.len() != 2 {
+            // Codespace bounds are hex strings whose digit count is
+            // 2× the byte length (2 for 1-byte, 4 for 2-byte).
+            let l = lo_bytes.len();
+            if l != hi_bytes.len() || (l != 2 && l != 4) {
                 return Err(Error::Unsupported {
                     feature: "ToUnicode codespace",
                     detail: format!(
-                        "only 1-byte codespaces are supported; got \
-                         {:?}..{:?}",
+                        "only uniform 1- or 2-byte codespaces are \
+                         supported; got {:?}..{:?}",
                         String::from_utf8_lossy(lo_bytes),
                         String::from_utf8_lossy(hi_bytes)
                     ),
                 });
             }
-            let lo = hex_u8(lo_bytes)?;
-            let hi = hex_u8(hi_bytes)?;
+            let this_len = (l / 2) as u8;
+            match len {
+                None => len = Some(this_len),
+                Some(prev) if prev == this_len => {}
+                Some(_) => {
+                    return Err(Error::Unsupported {
+                        feature: "ToUnicode mixed code lengths",
+                        detail: "codespace ranges declare different byte lengths".into(),
+                    })
+                }
+            }
+            let lo = hex_uint(lo_bytes)?;
+            let hi = hex_uint(hi_bytes)?;
             if lo > hi {
                 return Err(Error::Structure(
                     "codespacerange low bound exceeds high".into(),
                 ));
             }
-            // We don't restrict lo..hi — the CMap may declare a
-            // partial codespace as long as it's 1 byte wide.
         }
         let end = self.next_token()?;
         match end {
-            Tok::BareWord(b"endcodespacerange") => Ok(()),
+            Tok::BareWord(b"endcodespacerange") => Ok(len.unwrap_or(1)),
             _ => Err(Error::Structure("expected endcodespacerange".into())),
         }
     }
@@ -413,10 +448,15 @@ impl<'a> Parser<'a> {
                     ))
                 }
             };
-            if s.len() != 2 {
+            // Source width must match the declared codespace length.
+            if s.len() != (out.code_len as usize) * 2 {
                 return Err(Error::Unsupported {
-                    feature: "ToUnicode source code",
-                    detail: format!("only 1-byte codes; got {:?}", String::from_utf8_lossy(s)),
+                    feature: "ToUnicode source code width",
+                    detail: format!(
+                        "code {} does not match the declared {}-byte codespace",
+                        String::from_utf8_lossy(s),
+                        out.code_len
+                    ),
                 });
             }
             if d.len() > 1024 {
@@ -425,7 +465,7 @@ impl<'a> Parser<'a> {
                     max: 1024,
                 });
             }
-            let code = hex_u8(s)?;
+            let code = hex_uint(s)? as u32;
             let utf16 = decode_utf16be(d)?;
             out.entries.push(Mapping {
                 code,
@@ -464,14 +504,17 @@ impl<'a> Parser<'a> {
                     ))
                 }
             };
-            if lo.len() != 2 || hi.len() != 2 {
+            if lo.len() != (out.code_len as usize) * 2 || hi.len() != lo.len() {
                 return Err(Error::Unsupported {
-                    feature: "ToUnicode source code",
-                    detail: "only 1-byte codes are supported".into(),
+                    feature: "ToUnicode source code width",
+                    detail: format!(
+                        "bfrange bounds do not match the declared {}-byte codespace",
+                        out.code_len
+                    ),
                 });
             }
-            let lo = hex_u8(lo)?;
-            let hi = hex_u8(hi)?;
+            let lo = hex_uint(lo)? as u32;
+            let hi = hex_uint(hi)? as u32;
             if lo > hi {
                 return Err(Error::Structure("bfrange low bound exceeds high".into()));
             }
@@ -509,16 +552,12 @@ impl<'a> Parser<'a> {
                     if last_byte + (range_len - 1) > 0xFF {
                         return Err(Error::Structure("bfrange range overflows last byte".into()));
                     }
-                    // Last byte of `d` = last u16 of `base`.
-                    // Spec: increment the last *byte* (last u16's
-                    // low byte for a single-unit value, or the last
-                    // code unit for a multi-unit string).
                     let mut cur = base.clone();
                     for i in 0..range_len {
                         // Push the current value, then increment the
                         // last byte for the next iteration.
                         out.entries.push(Mapping {
-                            code: lo.wrapping_add(i as u8),
+                            code: lo.wrapping_add(i as u32),
                             utf16be: cur.clone(),
                         });
                         if let Some(last) = cur.last_mut() {
@@ -547,7 +586,7 @@ impl<'a> Parser<'a> {
                                 }
                                 let utf16 = decode_utf16be(d)?;
                                 out.entries.push(Mapping {
-                                    code: lo.wrapping_add(count as u8),
+                                    code: lo.wrapping_add(count as u32),
                                     utf16be: utf16,
                                 });
                                 count += 1;
@@ -581,10 +620,10 @@ impl<'a> Parser<'a> {
     }
 }
 
-/// Parse a 2-digit hex string to a byte value.
-fn hex_u8(s: &[u8]) -> Result<u8, Error> {
+/// Parse a hex digit string (2 or 4 digits) to an unsigned value.
+fn hex_uint(s: &[u8]) -> Result<u16, Error> {
     let s = std::str::from_utf8(s).map_err(|_| Error::Structure("invalid hex".into()))?;
-    u8::from_str_radix(s, 16).map_err(|_| Error::Structure(format!("invalid hex '{s}'")))
+    u16::from_str_radix(s, 16).map_err(|_| Error::Structure(format!("invalid hex '{s}'")))
 }
 
 /// Decode a hex string to UTF-16BE code units. Odd-length hex
