@@ -311,13 +311,24 @@ editing, no text extraction. The file must contain exactly one page;
 | `fonts` `xobjects` `colorspaces` `patterns` `shadings` `extgstates` `procsets` `properties` | direct entry counts of each `/Resources` sub-dict/array | `0` each |
 | `contents <ref>` `contents [<ref>, <ref>, ...]` `contents absent` | `/Contents` | `contents absent` |
 | `userunit <v>` `userunit absent` | `/UserUnit` | `userunit absent` |
+| `annot <i> <subtype> rect <llx> <lly> <urx> <ury> [/<k>=<v> ...]` | one line per `/Annots` element, in array order | — |
+
+Each `annot` line dumps the annotation dictionary: `/Subtype` and
+`/Rect` first (validated — a non-dict element, a non-ref element, a
+missing/ malformed `/Rect`, or a non-name `/Subtype` is a typed
+error), then every remaining key in byte order. Values are formatted
+recursively: numbers decimal, names `/name`, strings `(text)` with
+non-ASCII/non-printing bytes escaped `\xNN` (`(` `)` `\` too),
+arrays `[v0 v1 …]`, dicts `<< /k v … >>`, refs verbatim `n g R`,
+streams as `<stream>` (dict not expanded). Refs are shown, not
+resolved — an `annot` value never re-fetches another object.
 
 Errors are typed (`Error::Structure`/`MissingReference`): a
 non-1-page file (the count is reported), a non-array/unresolvable
 `/Annots`, a non-dict/unresolvable `/Resources`, a `/Contents` that is
-neither a ref nor an array of refs, or a non-numeric `/UserUnit`.
-Nothing is silently coerced — inspect explains the structure as it
-is, or fails.
+neither a ref nor an array of refs, a non-numeric `/UserUnit`, or a
+malformed annotation element. Nothing is silently coerced — inspect
+explains the structure as it is, or fails.
 
 ## Robustness
 
