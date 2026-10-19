@@ -20,3 +20,8 @@ tiny-skia = "0.12"
 
 # PNG encoding for M3 render output. MIT or Apache-2.0.
 png = "0.18"
+
+# JPEG (DCTDecode) decoding for image XObjects. Pure Rust,
+# MIT OR Apache-2.0; `rayon` parallelism is disabled to keep the
+# dependency tree small.
+jpeg-decoder = { version = "0.3", default-features = false }

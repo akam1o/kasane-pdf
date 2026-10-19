@@ -1,6 +1,6 @@
 # kasane-pdf support matrix
 
-Milestone: **M3**. Everything not listed as supported below is
+Milestone: **M4**. Everything not listed as supported below is
 unsupported and reported as a typed error — never silently skipped or
 returned as a partial result.
 
@@ -88,7 +88,8 @@ all parsed operations — no partial results.
 | `BT` `ET` | ✅ | nesting and balance checked |
 | `Tc` `Tw` `Tz` `TL` `Tf` `Tr` `Ts` `Td` `TD` `Tm` `T*` | ✅ | `Tf` keeps the font resource *name* |
 | `Tj` `TJ` `'` `"` | ✅ | `TJ` items: `TJItem::Text` (raw bytes) / `TJItem::Kern` (number); non-string/number items → `Error::Parse` |
-| `Do` `sh` | ✅ | resource name kept; XObject/shading **not** executed or decoded |
+| `Do` | ✅ | resolved via the *current* `/XObject` resource dict; `/Form` → painted via §8.10 rules (own `/Matrix`, `/BBox` clip, own `/Resources`); `/Image` → §8.9 sampled image (8-bit DeviceGray/RGB, raw/Flate/DCT); other subtypes → `Error::Unsupported` |
+| `sh` | ✅ | resource name kept; shading **not** executed |
 | `MP` `DP` `BMC` `BDC` `EMC` | ✅ | `DP`/`BDC` property operand must be a dict or name; balance checked |
 | `BX` `EX` | ✅ | inside, unknown operators are recorded as `Operation::Unknown` instead of failing (§7.8.2) |
 | `BI` `ID` `EI` (inline images) | ❌ | `Error::Unsupported` — the binary data between `ID` and `EI` cannot be tokenized without guessing |
@@ -123,9 +124,11 @@ a *render-time* restriction, not a parsing one.
 | `CS` `cs` + `SC` `sc` | ✅ | `DeviceGray`/`DeviceRGB`/`DeviceCMYK` and `DefaultGray`/`DefaultRGB`/`DefaultCMYK` |
 | `SCN` `scn` pattern name | ❌ | `Error::Unsupported` — patterns not rendered |
 | `CS`/`cs` non-device space | ❌ | `Error::Unsupported` — no ICCBased/Separation/DeviceN/Pattern |
-| text ops `Tf` `Tj` `TJ` `'` `"` | ❌ | `Error::Unsupported` — font loading is M4 |
+| text ops `Tf` `Tj` `TJ` `'` `"` | ❌ | `Error::Unsupported` — font loading is M5 |
 | text-state ops `Tc` `Tw` `Tz` `TL` `Tr` `Ts` `Td` `TD` `Tm` `T*` | ✅ | harmless state ops inside `BT`/`ET` (never reach a glyph) |
-| `Do` `sh` `gs` | ❌ | `Error::Unsupported` |
+| `Do` | ✅ | Form XObject (§8.10): gs saved, `/Matrix` concatenated, clipped to `/BBox`, form content runs under its own `/Resources`, gs restored; nested forms and recursion detection bounded by `max_xobject_depth`/`max_xobject_invocations`. Image XObject (§8.9): `/DeviceGray`/`/DeviceRGB` 8-bit only, raw/`FlateDecode`/`DCTDecode`, `/Decode`, `/Interpolate` (nearest-neighbour — spec permits ignoring interpolation). `/ImageMask`, `/Mask`, `/SMask`, `/SMaskInData` ≠ 0, `/OC`, `/Group`, `/Ref`, non-8-bit, non-device colour spaces → `Error::Unsupported` |
+| `sh` | ❌ | `Error::Unsupported` — shading not rendered |
+| `gs` | ❌ | `Error::Unsupported` |
 | `BMC` `BDC` `EMC` `MP` `DP` | ✅ | plain marked content — metadata only (§10.5) |
 | `/OC` `/OCMD` marked content | ❌ | `Error::Unsupported` — OCG/OCMD visibility evaluation is not implemented; a `/Properties` name that does not resolve to an OCG/OCMD dict is treated as plain marked content; unresolvable names error |
 | `BX` `EX` `Unknown` | ✅ | §7.8.2 compatibility — ignored |

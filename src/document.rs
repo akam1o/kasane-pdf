@@ -224,7 +224,7 @@ impl Document {
     /// Decode a stream body according to its dictionary's `/Filter` and
     /// `/DecodeParms`, bounded by `max_stream_bytes` and the shared
     /// `decoded_budget`.
-    fn decode_stream(&self, dict: &Dict, raw: &[u8]) -> Result<Vec<u8>, Error> {
+    pub(crate) fn decode_stream(&self, dict: &Dict, raw: &[u8]) -> Result<Vec<u8>, Error> {
         let out = filter::decode_stream(dict, raw, &self.limits)?;
         let cost = out.len() as u64;
         if cost > self.decoded_budget.get() {
@@ -354,21 +354,71 @@ impl Document {
     ) -> Result<Option<Object>, Error> {
         let resources = match page.resources() {
             None => return Ok(None),
-            Some(r) => self.deref(r)?,
+            Some(r) => r.clone(),
         };
-        let res_dict = resources
+        self.resolve_resource(&resources, category, name)
+    }
+
+    /// Resolve `name` in `category` of an arbitrary `/Resources`
+    /// dictionary — the same lookup [`Self::page_resource`] performs, but
+    /// against a supplied dictionary (a Form XObject's own resources).
+    ///
+    /// Per §7.8.3 a form without `/Resources` inherits the caller's
+    /// resource dictionary (an obsolete-but-legal ≤1.1 convention);
+    /// callers pass whichever dictionary is in effect.
+    ///
+    /// Returns the same three-state result as [`Self::page_resource`]:
+    /// `Ok(None)` for absent resources/categories/names,
+    /// `Err(Error::Structure)` for a non-dictionary resources or
+    /// category, `Err(Error::MissingReference)` for unresolved refs.
+    pub fn resolve_resource(
+        &self,
+        resources: &Object,
+        category: &str,
+        name: &[u8],
+    ) -> Result<Option<Object>, Error> {
+        let res = self.deref(resources)?;
+        let res_dict = res
             .as_dict()
-            .ok_or_else(|| Error::Structure("page /Resources is not a dictionary".into()))?;
+            .ok_or_else(|| Error::Structure("/Resources is not a dictionary".into()))?;
         let category_obj = match res_dict.get(category.as_bytes()) {
             None => return Ok(None),
             Some(c) => self.deref(c)?,
         };
         let cat_dict = category_obj.as_dict().ok_or_else(|| {
-            Error::Structure(format!("page /Resources /{category} is not a dictionary"))
+            Error::Structure(format!("/Resources /{category} is not a dictionary"))
         })?;
         match cat_dict.get(name) {
             None => Ok(None),
             Some(entry) => Ok(Some(self.deref(entry)?)),
+        }
+    }
+
+    /// Like [`Self::resolve_resource`] but returns the *unresolved* entry —
+    /// the raw `Object` stored in the category dictionary, which may
+    /// still be an `Object::Ref`. Used by the renderer to track which
+    /// indirect object a `Do` call refers to (for recursion detection)
+    /// without a second lookup.
+    pub fn resolve_resource_raw(
+        &self,
+        resources: &Object,
+        category: &str,
+        name: &[u8],
+    ) -> Result<Option<Object>, Error> {
+        let res = self.deref(resources)?;
+        let res_dict = res
+            .as_dict()
+            .ok_or_else(|| Error::Structure("/Resources is not a dictionary".into()))?;
+        let category_obj = match res_dict.get(category.as_bytes()) {
+            None => return Ok(None),
+            Some(c) => self.deref(c)?,
+        };
+        let cat_dict = category_obj.as_dict().ok_or_else(|| {
+            Error::Structure(format!("/Resources /{category} is not a dictionary"))
+        })?;
+        match cat_dict.get(name) {
+            None => Ok(None),
+            Some(entry) => Ok(Some(entry.clone())),
         }
     }
 
