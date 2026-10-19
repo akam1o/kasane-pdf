@@ -518,19 +518,26 @@ fn run_inspect(path: &str, page_no: usize) -> Result<(), Error> {
         }
     }
 
-    // One line per annotation, in /Annots order. Each entry must be
-    // an indirect ref resolving to a dict with a /Subtype name and a
-    // valid /Rect — anything else is a structural error.
+    // One line per annotation, in /Annots order. Each element may be
+    // an indirect ref to a dict (the usual form) or a direct dict —
+    // real files do embed annotations inline. Any other type is a
+    // structural error.
     for (i, entry) in annots.iter().enumerate() {
-        let aref = entry.as_ref().ok_or_else(|| {
-            Error::Structure(format!(
-                "annotation {i} is not an indirect reference ({entry:?})"
-            ))
-        })?;
-        let aobj = doc.resolve(aref)?;
-        let adict = aobj
-            .as_dict()
-            .ok_or_else(|| Error::Structure(format!("annotation {i} is not a dictionary")))?;
+        let adict_owned;
+        let adict = match entry {
+            Object::Ref(r) => {
+                adict_owned = doc.resolve(*r)?;
+                adict_owned.as_dict().ok_or_else(|| {
+                    Error::Structure(format!("annotation {i} is not a dictionary"))
+                })?
+            }
+            Object::Dict(d) => d,
+            other => {
+                return Err(Error::Structure(format!(
+                    "annotation {i} is not an indirect reference or a dictionary ({other:?})"
+                )))
+            }
+        };
         let subtype = adict
             .get(b"Subtype".as_slice())
             .and_then(|o| o.as_name())

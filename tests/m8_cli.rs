@@ -755,3 +755,88 @@ fn cli_inspect_annot_dangling_ref_errors() {
     let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
     assert!(!out.status.success(), "dangling annot ref must fail");
 }
+
+// ------------------------------------------------------------------
+// M11.1 — `inspect` annotation element types (ref | dict)
+// ------------------------------------------------------------------
+
+/// /Annots mixes a direct dict and an indirect ref — real files do.
+#[test]
+fn cli_inspect_annot_direct_and_mixed() {
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    // Direct dict + indirect ref in one /Annots array.
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] \
+          /Annots [<< /Subtype /Text /Rect [0 0 1 1] >> 4 0 R] >>",
+    );
+    push(4, b"<< /Type /Annot /Subtype /Square /Rect [1 1 5 5] >>");
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 5\n0000000000 65535 f \n".to_vec());
+    for n in 1..5u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 5 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    let dir = tmpdir("inspect-annot-mixed");
+    let src = dir.join("in.pdf");
+    fs::write(&src, parts.concat()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(
+        out.status.success(),
+        "mixed ref/dict annots must parse: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    let a0 = s.lines().find(|l| l.starts_with("annot 0 ")).unwrap();
+    assert!(a0.contains("Text rect 0 0 1 1"), "annot 0: {a0}");
+    let a1 = s.lines().find(|l| l.starts_with("annot 1 ")).unwrap();
+    assert!(a1.contains("Square rect 1 1 5 5"), "annot 1: {a1}");
+}
+
+#[test]
+fn cli_inspect_annot_bad_element_errors() {
+    // /Annots containing a number → not a ref or dict → error.
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 9 9] /Annots [42] >>",
+    );
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 4\n0000000000 65535 f \n".to_vec());
+    for n in 1..4u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 4 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    let dir = tmpdir("inspect-annot-badel");
+    let src = dir.join("in.pdf");
+    fs::write(&src, parts.concat()).unwrap();
+    let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
+    assert!(
+        !out.status.success(),
+        "non-ref/dict annot element must fail"
+    );
+}

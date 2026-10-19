@@ -314,9 +314,11 @@ editing, no text extraction. The file must contain exactly one page;
 | `annot <i> <subtype> rect <llx> <lly> <urx> <ury> [/<k>=<v> ...]` | one line per `/Annots` element, in array order | — |
 
 Each `annot` line dumps the annotation dictionary: `/Subtype` and
-`/Rect` first (validated — a non-dict element, a non-ref element, a
-missing/ malformed `/Rect`, or a non-name `/Subtype` is a typed
-error), then every remaining key in byte order. Values are formatted
+`/Rect` first (validated — the element may be an indirect ref *or*
+a direct dictionary, both are resolved to the dict; anything else —
+a number, string, stream — is a typed error, as is a non-dict
+element, a missing/malformed `/Rect`, or a non-name `/Subtype`),
+then every remaining key in byte order. Values are formatted
 recursively: numbers decimal, names `/name`, strings `(text)` with
 non-ASCII/non-printing bytes escaped `\xNN` (`(` `)` `\` too),
 arrays `[v0 v1 …]`, dicts `<< /k v … >>`, refs verbatim `n g R`,
