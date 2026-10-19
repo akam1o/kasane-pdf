@@ -309,7 +309,7 @@ editing, no text extraction. The file must contain exactly one page;
 | `rotation <deg>` | inherited `/Rotate` | `0` |
 | `annotations <count>` | `/Annots` array length | `0` |
 | `fonts` `xobjects` `colorspaces` `patterns` `shadings` `extgstates` `procsets` `properties` | direct entry counts of each `/Resources` sub-dict/array | `0` each |
-| `contents <ref>` `contents [<ref> ...]` `contents absent` | `/Contents` | `contents absent` |
+| `contents <ref>` `contents [<ref>, <ref>, ...]` `contents absent` | `/Contents` | `contents absent` |
 | `userunit <v>` `userunit absent` | `/UserUnit` | `userunit absent` |
 
 Errors are typed (`Error::Structure`/`MissingReference`): a
