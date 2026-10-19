@@ -13,12 +13,16 @@ renderer and writer are implemented here.
 
 ## Status
 
-**M8 is complete.** Rewrite any loaded document to a fresh
+**M8 / M8.1 are complete.** Rewrite any loaded document to a fresh
 single-revision PDF via `kasane-pdf rewrite in.pdf --output out.pdf`
 or the `rewrite(&Document)` API — preserving page tree, contents,
-fonts, text and basic links. See [`docs/coverage.md`](docs/coverage.md) for the
-detailed support matrix and [`docs/design.md`](docs/design.md) for
-architecture and licensing notes.
+fonts, text and basic links. M8.1 tightened the write guarantees:
+named destinations are refused outright, the output version is
+`max(header, catalog /Version)` with 2.0+ refused, and the CLI save
+path canonicalize+inode-checks identity, writes a `create_new` temp
+file, `sync_data`s and renames. See [`docs/coverage.md`](docs/coverage.md)
+for the detailed support matrix and [`docs/design.md`](docs/design.md)
+for architecture and licensing notes.
 
 What works today:
 

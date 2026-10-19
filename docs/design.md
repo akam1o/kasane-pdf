@@ -316,6 +316,14 @@ decoded-bytes cost. `unsafe` is not used anywhere.
      output, /Length recomputed, stream bytes verbatim, links and
      annots carried; signed/XFA/OCProperties/RichMedia/AA refused.
      Not an editor, redactor or sanitizer — see coverage.md.
+   - M8.1: rewrite guarantees tightened — named destinations
+      (name/string `/Dest`, `/Names /Dests`, catalog `/Dests`,
+      GoTo `/D` and OpenAction `/D` names/strings) are refused
+      outright; output version = `max(header, catalog /Version)`
+      with `2.0`+ refused; stream `/Length` emitted directly while
+      the indirect ref slot is skipped at collection; CLI same-file
+      check uses canonicalize + Unix (dev,ino); temp file uses
+      `create_new(true)` + `sync_data` + `rename`. See coverage.md.
 2. Rendering — transparency, patterns, ICC colour, masks
    (`/SMask`, `/ImageMask`), Type 0/CID + non-embedded fonts,
    remaining filters.

@@ -103,6 +103,22 @@ pub struct Limits {
     /// evade the budget because each occurrence adds its own bytes.
     /// Default: 8 MiB.
     pub max_extracted_unicode_bytes: u64,
+    /// Maximum indirect objects emitted by one [`crate::rewrite`] call.
+    /// Bounds the old→new reference map and the output buffer together.
+    /// Default: 200,000.
+    pub max_output_objects: usize,
+    /// Maximum total bytes emitted by one [`crate::rewrite`] call —
+    /// checked *while* writing, so a huge output fails partway through
+    /// without allocating the whole buffer first. Streams travel
+    /// encoded, so the cap applies to encoded bytes.
+    /// Default: 2 GiB.
+    pub max_output_bytes: u64,
+    /// Maximum depth of the reference-walk recursion inside
+    /// [`crate::rewrite`]. Genuine indirect cycles (page → /Parent → …)
+    /// terminate via the already-numbered map, not the depth cap — this
+    /// bounds pathological *direct* container nesting (arrays of
+    /// arrays of refs). Default: 512.
+    pub max_rewrite_walk_depth: usize,
 }
 
 impl Default for Limits {
@@ -135,6 +151,9 @@ impl Default for Limits {
             max_image_bytes: 256 * 1024 * 1024,
             max_text_codes: 1_000_000,
             max_extracted_unicode_bytes: 8 * 1024 * 1024,
+            max_output_objects: 200_000,
+            max_output_bytes: 2 * 1024 * 1024 * 1024,
+            max_rewrite_walk_depth: 512,
         }
     }
 }

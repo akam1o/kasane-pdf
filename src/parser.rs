@@ -18,6 +18,33 @@ use crate::lexer::{Lexer, Token};
 use crate::limits::Limits;
 use crate::object::{Dict, IndirectRef, Object};
 
+/// Parse `M.m` after a `%PDF-` marker; defaults to `(1, 7)` on any
+/// malformed text (we never refuse a file over its version label —
+/// the value is recorded for the writer only).
+fn parse_version(after: &[u8]) -> (u8, u8) {
+    let mut major = 0u8;
+    let mut minor = 0u8;
+    let mut dot = false;
+    let mut i = 0;
+    while i < after.len() && after[i].is_ascii_digit() {
+        major = major.saturating_mul(10).saturating_add(after[i] - b'0');
+        i += 1;
+    }
+    if i < after.len() && after[i] == b'.' {
+        dot = true;
+        i += 1;
+        while i < after.len() && after[i].is_ascii_digit() {
+            minor = minor.saturating_mul(10).saturating_add(after[i] - b'0');
+            i += 1;
+        }
+    }
+    if major == 0 && !dot {
+        (1, 7)
+    } else {
+        (major, minor)
+    }
+}
+
 /// A parsed indirect object definition (`n g obj … endobj`).
 #[derive(Debug)]
 pub(crate) struct IndirectObject {
@@ -55,18 +82,26 @@ impl<'a> Parser<'a> {
     /// Locate the `%PDF-` header. Per spec it starts the file; real-world
     /// files may carry a short binary prefix, so we accept it within the
     /// first 1024 bytes (common reader behaviour).
-    pub(crate) fn check_header(&mut self) -> Result<(), Error> {
+    ///
+    /// Returns the declared `(major, minor)` version — `%PDF-1.7` →
+    /// `(1, 7)` — parsed from the bytes after the marker, defaulting
+    /// to `(1, 7)` when the version text is malformed (the file still
+    /// parses; the version is only used to *declare* the output and
+    /// never to gate features).
+    pub(crate) fn check_header(&mut self) -> Result<(u8, u8), Error> {
         const SEARCH_WINDOW: usize = 1024;
         let input = self.lexer.input;
         let end = SEARCH_WINDOW.min(input.len());
         if end < b"%PDF-".len() {
             return Err(Error::NotPdf);
         }
-        if input[..end].windows(b"%PDF-".len()).any(|w| w == b"%PDF-") {
-            Ok(())
-        } else {
-            Err(Error::NotPdf)
+        for i in 0..end - b"%PDF-".len() {
+            if &input[i..i + b"%PDF-".len()] == b"%PDF-" {
+                let v = parse_version(&input[i + b"%PDF-".len()..]);
+                return Ok(v);
+            }
         }
+        Err(Error::NotPdf)
     }
 
     /// Locate the last `startxref` keyword near the end of the file and
@@ -84,6 +119,7 @@ impl<'a> Parser<'a> {
                 idx = Some(window_start + i);
             }
         }
+
         let kw =
             idx.ok_or_else(|| Error::Parse("no startxref marker in last 1024 bytes".to_string()))?;
 

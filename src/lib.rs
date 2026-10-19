@@ -76,4 +76,4 @@ pub use error::Error;
 pub use limits::Limits;
 pub use object::{IndirectRef, Object};
 pub use page::{Page, Rect};
-pub use rewrite::rewrite;
+pub use rewrite::{rewrite, rewrite_with_limits};

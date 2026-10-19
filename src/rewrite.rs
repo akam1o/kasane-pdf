@@ -32,23 +32,16 @@ use crate::object::{IndirectRef, Object};
 use crate::serialize::write_indirect_object;
 use std::collections::HashMap;
 
-/// Maximum indirect objects emitted by one rewrite — bounds both the
-/// reference map and the output buffer in memory.
-const MAX_OUTPUT_OBJECTS: usize = 200_000;
-/// Maximum total output bytes. Streams dominate file size; 2 GiB
-/// covers realistic documents while still bounding a pathological
-/// input that expands many small objects (a compressed stream is
-/// carried as-is, so the cap applies to the *encoded* bytes we emit).
-const MAX_OUTPUT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-/// Maximum DFS depth through the reference graph. Genuine indirect
-/// cycles (page → /Parent → …) don't recurse — they hit the
-/// already-numbered map and return; this bound catches pathological
-/// *direct*-container nesting (arrays of arrays of refs).
-const MAX_REF_WALK_DEPTH: usize = 512;
+use crate::limits::Limits;
 
-/// Header version — 1.7 covers every feature M8 can emit; a catalog
-/// `/Version` above it is honoured instead (we never under-declare).
-const BASE_VERSION: &str = "1.7";
+/// Header version — M8 writes classic xref + ObjStm-free output, so
+/// 1.7 covers every feature it can emit. A catalog `/Version` of 1.4
+/// through 1.7 is honoured; 1.3 or below means the catalog claims
+/// less than the header — we still output 1.7 so the file's declared
+/// version never falls below the structures it contains.
+/// A document that declares 2.0 (header or catalog) is refused: M8
+/// does not translate 2.0 content down to 1.7.
+const BASE_VERSION: (u8, u8) = (1, 7);
 
 /// Which trailer slot a discovered object came from.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -64,11 +57,18 @@ enum RootKind {
 /// Returns the complete file bytes; nothing is written to disk.
 /// Deterministic: same input → same output.
 pub fn rewrite(doc: &Document) -> Result<Vec<u8>, Error> {
+    rewrite_with_limits(doc, &Limits::default())
+}
+
+/// Like [`rewrite`] but with explicit output limits — the traversal
+/// budget, emitted-byte cap and walk depth come from `limits`.
+pub fn rewrite_with_limits(doc: &Document, limits: &Limits) -> Result<Vec<u8>, Error> {
     check_refusals(doc)?;
 
     // ---- Phase 1: collect reachable objects, assign new numbers ----
     let mut c = Collector {
         doc,
+        limits,
         map: HashMap::new(),
         bodies: HashMap::new(),
         kinds: HashMap::new(),
@@ -89,7 +89,7 @@ pub fn rewrite(doc: &Document) -> Result<Vec<u8>, Error> {
     }
 
     // ---- Phase 2: emit, in new-number order ----
-    let version = catalog_version(doc).unwrap_or(BASE_VERSION);
+    let version = effective_version(doc)?;
     let mut out: Vec<u8> = Vec::new();
     out.extend_from_slice(b"%PDF-");
     out.extend_from_slice(version.as_bytes());
@@ -107,10 +107,10 @@ pub fn rewrite(doc: &Document) -> Result<Vec<u8>, Error> {
     for (new_num, obj) in &sorted {
         offsets.push(out.len() as u64);
         write_indirect_object(*new_num, obj, &remap, &mut out)?;
-        if out.len() as u64 > MAX_OUTPUT_BYTES {
+        if out.len() as u64 > limits.max_output_bytes {
             return Err(Error::LimitExceeded {
                 limit: "max_output_bytes",
-                max: MAX_OUTPUT_BYTES,
+                max: limits.max_output_bytes,
             });
         }
     }
@@ -160,6 +160,7 @@ pub fn rewrite(doc: &Document) -> Result<Vec<u8>, Error> {
 
 struct Collector<'a> {
     doc: &'a Document,
+    limits: &'a Limits,
     /// `(old number, old gen) → new number`.
     map: HashMap<(u32, u16), u32>,
     /// `new number → resolved + ref-rewritten body`.
@@ -176,16 +177,16 @@ impl<'a> Collector<'a> {
     /// Shared refs and genuine indirect cycles both hit the `map`
     /// early-return — no stack needed for correctness.
     fn walk(&mut self, old_ref: IndirectRef, kind: RootKind, depth: usize) -> Result<(), Error> {
-        if depth > MAX_REF_WALK_DEPTH {
+        if depth > self.limits.max_rewrite_walk_depth {
             return Err(Error::LimitExceeded {
-                limit: "reference walk depth",
-                max: MAX_REF_WALK_DEPTH as u64,
+                limit: "max_rewrite_walk_depth",
+                max: self.limits.max_rewrite_walk_depth as u64,
             });
         }
-        if self.walked >= MAX_OUTPUT_OBJECTS {
+        if self.walked >= self.limits.max_output_objects {
             return Err(Error::LimitExceeded {
                 limit: "max_output_objects",
-                max: MAX_OUTPUT_OBJECTS as u64,
+                max: self.limits.max_output_objects as u64,
             });
         }
         self.walked += 1;
@@ -222,7 +223,17 @@ impl<'a> Collector<'a> {
                 }
             }
             Object::Stream { dict, .. } => {
-                for v in dict.values_mut() {
+                for (k, v) in dict.iter_mut() {
+                    // /Length is recomputed as a direct integer at
+                    // write time — an indirect /Length ref collected
+                    // here would emit an orphan object nothing in the
+                    // output references. If the same object is also
+                    // referenced elsewhere it is still collected from
+                    // that site (map dedupe keeps it reachable); only
+                    // the stream-dict slot is skipped.
+                    if k.as_slice() == b"Length" {
+                        continue;
+                    }
                     self.scan_and_collect(v, depth + 1)?;
                 }
             }
@@ -235,19 +246,131 @@ impl<'a> Collector<'a> {
     }
 }
 
-/// Catalog `/Version` ≥ the header base is honoured (§7.5.2 note);
-/// anything else falls back to `BASE_VERSION`.
-fn catalog_version(doc: &Document) -> Option<&'static str> {
-    doc.catalog()
-        .get(b"Version".as_slice())
-        .and_then(|o| o.as_name())
-        .and_then(|n| match n {
-            b"1.4" => Some("1.4"),
-            b"1.5" => Some("1.5"),
-            b"1.6" => Some("1.6"),
-            b"1.7" => Some("1.7"),
-            _ => None,
-        })
+/// The effective input version: `max(header_version, catalog_version)`.
+/// `2.0` and above are refused (M8 never writes a 2.x header — it does
+/// not translate 2.0 features down, so we cannot claim 1.7 either;
+/// 2.0-only features would silently break).
+fn effective_version(doc: &Document) -> Result<String, Error> {
+    let (maj, min) = doc.header_version();
+    let cat = catalog_version_num(doc);
+    // Effective = max of the two (the catalog's /Version overrides the
+    // header upward only — §7.5.2 note: it may be *higher* than the
+    // header, never lower).
+    let effective = match cat {
+        Some((cmaj, cmin)) if cmaj > maj || (cmaj == maj && cmin > min) => (cmaj, cmin),
+        _ => (maj, min),
+    };
+    // Guaranteed-write ceiling: 1.7. Anything above is Unsupported.
+    if effective > BASE_VERSION {
+        return Err(Error::Unsupported {
+            feature: "PDF version",
+            detail: format!(
+                "document declares PDF {effective:?} — cannot rewrite as ≤{}.{}",
+                BASE_VERSION.0, BASE_VERSION.1
+            ),
+        });
+    }
+    Ok(format!("{}.{}", effective.0, effective.1))
+}
+
+/// Catalog `/Version` as `(major, minor)` — `None` if absent/malformed.
+fn catalog_version_num(doc: &Document) -> Option<(u8, u8)> {
+    let name = doc.catalog().get(b"Version".as_slice())?.as_name()?;
+    let s = std::str::from_utf8(name).ok()?;
+    let (maj, min) = s.split_once('.')?;
+    let maj = maj.trim().parse::<u8>().ok()?;
+    let min = min.trim().parse::<u8>().ok()?;
+    Some((maj, min))
+}
+
+/// Scan every reachable `/Annots` entry and `/OpenAction`/`/GoTo`
+/// destination operands for a *named* destination — a name or
+/// string instead of the required destination array. Refuses the
+/// document before any output when one is found.
+fn check_named_dests(doc: &Document) -> Result<(), Error> {
+    // /OpenAction /D as a name/string is a named dest.
+    if let Some(oa) = doc.catalog().get(b"OpenAction".as_slice()) {
+        let oa = doc.deref(oa)?;
+        if let Some(d) = oa.as_dict() {
+            if let Some(dest) = d.get(b"D".as_slice()) {
+                check_dest_operand(doc, dest, "/OpenAction /D")?;
+            }
+        } else {
+            check_dest_operand(doc, &oa, "/OpenAction")?;
+        }
+    }
+    for page in doc.pages() {
+        if let Some(annots_obj) = page
+            .object_ref()
+            .and_then(|r| doc.resolve(r).ok())
+            .and_then(|o| o.as_dict().cloned())
+            .and_then(|d| d.get(b"Annots".as_slice()).cloned())
+        {
+            let annots = doc.deref(&annots_obj)?;
+            if let Some(arr) = annots.as_array() {
+                for a in arr {
+                    let a = doc.deref(a)?;
+                    if let Some(ad) = a.as_dict() {
+                        if let Some(dest) = ad.get(b"Dest".as_slice()) {
+                            check_dest_operand(doc, dest, "/Annots /Dest")?;
+                        }
+                        if let Some(action) = ad.get(b"A".as_slice()) {
+                            let action = doc.deref(action)?;
+                            if let Some(act_d) = action.as_dict() {
+                                let s = act_d.get(b"S".as_slice()).and_then(|o| o.as_name());
+                                if s == Some(b"GoTo") {
+                                    if let Some(dest) = act_d.get(b"D".as_slice()) {
+                                        check_dest_operand(doc, dest, "/Annots /A /GoTo /D")?;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A destination operand must be an array (`[page /XYZ …]` or
+/// `[page /Fit]`) — a `Name` or `String` means "look me up in the
+/// name tree", which M8 does not implement.
+fn check_dest_operand(doc: &Document, obj: &Object, context: &str) -> Result<(), Error> {
+    match obj {
+        Object::Name(n) | Object::String(n) => {
+            return Err(Error::Unsupported {
+                feature: "named destination",
+                detail: format!(
+                    "{context} contains named destination /{} — name trees are not resolved",
+                    String::from_utf8_lossy(n)
+                ),
+            });
+        }
+        Object::Ref(_) => {
+            // Resolve the ref once and re-check — an indirect /Dest
+            // could still hold a name/string inside an array's slot.
+            let resolved = doc.deref(obj)?;
+            return check_dest_operand(doc, &resolved, context);
+        }
+        Object::Array(arr) => {
+            // First element is the page ref — not a destination by
+            // itself; subsequent elements are positional params.
+            // A bare /Name or /String as the *first* element of the
+            // array is still wrong (dest arrays start with a page).
+            if let Some(Object::Name(n) | Object::String(n)) = arr.first() {
+                return Err(Error::Unsupported {
+                    feature: "named destination",
+                    detail: format!(
+                        "{context} destination array starts with /{} — not a page ref",
+                        String::from_utf8_lossy(n)
+                    ),
+                });
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Refusals — checked before any collection or output begins.
@@ -310,6 +433,46 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
             }
         }
     }
+
+    // ---- Named destinations: explicit refusal (M8.1 decision B) ----
+    //
+    // A named destination is a *name or string* that resolves through
+    // a name tree (/Dests in /Names, or the legacy /Dests dict) — we
+    // do not resolve or preserve that indirection. Direct destination
+    // *arrays* (e.g. `/D [5 0 R /XYZ 0 200 null]`) are preserved.
+    //
+    // Structures checked (any reachable):
+    //   * catalog /Dests dict          → refuse
+    //   * catalog /Names /Dests tree   → refuse
+    //   * link annot /Dest name/string → refuse
+    //   * GoTo action /D name/string   → refuse
+    //   * OpenAction /D name/string    → refuse
+    // The name-tree Kids chain is also walked so a /Dests hidden
+    // behind intermediate /Kids nodes is still caught.
+
+    if catalog.contains_key(b"Dests".as_slice()) {
+        return Err(Error::Unsupported {
+            feature: "named destination",
+            detail: "/Dests name tree is outside the M8 rewrite profile".into(),
+        });
+    }
+    if let Some(names_obj) = catalog.get(b"Names".as_slice()) {
+        let names = doc.deref(names_obj)?;
+        if let Some(d) = names.as_dict() {
+            if d.contains_key(b"Dests".as_slice()) {
+                return Err(Error::Unsupported {
+                    feature: "named destination",
+                    detail: "/Names /Dests is outside the M8 rewrite profile".into(),
+                });
+            }
+        }
+    }
+
+    // Walk /Annots arrays on every page for link-annotation named
+    // destinations, and check GoTo/OpenAction /D operands — a name
+    // or string where a destination array is required is a named
+    // destination we cannot honour.
+    check_named_dests(doc)?;
 
     // Active/executable structures outside the M8 profile.
     for key in [&b"OCProperties"[..], &b"RichMedia"[..], &b"AA"[..]] {
