@@ -1366,8 +1366,9 @@ def text_differences_encoding():
 
 
 def text_notdef():
-    """Char code with no encoding entry → .notdef glyph."""
-    stream = b"BT /F1 24 Tf 20 60 Td (A\\x01Z) Tj ET"  # 0x01 undefined
+    """Char code with no encoding entry → .notdef glyph.
+    0x01 is embedded as an octal escape — \\001 in the string."""
+    stream = b"BT /F1 24 Tf 20 60 Td (A\\001Z) Tj ET"  # \\001 = char 0x01
     objs = [
         (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
         (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),

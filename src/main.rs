@@ -16,7 +16,7 @@ fn main() -> ExitCode {
     let prog = args.first().map(String::as_str).unwrap_or("kasane-pdf");
 
     match args.get(1).map(String::as_str) {
-        Some(cmd @ ("contents" | "operations" | "render")) => {
+        Some(cmd @ ("contents" | "operations" | "render" | "text")) => {
             let (path, page_no) = match (args.get(2), args.get(3)) {
                 (Some(p), Some(n)) => (p, n),
                 _ => {
@@ -35,6 +35,7 @@ fn main() -> ExitCode {
                 "contents" => run_contents(path, page_no),
                 "operations" => run_operations(path, page_no),
                 "render" => run_render(path, page_no, &args[4..]),
+                "text" => run_text(path, page_no, &args[4..]),
                 _ => unreachable!(),
             };
             match result {
@@ -59,6 +60,7 @@ fn main() -> ExitCode {
             eprintln!(
                 "       {prog} render <file.pdf> <page-number> --output <file.png> [--dpi <dpi>]"
             );
+            eprintln!("       {prog} text <file.pdf> <page-number> [--format json|lines]");
             ExitCode::from(2)
         }
     }
@@ -207,4 +209,90 @@ fn run_render(path: &str, page_no: usize, args: &[String]) -> Result<(), Error> 
         page_no, output, rendered.width, rendered.height, rendered.page_size_pts.0, rendered.dpi
     );
     Ok(())
+}
+
+/// `text` subcommand: `text <file.pdf> <page> [--format json|lines]`.
+/// Prints each extracted character in content order with its
+/// resolved Unicode value and page-space geometry.
+fn run_text(path: &str, page_no: usize, args: &[String]) -> Result<(), Error> {
+    let mut format = "json";
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--format" => {
+                format = args
+                    .get(i + 1)
+                    .map(|s| s.as_str())
+                    .ok_or_else(|| Error::Structure("--format requires a value".into()))?;
+                i += 2;
+            }
+            other => {
+                return Err(Error::Structure(format!("unknown option '{other}'")));
+            }
+        }
+    }
+    if format != "json" && format != "lines" {
+        return Err(Error::Structure(format!(
+            "unknown --format '{format}' (json|lines)"
+        )));
+    }
+
+    let data = std::fs::read(path)?;
+    let doc = Document::from_bytes(&data)?;
+    let page = doc
+        .pages()
+        .get(page_no - 1)
+        .ok_or_else(|| Error::Structure(format!("page {page_no} does not exist")))?;
+
+    let text = kasane_pdf::extract_text(&doc, page, &Limits::default())?;
+    match format {
+        "json" => print_json(&text),
+        "lines" => print_lines(&text),
+        _ => unreachable!(),
+    }
+    Ok(())
+}
+
+fn print_json(t: &kasane_pdf::ExtractedText) {
+    let mut out = String::from("[\n");
+    for (i, c) in t.chars.iter().enumerate() {
+        if i > 0 {
+            out.push_str(",\n");
+        }
+        out.push_str("  {");
+        out.push_str(&format!("\"code\": {}, ", c.code));
+        match &c.unicode {
+            Some(s) => out.push_str(&format!("\"unicode\": {:?}, ", s)),
+            None => out.push_str("\"unicode\": null, "),
+        }
+        out.push_str(&format!("\"via\": {:?}, ", c.resolved_via));
+        out.push_str(&format!(
+            "\"origin\": [{:.2}, {:.2}], \"advance\": [{:.2}, {:.2}], ",
+            c.origin.0, c.origin.1, c.advance.0, c.advance.1
+        ));
+        match c.bounds {
+            Some(b) => out.push_str(&format!(
+                "\"bounds\": [{:.2}, {:.2}, {:.2}, {:.2}], ",
+                b.0, b.1, b.2, b.3
+            )),
+            None => out.push_str("\"bounds\": null, "),
+        }
+        out.push_str(&format!(
+            "\"mode\": {}, \"size\": {:.2}, \"rise\": {:.2}, \"tj\": {:.2}",
+            c.render_mode, c.font_size, c.rise, c.tj_adjust
+        ));
+        out.push('}');
+    }
+    out.push_str("\n]\n");
+    print!("{out}");
+}
+
+fn print_lines(t: &kasane_pdf::ExtractedText) {
+    for c in &t.chars {
+        let u = c.unicode.as_deref().unwrap_or("<unresolved>");
+        println!(
+            "0x{:02X} {:?} at ({:.1},{:.1}) adv({:.1},{:.1}) mode={} size={:.1}",
+            c.code, u, c.origin.0, c.origin.1, c.advance.0, c.advance.1, c.render_mode, c.font_size
+        );
+    }
 }

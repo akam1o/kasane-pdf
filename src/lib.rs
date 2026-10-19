@@ -60,11 +60,14 @@ mod objstm;
 mod page;
 mod parser;
 mod render;
+pub mod text_extract;
+mod tounicode;
 mod xref;
 
 pub use content::{Operation, TJItem};
 pub use matrix::Matrix;
 pub use render::{pixmap_to_png, render_page, Color, RenderOptions, RenderedPage};
+pub use text_extract::{extract_text, CharInfo, ExtractedText, ResolveKind};
 
 pub use document::Document;
 pub use error::Error;
