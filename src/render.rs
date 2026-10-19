@@ -378,6 +378,8 @@ pub fn render_page(
         text_tlm: Matrix::IDENTITY,
         text_codes: 0,
         extract: None,
+        extract_unicode_bytes: 0,
+        extraction_only: false,
     };
     renderer.run(&ops)?;
 
@@ -545,6 +547,13 @@ pub(crate) struct Renderer<'a> {
     /// If `Some`, text-showing ops also record an [`ExtractedChar`]
     /// per character code — used by [`crate::text_extract`].
     extract: Option<Vec<crate::text_extract::CharInfo>>,
+    /// Cumulative UTF-8 bytes of resolved Unicode stored in `extract`.
+    extract_unicode_bytes: u64,
+    /// `true` while serving `extract_text`: painting work (path
+    /// rasterisation, clip masks, image decoding) is skipped — the
+    /// interpreter still walks every operator so text state, resources
+    /// and limits behave exactly as during a render.
+    extraction_only: bool,
 }
 
 impl<'a> Renderer<'a> {
@@ -556,8 +565,6 @@ impl<'a> Renderer<'a> {
         page: &Page,
         opts: &'a RenderOptions,
     ) -> Result<Renderer<'a>, Error> {
-        // We still validate page geometry — extraction runs the same
-        // code path as painting.
         let limits = &opts.limits;
         if let Some(annots) = page_dict_entry(doc, page, b"Annots")? {
             if !is_empty_array(&annots) {
@@ -567,28 +574,12 @@ impl<'a> Renderer<'a> {
                 });
             }
         }
-        let crop = page.crop_box();
-        if !rect_is_finite(&crop) {
-            return Err(Error::Structure("CropBox has non-finite values".into()));
-        }
-        let rotate = page.rotate().rem_euclid(360);
-        let scale = opts.dpi / 72.0;
-        let w_pts = crop.width();
-        let h_pts = crop.height();
-        let width = checked_px(w_pts, scale, limits)?;
-        let height = checked_px(h_pts, scale, limits)?;
-        if width as u64 * height as u64 > limits.max_render_total_pixels {
-            return Err(Error::LimitExceeded {
-                limit: "max_render_total_pixels",
-                max: limits.max_render_total_pixels,
-            });
-        }
-        let user_to_pix = build_page_transform(&crop, rotate, scale)?;
-        // Minimal pixmap — content isn't painted, but the struct
-        // requires a live buffer. 1×1 suffices.
-        let mut pixmap = Pixmap::new(1, 1)
+        // Extraction reports PDF user-space (CropBox) coordinates, so
+        // no page→pixmap transform and no page-sized pixel buffer are
+        // needed. The struct still requires a live pixmap; 1×1 is a
+        // placeholder only — nothing is painted in extraction mode.
+        let pixmap = Pixmap::new(1, 1)
             .ok_or_else(|| Error::Structure("cannot allocate extraction pixmap".into()))?;
-        pixmap.fill(ts_color(Color::WHITE));
         let resources = page
             .resources()
             .cloned()
@@ -597,7 +588,7 @@ impl<'a> Renderer<'a> {
             limits,
             doc,
             pixmap: Box::leak(Box::new(pixmap)),
-            user_to_pix,
+            user_to_pix: Transform::default(),
             gs: GraphicsState::new(),
             gs_stack: Vec::new(),
             path: CurrentPath::default(),
@@ -610,6 +601,8 @@ impl<'a> Renderer<'a> {
             text_tlm: Matrix::IDENTITY,
             text_codes: 0,
             extract: Some(Vec::new()),
+            extract_unicode_bytes: 0,
+            extraction_only: true,
         })
     }
 
@@ -994,23 +987,22 @@ impl<'a> Renderer<'a> {
     }
 
     /// A `DP`/`BDC` tag+properties operand: decide whether this is
-    /// ordinary marked content (ignored) or Optional Content that we
-    /// cannot evaluate. `/OC` and `/OCMD` mark Optional Content
-    /// membership (§8.11); other tags are plain marked content.
+    /// ordinary marked content (ignored), Optional Content we cannot
+    /// evaluate (`/OC` + an OCG/OCMD property list — §8.11), or a
+    /// `/Span` sequence carrying `/ActualText` replacement text
+    /// (§14.9.4), which would change what text extraction reports.
+    /// All other tags and property lists are plain marked content.
     ///
     /// The `properties` operand may be a name (resolved against the
-    /// page's `/Properties` resource subdictionary) or a direct
-    /// dictionary. Names that resolve to an OCG/OCMD dictionary make
-    /// the whole block optional-content — we refuse to render the
-    /// page rather than silently draw members that may be hidden.
+    /// current `/Properties` resource subdictionary) or a direct
+    /// dictionary. An unresolvable name is a structure error, never
+    /// silently ignored.
     fn marked_content(&self, tag: &[u8], properties: &Object) -> Result<(), Error> {
-        // Resolve a `/Properties` name through the page's resources.
+        // Resolve a `/Properties` name through the current resources.
+        // Names under tags we don't inspect are plain marked content.
         let resolved = match properties {
             Object::Name(n) => {
-                // /OC/OCMD tags are only meaningful when they actually
-                // resolve to an optional-content dictionary; other
-                // names are treated as plain marked content.
-                if tag != b"OC" && tag != b"OCMD" {
+                if tag != b"OC" && tag != b"Span" {
                     return Ok(());
                 }
                 let props = self
@@ -1033,15 +1025,29 @@ impl<'a> Renderer<'a> {
         let dict = resolved.as_dict().ok_or_else(|| {
             Error::Structure("marked-content properties is not a dictionary".into())
         })?;
-        // OCG/OCMD membership is indicated by a /Type of /OCG or /OCMD.
-        match dict.get(b"Type".as_slice()).and_then(|t| t.as_name()) {
-            Some(b"OCG") | Some(b"OCMD") => Err(Error::Unsupported {
-                feature: "optional content (/OC or /OCMD marked content)",
-                detail: "OCG/OCMD membership requires visibility evaluation, not implemented in M3"
-                    .into(),
-            }),
-            _ => Ok(()),
+        if tag == b"OC" {
+            // OCG/OCMD membership is indicated by a /Type of /OCG or /OCMD.
+            match dict.get(b"Type".as_slice()).and_then(|t| t.as_name()) {
+                Some(b"OCG") | Some(b"OCMD") => return Err(Error::Unsupported {
+                    feature: "optional content (/OC or /OCMD marked content)",
+                    detail:
+                        "OCG/OCMD membership requires visibility evaluation, not implemented in M3"
+                            .into(),
+                }),
+                _ => return Ok(()),
+            }
         }
+        // §14.9.4: an /ActualText entry in a marked-content property
+        // list (attached via a /Span tag) substitutes the shown
+        // characters. Extraction cannot honour it, so refuse rather
+        // than return text that may not match the document's meaning.
+        if tag == b"Span" && dict.contains_key(b"ActualText".as_slice()) {
+            return Err(Error::Unsupported {
+                feature: "replacement text (/Span <</ActualText …>>)",
+                detail: "ActualText substitutes extracted text and is not implemented".into(),
+            });
+        }
+        Ok(())
     }
 
     /// The combined user→pixmap transform used at paint time:
@@ -1178,6 +1184,10 @@ impl<'a> Renderer<'a> {
     /// (`n` or a painting op) resets it separately.
     fn install_clip(&mut self) -> Result<(), Error> {
         let rule = self.path.pending_clip.take().unwrap();
+        if self.extraction_only {
+            // No pixels — a pending clip is just consumed.
+            return Ok(());
+        }
         let ts = self.paint_ts()?;
         let Some(new_path) = self.path.builder.clone().finish() else {
             // W on an empty path empties the clip.
@@ -1240,7 +1250,15 @@ impl<'a> Renderer<'a> {
         let raw = raw.to_vec();
         match dict.get(b"Subtype".as_slice()).and_then(|o| o.as_name()) {
             Some(b"Form") => self.do_form(&dict, &raw, name, entry_ref),
-            Some(b"Image") => self.do_image(&dict, &raw, name),
+            // Images carry no text — in extraction mode the dict is
+            // still validated/refused above but nothing is decoded.
+            Some(b"Image") => {
+                if self.extraction_only {
+                    Ok(())
+                } else {
+                    self.do_image(&dict, &raw, name)
+                }
+            }
             Some(other) => Err(Error::Unsupported {
                 feature: "XObject subtype",
                 detail: format!(
@@ -1358,7 +1376,12 @@ impl<'a> Renderer<'a> {
 
         // Clip to BBox in *form space* — build the BBox path in user
         // space and intersect via the same mechanism as W.
-        let clip_result = self.intersect_clip_rect(&bbox);
+        // Clip to BBox — skipped in extraction mode (no raster clip).
+        let clip_result = if self.extraction_only {
+            Ok(())
+        } else {
+            self.intersect_clip_rect(&bbox)
+        };
 
         // Decode and run the form's content stream.
         let run_result = (|| {
@@ -1893,9 +1916,12 @@ impl<'a> Renderer<'a> {
         let units = font.units_per_em()?;
         let mut gp = crate::font::GlyphPath::new(units);
         let has_outline = font.outline(gid, &mut gp)?;
+        // The finished path is consumed by painting or by the bounds
+        // computation below — exactly one of the two per call.
+        let glyph_path = if has_outline { gp.finish() } else { None };
 
-        if has_outline {
-            if let Some(path) = gp.finish() {
+        if let Some(path) = &glyph_path {
+            if !self.extraction_only {
                 // Text→render matrix (§9.4.4 note 2).
                 let trm = Matrix::new(t.font_size * t.h_scale, 0.0, 0.0, t.font_size, 0.0, t.rise)
                     .concat(self.text_tm)
@@ -1917,7 +1943,7 @@ impl<'a> Renderer<'a> {
                         p.set_color(tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a));
                         p.anti_alias = true;
                         self.pixmap
-                            .fill_path(&path, &p, FillRule::Winding, full, gs.clip.as_ref());
+                            .fill_path(path, &p, FillRule::Winding, full, gs.clip.as_ref());
                     }
                     _ => {}
                 }
@@ -1932,7 +1958,7 @@ impl<'a> Renderer<'a> {
                         ..Default::default()
                     };
                     self.pixmap
-                        .stroke_path(&path, &p, &stroke, full, gs.clip.as_ref());
+                        .stroke_path(path, &p, &stroke, full, gs.clip.as_ref());
                 }
                 // mode 3: invisible — paint nothing, still advance.
             }
@@ -1955,41 +1981,39 @@ impl<'a> Renderer<'a> {
             let origin = trm.transform(0.0, 0.0);
             let (ax, ay) = trm.transform(tx_text, 0.0);
             let advance = (ax - origin.0, ay - origin.1);
-            // Glyph bounds: outline in page space, or None if the
-            // glyph has no outline (e.g. space).
-            let bounds = if has_outline {
-                let mut gp2 = crate::font::GlyphPath::new(units);
-                if font.outline(gid, &mut gp2).unwrap_or(false) {
-                    gp2.finish().map(|p| {
-                        let b = p.bounds();
-                        let trm2 = Matrix::new(
-                            t.font_size * t.h_scale,
-                            0.0,
-                            0.0,
-                            t.font_size,
-                            0.0,
-                            t.rise,
-                        )
-                        .concat(self.text_tm)
-                        .concat(gs.ctm);
-                        let (x0, y0) = trm2.transform(b.left() as f64, b.top() as f64);
-                        let (x1, y1) = trm2.transform(b.right() as f64, b.bottom() as f64);
-                        let (x2, y2) = trm2.transform(b.left() as f64, b.bottom() as f64);
-                        let (x3, y3) = trm2.transform(b.right() as f64, b.top() as f64);
-                        (
-                            x0.min(x1).min(x2).min(x3),
-                            y0.min(y1).min(y2).min(y3),
-                            x0.max(x1).max(x2).max(x3),
-                            y0.max(y1).max(y2).max(y3),
-                        )
-                    })
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
+            // Glyph bounds: the outline's user-space axis-aligned bbox,
+            // or None if the glyph has no outline (e.g. space). Reuses
+            // the outline already built above — a second parse of the
+            // glyph program would only duplicate work.
+            let bounds = glyph_path.as_ref().map(|p| {
+                let b = p.bounds();
+                let (x0, y0) = trm.transform(b.left() as f64, b.top() as f64);
+                let (x1, y1) = trm.transform(b.right() as f64, b.bottom() as f64);
+                let (x2, y2) = trm.transform(b.left() as f64, b.bottom() as f64);
+                let (x3, y3) = trm.transform(b.right() as f64, b.top() as f64);
+                (
+                    x0.min(x1).min(x2).min(x3),
+                    y0.min(y1).min(y2).min(y3),
+                    x0.max(x1).max(x2).max(x3),
+                    y0.max(y1).max(y2).max(y3),
+                )
+            });
             let (unicode, resolved_via) = crate::text_extract::resolve_unicode(font, code);
+            if let Some(s) = &unicode {
+                self.extract_unicode_bytes = self
+                    .extract_unicode_bytes
+                    .checked_add(s.len() as u64)
+                    .ok_or(Error::LimitExceeded {
+                        limit: "max_extracted_unicode_bytes",
+                        max: self.limits.max_extracted_unicode_bytes,
+                    })?;
+                if self.extract_unicode_bytes > self.limits.max_extracted_unicode_bytes {
+                    return Err(Error::LimitExceeded {
+                        limit: "max_extracted_unicode_bytes",
+                        max: self.limits.max_extracted_unicode_bytes,
+                    });
+                }
+            }
             buf.push(crate::text_extract::CharInfo {
                 code,
                 unicode,
@@ -2018,6 +2042,13 @@ impl<'a> Renderer<'a> {
     }
 
     fn paint_path(&mut self, kind: PaintKind) -> Result<(), Error> {
+        if self.extraction_only {
+            // Nothing is rasterised; only a pending W/W* needs to be
+            // consumed so path-object bookkeeping stays consistent.
+            self.path.pending_clip = None;
+            self.path.reset();
+            return Ok(());
+        }
         // §8.5.4: the clip is intersected *after* the path is painted.
         // So we paint first (under the pre-W clip), then install the
         // pending clip for subsequent painting.

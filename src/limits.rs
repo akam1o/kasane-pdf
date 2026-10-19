@@ -96,6 +96,13 @@ pub struct Limits {
     /// single huge string or many small strings both hit the cap.
     /// Default: 1,000,000.
     pub max_text_codes: u64,
+    /// Maximum cumulative UTF-8 bytes of resolved Unicode text stored
+    /// in an [`crate::extract_text`] result for one page. Counted per
+    /// `CharInfo` before it is pushed — a mapping repeated many times
+    /// (split `Tj`s, `TJ` segments, repeated Form invocations) cannot
+    /// evade the budget because each occurrence adds its own bytes.
+    /// Default: 8 MiB.
+    pub max_extracted_unicode_bytes: u64,
 }
 
 impl Default for Limits {
@@ -127,6 +134,7 @@ impl Default for Limits {
             max_image_total_samples: 67_108_864,
             max_image_bytes: 256 * 1024 * 1024,
             max_text_codes: 1_000_000,
+            max_extracted_unicode_bytes: 8 * 1024 * 1024,
         }
     }
 }
