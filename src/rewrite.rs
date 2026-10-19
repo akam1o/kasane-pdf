@@ -333,7 +333,7 @@ fn effective_version(doc: &Document) -> Result<String, Error> {
 
     // Catalog /Version: absent → use header; present but not a valid
     // name token → refuse (a malformed version is not "no version").
-    let cat = catalog_version_num(doc)?;
+    let cat = doc.catalog_version()?;
     let effective = match cat {
         Some(c) if c > hdr => c,
         _ => hdr,
@@ -349,41 +349,6 @@ fn effective_version(doc: &Document) -> Result<String, Error> {
         });
     }
     Ok(format!("{}.{}", effective.0, effective.1))
-}
-
-/// Catalog `/Version` as `(major, minor)`.
-/// `Ok(None)` when `/Version` is absent.
-/// `Err(Unsupported)` when `/Version` is present but malformed — the
-/// value is a real dictionary entry we cannot silently drop, and an
-/// unparseable version cannot be compared to the header.
-fn catalog_version_num(doc: &Document) -> Result<Option<(u8, u8)>, Error> {
-    let name = match doc.catalog().get(b"Version".as_slice()) {
-        Some(o) => o,
-        None => return Ok(None),
-    };
-    // Spec §7.5.2: /Version is a name, e.g. /1.7. Anything else is
-    // malformed input we must not pretend is absent.
-    let raw = name.as_name().ok_or_else(|| Error::Unsupported {
-        feature: "PDF version",
-        detail: "catalog /Version is not a name object".to_string(),
-    })?;
-    let s = std::str::from_utf8(raw).map_err(|_| Error::Unsupported {
-        feature: "PDF version",
-        detail: "catalog /Version is not valid UTF-8".to_string(),
-    })?;
-    let (maj, min) = s.split_once('.').ok_or_else(|| Error::Unsupported {
-        feature: "PDF version",
-        detail: format!("catalog /Version /{s} is not M.m form"),
-    })?;
-    let maj: u8 = maj.parse().map_err(|_| Error::Unsupported {
-        feature: "PDF version",
-        detail: format!("catalog /Version /{s} has non-numeric major"),
-    })?;
-    let min: u8 = min.parse().map_err(|_| Error::Unsupported {
-        feature: "PDF version",
-        detail: format!("catalog /Version /{s} has non-numeric minor"),
-    })?;
-    Ok(Some((maj, min)))
 }
 
 /// Scan every reachable `/Annots` entry and `/OpenAction`/`/GoTo`
