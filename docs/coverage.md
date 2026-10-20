@@ -702,6 +702,86 @@ confirms disjoint rects leave middle pixels unchanged and only the
 selected pixels' components are zeroed; `pixels_changed` counts
 pixels (not components) and matches the CLI report.
 
+## Experimental scoped region removal (M20, `remove_region`, CLI `experimental-remove-region`)
+
+**Not a redaction tool** — same guarantee boundary as `remove_text`
+and `remove_image_region`. M20 performs a *single* integrated edit
+pass over one page: removes character codes whose filled-ink bounds
+hit a caller rect *and* blackens image samples whose painted
+positions hit the same rects, then writes one new PDF.
+
+What it does — API `remove_region(doc, page_index, rects, limits)`
+returning `RegionRemoval { output, codes_removed,
+invocations_edited, pixels_changed, sites, scope }`:
+
+- One `DiagWalker::new` walk over the original content stream —
+  every target is keyed by its *original* `op_index`. Text ops are
+  rewritten by `remove_text::rewrite_ops_for` (same TJ/kern logic);
+  image `Do`s are repointed to cloned image objects via `KasIm{n}`
+  (same per-invocation cloning as M19). Both edits are applied to
+  the *same* output ops list in one pass — a `Tj` that loses codes
+  becomes a `TJ` at the same `op_index`, and a `Do` that hits a
+  rect gets a new name at the same `op_index`. The page's
+  `/Contents` is serialised once, and `rewrite` runs once.
+- Text eligibility: `Tr 0` fill only, page-level (an out-of-rect
+  `Tr 3`/`Tr 1` occurrence still refuses). `Tj`/`TJ`/`'`/`"` are
+  rewritten with the same advance-preserving logic as `remove_text`.
+- Image eligibility: 8-bit DeviceGray/DeviceRGB (post-resolution
+  and `Default*` substitution), no `/Mask`/`SMask`/`SMaskInData`/
+  `OC`/`ImageMask`/`Interpolate`, default `/Decode`, no filter or
+  `/FlateDecode`, axis-aligned positive-scale CTM.
+- **No Form `Do` in M20** — a `Do` to a `/Form` is refused even
+  when it contains no text or images (M18's form handling is not
+  inherited).
+- Shared cumulative `max_edit_content_bytes` — the same budget
+  bounds the cloned image bodies plus the new `/Contents` (not
+  per-type). `max_image_bytes` is checked *before* each image
+  decodes. `max_diag_exec_ops` bounds the walk; `max_operations`
+  bounds the output op count. The final PDF is bounded by
+  `max_output_bytes`.
+- `pixels_changed` counts *pixels* (≥1 channel changed), not
+  components — same definition as M19.1/M19.2.
+- A rect that hits nothing produces an empty edit set — `Ok` with
+  `codes_removed = 0`, `invocations_edited = 0`, `pixels_changed = 0`.
+- Any failure — validation, unsupported construct, or limit — emits
+  nothing; a partial rewrite is never returned as success.
+
+Scope — a page is *refused* outright rather than half-edited when it
+carries: `/Annots`, `/UserUnit` ≠ 1, any `Do` to a `/Form`, any
+inline image, any `gs`/`sh`/Pattern/`ActualText`/OC, any
+`blocker`/`uncertain` from the walk, non-`Tr 0` text, an image that
+is not 8-bit DeviceGray/DeviceRGB (post-resolution), a mask/non-default
+`/Decode`/non-Flate filter/non-axis-aligned CTM, or an `Image`
+target at `form_path` depth ≥ 1.
+
+Limitations — by design and explicitly *not* done:
+
+- Form XObjects, inline images, JPEG, rotated/sheared images — all
+  refused.
+- The original image stream and `/Contents` stay in the file when
+  another page or an unedited invocation shares them.
+- Removed text can still exist elsewhere: `/Info`, XMP, structure
+  tree, `ActualText`, embedded files, other pages, font internals.
+- No guarantee of irreversibility — this is *content editing*, not
+  secure redaction.
+
+CLI:
+
+```sh
+kasane-pdf experimental-remove-region <file.pdf> <page> \
+  --rect <llx> <lly> <urx> <ury> [--rect ...] --output <out.pdf>
+```
+
+Same `--rect` convention as `preflight-redaction`/`remove_text`/
+`remove_image_region`; `--output` is required, input and output
+must differ, and the output is written atomically — a refusal
+leaves any existing output untouched.
+
+External check: `qpdf --check` clean; `pdftotext` confirms removed
+codes are absent and survivors keep positions; `pdfimages`
+extraction confirms only selected pixels are zeroed and the
+original image is preserved elsewhere in the file.
+
 ## Robustness
 
 Guaranteed (tested): bad xref offset, missing referenced objects, cyclic

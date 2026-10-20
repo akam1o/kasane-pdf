@@ -525,7 +525,9 @@ pub fn remove_image_region(
 /// Recompute the CTM at the point `op_index` executed — the `Do`'s
 /// own `cm` has already been applied. We re-walk the page ops up to
 /// but not including `op_index`, tracking only `q`/`Q`/`cm`.
-fn ctm_at_op(ops: &[Operation], op_index: usize) -> Result<Matrix, Error> {
+///
+/// Shared with `remove_region.rs` (M20).
+pub(crate) fn ctm_at_op(ops: &[Operation], op_index: usize) -> Result<Matrix, Error> {
     let mut ctm = Matrix::IDENTITY;
     let mut stack: Vec<Matrix> = Vec::new();
     for (i, op) in ops.iter().enumerate() {
@@ -546,12 +548,14 @@ fn ctm_at_op(ops: &[Operation], op_index: usize) -> Result<Matrix, Error> {
     Ok(ctm)
 }
 
-/// Validate an image XObject for M19 — returns `(width, height,
+/// Validate an image XObject for M19/M20 — returns `(width, height,
 /// ncomps)` on success, `Err` on any unsupported attribute.
 ///
 /// `resources` is the page's effective `/Resources` — needed to
 /// resolve named colour spaces (`/CS1`) and `Default*` substitutions.
-fn validate_image(
+///
+/// Shared with `remove_region.rs` (M20).
+pub(crate) fn validate_image(
     dict: &Dict,
     resources: Option<&Object>,
     doc: &Document,
@@ -719,7 +723,9 @@ fn validate_image(
 /// `max_image_bytes` is checked *before* the buffer grows: a raw
 /// image larger than the cap is refused without cloning, and a
 /// Flate stream stops mid-decode when the output would exceed it.
-fn decode_image(dict: &Dict, raw: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
+///
+/// Shared with `remove_region.rs` (M20).
+pub(crate) fn decode_image(dict: &Dict, raw: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
     let filters = crate::filter::normalize_filters(dict.get(b"Filter".as_slice()))?;
     if filters.is_empty() {
         // Raw data — check the cap before cloning.
@@ -888,7 +894,9 @@ fn apply_default_substitution(
 }
 
 /// Whether a `/Decode` array is the default `[0 1 …]` for `ncomps`.
-fn is_default_decode(obj: &Object, ncomps: usize) -> bool {
+///
+/// Shared with `remove_region.rs` (M20).
+pub(crate) fn is_default_decode(obj: &Object, ncomps: usize) -> bool {
     let arr = match obj.as_array() {
         Some(a) => a,
         None => return false,
@@ -904,9 +912,10 @@ fn is_default_decode(obj: &Object, ncomps: usize) -> bool {
 /// be axis-aligned with positive scale (no rotation, shear, or
 /// reflection). Returns a `Vec` of `(x0, y0, x1, y1)` pixel ranges,
 /// one per rect, expanded *outward* so no covered pixel is lost.
-/// Overlapping or adjacent ranges are merged so no pixel is visited
-/// twice.
-fn image_pixel_ranges(
+/// The union is exact — bands + x-interval merge, not a bounding box.
+///
+/// Shared with `remove_region.rs` (M20).
+pub(crate) fn image_pixel_ranges(
     ctm: &Matrix,
     width: u32,
     height: u32,
@@ -1589,7 +1598,9 @@ fn fmt_num(n: f64) -> String {
 /// the `KasFm{n}` scheme `remove_text` uses). Collision-checked
 /// against the page's effective `/XObject` dict plus the names this
 /// call already allocated.
-fn fresh_xobject_name(
+///
+/// Shared with `remove_region.rs` (M20).
+pub(crate) fn fresh_xobject_name(
     page: &crate::page::Page,
     doc: &Document,
     seq: u64,

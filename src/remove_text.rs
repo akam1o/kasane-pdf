@@ -546,7 +546,9 @@ pub fn remove_text(
 /// (impossible for an op the walker completed) or the walk diverged
 /// from the ops list — either way it's a structure error, never a
 /// guess.
-fn show_state<'a>(
+///
+/// Shared with `remove_region.rs` (M20).
+pub(crate) fn show_state<'a>(
     walker: &'a DiagWalker<'a>,
     form_path: &[FormFrame],
     op_index: usize,
@@ -570,8 +572,10 @@ fn show_state<'a>(
 ///
 /// A `Do`/`sh` or a non-show op passes straight through — callers
 /// intercept `Do` before calling this.
+///
+/// Shared with `remove_region.rs` (M20).
 #[allow(clippy::too_many_arguments)]
-fn rewrite_ops_for(
+pub(crate) fn rewrite_ops_for(
     walker: &DiagWalker,
     to_remove: &BTreeMap<(Vec<FormFrame>, usize), Vec<usize>>,
     site_lookup: &BTreeMap<(Vec<FormFrame>, usize, usize), Site>,
@@ -696,6 +700,8 @@ fn fresh_xobject_name(
 ///
 /// Returns `(ops, codes_removed, sites)` — `ops` is empty when the
 /// whole string was removed.
+///
+/// Shared with `remove_region.rs` (M20).
 fn rewrite_show_text(
     st: &ShowTextState,
     site_lookup: &BTreeMap<(Vec<FormFrame>, usize, usize), Site>,
@@ -840,6 +846,8 @@ fn rewrite_show_text(
 /// `rewrite_show_text`'s logic but without the `code_index` reset
 /// (the index runs across the whole array); numeric elements pass
 /// through unchanged. `st` is the op-time text state.
+///
+/// Shared with `remove_region.rs` (M20).
 fn rewrite_tj(
     st: &ShowTextState,
     site_lookup: &BTreeMap<(Vec<FormFrame>, usize, usize), Site>,
@@ -979,7 +987,10 @@ fn rewrite_tj(
 /// The buffer owns a `Vec<u8>` and never exposes it mutably — callers
 /// cannot bypass the checks. On failure the partial bytes are
 /// dropped with the buffer (no halfway stream escapes to the caller).
-struct BoundedWriter<'a> {
+///
+/// Shared with `remove_image.rs` (M19) and `remove_region.rs` (M20) —
+/// the writer is agnostic to *what* it writes.
+pub(crate) struct BoundedWriter<'a> {
     buf: Vec<u8>,
     limits: &'a Limits,
     /// Bytes already charged against `max_edit_content_bytes` by
@@ -989,7 +1000,7 @@ struct BoundedWriter<'a> {
 }
 
 impl<'a> BoundedWriter<'a> {
-    fn new(limits: &'a Limits, generated_so_far: u64) -> Self {
+    pub(crate) fn new(limits: &'a Limits, generated_so_far: u64) -> Self {
         Self {
             buf: Vec::new(),
             limits,
@@ -999,7 +1010,7 @@ impl<'a> BoundedWriter<'a> {
 
     /// Check `n` more bytes fit before appending. Returns the
     /// specific limit that would be exceeded, or `Ok(())`.
-    fn check(&self, n: usize) -> Result<(), Error> {
+    pub(crate) fn check(&self, n: usize) -> Result<(), Error> {
         let used = self.buf.len() as u64;
         let n = n as u64;
         let new_len = used.checked_add(n).ok_or(Error::LimitExceeded {
@@ -1029,14 +1040,14 @@ impl<'a> BoundedWriter<'a> {
     }
 
     /// Append one byte — budget checked first.
-    fn push(&mut self, b: u8) -> Result<(), Error> {
+    pub(crate) fn push(&mut self, b: u8) -> Result<(), Error> {
         self.check(1)?;
         self.buf.push(b);
         Ok(())
     }
 
     /// Append a slice — budget checked for the *whole* slice first.
-    fn extend_from_slice(&mut self, s: &[u8]) -> Result<(), Error> {
+    pub(crate) fn extend_from_slice(&mut self, s: &[u8]) -> Result<(), Error> {
         self.check(s.len())?;
         self.buf.extend_from_slice(s);
         Ok(())
@@ -1044,13 +1055,13 @@ impl<'a> BoundedWriter<'a> {
 
     /// Consume the buffer — the caller charges `buf.len()` via
     /// `charge_generated`.
-    fn into_inner(self) -> Vec<u8> {
+    pub(crate) fn into_inner(self) -> Vec<u8> {
         self.buf
     }
 }
 
 /// Serialise one op to content-stream bytes — a small subset of the
-/// full grammar, exactly what `remove_text` emits.
+/// full grammar, exactly what `remove_text`/`remove_region` emit.
 ///
 /// `generated_so_far` is the cumulative byte count already charged by
 /// earlier streams in this call — the writer stops appending once
@@ -1058,7 +1069,9 @@ impl<'a> BoundedWriter<'a> {
 /// `max_edit_content_bytes`, or `buf.len()` alone would exceed
 /// `max_output_bytes`. The check happens *before* every byte lands
 /// in the Vec, not after the whole op is written.
-fn serialize_ops(
+///
+/// Shared with `remove_image.rs` (M19) and `remove_region.rs` (M20).
+pub(crate) fn serialize_ops(
     ops: &[Operation],
     limits: &Limits,
     generated_so_far: u64,
@@ -1081,11 +1094,13 @@ fn serialize_ops(
 
 /// Charge `stream_len` bytes of generated output against
 /// `max_edit_content_bytes` — cumulative across every stream body the
-/// call materialises (page `/Contents` + each cloned form). Checked
-/// arithmetic so a counter can't wrap. Each stream also stays under
-/// `serialize_ops`'s `byte_budget` bound, so a single huge body
-/// and many small ones are both bounded.
-fn charge_generated(acc: u64, stream_len: usize, limits: &Limits) -> Result<u64, Error> {
+/// call materialises (page `/Contents` + each cloned form/image).
+/// Checked arithmetic so a counter can't wrap. Each stream also
+/// stays under `serialize_ops`'s `byte_budget` bound, so a single
+/// huge body and many small ones are both bounded.
+///
+/// Shared with `remove_image.rs` (M19) and `remove_region.rs` (M20).
+pub(crate) fn charge_generated(acc: u64, stream_len: usize, limits: &Limits) -> Result<u64, Error> {
     let total = acc
         .checked_add(stream_len as u64)
         .ok_or(Error::LimitExceeded {

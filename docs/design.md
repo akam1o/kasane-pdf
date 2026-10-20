@@ -689,6 +689,47 @@ CLI: `kasane-pdf experimental-remove-image-region in.pdf 1 --rect llx
 lly urx ury [--rect …] --output out.pdf` — same atomic-write and
 same-file-refusal rules as `experimental-remove-text`.
 
+### M20 — scoped region removal (text + image)
+
+`src/remove_region.rs` implements `remove_region` +
+`experimental-remove-region` — a single integrated edit pass over
+one page, not a pipeline of `remove_text` → `remove_image_region`.
+
+Design choices:
+
+- **One walk, one rewrite** — `DiagWalker::new` runs once over the
+  original content stream; every target is keyed by its original
+  `op_index`. Text rewrites and image `Do` renames are applied to
+  the same output ops list in one pass; the page's `/Contents` is
+  serialised once, `Edit::rewrite()` runs once.
+- **Planning against the original `Document`** — the walk never
+  re-parses. `op_index` never drifts: a `Tj` that loses codes
+  becomes a `TJ` at the same index; a `Do` that hits a rect gets a
+  new `KasIm{n}` name at the same index. Text edits do not shift
+  image `op_index` values and vice versa.
+- **Shared internal helpers** — `remove_text::rewrite_ops_for` (TJ
+  kern logic), `remove_text::serialize_ops`/`BoundedWriter`/
+  `charge_generated`, `remove_image::validate_image`/`decode_image`/
+  `image_pixel_ranges`/`ctm_at_op`/`fresh_xobject_name`/
+  `is_default_decode`/`resolve_colorspace_name`/
+  `apply_default_substitution` are all reused; nothing is
+  duplicated.
+- **M20's own eligibility** — not a union of M17+M19 refusals:
+  `Tr 0` text only (page-level), image eligibility per M19.2, and
+  `Form` `Do` refused (M18's form handling is *not* inherited).
+- **Shared cumulative budget** — `max_edit_content_bytes` bounds
+  the cloned image bodies plus the new `/Contents` *together*;
+  `charge_generated` runs before each image decodes and before
+  the page stream is serialised. The budget is not reset per
+  edit type.
+- **Atomic failure** — any typed error aborts the whole call;
+  no partial rewrite is returned. A rect hitting nothing produces
+  `Ok` with zero counters.
+
+CLI: `kasane-pdf experimental-remove-region in.pdf 1 --rect llx lly
+urx ury [--rect …] --output out.pdf` — same atomic-write and
+same-file-refusal rules as the other experimental commands.
+
 ## Specification references
 
 - ISO 32000-1:2008 (PDF 1.7) + Adobe errata — section numbers cited in

@@ -209,10 +209,15 @@ What works today:
 - `remove_image_region()` + `experimental-remove-image-region` —
   experimental image-region removal that blackens hit pixels in a
   cloned image object (not a redaction tool; see `docs/coverage.md`).
+- `remove_region()` + `experimental-remove-region` — experimental
+  scoped region removal that removes text codes *and* blackens
+  image pixels in one pass, writing one PDF (not a redaction tool;
+  see `docs/coverage.md`).
 - A `kasane-pdf` CLI (`info` mode + `contents`, `operations`,
   `render`, `text`, `rewrite`, `annotate-rect`, `inspect`,
-  `preflight-redaction`, `experimental-remove-text`, and
-  `experimental-remove-image-region` subcommands).
+  `preflight-redaction`, `experimental-remove-text`,
+  `experimental-remove-image-region`, and
+  `experimental-remove-region` subcommands).
 - Adding `/Subtype /Square` rectangle annotations to a page via an
   [`Edit`] session — opaque RGB stroke, positive width, generated
   `/AP` appearance, existing annots/links preserved, shared `/Annots`
