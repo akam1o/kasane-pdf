@@ -23,10 +23,12 @@
 //! - Any `gs`, `sh`, Pattern colour space, `/ActualText`/`OC` marked
 //!   content, or any other construct the diagnosis marks as
 //!   `blocker`/`uncertain` — the walk refuses on the first one.
-//! - Any image that is not 8-bit `/DeviceGray` or `/DeviceRGB` with
-//!   no `/Mask`, `/SMask`, `/SMaskInData`, `/OC`, `/ImageMask`, or
-//!   `/Interpolate` — the sample format must be exactly what we can
-//!   rewrite.
+//! - Any image that is not 8-bit `/DeviceGray` or `/DeviceRGB` (after
+//!   resolving `/ColorSpace` names through the page's `/Resources
+//!   /ColorSpace` dict — `/DefaultRGB` is *not* unconditionally
+//!   `DeviceRGB`) with no `/Mask`, `/SMask`, `/SMaskInData`, `/OC`,
+//!   `/ImageMask`, or `/Interpolate` — the sample format must be
+//!   exactly what we can rewrite.
 //! - Any non-default `/Decode` array — inverted or remapped samples
 //!   are not rewritten.
 //! - Any image with a `/Filter` other than none or `/FlateDecode` —
@@ -37,21 +39,36 @@
 //! - Any `Image` target at `form_path` depth ≥ 1 — images inside a
 //!   form are out of scope.
 //!
-//! Pixel selection: the rect's intersection with the image's painted
+//! Pixel selection: each rect's intersection with the image's painted
 //! axis-aligned bounding box is mapped back to image space via the
 //! inverse of the `Do`'s CTM (which must be axis-aligned with
 //! positive scale). The resulting real-valued pixel bounds are
 //! expanded *outward* — `floor` on the low edge, `ceil` on the high
-//! edge — so no covered pixel is lost to rounding. A pixel that is
-//! only partially covered is still replaced; the edit is
-//! conservative, not exact.
+//! edge — so no covered pixel is lost to rounding. Multiple rects
+//! produce a *union* of ranges, not a bounding box — disjoint rects
+//! do not fill the pixels between them, and overlapping ranges are
+//! merged so no pixel is visited twice. A pixel that is only
+//! partially covered is still replaced; the edit is conservative,
+//! not exact.
 //!
-//! Resource budgets: the same `max_edit_content_bytes` cumulative
-//! generated-byte cap as `remove_text` bounds the cloned image
-//! bodies plus the rewritten `/Contents`. `max_image_dimension`,
-//! `max_image_total_samples`, and `max_image_bytes` bound each
-//! image's decode. `max_diag_exec_ops` bounds the page walk.
-//! `max_xobject_invocations` bounds the `Do` count.
+//! `pixels_changed` counts *pixels*, not components: an RGB pixel
+//! is 1 whether 1 or 3 channels changed; an already-black pixel is 0.
+//! Gray follows the same definition.
+//!
+//! Resource budgets: `max_image_bytes` is checked *before* the
+//! decode buffer grows — a raw image larger than the cap is refused
+//! without cloning, and a Flate stream stops mid-decode when the
+//! output would exceed it. `max_image_dimension` and
+//! `max_image_total_samples` bound the geometry; `checked_mul` guards
+//! the `Width × Height × ncomps` size. The same
+//! `max_edit_content_bytes` cumulative generated-byte cap as
+//! `remove_text` bounds the cloned image bodies plus the rewritten
+//! `/Contents`; `charge_generated` runs before the edited body is
+//! held. `max_diag_exec_ops` bounds the page walk;
+//! `max_xobject_invocations` bounds the `Do` count. The final PDF is
+//! bounded by `max_output_bytes` at serialize time — `BoundedWriter`
+//! checks the remaining budget before every byte lands (logical
+//! bytes written, not allocator capacity/RSS).
 
 use crate::content::Operation;
 use crate::document::Document;
@@ -289,9 +306,13 @@ pub fn remove_image_region(
             .ok_or_else(|| Error::Structure("image XObject is not a stream".into()))?;
 
         // ---- validate the image for M19 ----------------------------
-        let (width, height, ncomps) = validate_image(dict, limits)?;
+        let (width, height, ncomps) = validate_image(dict, page.resources(), doc, limits)?;
 
         // ---- decode the sample data --------------------------------
+        // Budget is checked *before* the buffer grows — a raw image
+        // larger than `max_image_bytes` is refused without cloning,
+        // and a Flate stream stops mid-decode when the output would
+        // exceed the cap.
         let decoded = decode_image(dict, raw, limits)?;
         let expected = (width as u64)
             .checked_mul(height as u64)
@@ -312,21 +333,31 @@ pub fn remove_image_region(
             )));
         }
 
-        // ---- compute the pixel range to blacken ---------------------
-        let (x0, y0, x1, y1) = image_pixel_bounds(ctm, width, height, &validated)?;
-        if x0 >= x1 || y0 >= y1 {
-            // No pixels to change — skip this invocation.
-            continue;
+        // ---- compute the pixel ranges to blacken -------------------
+        // Each rect produces its own (x0,y0,x1,y1) — the union of
+        // *these* ranges is what gets blackened, not their bounding
+        // box. Disjoint rects do not fill the pixels between them.
+        let ranges = image_pixel_ranges(ctm, width, height, &validated)?;
+        if ranges.is_empty() {
+            continue; // no pixels to change
         }
-        let mut new_data = decoded.clone();
+        // Count changed *pixels* (not components): a pixel is one unit
+        // regardless of how many of its channels were non-zero.
+        let mut new_data = decoded;
         let mut changed_here: u64 = 0;
-        for y in y0..y1 {
-            for x in x0..x1 {
-                let idx = ((y as u64) * (width as u64) + (x as u64)) * (ncomps as u64);
-                for c in 0..ncomps {
-                    let i = (idx + c as u64) as usize;
-                    if new_data[i] != 0 {
-                        new_data[i] = 0;
+        for &(x0, y0, x1, y1) in &ranges {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let idx = ((y as u64) * (width as u64) + (x as u64)) * (ncomps as u64);
+                    let mut pixel_changed = false;
+                    for c in 0..ncomps {
+                        let i = (idx + c as u64) as usize;
+                        if new_data[i] != 0 {
+                            new_data[i] = 0;
+                            pixel_changed = true;
+                        }
+                    }
+                    if pixel_changed {
                         changed_here += 1;
                     }
                 }
@@ -502,7 +533,15 @@ fn ctm_at_op(ops: &[Operation], op_index: usize) -> Result<Matrix, Error> {
 
 /// Validate an image XObject for M19 — returns `(width, height,
 /// ncomps)` on success, `Err` on any unsupported attribute.
-fn validate_image(dict: &Dict, limits: &Limits) -> Result<(u32, u32, usize), Error> {
+///
+/// `resources` is the page's effective `/Resources` — needed to
+/// resolve named colour spaces (`/CS1`) and `Default*` substitutions.
+fn validate_image(
+    dict: &Dict,
+    resources: Option<&Object>,
+    doc: &Document,
+    limits: &Limits,
+) -> Result<(u32, u32, usize), Error> {
     let width = dict
         .get(b"Width".as_slice())
         .and_then(|o| o.as_i64())
@@ -581,26 +620,78 @@ fn validate_image(dict: &Dict, limits: &Limits) -> Result<(u32, u32, usize), Err
         .ok_or_else(|| Error::Structure("image has no /ColorSpace".into()))?;
     let ncomps = match cs_obj {
         Object::Name(n) => match n.as_slice() {
-            b"DeviceGray" | b"DefaultGray" => 1,
-            b"DeviceRGB" | b"DefaultRGB" => 3,
+            b"DeviceGray" => 1,
+            b"DeviceRGB" => 3,
+            b"DefaultGray" | b"DefaultRGB" => {
+                // Default* names resolve through the page's
+                // /Resources /ColorSpace dict — a missing entry is
+                // an error, a non-device entry is unsupported.
+                let resolved = resolve_colorspace_name(doc, resources, n)?;
+                match resolved.as_name() {
+                    Some(b"DeviceGray") => 1,
+                    Some(b"DeviceRGB") => 3,
+                    _ => {
+                        return Err(Error::Unsupported {
+                            feature: "image colour space",
+                            detail: format!(
+                                "/{} resolves to non-device space",
+                                String::from_utf8_lossy(n)
+                            ),
+                        })
+                    }
+                }
+            }
             other => {
-                return Err(Error::Unsupported {
-                    feature: "image colour space",
-                    detail: format!(
-                        "/{} — only DeviceGray/DeviceRGB are supported",
-                        String::from_utf8_lossy(other)
-                    ),
-                })
+                // A named colour space — resolve it via the page's
+                // /Resources /ColorSpace dict.
+                let resolved = resolve_colorspace_name(doc, resources, other)?;
+                match resolved.as_name() {
+                    Some(b"DeviceGray") => 1,
+                    Some(b"DeviceRGB") => 3,
+                    _ => {
+                        return Err(Error::Unsupported {
+                            feature: "image colour space",
+                            detail: format!(
+                                "/{} resolves to non-device space",
+                                String::from_utf8_lossy(other)
+                            ),
+                        })
+                    }
+                }
             }
         },
-        Object::Ref(_) => {
-            // A named colour space — resolve it via the page's
-            // /Resources /ColorSpace dict. For M19 we only accept
-            // direct names; indirect colour spaces are refused.
-            return Err(Error::Unsupported {
-                feature: "image colour space",
-                detail: "indirect colour spaces are not supported for image removal".into(),
-            });
+        Object::Ref(r) => {
+            // An indirect colour space — resolve the reference, then
+            // apply the same name-based rules. A named space that
+            // resolves to another name is followed one level deep.
+            let resolved = doc.deref(&Object::Ref(*r))?;
+            match resolved.as_name() {
+                Some(b"DeviceGray") => 1,
+                Some(b"DeviceRGB") => 3,
+                Some(other) => {
+                    // Indirect name → resolve through resources.
+                    let resolved2 = resolve_colorspace_name(doc, resources, other)?;
+                    match resolved2.as_name() {
+                        Some(b"DeviceGray") => 1,
+                        Some(b"DeviceRGB") => 3,
+                        _ => {
+                            return Err(Error::Unsupported {
+                                feature: "image colour space",
+                                detail: format!(
+                                    "indirect /{} resolves to non-device space",
+                                    String::from_utf8_lossy(other)
+                                ),
+                            })
+                        }
+                    }
+                }
+                None => {
+                    return Err(Error::Unsupported {
+                        feature: "image colour space",
+                        detail: "indirect colour space is not a name".into(),
+                    })
+                }
+            }
         }
         _ => {
             return Err(Error::Unsupported {
@@ -634,9 +725,20 @@ fn validate_image(dict: &Dict, limits: &Limits) -> Result<(u32, u32, usize), Err
 
 /// Decode image sample data — reuses the stream decoder with the
 /// image's own limits. No DCTDecode, no custom filters.
+///
+/// `max_image_bytes` is checked *before* the buffer grows: a raw
+/// image larger than the cap is refused without cloning, and a
+/// Flate stream stops mid-decode when the output would exceed it.
 fn decode_image(dict: &Dict, raw: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
     let filters = crate::filter::normalize_filters(dict.get(b"Filter".as_slice()))?;
     if filters.is_empty() {
+        // Raw data — check the cap before cloning.
+        if raw.len() as u64 > limits.max_image_bytes {
+            return Err(Error::LimitExceeded {
+                limit: "max_image_bytes",
+                max: limits.max_image_bytes,
+            });
+        }
         return Ok(raw.to_vec());
     }
     if filters.len() > limits.max_filter_chain {
@@ -653,14 +755,31 @@ fn decode_image(dict: &Dict, raw: &[u8], limits: &Limits) -> Result<Vec<u8>, Err
         buf = match fname.as_slice() {
             b"FlateDecode" | b"Fl" => {
                 let mut dec = flate2::read::ZlibDecoder::new(buf.as_slice());
+                // Read with a cap — stop before the output exceeds
+                // `max_image_bytes`, not after the whole stream is
+                // inflated.
                 let mut out = Vec::new();
-                std::io::Read::read_to_end(&mut dec, &mut out)
-                    .map_err(|e| Error::Parse(format!("FlateDecode failed: {e}")))?;
-                if out.len() as u64 > limits.max_image_bytes {
-                    return Err(Error::LimitExceeded {
-                        limit: "max_image_bytes",
-                        max: limits.max_image_bytes,
-                    });
+                let mut chunk = [0u8; 8192];
+                loop {
+                    let n = std::io::Read::read(&mut dec, &mut chunk)
+                        .map_err(|e| Error::Parse(format!("FlateDecode failed: {e}")))?;
+                    if n == 0 {
+                        break;
+                    }
+                    let new_len =
+                        (out.len() as u64)
+                            .checked_add(n as u64)
+                            .ok_or(Error::LimitExceeded {
+                                limit: "max_image_bytes",
+                                max: limits.max_image_bytes,
+                            })?;
+                    if new_len > limits.max_image_bytes {
+                        return Err(Error::LimitExceeded {
+                            limit: "max_image_bytes",
+                            max: limits.max_image_bytes,
+                        });
+                    }
+                    out.extend_from_slice(&chunk[..n]);
                 }
                 crate::filter::apply_predictor(out, parm, limits)?
             }
@@ -673,6 +792,24 @@ fn decode_image(dict: &Dict, raw: &[u8], limits: &Limits) -> Result<Vec<u8>, Err
         };
     }
     Ok(buf)
+}
+
+/// Resolve a colour-space name through the page's `/Resources`
+/// `/ColorSpace` dict — returns the resolved object, or `Err` when
+/// the name is missing or the resource chain is malformed.
+fn resolve_colorspace_name(
+    doc: &Document,
+    resources: Option<&Object>,
+    name: &[u8],
+) -> Result<Object, Error> {
+    let res = resources.ok_or_else(|| Error::Structure("page has no /Resources".into()))?;
+    doc.resolve_resource(res, "ColorSpace", name)?
+        .ok_or_else(|| {
+            Error::Structure(format!(
+                "/ColorSpace /{} is not defined in the page resources",
+                String::from_utf8_lossy(name)
+            ))
+        })
 }
 
 /// Whether a `/Decode` array is the default `[0 1 …]` for `ncomps`.
@@ -688,16 +825,18 @@ fn is_default_decode(obj: &Object, ncomps: usize) -> bool {
         .all(|p| p[0].as_number() == Some(0.0) && p[1].as_number() == Some(1.0))
 }
 
-/// Map user-space rects to image pixel bounds — the image's CTM must
+/// Map user-space rects to image pixel ranges — the image's CTM must
 /// be axis-aligned with positive scale (no rotation, shear, or
-/// reflection). Returns `(x0, y0, x1, y1)` in pixel coordinates,
-/// expanded *outward* so no covered pixel is lost.
-fn image_pixel_bounds(
+/// reflection). Returns a `Vec` of `(x0, y0, x1, y1)` pixel ranges,
+/// one per rect, expanded *outward* so no covered pixel is lost.
+/// Overlapping or adjacent ranges are merged so no pixel is visited
+/// twice.
+fn image_pixel_ranges(
     ctm: &Matrix,
     width: u32,
     height: u32,
     rects: &[crate::page::Rect],
-) -> Result<(u32, u32, u32, u32), Error> {
+) -> Result<Vec<(u32, u32, u32, u32)>, Error> {
     // The CTM must be axis-aligned: b == 0 and c == 0.
     if ctm.b != 0.0 || ctm.c != 0.0 {
         return Err(Error::Unsupported {
@@ -727,10 +866,7 @@ fn image_pixel_bounds(
     let inv_e = -ctm.e / ctm.a;
     let inv_f = -ctm.f / ctm.d;
 
-    let mut x0 = width;
-    let mut y0 = height;
-    let mut x1 = 0u32;
-    let mut y1 = 0u32;
+    let mut ranges = Vec::with_capacity(rects.len());
     for r in rects {
         // Map the rect's corners to unit-square space.
         let ux0 = (r.llx * inv_a) + inv_e;
@@ -754,12 +890,34 @@ fn image_pixel_bounds(
         // height-1, y=1 is the top row = pixel row 0.
         let py0 = (height as f64 - uy1 * height as f64).floor() as u32;
         let py1 = (height as f64 - uy0 * height as f64).ceil() as u32;
-        x0 = x0.min(px0.min(width));
-        x1 = x1.max(px1.min(width));
-        y0 = y0.min(py0.min(height));
-        y1 = y1.max(py1.min(height));
+        ranges.push((
+            px0.min(width),
+            py0.min(height),
+            px1.min(width),
+            py1.min(height),
+        ));
     }
-    Ok((x0, y0, x1, y1))
+    // Merge overlapping ranges — sort by (y0, x0) and coalesce
+    // adjacent/overlapping intervals so no pixel is visited twice.
+    // Two ranges merge when they overlap in both axes (or are
+    // adjacent — a pixel boundary shared counts as overlapping).
+    ranges.sort_by_key(|&(x0, y0, x1, y1)| (y0, x0, y1, x1));
+    let mut merged: Vec<(u32, u32, u32, u32)> = Vec::with_capacity(ranges.len());
+    for r in ranges {
+        if let Some(last) = merged.last_mut() {
+            // Merge if the new range overlaps or touches the last one
+            // in both axes — a shared edge (r.0 == last.2) counts.
+            if r.0 <= last.2 && r.1 <= last.3 && r.2 >= last.0 && r.3 >= last.1 {
+                last.0 = last.0.min(r.0);
+                last.1 = last.1.min(r.1);
+                last.2 = last.2.max(r.2);
+                last.3 = last.3.max(r.3);
+                continue;
+            }
+        }
+        merged.push(r);
+    }
+    Ok(merged)
 }
 
 /// Charge `stream_len` bytes of generated output against
@@ -2141,15 +2299,15 @@ mod tests {
         );
     }
 
-    /// A 2×2 RGB image: each pixel has 3 components — blackening one
-    /// pixel changes 3 bytes.
+    /// A 2×2 RGB image: `pixels_changed` counts *pixels*, not
+    /// components — one pixel = 1 even when all 3 channels go black.
     #[test]
     fn rgb_image_pixel_count() {
         let d = doc(&rgb_image_pdf());
         let r =
             remove_image_region(&d, 0, &[(20.0, 80.0, 40.0, 100.0)], &Limits::default()).unwrap();
         assert_eq!(r.invocations_edited, 1);
-        assert_eq!(r.pixels_changed, 3); // 1 pixel × 3 components
+        assert_eq!(r.pixels_changed, 1); // 1 pixel, not 3 components
     }
 
     /// A FlateDecode image decodes, blackens, and re-encodes without
@@ -2324,6 +2482,441 @@ mod tests {
         assert!(
             matches!(err, Error::Unsupported { .. }),
             "form Do must be refused: {err:?}"
+        );
+    }
+
+    // ---- M19.1 — regression tests ------------------------------------
+
+    /// Two rects covering the top-left and bottom-right pixels only —
+    /// the middle pixels must stay unchanged (no bounding-box fill).
+    #[test]
+    fn disjoint_rects_do_not_fill_between() {
+        // 4×4 gray image: each pixel covers 10×10 user units.
+        // Painted at 0,0 scaled 40×40 → pixels at:
+        //   (0,0): (0,30)-(10,40)  (1,0): (10,30)-(20,40)  …
+        //   (0,1): (0,20)-(10,30)  (1,1): (10,20)-(20,30)  …
+        //   (3,3): (30,0)-(40,10)
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        // 4×4 gray: 16 distinct values 0x10..0x1f
+        let img_data: Vec<u8> = (0x10..=0x1f).collect();
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 4 /Height 4 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"40 0 0 40 0 0 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // Rects: top-left pixel (0,3) at (0,30)-(10,40) and
+        // bottom-right pixel (3,0) at (30,0)-(40,10).
+        let r = remove_image_region(
+            &d,
+            0,
+            &[(0.0, 30.0, 10.0, 40.0), (30.0, 0.0, 40.0, 10.0)],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        // 2 pixels changed, not 16 (bounding box) — the 14 middle
+        // pixels must be unchanged.
+        assert_eq!(r.pixels_changed, 2);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // The clone must contain the original middle pixels.
+        // 4×4 data: [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+        //            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f]
+        // Pixel (0,0) is first byte 0x10 → 0x00 (top-left, row 0).
+        // Pixel (3,3) is last byte 0x1f → 0x00 (bottom-right, row 3).
+        // Middle bytes must be unchanged.
+        assert!(
+            out.contains("\x00\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x00"),
+            "middle pixels must be unchanged: {out}"
+        );
+    }
+
+    /// Overlapping rects: the shared pixel is counted once.
+    #[test]
+    fn overlapping_rects_count_once() {
+        let d = doc(&gray_image_pdf());
+        // Two rects covering the same top-left pixel — the second
+        // rect is entirely inside the first.
+        let r = remove_image_region(
+            &d,
+            0,
+            &[(20.0, 80.0, 40.0, 100.0), (25.0, 85.0, 35.0, 95.0)],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        // 1 pixel changed, not 2 — the overlap is not double-counted.
+        assert_eq!(r.pixels_changed, 1);
+    }
+
+    /// An RGB image's `pixels_changed` counts *pixels*, not changed
+    /// components — one pixel = 1 even when all 3 channels go black.
+    #[test]
+    fn rgb_pixels_changed_counts_pixels() {
+        let d = doc(&rgb_image_pdf());
+        let r =
+            remove_image_region(&d, 0, &[(20.0, 80.0, 40.0, 100.0)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        // 1 pixel changed (all 3 components), not 3.
+        assert_eq!(r.pixels_changed, 1);
+    }
+
+    /// A gray image's `pixels_changed` counts pixels — same definition
+    /// as RGB.
+    #[test]
+    fn gray_pixels_changed_counts_pixels() {
+        let d = doc(&gray_image_pdf());
+        let r =
+            remove_image_region(&d, 0, &[(20.0, 60.0, 60.0, 100.0)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        assert_eq!(r.pixels_changed, 4); // 4 pixels × 1 component
+    }
+
+    /// A named colour space resolves through the page's `/Resources`
+    /// `/ColorSpace` dict — `/CS1` → `/DeviceGray` is accepted.
+    #[test]
+    fn named_colorspace_resolves() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> \
+              /ColorSpace << /CS1 /DeviceGray >> >> \
+              /Contents 9 0 R >>"
+        );
+        let img_data = [0x10u8, 0x20, 0x30, 0x40];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /CS1 /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r =
+            remove_image_region(&d, 0, &[(20.0, 80.0, 40.0, 100.0)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+    }
+
+    /// `/DefaultRGB` is NOT unconditionally treated as `/DeviceRGB` —
+    /// it resolves through the page's `/Resources /ColorSpace` dict,
+    /// and if that entry is missing or non-device it is refused.
+    #[test]
+    fn default_rgb_resolves_or_refuses() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> \
+              /ColorSpace << /DefaultRGB 12 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        push!(12, b"/CalRGB");
+        let img_data = [0x10u8, 0x20, 0x30, 0x40];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DefaultRGB /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 13\n0000000000 65535 f \n".to_vec());
+        for n in 1..13u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 13 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // /DefaultRGB → /CalRGB (not a device space) → refused.
+        let err = remove_image_region(&d, 0, &[(20.0, 60.0, 60.0, 100.0)], &Limits::default())
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Unsupported { .. }),
+            "non-device DefaultRGB must be refused: {err:?}"
+        );
+    }
+
+    /// An indirect `/ColorSpace` reference resolves through the
+    /// page's `/Resources /ColorSpace` dict — `/CS1` → `11 0 R` →
+    /// `/DeviceGray` is accepted.
+    #[test]
+    fn indirect_colorspace_resolves() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> \
+              /ColorSpace << /CS1 11 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        push!(11, b"/DeviceGray");
+        let img_data = [0x10u8, 0x20, 0x30, 0x40];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /CS1 /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 12\n0000000000 65535 f \n".to_vec());
+        for n in 1..12u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 12 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r =
+            remove_image_region(&d, 0, &[(20.0, 60.0, 60.0, 100.0)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        assert_eq!(r.pixels_changed, 4);
+    }
+
+    /// A compressed image that expands past `max_image_bytes` is
+    /// refused *during* decode, not after — the read stops before
+    /// the whole buffer is allocated.
+    #[test]
+    fn flate_decode_stops_at_limit() {
+        // 4×4 gray = 16 bytes raw; compress it.
+        let img_data = [0x10u8; 16];
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&img_data).unwrap();
+            e.finish().unwrap()
+        };
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 4 /Height 4 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length "
+            .to_vec();
+        f.extend_from_slice(enc.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&enc);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // 16 bytes decoded > 8-byte limit → fails during decode.
+        let l = Limits {
+            max_image_bytes: 8,
+            ..Limits::default()
+        };
+        // Rect covers the painted image (20,60)–(60,100).
+        let err = remove_image_region(&d, 0, &[(20.0, 60.0, 60.0, 100.0)], &l).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::LimitExceeded {
+                    limit: "max_image_bytes",
+                    ..
+                }
+            ),
+            "decode must stop at max_image_bytes: {err:?}"
+        );
+    }
+
+    /// A raw (uncompressed) image larger than `max_image_bytes` is
+    /// refused before cloning — `raw.to_vec()` is not called.
+    #[test]
+    fn raw_image_refused_before_clone() {
+        let img_data = [0x10u8; 32]; // 32 bytes > 8-byte limit
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 4 /Height 8 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let l = Limits {
+            max_image_bytes: 8,
+            ..Limits::default()
+        };
+        // Rect covers the painted image (20,60)–(60,100).
+        let err = remove_image_region(&d, 0, &[(20.0, 60.0, 60.0, 100.0)], &l).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::LimitExceeded {
+                    limit: "max_image_bytes",
+                    ..
+                }
+            ),
+            "raw image must be refused before clone: {err:?}"
         );
     }
 }
