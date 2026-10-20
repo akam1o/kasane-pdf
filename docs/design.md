@@ -657,33 +657,33 @@ output must differ (`refuse_same_file`), the write is atomic
 (`write_atomic`), and a refusal leaves any existing output
 untouched.
 
-### M19.1 — image-region removal accuracy fixes
+### M19.2 — image-region removal: exact union, Default* substitution, pre-decode budget
 
 `src/remove_image.rs` implements `remove_image_region` +
-`experimental-remove-image-region`. M19.1 corrects four issues
-without widening scope:
+`experimental-remove-image-region`. M19.2 fixes three issues without
+widening scope:
 
-- **Union of pixel ranges** — `image_pixel_ranges` returns a `Vec`
-  of `(x0,y0,x1,y1)` per rect, not a single bounding box. Disjoint
-  rects do not fill the pixels between them; overlapping ranges are
-  merged (sort + coalesce) so no pixel is visited twice. The Vec is
-  bounded by `rects.len()` (`max_diag_rects`), never by image height.
-- **Pixel count, not component count** — `pixels_changed` counts
-  pixels with ≥1 changed channel; RGB `[r,g,b]`→`[0,0,0]` is 1,
-  `[0,128,0]`→`[0,0,0]` is 1, already-black is 0. Gray is the same.
-- **Colour-space resolution** — `validate_image` takes the page's
-  `/Resources` and resolves `/ColorSpace` names through
-  `Document::resolve_resource`. `/DefaultRGB` is not unconditionally
-  `DeviceRGB` — it resolves through the dict, and a non-device result
-  is `Unsupported`. Indirect refs are dereferenced, then the same
-  name rules apply. A missing entry is `Structure`, not a guess.
-- **Pre-allocation decode budget** — `decode_image` checks
-  `max_image_bytes` *before* `raw.to_vec()` or the Flate output Vec
-  grows. The expected `Width×Height×ncomps` size uses `checked_mul`.
-  `charge_generated` runs before the edited body is held, so the
-  cumulative `max_edit_content_bytes` cap is enforced before the
-  clone exists. `BoundedWriter` still caps the final PDF — but note
-  it bounds *logical* bytes written, not allocator capacity/RSS.
+- **Exact pixel union** — `image_pixel_ranges` splits rects into
+  horizontal bands at every distinct y-boundary, then merges
+  x-intervals within each band. A band is a maximal y-strip whose
+  x-interval set is constant — the union is the exact set of covered
+  pixels, not a bounding box. Corner-touching rects and L-shaped
+  overlaps do not fill the pixels between them. The intermediate
+  `Vec` is bounded by `rects.len()` (`max_diag_rects`), never by
+  image height.
+- **Default* substitution** — `validate_image` resolves the image's
+  `/ColorSpace` name through the page's `/Resources /ColorSpace`
+  dict, then applies the `Default*` substitution: a device name
+  (`/DeviceGray`, `/DeviceRGB`) is checked against `/DefaultGray`/
+  `/DefaultRGB` in the same dict. A non-device result is
+  `Unsupported`; a missing entry is `Structure`. Substitution does
+  not recurse — a `Default*` that is itself a device name is ignored.
+- **Pre-decode budget** — `max_image_bytes` and `max_edit_content_bytes`
+  are both checked *before* decoding. An image whose expected
+  `Width×Height×ncomps` size exceeds the remaining cumulative budget
+  is refused without allocating its buffer. A non-intersecting image
+  is skipped before decode entirely. The decoded `Vec` is moved (not
+  cloned) into the edited body — no extra copy.
 
 CLI: `kasane-pdf experimental-remove-image-region in.pdf 1 --rect llx
 lly urx ury [--rect …] --output out.pdf` — same atomic-write and
