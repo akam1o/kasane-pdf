@@ -122,21 +122,23 @@ be allocated elsewhere (e.g. image decode) under its own limit.
 painted positions hit a caller rect with opaque black in a *new*
 image object (per-invocation `KasIm{n}` cloning, same as M18 forms).
 The original stream is never mutated; other copies are preserved.
-M19.1 fixes four accuracy issues:
+M19.2 fixes three accuracy issues:
 
-- **Union of pixel ranges, not a bounding box** — each rect maps to
-  its own `(x0,y0,x1,y1)` via inverse CTM; disjoint rects do not
-  fill the pixels between them, overlaps are merged, and the
-  intermediate structure is bounded by the input rect count, not
-  image height.
+- **Exact pixel union, not a bounding box** — each rect maps to its
+  own `(x0,y0,x1,y1)` via inverse CTM; the union is computed by
+  splitting into horizontal bands and merging x-intervals within
+  each band. Corner-touching rects and L-shaped overlaps do not
+  fill the pixels between them. The intermediate structure is
+  bounded by the input rect count, not image height.
 - **`pixels_changed` counts pixels, not components** — an RGB pixel
   is 1 whether 1 or 3 channels changed; already-black pixels are 0.
-- **Colour-space resolution** — `/ColorSpace` names resolve through
-  the page's `/Resources /ColorSpace`; `/DefaultRGB` is not
-  unconditionally `DeviceRGB` — a non-device resolution is refused.
-- **Pre-allocation decode budget** — `max_image_bytes` is checked
-  *before* the buffer grows: raw images are refused without cloning,
-  and Flate streams stop mid-decode at the cap.
+- **Colour-space resolution + Default* substitution** — `/ColorSpace`
+  names resolve through the page's `/Resources /ColorSpace`; a
+  device name is then checked against `/DefaultGray`/`/DefaultRGB`
+  in the same dict. A non-device result is refused.
+- **Pre-decode budget check** — `max_image_bytes` and
+  `max_edit_content_bytes` are both checked *before* decoding;
+  a non-intersecting image is skipped without decoding.
 
 What works today:
 

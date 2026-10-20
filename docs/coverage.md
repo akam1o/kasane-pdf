@@ -623,34 +623,41 @@ pixels_changed, sites, scope }`:
   so the graphics state and hit tests are the diagnosis's; any
   `blocker`/`uncertain` entry or a mid-stream walk failure is a
   typed refusal.
-- **Pixel ranges, not a bounding box (M19.1)**: each rect produces
-  its own `(x0,y0,x1,y1)` pixel range via inverse-CTM mapping;
-  the union of *those* ranges is blackened, not their bounding box.
-  Disjoint rects do not fill the pixels between them; overlapping
-  ranges are merged so no pixel is visited twice. Outward rounding
-  (`floor`/`ceil`) and the y-flip (image rows top-down) are
-  unchanged. The intermediate `Vec` of ranges is bounded by the
-  input `rects` count (`max_diag_rects`), never by image height.
+- **Exact pixel union, not a bounding box (M19.2)**: each rect
+  produces its own `(x0,y0,x1,y1)` pixel range via inverse-CTM
+  mapping. The union is computed by splitting into horizontal bands
+  at every distinct y-boundary, then merging x-intervals within each
+  band — a band is a maximal y-strip whose x-interval set is
+  constant. Corner-touching rects and L-shaped overlaps do not fill
+  the pixels between them; overlapping ranges are merged so no pixel
+  is visited twice. Outward rounding (`floor`/`ceil`) and the y-flip
+  (image rows top-down) are unchanged. The intermediate `Vec` is
+  bounded by `rects.len()` (`max_diag_rects`), never by image height.
 - **Pixel count, not component count (M19.1)**: `pixels_changed`
   counts *pixels* — a pixel is one unit regardless of how many of
   its channels were non-zero. RGB `[r,g,b]` → `[0,0,0]` counts as 1;
   `[0,128,0]` → `[0,0,0]` also counts as 1; an already-black pixel
   counts as 0. Gray follows the same definition.
-- **Colour-space resolution (M19.1)**: `/ColorSpace` names are
-  resolved through the page's effective `/Resources /ColorSpace`
-  dict — `/CS1` → `/DeviceGray` works, `/DefaultRGB` → `/DeviceRGB`
-  works, but `/DefaultRGB` → `/CalRGB` (or any non-device space) is
-  refused. Indirect refs are dereferenced, then the same name rules
-  apply. A missing `/ColorSpace` resource entry is `Error::Structure`,
-  not a guess.
-- **Pre-allocation budgets (M19.1)**: `max_image_bytes` is checked
-  *before* the buffer grows — a raw image larger than the cap is
-  refused without cloning (`raw.to_vec()` never runs), and a Flate
-  stream stops mid-decode when the output would exceed the cap.
-  The expected `Width × Height × ncomps` size is computed with
-  `checked_mul` before any allocation. `charge_generated` is called
-  *before* the edited body is held, so the cumulative
-  `max_edit_content_bytes` cap is enforced before the clone exists.
+- **Colour-space resolution + Default* substitution (M19.2)**:
+  `/ColorSpace` names are resolved through the page's effective
+  `/Resources /ColorSpace` dict — `/CS1` → `/DeviceGray` works.
+  A *device* name (`/DeviceGray`, `/DeviceRGB`) is then checked
+  against the `Default*` substitution table in the same resource
+  dict: `/DefaultRGB` → `/DeviceRGB` is accepted, but `/DefaultRGB`
+  → `/CalRGB` (or any non-device space) is refused. Indirect refs
+  are dereferenced, then the same rules apply. A missing
+  `/ColorSpace` resource entry is `Error::Structure`, not a guess.
+  Substitution does not recurse — a `Default*` that is itself a
+  device name is ignored.
+- **Pre-decode budget check (M19.2)**: `max_image_bytes` and
+  `max_edit_content_bytes` are both checked *before* decoding —
+  an image whose expected `Width × Height × ncomps` size exceeds
+  the remaining cumulative budget is refused without allocating
+  its buffer. A non-intersecting image is skipped before decode
+  entirely (no budget consumed). `charge_generated` runs before
+  the decoded buffer is held, so the clone is never built when
+  the budget is insufficient. The decoded `Vec` is then moved
+  (not cloned) into the edited body — no extra copy.
 - Per-invocation cloning: fresh `/XObject` names (`KasIm{n}`,
   deterministic, collision-checked), only the hit `Do` is repointed,
   the page's effective `/Resources` is materialised, shared objects
