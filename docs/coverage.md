@@ -510,7 +510,22 @@ returning `Removal { output, codes_removed, sites, scope }`:
 - Reuses the M16 `DiagWalker` so the graphics/text state and hit
   tests are exactly the diagnosis's — any `blocker`/`uncertain`
   entry, or a mid-stream walk failure, is a typed refusal, not a
-  best-effort skip.
+  best-effort skip. Walk failures keep their typed error
+  (`LimitExceeded`, `Structure`, `Parse`…) — they are never
+  flattened into `Unsupported`.
+- **Op-time state (M17.1)**: the walker records the text state at
+  each page-level show op — resolved font, `Tfs`, `Th`, `Tc`, `Tw`
+  — keyed by `op_index`. Selection and the rewrite read the *same*
+  snapshot, so a later `Tf`/`Tc`/`Tw`/`Tz` change, `q`/`Q` restore,
+  or second `BT`/`ET` can never rewrite an earlier show under the
+  wrong parameters. `"`'s snapshot is taken *after* its `Tw`/`Tc`
+  update.
+- **Page-level eligibility (M17.1)**: a page is eligible only when
+  *every* shown text occurrence is `Tr 0` fill — an out-of-rect
+  `Tr 3`/`Tr 1`/`Tr 2` glyph still refuses the page. `Tr 4–7` and
+  `w = 0` hairlines arrive via `blocker`/`uncertain` and refuse the
+  same way. A `Tr` value *set* but never used to show text is
+  harmless (the mode only matters when a glyph paints under it).
 - Rewrites `Tj`/`TJ`/`'`/`"` only: a `Tj` losing codes becomes a
   `TJ` whose numeric elements restore the removed advance
   (`-(w0 + (Tc+Tw)·1000/Tfs)` — `Tz` cancels, so `Tfs = 0` or

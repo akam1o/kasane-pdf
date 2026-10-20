@@ -76,13 +76,19 @@ horizontal fonts only), rewrites the affected strings as `TJ` with
 numeric elements that restore the removed advance, and writes a new
 single-revision PDF through the same overlay pipeline as
 `annotate-rect`. A page with `/Annots`, any `Do`/`sh`/inline
-image/`gs`/Pattern/`ActualText`/OC, non-fill text modes, `w = 0`
-hairlines, unsupported fonts, non-finite CTM, `/UserUnit` ≠ 1,
-vertical text, or `Tfs`/`Tz` = 0 is refused outright — never
-half-edited. The input document and its bytes are never modified,
-and other pages sharing the original `/Contents` keep it (the
-removed bytes still exist in the shared stream — this is content
-editing, not secure redaction).
+image/`gs`/Pattern/`ActualText`/OC, any *shown* text mode other
+than `Tr 0` (even outside the rect), `w = 0` hairlines, unsupported
+fonts, non-finite CTM, `/UserUnit` ≠ 1, vertical text, or
+`Tfs`/`Tz` = 0 is refused outright — never half-edited. The input
+document and its bytes are never modified, and other pages sharing
+the original `/Contents` keep it (the removed bytes still exist in
+the shared stream — this is content editing, not secure redaction).
+M17.1 pins the rewrite to the *op-time* text state (font, `Tfs`,
+`Tc`, `Tw`, `Tz` as the op ran under them) rather than the
+stream-end state, checks eligibility page-wide instead of only
+against selected codes, and keeps typed walk errors
+(`LimitExceeded`, `Structure`, `Parse`) instead of flattening them
+into `Unsupported`.
 
 What works today:
 
