@@ -101,6 +101,16 @@ unmodified bytes. Nested `Do`s, images, `/Group`/`/OC`/`/Ref` forms,
 and all M17 refusals stay refused — the check is `form_path` depth
 plus the existing `blocker`/`uncertain`/mode rules.
 
+**M18.1 adds cumulative budgets** the per-stream `max_operations`
+parse cap cannot express: `max_diag_exec_ops` (200,000) counts every
+content-stream *execution* across page and form recursion (a form
+invoked N times costs N× its ops); `max_show_states` (200,000)
+bounds the `show_states` snapshot map (recorded only for
+`remove_text`, not `diagnose_redaction`); `max_edit_content_bytes`
+(64 MiB) bounds the cumulative generated stream bodies held in the
+`Edit` overlay before `rewrite` applies its own `max_output_bytes`
+to the final PDF.
+
 What works today:
 
 - PDF basic objects: null, bool, integer, real, name (with `#xx`

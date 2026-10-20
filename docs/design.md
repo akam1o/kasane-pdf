@@ -573,12 +573,14 @@ Design choices:
   key (`[]` at page level, `[frame]` inside a called form), so a
   form's inner ops under different invocations get distinct
   snapshots and never collide with page-level op indices. One
-  snapshot per show op, bounded by `max_operations` per stream ×
-  `max_xobject_invocations` for the recursion. Selection (`Target`)
-  and rewrite read the *same* state, so a later `Tf`/`Tc`/`Tz`/
-  `q`/`Q`/`BT` change can never rewrite an earlier show under the
-  stream-end values — the M17.0 bug where `walker.gs.text` at
-  end-of-stream was used for every op.
+  snapshot per show op, bounded by `max_show_states` (M18.1). The
+  map only records when the caller asks for it —
+  `diagnose_redaction` walks with `record_show_states = false` and
+  never fills it, so a diagnosis pays zero snapshot memory.
+  Selection (`Target`) and rewrite read the *same* state, so a
+  later `Tf`/`Tc`/`Tz`/`q`/`Q`/`BT` change can never rewrite an
+  earlier show under the stream-end values — the M17.0 bug where
+  `walker.gs.text` at end-of-stream was used for every op.
 - **Page-level eligibility (M17.1, extended M18)** — a page is
   eligible only when *every* text occurrence on it is `Tr 0` fill,
   checked against all `walker.targets`, not just the hit ones —
@@ -615,6 +617,21 @@ Design choices:
   `Document` and its bytes are never modified; other pages sharing
   the original stream keep it untouched (the removed bytes still
   exist in the shared object — explicitly out of scope).
+- **Cumulative budgets (M18.1)** — three limits the per-stream
+  `max_operations` parse cap cannot express:
+  - `max_diag_exec_ops` (200,000): every content-stream *execution*
+    inside one `diagnose_redaction`/`remove_text` walk — page ops,
+    ops inside a `Do`'d form, empty `Tj`s, state changes, unknown
+    ops. A form invoked N times costs N× its op count.
+  - `max_show_states` (200,000): entries in the `show_states`
+    snapshot map; the map only records when `remove_text` asks,
+    `diagnose_redaction` walks with snapshots off.
+  - `max_edit_content_bytes` (64 MiB): cumulative bytes of
+    *generated* stream bodies held in the `Edit` overlay — each
+    cloned form body plus the new page `/Contents`. `serialize_ops`
+    receives the remaining budget so its Vec stops growing at the
+    bound, and `charge_generated` counts each finished body; the
+    writer's `max_output_bytes` still caps the final PDF.
 - **Refusal list = diagnosis refusal list** — `/Annots`, `sh`/
   inline image/`gs`/Pattern/`ActualText`/OC, any `Do` inside a form,
   `Image`/non-Form XObject, any shown text mode other than `Tr 0`,

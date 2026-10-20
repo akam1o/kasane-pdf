@@ -148,6 +148,31 @@ pub struct Limits {
     /// Maximum resource entries inspected while looking for cross-page
     /// sharing. Default: 100,000.
     pub max_diag_share_refs: u64,
+    /// Maximum cumulative content-stream *executions* inside one
+    /// `diagnose_redaction`/`remove_text` walk — every op `run()`
+    /// dispatches counts once, whether it is a page-level op, an op
+    /// inside a `Do`'d form, an empty `Tj`, or a state change. Bounds
+    /// the `max_operations` (per-stream *parse*) ×
+    /// `max_xobject_invocations` product to something practical: the
+    /// same form invoked 10,000 times costs 10,000× its op count
+    /// here. Default: 200,000.
+    pub max_diag_exec_ops: u64,
+    /// Maximum entries the `show_states` snapshot map may hold —
+    /// one entry per page-level *or* form-level show op that ran,
+    /// keyed by `(form_path, op_index)`. A snapshot is small (an
+    /// `Rc`-shared font + four `f64`s + the key) but unbounded
+    /// entries still grow linearly with executed show ops.
+    /// Default: 200,000.
+    pub max_show_states: u64,
+    /// Maximum cumulative bytes of *generated* stream bodies one
+    /// `remove_text`/`Edit` call may hold at once — the rewritten
+    /// page `/Contents`, every cloned form body, and any other
+    /// synthesized stream count against this while they sit in the
+    /// overlay *before* `rewrite` emits the final PDF (which has its
+    /// own `max_output_bytes`). Distinct from that output cap: a
+    /// hundred small clones can fail here long before the writer
+    /// limit is reached. Default: 64 MiB.
+    pub max_edit_content_bytes: u64,
 }
 
 impl Default for Limits {
@@ -190,6 +215,9 @@ impl Default for Limits {
             max_diag_items: 100_000,
             max_diag_share_pages: 32,
             max_diag_share_refs: 100_000,
+            max_diag_exec_ops: 200_000,
+            max_show_states: 200_000,
+            max_edit_content_bytes: 64 * 1024 * 1024,
         }
     }
 }

@@ -312,6 +312,13 @@ pub fn remove_text(
     let mut do_renames: BTreeMap<usize, Vec<u8>> = BTreeMap::new();
     let mut removed_sites: Vec<Site> = Vec::new();
     let mut codes_removed: u64 = 0;
+    // Cumulative bytes of *generated* stream bodies — each cloned
+    // form and the new page `/Contents` count against
+    // `max_edit_content_bytes` while they sit in the overlay,
+    // *before* `rewrite` applies its own `max_output_bytes` to the
+    // final PDF. Checked arithmetic; the overlay never holds more
+    // than this budget at once.
+    let mut generated_bytes: u64 = 0;
     // M18: each *invocation* whose inner text lost codes gets its own
     // cloned Form object — the original stream stays untouched so
     // other invocations (and other pages sharing it) keep painting the
@@ -382,7 +389,11 @@ pub fn remove_text(
                 &mut removed_sites,
             )?);
         }
-        let new_body = serialize_ops(&new_form_ops, limits)?;
+        let remaining = limits
+            .max_edit_content_bytes
+            .saturating_sub(generated_bytes);
+        let new_body = serialize_ops(&new_form_ops, limits, remaining)?;
+        generated_bytes = charge_generated(generated_bytes, new_body.len(), limits)?;
         // Clone the stream dict, dropping `/Filter`/`/DecodeParms` —
         // the new body is emitted uncompressed, so the old filter
         // chain must not be claimed (a stale `/Filter` would decode
@@ -451,7 +462,11 @@ pub fn remove_text(
     }
 
     // ---- serialise the new page stream -------------------------------
-    let new_body = serialize_ops(&new_ops, limits)?;
+    let remaining = limits
+        .max_edit_content_bytes
+        .saturating_sub(generated_bytes);
+    let new_body = serialize_ops(&new_ops, limits, remaining)?;
+    charge_generated(generated_bytes, new_body.len(), limits)?;
     let mut edit = match edit_guard {
         Some(e) => e,
         None => Edit::new(doc, limits.clone())?,
@@ -962,7 +977,14 @@ fn rewrite_tj(
 
 /// Serialise one op to content-stream bytes — a small subset of the
 /// full grammar, exactly what `remove_text` emits.
-fn serialize_ops(ops: &[Operation], limits: &Limits) -> Result<Vec<u8>, Error> {
+///
+/// `byte_budget` is the *remaining* cumulative generated-byte budget
+/// (`max_edit_content_bytes` minus what earlier streams in this call
+/// already produced) — the Vec stops growing once it reaches that
+/// bound, so the serializer never allocates past what the caller can
+/// still hold. `max_output_bytes` is checked alongside: it bounds
+/// any *single* stream even when the cumulative budget is generous.
+fn serialize_ops(ops: &[Operation], limits: &Limits, byte_budget: u64) -> Result<Vec<u8>, Error> {
     let mut out = Vec::new();
     let mut ops_written: usize = 0;
     for op in ops {
@@ -975,6 +997,12 @@ fn serialize_ops(ops: &[Operation], limits: &Limits) -> Result<Vec<u8>, Error> {
         }
         write_op(op, &mut out, limits)?;
         out.push(b'\n');
+        if out.len() as u64 > byte_budget {
+            return Err(Error::LimitExceeded {
+                limit: "max_edit_content_bytes",
+                max: limits.max_edit_content_bytes,
+            });
+        }
         if out.len() as u64 > limits.max_output_bytes {
             return Err(Error::LimitExceeded {
                 limit: "max_output_bytes",
@@ -983,6 +1011,28 @@ fn serialize_ops(ops: &[Operation], limits: &Limits) -> Result<Vec<u8>, Error> {
         }
     }
     Ok(out)
+}
+
+/// Charge `stream_len` bytes of generated output against
+/// `max_edit_content_bytes` — cumulative across every stream body the
+/// call materialises (page `/Contents` + each cloned form). Checked
+/// arithmetic so a counter can't wrap. Each stream also stays under
+/// `serialize_ops`'s `byte_budget` bound, so a single huge body
+/// and many small ones are both bounded.
+fn charge_generated(acc: u64, stream_len: usize, limits: &Limits) -> Result<u64, Error> {
+    let total = acc
+        .checked_add(stream_len as u64)
+        .ok_or(Error::LimitExceeded {
+            limit: "max_edit_content_bytes",
+            max: limits.max_edit_content_bytes,
+        })?;
+    if total > limits.max_edit_content_bytes {
+        return Err(Error::LimitExceeded {
+            limit: "max_edit_content_bytes",
+            max: limits.max_edit_content_bytes,
+        });
+    }
+    Ok(total)
 }
 
 /// Serialise a single `Operation` — supports every variant the
@@ -1727,6 +1777,102 @@ mod tests {
         push!(9, &sb);
         // Form at 10 0 R — identity /Matrix, 200×200 /BBox, no own
         // /Resources (inherits the page's).
+        let mut f = b"<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+              /Matrix [1 0 0 1 0 0] /Length "
+            .to_vec();
+        f.extend_from_slice(form_body.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(form_body);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        parts.concat()
+    }
+
+    /// A page that invokes `/Fm1` `invocations` times at identical
+    /// CTM — used to exercise cumulative budgets across repeated
+    /// calls of the same small form.
+    fn form_n_invocations_pdf(form_body: &[u8], invocations: usize) -> Vec<u8> {
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> /XObject << /Fm1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut fd = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        fd.extend_from_slice(&widths);
+        fd.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push!(4, &fd);
+        push!(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs2 = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs2.extend_from_slice(&enc);
+        fs2.extend_from_slice(b"\nendstream");
+        push!(6, &fs2);
+        let mut body = Vec::new();
+        for _ in 0..invocations {
+            body.extend_from_slice(b"/Fm1 Do\n");
+        }
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(&body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
         let mut f = b"<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
               /Matrix [1 0 0 1 0 0] /Length "
             .to_vec();
@@ -3597,5 +3743,185 @@ mod tests {
         let d = doc(&parts.concat());
         let err = remove_text(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap_err();
         assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+    }
+
+    // ---- M18.1 — cumulative budgets ---------------------------------
+
+    /// A single form invocation fits the per-stream `max_operations`
+    /// parse cap, but *repeated* invocations accumulate op executions
+    /// the parse cap never sees. `max_diag_exec_ops` bounds the total
+    /// across page + all form recursion — a form with no text (so
+    /// `max_text_codes` can't catch it) must still stop.
+    #[test]
+    fn cumulative_exec_ops_stops_repeated_invocations() {
+        // One form of 5 ops (BT Tf Td Tj ET — the text is inside
+        // bounds so it's eligible) invoked 4 times: 4×(5 inner) + 4
+        // `Do` = 24 executions. A cap of 20 must fail *cumulative*,
+        // even though each stream parses under max_operations easily.
+        let d = doc(&form_n_invocations_pdf(
+            b"BT /F1 24 Tf 0 0 Td (A) Tj ET\n",
+            4,
+        ));
+        let l = Limits {
+            max_diag_exec_ops: 20,
+            ..Limits::default()
+        };
+        let err = remove_text(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &l).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::LimitExceeded {
+                    limit: "max_diag_exec_ops",
+                    ..
+                }
+            ),
+            "repeated invocations must hit the cumulative op cap: {err:?}"
+        );
+    }
+
+    /// An empty form (zero inner ops) still burns one `Do` execution
+    /// per invocation — the cumulative cap catches it where
+    /// `max_text_codes` sees nothing.
+    #[test]
+    fn cumulative_exec_ops_counts_empty_invocations() {
+        // 10 `/Fm1 Do` of an empty form — 10 executions at page level
+        // plus 0 inside. A cap of 5 must fail even though no text
+        // and no inner ops ever run.
+        let d = doc(&form_n_invocations_pdf(b"", 10));
+        let l = Limits {
+            max_diag_exec_ops: 5,
+            ..Limits::default()
+        };
+        let err = remove_text(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &l).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::LimitExceeded {
+                    limit: "max_diag_exec_ops",
+                    ..
+                }
+            ),
+            "empty-form invocations still cost an op each: {err:?}"
+        );
+    }
+
+    /// Boundary check: N executions exactly at the cap succeed,
+    /// N+1 fails.
+    #[test]
+    fn cumulative_exec_ops_boundary() {
+        // Page: `/Fm1 Do` once (1 op) + form: 5 inner ops = 6 total.
+        let d = doc(&form_n_invocations_pdf(
+            b"BT /F1 24 Tf 0 0 Td (A) Tj ET\n",
+            1,
+        ));
+        let exact = Limits {
+            max_diag_exec_ops: 6,
+            ..Limits::default()
+        };
+        remove_text(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &exact).expect("6 ops at cap must pass");
+        let over = Limits {
+            max_diag_exec_ops: 5,
+            ..Limits::default()
+        };
+        assert!(
+            matches!(
+                remove_text(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &over),
+                Err(Error::LimitExceeded {
+                    limit: "max_diag_exec_ops",
+                    ..
+                })
+            ),
+            "5 < 6 must fail"
+        );
+    }
+
+    /// Snapshot records are bounded too — many show ops with few
+    /// codes must not grow `show_states` without bound. A cap
+    /// smaller than the op count (each op still executes fine)
+    /// fails as `LimitExceeded` on the *snapshot* budget.
+    #[test]
+    fn show_state_snapshots_are_bounded() {
+        // A form with 5 `Tj`s → 5 snapshots per invocation;
+        // 2 invocations = 10 entries (distinct form_paths). A cap of
+        // 8 must fail before the second invocation finishes — and a
+        // diagnose-only caller recording no snapshots at all is
+        // unaffected.
+        let d = doc(&form_n_invocations_pdf(
+            b"BT /F1 24 Tf 0 0 Td (A) Tj (B) Tj (C) Tj (D) Tj (E) Tj ET\n",
+            2,
+        ));
+        let l = Limits {
+            max_show_states: 8,
+            ..Limits::default()
+        };
+        let err = remove_text(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &l).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::LimitExceeded {
+                    limit: "max_show_states",
+                    ..
+                }
+            ),
+            "snapshot map must be bounded: {err:?}"
+        );
+    }
+
+    /// Diagnose-only callers don't need `show_states` at all — the
+    /// map records *only* when the walk was requested with snapshot
+    /// collection on. `diagnose_redaction` never fills it.
+    #[test]
+    fn diagnose_does_not_record_snapshots() {
+        let d = doc(&form_n_invocations_pdf(
+            b"BT /F1 24 Tf 0 0 Td (A) Tj ET\n",
+            3,
+        ));
+        let page = &d.pages()[0];
+        let ops = d.page_operations(page).unwrap();
+        let rects = [crate::page::Rect {
+            llx: 0.0,
+            lly: 0.0,
+            urx: 200.0,
+            ury: 200.0,
+        }];
+        let limits = Limits::default();
+        let mut w = DiagWalker::new_diag_only(&d, page, &limits, &rects);
+        w.run(&ops).unwrap();
+        assert!(
+            w.show_states.is_empty(),
+            "diagnose-only walk must not record show_states"
+        );
+    }
+
+    /// Each generated form clone counts its bytes against
+    /// `max_edit_content_bytes` — a small shared form cloned many
+    /// times must stop on the *cumulative* budget even though each
+    /// stream alone is tiny and the final output is far from
+    /// `max_output_bytes`.
+    #[test]
+    fn generated_content_bytes_are_cumulative() {
+        // Form body ~32 bytes → clone body ~38 bytes; 3 invocations
+        // = ~114 generated bytes + page stream. A cap below the
+        // total but above one stream must fail partway.
+        let d = doc(&form_n_invocations_pdf(
+            b"BT /F1 24 Tf 0 0 Td (ABC) Tj ET\n",
+            3,
+        ));
+        // A rect that hits 'B' under all 3 identical invocations.
+        let l = Limits {
+            max_edit_content_bytes: 40, // ~1 clone + some page stream
+            ..Limits::default()
+        };
+        let err = remove_text(&d, 0, &[(14.5, 0.0, 21.0, 20.0)], &l).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                Error::LimitExceeded {
+                    limit: "max_edit_content_bytes",
+                    ..
+                }
+            ),
+            "cumulative generated bytes must refuse: {err:?}"
+        );
     }
 }

@@ -420,7 +420,9 @@ pub fn diagnose_redaction(
 
     // ---- content walk ---------------------------------------------
     let ops = doc.page_operations(page)?;
-    let mut walker = DiagWalker::new(doc, page, limits, &validated);
+    // Snapshots are off for the diagnosis — it reports targets and
+    // never rewrites ops, so `show_states` stays empty.
+    let mut walker = DiagWalker::new_diag_only(doc, page, limits, &validated);
     match walker.run(&ops) {
         Ok(()) => {}
         Err(e) => {
@@ -789,6 +791,10 @@ pub(crate) struct DiagWalker<'a> {
     /// the diagnosis (and renderer) saw, not the state at end of
     /// stream.
     pub(crate) show_states: BTreeMap<(Vec<FormFrame>, usize), ShowTextState>,
+    /// Whether `capture_show_state` records — `false` for
+    /// `diagnose_redaction` (the diagnosis reports targets and never
+    /// rewrites ops, so it doesn't pay the map's memory).
+    record_show_states: bool,
     /// object ref → (kind, sites) for sharing analysis.
     site_map: BTreeMap<(u32, u16), (String, Vec<Site>)>,
     /// Counting budget for reported items.
@@ -796,6 +802,11 @@ pub(crate) struct DiagWalker<'a> {
     /// Character codes processed — bounded by `max_text_codes`, the
     /// same limit `render`/`extract` honour.
     text_codes: u64,
+    /// Cumulative ops `run()` has dispatched across the page *and*
+    /// every `Do`'d form invocation — bounded by `max_diag_exec_ops`.
+    /// Distinct from `max_operations` (per-stream *parse*): the same
+    /// form invoked N times costs N× its op count here.
+    exec_ops: u64,
 }
 
 /// The text state one page-level show op ran under — a snapshot of
@@ -859,6 +870,28 @@ impl<'a> DiagWalker<'a> {
         limits: &'a Limits,
         rects: &'a [Rect],
     ) -> Self {
+        Self::build(doc, page, limits, rects, true)
+    }
+
+    /// Variant for `diagnose_redaction`: snapshots are off — the
+    /// diagnosis reports targets directly and never rewrites ops, so
+    /// it doesn't pay the `show_states` memory.
+    pub(crate) fn new_diag_only(
+        doc: &'a Document,
+        page: &'a Page,
+        limits: &'a Limits,
+        rects: &'a [Rect],
+    ) -> Self {
+        Self::build(doc, page, limits, rects, false)
+    }
+
+    fn build(
+        doc: &'a Document,
+        page: &'a Page,
+        limits: &'a Limits,
+        rects: &'a [Rect],
+        record_show_states: bool,
+    ) -> Self {
         let resources = page
             .resources()
             .cloned()
@@ -901,9 +934,11 @@ impl<'a> DiagWalker<'a> {
             uncertain: Vec::new(),
             blockers: Vec::new(),
             show_states: BTreeMap::new(),
+            record_show_states,
             site_map: BTreeMap::new(),
             reported: 0,
             text_codes: 0,
+            exec_ops: 0,
         }
     }
 
@@ -955,6 +990,21 @@ impl<'a> DiagWalker<'a> {
     pub(crate) fn run(&mut self, ops: &[crate::content::Operation]) -> Result<(), Error> {
         for (i, op) in ops.iter().enumerate() {
             self.op_index = i;
+            // Cumulative execution budget — page ops and every `Do`'d
+            // form's ops share one counter, so a small form invoked
+            // many times cannot spin unbounded. Checked *before* the
+            // op runs so an overrun leaves state untouched for the
+            // `incomplete` report.
+            self.exec_ops = self.exec_ops.checked_add(1).ok_or(Error::LimitExceeded {
+                limit: "max_diag_exec_ops",
+                max: self.limits.max_diag_exec_ops,
+            })?;
+            if self.exec_ops > self.limits.max_diag_exec_ops {
+                return Err(Error::LimitExceeded {
+                    limit: "max_diag_exec_ops",
+                    max: self.limits.max_diag_exec_ops,
+                });
+            }
             self.exec(op)?;
         }
         Ok(())
@@ -1133,7 +1183,7 @@ impl<'a> DiagWalker<'a> {
                 // 0 for each op so two `Tj`s in one stream each count
                 // from 0.
                 self.code_index = 0;
-                self.capture_show_state();
+                self.capture_show_state()?;
                 self.show_text(bytes)?;
             }
             O::ShowTextAdjusted(items) => {
@@ -1142,7 +1192,7 @@ impl<'a> DiagWalker<'a> {
                 // at index 0 and 'B' at index 1 (numeric elements
                 // produce no codes and do not advance the index).
                 self.code_index = 0;
-                self.capture_show_state();
+                self.capture_show_state()?;
                 for it in items {
                     match it {
                         crate::content::TJItem::Text(b) => self.show_text(b)?,
@@ -1160,7 +1210,7 @@ impl<'a> DiagWalker<'a> {
                 let t = crate::matrix::Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.gs.text.leading);
                 self.text_tlm = t.concat(self.text_tlm);
                 self.text_tm = self.text_tlm;
-                self.capture_show_state();
+                self.capture_show_state()?;
                 self.show_text(text)?;
             }
             O::SetSpacingNextLineShowText {
@@ -1174,7 +1224,7 @@ impl<'a> DiagWalker<'a> {
                 let t = crate::matrix::Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.gs.text.leading);
                 self.text_tlm = t.concat(self.text_tlm);
                 self.text_tm = self.text_tlm;
-                self.capture_show_state();
+                self.capture_show_state()?;
                 self.show_text(text)?;
             }
             O::Do(n) => self.do_xobject(n)?,
@@ -1376,13 +1426,26 @@ impl<'a> DiagWalker<'a> {
     /// Record the text state the current show op is about to run
     /// under — keyed by `(form_path, op_index)` so the same form's
     /// inner ops under different invocations get distinct snapshots.
-    /// Bounded the same way `ops` is (`max_operations` per stream,
-    /// `max_xobject_invocations` for the recursion) — no extra limit.
-    fn capture_show_state(&mut self) {
-        self.show_states.insert(
-            (self.form_path.clone(), self.op_index),
-            ShowTextState::capture(&self.gs.text),
-        );
+    /// Bounded by `max_show_states`; an existing key (same op, same
+    /// invocation) replaces without counting. Skipped entirely when
+    /// `record_show_states` is `false` (`diagnose_redaction` — the
+    /// map is only needed by `remove_text`'s rewrite).
+    fn capture_show_state(&mut self) -> Result<(), Error> {
+        if !self.record_show_states {
+            return Ok(());
+        }
+        let key = (self.form_path.clone(), self.op_index);
+        if !self.show_states.contains_key(&key)
+            && self.show_states.len() as u64 >= self.limits.max_show_states
+        {
+            return Err(Error::LimitExceeded {
+                limit: "max_show_states",
+                max: self.limits.max_show_states,
+            });
+        }
+        self.show_states
+            .insert(key, ShowTextState::capture(&self.gs.text));
+        Ok(())
     }
 
     /// Position one character code and record the target — mirrors the
