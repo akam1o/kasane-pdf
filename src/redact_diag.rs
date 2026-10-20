@@ -31,6 +31,21 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 // Public result types
 // -------------------------------------------------------------------
 
+/// One step in a `Do` invocation chain — the resource name used, the
+/// resolved object ref, and the op index of the `Do` that produced
+/// it. `op_index` disambiguates two calls to the same form (or two
+/// names for the same object) at the same nesting level.
+#[derive(Debug, Clone)]
+pub struct FormFrame {
+    /// The `/XObject` resource name used for the `Do`.
+    pub name: Vec<u8>,
+    /// The form's indirect ref, when resolvable.
+    pub xobj: Option<IndirectRef>,
+    /// The `Do` op's index in its own stream — the call-site
+    /// position that separates two invocations of the same object.
+    pub op_index: usize,
+}
+
 /// The kind of a diagnosed occurrence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TargetKind {
@@ -67,8 +82,14 @@ pub struct Site {
     /// content when `form_path` is empty).
     pub op_index: usize,
     /// `Do` invocation chain that led here — outermost first. Empty at
-    /// page level. Each element is `(resource name, resolved ref)`.
-    pub form_path: Vec<(Vec<u8>, Option<IndirectRef>)>,
+    /// page level. Each [`FormFrame`] carries the call-site `op_index`
+    /// so two `Do`s of the same form are distinct sites.
+    pub form_path: Vec<FormFrame>,
+    /// For a `Text` target: the index of the character code within the
+    /// `Tj`/`TJ`/`'`/`"` string operand — `0` for the first code. The
+    /// same op index covers every code in a multi-code string; this
+    /// is what tells them apart. `None` for non-text targets.
+    pub code_index: Option<usize>,
 }
 
 /// A diagnosed occurrence with a determined page-space footprint.
@@ -290,7 +311,8 @@ pub struct Diagnosis {
 /// positive width/height with `urx > llx`, `ury > lly`. Corners are
 /// **not** swapped — a reversed rect is a caller bug, not something
 /// to silently fix.
-fn check_rect(i: usize, llx: f64, lly: f64, urx: f64, ury: f64) -> Result<Rect, Error> {
+/// `pub(crate)` — M17 validates its `--rect` inputs the same way.
+pub(crate) fn check_rect(i: usize, llx: f64, lly: f64, urx: f64, ury: f64) -> Result<Rect, Error> {
     for (j, v) in [llx, lly, urx, ury].iter().enumerate() {
         if !v.is_finite() {
             return Err(Error::Structure(format!(
@@ -312,7 +334,8 @@ fn check_rect(i: usize, llx: f64, lly: f64, urx: f64, ury: f64) -> Result<Rect, 
 /// used for every target. Touching edges count as overlapping: a
 /// zero-area contact still reports the hit because stroke outlines,
 /// clips and estimates mean the real coverage may reach inside.
-fn intersects(b: &(f64, f64, f64, f64), r: &Rect) -> bool {
+/// `pub(crate)` — M17 uses the same conservative overlap test.
+pub(crate) fn intersects(b: &(f64, f64, f64, f64), r: &Rect) -> bool {
     b.0 <= r.urx && b.2 >= r.llx && b.1 <= r.ury && b.3 >= r.lly
 }
 
@@ -461,6 +484,7 @@ fn collect_annots(
             contents: Vec::new(),
             op_index: usize::MAX,
             form_path: Vec::new(),
+            code_index: None,
         };
         let aobj = match entry {
             Object::Ref(r) => match doc.resolve(*r) {
@@ -522,7 +546,8 @@ fn collect_annots(
 /// Collect the indirect refs behind a page's `/Contents` — a single
 /// stream → one ref; an array → every ref element (non-ref elements
 /// are skipped, they carry no identity). Used by `Site::contents`.
-fn contents_refs(page: &Page) -> Vec<IndirectRef> {
+/// `pub(crate)` — M17 needs the same `/Contents` element list.
+pub(crate) fn contents_refs(page: &Page) -> Vec<IndirectRef> {
     let mut out = Vec::new();
     match page.contents() {
         Some(Object::Ref(r)) => out.push(*r),
@@ -540,7 +565,12 @@ fn contents_refs(page: &Page) -> Vec<IndirectRef> {
 
 /// `page_dict_entry` variant kept local to avoid a circular import —
 /// resolve one key through the page dict the way `render.rs` does.
-fn page_dict_entry(doc: &Document, page: &Page, key: &[u8]) -> Result<Option<Object>, Error> {
+/// `pub(crate)` — M17 checks the same page-level keys (/Annots).
+pub(crate) fn page_dict_entry(
+    doc: &Document,
+    page: &Page,
+    key: &[u8],
+) -> Result<Option<Object>, Error> {
     let r = match page.object_ref() {
         Some(r) => r,
         None => return Ok(None),
@@ -657,30 +687,65 @@ fn collect_shared(
 // Content walker
 // -------------------------------------------------------------------
 
-/// Minimal graphics state the diagnosis needs: CTM for geometry,
-/// clip rect for conservative coverage, and the current text state
-/// to position shown characters.
-struct DiagGs {
-    ctm: crate::matrix::Matrix,
+/// Stroke-related graphics state — `w`/`J`/`j`/`M`/`d` influence how
+/// far a path's stroke extends past its construction points. These
+/// are part of the graphics state (§8.4.3 Table 52) so `q`/`Q` must
+/// save and restore them — an inner `w` must never inflate the outer
+/// stroke's bounds.
+#[derive(Clone)]
+struct StrokeState {
+    /// `w` — line width in user space (pre-CTM).
+    width: f64,
+    /// `J` — line cap (0 butt, 1 round, 2 square). Round/square extend
+    /// the stroke by `w/2` beyond path endpoints.
+    cap: i64,
+    /// `j` — line join (0 miter, 1 round, 2 bevel). Miter extends by
+    /// up to `M × w/2`.
+    join: i64,
+    /// `M` — miter limit, applied to the join extension.
+    miter_limit: f64,
+}
+
+/// The *whole* graphics state a diagnosis tracks — saved and restored
+/// together by `q`/`Q` (§8.4.3). `text_tm`/`text_tlm`/`in_text` are
+/// **not** part of the graphics state (they live inside `BT`/`ET`)
+/// and are kept on `DiagWalker` directly.
+#[derive(Clone)]
+pub(crate) struct DiagGs {
+    /// `pub(crate)` — M17 needs the text state for advance math.
+    pub(crate) ctm: crate::matrix::Matrix,
     /// Active clip in user space, when known — path/image/text
     /// bounds are intersected with it for the overlap test but the
     /// reported bounds stay the *whole* object (a conservative
     /// candidate, never a "safe outside" verdict).
     clip: Option<(f64, f64, f64, f64)>,
+    /// Stroke state — saved/restored by `q`/`Q`.
+    stroke: StrokeState,
+    /// Text state — `Tc`/`Tw`/`Tz`/`TL`/`Ts`/`Tr`/`Tf`/`Tmode` are
+    /// graphics-state parameters (Table 52); `Tm`/`Tlm` are not.
+    /// `pub(crate)` — M17 reads it for advance math.
+    pub(crate) text: TextState,
 }
 
-struct DiagWalker<'a> {
+/// `pub(crate)` — M17's `remove_text` walks the same content with the
+/// same state tracking to find which codes land inside the rect. The
+/// walker is *not* a public API; callers go through
+/// [`diagnose_redaction`] or [`crate::remove_text::remove_text`].
+pub(crate) struct DiagWalker<'a> {
     doc: &'a Document,
     limits: &'a Limits,
     rects: &'a [Rect],
     /// `/Contents` element refs for `Site::contents` — resolved once
     /// at construction (refs only, no stream decode).
     contents_refs: Vec<IndirectRef>,
-    gs: DiagGs,
+    /// `pub(crate)` — M17 reads the text state for advance math.
+    pub(crate) gs: DiagGs,
     gs_stack: Vec<DiagGs>,
     resources: Object,
-    /// Current `Do` nesting for site reporting.
-    form_path: Vec<(Vec<u8>, Option<IndirectRef>)>,
+    /// Current `Do` nesting for site reporting — each frame carries
+    /// the call-site `op_index` so two invocations of the same form
+    /// produce distinct `Site`s.
+    form_path: Vec<FormFrame>,
     xobject_depth: u32,
     xobject_invocations: u64,
     xobject_stack: Vec<IndirectRef>,
@@ -690,40 +755,59 @@ struct DiagWalker<'a> {
     path_bounds: Option<(f64, f64, f64, f64)>,
     path_has_point: bool,
     pending_clip: Option<()>,
-    /// Current line width in user space — path bounds are inflated
-    /// by half this (scaled by the CTM) for the stroke extent.
-    stroke_width: f64,
-    /// Text state needed to position shown text.
+    /// Position of the next shown character inside the current
+    /// `Tj`/`TJ` string — reset per string operand so `Site::code_index`
+    /// distinguishes 'A' from 'B' from 'C' in one `Tj`.
+    code_index: usize,
+    /// `text_tm`/`text_tlm`/`in_text` live inside `BT`/`ET` — not part
+    /// of the graphics state, so not in `DiagGs`.
     text_tm: crate::matrix::Matrix,
     text_tlm: crate::matrix::Matrix,
-    text_state: TextState,
     in_text: bool,
-    targets: Vec<Target>,
-    uncertain: Vec<Uncertain>,
-    blockers: Vec<Blocker>,
+    /// `true` while a construct that could have changed the graphics
+    /// state is unhandled — subsequent targets are reported as
+    /// `uncertain` until `Q` or a form's end restores known state.
+    /// `gs`/`sh`/`Pattern` colours and `Unknown` ops set this.
+    uncertain_state: bool,
+    /// `pub(crate)` — M17 reads the per-code targets.
+    pub(crate) targets: Vec<Target>,
+    /// `pub(crate)` — M17 refuses on any uncertain entry.
+    pub(crate) uncertain: Vec<Uncertain>,
+    /// `pub(crate)` — M17 refuses on any blocker.
+    pub(crate) blockers: Vec<Blocker>,
     /// object ref → (kind, sites) for sharing analysis.
     site_map: BTreeMap<(u32, u16), (String, Vec<Site>)>,
     /// Counting budget for reported items.
     reported: u64,
+    /// Character codes processed — bounded by `max_text_codes`, the
+    /// same limit `render`/`extract` honour.
+    text_codes: u64,
 }
 
 /// Text state we must track to position glyphs (subset of the
-/// renderer's).
+/// renderer's). `pub(crate)` — M17 reads `font`/`font_size`/`h_scale`
+/// for the advance math.
 #[derive(Default, Clone)]
-struct TextState {
-    char_spacing: f64,
-    word_spacing: f64,
-    h_scale: f64,
-    font_size: f64,
-    render_mode: i64,
-    rise: f64,
-    leading: f64,
-    font: Option<crate::font::Font>,
-    font_name: Vec<u8>,
+pub(crate) struct TextState {
+    pub(crate) char_spacing: f64,
+    pub(crate) word_spacing: f64,
+    pub(crate) h_scale: f64,
+    pub(crate) font_size: f64,
+    pub(crate) render_mode: i64,
+    pub(crate) rise: f64,
+    pub(crate) leading: f64,
+    pub(crate) font: Option<crate::font::Font>,
+    pub(crate) font_name: Vec<u8>,
 }
 
 impl<'a> DiagWalker<'a> {
-    fn new(doc: &'a Document, page: &'a Page, limits: &'a Limits, rects: &'a [Rect]) -> Self {
+    /// `pub(crate)` — M17 reuses the walk to enumerate text positions.
+    pub(crate) fn new(
+        doc: &'a Document,
+        page: &'a Page,
+        limits: &'a Limits,
+        rects: &'a [Rect],
+    ) -> Self {
         let resources = page
             .resources()
             .cloned()
@@ -736,6 +820,16 @@ impl<'a> DiagWalker<'a> {
             gs: DiagGs {
                 ctm: crate::matrix::Matrix::IDENTITY,
                 clip: None,
+                stroke: StrokeState {
+                    width: 1.0,
+                    cap: 0,
+                    join: 0,
+                    miter_limit: 10.0,
+                },
+                text: TextState {
+                    h_scale: 1.0,
+                    ..Default::default()
+                },
             },
             gs_stack: Vec::new(),
             resources,
@@ -747,19 +841,17 @@ impl<'a> DiagWalker<'a> {
             path_bounds: None,
             path_has_point: false,
             pending_clip: None,
-            stroke_width: 1.0,
+            code_index: 0,
             text_tm: crate::matrix::Matrix::IDENTITY,
             text_tlm: crate::matrix::Matrix::IDENTITY,
-            text_state: TextState {
-                h_scale: 1.0,
-                ..Default::default()
-            },
             in_text: false,
+            uncertain_state: false,
             targets: Vec::new(),
             uncertain: Vec::new(),
             blockers: Vec::new(),
             site_map: BTreeMap::new(),
             reported: 0,
+            text_codes: 0,
         }
     }
 
@@ -768,9 +860,35 @@ impl<'a> DiagWalker<'a> {
             contents: self.contents_refs.clone(),
             op_index: self.op_index,
             form_path: self.form_path.clone(),
+            code_index: None,
         }
     }
 
+    /// The site a *text* occurrence reports — `code_index` is filled
+    /// by the caller since it changes per code inside one `Tj`.
+    fn text_site(&self, code_index: usize) -> Site {
+        let mut s = self.site();
+        s.code_index = Some(code_index);
+        s
+    }
+
+    /// `pub(crate)` — M17 needs to reconstruct a removed code's site
+    /// (the `op_index` of the op it came from plus its `code_index`)
+    /// without re-walking the state stack.
+    pub(crate) fn text_site_at(&self, op_index: usize, code_index: usize) -> Site {
+        Site {
+            contents: self.contents_refs.clone(),
+            op_index,
+            form_path: self.form_path.clone(),
+            code_index: Some(code_index),
+        }
+    }
+
+    /// `max_diag_items` bounds the *total* reported items — targets,
+    /// uncertain, and blockers all count against it. Every push to
+    /// `targets`/`uncertain`/`blockers` inside the walk goes through
+    /// `bump_reported` so an adversarial stream cannot grow the report
+    /// without bound (e.g. thousands of `gs` blockers).
     fn bump_reported(&mut self) -> Result<(), Error> {
         self.reported += 1;
         if self.reported > self.limits.max_diag_items {
@@ -782,7 +900,19 @@ impl<'a> DiagWalker<'a> {
         Ok(())
     }
 
-    fn run(&mut self, ops: &[crate::content::Operation]) -> Result<(), Error> {
+    fn push_uncertain(&mut self, u: Uncertain) -> Result<(), Error> {
+        self.bump_reported()?;
+        self.uncertain.push(u);
+        Ok(())
+    }
+
+    fn push_blocker(&mut self, b: Blocker) -> Result<(), Error> {
+        self.bump_reported()?;
+        self.blockers.push(b);
+        Ok(())
+    }
+
+    pub(crate) fn run(&mut self, ops: &[crate::content::Operation]) -> Result<(), Error> {
         for (i, op) in ops.iter().enumerate() {
             self.op_index = i;
             self.exec(op)?;
@@ -800,10 +930,7 @@ impl<'a> DiagWalker<'a> {
                         max: self.limits.max_gsave_depth as u64,
                     });
                 }
-                self.gs_stack.push(DiagGs {
-                    ctm: self.gs.ctm,
-                    clip: self.gs.clip,
-                });
+                self.gs_stack.push(self.gs.clone());
             }
             O::RestoreState => {
                 let popped = self
@@ -811,6 +938,10 @@ impl<'a> DiagWalker<'a> {
                     .pop()
                     .ok_or_else(|| Error::Structure("Q without matching q".into()))?;
                 self.gs = popped;
+                // State restored → geometry is trustworthy again. Any
+                // earlier `uncertain_state` is cleared by the *restore*
+                // itself, which is exactly why the flag exists.
+                self.uncertain_state = false;
             }
             O::ConcatMatrix(m) => {
                 if !m.is_finite() {
@@ -822,26 +953,26 @@ impl<'a> DiagWalker<'a> {
                 }
                 self.gs.ctm = self.gs.ctm.concat(*m);
             }
-            O::SetLineWidth(w) => self.stroke_width = *w,
-            O::SetLineCap(_)
-            | O::SetLineJoin(_)
-            | O::SetMiterLimit(_)
-            | O::SetDash { .. }
-            | O::SetFlatness(_)
-            | O::SetRenderingIntent(_) => {}
+            O::SetLineWidth(w) => self.gs.stroke.width = *w,
+            O::SetLineCap(c) => self.gs.stroke.cap = *c,
+            O::SetLineJoin(j) => self.gs.stroke.join = *j,
+            O::SetMiterLimit(m) => self.gs.stroke.miter_limit = *m,
+            O::SetDash { .. } | O::SetFlatness(_) | O::SetRenderingIntent(_) => {}
             O::SetColorSpaceStroke(n) | O::SetColorSpaceFill(n) => {
                 // A Pattern colour space means subsequent SC/sc paints
                 // a *pattern* — its extent is whatever the pattern
-                // paints, not the path bounds. Block.
+                // paints, not the path bounds. Block + mark subsequent
+                // positions uncertain: the paint's coverage is unknown.
                 if is_pattern_name(self.doc, &self.resources, n)? {
-                    self.blockers.push(Blocker {
+                    self.push_blocker(Blocker {
                         site: Some(self.site()),
                         what: "pattern colour space".into(),
                         detail: format!(
                             "/{} — pattern fills paint outside the path bbox",
                             String::from_utf8_lossy(n)
                         ),
-                    });
+                    })?;
+                    self.uncertain_state = true;
                 }
             }
             O::SetColorStroke(_)
@@ -922,28 +1053,28 @@ impl<'a> DiagWalker<'a> {
             }
             O::EndText => self.in_text = false,
             O::SetTextFont { font, size } => {
-                self.text_state.font = Some(crate::font::load_font(
+                self.gs.text.font = Some(crate::font::load_font(
                     self.doc,
                     &self.resources,
                     font,
                     self.limits,
                 )?);
-                self.text_state.font_name = font.clone();
-                self.text_state.font_size = *size;
+                self.gs.text.font_name = font.clone();
+                self.gs.text.font_size = *size;
             }
-            O::SetCharSpacing(v) => self.text_state.char_spacing = *v,
-            O::SetWordSpacing(v) => self.text_state.word_spacing = *v,
-            O::SetHorizontalScaling(v) => self.text_state.h_scale = *v / 100.0,
-            O::SetTextLeading(v) => self.text_state.leading = *v,
-            O::SetTextRenderingMode(m) => self.text_state.render_mode = *m,
-            O::SetTextRise(v) => self.text_state.rise = *v,
+            O::SetCharSpacing(v) => self.gs.text.char_spacing = *v,
+            O::SetWordSpacing(v) => self.gs.text.word_spacing = *v,
+            O::SetHorizontalScaling(v) => self.gs.text.h_scale = *v / 100.0,
+            O::SetTextLeading(v) => self.gs.text.leading = *v,
+            O::SetTextRenderingMode(m) => self.gs.text.render_mode = *m,
+            O::SetTextRise(v) => self.gs.text.rise = *v,
             O::MoveTextPosition(x, y) => {
                 let t = crate::matrix::Matrix::new(1.0, 0.0, 0.0, 1.0, *x, *y);
                 self.text_tlm = t.concat(self.text_tlm);
                 self.text_tm = self.text_tlm;
             }
             O::MoveTextPositionAndSetLeading(x, y) => {
-                self.text_state.leading = -*y;
+                self.gs.text.leading = -*y;
                 let t = crate::matrix::Matrix::new(1.0, 0.0, 0.0, 1.0, *x, *y);
                 self.text_tlm = t.concat(self.text_tlm);
                 self.text_tm = self.text_tlm;
@@ -953,18 +1084,28 @@ impl<'a> DiagWalker<'a> {
                 self.text_tlm = *m;
             }
             O::NextLine => {
-                let t =
-                    crate::matrix::Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.text_state.leading);
+                let t = crate::matrix::Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.gs.text.leading);
                 self.text_tlm = t.concat(self.text_tlm);
                 self.text_tm = self.text_tlm;
             }
-            O::ShowText(bytes) => self.show_text(bytes)?,
+            O::ShowText(bytes) => {
+                // A `Tj`'s string is one run — `code_index` restarts at
+                // 0 for each op so two `Tj`s in one stream each count
+                // from 0.
+                self.code_index = 0;
+                self.show_text(bytes)?;
+            }
             O::ShowTextAdjusted(items) => {
+                // A `TJ` array is *one* op — the code index runs across
+                // every `Text` element so `[(A) 100 (B)]` reports 'A'
+                // at index 0 and 'B' at index 1 (numeric elements
+                // produce no codes and do not advance the index).
+                self.code_index = 0;
                 for it in items {
                     match it {
                         crate::content::TJItem::Text(b) => self.show_text(b)?,
                         crate::content::TJItem::Kern(n) => {
-                            let t = &self.text_state;
+                            let t = &self.gs.text;
                             let tx = -*n / 1000.0 * t.font_size * t.h_scale;
                             let tm = crate::matrix::Matrix::new(1.0, 0.0, 0.0, 1.0, tx, 0.0);
                             self.text_tm = tm.concat(self.text_tm);
@@ -973,8 +1114,8 @@ impl<'a> DiagWalker<'a> {
                 }
             }
             O::NextLineShowText(text) => {
-                let t =
-                    crate::matrix::Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.text_state.leading);
+                self.code_index = 0;
+                let t = crate::matrix::Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.gs.text.leading);
                 self.text_tlm = t.concat(self.text_tlm);
                 self.text_tm = self.text_tlm;
                 self.show_text(text)?;
@@ -984,34 +1125,40 @@ impl<'a> DiagWalker<'a> {
                 char_spacing,
                 text,
             } => {
-                self.text_state.word_spacing = *word_spacing;
-                self.text_state.char_spacing = *char_spacing;
-                let t =
-                    crate::matrix::Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.text_state.leading);
+                self.code_index = 0;
+                self.gs.text.word_spacing = *word_spacing;
+                self.gs.text.char_spacing = *char_spacing;
+                let t = crate::matrix::Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.gs.text.leading);
                 self.text_tlm = t.concat(self.text_tlm);
                 self.text_tm = self.text_tlm;
                 self.show_text(text)?;
             }
             O::Do(n) => self.do_xobject(n)?,
             O::Shading(n) => {
-                self.blockers.push(Blocker {
+                self.push_blocker(Blocker {
                     site: Some(self.site()),
                     what: "shading (sh)".into(),
                     detail: format!(
                         "/{} — shading fills an area we cannot bound",
                         String::from_utf8_lossy(n)
                     ),
-                });
+                })?;
+                self.uncertain_state = true;
             }
             O::SetExtGState(n) => {
-                self.blockers.push(Blocker {
+                // An uninterpreted `gs` may change the line width,
+                // blending, or any other graphics-state parameter —
+                // subsequent positions are uncertain until `Q` or a
+                // form's end restores state.
+                self.push_blocker(Blocker {
                     site: Some(self.site()),
                     what: "ExtGState (gs)".into(),
                     detail: format!(
                         "/{} — transparency/blend state is not implemented",
                         String::from_utf8_lossy(n)
                     ),
-                });
+                })?;
+                self.uncertain_state = true;
             }
             O::MarkedContentPoint(_) => {}
             O::DesignatedMarkedContentPoint { tag, properties }
@@ -1025,16 +1172,22 @@ impl<'a> DiagWalker<'a> {
             | O::BeginCompatibility
             | O::EndCompatibility => {}
             O::Unknown { operator, .. } => {
-                // An op we cannot interpret means *position tracking*
-                // may drift — nothing after is "certain".
-                self.uncertain.push(Uncertain {
+                // `Unknown` ops only reach here inside `BX … EX` —
+                // outside, the parser fails outright (§7.8.2). A
+                // compatibility-section op is *by definition* one the
+                // consumer doesn't understand and must ignore, so it
+                // does not taint state. (An op that *would* change
+                // state still reports as a blocker if it's one we
+                // know — `gs`, `sh`, Pattern — those set
+                // `uncertain_state` directly.)
+                self.push_uncertain(Uncertain {
                     kind: TargetKind::Other,
                     site: self.site(),
                     reason: format!(
-                        "unknown operator '{}' — subsequent positions may be wrong",
+                        "unknown operator '{}' ignored inside BX…EX",
                         String::from_utf8_lossy(operator)
                     ),
-                });
+                })?;
             }
         }
         Ok(())
@@ -1056,30 +1209,74 @@ impl<'a> DiagWalker<'a> {
     fn paint_path_target(&mut self, op: &crate::content::Operation) -> Result<(), Error> {
         use crate::content::Operation as O;
         let is_paint = !matches!(op, O::EndPath);
+        let stroked = matches!(
+            op,
+            O::Stroke
+                | O::CloseAndStroke
+                | O::FillAndStroke
+                | O::FillAndStrokeEvenOdd
+                | O::CloseFillAndStroke
+                | O::CloseFillAndStrokeEvenOdd
+        );
         if is_paint {
             if let Some(mut b) = self.path_bounds {
-                // Conservative: inflate by half the line width scaled
-                // by the CTM — stroke extent depends on width/cap/join
-                // and we must not under-report coverage.
-                let inflate = (self.stroke_width / 2.0).abs() * ctm_scale(&self.gs.ctm).max(0.0);
-                if inflate.is_finite() {
-                    b.0 -= inflate;
-                    b.1 -= inflate;
-                    b.2 += inflate;
-                    b.3 += inflate;
+                // Stroke extent: the outline of a `w`-wide stroke may
+                // extend past the construction points by up to
+                // `w/2` (butt/round/square cap) or `M × w/2` at a
+                // miter join — under the *largest* CTM stretch, not
+                // `sqrt(|det|)` which under-reports non-uniform
+                // scaling.
+                //
+                // A `w` of 0 is a device-pixel hairline — its coverage
+                // is resolution-dependent and *cannot* be bounded in
+                // user space, so a stroked target at `w == 0` is
+                // `uncertain`, not a certain `Target` whose bounds we
+                // would then call "safe outside". A fill-only path is
+                // unaffected — it does not stroke. For fill+stroke
+                // (`B`, `b`, `B*`, `b*`) the whole occurrence reports
+                // uncertain — the fill's bounds are known but the
+                // stroke's un-evaluated reach must not be dropped.
+                if stroked && self.gs.stroke.width == 0.0 {
+                    self.push_uncertain(Uncertain {
+                        kind: TargetKind::Path,
+                        site: self.site(),
+                        reason: "hairline stroke (w=0) — device-resolution dependent \
+                                 extent cannot be bounded in user space"
+                            .into(),
+                    })?;
+                } else {
+                    let inflate = if stroked {
+                        stroke_reach(&self.gs.stroke) * ctm_max_scale(&self.gs.ctm)
+                    } else {
+                        0.0
+                    };
+                    if inflate.is_finite() {
+                        b.0 -= inflate;
+                        b.1 -= inflate;
+                        b.2 += inflate;
+                        b.3 += inflate;
+                    }
+                    if self.uncertain_state {
+                        self.push_uncertain(Uncertain {
+                            kind: TargetKind::Path,
+                            site: self.site(),
+                            reason: "graphics state was changed by an unhandled construct".into(),
+                        })?;
+                    } else {
+                        let hits = hits_for(&b, self.rects);
+                        self.bump_reported()?;
+                        self.targets.push(Target {
+                            kind: TargetKind::Path,
+                            site: self.site(),
+                            bounds: b,
+                            hits,
+                            detail: TargetDetail::Path {
+                                op: op.name(),
+                                stroked,
+                            },
+                        });
+                    }
                 }
-                let hits = hits_for(&b, self.rects);
-                self.bump_reported()?;
-                self.targets.push(Target {
-                    kind: TargetKind::Path,
-                    site: self.site(),
-                    bounds: b,
-                    hits,
-                    detail: TargetDetail::Path {
-                        op: op.name(),
-                        stroked: inflate > 0.0,
-                    },
-                });
             }
         }
         // Install a pending clip as the *path's* bounds (approximation).
@@ -1096,23 +1293,38 @@ impl<'a> DiagWalker<'a> {
         Ok(())
     }
 
+    /// Show one string's codes — `code_index` is *not* reset here so
+    /// the caller (a `Tj`, or one element of a `TJ` array) decides the
+    /// numbering scope. `Tj`/`'`/`"` reset to 0 before the call; `TJ`
+    /// resets once for the whole array so `[(A) 100 (B)]` numbers the
+    /// 'A' 0 and the 'B' 1 — two occurrences of the same op stay
+    /// distinct sites.
     fn show_text(&mut self, bytes: &[u8]) -> Result<(), Error> {
         if !self.in_text {
             return Err(Error::Structure("Tj outside a text object".into()));
         }
         let font = self
-            .text_state
+            .gs
+            .text
             .font
             .clone()
             .ok_or_else(|| Error::Structure("Tj before Tf — no font selected".into()))?;
-        if !(self.text_state.font_size.is_finite() && self.text_state.font_size > 0.0) {
+        if !(self.gs.text.font_size.is_finite() && self.gs.text.font_size > 0.0) {
             return Err(Error::Structure("Tj before Tf — no font size".into()));
         }
         let mut pos = 0;
         while pos < bytes.len() {
             let (code, len) = font.read_code(bytes, pos)?;
             pos += len;
+            self.text_codes += 1;
+            if self.text_codes > self.limits.max_text_codes {
+                return Err(Error::LimitExceeded {
+                    limit: "max_text_codes",
+                    max: self.limits.max_text_codes,
+                });
+            }
             self.show_glyph(&font, code)?;
+            self.code_index += 1;
         }
         Ok(())
     }
@@ -1120,16 +1332,18 @@ impl<'a> DiagWalker<'a> {
     /// Position one character code and record the target — mirrors the
     /// renderer's `show_glyph` math but reports instead of painting.
     fn show_glyph(&mut self, font: &crate::font::Font, code: u32) -> Result<(), Error> {
-        // Copy the scalars out of `text_state` up front — we mutate
+        // Copy the scalars out of `gs.text` up front — we mutate
         // `self` (report, site_map) while the glyph positions itself.
-        let (font_size, h_scale, rise, char_spacing, word_spacing) = {
-            let t = &self.text_state;
+        let (font_size, h_scale, rise, char_spacing, word_spacing, render_mode, font_name) = {
+            let t = &self.gs.text;
             (
                 t.font_size,
                 t.h_scale,
                 t.rise,
                 t.char_spacing,
                 t.word_spacing,
+                t.render_mode,
+                t.font_name.clone(),
             )
         };
         // Glyph → page transform: Trm × CTM (§9.4.4).
@@ -1137,89 +1351,200 @@ impl<'a> DiagWalker<'a> {
             .concat(self.text_tm)
             .concat(self.gs.ctm);
         if !trm.is_finite() {
-            self.uncertain.push(Uncertain {
+            self.push_uncertain(Uncertain {
                 kind: TargetKind::Text,
-                site: self.site(),
+                site: self.text_site(self.code_index),
                 reason: "non-finite text rendering matrix".into(),
-            });
+            })?;
+            // Advance still runs — the next glyph's position is known
+            // even if this one's isn't.
+            self.advance_glyph(font, code, font_size, h_scale, char_spacing, word_spacing);
             return Ok(());
         }
         let origin = trm.transform(0.0, 0.0);
-        // Outline bounds, or a cell estimate when the glyph has no
-        // outline (space, .notdef) — the estimate is *not* ink extent.
-        let gid = font.glyph_id(code).ok();
-        let units = font.units_per_em().unwrap_or(1000.0);
-        let mut gp = crate::font::GlyphPath::new(units);
-        let has_outline = gid
-            .map(|g| font.outline(g, &mut gp).unwrap_or(false))
-            .unwrap_or(false);
-        let (bounds, bounds_kind) = if has_outline {
-            if let Some(path) = gp.finish() {
-                let b = path.bounds();
-                let corners = [
-                    trm.transform(b.left() as f64, b.top() as f64),
-                    trm.transform(b.right() as f64, b.bottom() as f64),
-                    trm.transform(b.left() as f64, b.bottom() as f64),
-                    trm.transform(b.right() as f64, b.top() as f64),
-                ];
-                (
-                    (
-                        corners[0]
-                            .0
-                            .min(corners[1].0)
-                            .min(corners[2].0)
-                            .min(corners[3].0),
-                        corners[0]
-                            .1
-                            .min(corners[1].1)
-                            .min(corners[2].1)
-                            .min(corners[3].1),
-                        corners[0]
-                            .0
-                            .max(corners[1].0)
-                            .max(corners[2].0)
-                            .max(corners[3].0),
-                        corners[0]
-                            .1
-                            .max(corners[1].1)
-                            .max(corners[2].1)
-                            .max(corners[3].1),
-                    ),
-                    TextBounds::Outline,
-                )
-            } else {
-                (cell_estimate(&trm), TextBounds::Cell)
+        // Distinguish "the glyph has no outline" (space, .notdef,
+        // unresolvable code → a Cell estimate) from "outline lookup
+        // failed" (broken font, limit, unsupported → uncertain). An
+        // error is never silently swapped for a cell estimate.
+        let (bounds, bounds_kind) = match font.glyph_id(code) {
+            Ok(gid) => {
+                let units = match font.units_per_em() {
+                    Ok(u) => u,
+                    Err(e) => return self.glyph_error(code, e),
+                };
+                let mut gp = crate::font::GlyphPath::new(units);
+                match font.outline(gid, &mut gp) {
+                    Ok(true) => match gp.finish() {
+                        Some(path) => {
+                            let b = path.bounds();
+                            let corners = [
+                                trm.transform(b.left() as f64, b.top() as f64),
+                                trm.transform(b.right() as f64, b.bottom() as f64),
+                                trm.transform(b.left() as f64, b.bottom() as f64),
+                                trm.transform(b.right() as f64, b.top() as f64),
+                            ];
+                            (
+                                (
+                                    corners[0]
+                                        .0
+                                        .min(corners[1].0)
+                                        .min(corners[2].0)
+                                        .min(corners[3].0),
+                                    corners[0]
+                                        .1
+                                        .min(corners[1].1)
+                                        .min(corners[2].1)
+                                        .min(corners[3].1),
+                                    corners[0]
+                                        .0
+                                        .max(corners[1].0)
+                                        .max(corners[2].0)
+                                        .max(corners[3].0),
+                                    corners[0]
+                                        .1
+                                        .max(corners[1].1)
+                                        .max(corners[2].1)
+                                        .max(corners[3].1),
+                                ),
+                                TextBounds::Outline,
+                            )
+                        }
+                        // Empty outline path — same as no outline.
+                        None => (cell_estimate(&trm), TextBounds::Cell),
+                    },
+                    // No outline → a cell *estimate*, never ink extent.
+                    Ok(false) => (cell_estimate(&trm), TextBounds::Cell),
+                    // Outline lookup failed — do NOT fall back to a
+                    // silent estimate: the glyph may paint outside any
+                    // cell we invent.
+                    Err(e) => return self.glyph_error(code, e),
+                }
             }
+            // `glyph_id` itself failed — the code is still shown but
+            // its ink extent is unknown.
+            Err(e) => return self.glyph_error(code, e),
+        };
+        // Stroke-mode text (Tr 1, 2, 5, 6) paints a `w`-wide outline
+        // outside the glyph's ink bbox — inflate for the stroke reach
+        // the way a path stroke does. Clip modes 4–7 are unsupported
+        // by the engine (renderer refuses them) and are blockers.
+        // A `w` of 0 makes the stroke a device-pixel hairline — its
+        // coverage is resolution-dependent and cannot be bounded in
+        // user space, so the whole occurrence reports `uncertain`.
+        // Fill-only text (Tr 0, 3) is unaffected.
+        let is_stroked_text =
+            render_mode == 1 || render_mode == 2 || render_mode == 5 || render_mode == 6;
+        let (bounds, bounds_kind) = if render_mode >= 4 {
+            self.push_blocker(Blocker {
+                site: Some(self.text_site(self.code_index)),
+                what: "text clipping mode".into(),
+                detail: format!("Tr {render_mode} — text-as-clip is not implemented"),
+            })?;
+            self.push_uncertain(Uncertain {
+                kind: TargetKind::Text,
+                site: self.text_site(self.code_index),
+                reason: format!("Tr {render_mode} — clip-mode text extent is not implemented"),
+            })?;
+            (bounds, bounds_kind)
+        } else if is_stroked_text && self.gs.stroke.width == 0.0 {
+            self.push_uncertain(Uncertain {
+                kind: TargetKind::Text,
+                site: self.text_site(self.code_index),
+                reason: "hairline text stroke (w=0) — device-resolution dependent \
+                         extent cannot be bounded in user space"
+                    .into(),
+            })?;
+            // Still advance below — the *next* glyph's position is
+            // determined by the width table, not the bounds.
+            self.advance_glyph(font, code, font_size, h_scale, char_spacing, word_spacing);
+            return Ok(());
+        } else if is_stroked_text {
+            let inflate = stroke_reach(&self.gs.stroke) * ctm_max_scale(&trm);
+            let mut b = bounds;
+            b.0 -= inflate;
+            b.1 -= inflate;
+            b.2 += inflate;
+            b.3 += inflate;
+            (b, bounds_kind)
         } else {
-            (cell_estimate(&trm), TextBounds::Cell)
+            (bounds, bounds_kind)
         };
         if !bounds.0.is_finite() || !bounds.1.is_finite() {
-            self.uncertain.push(Uncertain {
+            self.push_uncertain(Uncertain {
                 kind: TargetKind::Text,
-                site: self.site(),
+                site: self.text_site(self.code_index),
                 reason: "non-finite glyph bounds".into(),
-            });
+            })?;
+        } else if self.uncertain_state {
+            self.push_uncertain(Uncertain {
+                kind: TargetKind::Text,
+                site: self.text_site(self.code_index),
+                reason: "graphics state was changed by an unhandled construct".into(),
+            })?;
+        } else if render_mode >= 4 {
+            // Already reported as a blocker + uncertain above — do not
+            // also emit a normal Target for clip-mode text.
         } else {
             let hits = hits_for(&bounds, self.rects);
             let (unicode, _via) = crate::text_extract::resolve_unicode(font, code);
             self.bump_reported()?;
             self.targets.push(Target {
                 kind: TargetKind::Text,
-                site: self.site(),
+                site: self.text_site(self.code_index),
                 bounds,
                 hits,
                 detail: TargetDetail::Text {
                     code,
                     unicode,
-                    font: self.text_state.font_name.clone(),
-                    render_mode: self.text_state.render_mode as u8,
+                    font: font_name,
+                    render_mode: render_mode as u8,
                     origin,
                     bounds_kind,
                 },
             });
         }
-        // Advance the text matrix exactly like the renderer — the next
-        // glyph's position depends on this.
+        self.advance_glyph(font, code, font_size, h_scale, char_spacing, word_spacing);
+        Ok(())
+    }
+
+    /// Report a glyph-processing failure as `uncertain` — never
+    /// silently swap an error for the cell estimate. `LimitExceeded`
+    /// is re-raised (it's a resource bound, not a glyph problem);
+    /// other errors mean the code *is* shown but its extent is
+    /// unknown.
+    fn glyph_error(&mut self, code: u32, e: Error) -> Result<(), Error> {
+        if matches!(e, Error::LimitExceeded { .. }) {
+            return Err(e);
+        }
+        self.push_uncertain(Uncertain {
+            kind: TargetKind::Text,
+            site: self.text_site(self.code_index),
+            reason: format!("glyph 0x{code:X} — outline lookup failed: {e}"),
+        })?;
+        // Still advance — the *next* glyph's origin is determined by
+        // the font's width table, which is separate from outlines.
+        let (fs, hs, cs, ws) = {
+            let t = &self.gs.text;
+            (t.font_size, t.h_scale, t.char_spacing, t.word_spacing)
+        };
+        let font = self.gs.text.font.clone();
+        if let Some(f) = font {
+            self.advance_glyph(&f, code, fs, hs, cs, ws);
+        }
+        Ok(())
+    }
+
+    /// Advance `text_tm` by the glyph's width — separated so an
+    /// unresolvable *extent* never breaks the *next* glyph's origin.
+    fn advance_glyph(
+        &mut self,
+        font: &crate::font::Font,
+        code: u32,
+        font_size: f64,
+        h_scale: f64,
+        char_spacing: f64,
+        word_spacing: f64,
+    ) {
         let w0 = font.width(code);
         let tw = if font.is_space_code(code) {
             word_spacing
@@ -1229,7 +1554,6 @@ impl<'a> DiagWalker<'a> {
         let tx = ((w0 / 1000.0) * font_size + char_spacing + tw) * h_scale;
         let adv = crate::matrix::Matrix::new(1.0, 0.0, 0.0, 1.0, tx, 0.0);
         self.text_tm = adv.concat(self.text_tm);
-        Ok(())
     }
 
     fn do_xobject(&mut self, name: &[u8]) -> Result<(), Error> {
@@ -1263,14 +1587,14 @@ impl<'a> DiagWalker<'a> {
             Some(b"Form") => self.do_form(&dict, &raw, name, entry_ref),
             Some(b"Image") => self.do_image(&dict, name, entry_ref),
             Some(other) => {
-                self.blockers.push(Blocker {
+                self.push_blocker(Blocker {
                     site: Some(self.site()),
                     what: "XObject subtype".into(),
                     detail: format!(
                         "/{} — only /Form and /Image XObjects are diagnosable",
                         String::from_utf8_lossy(other)
                     ),
-                });
+                })?;
                 Ok(())
             }
             None => Err(Error::Structure(format!(
@@ -1365,11 +1689,11 @@ impl<'a> DiagWalker<'a> {
                 .max(corners[3].1),
         );
         if !bounds.0.is_finite() {
-            self.uncertain.push(Uncertain {
+            self.push_uncertain(Uncertain {
                 kind: TargetKind::Image,
                 site: self.site(),
                 reason: "non-finite image placement".into(),
-            });
+            })?;
         } else {
             let hits = hits_for(&bounds, self.rects);
             self.bump_reported()?;
@@ -1417,7 +1741,7 @@ impl<'a> DiagWalker<'a> {
         // Blocking attributes that change what's painted.
         for key in [b"Group".as_slice(), b"OC".as_slice(), b"Ref".as_slice()] {
             if dict.contains_key(key) {
-                self.blockers.push(Blocker {
+                self.push_blocker(Blocker {
                     site: Some(self.site()),
                     what: format!("form /{}", String::from_utf8_lossy(key)),
                     detail: match key {
@@ -1426,7 +1750,7 @@ impl<'a> DiagWalker<'a> {
                         _ => "reference XObject imports external content",
                     }
                     .into(),
-                });
+                })?;
             }
         }
         let bbox = dict
@@ -1481,7 +1805,19 @@ impl<'a> DiagWalker<'a> {
                 .max(corners[2].1)
                 .max(corners[3].1),
         );
-        if bounds.0.is_finite() {
+        if !bounds.0.is_finite() {
+            self.push_uncertain(Uncertain {
+                kind: TargetKind::Form,
+                site: self.site(),
+                reason: "non-finite form placement".into(),
+            })?;
+        } else if self.uncertain_state {
+            self.push_uncertain(Uncertain {
+                kind: TargetKind::Form,
+                site: self.site(),
+                reason: "graphics state was changed by an unhandled construct".into(),
+            })?;
+        } else {
             let hits = hits_for(&bounds, self.rects);
             self.bump_reported()?;
             self.targets.push(Target {
@@ -1503,12 +1839,6 @@ impl<'a> DiagWalker<'a> {
                     ],
                 },
             });
-        } else {
-            self.uncertain.push(Uncertain {
-                kind: TargetKind::Form,
-                site: self.site(),
-                reason: "non-finite form placement".into(),
-            });
         }
         if let Some(r) = entry_ref {
             let site = self.site();
@@ -1518,17 +1848,23 @@ impl<'a> DiagWalker<'a> {
                 .1
                 .push(site);
         }
-        // Recurse: save gs (resources swap + ctm concat), run inner
-        // ops, restore — same lifecycle as the renderer.
-        self.form_path.push((name.to_vec(), entry_ref));
+        // Recurse: save the *whole* graphics state — the form inherits
+        // it (§8.10.1: a form runs under the caller's CTM, clip, and
+        // gstate) but changes inside it must not leak back. Also save
+        // `uncertain_state`: a blocker inside a form makes the *form's*
+        // content uncertain but the state returns to the caller's when
+        // the form ends, so the outer flag is restored too.
+        self.form_path.push(FormFrame {
+            name: name.to_vec(),
+            xobj: entry_ref,
+            op_index: self.op_index,
+        });
         let saved_resources = match dict.get(b"Resources".as_slice()) {
             None | Some(Object::Null) => None,
             Some(r) => Some(std::mem::replace(&mut self.resources, r.clone())),
         };
-        self.gs_stack.push(DiagGs {
-            ctm: self.gs.ctm,
-            clip: self.gs.clip,
-        });
+        self.gs_stack.push(self.gs.clone());
+        let saved_uncertain = self.uncertain_state;
         self.gs.ctm = self.gs.ctm.concat(form_matrix);
         // The form's BBox is its clip in *form space* — record it as
         // the current clip rect mapped to page space.
@@ -1553,6 +1889,7 @@ impl<'a> DiagWalker<'a> {
             self.resources = r;
         }
         self.gs = self.gs_stack.pop().expect("pushed above");
+        self.uncertain_state = saved_uncertain;
         self.form_path.pop();
         if pop_ref {
             self.xobject_stack.pop();
@@ -1590,31 +1927,65 @@ impl<'a> DiagWalker<'a> {
         })?;
         if tag == b"OC" {
             match dict.get(b"Type".as_slice()).and_then(|t| t.as_name()) {
-                Some(b"OCG") | Some(b"OCMD") => self.blockers.push(Blocker {
+                Some(b"OCG") | Some(b"OCMD") => self.push_blocker(Blocker {
                     site: Some(self.site()),
                     what: "optional content (/OC)".into(),
                     detail: "OCG/OCMD membership needs visibility evaluation".into(),
-                }),
+                })?,
                 _ => {}
             }
         }
         if tag == b"Span" && dict.contains_key(b"ActualText".as_slice()) {
-            self.blockers.push(Blocker {
+            self.push_blocker(Blocker {
                 site: Some(self.site()),
                 what: "ActualText".into(),
                 detail: "replacement text substitutes the shown characters".into(),
-            });
+            })?;
         }
         Ok(())
     }
 }
 
-/// Rough scale factor of a matrix — used to inflate path bounds for
-/// stroke extent. `sqrt(|det|)` overestimates anisotropy on shear but
-/// is conservative (never under-reports).
-fn ctm_scale(m: &crate::matrix::Matrix) -> f64 {
-    let det = (m.a * m.d - m.b * m.c).abs();
-    det.sqrt()
+/// Largest stretch factor of a 2×2 matrix — the upper bound of
+/// `‖M·v‖` for a unit `v`, equal to the larger column norm
+/// `max(√(a²+c²), √(b²+d²))`. (The true largest singular value is
+/// `≥` each column norm and `≤ √2 × max column norm`; taking the
+/// column norm itself *can* under-estimate a combined shear+stretch
+/// by up to √2, so we scale up by √2 for a provable upper bound.)
+/// `sqrt(|det|)` — the geometric mean of the singular values — is
+/// *not* conservative: under `10 0 0 0.1` it returns 1 while the
+/// actual stretch is 10.
+fn ctm_max_scale(m: &crate::matrix::Matrix) -> f64 {
+    let c1 = (m.a * m.a + m.c * m.c).sqrt();
+    let c2 = (m.b * m.b + m.d * m.d).sqrt();
+    std::f64::consts::SQRT_2 * c1.max(c2)
+}
+
+/// How far the stroke outline may extend past a path's construction
+/// points, in *user space* — `w/2` for a plain stroke, raised to
+/// `miter_limit × w/2` when miter joins are in effect (§8.4.3.4: the
+/// miter spike can reach `M` times the half-width at sharp corners).
+/// Round and square caps still fit inside `w/2` of the *path end*;
+/// miter is the only join that exceeds it.
+///
+/// `w == 0` never reaches here — a hairline stroke is classified
+/// `uncertain` by the caller before extent is computed (its coverage
+/// is device-resolution dependent, not boundable in user space).
+fn stroke_reach(s: &StrokeState) -> f64 {
+    let w = s.width.abs();
+    let half = w / 2.0;
+    if s.join == 0 {
+        // Miter join — the spike reaches `miter_limit × half` when the
+        // corner is sharper than the limit.
+        let m = if s.miter_limit.is_finite() && s.miter_limit >= 1.0 {
+            s.miter_limit
+        } else {
+            1.0
+        };
+        half * m
+    } else {
+        half
+    }
 }
 
 /// Estimated character cell — origin, one-em advance, one-em ascent
@@ -1693,7 +2064,9 @@ mod tests {
     /// A minimal 1-page PDF exposing one text glyph (KasaneTest.ttf)
     /// — the same TTF fixture `text_basic.pdf` uses, so the outline
     /// bounds are deterministic.
-    fn one_glyph_pdf() -> Vec<u8> {
+    /// Build the single-page TrueType fixture — `text_body` is the
+    /// raw `/Contents` stream (defaults to `(A) Tj` at 24pt).
+    fn one_glyph_pdf_with(text_body: &[u8]) -> Vec<u8> {
         let font_bytes = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/KasaneTest.ttf"
@@ -1757,7 +2130,94 @@ mod tests {
         fs.extend_from_slice(&enc);
         fs.extend_from_slice(b"\nendstream");
         push!(6, &fs);
-        let body = b"BT /F1 24 Tf 20 60 Td (A) Tj ET\n";
+        let body = text_body;
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 10\n0000000000 65535 f \n".to_vec());
+        for n in 1..10u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 10 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        parts.concat()
+    }
+
+    fn one_glyph_pdf() -> Vec<u8> {
+        one_glyph_pdf_with(b"BT /F1 24 Tf 20 60 Td (A) Tj ET\n")
+    }
+
+    /// Same fixture with `(ABC) Tj` — three codes in one string.
+    fn three_glyph_pdf() -> Vec<u8> {
+        one_glyph_pdf_with(b"BT /F1 24 Tf 20 60 Td (ABC) Tj ET\n")
+    }
+
+    /// A Type0/Identity-H composite-font page — the codes are 2-byte
+    /// (`<0041 0042>` shows CIDs 0x41 and 0x42). `code_index` counts
+    /// *codes*, not bytes — two codes, indices 0 and 1.
+    fn composite_pdf() -> Vec<u8> {
+        let ttf = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> >> /Contents 9 0 R >>"
+        );
+        push!(
+            4,
+            b"<< /Type /Font /Subtype /Type0 /BaseFont /KasaneTest \
+              /Encoding /Identity-H /DescendantFonts [5 0 R] >>"
+        );
+        push!(
+            5,
+            b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /KasaneTest \
+              /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+              /FontDescriptor 6 0 R /CIDToGIDMap /Identity /DW 600 >>"
+        );
+        push!(
+            6,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 4 \
+              /FontBBox [0 -200 600 800] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 7 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&ttf).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            ttf.len()
+        )
+        .into_bytes();
+        fs.extend_from_slice(&enc);
+        fs.extend_from_slice(b"\nendstream");
+        push!(7, &fs);
+        // <0041 0042> — two 2-byte codes, CIDs 65 and 66.
+        let body = b"BT /F1 24 Tf 20 60 Td <0041 0042> Tj ET\n";
         let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
         sb.extend_from_slice(body);
         sb.extend_from_slice(b"\nendstream");
@@ -1904,5 +2364,548 @@ mod tests {
         assert!(!d.shared_scope.truncated);
         // A single-page doc can't have cross-page sharing.
         assert!(d.shared.is_empty());
+    }
+
+    // ---- M16.1: reproduction tests — these pin bugs found in the
+    // M16 implementation and must FAIL on the pre-fix code.
+    // -------------------------------------------------------------
+
+    /// Build a single-page PDF whose `/Contents` is `body` (raw op
+    /// bytes) and `/Resources` is `resources` (raw dict bytes, e.g.
+    /// `<< /XObject << /F1 5 0 R >> >>`). `extra` adds further
+    /// indirect objects after the four fixed ones.
+    fn page_pdf(body: &[u8], resources: &[u8], extra: &[(u32, &[u8])]) -> Vec<u8> {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        let mut page_dict =
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 500 500] /Resources ".to_vec();
+        page_dict.extend_from_slice(resources);
+        page_dict.extend_from_slice(b" /Contents 4 0 R >>");
+        push!(3, &page_dict);
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(4, &sb);
+        for (n, b) in extra {
+            push!(*n, *b);
+        }
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        let count = 4 + extra.len() as u32 + 1;
+        parts.push(format!("xref\n0 {count}\n0000000000 65535 f \n").into_bytes());
+        for n in 1..count {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(format!("trailer\n<< /Size {count} /Root 1 0 R >>\n").into_bytes());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        parts.concat()
+    }
+
+    #[test]
+    fn nonuniform_ctm_stroke_extent_is_not_underestimated() {
+        // A 4-unit line at (10,10)–(14,10) stroked at w=2 under
+        // `10 0 0 0.1`: the path bbox is [100,1,140,1] and the stroke
+        // extends ~1 pt × scale-10 horizontally — sqrt(|det|)=1 would
+        // only inflate by 1. A rect inside the *extended* zone must
+        // hit: conservative bounds must cover the real reach.
+        let pdf = page_pdf(
+            b"q\n10 0 0 0.1 0 0 cm\n2 w\n10 10 m 14 10 l S\nQ\n",
+            b"<< >>",
+            &[],
+        );
+        let doc = crate::document::Document::from_bytes(&pdf).unwrap();
+        let d = diagnose_redaction(&doc, 0, &[(88.0, 0.0, 95.0, 5.0)], &Limits::default()).unwrap();
+        let path = d
+            .targets
+            .iter()
+            .find(|t| t.kind == TargetKind::Path)
+            .expect("a path target");
+        assert!(
+            !path.hits.is_empty(),
+            "stroke extent under 10×/0.1× CTM must not be under-reported: bounds {:?}",
+            path.bounds
+        );
+    }
+
+    #[test]
+    fn q_restores_line_width() {
+        // Outer w=1 with *bevel* joins (j=1) so the reach is w/2 = 0.5;
+        // inner q/Q sets w=10. The second S after Q must inflate by
+        // 0.5, not 5 — the rect only covers the wrong-zone.
+        // (`j 1` disables miter, which would legitimately reach 5.)
+        let pdf = page_pdf(
+            b"1 j\n1 w\nq\n10 w\n10 10 m 20 10 l S\nQ\n10 20 m 20 20 l S\n",
+            b"<< >>",
+            &[],
+        );
+        let doc = crate::document::Document::from_bytes(&pdf).unwrap();
+        let d =
+            diagnose_redaction(&doc, 0, &[(10.0, 15.0, 20.0, 17.0)], &Limits::default()).unwrap();
+        let second = d
+            .targets
+            .iter()
+            .filter(|t| t.kind == TargetKind::Path)
+            .nth(1)
+            .expect("two path targets");
+        assert!(
+            second.hits.is_empty(),
+            "Q must restore line width — second stroke inflated by 5, not 0.5: {:?}",
+            second.bounds
+        );
+    }
+
+    #[test]
+    fn miter_join_extends_stroke_beyond_half_width() {
+        // A miter join (default j=0) with the default miter limit 10
+        // may extend up to 10× w/2 at a sharp corner — the diagnosis
+        // must count it. A rect placed only inside the miter's reach
+        // (past the line endpoints) must hit.
+        let pdf = page_pdf(b"4 w\n10 10 m 20 10 l 11 10.1 l S\n", b"<< >>", &[]);
+        let doc = crate::document::Document::from_bytes(&pdf).unwrap();
+        // The V at (20,10)→(11,10.1) is nearly flat — its miter spike
+        // reaches far past the path bbox. Reach is up to 4/2 × 10 = 20
+        // in user space (CTM is identity).
+        let d =
+            diagnose_redaction(&doc, 0, &[(40.0, 9.0, 45.0, 11.0)], &Limits::default()).unwrap();
+        let path = d
+            .targets
+            .iter()
+            .find(|t| t.kind == TargetKind::Path)
+            .expect("a path target");
+        assert!(
+            !path.hits.is_empty(),
+            "miter reach (10× w/2) must be in the bounds: {:?}",
+            path.bounds
+        );
+    }
+
+    #[test]
+    fn form_state_does_not_leak() {
+        // The form sets w=20; if it leaks the page-level S inflates
+        // by its reach. With bevel joins at the page level (j=1 →
+        // reach = w/2), a leaked w=20 reaches 10 while the correct
+        // w=1 reaches 0.5 — the rect covers only the wrong zone.
+        let pdf = page_pdf(
+            b"1 j\n1 w\nq /Fm1 Do Q\n10 100 m 20 100 l S\n",
+            b"<< /XObject << /Fm1 5 0 R >> >>",
+            &[(
+                5,
+                b"<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] \
+                  /Length 16 >>\nstream\n20 w\n0 0 10 10 re S\nendstream",
+            )],
+        );
+        let doc = crate::document::Document::from_bytes(&pdf).unwrap();
+        let d =
+            diagnose_redaction(&doc, 0, &[(10.0, 95.0, 20.0, 97.0)], &Limits::default()).unwrap();
+        let outer = d
+            .targets
+            .iter()
+            .rfind(|t| t.kind == TargetKind::Path && t.site.form_path.is_empty())
+            .expect("a page-level path target");
+        assert!(
+            outer.hits.is_empty(),
+            "form's w=20 must not leak to page level: {:?}",
+            outer.bounds
+        );
+    }
+
+    #[test]
+    fn same_form_twice_has_distinct_sites() {
+        let pdf = page_pdf(
+            b"q 1 0 0 1 100 100 cm /F1 Do Q\nq 1 0 0 1 200 200 cm /F2 Do Q\n",
+            b"<< /XObject << /F1 5 0 R /F2 5 0 R >> >>",
+            &[(
+                5,
+                b"<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] \
+                  /Length 16 >>\nstream\n0 0 10 10 re f\nendstream",
+            )],
+        );
+        let doc = crate::document::Document::from_bytes(&pdf).unwrap();
+        let d =
+            diagnose_redaction(&doc, 0, &[(0.0, 0.0, 500.0, 500.0)], &Limits::default()).unwrap();
+        let forms: Vec<_> = d
+            .targets
+            .iter()
+            .filter(|t| t.kind == TargetKind::Form)
+            .collect();
+        assert_eq!(forms.len(), 2, "{:?}", d.targets);
+        // The Do ops sit at different positions — sites must differ.
+        assert_ne!(forms[0].site.op_index, forms[1].site.op_index);
+        // Each call's inner path must report *which* call it came
+        // from — (name, ref) alone can't tell F1-5R from F2-5R.
+        let inner: Vec<_> = d
+            .targets
+            .iter()
+            .filter(|t| t.kind == TargetKind::Path && !t.site.form_path.is_empty())
+            .collect();
+        assert_eq!(inner.len(), 2);
+        assert_ne!(
+            format!("{:?}", inner[0].site.form_path),
+            format!("{:?}", inner[1].site.form_path),
+            "inner sites of two calls to the same form must differ"
+        );
+    }
+
+    #[test]
+    fn unhandled_gs_makes_following_positions_uncertain() {
+        // An `gs` op names an ExtGState we can't interpret — it may
+        // set the line width, so any stroke after it has unknown
+        // reach. The following S must land in `uncertain`, not
+        // `targets`, until `Q` restores known state.
+        let pdf = page_pdf(
+            b"q /GS1 gs 10 10 m 20 10 l S Q\n10 20 m 20 20 l S\n",
+            b"<< /ExtGState << /GS1 << /LW 50 >> >> >>",
+            &[],
+        );
+        let doc = crate::document::Document::from_bytes(&pdf).unwrap();
+        let d =
+            diagnose_redaction(&doc, 0, &[(0.0, 0.0, 500.0, 500.0)], &Limits::default()).unwrap();
+        // The S inside the tainted q…Q must be uncertain — its stroke
+        // width is whatever /GS1 sets (50, but we can't assume).
+        assert!(
+            d.uncertain.iter().any(|u| u.kind == TargetKind::Path),
+            "S after unhandled gs must be uncertain: {:?}",
+            d
+        );
+        // The S *after* Q runs under restored state — it must be a
+        // normal target again.
+        assert!(
+            d.targets
+                .iter()
+                .any(|t| t.kind == TargetKind::Path && t.site.op_index > 4),
+            "S after Q restores certain state: {:?}",
+            d.targets
+        );
+    }
+
+    #[test]
+    fn tj_codes_have_distinct_positions() {
+        // '(ABC) Tj' shows three glyphs from one op — each must carry
+        // its own `code_index` so 'A' 'B' 'C' are three sites, not one.
+        let doc = crate::document::Document::from_bytes(&three_glyph_pdf()).unwrap();
+        let d =
+            diagnose_redaction(&doc, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap();
+        let texts: Vec<_> = d
+            .targets
+            .iter()
+            .filter(|t| t.kind == TargetKind::Text)
+            .collect();
+        assert_eq!(texts.len(), 3, "expected 3 text targets: {:?}", d.targets);
+        // Same op_index for all three, distinct code_index.
+        assert!(texts
+            .iter()
+            .all(|t| t.site.op_index == texts[0].site.op_index));
+        let idx: Vec<_> = texts.iter().map(|t| t.site.code_index).collect();
+        assert_eq!(idx, vec![Some(0), Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn stroke_mode_text_is_inflated() {
+        // `Tr 1` (stroke only) + a wide line — the glyph's ink bbox
+        // doesn't cover the stroke reach, so the reported bounds must
+        // extend past it. With bevel join the reach is w/2 × trm-scale.
+        let doc = crate::document::Document::from_bytes(&one_glyph_pdf_with(
+            b"BT /F1 24 Tf 20 60 Td 1 j 4 w 1 Tr (A) Tj ET\n",
+        ))
+        .unwrap();
+        let d =
+            diagnose_redaction(&doc, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap();
+        let text = d
+            .targets
+            .iter()
+            .find(|t| t.kind == TargetKind::Text)
+            .expect("a text target");
+        if let TargetDetail::Text {
+            bounds_kind,
+            origin,
+            ..
+        } = &text.detail
+        {
+            // Outline bounds expanded by stroke reach — larger than
+            // the pure-outline bbox the same glyph reports at Tr 0.
+            assert_eq!(
+                *bounds_kind,
+                crate::redact_diag::TextBounds::Outline,
+                "outline + stroke reach"
+            );
+            // A 4pt stroke under 24pt font, CTM identity → reach =
+            // 4/2 × √2 × max_scale(trm) ≈ 2.83 × 24 ≈ 68pt in user
+            // space — the inflated bbox extends well left of the
+            // glyph's origin at x=20.
+            assert!(
+                text.bounds.0 < origin.0,
+                "stroke reach must extend bounds past origin: {:?}",
+                text.bounds
+            );
+        } else {
+            panic!("expected Text detail");
+        }
+    }
+
+    #[test]
+    fn text_codes_limit_stops_walk_as_incomplete() {
+        // A string longer than `max_text_codes` stops the walk with
+        // `incomplete` — the limit is enforced, but the walk's partial
+        // results are returned marked incomplete, not a hard error
+        // (a LimitExceeded mid-stream is a *stopped* walk, not a
+        // failed diagnosis).
+        let bytes = three_glyph_pdf(); // "ABC" → 3 codes
+        let doc = crate::document::Document::from_bytes(&bytes).unwrap();
+        let limits = Limits {
+            max_text_codes: 2,
+            ..Default::default()
+        };
+        let d = diagnose_redaction(&doc, 0, &[(0.0, 0.0, 200.0, 200.0)], &limits).unwrap();
+        assert!(
+            d.incomplete.is_some(),
+            "max_text_codes must mark the diagnosis incomplete: {:?}",
+            d.incomplete
+        );
+        // And the two completed glyphs are still reported — the
+        // walk stopped at code 2, never silently dropped the rest.
+        assert_eq!(
+            d.targets
+                .iter()
+                .filter(|t| t.kind == TargetKind::Text)
+                .count(),
+            2
+        );
+    }
+
+    // ---- M16.2: reproduction tests — pin hairline and TJ-position
+    // bugs. These FAIL on the pre-fix code.
+    // --------------------------------------------------------------
+
+    /// A `w`-0 stroke is a device-pixel hairline — its coverage is
+    /// DPI-dependent and cannot be bounded in user space, so it must
+    /// not report as a certain target.
+    #[test]
+    fn zero_width_stroke_is_uncertain_not_a_target() {
+        let pdf = page_pdf(b"0 w\n10 10 m 20 10 l S\n", b"<< >>", &[]);
+        let doc = crate::document::Document::from_bytes(&pdf).unwrap();
+        let d =
+            diagnose_redaction(&doc, 0, &[(0.0, 0.0, 500.0, 500.0)], &Limits::default()).unwrap();
+        // The hairline must not be a certain `Target` — it is
+        // `uncertain` with a reason naming the device dependency.
+        assert!(
+            d.targets.iter().all(|t| t.kind != TargetKind::Path || {
+                if let TargetDetail::Path { stroked, .. } = &t.detail {
+                    !*stroked || {
+                        // A *stroked* path at w=0 must not be a
+                        // certain target — non-stroked ones are
+                        // unaffected.
+                        false
+                    }
+                } else {
+                    true
+                }
+            }),
+            "w=0 stroke must not be a certain target: {:?}",
+            d.targets
+        );
+        assert!(
+            d.uncertain
+                .iter()
+                .any(|u| u.kind == TargetKind::Path && u.reason.contains("hairline")),
+            "w=0 stroke must be uncertain: {:?}",
+            d.uncertain
+        );
+    }
+
+    /// A fill-only path (`f`) with `w=0` must stay a normal target —
+    /// the stroke width does not change a fill's bounds.
+    #[test]
+    fn fill_only_path_at_zero_width_stays_certain() {
+        let pdf = page_pdf(b"0 w\n10 10 20 20 re f\n", b"<< >>", &[]);
+        let doc = crate::document::Document::from_bytes(&pdf).unwrap();
+        let d =
+            diagnose_redaction(&doc, 0, &[(0.0, 0.0, 500.0, 500.0)], &Limits::default()).unwrap();
+        assert!(
+            d.targets.iter().any(|t| t.kind == TargetKind::Path),
+            "fill-only path must still be a target: {:?}",
+            d.targets
+        );
+    }
+
+    /// Fill+stroke (`B`) at `w=0` — the *fill* part is determined but
+    /// the *stroke* part is a hairline. The whole occurrence reports
+    /// as uncertain so the stroke's un-evaluated reach is not lost.
+    #[test]
+    fn fill_and_stroke_at_zero_width_is_uncertain() {
+        let pdf = page_pdf(b"0 w\n10 10 20 20 re B\n", b"<< >>", &[]);
+        let doc = crate::document::Document::from_bytes(&pdf).unwrap();
+        let d =
+            diagnose_redaction(&doc, 0, &[(0.0, 0.0, 500.0, 500.0)], &Limits::default()).unwrap();
+        assert!(
+            d.uncertain
+                .iter()
+                .any(|u| u.kind == TargetKind::Path && u.reason.contains("hairline")),
+            "fill+stroke at w=0 must be uncertain: {:?}",
+            d.uncertain
+        );
+        // And it must *not* also appear as a certain target.
+        assert!(
+            d.targets.iter().all(|t| t.kind != TargetKind::Path),
+            "w=0 fill+stroke must not double-report as a target"
+        );
+    }
+
+    /// Stroke-mode text (`Tr 1`) at `w=0` — same hairline rule.
+    #[test]
+    fn stroke_mode_text_at_zero_width_is_uncertain() {
+        let doc = crate::document::Document::from_bytes(&one_glyph_pdf_with(
+            b"BT /F1 24 Tf 20 60 Td 0 w 1 Tr (A) Tj ET\n",
+        ))
+        .unwrap();
+        let d =
+            diagnose_redaction(&doc, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap();
+        assert!(
+            d.uncertain
+                .iter()
+                .any(|u| u.kind == TargetKind::Text && u.reason.contains("hairline")),
+            "stroke text at w=0 must be uncertain: {:?}",
+            d.uncertain
+        );
+        // And it must *not* also appear as a certain target.
+        assert!(
+            d.targets.iter().all(|t| t.kind != TargetKind::Text),
+            "w=0 stroke text must not double-report as a target"
+        );
+    }
+
+    /// `[(A) 100 (B)] TJ` — A and B must have *different* code_index
+    /// even though they come from the same TJ op.
+    #[test]
+    fn tj_codes_across_array_elements_have_distinct_index() {
+        let doc = crate::document::Document::from_bytes(&one_glyph_pdf_with(
+            b"BT /F1 24 Tf 20 60 Td [(A) 100 (B)] TJ ET\n",
+        ))
+        .unwrap();
+        let d =
+            diagnose_redaction(&doc, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap();
+        let texts: Vec<_> = d
+            .targets
+            .iter()
+            .filter(|t| t.kind == TargetKind::Text)
+            .collect();
+        assert_eq!(texts.len(), 2, "expected 2 text targets: {:?}", d.targets);
+        // Same op_index for both — same TJ — but distinct code_index.
+        assert!(texts
+            .iter()
+            .all(|t| t.site.op_index == texts[0].site.op_index));
+        let idx: Vec<_> = texts.iter().map(|t| t.site.code_index).collect();
+        assert_eq!(
+            idx,
+            vec![Some(0), Some(1)],
+            "A and B in one TJ must carry distinct code_index"
+        );
+    }
+
+    /// `[(A) () (A)] TJ` — a repeated character inside one TJ must
+    /// still be told apart by its position.
+    #[test]
+    fn repeated_character_in_tj_is_distinguished() {
+        let doc = crate::document::Document::from_bytes(&one_glyph_pdf_with(
+            b"BT /F1 24 Tf 20 60 Td [(A) () (A)] TJ ET\n",
+        ))
+        .unwrap();
+        let d =
+            diagnose_redaction(&doc, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap();
+        let texts: Vec<_> = d
+            .targets
+            .iter()
+            .filter(|t| t.kind == TargetKind::Text)
+            .collect();
+        assert_eq!(texts.len(), 2);
+        let idx: Vec<_> = texts.iter().map(|t| t.site.code_index).collect();
+        assert_eq!(idx, vec![Some(0), Some(1)]);
+    }
+
+    /// Hairline `uncertain` entries count against `max_diag_items` —
+    /// a stream full of w=0 strokes cannot grow the report without
+    /// bound.
+    #[test]
+    fn hairline_uncertain_counts_against_diag_items() {
+        // Two w=0 strokes → two `uncertain` entries. Cap the report
+        // at 1 — the second must hit LimitExceeded (→ incomplete).
+        let pdf = page_pdf(
+            b"0 w\n10 10 m 20 10 l S\n10 20 m 20 20 l S\n",
+            b"<< >>",
+            &[],
+        );
+        let doc = crate::document::Document::from_bytes(&pdf).unwrap();
+        let limits = Limits {
+            max_diag_items: 1,
+            ..Default::default()
+        };
+        let d = diagnose_redaction(&doc, 0, &[(0.0, 0.0, 500.0, 500.0)], &limits).unwrap();
+        assert!(
+            d.incomplete.is_some(),
+            "hairline items must count against max_diag_items: {:?}",
+            d
+        );
+    }
+
+    /// Two-byte codes in one `TJ` string — `code_index` counts codes,
+    /// not bytes. `<0041 0042>` is two codes → indices 0 and 1.
+    #[test]
+    fn composite_tj_codes_count_per_code_not_per_byte() {
+        let doc = crate::document::Document::from_bytes(&composite_pdf()).unwrap();
+        let d =
+            diagnose_redaction(&doc, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap();
+        let texts: Vec<_> = d
+            .targets
+            .iter()
+            .filter(|t| t.kind == TargetKind::Text)
+            .collect();
+        assert_eq!(texts.len(), 2, "expected 2 text targets: {:?}", d.targets);
+        let idx: Vec<_> = texts.iter().map(|t| t.site.code_index).collect();
+        assert_eq!(idx, vec![Some(0), Some(1)]);
+    }
+
+    /// A numeric-only TJ element produces no code — the index must
+    /// not skip a number for it.
+    #[test]
+    fn tj_numeric_element_produces_no_code_index() {
+        let doc = crate::document::Document::from_bytes(&one_glyph_pdf_with(
+            b"BT /F1 24 Tf 20 60 Td [100 -50] TJ ET\n",
+        ))
+        .unwrap();
+        let d =
+            diagnose_redaction(&doc, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap();
+        assert!(
+            d.targets.iter().all(|t| t.kind != TargetKind::Text),
+            "numeric-only TJ must produce no text targets"
+        );
+    }
+
+    #[test]
+    fn bx_ex_unknown_op_does_not_taint_state() {
+        // `BX … EX` brackets operators the consumer may not know —
+        // §7.8.2 says they are ignored, so they do *not* change
+        // graphics state. The S after must still report as a certain
+        // target (only the op itself is noted as uncertain).
+        let pdf = page_pdf(b"BX\nFooOp\nEX\n10 10 m 20 10 l S\n", b"<< >>", &[]);
+        let doc = crate::document::Document::from_bytes(&pdf).unwrap();
+        let d =
+            diagnose_redaction(&doc, 0, &[(0.0, 0.0, 500.0, 500.0)], &Limits::default()).unwrap();
+        assert!(
+            d.targets.iter().any(|t| t.kind == TargetKind::Path),
+            "path after a BX…EX unknown op must still be certain: {:?}",
+            d.targets
+        );
     }
 }

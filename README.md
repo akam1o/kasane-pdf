@@ -51,14 +51,38 @@ page.
 step toward a real redaction feature: a read-only, in-memory
 diagnostic of what painted content falls inside caller-supplied
 rectangles. It reports each shown character, image placement, Form
-invocation, and painted path with a conservative bounding box and
-site identity (`/Contents` ref + op index + `Do` chain), enumerates
+invocation, and painted path with a bounding box and
+site identity (`/Contents` ref + op index + `Do` call-site chain +
+character index within the string), enumerates
 blockers (Optional Content, `/ActualText`, unsupported XObjects),
 locations it could not pin down (`uncertain`), sharing that would
 make an edit unsafe (`shared`), page annotations, and document areas
 never examined (`unexamined`). It deliberately returns no "safe"
 verdict — the name is `preflight-redaction` because a clean report
 means only "the scan completed", never "redaction would work".
+"Conservative" bounds are only claimed where the reach is provable —
+a stroke's extent uses `√2 × max(|col₁|, |col₂|)` of the CTM (never
+`sqrt(|det|)`, which under-reports non-uniform scaling), a `w = 0`
+hairline (device-resolution dependent, unboundable in user space)
+reports as `uncertain` instead of a certain target, and state a
+`gs`/`sh`/Pattern changed marks everything after `uncertain` until
+`Q` or a form's end restores known state.
+
+**M17 adds `remove_text` + `experimental-remove-text`** — an
+*experimental* scoped text removal, **not** a redaction tool. It
+deletes the shown character codes whose filled-ink bounds hit a
+rect (page-level `Tj`/`TJ`/`'`/`"`, `Tr 0` fill, supported
+horizontal fonts only), rewrites the affected strings as `TJ` with
+numeric elements that restore the removed advance, and writes a new
+single-revision PDF through the same overlay pipeline as
+`annotate-rect`. A page with `/Annots`, any `Do`/`sh`/inline
+image/`gs`/Pattern/`ActualText`/OC, non-fill text modes, `w = 0`
+hairlines, unsupported fonts, non-finite CTM, `/UserUnit` ≠ 1,
+vertical text, or `Tfs`/`Tz` = 0 is refused outright — never
+half-edited. The input document and its bytes are never modified,
+and other pages sharing the original `/Contents` keep it (the
+removed bytes still exist in the shared stream — this is content
+editing, not secure redaction).
 
 What works today:
 
@@ -123,9 +147,12 @@ What works today:
   diagnosis — targets (text/image/form/path), blockers, uncertain
   positions, shared resources, page annotations, and unexamined
   document areas, with no "safe" verdict.
+- `remove_text()` + `experimental-remove-text` — experimental scoped
+  text removal that deletes hit codes and preserves survivors'
+  positions (not a redaction tool; see `docs/coverage.md`).
 - A `kasane-pdf` CLI (`info` mode + `contents`, `operations`,
-  `render`, `text`, `rewrite`, `annotate-rect`, `inspect` and
-  `preflight-redaction` subcommands).
+  `render`, `text`, `rewrite`, `annotate-rect`, `inspect`,
+  `preflight-redaction` and `experimental-remove-text` subcommands).
 - Adding `/Subtype /Square` rectangle annotations to a page via an
   [`Edit`] session — opaque RGB stroke, positive width, generated
   `/AP` appearance, existing annots/links preserved, shared `/Annots`
@@ -225,6 +252,16 @@ unexamined 9
   - embedded files and attachments
   ...
 note: a clean report means 'no obstacle found in the examined scope' — it is NOT a redaction-safety verdict.
+
+$ cargo run -- experimental-remove-text tests/fixtures/text_basic.pdf 1 \
+    --rect 35 60 38 80 --output /tmp/out.pdf
+experimental-remove-text tests/fixtures/text_basic.pdf page 1 -> /tmp/out.pdf (2946 bytes)
+codes removed: 1
+  page 1 (1 rect)
+  codes removed: 1
+  scope: page-level content only — no Form/Annots/metadata/structure
+# the output's Contents is now: BT /F1 24 Tf 20 60 Td [(A) -600 (C)] TJ ET
+# — 'B' is gone and 'C' keeps its origin.
 ```
 
 Errors are printed with a stable category in brackets, e.g.
