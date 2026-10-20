@@ -72,6 +72,20 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("preflight-redaction") => {
+            // preflight-redaction <file.pdf> <page> --rect llx lly urx ury
+            //   [--rect …] [--format text|json]
+            // Diagnose what a *future* redaction would face — never
+            // modifies the file, and a clean report is NOT a "safe to
+            // redact" verdict.
+            match run_preflight(&args[2..]) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error [{}]: {e}", e.kind());
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some(cmd @ ("contents" | "operations" | "render" | "text")) => {
             let (path, page_no) = match (args.get(2), args.get(3)) {
                 (Some(p), Some(n)) => (p, n),
@@ -119,6 +133,9 @@ fn main() -> ExitCode {
             eprintln!("       {prog} text <file.pdf> <page-number> [--format json|lines]");
             eprintln!("       {prog} rewrite <file.pdf> --output <out.pdf>");
             eprintln!("       {prog} inspect <file.pdf> <page-number>");
+            eprintln!(
+                "       {prog} preflight-redaction <file.pdf> <page-number> --rect llx lly urx ury [--rect …] [--format text|json]"
+            );
             ExitCode::from(2)
         }
     }
@@ -1116,6 +1133,520 @@ fn print_json(t: &kasane_pdf::ExtractedText) {
     }
     out.push_str("\n]\n");
     print!("{out}");
+}
+
+/// `preflight-redaction` subcommand:
+/// `preflight-redaction <file.pdf> <page> --rect llx lly urx ury
+///   [--rect …] [--format text|json]`.
+///
+/// Diagnose what a *future* redaction would face — never modifies the
+/// file. A clean report is **not** a "safe to redact" verdict; the
+/// output names targets, blockers, uncertain positions, unexamined
+/// areas, and shared resources.
+fn run_preflight(args: &[String]) -> Result<(), Error> {
+    // args[0]=input args[1]=page then --rect ×N + --format.
+    if args.len() < 2 {
+        return Err(Error::Structure(preflight_usage()));
+    }
+    let input = &args[0];
+    let page: usize = args[1]
+        .parse()
+        .ok()
+        .filter(|&n| n >= 1)
+        .ok_or_else(|| Error::Structure(format!("invalid page number '{}'", args[1])))?;
+    let mut rects: Vec<[f64; 4]> = Vec::new();
+    let mut format = "text";
+    let mut i = 2;
+    while i < args.len() {
+        let need = |n: usize| -> Result<(), Error> {
+            if i + n < args.len() {
+                Ok(())
+            } else {
+                Err(Error::Structure(format!(
+                    "flag '{}' expects {n} value(s)\n{}",
+                    args[i],
+                    preflight_usage()
+                )))
+            }
+        };
+        let num = |s: &str| -> Result<f64, Error> {
+            s.parse::<f64>()
+                .map_err(|_| Error::Structure(format!("expected a number, got '{s}'")))
+        };
+        match args[i].as_str() {
+            "--rect" => {
+                need(4)?;
+                rects.push([
+                    num(&args[i + 1])?,
+                    num(&args[i + 2])?,
+                    num(&args[i + 3])?,
+                    num(&args[i + 4])?,
+                ]);
+                i += 5;
+            }
+            "--format" => {
+                need(1)?;
+                format = args[i + 1].as_str();
+                if format != "text" && format != "json" {
+                    return Err(Error::Structure(format!(
+                        "unknown --format '{format}' (text|json)"
+                    )));
+                }
+                i += 2;
+            }
+            other => {
+                return Err(Error::Structure(format!(
+                    "unknown option '{other}'\n{}",
+                    preflight_usage()
+                )));
+            }
+        }
+    }
+    if rects.is_empty() {
+        return Err(Error::Structure(format!(
+            "at least one --rect is required\n{}",
+            preflight_usage()
+        )));
+    }
+    let data = std::fs::read(input)?;
+    let doc = Document::from_bytes(&data)?;
+    let diag = kasane_pdf::diagnose_redaction(
+        &doc,
+        page - 1,
+        &rects
+            .iter()
+            .map(|r| (r[0], r[1], r[2], r[3]))
+            .collect::<Vec<_>>(),
+        &Limits::default(),
+    )?;
+    match format {
+        "json" => print_preflight_json(&diag),
+        _ => print_preflight_text(&diag, page),
+    }
+    Ok(())
+}
+
+fn preflight_usage() -> String {
+    "usage: kasane-pdf preflight-redaction <file.pdf> <page> \
+     --rect <llx> <lly> <urx> <ury> [--rect …] [--format text|json]\n\
+     rect corners are PDF user space (+x right, +y up; ll = lower-left)\n\
+     — the diagnosis never modifies the file and a clean report is not \
+     a 'safe to redact' verdict."
+        .into()
+}
+
+// Output caps — a single preflight run prints at most this many
+// entries per category; every truncation states the omitted count.
+const MAX_PREFLIGHT_LINES: usize = 1_000;
+
+fn clip_preflight<T>(v: &[T]) -> (&[T], usize) {
+    let shown = v.len().min(MAX_PREFLIGHT_LINES);
+    (&v[..shown], v.len() - shown)
+}
+
+fn print_preflight_text(d: &kasane_pdf::Diagnosis, page: usize) {
+    println!("preflight-redaction — diagnosis, not a redaction");
+    println!("page: {page}");
+    println!("rects: {}", d.rects.len());
+    for (i, r) in d.rects.iter().enumerate() {
+        println!(
+            "  rect {i}: {} {} {} {}",
+            fmt_num(r.llx),
+            fmt_num(r.lly),
+            fmt_num(r.urx),
+            fmt_num(r.ury)
+        );
+    }
+    if let Some(inc) = &d.incomplete {
+        println!("incomplete: {}", inc.reason);
+        if let Some(op) = inc.from_op {
+            println!("  (scan stopped before operation {op})");
+        }
+    }
+    let (targets, tn) = clip_preflight(&d.targets);
+    println!("targets {}", d.targets.len());
+    for t in targets {
+        println!("  {}", describe_target(t));
+    }
+    if tn > 0 {
+        println!("  ... ({tn} more — output capped at {MAX_PREFLIGHT_LINES})");
+    }
+    let (uncertain, un) = clip_preflight(&d.uncertain);
+    println!("uncertain {}", d.uncertain.len());
+    for u in uncertain {
+        println!("  {:?} at {}: {}", u.kind, site_str(&u.site), u.reason);
+    }
+    if un > 0 {
+        println!("  ... ({un} more)");
+    }
+    let (blockers, bn) = clip_preflight(&d.blockers);
+    println!("blockers {}", d.blockers.len());
+    for b in blockers {
+        let site = b.site.as_ref().map(site_str).unwrap_or_default();
+        println!("  {} {}{}", b.what, b.detail, site);
+    }
+    if bn > 0 {
+        println!("  ... ({bn} more)");
+    }
+    let (shared, sn) = clip_preflight(&d.shared);
+    println!(
+        "shared {} (scanned {}/{} pages{})",
+        d.shared.len(),
+        d.shared_scope.pages_scanned,
+        d.shared_scope.pages_total,
+        if d.shared_scope.truncated {
+            " — truncated"
+        } else {
+            ""
+        }
+    );
+    for s in shared {
+        let other = if s.other_pages.is_empty() {
+            String::new()
+        } else {
+            format!(
+                ", also in resources of page(s) {}",
+                s.other_pages
+                    .iter()
+                    .map(|p| (p + 1).to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
+        println!(
+            "  {} {} used at {} site(s){}",
+            s.obj,
+            s.kind,
+            s.sites.len(),
+            other
+        );
+    }
+    if sn > 0 {
+        println!("  ... ({sn} more)");
+    }
+    let (annots, an) = clip_preflight(&d.annotations);
+    println!("annotations {}", d.annotations.len());
+    for a in annots {
+        let rect = a
+            .rect
+            .map(|r| {
+                format!(
+                    "[{} {} {} {}]",
+                    fmt_num(r.0),
+                    fmt_num(r.1),
+                    fmt_num(r.2),
+                    fmt_num(r.3)
+                )
+            })
+            .unwrap_or_else(|| "<none>".into());
+        let hits = if a.hits.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " — overlaps rect(s) {}",
+                a.hits
+                    .iter()
+                    .map(|h| h.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
+        let extra = if a.extra_keys.is_empty() {
+            String::new()
+        } else {
+            format!(" carries {}", a.extra_keys.join(","))
+        };
+        println!("  /{} rect {}{}{}", a.subtype, rect, hits, extra);
+    }
+    if an > 0 {
+        println!("  ... ({an} more)");
+    }
+    println!("unexamined {}", d.unexamined.len());
+    for u in &d.unexamined {
+        println!("  - {u}");
+    }
+    println!(
+        "note: a clean report means 'no obstacle found in the examined scope' — \
+         it is NOT a redaction-safety verdict."
+    );
+}
+
+fn site_str(s: &kasane_pdf::redact_diag::Site) -> String {
+    let mut out = String::new();
+    if !s.contents.is_empty() {
+        out.push_str(&format!(
+            " contents[{}]",
+            s.contents
+                .iter()
+                .map(|r| r.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+    }
+    out.push_str(&format!(" op#{}", s.op_index));
+    for (name, r) in &s.form_path {
+        out.push_str(&format!(
+            " via /{}{}",
+            String::from_utf8_lossy(name),
+            r.map(|r| format!(" ({r})")).unwrap_or_default()
+        ));
+    }
+    out
+}
+
+fn describe_target(t: &kasane_pdf::Target) -> String {
+    use kasane_pdf::redact_diag::TargetDetail as D;
+    let hits = if t.hits.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " rects {}",
+            t.hits
+                .iter()
+                .map(|h| h.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
+    let head = format!(
+        "{:?} bounds [{} {} {} {}]{} @{}",
+        t.kind,
+        fmt_num(t.bounds.0),
+        fmt_num(t.bounds.1),
+        fmt_num(t.bounds.2),
+        fmt_num(t.bounds.3),
+        hits,
+        site_str(&t.site)
+    );
+    match &t.detail {
+        D::Text {
+            code,
+            unicode,
+            font,
+            render_mode,
+            origin,
+            bounds_kind,
+        } => format!(
+            "{head} text code=0x{code:04X} unicode={} font=/{} mode={render_mode} origin=({} {}) via={:?}",
+            unicode
+                .as_deref()
+                .map(|s| format!("{s:?}"))
+                .unwrap_or_else(|| "<unresolved>".into()),
+            escape_bytes(font),
+            fmt_num(origin.0),
+            fmt_num(origin.1),
+            bounds_kind
+        ),
+        D::Image {
+            xobj,
+            name,
+            size,
+            blockers,
+        } => format!(
+            "{head} image /{} {}x{}{}{}",
+            escape_bytes(name),
+            size.0,
+            size.1,
+            xobj.map(|r| format!(" {r}")).unwrap_or_default(),
+            if blockers.is_empty() {
+                String::new()
+            } else {
+                format!(" blockers:{}", blockers.join(","))
+            }
+        ),
+        D::Path { op, stroked } => format!(
+            "{head} path {}{}",
+            op,
+            if *stroked { " (stroke-inflated)" } else { "" }
+        ),
+        D::Form {
+            xobj,
+            name,
+            bbox,
+            matrix,
+        } => format!(
+            "{head} form /{}{} bbox [{} {} {} {}] matrix [{}]",
+            escape_bytes(name),
+            xobj.map(|r| format!(" {r}")).unwrap_or_default(),
+            fmt_num(bbox.0),
+            fmt_num(bbox.1),
+            fmt_num(bbox.2),
+            fmt_num(bbox.3),
+            matrix.iter().map(|v| fmt_num(*v)).collect::<Vec<_>>().join(" ")
+        ),
+        D::Other { what } => format!("{head} {what}"),
+    }
+}
+
+fn print_preflight_json(d: &kasane_pdf::Diagnosis) {
+    let mut out = String::from("{\n");
+    out.push_str(&format!(
+        "  \"rects\": [{}],\n",
+        d.rects
+            .iter()
+            .map(|r| format!(
+                "[{}, {}, {}, {}]",
+                fmt_num(r.llx),
+                fmt_num(r.lly),
+                fmt_num(r.urx),
+                fmt_num(r.ury)
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+    let (targets, tn) = clip_preflight(&d.targets);
+    out.push_str(&format!("  \"targets\": {},\n", d.targets.len()));
+    out.push_str("  \"target_list\": [\n");
+    for (i, t) in targets.iter().enumerate() {
+        if i > 0 {
+            out.push_str(",\n");
+        }
+        out.push_str("    ");
+        out.push_str(&target_json(t));
+    }
+    out.push_str("\n  ]");
+    if tn > 0 {
+        out.push_str(&format!(",\n  \"targets_omitted\": {tn}"));
+    }
+    out.push_str(",\n  \"uncertain\": ");
+    out.push_str(&d.uncertain.len().to_string());
+    out.push_str(",\n  \"blockers\": ");
+    out.push_str(&d.blockers.len().to_string());
+    out.push_str(&format!(
+        ",\n  \"shared\": {},\n  \"shared_scope\": {{\"pages_scanned\": {}, \"pages_total\": {}, \"truncated\": {}}}",
+        d.shared.len(),
+        d.shared_scope.pages_scanned,
+        d.shared_scope.pages_total,
+        d.shared_scope.truncated
+    ));
+    out.push_str(&format!(
+        ",\n  \"annotations\": {},\n  \"incomplete\": {}",
+        d.annotations.len(),
+        match &d.incomplete {
+            Some(i) => format!("{{\"reason\": {:?}}}", i.reason),
+            None => "null".into(),
+        }
+    ));
+    out.push_str(&format!(
+        ",\n  \"unexamined\": {}\n}}\n",
+        d.unexamined.len()
+    ));
+    print!("{out}");
+}
+
+fn target_json(t: &kasane_pdf::Target) -> String {
+    use kasane_pdf::redact_diag::TargetDetail as D;
+    let mut s = format!(
+        "{{\"kind\": \"{:?}\", \"bounds\": [{}, {}, {}, {}], \"hits\": [{}]",
+        t.kind,
+        fmt_num(t.bounds.0),
+        fmt_num(t.bounds.1),
+        fmt_num(t.bounds.2),
+        fmt_num(t.bounds.3),
+        t.hits
+            .iter()
+            .map(|h| h.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    s.push_str(&format!(", \"site\": {{\"op\": {}", t.site.op_index));
+    if !t.site.contents.is_empty() {
+        s.push_str(&format!(
+            ", \"contents\": [{}]",
+            t.site
+                .contents
+                .iter()
+                .map(|r| format!("\"{r}\""))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if !t.site.form_path.is_empty() {
+        s.push_str(&format!(
+            ", \"form_path\": [{}]",
+            t.site
+                .form_path
+                .iter()
+                .map(|(n, r)| format!(
+                    "{{\"name\": \"{}\", \"ref\": {}}}",
+                    escape_bytes(n),
+                    r.map(|r| format!("\"{r}\""))
+                        .unwrap_or_else(|| "null".into())
+                ))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    s.push('}');
+    match &t.detail {
+        D::Text {
+            code,
+            unicode,
+            font,
+            render_mode,
+            origin,
+            bounds_kind,
+        } => s.push_str(&format!(
+            ", \"text\": {{\"code\": {}, \"unicode\": {}, \"font\": \"{}\", \"mode\": {}, \"origin\": [{}, {}], \"bounds_kind\": \"{:?}\"}}",
+            code,
+            unicode
+                .as_ref()
+                .map(|u| format!("{u:?}"))
+                .unwrap_or_else(|| "null".into()),
+            escape_bytes(font),
+            render_mode,
+            fmt_num(origin.0),
+            fmt_num(origin.1),
+            bounds_kind
+        )),
+        D::Image {
+            xobj,
+            name,
+            size,
+            blockers,
+        } => s.push_str(&format!(
+            ", \"image\": {{\"name\": \"{}\", \"ref\": {}, \"size\": [{}, {}], \"blockers\": [{}]}}",
+            escape_bytes(name),
+            xobj.map(|r| format!("\"{r}\""))
+                .unwrap_or_else(|| "null".into()),
+            size.0,
+            size.1,
+            blockers
+                .iter()
+                .map(|b| format!("{b:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        D::Path { op, stroked } => {
+            s.push_str(&format!(
+                ", \"path\": {{\"op\": \"{}\", \"stroked\": {}}}",
+                op, stroked
+            ))
+        }
+        D::Form {
+            xobj,
+            name,
+            bbox,
+            matrix,
+        } => s.push_str(&format!(
+            ", \"form\": {{\"name\": \"{}\", \"ref\": {}, \"bbox\": [{}, {}, {}, {}], \"matrix\": [{}]}}",
+            escape_bytes(name),
+            xobj.map(|r| format!("\"{r}\""))
+                .unwrap_or_else(|| "null".into()),
+            fmt_num(bbox.0),
+            fmt_num(bbox.1),
+            fmt_num(bbox.2),
+            fmt_num(bbox.3),
+            matrix
+                .iter()
+                .map(|v| fmt_num(*v))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )),
+        D::Other { what } => s.push_str(&format!(", \"other\": {what:?}")),
+    }
+    s.push('}');
+    s
 }
 
 /// Unix-only file identity — (dev, ino) identifies the inode, so two

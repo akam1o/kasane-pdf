@@ -456,6 +456,56 @@ These requirements shape document-model choices being made now:
 - Safety is verified externally: text/image extraction by an
   independent engine plus internal-structure inspection.
 
+## M16 — pre-redaction diagnosis
+
+`src/redact_diag.rs` implements `diagnose_redaction` +
+`preflight-redaction` — a **read-only** preflight that walks a page's
+content as a reader (not a renderer) and reports what a future
+redaction would have to handle.
+
+Why a separate walker instead of reusing `Renderer`: the render
+interpreter skips path/image/clip work in extraction mode and
+*refuses* on `gs`/`sh`/patterns — those exact constructs are the
+blockers a diagnosis must *report*, not abort on. The walker
+(`DiagWalker`) mirrors the render lifecycle (gs stack, CTM, text
+state, `Do` recursion with `xobject_stack`, `/Resources` swap) but
+records occurrences instead of painting.
+
+Key semantics — every choice is conservative because a wrong "safe"
+verdict is worse than a verbose report:
+
+- `targets` vs `uncertain` vs `blockers` vs `incomplete` vs
+  `unexamined` are kept distinct so "nothing found" is never confused
+  with "could not look". `Diagnosis` has no boolean verdict.
+- `Site { contents, op_index, form_path }` is the minimum identity
+  needed to re-find an occurrence: `/Contents` element refs (every
+  element when the array is used — `page_operations` already treats
+  them as one logical stream), a parsed op index, and the outermost-
+  first `Do` chain. No source map, no generic IR.
+- Text bounds are the glyph's *outline* bbox or an *estimated cell*
+  (labelled `TextBounds::Cell` for space/`.notdef`/missing outlines)
+  — never silently presented as a safe redaction region.
+- Image bounds are the unit square under the `Do` CTM — the *whole*
+  image extent, so rotation/shear/clip over-report rather than
+  under-report.
+- Path bounds inflate the construction points by `line_width/2 ×
+  sqrt(|CTM_det|)` — an upper bound for stroke extent, never a lower
+  one.
+- Sharing analysis is bounded: `site_map` on this page + a
+  `/Resources` scan of ≤`max_diag_share_pages` other pages, ≤
+  `max_diag_share_refs` entries. `shared_scope.truncated` is reported;
+  "not shared" is only claimed for *scanned* pages.
+- Anything the walker cannot interpret (unsupported font, non-finite
+  CTM, out-of-order path ops, inline images) stops the walk and
+  records `incomplete` — partial results are never mistaken for
+  "all clear".
+
+CLI: `kasane-pdf preflight-redaction in.pdf 1 --rect llx lly urx ury
+[--rect …] [--format text|json]` — read-only, deterministic order,
+capped output, exit 0 on a completed diagnosis (with or without
+blockers), 1 on a typed error, 2 on usage errors. The name is
+deliberately not `redact`.
+
 ## Specification references
 
 - ISO 32000-1:2008 (PDF 1.7) + Adobe errata — section numbers cited in

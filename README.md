@@ -47,6 +47,19 @@ reference(s), `/UserUnit`), enumerates named resources per category
 never renders, edits or extracts. The file must contain exactly one
 page.
 
+**M16 adds `diagnose_redaction` + `preflight-redaction`** — the first
+step toward a real redaction feature: a read-only, in-memory
+diagnostic of what painted content falls inside caller-supplied
+rectangles. It reports each shown character, image placement, Form
+invocation, and painted path with a conservative bounding box and
+site identity (`/Contents` ref + op index + `Do` chain), enumerates
+blockers (Optional Content, `/ActualText`, unsupported XObjects),
+locations it could not pin down (`uncertain`), sharing that would
+make an edit unsafe (`shared`), page annotations, and document areas
+never examined (`unexamined`). It deliberately returns no "safe"
+verdict — the name is `preflight-redaction` because a clean report
+means only "the scan completed", never "redaction would work".
+
 What works today:
 
 - PDF basic objects: null, bool, integer, real, name (with `#xx`
@@ -106,8 +119,13 @@ What works today:
   cumulative `max_extracted_unicode_bytes` budget bounds the
   Unicode a page can emit (UTF-8 bytes, counted per emitted code
   so repeated/split strings cannot evade it).
+- `diagnose_redaction()` + `preflight-redaction` pre-redaction
+  diagnosis — targets (text/image/form/path), blockers, uncertain
+  positions, shared resources, page annotations, and unexamined
+  document areas, with no "safe" verdict.
 - A `kasane-pdf` CLI (`info` mode + `contents`, `operations`,
-  `render`, `text`, `rewrite` and `annotate-rect` subcommands).
+  `render`, `text`, `rewrite`, `annotate-rect`, `inspect` and
+  `preflight-redaction` subcommands).
 - Adding `/Subtype /Square` rectangle annotations to a page via an
   [`Edit`] session — opaque RGB stroke, positive width, generated
   `/AP` appearance, existing annots/links preserved, shared `/Annots`
@@ -192,6 +210,21 @@ page: 1 (5 operation(s))
 
 $ cargo run -- render tests/fixtures/render_rects.pdf 1 --output out.png --dpi 144
 rendered page 1 -> out.png (400x400 px, 200 pts, dpi 144)
+
+$ cargo run -- preflight-redaction tests/fixtures/text_basic.pdf 1 \
+    --rect 15 55 70 80
+preflight-redaction — diagnosis, not a redaction
+page: 1
+rects: 1
+  rect 0: 15 55 70 80
+targets 3
+  Text bounds [20 60 34.40000057220459 76.80000114440918] rects 0 @ contents[4 0 R] op#3 text code=0x0041 unicode="A" font=/F1 mode=0 origin=(20 60) via=Outline
+  ...
+unexamined 9
+  - /Info and /XMP metadata
+  - embedded files and attachments
+  ...
+note: a clean report means 'no obstacle found in the examined scope' — it is NOT a redaction-safety verdict.
 ```
 
 Errors are printed with a stable category in brackets, e.g.

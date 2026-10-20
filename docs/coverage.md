@@ -353,6 +353,92 @@ content stream, a non-numeric `/UserUnit`, or a malformed annotation
 element. Nothing is silently coerced — inspect explains the
 structure as it is, or fails.
 
+## Pre-redaction diagnosis (M16, `redact_diag`, CLI `preflight-redaction`)
+
+`diagnose_redaction(&doc, page_index, rects, limits) -> Diagnosis`
+inspects one page's content streams *as a reader* and reports what a
+future redaction would face. **It never edits the file, and a clean
+result is not a "safe to redact" verdict** — it only means the walk
+finished and saw no obstacle in the examined scope.
+
+### Input contract
+
+- `rects` — 1..=`max_diag_rects` (256) user-space rectangles
+  `(llx, lly, urx, ury)`. Every component must be finite and
+  `llx < urx`, `lly < ury`; reversed or degenerate rects are
+  `Error::Structure`, never silently normalised or clipped.
+- `page_index` — 0-based; out of range is `Error::Structure` naming
+  the count.
+- `/UserUnit` ≠ 1 on the page is a *blocker* (coordinates aren't the
+  default unit); a non-numeric `/UserUnit` is `Error::Structure`.
+
+### What the result means
+
+| Field | Contents |
+|---|---|
+| `targets` | Painted occurrences localised to page space: each shown character (`Text`), each `/Image` `Do` call (`Image`), each `/Form` `Do` invocation (`Form`), each path painted by a fill/stroke op (`Path`). `bounds` is the conservative axis-aligned bbox; `hits` lists which input rects it intersects (touching edges count). |
+| `uncertain` | Occurrences that could not be localised — e.g. a non-finite text/image/form transform. Their position is not guessed. |
+| `blockers` | Structures that make exact processing impossible: `/OC` marked content, `/ActualText`, `/ExtGState`, `sh`, `/Pattern` colour space, unsupported `/XObject` subtype, `/UserUnit`, dangling/non-dict annotations. The walk continues past most of them so the caller sees the whole picture. |
+| `shared` | Objects invoked from ≥2 sites on this page (e.g. two `Do` names for the same form) *or* listed in another page's `/Resources` — editing them would affect every call site. `shared_scope` reports `pages_scanned`/`pages_total`/`truncated`; a truncated scan is *not* a "not shared" guarantee. |
+| `annotations` | `/Annots` entries with `/Subtype`, `/Rect`, `hits` against the input rects, and extra payloads (`/Contents` `/A` `/AP` `/AA` `/Popup` `/Dest`). The `/Rect` is the annotation's frame, not the extent of all data it carries. |
+| `unexamined` | Fixed labels for document areas never evaluated: `/Info`/XMP, attachments, form values, structure tree/alt text, JavaScript/actions, font-embedded data, duplicated content on other pages, annotation appearances, link-target text. "Not examined" ≠ "absent". |
+| `incomplete` | `Some` when the walk stopped mid-stream — e.g. an unsupported font subtype, a non-finite CTM, an out-of-place path op. `targets`/`blockers` are then *partial*: "the stream could not be fully scanned", never "nothing was found". |
+
+`Diagnosis` deliberately carries no boolean "safe" flag. A clean
+report means "walk completed, no blockers in the examined scope",
+and nothing more.
+
+### Per-kind bounds semantics (ISO 32000-1 §8, §9)
+
+- **Text** — origin from the same `Trm × CTM` math the renderer
+  uses; bounds are the glyph *outline* bbox under that transform
+  (`TextBounds::Outline` — ink extent only; stroke-mode text may
+  paint outside it) or, for space/`.notdef`/missing outlines, an
+  estimated character *cell* (`TextBounds::Cell` — an estimate,
+  never ink extent). The raw character code is reported verbatim
+  even when Unicode is unresolved; multi-scalar mappings are not
+  split.
+- **Image** — the unit square `[0,1]×[0,1]` under the `Do` CTM,
+  axis-aligned. This is the *whole image extent* — a conservative
+  candidate, never the painted pixels — so rotation/shear/clip
+  over-report coverage rather than under-report.
+- **Form** — `/BBox` under `Matrix × CTM`; inner occurrences report
+  with `Site::form_path` extended so a shared form's each call is
+  distinguishable.
+- **Path** — the construction ops' points under the CTM, inflated
+  by `line_width/2 × sqrt(|CTM_det|)` for stroke extent (cap/join
+  are not evaluated — the inflation is an upper bound, never a
+  lower one).
+
+### Site identity
+
+`Site` carries `contents` (the `/Contents` element refs — every
+element when the array is used, since `page_operations` treats it
+as one logical stream), `op_index` (the parsed op index in that
+logical stream — for form-nested ops, the index *inside* the form's
+stream), and `form_path` (outermost-first `(name, ref)` chain for
+nested `Do`). That is the minimum needed to re-find an occurrence
+in the source streams without inventing a source map.
+
+### CLI
+
+```
+kasane-pdf preflight-redaction <file.pdf> <page> \
+  --rect <llx> <lly> <urx> <ury> [--rect ...] [--format text|json]
+```
+
+`--rect` is lower-left x,y then upper-right x,y in PDF user space —
+the same un-rotated, un-cropped convention as `inspect` and
+`extract_text`. Exit is `0` on a completed diagnosis *with or
+without* blockers, `1` on a typed error (bad input, unreadable
+content), `2` on usage errors. Output lines/state are deterministic
+and capped at 1_000 entries per category; `incomplete`/`truncated`
+are always stated, never silent.
+
+The name is `preflight-redaction` precisely because this is not a
+redaction engine and produces no safety guarantee — see
+`src/redact_diag.rs`'s module doc.
+
 ## Robustness
 
 Guaranteed (tested): bad xref offset, missing referenced objects, cyclic
@@ -371,4 +457,10 @@ total pixels (`max_render_pixels`, `max_render_total_pixels`,
 `max_render_buffer_bytes`), and path complexity
 (`max_path_elements`). The M1 decoded-byte budget counts decode
 *work*; the M2 operation limits bound the retained structure; the M3
-render limits bound the output.
+render limits bound the output. M16 diagnosis adds input/output
+bounds — `max_diag_rects`, `max_diag_items` (reported targets +
+uncertain + blockers), `max_diag_share_pages` (cross-page sharing
+scan), `max_diag_share_refs` (resource entries inspected), and a
+CLI output cap of 1_000 lines per category — so a diagnosis never
+grows without bound and its partial-result markers (`incomplete`,
+`shared_scope.truncated`) are always stated.
