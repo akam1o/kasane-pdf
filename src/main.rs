@@ -86,6 +86,21 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("experimental-remove-text") => {
+            // experimental-remove-text <file.pdf> <page>
+            //   --rect llx lly urx ury [--rect …] --output <out.pdf>
+            // Experimental scoped text removal — NOT a redaction tool:
+            // removes the shown codes whose filled ink bounds hit a
+            // rect and preserves the survivors' positions. See the
+            // `remove_text` module docs for the full refusal list.
+            match run_remove_text(&args[2..]) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error [{}]: {e}", e.kind());
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some(cmd @ ("contents" | "operations" | "render" | "text")) => {
             let (path, page_no) = match (args.get(2), args.get(3)) {
                 (Some(p), Some(n)) => (p, n),
@@ -135,6 +150,9 @@ fn main() -> ExitCode {
             eprintln!("       {prog} inspect <file.pdf> <page-number>");
             eprintln!(
                 "       {prog} preflight-redaction <file.pdf> <page-number> --rect llx lly urx ury [--rect …] [--format text|json]"
+            );
+            eprintln!(
+                "       {prog} experimental-remove-text <file.pdf> <page-number> --rect llx lly urx ury [--rect …] --output <out.pdf>"
             );
             ExitCode::from(2)
         }
@@ -1235,6 +1253,115 @@ fn preflight_usage() -> String {
         .into()
 }
 
+/// `experimental-remove-text` subcommand:
+/// `experimental-remove-text <file.pdf> <page>
+///   --rect llx lly urx ury [--rect …] --output <out.pdf>`.
+///
+/// Experimental scoped text removal — **not** a redaction tool: it
+/// deletes the shown character codes whose filled ink bounds hit a
+/// rect and preserves the survivors' positions. A page carrying
+/// Form XObjects, annotations, unsupported fonts, or any blocker/
+/// uncertain diagnosis entry is refused outright — nothing is
+/// emitted on failure. See `src/remove_text.rs` for the full list.
+fn run_remove_text(args: &[String]) -> Result<(), Error> {
+    if args.len() < 2 {
+        return Err(Error::Structure(remove_text_usage()));
+    }
+    let input = &args[0];
+    let page: usize = args[1]
+        .parse()
+        .ok()
+        .filter(|&n| n >= 1)
+        .ok_or_else(|| Error::Structure(format!("invalid page number '{}'", args[1])))?;
+    let mut rects: Vec<[f64; 4]> = Vec::new();
+    let mut output: Option<&str> = None;
+    let mut i = 2;
+    while i < args.len() {
+        let need = |n: usize| -> Result<(), Error> {
+            if i + n < args.len() {
+                Ok(())
+            } else {
+                Err(Error::Structure(format!(
+                    "flag '{}' expects {n} value(s)\n{}",
+                    args[i],
+                    remove_text_usage()
+                )))
+            }
+        };
+        let num = |s: &str| -> Result<f64, Error> {
+            s.parse::<f64>()
+                .map_err(|_| Error::Structure(format!("expected a number, got '{s}'")))
+        };
+        match args[i].as_str() {
+            "--rect" => {
+                need(4)?;
+                rects.push([
+                    num(&args[i + 1])?,
+                    num(&args[i + 2])?,
+                    num(&args[i + 3])?,
+                    num(&args[i + 4])?,
+                ]);
+                i += 5;
+            }
+            "--output" => {
+                need(1)?;
+                output = Some(&args[i + 1]);
+                i += 2;
+            }
+            other => {
+                return Err(Error::Structure(format!(
+                    "unknown option '{other}'\n{}",
+                    remove_text_usage()
+                )));
+            }
+        }
+    }
+    if rects.is_empty() {
+        return Err(Error::Structure(format!(
+            "at least one --rect is required\n{}",
+            remove_text_usage()
+        )));
+    }
+    let output = output.ok_or_else(|| Error::Structure(remove_text_usage()))?;
+    refuse_same_file(input, output)?;
+    let data = std::fs::read(input)?;
+    let doc = Document::from_bytes(&data)?;
+    let r = kasane_pdf::remove_text(
+        &doc,
+        page - 1,
+        &rects
+            .iter()
+            .map(|r| (r[0], r[1], r[2], r[3]))
+            .collect::<Vec<_>>(),
+        &Limits::default(),
+    )?;
+    write_atomic(
+        &r.output,
+        &format!("{output}.kasane-tmp-{}", std::process::id()),
+        output,
+    )?;
+    println!(
+        "experimental-remove-text {input} page {page} -> {output} ({} bytes)",
+        r.output.len()
+    );
+    println!("codes removed: {}", r.codes_removed);
+    for s in &r.scope {
+        println!("  {s}");
+    }
+    Ok(())
+}
+
+fn remove_text_usage() -> String {
+    "usage: kasane-pdf experimental-remove-text <file.pdf> <page> \
+     --rect <llx> <lly> <urx> <ury> [--rect …] --output <out.pdf>\n\
+     Experimental scoped text removal — NOT a redaction or sanitize \
+     tool: deletes shown codes whose filled ink bounds hit a rect \
+     (Tr 0 text at page level only) and preserves the survivors' \
+     positions. A page with Form XObjects, annotations, unsupported \
+     fonts, or any blocker/uncertain diagnosis entry is refused."
+        .into()
+}
+
 // Output caps — a single preflight run prints at most this many
 // entries per category; every truncation states the omitted count.
 const MAX_PREFLIGHT_LINES: usize = 1_000;
@@ -1384,12 +1511,16 @@ fn site_str(s: &kasane_pdf::redact_diag::Site) -> String {
         ));
     }
     out.push_str(&format!(" op#{}", s.op_index));
-    for (name, r) in &s.form_path {
+    for f in &s.form_path {
         out.push_str(&format!(
-            " via /{}{}",
-            String::from_utf8_lossy(name),
-            r.map(|r| format!(" ({r})")).unwrap_or_default()
+            " via /{}{}@op#{}",
+            String::from_utf8_lossy(&f.name),
+            f.xobj.map(|r| format!(" ({r})")).unwrap_or_default(),
+            f.op_index
         ));
+    }
+    if let Some(ci) = s.code_index {
+        out.push_str(&format!(" code#{ci}"));
     }
     out
 }
@@ -1567,15 +1698,20 @@ fn target_json(t: &kasane_pdf::Target) -> String {
             t.site
                 .form_path
                 .iter()
-                .map(|(n, r)| format!(
-                    "{{\"name\": \"{}\", \"ref\": {}}}",
-                    escape_bytes(n),
-                    r.map(|r| format!("\"{r}\""))
-                        .unwrap_or_else(|| "null".into())
+                .map(|f| format!(
+                    "{{\"name\": \"{}\", \"ref\": {}, \"op_index\": {}}}",
+                    escape_bytes(&f.name),
+                    f.xobj
+                        .map(|r| format!("\"{r}\""))
+                        .unwrap_or_else(|| "null".into()),
+                    f.op_index
                 ))
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
+    }
+    if let Some(ci) = t.site.code_index {
+        s.push_str(&format!(", \"code_index\": {ci}"));
     }
     s.push('}');
     match &t.detail {

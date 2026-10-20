@@ -392,12 +392,18 @@ and nothing more.
 
 - **Text** — origin from the same `Trm × CTM` math the renderer
   uses; bounds are the glyph *outline* bbox under that transform
-  (`TextBounds::Outline` — ink extent only; stroke-mode text may
-  paint outside it) or, for space/`.notdef`/missing outlines, an
-  estimated character *cell* (`TextBounds::Cell` — an estimate,
-  never ink extent). The raw character code is reported verbatim
-  even when Unicode is unresolved; multi-scalar mappings are not
-  split.
+  (`TextBounds::Outline` — ink extent only) or, for
+  space/`.notdef`/missing outlines, an estimated character *cell*
+  (`TextBounds::Cell` — an estimate, never ink extent). Stroke-mode
+  text (`Tr` 1, 2, 5, 6) inflates the bounds by the same stroke
+  reach a path uses — a text stroke extends outside the ink bbox
+  exactly like a path stroke. Clip-mode text (`Tr` 4–7) is a blocker
+  plus `uncertain` — its extent is not estimated. The raw character
+  code is reported verbatim even when Unicode is unresolved;
+  multi-scalar mappings are not split. A `glyph_id`/`outline`/
+  `units_per_em` *error* reports `uncertain` — never a silent cell
+  estimate; `LimitExceeded` propagates. Stroke-mode text at `w == 0`
+  is a device-pixel hairline — `uncertain`, never a certain target.
 - **Image** — the unit square `[0,1]×[0,1]` under the `Do` CTM,
   axis-aligned. This is the *whole image extent* — a conservative
   candidate, never the painted pixels — so rotation/shear/clip
@@ -405,10 +411,41 @@ and nothing more.
 - **Form** — `/BBox` under `Matrix × CTM`; inner occurrences report
   with `Site::form_path` extended so a shared form's each call is
   distinguishable.
-- **Path** — the construction ops' points under the CTM, inflated
-  by `line_width/2 × sqrt(|CTM_det|)` for stroke extent (cap/join
-  are not evaluated — the inflation is an upper bound, never a
-  lower one).
+- **Path** — the construction ops' points under the CTM, inflated by
+  the *stroke reach*: `w/2` for butt/round/square caps and joins,
+  `miter_limit × w/2` when miter joins are in effect — scaled by
+  `√2 × max(|col₁|, |col₂|)` of the CTM, the provable upper bound on
+  a unit vector's stretch. `sqrt(|det|)` — the geometric mean of the
+  singular values — **under-reports** non-uniform scaling (a `10 0 0
+  0.1` CTM stretches by 10, not 1).
+  
+  **Hairline** — a `w` of 0 is a *device-pixel* stroke: its coverage
+  is resolution-dependent and cannot be bounded in user space, so a
+  stroked path (S, s, B, b, B*, b*) at `w == 0` reports as
+  `uncertain` — never a certain `Target` whose bounds we would call
+  "outside the rect". A fill-only path (`f`, `f*`) is unaffected —
+  it does not stroke. For fill+stroke ops (`B`, `b`, `B*`, `b*`) the
+  *whole* occurrence reports uncertain: the fill's bounds are known
+  but the stroke's un-evaluated reach must not be dropped from the
+  same occurrence.
+
+### Graphics-state tracking
+
+`DiagWalker` mirrors the renderer's lifecycle but the state it
+tracks is the *whole* graphics state the diagnosis needs — CTM,
+clip rect, stroke parameters (`w`/`J`/`j`/`M`), and the text state
+parameters (`Tc`/`Tw`/`Tz`/`TL`/`Ts`/`Tr`/`Tf`, Table 52). `q`/`Q`
+save and restore all of it; a `Form` `Do` pushes and pops the same
+struct so `w`/`Tf`/`Tc` changes inside a form never leak to the
+page level. `Tm`/`Tlm`/`in_text` are *not* graphics state — they
+live on the walker inside `BT`/`ET`.
+
+An uninterpreted state-changing construct (`gs` ExtGState, `sh`
+shading, a Pattern colour space) is recorded as a `blocker` **and**
+marks `uncertain_state`: every geometry op after it is reported as
+`uncertain` rather than a certain `Target`, until `Q` or a form's
+end restores known state. (`BX…EX` `Unknown` ops do *not* taint
+state — §7.8.2 says they are ignored by definition.)
 
 ### Site identity
 
@@ -416,9 +453,21 @@ and nothing more.
 element when the array is used, since `page_operations` treats it
 as one logical stream), `op_index` (the parsed op index in that
 logical stream — for form-nested ops, the index *inside* the form's
-stream), and `form_path` (outermost-first `(name, ref)` chain for
-nested `Do`). That is the minimum needed to re-find an occurrence
-in the source streams without inventing a source map.
+stream), `form_path` (outermost-first [`FormFrame`] chain — each
+frame has the resource `name`, resolved `xobj` ref, and the
+call-site `op_index`, so two `Do`s of the same object or the same
+name for two objects are distinct sites), and `code_index`.
+
+`code_index` is the character's position in the *code stream of the
+op*, counted per shown character code (a 1- or 2-byte code per the
+font's CMap — not a Unicode scalar count and not a byte offset). For
+a `Tj`/`'`/`"` op it counts the codes in that one string, restarting
+at 0. For a `TJ` op it counts across the *whole array* —
+`[(A) 100 (B)]` reports 'A' at index 0 and 'B' at index 1 — so two
+characters that share one `op_index` stay distinct sites. Numeric
+`TJ` elements produce no codes and do not advance the index. A code
+that maps to several Unicode scalars still reports under its own
+single `code_index` — the code, not its expansion, is the identity.
 
 ### CLI
 
@@ -438,6 +487,73 @@ are always stated, never silent.
 The name is `preflight-redaction` precisely because this is not a
 redaction engine and produces no safety guarantee — see
 `src/redact_diag.rs`'s module doc.
+
+## Experimental scoped text removal (M17, `remove_text`, CLI `experimental-remove-text`)
+
+**Not a redaction tool** — the name and docs say so up front. M17
+*deletes* the character codes whose filled-ink bounds overlap a
+caller rectangle and writes a new single-revision PDF; it does not
+paint over anything, does not touch other copies of the same data
+(metadata, annotations, structure tree, other pages, font internals,
+the original `/Contents` when it is shared), and does not guarantee
+irreversibility. Think of it as an experiment in character-level
+content editing on the smallest safe scope.
+
+What it does — API `remove_text(doc, page_index, rects, limits)`
+returning `Removal { output, codes_removed, sites, scope }`:
+
+- Rects are un-rotated, un-cropped user space — the same convention
+  as `preflight-redaction`/`inspect`. A code is removed when its
+  *filled* glyph-outline bounds overlap any rect (edge-touching
+  counts); a code is one removal unit even when it expands to several
+  Unicode characters.
+- Reuses the M16 `DiagWalker` so the graphics/text state and hit
+  tests are exactly the diagnosis's — any `blocker`/`uncertain`
+  entry, or a mid-stream walk failure, is a typed refusal, not a
+  best-effort skip.
+- Rewrites `Tj`/`TJ`/`'`/`"` only: a `Tj` losing codes becomes a
+  `TJ` whose numeric elements restore the removed advance
+  (`-(w0 + (Tc+Tw)·1000/Tfs)` — `Tz` cancels, so `Tfs = 0` or
+  `Tz = 0` is refused); a `TJ` keeps its original numeric elements
+  and splits string elements around removed runs; `'`/`"` expand to
+  `T*` + `Tj` (and `Tw`/`Tc` for `"`) so their side effects survive
+  even when the text goes to zero.
+- Writes a *new* `/Contents` stream through the same
+  `Edit`/`rewrite_overlay` pipeline as `annotate-rect` — the input
+  document and its bytes are never modified, and other pages that
+  share the original stream keep it untouched.
+
+Scope — a page is *refused* outright rather than half-edited when it
+carries: `/Annots`, any `Do`/`sh`/inline image/`gs`/Pattern colour
+space/`ActualText`/OC, any rendering mode other than `Tr 0` fill,
+`w = 0` hairlines, unsupported or unresolvable fonts, non-finite
+CTM, `/UserUnit` ≠ 1, vertical text, or `Tfs`/`Tz` = 0. Every one of
+those was already a `blocker`/`uncertain` in the diagnosis — removal
+refuses on the first rather than continue past unknown state.
+
+Limitations — by design and explicitly *not* done:
+
+- Form XObject and annotation content is out of scope (refused).
+- The original `/Contents` stays in the file when another page
+  shares it (page 2's view is unchanged; the removed bytes still
+  exist in the shared stream).
+- Removed text can still exist elsewhere: `/Info`, XMP, structure
+  tree, `ActualText`, embedded files, other pages, or the font's
+  own cmap/name tables.
+- No guarantee of irreversibility — this is *content editing*, not
+  secure redaction.
+
+CLI:
+
+```sh
+kasane-pdf experimental-remove-text <file.pdf> <page> \
+  --rect <llx> <lly> <urx> <ury> [--rect ...] --output <out.pdf>
+```
+
+Same `--rect` convention as `preflight-redaction`; `--output` is
+required, input and output must differ (same-file check is the
+`refuse_same_file` helper), and the output is written atomically —
+a refusal leaves any existing output untouched.
 
 ## Robustness
 

@@ -48,7 +48,9 @@ pub struct Edit<'a> {
     /// `(obj, gen) → body` for every synthetic object and every real
     /// object whose body the edit replaces (the page dict and any
     /// copied `/Annots` array). Fed to [`rewrite::rewrite_overlay`].
-    overlay: HashMap<(u32, u16), Object>,
+    /// `pub(crate)` — M17's `remove_text` inserts its `/Contents`
+    /// stream and page-dict update through the same overlay.
+    pub(crate) overlay: HashMap<(u32, u16), Object>,
     /// Next synthetic object number to hand out.
     next_synth: u32,
     /// Validated annotations to materialise at `commit` time.
@@ -71,6 +73,8 @@ pub struct Edit<'a> {
 }
 
 impl<'a> Edit<'a> {
+    /// `pub(crate)` — M17's `remove_text` allocates one synthetic
+    /// object (the new `/Contents` stream) through the same allocator.
     pub(crate) fn new(doc: &'a Document, limits: Limits) -> Result<Self, Error> {
         Ok(Edit {
             doc,
@@ -95,7 +99,9 @@ impl<'a> Edit<'a> {
     /// region is exhausted (input filled `SYNTH_TOP`…`0`) only in a
     /// pathological file; hitting `max_edit_objects` or `0` is a typed
     /// `LimitExceeded`/`Unsupported` error, never a wraparound.
-    fn alloc(&mut self) -> Result<IndirectRef, Error> {
+    /// `pub(crate)` — M17 allocates the new `/Contents` stream ref
+    /// through the same synthetic-number allocator.
+    pub(crate) fn alloc(&mut self) -> Result<IndirectRef, Error> {
         self.synth_objects += 1;
         if self.synth_objects > self.limits.max_edit_objects {
             return Err(Error::LimitExceeded {
