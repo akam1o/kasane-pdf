@@ -14,15 +14,28 @@
 //! not guarantee irreversibility. See the crate docs and
 //! `docs/coverage.md` for the full scope list.
 //!
+//! **M18 — one level of `/Form`.** A page-level `Do` whose target is
+//! a `/Form` XObject is in scope: the invocation's inner text is
+//! edited by cloning the form stream into a new object, registering
+//! it under a fresh `/XObject` name (`KasFm{n}`) in the page's
+//! effective resources, and rewriting that `Do` to the new name. Two
+//! `Do`s of the same form are distinct invocations — each clones its
+//! own copy, so the unedited call (and every other page sharing the
+//! original) keeps the original object. Nested `Do`s (a `Do` inside
+//! a form), images, `/Group`/`/OC`/`/Ref` forms, and every other
+//! M17 refusal stay refused — the eligibility check is the walk's
+//! `form_path` depth plus the existing `blocker`/`uncertain`/mode
+//! rules.
+//!
 //! Scope — a page is *refused* (typed error) rather than half-edited
 //! when any of these appear in its content or page dict:
 //!
 //! - `/Annots` — annotations are out of scope (the diagnosis sees
 //!   them; removal does not reason about their content).
-//! - Any `Do`, `sh`, `gs`, Pattern colour space, `BI`/`ID`/`EI`
-//!   inline image, or `/ActualText`/`OC` marked content — the
-//!   diagnosis already marks these; removal refuses on the first one
-//!   rather than continue past unknown state.
+//! - Any `sh`, `gs`, Pattern colour space, `BI`/`ID`/`EI` inline
+//!   image, `/ActualText`/`OC` marked content, or an `Image`/nested
+//!   `Do` — the diagnosis already marks these; removal refuses on
+//!   the first one rather than continue past unknown state.
 //! - Any text-rendering mode other than `Tr 0` (fill) anywhere in
 //!   the shown text — the eligibility check is page-level, not
 //!   per-rect: an out-of-rect `Tr 3`/`Tr 1`/`Tr 2` occurrence still
@@ -30,8 +43,6 @@
 //!   `blocker`/`uncertain` in the diagnosis.) A `Tr` *set* but never
 //!   used to show text is harmless — the mode only matters when a
 //!   glyph is painted under it.
-//! - A `Form` XObject `Do`, even at page level — form content is out
-//!   of scope (the diagnosis walks it; removal refuses).
 //! - Unsupported or unresolvable fonts, non-finite transforms, and
 //!   any other construct that makes the diagnosis `incomplete`,
 //!   `uncertain`, or `blocker`-carrying — those are refused, never
@@ -58,9 +69,10 @@ use crate::document::Document;
 use crate::edit::Edit;
 use crate::error::Error;
 use crate::limits::Limits;
-use crate::object::Object;
+use crate::object::{Dict, IndirectRef, Object};
 use crate::redact_diag::{
-    check_rect, page_dict_entry, DiagWalker, ShowTextState, Site, TargetDetail, TargetKind,
+    check_rect, page_dict_entry, DiagWalker, FormFrame, ShowTextState, Site, TargetDetail,
+    TargetKind,
 };
 use std::collections::BTreeMap;
 
@@ -184,68 +196,107 @@ pub fn remove_text(
             detail: u.reason.clone(),
         });
     }
-    // A `Do` — even when the diagnosis handles it — is out of scope
-    // for M17 (form text is not edited). Refuse on the first one.
+    // `sh` is out of scope outright — shading fills an area we cannot
+    // bound or rewrite around. Refuse on the first one.
     if let Some((i, _)) = ops
         .iter()
         .enumerate()
-        .find(|(_, o)| matches!(o, Operation::Do(_) | Operation::Shading(_)))
+        .find(|(_, o)| matches!(o, Operation::Shading(_)))
     {
         return Err(Error::Unsupported {
-            feature: "text removal on a page with Do/sh",
-            detail: format!("op #{i} — XObject/shading content is out of scope"),
+            feature: "text removal on a page with sh",
+            detail: format!("op #{i} — shading content is out of scope"),
         });
     }
 
     // ---- page-level eligibility -----------------------------------
-    // A page is eligible only when *every* text occurrence on it is
-    // `Tr 0` fill — the modes we can faithfully rewrite. This is a
-    // property of the page's shown text, not of what a rect hit, so
-    // an out-of-rect `Tr 3`/`Tr 1` glyph still refuses the page.
-    // (`Tr 4–7` and `w = 0` stroked text already landed in
-    // `blockers`/`uncertain` above and never reach here.)
+    // A page is eligible only when every occurrence the walk produced
+    // is one M18 can faithfully rewrite:
+    //
+    // - `Text` targets must all be `Tr 0` fill — page-level *and*
+    //   form-level alike. An out-of-rect `Tr 3`/`Tr 1` glyph still
+    //   refuses the page: eligibility is a property of the shown
+    //   text, not of what a rect hit. (`Tr 4–7` and `w = 0` stroked
+    //   text already landed in `blockers`/`uncertain` above.)
+    // - `Form` targets are the `Do` invocations the page made —
+    //   always at `form_path` depth 0.
+    // - `Image` and `Other` targets are refused regardless of rects —
+    //   their *presence* is out of scope.
+    // - Any occurrence at `form_path` depth ≥ 2 means a `Do` inside
+    //   a form — nested XObjects are out of scope for M18.
     for t in &walker.targets {
-        if t.kind != TargetKind::Text {
-            continue;
+        if t.site.form_path.len() > 1 {
+            return Err(Error::Unsupported {
+                feature: "text removal on a page with nested XObjects",
+                detail: "a Do inside a form is out of scope".into(),
+            });
         }
-        if let TargetDetail::Text { render_mode, .. } = &t.detail {
-            if *render_mode != 0u8 {
+        match t.kind {
+            TargetKind::Text => {
+                if let TargetDetail::Text { render_mode, .. } = &t.detail {
+                    if *render_mode != 0u8 {
+                        return Err(Error::Unsupported {
+                            feature: "text removal on a page with non-fill text",
+                            detail: format!(
+                                "Tr {render_mode} text is out of scope — only Tr 0 fill \
+                                 is rewritten (op #{}, code #{:?})",
+                                t.site.op_index, t.site.code_index
+                            ),
+                        });
+                    }
+                }
+            }
+            // A `Form` target is a `Do` invocation record — at depth 0
+            // it's the page-level call we may edit; at depth ≥ 1 it
+            // is a `Do` *inside* a form → nested, refused. (The
+            // `form_path.len() > 1` check above catches the inner
+            // *text*; this catches an empty nested form.)
+            TargetKind::Form if !t.site.form_path.is_empty() => {
                 return Err(Error::Unsupported {
-                    feature: "text removal on a page with non-fill text",
+                    feature: "text removal on a page with nested XObjects",
+                    detail: "a Do inside a form is out of scope".into(),
+                });
+            }
+            TargetKind::Form | TargetKind::Path => {}
+            TargetKind::Image | TargetKind::Other => {
+                return Err(Error::Unsupported {
+                    feature: "text removal on a page with non-form XObjects",
                     detail: format!(
-                        "Tr {render_mode} text is out of scope — only Tr 0 fill is rewritten \
-                         (op #{}, code #{:?})",
-                        t.site.op_index, t.site.code_index
+                        "an {:?} occurrence at op #{} is out of scope",
+                        t.kind, t.site.op_index
                     ),
                 });
             }
         }
     }
+    // (Any uncertain or blocker site inside a nested form was already
+    // refused above — the depth check on `targets` covers the case
+    // where the nested call produced only in-scope occurrences.)
 
     // ---- collect codes to remove ------------------------------------
-    // (op_index → sorted code_index list). A code's `hits` tell us
-    // its ink bounds overlapped a user rect — the *filled* bounds of
-    // a `Tr 0` glyph, edge-touching counts as a hit. Every target
-    // reaching here is already `Tr 0` (page-level eligibility above).
-    let mut to_remove: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    // ((form_path, op_index) → sorted code_index list). A code's
+    // `hits` tell us its ink bounds overlapped a user rect — the
+    // *filled* bounds of a `Tr 0` glyph, edge-touching counts as a
+    // hit. The `form_path` is part of the key: two `Do` invocations of
+    // the same form (or two names for the same object) are distinct
+    // removal scopes because their CTMs differ. Every target reaching
+    // here is already `Tr 0` (eligibility above).
+    let mut to_remove: BTreeMap<(Vec<FormFrame>, usize), Vec<usize>> = BTreeMap::new();
+    // Site lookup for the audit trail — the target's own `Site`
+    // already carries the correct `form_path`/`op_index`/`code_index`,
+    // so `removed_sites` does not reconstruct them.
+    let mut site_lookup: BTreeMap<(Vec<FormFrame>, usize, usize), Site> = BTreeMap::new();
     for t in &walker.targets {
         if t.kind == TargetKind::Text && !t.hits.is_empty() {
-            // Defensive: a target inside a form's stream would carry
-            // that form's op_index, not the page's — the `Do` refusal
-            // above means none should exist here; refuse rather than
-            // silently mis-map.
-            if !t.site.form_path.is_empty() {
-                return Err(Error::Unsupported {
-                    feature: "text removal of form-nested text",
-                    detail: "form content is out of scope".into(),
-                });
-            }
-            let op = t.site.op_index;
             let ci = t
                 .site
                 .code_index
                 .ok_or_else(|| Error::Structure("text target without code_index".into()))?;
-            to_remove.entry(op).or_default().push(ci);
+            let key = (t.site.form_path.clone(), t.site.op_index);
+            site_lookup
+                .entry((t.site.form_path.clone(), t.site.op_index, ci))
+                .or_insert_with(|| t.site.clone());
+            to_remove.entry(key).or_default().push(ci);
         }
     }
     // Defensive: `binary_search` below needs sorted inputs — targets
@@ -254,107 +305,157 @@ pub fn remove_text(
         v.sort_unstable();
     }
 
-    // ---- rewrite the content stream ---------------------------------
+    // ---- clone forms for edited invocations -------------------------
+    // (Deferred `Edit` — created lazily so a no-form-removal page
+    // does not allocate an unused session.)
+    let mut edit_guard: Option<Edit> = None;
+    let mut do_renames: BTreeMap<usize, Vec<u8>> = BTreeMap::new();
+    let mut removed_sites: Vec<Site> = Vec::new();
+    let mut codes_removed: u64 = 0;
+    // M18: each *invocation* whose inner text lost codes gets its own
+    // cloned Form object — the original stream stays untouched so
+    // other invocations (and other pages sharing it) keep painting the
+    // removed characters. Cloning is per-invocation (no dedup): two
+    // hits under different CTMs are different edits.
+    let mut new_xobject_entries: Vec<(Vec<u8>, IndirectRef)> = Vec::new();
+    // Collect the invocation keys first — iterating `to_remove` in
+    // sorted order makes the generated names deterministic. Multiple
+    // inner ops of the *same* invocation share one `form_path`, so
+    // dedup before cloning.
+    let mut seen_invocations: std::collections::BTreeSet<Vec<FormFrame>> =
+        std::collections::BTreeSet::new();
+    let form_invocations: Vec<Vec<FormFrame>> = to_remove
+        .keys()
+        .filter(|(fp, _)| fp.len() == 1)
+        .map(|(fp, _)| fp.clone())
+        .filter(|fp| seen_invocations.insert(fp.clone()))
+        .collect();
+    for (form_seq, fp) in form_invocations.iter().enumerate() {
+        let frame = &fp[0];
+        let do_op_index = frame.op_index;
+        // Resolve the stream through the invocation's *name* in the
+        // page resources — this covers both indirect and direct-dict
+        // forms (`frame.xobj` is `None` for the latter). The name is
+        // the one this `Do` used, so two names pointing at the same
+        // object still produce per-invocation clones.
+        let entry = doc
+            .resolve_resource_raw(
+                page.resources()
+                    .ok_or_else(|| Error::Structure("page has no /Resources".into()))?,
+                "XObject",
+                &frame.name,
+            )?
+            .ok_or_else(|| {
+                Error::Structure(format!(
+                    "/XObject /{} no longer resolves",
+                    String::from_utf8_lossy(&frame.name)
+                ))
+            })?;
+        let obj = doc.deref(&entry)?;
+        let (fdict, fraw) = obj
+            .as_stream()
+            .ok_or_else(|| Error::Structure("form XObject is not a stream".into()))?;
+        let decoded = doc.decode_stream(fdict, fraw)?;
+        let form_ops = crate::content::parse_content_stream(&[decoded], limits)?;
+        // Rewrite the form's own ops — its `to_remove` entries are
+        // keyed `(fp, inner_op_index)`.
+        let mut new_form_ops: Vec<Operation> = Vec::with_capacity(form_ops.len());
+        for (inner_idx, fop) in form_ops.iter().enumerate() {
+            // A `Do`/`sh` inside the form is out of scope — the
+            // eligibility scan already refused when the walker saw
+            // one; this is a defensive re-check, never reached on a
+            // passed page.
+            if matches!(fop, Operation::Do(_) | Operation::Shading(_)) {
+                return Err(Error::Unsupported {
+                    feature: "text removal on a page with nested XObjects",
+                    detail: "a Do/sh inside a form is out of scope".into(),
+                });
+            }
+            new_form_ops.extend(rewrite_ops_for(
+                &walker,
+                &to_remove,
+                &site_lookup,
+                fp,
+                inner_idx,
+                fop,
+                &mut codes_removed,
+                &mut removed_sites,
+            )?);
+        }
+        let new_body = serialize_ops(&new_form_ops, limits)?;
+        // Clone the stream dict, dropping `/Filter`/`/DecodeParms` —
+        // the new body is emitted uncompressed, so the old filter
+        // chain must not be claimed (a stale `/Filter` would decode
+        // garbage on read). `/Length` is set from the new data.
+        let mut new_dict = fdict.clone();
+        new_dict.remove(b"Filter".as_slice());
+        new_dict.remove(b"DecodeParms".as_slice());
+        new_dict.remove(b"Length".as_slice());
+        new_dict.insert(b"Length".to_vec(), Object::Integer(new_body.len() as i64));
+        // The form may carry `/Group`, `/OC`, `/Ref` — the walker
+        // already pushed blockers for them, so reaching here means
+        // they are absent. `/Resources`, `/Matrix`, `/BBox` and every
+        // other key are preserved verbatim.
+        if edit_guard.is_none() {
+            edit_guard = Some(Edit::new(doc, limits.clone())?);
+        }
+        let edit = edit_guard.as_mut().unwrap();
+        let clone_ref = edit.alloc()?;
+        edit.overlay.insert(
+            (clone_ref.number, clone_ref.generation),
+            Object::Stream {
+                dict: new_dict,
+                data: new_body,
+            },
+        );
+        // Register the clone under a deterministic fresh name in the
+        // page's `/XObject` dict, and rewrite the page-level `Do` to
+        // it. `KasFm{n}` cannot collide with anything the page
+        // resources already define (checked below before insert).
+        let allocated: Vec<Vec<u8>> = new_xobject_entries.iter().map(|(n, _)| n.clone()).collect();
+        let new_name = fresh_xobject_name(page, doc, form_seq as u64, &allocated)?;
+        do_renames.insert(do_op_index, new_name.clone());
+        new_xobject_entries.push((new_name, clone_ref));
+    }
+
+    // ---- rewrite the page content stream ----------------------------
     // Build a new ops vec with text ops rewritten; everything else
     // passes through unchanged. `Tj`/`'`/`"` are converted to `TJ`
     // when they lose codes so the survivors' positions are preserved.
     // Each op's rewrite uses the *state snapshot* the walker recorded
     // at that op (`show_states`), not the end-of-stream state — a
     // later `Tf`/`Tc`/`Tz` must not rewrite an earlier show.
+    // `Do` ops whose invocation lost codes point at the new resource
+    // names assigned above (`do_renames`).
     let mut new_ops: Vec<Operation> = Vec::with_capacity(ops.len());
-    let mut removed_sites: Vec<Site> = Vec::new();
-    let mut codes_removed: u64 = 0;
     for (op_index, op) in ops.iter().enumerate() {
         match op {
-            Operation::ShowText(bytes) => {
-                let rem = to_remove.get(&op_index);
-                match rem {
-                    None => new_ops.push(op.clone()),
-                    Some(idxs) => {
-                        let st = show_state(&walker, op_index)?;
-                        let (new_items, n_removed, sites) =
-                            rewrite_show_text(st, &walker, bytes, idxs, op_index)?;
-                        codes_removed += n_removed;
-                        removed_sites.extend(sites);
-                        new_ops.extend(new_items);
-                    }
+            Operation::Do(_) => {
+                if let Some(new_name) = do_renames.get(&op_index) {
+                    new_ops.push(Operation::Do(new_name.clone()));
+                } else {
+                    new_ops.push(op.clone());
                 }
             }
-            Operation::ShowTextAdjusted(items) => {
-                let rem = to_remove.get(&op_index);
-                match rem {
-                    None => new_ops.push(op.clone()),
-                    Some(idxs) => {
-                        let st = show_state(&walker, op_index)?;
-                        let (new_items, n_removed, sites) =
-                            rewrite_tj(st, &walker, items, idxs, op_index)?;
-                        codes_removed += n_removed;
-                        removed_sites.extend(sites);
-                        new_ops.extend(new_items);
-                    }
-                }
-            }
-            // `'` and `"` carry side effects beyond Tj — expand them
-            // to `T*` + `Tj` (and `Tw`/`Tc` for `"`) so the rewrite
-            // never drops the leading/spacing update. (A `'` or `"`
-            // whose text is fully removed still needs its `T*`.)
-            Operation::NextLineShowText(text) => {
-                let rem = to_remove.get(&op_index);
-                match rem {
-                    None => new_ops.push(op.clone()),
-                    Some(idxs) => {
-                        // `'` ≡ T* + Tj — emit the T* unconditionally
-                        // so the line move survives an empty Tj.
-                        new_ops.push(Operation::NextLine);
-                        let st = show_state(&walker, op_index)?;
-                        let (new_items, n_removed, sites) =
-                            rewrite_show_text(st, &walker, text, idxs, op_index)?;
-                        codes_removed += n_removed;
-                        removed_sites.extend(sites);
-                        new_ops.extend(new_items);
-                    }
-                }
-            }
-            Operation::SetSpacingNextLineShowText {
-                word_spacing,
-                char_spacing,
-                text,
-            } => {
-                let rem = to_remove.get(&op_index);
-                match rem {
-                    None => new_ops.push(op.clone()),
-                    Some(idxs) => {
-                        // `"` ≡ Tw + Tc + T* + Tj — emit the spacing
-                        // and T* unconditionally. The snapshot already
-                        // carries the op's *new* `Tw`/`Tc` (it was
-                        // recorded after the update), so the advance
-                        // math uses the right spacing.
-                        new_ops.push(Operation::SetWordSpacing(*word_spacing));
-                        new_ops.push(Operation::SetCharSpacing(*char_spacing));
-                        new_ops.push(Operation::NextLine);
-                        let st = show_state(&walker, op_index)?;
-                        let (new_items, n_removed, sites) =
-                            rewrite_show_text(st, &walker, text, idxs, op_index)?;
-                        codes_removed += n_removed;
-                        removed_sites.extend(sites);
-                        new_ops.extend(new_items);
-                    }
-                }
-            }
-            _ => new_ops.push(op.clone()),
+            _ => new_ops.extend(rewrite_ops_for(
+                &walker,
+                &to_remove,
+                &site_lookup,
+                &[],
+                op_index,
+                op,
+                &mut codes_removed,
+                &mut removed_sites,
+            )?),
         }
     }
 
-    // Nothing removed → nothing to write. Report an empty-edit result
-    // (still a valid PDF — the caller sees `codes_removed == 0`).
-    let codes_removed = codes_removed;
-
-    // ---- serialise the new stream -----------------------------------
+    // ---- serialise the new page stream -------------------------------
     let new_body = serialize_ops(&new_ops, limits)?;
-    // The replacement Contents is a synthetic object; the page dict
-    // is updated to point at it. Other pages that share the original
-    // stream keep it untouched.
-    let mut edit = Edit::new(doc, limits.clone())?;
+    let mut edit = match edit_guard {
+        Some(e) => e,
+        None => Edit::new(doc, limits.clone())?,
+    };
     let stream_ref = edit.alloc()?;
     edit.overlay.insert(
         (stream_ref.number, stream_ref.generation),
@@ -376,6 +477,35 @@ pub fn remove_text(
         .cloned()
         .ok_or_else(|| Error::Structure(format!("page {page_ref} is not a dictionary")))?;
     page_dict.insert(b"Contents".to_vec(), Object::Ref(stream_ref));
+    if !new_xobject_entries.is_empty() {
+        // Merge the cloned forms into the page's *effective* `/XObject`
+        // dict — the effective dict is materialised into the page's
+        // `/Resources` so an inherited or shared resources object is
+        // never mutated. Other categories (`/Font`, `/ExtGState`, …)
+        // pass through verbatim (refs preserved).
+        let mut res_dict = match page.resources() {
+            Some(r) => doc
+                .deref(r)?
+                .as_dict()
+                .cloned()
+                .ok_or_else(|| Error::Structure("/Resources is not a dictionary".into()))?,
+            None => Dict::new(),
+        };
+        // The `/XObject` entry may itself be a `Ref` to a shared dict
+        // — deref + clone so the shared object is never mutated.
+        let mut xobj_dict = match res_dict.get(b"XObject".as_slice()) {
+            Some(o) => doc.deref(o)?.as_dict().cloned().ok_or_else(|| {
+                Error::Structure("/Resources /XObject is not a dictionary".into())
+            })?,
+            None => Dict::new(),
+        };
+        for (name, r) in &new_xobject_entries {
+            // `fresh_xobject_name` already verified the name is free.
+            xobj_dict.insert(name.clone(), Object::Ref(*r));
+        }
+        res_dict.insert(b"XObject".to_vec(), Object::Dict(xobj_dict));
+        page_dict.insert(b"Resources".to_vec(), Object::Dict(res_dict));
+    }
     edit.overlay.insert(
         (page_ref.number, page_ref.generation),
         Object::Dict(page_dict),
@@ -394,34 +524,173 @@ pub fn remove_text(
                 if validated.len() == 1 { "" } else { "s" }
             ),
             format!("codes removed: {codes_removed}"),
-            "scope: page-level content only — no Form/Annots/metadata/structure".into(),
+            "scope: page-level content + one level of /Form — no nested XObjects, \
+             no /Annots/metadata/structure"
+                .into(),
         ],
     })
 }
 
-/// Fetch the text-state snapshot the walker recorded at `op_index` —
-/// the state the show op *actually ran under*. A missing entry means
-/// the op never executed its show (impossible for a page-level op the
-/// walker completed) or the walk diverged from the ops list — either
-/// way it's a structure error, never a guess.
-fn show_state<'a>(walker: &'a DiagWalker<'a>, op_index: usize) -> Result<&'a ShowTextState, Error> {
+/// Fetch the text-state snapshot the walker recorded at
+/// `(form_path, op_index)` — the state the show op *actually ran
+/// under*. A missing entry means the op never executed its show
+/// (impossible for an op the walker completed) or the walk diverged
+/// from the ops list — either way it's a structure error, never a
+/// guess.
+fn show_state<'a>(
+    walker: &'a DiagWalker<'a>,
+    form_path: &[FormFrame],
+    op_index: usize,
+) -> Result<&'a ShowTextState, Error> {
     walker
         .show_states
-        .get(&op_index)
-        .ok_or_else(|| Error::Structure(format!("no text-state snapshot for op #{op_index}")))
+        .get(&(form_path.to_vec(), op_index))
+        .ok_or_else(|| {
+            Error::Structure(format!(
+                "no text-state snapshot for op #{op_index} (form_path depth {})",
+                form_path.len()
+            ))
+        })
+}
+
+/// Rewrite a single `Tj`/`TJ`/`'`/`"` op at `(form_path, op_index)`
+/// against its removal list and state snapshot — shared by the
+/// page-level loop and the per-form clone. Returns the replacement
+/// ops (0–3 for `'`/`"` expansion, 1 otherwise) and appends to
+/// `codes_removed`/`removed_sites`.
+///
+/// A `Do`/`sh` or a non-show op passes straight through — callers
+/// intercept `Do` before calling this.
+#[allow(clippy::too_many_arguments)]
+fn rewrite_ops_for(
+    walker: &DiagWalker,
+    to_remove: &BTreeMap<(Vec<FormFrame>, usize), Vec<usize>>,
+    site_lookup: &BTreeMap<(Vec<FormFrame>, usize, usize), Site>,
+    form_path: &[FormFrame],
+    op_index: usize,
+    op: &Operation,
+    codes_removed: &mut u64,
+    removed_sites: &mut Vec<Site>,
+) -> Result<Vec<Operation>, Error> {
+    let key = (form_path.to_vec(), op_index);
+    let rem = to_remove.get(&key);
+    match (op, rem) {
+        (Operation::ShowText(bytes), Some(idxs)) => {
+            let st = show_state(walker, form_path, op_index)?;
+            let (new_items, n, sites) =
+                rewrite_show_text(st, site_lookup, form_path, bytes, idxs, op_index)?;
+            *codes_removed += n;
+            removed_sites.extend(sites);
+            Ok(new_items)
+        }
+        (Operation::ShowTextAdjusted(items), Some(idxs)) => {
+            let st = show_state(walker, form_path, op_index)?;
+            let (new_items, n, sites) =
+                rewrite_tj(st, site_lookup, form_path, items, idxs, op_index)?;
+            *codes_removed += n;
+            removed_sites.extend(sites);
+            Ok(new_items)
+        }
+        // `'` ≡ T* + Tj — emit the T* unconditionally so the line move
+        // survives an empty Tj.
+        (Operation::NextLineShowText(text), Some(idxs)) => {
+            let st = show_state(walker, form_path, op_index)?;
+            let (new_items, n, sites) =
+                rewrite_show_text(st, site_lookup, form_path, text, idxs, op_index)?;
+            *codes_removed += n;
+            removed_sites.extend(sites);
+            let mut v = vec![Operation::NextLine];
+            v.extend(new_items);
+            Ok(v)
+        }
+        // `"` ≡ Tw + Tc + T* + Tj — emit the spacing and T*
+        // unconditionally. The snapshot already carries the op's *new*
+        // `Tw`/`Tc` (recorded after the update).
+        (
+            Operation::SetSpacingNextLineShowText {
+                word_spacing,
+                char_spacing,
+                text,
+            },
+            Some(idxs),
+        ) => {
+            let st = show_state(walker, form_path, op_index)?;
+            let (new_items, n, sites) =
+                rewrite_show_text(st, site_lookup, form_path, text, idxs, op_index)?;
+            *codes_removed += n;
+            removed_sites.extend(sites);
+            let mut v = vec![
+                Operation::SetWordSpacing(*word_spacing),
+                Operation::SetCharSpacing(*char_spacing),
+                Operation::NextLine,
+            ];
+            v.extend(new_items);
+            Ok(v)
+        }
+        _ => Ok(vec![op.clone()]),
+    }
+}
+
+/// Pick a fresh `/XObject` resource name for a cloned form —
+/// deterministic (`KasFm0`, `KasFm1`, …) and verified absent from both
+/// the page's effective `/XObject` dict *and* the names already
+/// allocated this call (`allocated`), so a generated name can never
+/// shadow a resource another `Do` uses or collide with a sibling
+/// clone.
+fn fresh_xobject_name(
+    page: &crate::page::Page,
+    doc: &Document,
+    seq: u64,
+    allocated: &[Vec<u8>],
+) -> Result<Vec<u8>, Error> {
+    let existing: Option<Dict> = match page.resources() {
+        Some(r) => match doc.deref(r)?.as_dict() {
+            Some(d) => match d.get(b"XObject".as_slice()) {
+                Some(o) => Some(doc.deref(o)?.as_dict().cloned().ok_or_else(|| {
+                    Error::Structure("/Resources /XObject is not a dictionary".into())
+                })?),
+                None => None,
+            },
+            None => return Err(Error::Structure("/Resources is not a dictionary".into())),
+        },
+        None => None,
+    };
+    for n in seq.. {
+        let name = format!("KasFm{n}").into_bytes();
+        let taken = existing
+            .as_ref()
+            .map(|d| d.contains_key(name.as_slice()))
+            .unwrap_or(false)
+            || allocated.contains(&name);
+        if !taken {
+            return Ok(name);
+        }
+        // Practically unreachable — a document would need `KasFm{n}`
+        // for every n up to u64::MAX — but the loop is bounded so a
+        // pathological dict can't spin forever.
+        if n - seq > 1_000_000 {
+            return Err(Error::LimitExceeded {
+                limit: "xobject_name_space",
+                max: 1_000_000,
+            });
+        }
+    }
+    unreachable!()
 }
 
 /// Rewrite one `Tj`/`'`/`"` string with `remove` codes taken out —
 /// emits a `TJ` op (or nothing when every code went) whose numeric
 /// elements carry each removed code's advance so following glyphs
-/// land where they did. `st` is the *op-time* text state; `walker`
-/// supplies `text_site_at` for the audit trail.
+/// land where they did. `st` is the *op-time* text state;
+/// `site_lookup` supplies the removed codes' `Site`s (carrying the
+/// right `form_path`).
 ///
 /// Returns `(ops, codes_removed, sites)` — `ops` is empty when the
 /// whole string was removed.
 fn rewrite_show_text(
     st: &ShowTextState,
-    walker: &DiagWalker,
+    site_lookup: &BTreeMap<(Vec<FormFrame>, usize, usize), Site>,
+    form_path: &[FormFrame],
     bytes: &[u8],
     remove: &[usize],
     op_index: usize,
@@ -506,7 +775,14 @@ fn rewrite_show_text(
             };
             removed_advance += w0 + (char_spacing + tw) * 1000.0 / font_size;
             codes_removed += 1;
-            sites.push(walker.text_site_at(op_index, ci));
+            sites.push(
+                site_lookup
+                    .get(&(form_path.to_vec(), op_index, ci))
+                    .cloned()
+                    .ok_or_else(|| {
+                        Error::Structure(format!("no site for removed code {ci} at op #{op_index}"))
+                    })?,
+            );
         } else {
             // Kept — but if a removed run ended just before, flush its
             // accumulated advance *first* so the kern sits between the
@@ -557,7 +833,8 @@ fn rewrite_show_text(
 /// through unchanged. `st` is the op-time text state.
 fn rewrite_tj(
     st: &ShowTextState,
-    walker: &DiagWalker,
+    site_lookup: &BTreeMap<(Vec<FormFrame>, usize, usize), Site>,
+    form_path: &[FormFrame],
     items: &[TJItem],
     remove: &[usize],
     op_index: usize,
@@ -624,7 +901,16 @@ fn rewrite_tj(
                         };
                         removed_advance += w0 + (char_spacing + tw) * 1000.0 / font_size;
                         codes_removed += 1;
-                        sites.push(walker.text_site_at(op_index, global));
+                        sites.push(
+                            site_lookup
+                                .get(&(form_path.to_vec(), op_index, global))
+                                .cloned()
+                                .ok_or_else(|| {
+                                    Error::Structure(format!(
+                                        "no site for removed code {global} at op #{op_index}"
+                                    ))
+                                })?,
+                        );
                     } else {
                         // Kept — flush any pending removed advance
                         // first so the kern lands between strings.
@@ -1359,10 +1645,1141 @@ mod tests {
         parts.push(b"trailer\n<< /Size 6 /Root 1 0 R >>\n".to_vec());
         parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
         let d = doc(&parts.concat());
+        // M18: a Form `Do` is in scope — an empty form with no
+        // removals succeeds (no clone is needed since nothing was
+        // selected inside it).
+        let r = remove_text(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap();
+        assert_eq!(r.codes_removed, 0);
+    }
+
+    /// A 1-page PDF with a Form XObject invoked once — `/Fm1` at
+    /// `10 0 R`. `form_body` runs inside the form under the page's
+    /// `/F1` (inherited resources: the form has no `/Resources` of its
+    /// own so it uses the caller's, §8.10.1).
+    fn form_pdf(form_body: &[u8]) -> Vec<u8> {
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> /XObject << /Fm1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut fd = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        fd.extend_from_slice(&widths);
+        fd.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push!(4, &fd);
+        push!(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs2 = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs2.extend_from_slice(&enc);
+        fs2.extend_from_slice(b"\nendstream");
+        push!(6, &fs2);
+        // Page content: one `Do` at op #0.
+        let body = b"/Fm1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        // Form at 10 0 R — identity /Matrix, 200×200 /BBox, no own
+        // /Resources (inherits the page's).
+        let mut f = b"<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+              /Matrix [1 0 0 1 0 0] /Length "
+            .to_vec();
+        f.extend_from_slice(form_body.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(form_body);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        parts.concat()
+    }
+
+    /// M18 — remove a code inside a Form `Do`: the invocation is
+    /// cloned (new `/XObject` name + new stream object), the page's
+    /// `Do` points at the clone, and the *original* form object is
+    /// untouched in the output.
+    #[test]
+    fn form_text_removal_clones_the_invocation() {
+        // Form paints (ABC) at 24pt under /F1 — 'B' sits at
+        // origin 34.4..40.4, ink ~34.4..40.4, y 60..76.8.
+        let d = doc(&form_pdf(b"BT /F1 24 Tf 20 60 Td (ABC) Tj ET\n"));
+        let r = remove_text(&d, 0, &[(35.0, 60.0, 38.0, 80.0)], &Limits::default()).unwrap();
+        assert_eq!(r.codes_removed, 1);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // The clone's stream must carry the same rewrite a page-level
+        // removal would: [(A) -600 (C)] TJ at op-time Tc=0, w0=600.
+        assert!(
+            out.contains("[(A) -600 (C)] TJ"),
+            "cloned form must rewrite the Tj: {out}"
+        );
+        // The original form object (10 0 R) must still contain the
+        // *unmodified* string — its bytes are preserved verbatim.
+        assert!(
+            out.contains("(ABC)"),
+            "original form must keep its (ABC) string: {out}"
+        );
+        // A new resource name was registered and a `Do` rewritten.
+        assert!(
+            out.contains("/KasFm"),
+            "cloned form must get a fresh /XObject name: {out}"
+        );
+    }
+
+    /// M18 — two `Do`s of the *same* form are distinct invocations:
+    /// only the one whose inner text a rect hits is cloned; the other
+    /// keeps pointing at the original object.
+    #[test]
+    fn two_invocations_only_the_hit_one_is_cloned() {
+        // /Fm1 twice at different translations — 'B' inside the
+        // first invocation's copy at (20,60)+(34.4,0) ≈ origin
+        // 54.4..60.4; the second copy is at (120,60).
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> /XObject << /Fm1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut fd = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        fd.extend_from_slice(&widths);
+        fd.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push!(4, &fd);
+        push!(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs2 = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs2.extend_from_slice(&enc);
+        fs2.extend_from_slice(b"\nendstream");
+        push!(6, &fs2);
+        // Two `Do`s of the same form at translations (20,60) and
+        // (120,60) — op #2 and op #5 (cm + Do each).
+        let body = b"q 1 0 0 1 20 60 cm /Fm1 Do Q\nq 1 0 0 1 120 60 cm /Fm1 Do Q\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let form_body = b"BT /F1 24 Tf 0 0 Td (ABC) Tj ET\n";
+        let mut f = b"<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+              /Matrix [1 0 0 1 0 0] /Length "
+            .to_vec();
+        f.extend_from_slice(form_body.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(form_body);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // 'B' inside invocation 1: ink ~34.4..40.4 — rect edges stay
+        // strictly inside so A's `20..34.4` and C's `57.2..63.2`
+        // (edge-touching counts as a hit) are both missed.
+        // Invocation 2's 'B' is at 120+34.4=154.4 — outside.
+        let r = remove_text(&d, 0, &[(34.5, 55.0, 40.0, 80.0)], &Limits::default()).unwrap();
+        assert_eq!(r.codes_removed, 1);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // The clone carries the rewrite; the original form keeps
+        // "(ABC)" so invocation 2 still shows all three glyphs.
+        assert!(out.contains("[(A) -600 (C)] TJ"), "clone: {out}");
+        assert!(out.contains("(ABC)"), "original keeps (ABC): {out}");
+        // Exactly one `Do` was renamed — the other still says `/Fm1`.
+        let fm1_count = out.matches("/Fm1 Do").count();
+        let kasm_do = out.matches("/KasFm0 Do").count();
+        assert_eq!(fm1_count, 1, "one /Fm1 Do remains: {out}");
+        assert_eq!(kasm_do, 1, "one /KasFm0 Do appeared: {out}");
+    }
+
+    /// M18 — the caller's text state is inherited by the form: `Tc`
+    /// set at page level before the `Do` applies to the form's `Tj`,
+    /// so the kern carries `Tc` even though the form never sets it.
+    #[test]
+    fn form_inherits_caller_text_state() {
+        // `2 Tc` at page level (text state is graphics state) — the
+        // form's 'B' advance = 14.4+2 = 16.4 → origin 36.4, ink
+        // ~36.4..42.4 (rect 36..43 hits only it).
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> /XObject << /Fm1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut fd = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        fd.extend_from_slice(&widths);
+        fd.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push!(4, &fd);
+        push!(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs2 = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs2.extend_from_slice(&enc);
+        fs2.extend_from_slice(b"\nendstream");
+        push!(6, &fs2);
+        let body = b"2 Tc\nq 1 0 0 1 20 60 cm /Fm1 Do Q\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let form_body = b"BT /F1 24 Tf 0 0 Td (ABC) Tj ET\n";
+        let mut f = b"<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+              /Matrix [1 0 0 1 0 0] /Length "
+            .to_vec();
+        f.extend_from_slice(form_body.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(form_body);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r = remove_text(&d, 0, &[(36.0, 55.0, 43.0, 80.0)], &Limits::default()).unwrap();
+        assert_eq!(r.codes_removed, 1);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // Kern at *inherited* Tc=2: -(600 + 2·1000/24) = -683.3333 —
+        // a snapshot taken inside the form sees the caller's Tc.
+        assert!(out.contains("-683.3333"), "inherited Tc=2 kern: {out}");
+    }
+
+    /// M18 — rect hits at *both* levels: page-level text is rewritten
+    /// in the page stream while the form invocation is cloned — the
+    // two scopes compose.
+    #[test]
+    fn form_and_page_text_both_rewrite() {
+        // Page shows (XYZ) at (20,120); form shows (ABC) at (20,60).
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> /XObject << /Fm1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut fd = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        fd.extend_from_slice(&widths);
+        fd.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push!(4, &fd);
+        push!(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs2 = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs2.extend_from_slice(&enc);
+        fs2.extend_from_slice(b"\nendstream");
+        push!(6, &fs2);
+        let body = b"q 1 0 0 1 20 60 cm /Fm1 Do Q\nBT /F1 24 Tf 20 120 Td (XYZ) Tj ET\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let form_body = b"BT /F1 24 Tf 0 0 Td (ABC) Tj ET\n";
+        let mut f = b"<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+              /Matrix [1 0 0 1 0 0] /Length "
+            .to_vec();
+        f.extend_from_slice(form_body.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(form_body);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // 'Y' on the page (ink 34.4..40.4 @y120) + 'B' in the form
+        // (ink 34.4..40.4 @y60 — form cm(20,60) + inner Td(0,0)).
+        let r = remove_text(
+            &d,
+            0,
+            &[(34.5, 115.0, 40.0, 140.0), (34.5, 55.0, 40.0, 80.0)],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.codes_removed, 2);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // Page Tj: [(X) -600 (Z)] — form clone: [(A) -600 (C)].
+        assert!(out.contains("[(X) -600 (Z)] TJ"), "page rewrite: {out}");
+        assert!(out.contains("[(A) -600 (C)] TJ"), "form clone: {out}");
+    }
+
+    /// M18 — a form stream that *is* `/Filter`ed is decoded, rewritten,
+    /// and emitted uncompressed — the clone dict must not keep the
+    /// stale `/Filter` (the decoder would otherwise re-apply it).
+    #[test]
+    fn filtered_form_clone_strips_filter() {
+        // Form body stored Flate-compressed; removal must clone it as
+        // a plain stream without `/Filter`/`/DecodeParms`.
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> /XObject << /Fm1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut fd = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        fd.extend_from_slice(&widths);
+        fd.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push!(4, &fd);
+        push!(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs2 = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs2.extend_from_slice(&enc);
+        fs2.extend_from_slice(b"\nendstream");
+        push!(6, &fs2);
+        push!(9, &{
+            let body = b"/Fm1 Do\n";
+            let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+            sb.extend_from_slice(body);
+            sb.extend_from_slice(b"\nendstream");
+            sb
+        });
+        // Form stored compressed.
+        let form_body = b"BT /F1 24 Tf 0 0 Td (ABC) Tj ET\n";
+        let fenc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(form_body).unwrap();
+            e.finish().unwrap()
+        };
+        let mut f = format!(
+            "<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+              /Matrix [1 0 0 1 0 0] /Filter /FlateDecode /Length {} >>\nstream\n",
+            fenc.len()
+        )
+        .into_bytes();
+        f.extend_from_slice(&fenc);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // 'B' ink 14.4..20.4 — edges strictly inside so A (0..14.4)
+        // and C (37.2..43.2) are missed.
+        let r = remove_text(&d, 0, &[(14.5, 0.0, 20.0, 20.0)], &Limits::default()).unwrap();
+        assert_eq!(r.codes_removed, 1);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // The clone carries the rewrite uncompressed — no `/Filter`
+        // near its stream header.
+        assert!(out.contains("[(A) -600 (C)] TJ"), "clone rewrite: {out}");
+        // The *clone* carries the rewrite uncompressed — its dict
+        // must not declare `/Filter`. Find the obj whose stream
+        // contains the TJ (the `/XObject` entry `/KasFm0 N 0 R`
+        // points at it; object order in the output isn't fixed).
+        let tj_pos = out.find("[(A) -600 (C)] TJ").expect("clone body");
+        let dict_start = out[..tj_pos].rfind("<< /BBox").expect("clone dict");
+        let dict_text = &out[dict_start..tj_pos];
+        assert!(
+            !dict_text.contains("/Filter"),
+            "clone must not carry the old /Filter: {dict_text}"
+        );
+        // The *original* still carries its `/Filter` + encoded bytes —
+        // assert it's untouched by finding `/FlateDecode` surviving.
+        assert!(
+            out.contains("/FlateDecode"),
+            "original keeps /Filter: {out}"
+        );
+    }
+
+    /// M18 — a form carrying `/Group` (transparency group) is refused:
+    /// the walker already blocks on it, and the refusal survives to
+    /// remove_text even when the rect selects its text.
+    #[test]
+    fn form_with_group_is_refused() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> /XObject << /Fm1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut fd = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        fd.extend_from_slice(&widths);
+        fd.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push!(4, &fd);
+        push!(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs2 = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs2.extend_from_slice(&enc);
+        fs2.extend_from_slice(b"\nendstream");
+        push!(6, &fs2);
+        push!(9, &{
+            let body = b"/Fm1 Do\n";
+            let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+            sb.extend_from_slice(body);
+            sb.extend_from_slice(b"\nendstream");
+            sb
+        });
+        let form_body = b"BT /F1 24 Tf 0 0 Td (ABC) Tj ET\n";
+        let mut f = b"<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+              /Matrix [1 0 0 1 0 0] /Group << /S /Transparency >> /Length "
+            .to_vec();
+        f.extend_from_slice(form_body.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(form_body);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
         let err = remove_text(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap_err();
         assert!(
             matches!(err, Error::Unsupported { .. }),
-            "Do must refuse, got {err:?}"
+            "/Group must refuse: {err:?}"
+        );
+    }
+
+    /// M18 — the same form object invoked on *two pages*: editing
+    /// page 1's invocation leaves page 2's `Do` (and the shared form)
+    /// untouched — only page 1's resources gain the clone.
+    #[test]
+    fn shared_form_other_page_keeps_original() {
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 >>");
+        // Two pages — each calls /Fm1 at identity CTM, sharing 10 0 R.
+        for (page, contents) in [(3u32, 9u32), (8u32, 12u32)] {
+            let body = b"/Fm1 Do\n";
+            let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+            sb.extend_from_slice(body);
+            sb.extend_from_slice(b"\nendstream");
+            push!(contents, &sb);
+            let pdict = format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                 /Resources << /Font << /F1 4 0 R >> /XObject << /Fm1 10 0 R >> >> \
+                 /Contents {contents} 0 R >>"
+            )
+            .into_bytes();
+            push!(page, &pdict);
+        }
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut fd = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        fd.extend_from_slice(&widths);
+        fd.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push!(4, &fd);
+        push!(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs2 = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs2.extend_from_slice(&enc);
+        fs2.extend_from_slice(b"\nendstream");
+        push!(6, &fs2);
+        let form_body = b"BT /F1 24 Tf 0 0 Td (ABC) Tj ET\n";
+        let mut f = b"<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+              /Matrix [1 0 0 1 0 0] /Length "
+            .to_vec();
+        f.extend_from_slice(form_body.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(form_body);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 13\n0000000000 65535 f \n".to_vec());
+        for n in 1..13u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 13 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // Remove 'B' on page 1 only — page 2's invocation shares the
+        // same form object and must keep all three glyphs.
+        let r = remove_text(&d, 0, &[(14.5, 0.0, 20.0, 20.0)], &Limits::default()).unwrap();
+        assert_eq!(r.codes_removed, 1);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // The original form keeps `(ABC)` — page 2 still shows it.
+        assert!(out.contains("(ABC)"), "shared original intact: {out}");
+        assert!(
+            out.contains("[(A) -600 (C)] TJ"),
+            "page 1 clone rewrote: {out}"
+        );
+        // Two `/Fm1 Do` calls would mean both pages renamed — exactly
+        // one `/Fm1 Do` must survive (page 2's), one `/KasFm0 Do`
+        // appears (page 1's).
+        assert_eq!(
+            out.matches("/Fm1 Do").count(),
+            1,
+            "page 2 keeps /Fm1: {out}"
+        );
+        assert_eq!(out.matches("/KasFm0 Do").count(), 1, "page 1 cloned: {out}");
+    }
+
+    /// M18 — a `Do` inside a form refuses even when the nested form
+    /// is *empty* (no inner text to trip the depth check): the
+    /// invocation record itself (`Form` target at depth 1) is the
+    /// nested signal.
+    #[test]
+    fn empty_nested_do_is_refused() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> /XObject << /Outer 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut fd = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        fd.extend_from_slice(&widths);
+        fd.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push!(4, &fd);
+        push!(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs2 = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs2.extend_from_slice(&enc);
+        fs2.extend_from_slice(b"\nendstream");
+        push!(6, &fs2);
+        push!(9, &{
+            let body = b"/Outer Do\n";
+            let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+            sb.extend_from_slice(body);
+            sb.extend_from_slice(b"\nendstream");
+            sb
+        });
+        let outer_body = b"/Inner Do\n";
+        let mut f = b"<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> /XObject << /Inner 11 0 R >> >> \
+              /Length "
+            .to_vec();
+        f.extend_from_slice(outer_body.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(outer_body);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        // Inner form is EMPTY — no inner text targets.
+        let f2 = b"<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] \
+              /Length 0 >>\nstream\n\nendstream"
+            .to_vec();
+        push!(11, &f2);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 12\n0000000000 65535 f \n".to_vec());
+        for n in 1..12u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 12 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let err = remove_text(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap_err();
+        assert!(
+            matches!(err, Error::Unsupported { .. }),
+            "empty nested Do must refuse: {err:?}"
+        );
+    }
+
+    /// M18 — a `Do` *inside* a form refuses (nested XObjects).
+    #[test]
+    fn nested_do_is_refused() {
+        // The outer form contains a `Do` of the inner form.
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> /XObject << /Outer 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut fd = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        fd.extend_from_slice(&widths);
+        fd.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push!(4, &fd);
+        push!(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs2 = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs2.extend_from_slice(&enc);
+        fs2.extend_from_slice(b"\nendstream");
+        push!(6, &fs2);
+        push!(9, &{
+            let body = b"/Outer Do\n";
+            let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+            sb.extend_from_slice(body);
+            sb.extend_from_slice(b"\nendstream");
+            sb
+        });
+        // Outer form — its own /Resources must carry the /Font the
+        // inner form needs (a form's /Resources *replaces* the
+        // caller's, §8.10.1 — it does not merge).
+        let outer_body = b"/Inner Do\n";
+        let mut f = b"<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> /XObject << /Inner 11 0 R >> >> \
+              /Length "
+            .to_vec();
+        f.extend_from_slice(outer_body.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(outer_body);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let inner_body = b"BT /F1 24 Tf 20 60 Td (ABC) Tj ET\n";
+        let mut f2 = b"<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+              /Length "
+            .to_vec();
+        f2.extend_from_slice(inner_body.len().to_string().as_bytes());
+        f2.extend_from_slice(b" >>\nstream\n");
+        f2.extend_from_slice(inner_body);
+        f2.extend_from_slice(b"\nendstream");
+        push!(11, &f2);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 12\n0000000000 65535 f \n".to_vec());
+        for n in 1..12u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 12 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let err = remove_text(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap_err();
+        assert!(
+            matches!(err, Error::Unsupported { .. }),
+            "nested Do must refuse: {err:?}"
+        );
+    }
+
+    /// An *image* `Do` is still refused — form text is the only
+    /// XObject kind M18 edits.
+    #[test]
+    fn image_xobject_is_refused() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> /XObject << /Im1 6 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        // Reuse the one-glyph fixture for the font — the image is a
+        // 1x1 DeviceGray stream.
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut fd = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        fd.extend_from_slice(&widths);
+        fd.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push!(4, &fd);
+        push!(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 7 0 R >>"
+        );
+        push!(
+            6,
+            b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 1 >>\nstream\n\x80\nendstream"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs2 = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs2.extend_from_slice(&enc);
+        fs2.extend_from_slice(b"\nendstream");
+        push!(7, &fs2);
+        let body = b"BT /F1 24 Tf 20 60 Td (A) Tj ET\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 10\n0000000000 65535 f \n".to_vec());
+        for n in 1..10u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 10 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let err = remove_text(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap_err();
+        assert!(
+            matches!(err, Error::Unsupported { .. }),
+            "image Do must refuse, got {err:?}"
         );
     }
 

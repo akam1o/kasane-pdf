@@ -565,21 +565,41 @@ Design choices:
   construct the scope refuses. Walk errors keep their typed kind
   (`LimitExceeded`, `Structure`, `Parse`) — never flattened to
   `Unsupported`.
-- **Op-time state snapshots (M17.1)** — the walker records the text
-  state each page-level show op ran under (`Font` (Rc-cloned), `Tfs`,
-  `Th`, `Tc`, `Tw`) into `show_states[op_index]` at the point
-  `show_text` consumes it — after `"`'s `Tw`/`Tc` update, after
-  `'`/`"`'s line move. One snapshot per show op, bounded by
-  `max_operations`; form-level ops get none (removal is refused on
-  `Do` anyway). Selection (`Target`) and rewrite read the *same*
-  state, so a later `Tf`/`Tc`/`Tz`/`q`/`Q`/`BT` change can never
-  rewrite an earlier show under the stream-end values — the M17.0
-  bug where `walker.gs.text` at end-of-stream was used for every op.
-- **Page-level eligibility (M17.1)** — a page is eligible only when
-  *every* text occurrence on it is `Tr 0` fill, checked against all
-  `walker.targets`, not just the hit ones. `Tr 4–7` and `w = 0`
-  stroked text arrive via `blocker`/`uncertain` and refuse the same
-  way; a `Tr` *set* but never used to show text is harmless.
+- **Op-time state snapshots (M17.1, extended M18)** — the walker
+  records the text state each show op ran under (`Font` (Rc-cloned),
+  `Tfs`, `Th`, `Tc`, `Tw`) into `show_states[(form_path, op_index)]`
+  at the point `show_text` consumes it — after `"`'s `Tw`/`Tc`
+  update, after `'`/`"`'s line move. The `form_path` is part of the
+  key (`[]` at page level, `[frame]` inside a called form), so a
+  form's inner ops under different invocations get distinct
+  snapshots and never collide with page-level op indices. One
+  snapshot per show op, bounded by `max_operations` per stream ×
+  `max_xobject_invocations` for the recursion. Selection (`Target`)
+  and rewrite read the *same* state, so a later `Tf`/`Tc`/`Tz`/
+  `q`/`Q`/`BT` change can never rewrite an earlier show under the
+  stream-end values — the M17.0 bug where `walker.gs.text` at
+  end-of-stream was used for every op.
+- **Page-level eligibility (M17.1, extended M18)** — a page is
+  eligible only when *every* text occurrence on it is `Tr 0` fill,
+  checked against all `walker.targets`, not just the hit ones —
+  page-level and form-level alike. `Tr 4–7` and `w = 0` stroked
+  text arrive via `blocker`/`uncertain` and refuse the same way; a
+  `Tr` *set* but never used to show text is harmless.
+- **One level of `/Form` (M18)** — a page-level `Do` targeting a
+  `/Form` is edited *per invocation*: the call-site `form_path`
+  (resource name + call-site `op_index`, not just the object ref)
+  keys the removal scope, so two `Do`s of the same form or two
+  names for the same object clone independently. The clone is a new
+  stream object with the rewritten ops serialised uncompressed —
+  `/Filter`/`/DecodeParms` are dropped because the body no longer
+  carries the encoding they described, `/Length` is recomputed, and
+  `/Resources`/`/Matrix`/`/BBox` plus every other key pass through
+  verbatim. A deterministic `KasFm{n}` name (collision-checked
+  against the page's effective `/XObject` dict) registers the clone
+  in the page's materialised `/Resources`; only that `Do` is
+  repointed. Nested `Do`s (`form_path` depth ≥ 2), `Image`/`Other`
+  targets, and `/Group`/`/OC`/`/Ref` forms refuse — the last three
+  via the walker's existing `blocker` path.
 - **Rewrite = `Tj`→`TJ`, `TJ` element-split, `'`/`"` expansion** —
   a `Tj` losing codes becomes a `TJ` whose numeric elements restore
   the removed advance `-(w0 + (Tc+Tw)·1000/Tfs)` (`Tz` cancels — the
@@ -595,14 +615,15 @@ Design choices:
   `Document` and its bytes are never modified; other pages sharing
   the original stream keep it untouched (the removed bytes still
   exist in the shared object — explicitly out of scope).
-- **Refusal list = diagnosis refusal list** — `/Annots`, `Do`/`sh`/
-  inline image/`gs`/Pattern/`ActualText`/OC, any shown text mode
-  other than `Tr 0`, `w = 0` hairlines, unsupported fonts,
-  non-finite CTM, `/UserUnit` ≠ 1, vertical text — each is a typed
-  `Error::Unsupported`, never a partial edit. `serialize_ops`/
-  `write_op` reserialise every op in the stream (no verbatim
-  copying); the match is exhaustive over `Operation`, so a future
-  variant fails to compile rather than slipping through.
+- **Refusal list = diagnosis refusal list** — `/Annots`, `sh`/
+  inline image/`gs`/Pattern/`ActualText`/OC, any `Do` inside a form,
+  `Image`/non-Form XObject, any shown text mode other than `Tr 0`,
+  `w = 0` hairlines, unsupported fonts, non-finite CTM, `/UserUnit`
+  ≠ 1, vertical text — each is a typed `Error::Unsupported`, never
+  a partial edit. `serialize_ops`/`write_op` reserialise every op in
+  the stream (no verbatim copying); the match is exhaustive over
+  `Operation`, so a future variant fails to compile rather than
+  slipping through.
 - **Audit trail** — `Removal { output, codes_removed, sites, scope }`
   reports which codes were removed (site identity from the
   diagnosis: `/Contents` ref + op index + code index) and the scope
