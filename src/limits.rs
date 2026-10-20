@@ -134,6 +134,20 @@ pub struct Limits {
     /// appearance is ~80 bytes; this cap stops an unbounded add loop
     /// from growing memory without limit. Default: 16 MiB.
     pub max_edit_annot_bytes: u64,
+
+    /// Maximum `--rect` arguments one `diagnose_redaction` call accepts.
+    /// Default: 256.
+    pub max_diag_rects: u64,
+    /// Maximum reported items (targets + uncertain + blockers) a single
+    /// diagnosis may accumulate — bounds the result structure itself.
+    /// Default: 100,000.
+    pub max_diag_items: u64,
+    /// Maximum *other* pages scanned for cross-page resource sharing —
+    /// bounds the sharing analysis, not the page itself. Default: 32.
+    pub max_diag_share_pages: u64,
+    /// Maximum resource entries inspected while looking for cross-page
+    /// sharing. Default: 100,000.
+    pub max_diag_share_refs: u64,
 }
 
 impl Default for Limits {
@@ -172,6 +186,10 @@ impl Default for Limits {
             max_edit_annots: 10_000,
             max_edit_objects: 40_000,
             max_edit_annot_bytes: 16 * 1024 * 1024,
+            max_diag_rects: 256,
+            max_diag_items: 100_000,
+            max_diag_share_pages: 32,
+            max_diag_share_refs: 100_000,
         }
     }
 }

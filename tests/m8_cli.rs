@@ -1451,3 +1451,306 @@ fn cli_inspect_version_malformed_name_errors() {
     let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
     assert!(!out.status.success(), "malformed /Version name must fail");
 }
+
+// ------------------------------------------------------------------
+// M16 — `preflight-redaction`
+// ------------------------------------------------------------------
+
+/// A 1-page PDF with a TrueType font (no embedding — glyph outlines
+/// fall back to the cell estimate), one image XObject, one Form
+/// XObject that wraps a `Tj`, and a Link annotation. Exercises every
+/// preflight category: text, image, form, path, annot, shared.
+fn preflight_pdf() -> Vec<u8> {
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+          /Annots [9 0 R] \
+          /Resources << \
+            /Font << /F1 4 0 R >> \
+            /XObject << /Im1 5 0 R /Fm1 6 0 R /Fm2 6 0 R >> \
+          >> \
+          /Contents 7 0 R >>",
+    );
+    // Type1 — unsupported: any Tj under it stops the walk.
+    push(
+        4,
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+    );
+    push(
+        5,
+        b"<< /Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 16 >>\nstream\nxxxxxxxxxxxxxxxx\nendstream",
+    );
+    // A form with no text — just a path — so the Do call itself is
+    // diagnosable even though the page's Tj is not.
+    push(
+        6,
+        b"<< /Type /XObject /Subtype /Form /BBox [0 0 100 40] /Length 19 >>\nstream\n0 0 100 40 re f\nendstream",
+    );
+    // Content order: image, form×2 (shared), path — *then* the
+    // unsupported-font text so the walk stops after diagnosing the
+    // shared/path targets.
+    let body = b"q 40 0 0 40 100 50 cm /Im1 Do Q\nq /Fm1 Do Q\nq 1 0 0 1 120 120 cm /Fm2 Do Q\n2 w 20 20 160 160 re S\nBT /F1 12 Tf 50 150 Td (Hi) Tj ET\n";
+    let stream = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+    let mut s = stream;
+    s.extend_from_slice(body);
+    s.extend_from_slice(b"\nendstream");
+    // Drop the closure's borrow before a manual push, then rebind it.
+    drop(push);
+    offs.push((7, parts.iter().map(|p| p.len()).sum()));
+    parts.push(b"7 0 obj\n".to_vec());
+    parts.push(s);
+    parts.push(b"\nendobj\n".to_vec());
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(
+        9,
+        b"<< /Type /Annot /Subtype /Link /Rect [40 140 70 160] /A << /S /URI /URI (https://x) >> >>",
+    );
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 10\n0000000000 65535 f \n".to_vec());
+    for n in 1..10u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        } else {
+            parts.push(b"0000000000 00000 f \n".to_vec());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 10 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    parts.concat()
+}
+
+#[test]
+fn cli_preflight_happy_text_format() {
+    let dir = tmpdir("pf-text");
+    let src = dir.join("in.pdf");
+    // text_basic.pdf: KasaneTest.ttf TrueType, /Encoding WinAnsi —
+    // fully diagnosable, "ABC" at (20,60) size 24.
+    fs::write(&src, fs::read(fixture("text_basic.pdf")).unwrap()).unwrap();
+    let out = bin()
+        .args(["preflight-redaction"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "15", "55", "70", "80"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    for line in [
+        "preflight-redaction — diagnosis, not a redaction",
+        "page: 1",
+        "rects: 1",
+        "  rect 0: 15 55 70 80",
+        "targets 3",
+        "uncertain 0",
+        "blockers 0",
+        "shared",
+        "annotations 0",
+        "unexamined",
+    ] {
+        assert!(
+            s.lines().any(|l| l.starts_with(line)),
+            "missing '{line}':\n{s}"
+        );
+    }
+    // Each of the three 'A','B','C' glyphs overlaps rect 0 — outline
+    // bounds are reported (ink extent), not a redaction region.
+    let text_hits = s
+        .lines()
+        .filter(|l| l.contains("Text") && l.contains("rects 0"))
+        .count();
+    assert_eq!(text_hits, 3, "expected 3 text targets on rect 0:\n{s}");
+    // Unicode resolved through the encoding fallback.
+    assert!(s.contains("\"A\""), "unicode 'A':\n{s}");
+    // The footer disclaimer must be the only "verdict" — never a
+    // "this file is safe to redact" claim.
+    assert!(!s.contains("safe to redact"), "no safety verdict:\n{s}");
+}
+
+#[test]
+fn cli_preflight_unsupported_font_reports_incomplete() {
+    // Type1 fonts are not supported — the walk must mark the scan
+    // incomplete, never "no targets found".
+    let dir = tmpdir("pf-type1");
+    let src = dir.join("in.pdf");
+    fs::write(&src, preflight_pdf()).unwrap();
+    let out = bin()
+        .args(["preflight-redaction"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "0", "0", "200", "200"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        s.lines().any(|l| l.starts_with("incomplete: ")),
+        "unsupported font → incomplete:\n{s}"
+    );
+    // The annot is still reported (it's above the content walk).
+    assert!(s.lines().any(|l| l.starts_with("annotations 1")), "{s}");
+    // The walk stopped at the Type1 Tj — targets seen before that
+    // (image, two form calls, three paths incl. two inside the
+    // forms) are reported *partially*, never as "all clear".
+    assert!(s.lines().any(|l| l.starts_with("targets 6")), "{s}");
+}
+
+#[test]
+fn cli_preflight_shared_form_is_reported() {
+    // preflight_pdf calls the same form as /Fm1 and /Fm2 — the form
+    // object is shared even though each Do site is distinct.
+    let dir = tmpdir("pf-shared");
+    let src = dir.join("in.pdf");
+    fs::write(&src, preflight_pdf()).unwrap();
+    let out = bin()
+        .args(["preflight-redaction"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "0", "0", "10", "10"]) // rect misses text; shared still reports
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let s = String::from_utf8_lossy(&out.stdout);
+    // Two Do sites → shared, even though the font inside the form is
+    // Type1 (so the inner walk also goes incomplete — the shared
+    // report is about the *object*, not its contents).
+    assert!(
+        s.lines().any(|l| l.starts_with("shared 1")),
+        "expected shared form:\n{s}"
+    );
+}
+
+#[test]
+fn cli_preflight_json_format() {
+    let dir = tmpdir("pf-json");
+    let src = dir.join("in.pdf");
+    fs::write(&src, preflight_pdf()).unwrap();
+    let out = bin()
+        .args(["preflight-redaction"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "0", "0", "200", "200", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let s = String::from_utf8_lossy(&out.stdout);
+    // JSON output is parseable and carries the core fields.
+    assert!(s.starts_with("{\n"), "JSON expected:\n{s}");
+    for k in [
+        "\"rects\"",
+        "\"targets\"",
+        "\"target_list\"",
+        "\"uncertain\"",
+        "\"blockers\"",
+        "\"shared\"",
+        "\"annotations\"",
+        "\"unexamined\"",
+        "\"incomplete\"",
+    ] {
+        assert!(s.contains(k), "missing key {k}:\n{s}");
+    }
+    // The Type1 font makes the walk incomplete — the JSON still
+    // carries the image/form/path targets seen before the text op
+    // was reached (they come first in the stream).
+    assert!(s.contains("\"kind\": \"Image\""), "image target:\n{s}");
+    assert!(s.contains("\"kind\": \"Form\""), "form target:\n{s}");
+    assert!(s.contains("\"kind\": \"Path\""), "path target:\n{s}");
+    // Incomplete is an object, not null.
+    assert!(s.contains("\"incomplete\": {"), "{s}");
+}
+
+#[test]
+fn cli_preflight_requires_rect() {
+    let dir = tmpdir("pf-norect");
+    let src = dir.join("in.pdf");
+    fs::write(&src, preflight_pdf()).unwrap();
+    let out = bin()
+        .args(["preflight-redaction"])
+        .arg(&src)
+        .arg("1")
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "no --rect must fail");
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(e.contains("--rect"), "error must mention --rect: {e}");
+}
+
+#[test]
+fn cli_preflight_rejects_bad_rect() {
+    let dir = tmpdir("pf-badrect");
+    let src = dir.join("in.pdf");
+    fs::write(&src, preflight_pdf()).unwrap();
+    for rect in [
+        ["50", "50", "50", "60"], // zero width
+        ["0", "0", "-1", "10"],   // negative width after normalise
+        ["0", "0", "abc", "10"],  // non-numeric
+    ] {
+        let mut a = vec!["preflight-redaction".to_string()];
+        a.push(src.to_string_lossy().into_owned());
+        a.push("1".into());
+        a.push("--rect".into());
+        a.extend(rect.iter().map(|s| s.to_string()));
+        let out = bin().args(&a).output().unwrap();
+        assert!(
+            !out.status.success(),
+            "rect {rect:?} must fail: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+    }
+}
+
+#[test]
+fn cli_preflight_input_unchanged() {
+    let dir = tmpdir("pf-unchanged");
+    let src = dir.join("in.pdf");
+    let pdf = preflight_pdf();
+    fs::write(&src, &pdf).unwrap();
+    let out = bin()
+        .args(["preflight-redaction"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "0", "0", "200", "200"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(fs::read(&src).unwrap(), pdf, "input was modified");
+}
+
+#[test]
+fn cli_preflight_page_out_of_range() {
+    let dir = tmpdir("pf-page");
+    let src = dir.join("in.pdf");
+    fs::write(&src, preflight_pdf()).unwrap();
+    let out = bin()
+        .args(["preflight-redaction"])
+        .arg(&src)
+        .arg("5")
+        .args(["--rect", "0", "0", "10", "10"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "page 5 of 1 must fail");
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(e.contains("page 5") || e.contains("1 page"), "{e}");
+}
