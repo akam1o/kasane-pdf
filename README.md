@@ -112,7 +112,31 @@ bounds the `show_states` snapshot map (recorded only for
 to the final PDF. M18.2 makes the byte budget *pre-allocation*: a
 `BoundedWriter` checks the remaining budget before every
 `push`/`extend_from_slice`, so a long `Tj` string or huge `TJ`
-array stops mid-write instead of allocating past the bound.
+array stops mid-write instead of allocating past the bound. Note:
+`BoundedWriter` bounds *logical* bytes written; it does not
+guarantee a capacity or RSS ceiling — a single huge `Vec` can still
+be allocated elsewhere (e.g. image decode) under its own limit.
+
+**M19 adds experimental image-region removal** — `remove_image_region`
++ `experimental-remove-image-region` replaces image samples whose
+painted positions hit a caller rect with opaque black in a *new*
+image object (per-invocation `KasIm{n}` cloning, same as M18 forms).
+The original stream is never mutated; other copies are preserved.
+M19.1 fixes four accuracy issues:
+
+- **Union of pixel ranges, not a bounding box** — each rect maps to
+  its own `(x0,y0,x1,y1)` via inverse CTM; disjoint rects do not
+  fill the pixels between them, overlaps are merged, and the
+  intermediate structure is bounded by the input rect count, not
+  image height.
+- **`pixels_changed` counts pixels, not components** — an RGB pixel
+  is 1 whether 1 or 3 channels changed; already-black pixels are 0.
+- **Colour-space resolution** — `/ColorSpace` names resolve through
+  the page's `/Resources /ColorSpace`; `/DefaultRGB` is not
+  unconditionally `DeviceRGB` — a non-device resolution is refused.
+- **Pre-allocation decode budget** — `max_image_bytes` is checked
+  *before* the buffer grows: raw images are refused without cloning,
+  and Flate streams stop mid-decode at the cap.
 
 What works today:
 
@@ -180,9 +204,13 @@ What works today:
 - `remove_text()` + `experimental-remove-text` — experimental scoped
   text removal that deletes hit codes and preserves survivors'
   positions (not a redaction tool; see `docs/coverage.md`).
+- `remove_image_region()` + `experimental-remove-image-region` —
+  experimental image-region removal that blackens hit pixels in a
+  cloned image object (not a redaction tool; see `docs/coverage.md`).
 - A `kasane-pdf` CLI (`info` mode + `contents`, `operations`,
   `render`, `text`, `rewrite`, `annotate-rect`, `inspect`,
-  `preflight-redaction` and `experimental-remove-text` subcommands).
+  `preflight-redaction`, `experimental-remove-text`, and
+  `experimental-remove-image-region` subcommands).
 - Adding `/Subtype /Square` rectangle annotations to a page via an
   [`Edit`] session — opaque RGB stroke, positive width, generated
   `/AP` appearance, existing annots/links preserved, shared `/Annots`
