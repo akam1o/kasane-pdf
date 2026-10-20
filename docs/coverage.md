@@ -626,3 +626,23 @@ scan), `max_diag_share_refs` (resource entries inspected), and a
 CLI output cap of 1_000 lines per category — so a diagnosis never
 grows without bound and its partial-result markers (`incomplete`,
 `shared_scope.truncated`) are always stated.
+
+M18.1 adds three cumulative budgets that the per-stream parse cap
+(`max_operations`) cannot express:
+
+- `max_diag_exec_ops` (200,000) — every content-stream *execution*
+  inside one `diagnose_redaction`/`remove_text` walk. A page op,
+  an op inside a `Do`'d form, an empty `Tj`, a state change, or an
+  unknown op all count once. The same form invoked N times costs
+  N× its op count; the per-stream parse cap sees each stream once.
+- `max_show_states` (200,000) — entries in the walker's
+  `show_states` snapshot map, one per page-level or form-level show
+  op that ran, keyed by `(form_path, op_index)`. The map only
+  records when `remove_text` asks for it; `diagnose_redaction`
+  walks with snapshots off and never fills it.
+- `max_edit_content_bytes` (64 MiB) — bytes of *generated* stream
+  bodies held in the `Edit` overlay at once: each cloned form body
+  plus the new page `/Contents`. Checked before `serialize_ops`
+  grows its Vec past the remaining budget, and again when the
+  finished body is charged; the writer's own `max_output_bytes`
+  still caps the final PDF independently.
