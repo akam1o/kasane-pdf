@@ -629,9 +629,12 @@ Design choices:
   - `max_edit_content_bytes` (64 MiB): cumulative bytes of
     *generated* stream bodies held in the `Edit` overlay — each
     cloned form body plus the new page `/Contents`. `serialize_ops`
-    receives the remaining budget so its Vec stops growing at the
-    bound, and `charge_generated` counts each finished body; the
-    writer's `max_output_bytes` still caps the final PDF.
+    passes the cumulative count to a `BoundedWriter` whose
+    `push`/`extend_from_slice` check the remaining budget *before*
+    appending — a long `Tj` string or huge `TJ` array stops
+    mid-write, never allocating past the bound. `charge_generated`
+    counts each finished body; the writer's `max_output_bytes`
+    still caps the final PDF independently.
 - **Refusal list = diagnosis refusal list** — `/Annots`, `sh`/
   inline image/`gs`/Pattern/`ActualText`/OC, any `Do` inside a form,
   `Image`/non-Form XObject, any shown text mode other than `Tr 0`,

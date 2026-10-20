@@ -389,10 +389,7 @@ pub fn remove_text(
                 &mut removed_sites,
             )?);
         }
-        let remaining = limits
-            .max_edit_content_bytes
-            .saturating_sub(generated_bytes);
-        let new_body = serialize_ops(&new_form_ops, limits, remaining)?;
+        let new_body = serialize_ops(&new_form_ops, limits, generated_bytes)?;
         generated_bytes = charge_generated(generated_bytes, new_body.len(), limits)?;
         // Clone the stream dict, dropping `/Filter`/`/DecodeParms` —
         // the new body is emitted uncompressed, so the old filter
@@ -462,10 +459,7 @@ pub fn remove_text(
     }
 
     // ---- serialise the new page stream -------------------------------
-    let remaining = limits
-        .max_edit_content_bytes
-        .saturating_sub(generated_bytes);
-    let new_body = serialize_ops(&new_ops, limits, remaining)?;
+    let new_body = serialize_ops(&new_ops, limits, generated_bytes)?;
     charge_generated(generated_bytes, new_body.len(), limits)?;
     let mut edit = match edit_guard {
         Some(e) => e,
@@ -975,17 +969,101 @@ fn rewrite_tj(
     ))
 }
 
+/// Bounded output buffer — every `push`/`extend_from_slice` checks
+/// the *remaining* byte budget *before* appending, so a long string
+/// or huge TJ array stops mid-write rather than allocating past the
+/// limit. `max_edit_content_bytes` (cumulative) and
+/// `max_output_bytes` (single-stream) are enforced together; the
+/// tighter of the two is hit first.
+///
+/// The buffer owns a `Vec<u8>` and never exposes it mutably — callers
+/// cannot bypass the checks. On failure the partial bytes are
+/// dropped with the buffer (no halfway stream escapes to the caller).
+struct BoundedWriter<'a> {
+    buf: Vec<u8>,
+    limits: &'a Limits,
+    /// Bytes already charged against `max_edit_content_bytes` by
+    /// earlier streams in the same call — the remaining cumulative
+    /// budget is `max_edit_content_bytes - generated_so_far`.
+    generated_so_far: u64,
+}
+
+impl<'a> BoundedWriter<'a> {
+    fn new(limits: &'a Limits, generated_so_far: u64) -> Self {
+        Self {
+            buf: Vec::new(),
+            limits,
+            generated_so_far,
+        }
+    }
+
+    /// Check `n` more bytes fit before appending. Returns the
+    /// specific limit that would be exceeded, or `Ok(())`.
+    fn check(&self, n: usize) -> Result<(), Error> {
+        let used = self.buf.len() as u64;
+        let n = n as u64;
+        let new_len = used.checked_add(n).ok_or(Error::LimitExceeded {
+            limit: "max_edit_content_bytes",
+            max: self.limits.max_edit_content_bytes,
+        })?;
+        if new_len > self.limits.max_output_bytes {
+            return Err(Error::LimitExceeded {
+                limit: "max_output_bytes",
+                max: self.limits.max_output_bytes,
+            });
+        }
+        let gen_total = self
+            .generated_so_far
+            .checked_add(new_len)
+            .ok_or(Error::LimitExceeded {
+                limit: "max_edit_content_bytes",
+                max: self.limits.max_edit_content_bytes,
+            })?;
+        if gen_total > self.limits.max_edit_content_bytes {
+            return Err(Error::LimitExceeded {
+                limit: "max_edit_content_bytes",
+                max: self.limits.max_edit_content_bytes,
+            });
+        }
+        Ok(())
+    }
+
+    /// Append one byte — budget checked first.
+    fn push(&mut self, b: u8) -> Result<(), Error> {
+        self.check(1)?;
+        self.buf.push(b);
+        Ok(())
+    }
+
+    /// Append a slice — budget checked for the *whole* slice first.
+    fn extend_from_slice(&mut self, s: &[u8]) -> Result<(), Error> {
+        self.check(s.len())?;
+        self.buf.extend_from_slice(s);
+        Ok(())
+    }
+
+    /// Consume the buffer — the caller charges `buf.len()` via
+    /// `charge_generated`.
+    fn into_inner(self) -> Vec<u8> {
+        self.buf
+    }
+}
+
 /// Serialise one op to content-stream bytes — a small subset of the
 /// full grammar, exactly what `remove_text` emits.
 ///
-/// `byte_budget` is the *remaining* cumulative generated-byte budget
-/// (`max_edit_content_bytes` minus what earlier streams in this call
-/// already produced) — the Vec stops growing once it reaches that
-/// bound, so the serializer never allocates past what the caller can
-/// still hold. `max_output_bytes` is checked alongside: it bounds
-/// any *single* stream even when the cumulative budget is generous.
-fn serialize_ops(ops: &[Operation], limits: &Limits, byte_budget: u64) -> Result<Vec<u8>, Error> {
-    let mut out = Vec::new();
+/// `generated_so_far` is the cumulative byte count already charged by
+/// earlier streams in this call — the writer stops appending once
+/// `generated_so_far + buf.len()` would exceed
+/// `max_edit_content_bytes`, or `buf.len()` alone would exceed
+/// `max_output_bytes`. The check happens *before* every byte lands
+/// in the Vec, not after the whole op is written.
+fn serialize_ops(
+    ops: &[Operation],
+    limits: &Limits,
+    generated_so_far: u64,
+) -> Result<Vec<u8>, Error> {
+    let mut out = BoundedWriter::new(limits, generated_so_far);
     let mut ops_written: usize = 0;
     for op in ops {
         ops_written += 1;
@@ -995,22 +1073,10 @@ fn serialize_ops(ops: &[Operation], limits: &Limits, byte_budget: u64) -> Result
                 max: limits.max_operations as u64,
             });
         }
-        write_op(op, &mut out, limits)?;
-        out.push(b'\n');
-        if out.len() as u64 > byte_budget {
-            return Err(Error::LimitExceeded {
-                limit: "max_edit_content_bytes",
-                max: limits.max_edit_content_bytes,
-            });
-        }
-        if out.len() as u64 > limits.max_output_bytes {
-            return Err(Error::LimitExceeded {
-                limit: "max_output_bytes",
-                max: limits.max_output_bytes,
-            });
-        }
+        write_op(op, &mut out)?;
+        out.push(b'\n')?;
     }
-    Ok(out)
+    Ok(out.into_inner())
 }
 
 /// Charge `stream_len` bytes of generated output against
@@ -1038,336 +1104,336 @@ fn charge_generated(acc: u64, stream_len: usize, limits: &Limits) -> Result<u64,
 /// Serialise a single `Operation` — supports every variant the
 /// removal path can emit. Literal-string bytes are written verbatim
 /// with `(`/`)`/`\` escaped (the same encoding the parser accepts).
-fn write_op(op: &Operation, out: &mut Vec<u8>, _limits: &Limits) -> Result<(), Error> {
+fn write_op(op: &Operation, out: &mut BoundedWriter<'_>) -> Result<(), Error> {
     match op {
-        Operation::SaveState => out.extend_from_slice(b"q"),
-        Operation::RestoreState => out.extend_from_slice(b"Q"),
+        Operation::SaveState => out.extend_from_slice(b"q")?,
+        Operation::RestoreState => out.extend_from_slice(b"Q")?,
         Operation::ConcatMatrix(m) => {
             for v in [m.a, m.b, m.c, m.d, m.e, m.f] {
-                out.extend_from_slice(fmt_num(v).as_bytes());
-                out.push(b' ');
+                out.extend_from_slice(fmt_num(v).as_bytes())?;
+                out.push(b' ')?;
             }
-            out.extend_from_slice(b"cm");
+            out.extend_from_slice(b"cm")?;
         }
         Operation::SetLineWidth(w) => {
-            out.extend_from_slice(fmt_num(*w).as_bytes());
-            out.extend_from_slice(b" w");
+            out.extend_from_slice(fmt_num(*w).as_bytes())?;
+            out.extend_from_slice(b" w")?;
         }
         Operation::SetLineCap(c) => {
-            out.extend_from_slice(c.to_string().as_bytes());
-            out.extend_from_slice(b" J");
+            out.extend_from_slice(c.to_string().as_bytes())?;
+            out.extend_from_slice(b" J")?;
         }
         Operation::SetLineJoin(j) => {
-            out.extend_from_slice(j.to_string().as_bytes());
-            out.extend_from_slice(b" j");
+            out.extend_from_slice(j.to_string().as_bytes())?;
+            out.extend_from_slice(b" j")?;
         }
         Operation::SetMiterLimit(m) => {
-            out.extend_from_slice(fmt_num(*m).as_bytes());
-            out.extend_from_slice(b" M");
+            out.extend_from_slice(fmt_num(*m).as_bytes())?;
+            out.extend_from_slice(b" M")?;
         }
         Operation::SetDash { dashes, phase } => {
-            out.push(b'[');
+            out.push(b'[')?;
             for (i, v) in dashes.iter().enumerate() {
                 if i > 0 {
-                    out.push(b' ');
+                    out.push(b' ')?;
                 }
-                out.extend_from_slice(fmt_num(*v).as_bytes());
+                out.extend_from_slice(fmt_num(*v).as_bytes())?;
             }
-            out.extend_from_slice(b"] ");
-            out.extend_from_slice(fmt_num(*phase).as_bytes());
-            out.extend_from_slice(b" d");
+            out.extend_from_slice(b"] ")?;
+            out.extend_from_slice(fmt_num(*phase).as_bytes())?;
+            out.extend_from_slice(b" d")?;
         }
         Operation::SetRenderingIntent(n) => {
-            out.push(b'/');
-            out.extend_from_slice(n);
-            out.extend_from_slice(b" ri");
+            out.push(b'/')?;
+            out.extend_from_slice(n)?;
+            out.extend_from_slice(b" ri")?;
         }
         Operation::SetFlatness(i) => {
-            out.extend_from_slice(fmt_num(*i).as_bytes());
-            out.extend_from_slice(b" i");
+            out.extend_from_slice(fmt_num(*i).as_bytes())?;
+            out.extend_from_slice(b" i")?;
         }
         // Colour ops — pass through unchanged; the operands were
         // validated by the parser (numbers, plus an optional trailing
         // pattern name for SCN/scn — re-emitted as `N` forms when a
         // trailing Name is present).
         Operation::SetGrayStroke(v) => {
-            out.extend_from_slice(fmt_num(*v).as_bytes());
-            out.extend_from_slice(b" G");
+            out.extend_from_slice(fmt_num(*v).as_bytes())?;
+            out.extend_from_slice(b" G")?;
         }
         Operation::SetGrayFill(v) => {
-            out.extend_from_slice(fmt_num(*v).as_bytes());
-            out.extend_from_slice(b" g");
+            out.extend_from_slice(fmt_num(*v).as_bytes())?;
+            out.extend_from_slice(b" g")?;
         }
         Operation::SetRgbStroke(r, g, b) => {
             for (i, v) in [r, g, b].iter().enumerate() {
                 if i > 0 {
-                    out.push(b' ');
+                    out.push(b' ')?;
                 }
-                out.extend_from_slice(fmt_num(**v).as_bytes());
+                out.extend_from_slice(fmt_num(**v).as_bytes())?;
             }
-            out.extend_from_slice(b" RG");
+            out.extend_from_slice(b" RG")?;
         }
         Operation::SetRgbFill(r, g, b) => {
             for (i, v) in [r, g, b].iter().enumerate() {
                 if i > 0 {
-                    out.push(b' ');
+                    out.push(b' ')?;
                 }
-                out.extend_from_slice(fmt_num(**v).as_bytes());
+                out.extend_from_slice(fmt_num(**v).as_bytes())?;
             }
-            out.extend_from_slice(b" rg");
+            out.extend_from_slice(b" rg")?;
         }
         Operation::SetCmykStroke(c, m, y, k) => {
             for (i, v) in [c, m, y, k].iter().enumerate() {
                 if i > 0 {
-                    out.push(b' ');
+                    out.push(b' ')?;
                 }
-                out.extend_from_slice(fmt_num(**v).as_bytes());
+                out.extend_from_slice(fmt_num(**v).as_bytes())?;
             }
-            out.extend_from_slice(b" K");
+            out.extend_from_slice(b" K")?;
         }
         Operation::SetCmykFill(c, m, y, k) => {
             for (i, v) in [c, m, y, k].iter().enumerate() {
                 if i > 0 {
-                    out.push(b' ');
+                    out.push(b' ')?;
                 }
-                out.extend_from_slice(fmt_num(**v).as_bytes());
+                out.extend_from_slice(fmt_num(**v).as_bytes())?;
             }
-            out.extend_from_slice(b" k");
+            out.extend_from_slice(b" k")?;
         }
         Operation::SetColorSpaceStroke(n) => {
-            out.push(b'/');
-            out.extend_from_slice(n);
-            out.extend_from_slice(b" CS");
+            out.push(b'/')?;
+            out.extend_from_slice(n)?;
+            out.extend_from_slice(b" CS")?;
         }
         Operation::SetColorSpaceFill(n) => {
-            out.push(b'/');
-            out.extend_from_slice(n);
-            out.extend_from_slice(b" cs");
+            out.push(b'/')?;
+            out.extend_from_slice(n)?;
+            out.extend_from_slice(b" cs")?;
         }
         Operation::SetColorStroke(ops) => {
             for o in ops {
-                write_object_shallow(o, out);
-                out.push(b' ');
+                write_object_shallow(o, out)?;
+                out.push(b' ')?;
             }
             // `SC` vs `SCN` — the parser merges them; emit `SCN` when
             // a trailing pattern name is present (per §8.6.8).
             if matches!(ops.last(), Some(Object::Name(_))) {
-                out.extend_from_slice(b"SCN");
+                out.extend_from_slice(b"SCN")?;
             } else {
-                out.extend_from_slice(b"SC");
+                out.extend_from_slice(b"SC")?;
             }
         }
         Operation::SetColorFill(ops) => {
             for o in ops {
-                write_object_shallow(o, out);
-                out.push(b' ');
+                write_object_shallow(o, out)?;
+                out.push(b' ')?;
             }
             if matches!(ops.last(), Some(Object::Name(_))) {
-                out.extend_from_slice(b"scn");
+                out.extend_from_slice(b"scn")?;
             } else {
-                out.extend_from_slice(b"sc");
+                out.extend_from_slice(b"sc")?;
             }
         }
         Operation::SetExtGState(n) => {
-            out.push(b'/');
-            out.extend_from_slice(n);
-            out.extend_from_slice(b" gs");
+            out.push(b'/')?;
+            out.extend_from_slice(n)?;
+            out.extend_from_slice(b" gs")?;
         }
         Operation::MoveTo(x, y) => {
-            out.extend_from_slice(fmt_num(*x).as_bytes());
-            out.push(b' ');
-            out.extend_from_slice(fmt_num(*y).as_bytes());
-            out.extend_from_slice(b" m");
+            out.extend_from_slice(fmt_num(*x).as_bytes())?;
+            out.push(b' ')?;
+            out.extend_from_slice(fmt_num(*y).as_bytes())?;
+            out.extend_from_slice(b" m")?;
         }
         Operation::LineTo(x, y) => {
-            out.extend_from_slice(fmt_num(*x).as_bytes());
-            out.push(b' ');
-            out.extend_from_slice(fmt_num(*y).as_bytes());
-            out.extend_from_slice(b" l");
+            out.extend_from_slice(fmt_num(*x).as_bytes())?;
+            out.push(b' ')?;
+            out.extend_from_slice(fmt_num(*y).as_bytes())?;
+            out.extend_from_slice(b" l")?;
         }
         Operation::CurveTo(x1, y1, x2, y2, x3, y3) => {
             for (i, v) in [x1, y1, x2, y2, x3, y3].iter().enumerate() {
                 if i > 0 {
-                    out.push(b' ');
+                    out.push(b' ')?;
                 }
-                out.extend_from_slice(fmt_num(**v).as_bytes());
+                out.extend_from_slice(fmt_num(**v).as_bytes())?;
             }
-            out.extend_from_slice(b" c");
+            out.extend_from_slice(b" c")?;
         }
         Operation::CurveToV(x2, y2, x3, y3) => {
             for (i, v) in [x2, y2, x3, y3].iter().enumerate() {
                 if i > 0 {
-                    out.push(b' ');
+                    out.push(b' ')?;
                 }
-                out.extend_from_slice(fmt_num(**v).as_bytes());
+                out.extend_from_slice(fmt_num(**v).as_bytes())?;
             }
-            out.extend_from_slice(b" v");
+            out.extend_from_slice(b" v")?;
         }
         Operation::CurveToY(x1, y1, x3, y3) => {
             for (i, v) in [x1, y1, x3, y3].iter().enumerate() {
                 if i > 0 {
-                    out.push(b' ');
+                    out.push(b' ')?;
                 }
-                out.extend_from_slice(fmt_num(**v).as_bytes());
+                out.extend_from_slice(fmt_num(**v).as_bytes())?;
             }
-            out.extend_from_slice(b" y");
+            out.extend_from_slice(b" y")?;
         }
-        Operation::ClosePath => out.extend_from_slice(b"h"),
+        Operation::ClosePath => out.extend_from_slice(b"h")?,
         Operation::Rectangle(x, y, w, h) => {
             for (i, v) in [x, y, w, h].iter().enumerate() {
                 if i > 0 {
-                    out.push(b' ');
+                    out.push(b' ')?;
                 }
-                out.extend_from_slice(fmt_num(**v).as_bytes());
+                out.extend_from_slice(fmt_num(**v).as_bytes())?;
             }
-            out.extend_from_slice(b" re");
+            out.extend_from_slice(b" re")?;
         }
-        Operation::Stroke => out.extend_from_slice(b"S"),
-        Operation::CloseAndStroke => out.extend_from_slice(b"s"),
-        Operation::Fill => out.extend_from_slice(b"f"),
-        Operation::FillEvenOdd => out.extend_from_slice(b"f*"),
-        Operation::FillAndStroke => out.extend_from_slice(b"B"),
-        Operation::FillAndStrokeEvenOdd => out.extend_from_slice(b"B*"),
-        Operation::CloseFillAndStroke => out.extend_from_slice(b"b"),
-        Operation::CloseFillAndStrokeEvenOdd => out.extend_from_slice(b"b*"),
-        Operation::EndPath => out.extend_from_slice(b"n"),
-        Operation::Clip => out.extend_from_slice(b"W"),
-        Operation::ClipEvenOdd => out.extend_from_slice(b"W*"),
-        Operation::BeginText => out.extend_from_slice(b"BT"),
-        Operation::EndText => out.extend_from_slice(b"ET"),
+        Operation::Stroke => out.extend_from_slice(b"S")?,
+        Operation::CloseAndStroke => out.extend_from_slice(b"s")?,
+        Operation::Fill => out.extend_from_slice(b"f")?,
+        Operation::FillEvenOdd => out.extend_from_slice(b"f*")?,
+        Operation::FillAndStroke => out.extend_from_slice(b"B")?,
+        Operation::FillAndStrokeEvenOdd => out.extend_from_slice(b"B*")?,
+        Operation::CloseFillAndStroke => out.extend_from_slice(b"b")?,
+        Operation::CloseFillAndStrokeEvenOdd => out.extend_from_slice(b"b*")?,
+        Operation::EndPath => out.extend_from_slice(b"n")?,
+        Operation::Clip => out.extend_from_slice(b"W")?,
+        Operation::ClipEvenOdd => out.extend_from_slice(b"W*")?,
+        Operation::BeginText => out.extend_from_slice(b"BT")?,
+        Operation::EndText => out.extend_from_slice(b"ET")?,
         Operation::SetTextFont { font, size } => {
-            out.push(b'/');
-            out.extend_from_slice(font);
-            out.push(b' ');
-            out.extend_from_slice(fmt_num(*size).as_bytes());
-            out.extend_from_slice(b" Tf");
+            out.push(b'/')?;
+            out.extend_from_slice(font)?;
+            out.push(b' ')?;
+            out.extend_from_slice(fmt_num(*size).as_bytes())?;
+            out.extend_from_slice(b" Tf")?;
         }
         Operation::SetCharSpacing(v) => {
-            out.extend_from_slice(fmt_num(*v).as_bytes());
-            out.extend_from_slice(b" Tc");
+            out.extend_from_slice(fmt_num(*v).as_bytes())?;
+            out.extend_from_slice(b" Tc")?;
         }
         Operation::SetWordSpacing(v) => {
-            out.extend_from_slice(fmt_num(*v).as_bytes());
-            out.extend_from_slice(b" Tw");
+            out.extend_from_slice(fmt_num(*v).as_bytes())?;
+            out.extend_from_slice(b" Tw")?;
         }
         Operation::SetHorizontalScaling(v) => {
-            out.extend_from_slice(fmt_num(*v).as_bytes());
-            out.extend_from_slice(b" Tz");
+            out.extend_from_slice(fmt_num(*v).as_bytes())?;
+            out.extend_from_slice(b" Tz")?;
         }
         Operation::SetTextLeading(v) => {
-            out.extend_from_slice(fmt_num(*v).as_bytes());
-            out.extend_from_slice(b" TL");
+            out.extend_from_slice(fmt_num(*v).as_bytes())?;
+            out.extend_from_slice(b" TL")?;
         }
         Operation::SetTextRenderingMode(m) => {
-            out.extend_from_slice(m.to_string().as_bytes());
-            out.extend_from_slice(b" Tr");
+            out.extend_from_slice(m.to_string().as_bytes())?;
+            out.extend_from_slice(b" Tr")?;
         }
         Operation::SetTextRise(v) => {
-            out.extend_from_slice(fmt_num(*v).as_bytes());
-            out.extend_from_slice(b" Ts");
+            out.extend_from_slice(fmt_num(*v).as_bytes())?;
+            out.extend_from_slice(b" Ts")?;
         }
         Operation::MoveTextPosition(x, y) => {
-            out.extend_from_slice(fmt_num(*x).as_bytes());
-            out.push(b' ');
-            out.extend_from_slice(fmt_num(*y).as_bytes());
-            out.extend_from_slice(b" Td");
+            out.extend_from_slice(fmt_num(*x).as_bytes())?;
+            out.push(b' ')?;
+            out.extend_from_slice(fmt_num(*y).as_bytes())?;
+            out.extend_from_slice(b" Td")?;
         }
         Operation::MoveTextPositionAndSetLeading(x, y) => {
-            out.extend_from_slice(fmt_num(*x).as_bytes());
-            out.push(b' ');
-            out.extend_from_slice(fmt_num(*y).as_bytes());
-            out.extend_from_slice(b" TD");
+            out.extend_from_slice(fmt_num(*x).as_bytes())?;
+            out.push(b' ')?;
+            out.extend_from_slice(fmt_num(*y).as_bytes())?;
+            out.extend_from_slice(b" TD")?;
         }
         Operation::SetTextMatrix(m) => {
             for v in [m.a, m.b, m.c, m.d, m.e, m.f] {
-                out.extend_from_slice(fmt_num(v).as_bytes());
-                out.push(b' ');
+                out.extend_from_slice(fmt_num(v).as_bytes())?;
+                out.push(b' ')?;
             }
-            out.extend_from_slice(b"Tm");
+            out.extend_from_slice(b"Tm")?;
         }
-        Operation::NextLine => out.extend_from_slice(b"T*"),
+        Operation::NextLine => out.extend_from_slice(b"T*")?,
         Operation::ShowText(bytes) => {
-            write_literal_string(bytes, out);
-            out.extend_from_slice(b" Tj");
+            write_literal_string(bytes, out)?;
+            out.extend_from_slice(b" Tj")?;
         }
         Operation::ShowTextAdjusted(items) => {
-            out.push(b'[');
+            out.push(b'[')?;
             let mut first = true;
             for it in items {
                 if !first {
-                    out.push(b' ');
+                    out.push(b' ')?;
                 }
                 first = false;
                 match it {
-                    TJItem::Text(b) => write_literal_string(b, out),
-                    TJItem::Kern(n) => out.extend_from_slice(fmt_num(*n).as_bytes()),
+                    TJItem::Text(b) => write_literal_string(b, out)?,
+                    TJItem::Kern(n) => out.extend_from_slice(fmt_num(*n).as_bytes())?,
                 }
             }
-            out.extend_from_slice(b"] TJ");
+            out.extend_from_slice(b"] TJ")?;
         }
         Operation::NextLineShowText(text) => {
-            write_literal_string(text, out);
-            out.extend_from_slice(b" '");
+            write_literal_string(text, out)?;
+            out.extend_from_slice(b" '")?;
         }
         Operation::SetSpacingNextLineShowText {
             word_spacing,
             char_spacing,
             text,
         } => {
-            out.extend_from_slice(fmt_num(*word_spacing).as_bytes());
-            out.push(b' ');
-            out.extend_from_slice(fmt_num(*char_spacing).as_bytes());
-            out.push(b' ');
-            write_literal_string(text, out);
-            out.extend_from_slice(b" \"");
+            out.extend_from_slice(fmt_num(*word_spacing).as_bytes())?;
+            out.push(b' ')?;
+            out.extend_from_slice(fmt_num(*char_spacing).as_bytes())?;
+            out.push(b' ')?;
+            write_literal_string(text, out)?;
+            out.extend_from_slice(b" \"")?;
         }
         Operation::Do(n) => {
-            out.push(b'/');
-            out.extend_from_slice(n);
-            out.extend_from_slice(b" Do");
+            out.push(b'/')?;
+            out.extend_from_slice(n)?;
+            out.extend_from_slice(b" Do")?;
         }
         Operation::Shading(n) => {
-            out.push(b'/');
-            out.extend_from_slice(n);
-            out.extend_from_slice(b" sh");
+            out.push(b'/')?;
+            out.extend_from_slice(n)?;
+            out.extend_from_slice(b" sh")?;
         }
         Operation::MarkedContentPoint(n) => {
-            out.push(b'/');
-            out.extend_from_slice(n);
-            out.extend_from_slice(b" MP");
+            out.push(b'/')?;
+            out.extend_from_slice(n)?;
+            out.extend_from_slice(b" MP")?;
         }
         Operation::DesignatedMarkedContentPoint { tag, properties } => {
-            out.push(b'/');
-            out.extend_from_slice(tag);
-            out.push(b' ');
-            write_object_shallow(properties, out);
-            out.extend_from_slice(b" DP");
+            out.push(b'/')?;
+            out.extend_from_slice(tag)?;
+            out.push(b' ')?;
+            write_object_shallow(properties, out)?;
+            out.extend_from_slice(b" DP")?;
         }
         Operation::BeginMarkedContent(n) => {
-            out.push(b'/');
-            out.extend_from_slice(n);
-            out.extend_from_slice(b" BMC");
+            out.push(b'/')?;
+            out.extend_from_slice(n)?;
+            out.extend_from_slice(b" BMC")?;
         }
         Operation::BeginMarkedContentWithProps { tag, properties } => {
-            out.push(b'/');
-            out.extend_from_slice(tag);
-            out.push(b' ');
-            write_object_shallow(properties, out);
-            out.extend_from_slice(b" BDC");
+            out.push(b'/')?;
+            out.extend_from_slice(tag)?;
+            out.push(b' ')?;
+            write_object_shallow(properties, out)?;
+            out.extend_from_slice(b" BDC")?;
         }
-        Operation::EndMarkedContent => out.extend_from_slice(b"EMC"),
-        Operation::BeginCompatibility => out.extend_from_slice(b"BX"),
-        Operation::EndCompatibility => out.extend_from_slice(b"EX"),
+        Operation::EndMarkedContent => out.extend_from_slice(b"EMC")?,
+        Operation::BeginCompatibility => out.extend_from_slice(b"BX")?,
+        Operation::EndCompatibility => out.extend_from_slice(b"EX")?,
         // Unknown ops inside BX…EX round-trip verbatim — the operands
         // were parsed objects, re-emitted with the same serialiser.
         // (`Unknown` outside BX…EX never reaches here: the walker's
         // `uncertain_state` taint refuses the page first.)
         Operation::Unknown { operator, operands } => {
             for o in operands {
-                write_object_shallow(o, out);
-                out.push(b' ');
+                write_object_shallow(o, out)?;
+                out.push(b' ')?;
             }
-            out.extend_from_slice(operator);
+            out.extend_from_slice(operator)?;
         }
     }
     Ok(())
@@ -1376,66 +1442,68 @@ fn write_op(op: &Operation, out: &mut Vec<u8>, _limits: &Limits) -> Result<(), E
 /// Literal PDF string: `(…)` with `(`/`)`/`\` and control bytes
 /// escaped. Non-ASCII bytes are written as `\xNN` octal escapes so
 /// the output stays ASCII-clean and re-parses exactly.
-fn write_literal_string(bytes: &[u8], out: &mut Vec<u8>) {
-    out.push(b'(');
+fn write_literal_string(bytes: &[u8], out: &mut BoundedWriter<'_>) -> Result<(), Error> {
+    out.push(b'(')?;
     for &b in bytes {
         match b {
             b'(' | b')' | b'\\' => {
-                out.push(b'\\');
-                out.push(b);
+                out.push(b'\\')?;
+                out.push(b)?;
             }
             0x00..=0x08 | 0x0b | 0x0c | 0x0e..=0x1f | 0x7f..=0xff => {
-                out.extend_from_slice(format!("\\{:03o}", b).as_bytes());
+                out.extend_from_slice(format!("\\{:03o}", b).as_bytes())?;
             }
-            _ => out.push(b),
+            _ => out.push(b)?,
         }
     }
-    out.push(b')');
+    out.push(b')')?;
+    Ok(())
 }
 
 /// Serialise a scalar/array/dict object shallowly — used for
 /// marked-content properties and `Unknown` operands. Streams are not
 /// representable here (none appear as operands).
-fn write_object_shallow(o: &Object, out: &mut Vec<u8>) {
+fn write_object_shallow(o: &Object, out: &mut BoundedWriter<'_>) -> Result<(), Error> {
     match o {
-        Object::Null => out.extend_from_slice(b"null"),
-        Object::Bool(b) => out.extend_from_slice(if *b { b"true" } else { b"false" }),
-        Object::Integer(n) => out.extend_from_slice(n.to_string().as_bytes()),
-        Object::Real(n) => out.extend_from_slice(fmt_num(*n).as_bytes()),
+        Object::Null => out.extend_from_slice(b"null")?,
+        Object::Bool(b) => out.extend_from_slice(if *b { b"true" } else { b"false" })?,
+        Object::Integer(n) => out.extend_from_slice(n.to_string().as_bytes())?,
+        Object::Real(n) => out.extend_from_slice(fmt_num(*n).as_bytes())?,
         Object::Name(n) => {
-            out.push(b'/');
-            out.extend_from_slice(n);
+            out.push(b'/')?;
+            out.extend_from_slice(n)?;
         }
-        Object::String(s) => write_literal_string(s, out),
+        Object::String(s) => write_literal_string(s, out)?,
         Object::Array(a) => {
-            out.push(b'[');
+            out.push(b'[')?;
             for (i, x) in a.iter().enumerate() {
                 if i > 0 {
-                    out.push(b' ');
+                    out.push(b' ')?;
                 }
-                write_object_shallow(x, out);
+                write_object_shallow(x, out)?;
             }
-            out.push(b']');
+            out.push(b']')?;
         }
         Object::Dict(d) => {
-            out.extend_from_slice(b"<<");
+            out.extend_from_slice(b"<<")?;
             for (k, v) in d {
-                out.push(b' ');
-                out.push(b'/');
-                out.extend_from_slice(k);
-                out.push(b' ');
-                write_object_shallow(v, out);
+                out.push(b' ')?;
+                out.push(b'/')?;
+                out.extend_from_slice(k)?;
+                out.push(b' ')?;
+                write_object_shallow(v, out)?;
             }
-            out.extend_from_slice(b" >>");
+            out.extend_from_slice(b" >>")?;
         }
         Object::Ref(r) => {
-            out.extend_from_slice(format!("{} {} R", r.number, r.generation).as_bytes());
+            out.extend_from_slice(format!("{} {} R", r.number, r.generation).as_bytes())?;
         }
         Object::Stream { .. } => {
             // Unreachable — an operand is never a stream.
-            out.extend_from_slice(b"null");
+            out.extend_from_slice(b"null")?;
         }
     }
+    Ok(())
 }
 
 /// Format a content-stream number: integer when exact, else fixed-
@@ -3923,5 +3991,184 @@ mod tests {
             ),
             "cumulative generated bytes must refuse: {err:?}"
         );
+    }
+
+    // ---- M18.2 — BoundedWriter unit tests ----------------------------
+
+    /// A `BoundedWriter` stops *before* the byte that would exceed
+    /// the budget — the failed `push` leaves the buffer unchanged,
+    /// so a caller that ignores the error still holds only the
+    /// allowed prefix.
+    #[test]
+    fn bounded_writer_refuses_before_exceeding() {
+        let limits = Limits {
+            max_edit_content_bytes: 10,
+            ..Limits::default()
+        };
+        let mut w = BoundedWriter::new(&limits, 0);
+        // 10 bytes at the cap succeed.
+        for _ in 0..10 {
+            w.push(b'x').unwrap();
+        }
+        assert_eq!(w.buf.len(), 10);
+        // The 11th fails *before* landing — buf stays 10.
+        assert!(matches!(
+            w.push(b'x'),
+            Err(Error::LimitExceeded {
+                limit: "max_edit_content_bytes",
+                ..
+            })
+        ));
+        assert_eq!(w.buf.len(), 10);
+        assert_eq!(&w.buf, &[b'x'; 10]);
+    }
+
+    /// A slice add checks the *whole* length up front — a 5-byte
+    /// slice into a 6-byte buffer must fail atomically, leaving the
+    /// original 6 bytes untouched.
+    #[test]
+    fn bounded_writer_slice_add_is_atomic() {
+        let limits = Limits {
+            max_edit_content_bytes: 10,
+            ..Limits::default()
+        };
+        let mut w = BoundedWriter::new(&limits, 0);
+        w.extend_from_slice(b"123456").unwrap(); // 6 used
+        assert!(matches!(
+            w.extend_from_slice(b"78901"), // +5 → 11 > 10
+            Err(Error::LimitExceeded {
+                limit: "max_edit_content_bytes",
+                ..
+            })
+        ));
+        assert_eq!(w.buf.len(), 6);
+        assert_eq!(&w.buf, b"123456");
+        // A 4-byte slice fits exactly.
+        w.extend_from_slice(b"7890").unwrap();
+        assert_eq!(&w.buf, b"1234567890");
+    }
+
+    /// `generated_so_far` shifts the cumulative bound — a second
+    /// stream sees only the bytes still left in
+    /// `max_edit_content_bytes`.
+    #[test]
+    fn bounded_writer_respects_cumulative_budget() {
+        let limits = Limits {
+            max_edit_content_bytes: 20,
+            ..Limits::default()
+        };
+        // First stream used 15; this one gets 5 before hitting the cap.
+        let mut w = BoundedWriter::new(&limits, 15);
+        w.extend_from_slice(b"12345").unwrap(); // 5 used, 15+5=20 total
+        assert!(matches!(
+            w.push(b'x'),
+            Err(Error::LimitExceeded {
+                limit: "max_edit_content_bytes",
+                ..
+            })
+        ));
+        assert_eq!(w.buf.len(), 5);
+    }
+
+    /// `max_output_bytes` (single-stream) is checked alongside the
+    /// cumulative bound — a tight per-stream cap fires even when
+    /// `max_edit_content_bytes` is generous.
+    #[test]
+    fn bounded_writer_single_stream_cap() {
+        let limits = Limits {
+            max_edit_content_bytes: 1000,
+            max_output_bytes: 5,
+            ..Limits::default()
+        };
+        let mut w = BoundedWriter::new(&limits, 0);
+        w.extend_from_slice(b"12345").unwrap(); // 5 used, under both caps
+        assert!(matches!(
+            w.push(b'x'),
+            Err(Error::LimitExceeded {
+                limit: "max_output_bytes",
+                ..
+            })
+        ));
+        assert_eq!(w.buf.len(), 5);
+    }
+
+    /// A `Tj` with a huge literal string stops mid-write — the
+    /// `BoundedWriter` refuses the *next* byte, not after the whole
+    /// op is rendered. A 100-byte string into a 10-byte budget must
+    /// fail on the 11th byte, leaving 10 bytes in the buffer.
+    #[test]
+    fn tj_with_long_string_stops_mid_write() {
+        let limits = Limits {
+            max_edit_content_bytes: 10,
+            ..Limits::default()
+        };
+        let mut w = BoundedWriter::new(&limits, 0);
+        let op = Operation::ShowText(b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_vec()); // 40 a's
+                                                                                            // The `(` + 10 a's = 11 bytes — the 11th `a` refuses at
+                                                                                            // budget 10. The `)` and ` Tj` never land.
+        assert!(matches!(
+            write_op(&op, &mut w),
+            Err(Error::LimitExceeded {
+                limit: "max_edit_content_bytes",
+                ..
+            })
+        ));
+        assert_eq!(w.buf.len(), 10);
+        assert_eq!(&w.buf, b"(aaaaaaaaa"); // `(` + 9 a's = 10
+    }
+
+    /// A `TJ` array with many numeric elements stops mid-write —
+    /// each ` ` separator and each `Kern` number is checked before
+    /// landing.
+    #[test]
+    fn tj_many_kerns_stops_mid_write() {
+        let limits = Limits {
+            max_edit_content_bytes: 15,
+            ..Limits::default()
+        };
+        let mut w = BoundedWriter::new(&limits, 0);
+        let op = Operation::ShowTextAdjusted(vec![
+            TJItem::Kern(100.5), // "100.5" = 5 bytes
+            TJItem::Kern(200.5), // "200.5" = 5 bytes
+            TJItem::Kern(300.5), // "300.5" = 5 bytes
+        ]);
+        let r = write_op(&op, &mut w);
+        assert!(matches!(
+            r,
+            Err(Error::LimitExceeded {
+                limit: "max_edit_content_bytes",
+                ..
+            })
+        ));
+        // `[` + `100.5` + ` ` + `200.5` + ` ` = 13 bytes; the next
+        // `300.5` would push to 19 > 15, so it refuses *before*
+        // landing. The buffer holds the allowed prefix.
+        assert_eq!(w.buf.len(), 13);
+        assert_eq!(&w.buf, b"[100.5 200.5 ");
+    }
+
+    /// Escaped characters in a literal string expand to 4 bytes
+    /// (`\xNN`) — the check sees the *expanded* length, so a string
+    /// of 3 control bytes needs 12 budget bytes + 2 for `()`.
+    #[test]
+    fn escaped_chars_count_expanded_length() {
+        let limits = Limits {
+            max_edit_content_bytes: 13, // `(` + 3×`\xNN` = 13; `)` refuses
+            ..Limits::default()
+        };
+        let mut w = BoundedWriter::new(&limits, 0);
+        let op = Operation::ShowText(vec![0x01, 0x02, 0x03]);
+        let r = write_op(&op, &mut w);
+        assert!(matches!(
+            r,
+            Err(Error::LimitExceeded {
+                limit: "max_edit_content_bytes",
+                ..
+            })
+        ));
+        // `(` + `\001` + `\002` + `\003` = 13 bytes; `)` would be 14 —
+        // the `)` push refuses at 13, leaving 13 in the buffer.
+        assert_eq!(w.buf.len(), 13);
+        assert_eq!(&w.buf, b"(\\001\\002\\003");
     }
 }
