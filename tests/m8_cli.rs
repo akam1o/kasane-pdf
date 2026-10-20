@@ -1961,3 +1961,112 @@ fn cli_remove_text_input_unchanged() {
     assert!(out.status.success());
     assert_eq!(fs::read(&src).unwrap(), pdf, "input was modified");
 }
+
+#[test]
+fn cli_remove_text_op_state_change() {
+    // M17.1 — a Tc change mid-stream must not rewrite an earlier op
+    // under the stream-end state. `Tc=5` before `(AB)`, `Tc=0` before
+    // `(C)`: removing 'B' must carry the op-time kern
+    // -(600 + 5·1000/24) = -808.3333, not the end-of-stream -600.
+    let dir = tmpdir("rt-state");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    // Same fixture as remove_text_pdf but with `Tc` changes.
+    let pdf = {
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        let mut push = |n: u32, body: &[u8]| {
+            offs.push((n, parts.iter().map(|p| p.len()).sum()));
+            parts.push(format!("{n} 0 obj\n").into_bytes());
+            parts.push(body.to_vec());
+            parts.push(b"\nendobj\n".to_vec());
+        };
+        push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> >> /Contents 9 0 R >>",
+        );
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut fd = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        fd.extend_from_slice(&widths);
+        fd.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push(4, &fd);
+        push(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>",
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs2 = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs2.extend_from_slice(&enc);
+        fs2.extend_from_slice(b"\nendstream");
+        push(6, &fs2);
+        let body = b"BT /F1 24 Tf 5 Tc 20 60 Td (AB) Tj 0 Tc (C) Tj ET\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 10\n0000000000 65535 f \n".to_vec());
+        for n in 1..10u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 10 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        parts.concat()
+    };
+    fs::write(&src, &pdf).unwrap();
+    let out = bin()
+        .args(["experimental-remove-text"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "36", "55", "46", "80", "--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let raw = String::from_utf8_lossy(&fs::read(&dst).unwrap()).into_owned();
+    assert!(
+        raw.contains("[(A) -808.3333] TJ"),
+        "kern must use the op-time Tc=5: {raw}"
+    );
+}

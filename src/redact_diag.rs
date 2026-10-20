@@ -775,6 +775,14 @@ pub(crate) struct DiagWalker<'a> {
     pub(crate) uncertain: Vec<Uncertain>,
     /// `pub(crate)` — M17 refuses on any blocker.
     pub(crate) blockers: Vec<Blocker>,
+    /// `pub(crate)` — M17.1: the text state *at each page-level show
+    /// op* (`Tj`/`TJ`/`'`/`"`), keyed by `op_index`. Recorded at the
+    /// exact point `show_text` reads it — after `"`'s `Tw`/`Tc`
+    /// update, after `'`/`"`'s line move — so the rewrite uses the
+    /// same state the diagnosis (and renderer) saw, not the state at
+    /// end of stream. Only page-level ops are recorded (`form_path`
+    /// empty): form content is out of scope for removal anyway.
+    pub(crate) show_states: BTreeMap<usize, ShowTextState>,
     /// object ref → (kind, sites) for sharing analysis.
     site_map: BTreeMap<(u32, u16), (String, Vec<Site>)>,
     /// Counting budget for reported items.
@@ -782,6 +790,43 @@ pub(crate) struct DiagWalker<'a> {
     /// Character codes processed — bounded by `max_text_codes`, the
     /// same limit `render`/`extract` honour.
     text_codes: u64,
+}
+
+/// The text state one page-level show op ran under — a snapshot of
+/// `gs.text` (plus the resolved `Font`) taken at the point
+/// `show_text` consumed it. `pub(crate)` — M17 uses it for the
+/// advance math and code decoding so selection and rewrite see the
+/// *same* state.
+#[derive(Clone)]
+pub(crate) struct ShowTextState {
+    /// Resolved font behind the `Tf` in effect (`None` → the op would
+    /// have failed as "Tj before Tf" — unreachable for a completed
+    /// show, kept for type simplicity).
+    pub(crate) font: Option<crate::font::Font>,
+    /// Font size (`Tfs`).
+    pub(crate) font_size: f64,
+    /// Horizontal scaling as a fraction (`Tz` ÷ 100).
+    pub(crate) h_scale: f64,
+    /// Character spacing (`Tc`).
+    pub(crate) char_spacing: f64,
+    /// Word spacing (`Tw`) — includes `"`'s update when applicable.
+    pub(crate) word_spacing: f64,
+}
+
+impl ShowTextState {
+    /// Snapshot the text state `show_text` is about to run under —
+    /// called *inside* `exec` for each page-level show op, after any
+    /// state updates the op itself performs (so `"` records its new
+    /// `Tw`/`Tc`).
+    fn capture(gs_text: &TextState) -> Self {
+        ShowTextState {
+            font: gs_text.font.clone(),
+            font_size: gs_text.font_size,
+            h_scale: gs_text.h_scale,
+            char_spacing: gs_text.char_spacing,
+            word_spacing: gs_text.word_spacing,
+        }
+    }
 }
 
 /// Text state we must track to position glyphs (subset of the
@@ -849,6 +894,7 @@ impl<'a> DiagWalker<'a> {
             targets: Vec::new(),
             uncertain: Vec::new(),
             blockers: Vec::new(),
+            show_states: BTreeMap::new(),
             site_map: BTreeMap::new(),
             reported: 0,
             text_codes: 0,
@@ -1093,6 +1139,7 @@ impl<'a> DiagWalker<'a> {
                 // 0 for each op so two `Tj`s in one stream each count
                 // from 0.
                 self.code_index = 0;
+                self.capture_show_state();
                 self.show_text(bytes)?;
             }
             O::ShowTextAdjusted(items) => {
@@ -1101,6 +1148,7 @@ impl<'a> DiagWalker<'a> {
                 // at index 0 and 'B' at index 1 (numeric elements
                 // produce no codes and do not advance the index).
                 self.code_index = 0;
+                self.capture_show_state();
                 for it in items {
                     match it {
                         crate::content::TJItem::Text(b) => self.show_text(b)?,
@@ -1118,6 +1166,7 @@ impl<'a> DiagWalker<'a> {
                 let t = crate::matrix::Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.gs.text.leading);
                 self.text_tlm = t.concat(self.text_tlm);
                 self.text_tm = self.text_tlm;
+                self.capture_show_state();
                 self.show_text(text)?;
             }
             O::SetSpacingNextLineShowText {
@@ -1131,6 +1180,7 @@ impl<'a> DiagWalker<'a> {
                 let t = crate::matrix::Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.gs.text.leading);
                 self.text_tlm = t.concat(self.text_tlm);
                 self.text_tm = self.text_tlm;
+                self.capture_show_state();
                 self.show_text(text)?;
             }
             O::Do(n) => self.do_xobject(n)?,
@@ -1327,6 +1377,18 @@ impl<'a> DiagWalker<'a> {
             self.code_index += 1;
         }
         Ok(())
+    }
+
+    /// Record the text state the current show op is about to run
+    /// under — only for page-level ops (`form_path` empty); form
+    /// content is out of scope for M17 removal and gets no snapshot.
+    /// The map is keyed by `op_index` and bounded the same way `ops`
+    /// is (`max_operations`), so no extra limit is needed.
+    fn capture_show_state(&mut self) {
+        if self.form_path.is_empty() {
+            self.show_states
+                .insert(self.op_index, ShowTextState::capture(&self.gs.text));
+        }
     }
 
     /// Position one character code and record the target — mirrors the

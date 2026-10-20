@@ -562,7 +562,24 @@ Design choices:
   mid-stream walk failure, is a typed refusal — the walker has
   already reasoned about `q`/`Q`, `cm`/`Tm`/`Td`/`TD`/`T*`, font
   width/space tables, `Tc`/`Tw`/`Tz`/`TL`/`Tr`/`Ts`, and every
-  construct the scope refuses.
+  construct the scope refuses. Walk errors keep their typed kind
+  (`LimitExceeded`, `Structure`, `Parse`) — never flattened to
+  `Unsupported`.
+- **Op-time state snapshots (M17.1)** — the walker records the text
+  state each page-level show op ran under (`Font` (Rc-cloned), `Tfs`,
+  `Th`, `Tc`, `Tw`) into `show_states[op_index]` at the point
+  `show_text` consumes it — after `"`'s `Tw`/`Tc` update, after
+  `'`/`"`'s line move. One snapshot per show op, bounded by
+  `max_operations`; form-level ops get none (removal is refused on
+  `Do` anyway). Selection (`Target`) and rewrite read the *same*
+  state, so a later `Tf`/`Tc`/`Tz`/`q`/`Q`/`BT` change can never
+  rewrite an earlier show under the stream-end values — the M17.0
+  bug where `walker.gs.text` at end-of-stream was used for every op.
+- **Page-level eligibility (M17.1)** — a page is eligible only when
+  *every* text occurrence on it is `Tr 0` fill, checked against all
+  `walker.targets`, not just the hit ones. `Tr 4–7` and `w = 0`
+  stroked text arrive via `blocker`/`uncertain` and refuse the same
+  way; a `Tr` *set* but never used to show text is harmless.
 - **Rewrite = `Tj`→`TJ`, `TJ` element-split, `'`/`"` expansion** —
   a `Tj` losing codes becomes a `TJ` whose numeric elements restore
   the removed advance `-(w0 + (Tc+Tw)·1000/Tfs)` (`Tz` cancels — the
@@ -579,12 +596,13 @@ Design choices:
   the original stream keep it untouched (the removed bytes still
   exist in the shared object — explicitly out of scope).
 - **Refusal list = diagnosis refusal list** — `/Annots`, `Do`/`sh`/
-  inline image/`gs`/Pattern/`ActualText`/OC, non-`Tr 0` modes,
-  `w = 0` hairlines, unsupported fonts, non-finite CTM, `/UserUnit`
-  ≠ 1, vertical text — each is a typed `Error::Unsupported`, never a
-  partial edit. `serialize_ops`/`write_op` reserialise every op in
-  the stream (no verbatim copying) and any variant outside the
-  known set is a typed error rather than a guess.
+  inline image/`gs`/Pattern/`ActualText`/OC, any shown text mode
+  other than `Tr 0`, `w = 0` hairlines, unsupported fonts,
+  non-finite CTM, `/UserUnit` ≠ 1, vertical text — each is a typed
+  `Error::Unsupported`, never a partial edit. `serialize_ops`/
+  `write_op` reserialise every op in the stream (no verbatim
+  copying); the match is exhaustive over `Operation`, so a future
+  variant fails to compile rather than slipping through.
 - **Audit trail** — `Removal { output, codes_removed, sites, scope }`
   reports which codes were removed (site identity from the
   diagnosis: `/Contents` ref + op index + code index) and the scope

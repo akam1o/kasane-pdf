@@ -23,15 +23,28 @@
 //!   inline image, or `/ActualText`/`OC` marked content — the
 //!   diagnosis already marks these; removal refuses on the first one
 //!   rather than continue past unknown state.
-//! - Any text-rendering mode other than `Tr 0` (fill) — stroke,
-//!   clip, and invisible text are all refused; `w = 0` hairlines
-//!   never reach here (diagnosis reports them `uncertain`).
+//! - Any text-rendering mode other than `Tr 0` (fill) anywhere in
+//!   the shown text — the eligibility check is page-level, not
+//!   per-rect: an out-of-rect `Tr 3`/`Tr 1`/`Tr 2` occurrence still
+//!   refuses the page. (`Tr 4–7` and `w = 0` hairlines are already
+//!   `blocker`/`uncertain` in the diagnosis.) A `Tr` *set* but never
+//!   used to show text is harmless — the mode only matters when a
+//!   glyph is painted under it.
 //! - A `Form` XObject `Do`, even at page level — form content is out
 //!   of scope (the diagnosis walks it; removal refuses).
 //! - Unsupported or unresolvable fonts, non-finite transforms, and
 //!   any other construct that makes the diagnosis `incomplete`,
 //!   `uncertain`, or `blocker`-carrying — those are refused, never
 //!   silently treated as "nothing to remove".
+//!
+//! **Op-time state (M17.1).** The diagnosis walker records the text
+//! state *at each page-level show op* (`Tj`/`TJ`/`'`/`"`) —
+//! resolved font, `Tfs`, `Th`, `Tc`, `Tw` — keyed by `op_index`.
+//! Selection and rewrite read the *same* snapshot, so a `Tf`/`Tc`/
+//! `Tw`/`Tz` change, a `q`/`Q` restore, or a second `BT`/`ET` later
+//! in the stream can never rewrite an earlier show under the wrong
+//! parameters. `"`'s snapshot is taken *after* its `Tw`/`Tc` update
+//! so the kern math sees the values the op actually used.
 //!
 //! Position preservation: each removed code is replaced by a `TJ`
 //! numeric element whose value is the negation of that code's
@@ -46,7 +59,9 @@ use crate::edit::Edit;
 use crate::error::Error;
 use crate::limits::Limits;
 use crate::object::Object;
-use crate::redact_diag::{check_rect, page_dict_entry, DiagWalker, Site, TargetDetail, TargetKind};
+use crate::redact_diag::{
+    check_rect, page_dict_entry, DiagWalker, ShowTextState, Site, TargetDetail, TargetKind,
+};
 use std::collections::BTreeMap;
 
 /// The result of [`remove_text`] — the rewritten PDF bytes plus the
@@ -149,14 +164,11 @@ pub fn remove_text(
     // before we ever touch the stream.
     let ops = doc.page_operations(page)?;
     let mut walker = DiagWalker::new(doc, page, limits, &validated);
-    if let Err(e) = walker.run(&ops) {
-        // A mid-stream failure is not "nothing to remove" — the page
-        // could not be fully walked, so removal refuses.
-        return Err(Error::Unsupported {
-            feature: "text removal on an un-walkable page",
-            detail: format!("content walk failed: {e}"),
-        });
-    }
+    // A mid-stream failure keeps its *typed* error — `LimitExceeded`
+    // stays a limit, `Structure`/`Parse` stay input problems; only
+    // constructs the scope does not cover surface as `Unsupported`
+    // (those arrive via `blockers`/`uncertain`, not `Err`).
+    walker.run(&ops)?;
     // Any blocker or uncertain entry means part of the page's state
     // or content was not fully understood — refuse rather than edit
     // past it.
@@ -185,23 +197,48 @@ pub fn remove_text(
         });
     }
 
+    // ---- page-level eligibility -----------------------------------
+    // A page is eligible only when *every* text occurrence on it is
+    // `Tr 0` fill — the modes we can faithfully rewrite. This is a
+    // property of the page's shown text, not of what a rect hit, so
+    // an out-of-rect `Tr 3`/`Tr 1` glyph still refuses the page.
+    // (`Tr 4–7` and `w = 0` stroked text already landed in
+    // `blockers`/`uncertain` above and never reach here.)
+    for t in &walker.targets {
+        if t.kind != TargetKind::Text {
+            continue;
+        }
+        if let TargetDetail::Text { render_mode, .. } = &t.detail {
+            if *render_mode != 0u8 {
+                return Err(Error::Unsupported {
+                    feature: "text removal on a page with non-fill text",
+                    detail: format!(
+                        "Tr {render_mode} text is out of scope — only Tr 0 fill is rewritten \
+                         (op #{}, code #{:?})",
+                        t.site.op_index, t.site.code_index
+                    ),
+                });
+            }
+        }
+    }
+
     // ---- collect codes to remove ------------------------------------
     // (op_index → sorted code_index list). A code's `hits` tell us
     // its ink bounds overlapped a user rect — the *filled* bounds of
-    // a `Tr 0` glyph, edge-touching counts as a hit.
+    // a `Tr 0` glyph, edge-touching counts as a hit. Every target
+    // reaching here is already `Tr 0` (page-level eligibility above).
     let mut to_remove: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
     for t in &walker.targets {
         if t.kind == TargetKind::Text && !t.hits.is_empty() {
-            if let TargetDetail::Text { render_mode, .. } = &t.detail {
-                // Defensive: the walker already refuses non-fill
-                // modes, but a caller-supplied Targets could pass a
-                // stroked glyph — refuse rather than guess.
-                if *render_mode != 0u8 {
-                    return Err(Error::Unsupported {
-                        feature: "text removal of non-fill-mode text",
-                        detail: format!("Tr {render_mode} is not plain fill"),
-                    });
-                }
+            // Defensive: a target inside a form's stream would carry
+            // that form's op_index, not the page's — the `Do` refusal
+            // above means none should exist here; refuse rather than
+            // silently mis-map.
+            if !t.site.form_path.is_empty() {
+                return Err(Error::Unsupported {
+                    feature: "text removal of form-nested text",
+                    detail: "form content is out of scope".into(),
+                });
             }
             let op = t.site.op_index;
             let ci = t
@@ -211,11 +248,19 @@ pub fn remove_text(
             to_remove.entry(op).or_default().push(ci);
         }
     }
+    // Defensive: `binary_search` below needs sorted inputs — targets
+    // arrive in code order already, but sorting is cheap insurance.
+    for v in to_remove.values_mut() {
+        v.sort_unstable();
+    }
 
     // ---- rewrite the content stream ---------------------------------
     // Build a new ops vec with text ops rewritten; everything else
     // passes through unchanged. `Tj`/`'`/`"` are converted to `TJ`
     // when they lose codes so the survivors' positions are preserved.
+    // Each op's rewrite uses the *state snapshot* the walker recorded
+    // at that op (`show_states`), not the end-of-stream state — a
+    // later `Tf`/`Tc`/`Tz` must not rewrite an earlier show.
     let mut new_ops: Vec<Operation> = Vec::with_capacity(ops.len());
     let mut removed_sites: Vec<Site> = Vec::new();
     let mut codes_removed: u64 = 0;
@@ -226,8 +271,9 @@ pub fn remove_text(
                 match rem {
                     None => new_ops.push(op.clone()),
                     Some(idxs) => {
+                        let st = show_state(&walker, op_index)?;
                         let (new_items, n_removed, sites) =
-                            rewrite_show_text(&walker, bytes, idxs, op_index, None)?;
+                            rewrite_show_text(st, &walker, bytes, idxs, op_index)?;
                         codes_removed += n_removed;
                         removed_sites.extend(sites);
                         new_ops.extend(new_items);
@@ -239,8 +285,9 @@ pub fn remove_text(
                 match rem {
                     None => new_ops.push(op.clone()),
                     Some(idxs) => {
+                        let st = show_state(&walker, op_index)?;
                         let (new_items, n_removed, sites) =
-                            rewrite_tj(&walker, items, idxs, op_index)?;
+                            rewrite_tj(st, &walker, items, idxs, op_index)?;
                         codes_removed += n_removed;
                         removed_sites.extend(sites);
                         new_ops.extend(new_items);
@@ -259,8 +306,9 @@ pub fn remove_text(
                         // `'` ≡ T* + Tj — emit the T* unconditionally
                         // so the line move survives an empty Tj.
                         new_ops.push(Operation::NextLine);
+                        let st = show_state(&walker, op_index)?;
                         let (new_items, n_removed, sites) =
-                            rewrite_show_text(&walker, text, idxs, op_index, None)?;
+                            rewrite_show_text(st, &walker, text, idxs, op_index)?;
                         codes_removed += n_removed;
                         removed_sites.extend(sites);
                         new_ops.extend(new_items);
@@ -277,17 +325,16 @@ pub fn remove_text(
                     None => new_ops.push(op.clone()),
                     Some(idxs) => {
                         // `"` ≡ Tw + Tc + T* + Tj — emit the spacing
-                        // and T* unconditionally.
+                        // and T* unconditionally. The snapshot already
+                        // carries the op's *new* `Tw`/`Tc` (it was
+                        // recorded after the update), so the advance
+                        // math uses the right spacing.
                         new_ops.push(Operation::SetWordSpacing(*word_spacing));
                         new_ops.push(Operation::SetCharSpacing(*char_spacing));
                         new_ops.push(Operation::NextLine);
-                        let (new_items, n_removed, sites) = rewrite_show_text(
-                            &walker,
-                            text,
-                            idxs,
-                            op_index,
-                            Some((*word_spacing, *char_spacing)),
-                        )?;
+                        let st = show_state(&walker, op_index)?;
+                        let (new_items, n_removed, sites) =
+                            rewrite_show_text(st, &walker, text, idxs, op_index)?;
                         codes_removed += n_removed;
                         removed_sites.extend(sites);
                         new_ops.extend(new_items);
@@ -352,35 +399,44 @@ pub fn remove_text(
     })
 }
 
+/// Fetch the text-state snapshot the walker recorded at `op_index` —
+/// the state the show op *actually ran under*. A missing entry means
+/// the op never executed its show (impossible for a page-level op the
+/// walker completed) or the walk diverged from the ops list — either
+/// way it's a structure error, never a guess.
+fn show_state<'a>(walker: &'a DiagWalker<'a>, op_index: usize) -> Result<&'a ShowTextState, Error> {
+    walker
+        .show_states
+        .get(&op_index)
+        .ok_or_else(|| Error::Structure(format!("no text-state snapshot for op #{op_index}")))
+}
+
 /// Rewrite one `Tj`/`'`/`"` string with `remove` codes taken out —
 /// emits a `TJ` op (or nothing when every code went) whose numeric
 /// elements carry each removed code's advance so following glyphs
-/// land where they did. `cs_extra` is `Some((Tw, Tc))` for `"` —
-/// its spacing values were already emitted as separate ops.
+/// land where they did. `st` is the *op-time* text state; `walker`
+/// supplies `text_site_at` for the audit trail.
 ///
 /// Returns `(ops, codes_removed, sites)` — `ops` is empty when the
 /// whole string was removed.
 fn rewrite_show_text(
+    st: &ShowTextState,
     walker: &DiagWalker,
     bytes: &[u8],
     remove: &[usize],
     op_index: usize,
-    cs_extra: Option<(f64, f64)>,
 ) -> Result<(Vec<Operation>, u64, Vec<Site>), Error> {
-    let font = walker
-        .gs
-        .text
+    let font = st
         .font
         .as_ref()
         .ok_or_else(|| Error::Structure("Tj before Tf — no font selected".into()))?;
-    let t = &walker.gs.text;
     // The advance a removed code contributes is
     //   (w0/1000 × Tfs + Tc [+ Tw if space]) × Th
     // which a TJ numeric element reproduces as `-advance × 1000 /
     // (Tfs × Th)` — i.e. -(w0 + (Tc[+Tw])×1000/Tfs) — so the
     // surviving codes keep their original positions.
-    let font_size = t.font_size;
-    let h_scale = t.h_scale;
+    let font_size = st.font_size;
+    let h_scale = st.h_scale;
     if !(font_size.is_finite() && font_size > 0.0) {
         return Err(Error::Unsupported {
             feature: "text removal with Tfs = 0",
@@ -393,14 +449,11 @@ fn rewrite_show_text(
             detail: "cannot express the removed advance as a TJ number".into(),
         });
     }
-    // `cs_extra` is `Some((Tw, Tc))` only for `"` — that op *sets*
-    // the spacing values (they replace `t.word_spacing`/
-    // `t.char_spacing` for the shown string), so use them verbatim
-    // rather than adding to the walker's current state.
-    let (word_spacing, char_spacing) = match cs_extra {
-        Some((w, c)) => (w, c),
-        None => (t.word_spacing, t.char_spacing),
-    };
+    // `st.word_spacing`/`st.char_spacing` are the values the op ran
+    // under — for `"` the snapshot already carries the op's new
+    // spacing, so no separate handling is needed.
+    let char_spacing = st.char_spacing;
+    let word_spacing = st.word_spacing;
 
     // Decode every code so we can count positions and know widths.
     let mut codes: Vec<(u32, usize)> = Vec::new();
@@ -416,8 +469,11 @@ fn rewrite_show_text(
 
     // Split `codes` into kept runs and removed runs — each kept run
     // becomes a string element, each removed run a numeric element
-    // carrying its summed advance. `pos` inside `bytes` is tracked so
-    // each kept string is the original byte slice.
+    // carrying its summed advance. `byte_pos` inside `bytes` is
+    // tracked so each kept string is the original byte slice, and the
+    // numeric element goes *between* the kept runs so the surviving
+    // codes land where they did: `(ABC)` removing 'B' →
+    // `[(A) <advB> (C)]`, not `[(A)(C) <advB>]`.
     //
     // A removed code's advance (user space) is
     //   ((w0/1000)·Tfs + Tc [+Tw if space]) · Th
@@ -425,27 +481,18 @@ fn rewrite_show_text(
     // So `n = -(w0 + (Tc[+Tw])·1000/Tfs)` — `h_scale` cancels and must
     // not appear in the formula (it is *not* part of the TJ-number
     // semantics; §9.4.4 shows the adjustment is `w0 - n/1000` in glyph
-    // space before `Tfs·Th` is applied).
-    // Split `codes` into kept runs and removed runs — each kept run
-    // becomes a string element, each removed run a numeric element
-    // carrying its summed advance. The numeric element goes *between*
-    // the kept runs so the surviving codes land where they did:
-    // `(ABC)` removing 'B' → `[(A) <advB> (C)]`, not `[(A)(C) <advB>]`.
-    //
-    // A removed code's advance (user space) is
-    //   ((w0/1000)·Tfs + Tc [+Tw if space]) · Th
-    // and a TJ numeric `n` moves the next glyph by `-n·Tfs·Th/1000`.
-    // So `n = -(w0 + (Tc[+Tw])·1000/Tfs)` — `h_scale` cancels and must
-    // not appear in the formula (it is *not* part of the TJ-number
-    // semantics; §9.4.4 shows the adjustment is `w0 - n/1000` in glyph
-    // space before `Tfs·Th` is applied).
+    // space before `Tfs·Th` is applied). `st` carries the *op-time*
+    // Tfs/Tc/Tw/Tz — a later state change never reaches this math.
     let mut items: Vec<TJItem> = Vec::new();
     let mut sites: Vec<Site> = Vec::new();
     let mut codes_removed: u64 = 0;
     let mut run_start: Option<usize> = None;
     let mut removed_advance = 0.0f64;
     for (ci, (code, byte_pos)) in codes.iter().enumerate() {
-        if remove.contains(&ci) {
+        // `remove` is sorted ascending (code_index order) — binary
+        // search keeps the per-code test O(log n) rather than O(n)
+        // so a long string with many removals is not quadratic.
+        if remove.binary_search(&ci).is_ok() {
             // Removed — close any kept run *before* the numeric item
             // so the order is text, adjustment, text.
             if let Some(start) = run_start.take() {
@@ -507,22 +554,20 @@ fn rewrite_show_text(
 /// Rewrite a `TJ` array — each `Text` element is filtered with
 /// `rewrite_show_text`'s logic but without the `code_index` reset
 /// (the index runs across the whole array); numeric elements pass
-/// through unchanged.
+/// through unchanged. `st` is the op-time text state.
 fn rewrite_tj(
+    st: &ShowTextState,
     walker: &DiagWalker,
     items: &[TJItem],
     remove: &[usize],
     op_index: usize,
 ) -> Result<(Vec<Operation>, u64, Vec<Site>), Error> {
-    let font = walker
-        .gs
-        .text
+    let font = st
         .font
         .as_ref()
         .ok_or_else(|| Error::Structure("TJ before Tf — no font selected".into()))?;
-    let t = &walker.gs.text;
-    let font_size = t.font_size;
-    let h_scale = t.h_scale;
+    let font_size = st.font_size;
+    let h_scale = st.h_scale;
     if !(font_size.is_finite() && font_size > 0.0) {
         return Err(Error::Unsupported {
             feature: "text removal with Tfs = 0",
@@ -535,8 +580,8 @@ fn rewrite_tj(
             detail: "cannot express the removed advance as a TJ number".into(),
         });
     }
-    let char_spacing = t.char_spacing;
-    let word_spacing = t.word_spacing;
+    let char_spacing = st.char_spacing;
+    let word_spacing = st.word_spacing;
 
     let mut new_items: Vec<TJItem> = Vec::new();
     let mut sites: Vec<Site> = Vec::new();
@@ -563,7 +608,9 @@ fn rewrite_tj(
                 let mut removed_advance = 0.0f64;
                 for (local_ci, (code, byte_pos)) in codes.iter().enumerate() {
                     let global = ci + local_ci;
-                    if remove.contains(&global) {
+                    // `remove` is sorted ascending — binary search
+                    // keeps this O(log n) per code.
+                    if remove.binary_search(&global).is_ok() {
                         // Close the kept run *before* the kern so the
                         // order is text, adjustment, text.
                         if let Some(start) = run_start.take() {
@@ -702,6 +749,88 @@ fn write_op(op: &Operation, out: &mut Vec<u8>, _limits: &Limits) -> Result<(), E
         Operation::SetFlatness(i) => {
             out.extend_from_slice(fmt_num(*i).as_bytes());
             out.extend_from_slice(b" i");
+        }
+        // Colour ops — pass through unchanged; the operands were
+        // validated by the parser (numbers, plus an optional trailing
+        // pattern name for SCN/scn — re-emitted as `N` forms when a
+        // trailing Name is present).
+        Operation::SetGrayStroke(v) => {
+            out.extend_from_slice(fmt_num(*v).as_bytes());
+            out.extend_from_slice(b" G");
+        }
+        Operation::SetGrayFill(v) => {
+            out.extend_from_slice(fmt_num(*v).as_bytes());
+            out.extend_from_slice(b" g");
+        }
+        Operation::SetRgbStroke(r, g, b) => {
+            for (i, v) in [r, g, b].iter().enumerate() {
+                if i > 0 {
+                    out.push(b' ');
+                }
+                out.extend_from_slice(fmt_num(**v).as_bytes());
+            }
+            out.extend_from_slice(b" RG");
+        }
+        Operation::SetRgbFill(r, g, b) => {
+            for (i, v) in [r, g, b].iter().enumerate() {
+                if i > 0 {
+                    out.push(b' ');
+                }
+                out.extend_from_slice(fmt_num(**v).as_bytes());
+            }
+            out.extend_from_slice(b" rg");
+        }
+        Operation::SetCmykStroke(c, m, y, k) => {
+            for (i, v) in [c, m, y, k].iter().enumerate() {
+                if i > 0 {
+                    out.push(b' ');
+                }
+                out.extend_from_slice(fmt_num(**v).as_bytes());
+            }
+            out.extend_from_slice(b" K");
+        }
+        Operation::SetCmykFill(c, m, y, k) => {
+            for (i, v) in [c, m, y, k].iter().enumerate() {
+                if i > 0 {
+                    out.push(b' ');
+                }
+                out.extend_from_slice(fmt_num(**v).as_bytes());
+            }
+            out.extend_from_slice(b" k");
+        }
+        Operation::SetColorSpaceStroke(n) => {
+            out.push(b'/');
+            out.extend_from_slice(n);
+            out.extend_from_slice(b" CS");
+        }
+        Operation::SetColorSpaceFill(n) => {
+            out.push(b'/');
+            out.extend_from_slice(n);
+            out.extend_from_slice(b" cs");
+        }
+        Operation::SetColorStroke(ops) => {
+            for o in ops {
+                write_object_shallow(o, out);
+                out.push(b' ');
+            }
+            // `SC` vs `SCN` — the parser merges them; emit `SCN` when
+            // a trailing pattern name is present (per §8.6.8).
+            if matches!(ops.last(), Some(Object::Name(_))) {
+                out.extend_from_slice(b"SCN");
+            } else {
+                out.extend_from_slice(b"SC");
+            }
+        }
+        Operation::SetColorFill(ops) => {
+            for o in ops {
+                write_object_shallow(o, out);
+                out.push(b' ');
+            }
+            if matches!(ops.last(), Some(Object::Name(_))) {
+                out.extend_from_slice(b"scn");
+            } else {
+                out.extend_from_slice(b"sc");
+            }
         }
         Operation::SetExtGState(n) => {
             out.push(b'/');
@@ -895,21 +1024,14 @@ fn write_op(op: &Operation, out: &mut Vec<u8>, _limits: &Limits) -> Result<(), E
         Operation::EndCompatibility => out.extend_from_slice(b"EX"),
         // Unknown ops inside BX…EX round-trip verbatim — the operands
         // were parsed objects, re-emitted with the same serialiser.
+        // (`Unknown` outside BX…EX never reaches here: the walker's
+        // `uncertain_state` taint refuses the page first.)
         Operation::Unknown { operator, operands } => {
             for o in operands {
                 write_object_shallow(o, out);
                 out.push(b' ');
             }
             out.extend_from_slice(operator);
-        }
-        // Non-text-state ops the walker refuses on are unreachable —
-        // `remove_text` bails before this point. Anything not listed
-        // above falls through to a typed error rather than a guess.
-        _ => {
-            return Err(Error::Unsupported {
-                feature: "content rewrite",
-                detail: format!("op '{}' is outside the M17 rewrite set", op.name()),
-            })
         }
     }
     Ok(())
@@ -1374,6 +1496,54 @@ mod tests {
         assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
     }
 
+    /// M17.1 — an invisible (Tr 3) text occurrence *outside* the
+    /// removal rect is still out of scope: the page's eligibility is
+    /// decided by what it *shows*, not by what was selected. The
+    /// current code only checks the render mode of *hit* targets, so
+    /// out-of-rect Tr 3 text slips through — fix that.
+    #[test]
+    fn invisible_text_outside_rect_is_refused() {
+        // (A) at Tr 0 on line 1; (B) at Tr 3 on line 2 — only 'A' is
+        // inside the rect. The Tr 3 occurrence is out of scope even
+        // though nothing removes it.
+        let d = doc(&one_glyph(
+            b"BT /F1 24 Tf 0 Tr 20 100 Td (A) Tj 3 Tr 20 60 Td (B) Tj ET\n",
+        ));
+        let err = remove_text(&d, 0, &[(15.0, 95.0, 40.0, 125.0)], &Limits::default()).unwrap_err();
+        assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+    }
+
+    /// Same for stroke modes — Tr 1 text far from the rect refuses
+    /// the page, not just refuses-to-remove.
+    #[test]
+    fn stroke_mode_outside_rect_is_refused() {
+        let d = doc(&one_glyph(
+            b"BT /F1 24 Tf 0 Tr 20 100 Td (A) Tj 1 Tr 20 60 Td (B) Tj ET\n",
+        ));
+        let err = remove_text(&d, 0, &[(15.0, 95.0, 40.0, 125.0)], &Limits::default()).unwrap_err();
+        assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+    }
+
+    /// A page whose *only* text is Tr 3 — nothing is even selected —
+    /// is still refused (the unsupported occurrence exists).
+    #[test]
+    fn page_with_only_invisible_text_is_refused() {
+        let d = doc(&one_glyph(b"BT /F1 24 Tf 3 Tr 20 60 Td (B) Tj ET\n"));
+        let err =
+            remove_text(&d, 0, &[(150.0, 150.0, 190.0, 190.0)], &Limits::default()).unwrap_err();
+        assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+    }
+
+    /// Tr set to an unsupported mode but *never used* to show text is
+    /// fine — the mode only matters when glyphs are shown under it.
+    /// `3 Tr` then `0 Tr` before any `Tj` shows nothing unsupported.
+    #[test]
+    fn unused_render_mode_is_allowed() {
+        let d = doc(&one_glyph(b"BT /F1 24 Tf 3 Tr 0 Tr 20 60 Td (AB) Tj ET\n"));
+        let r = remove_text(&d, 0, &[(35.0, 60.0, 38.0, 80.0)], &Limits::default()).unwrap();
+        assert_eq!(r.codes_removed, 1);
+    }
+
     /// An invisible (Tr 3) text page is refused — invisible text is
     /// not evaluated.
     #[test]
@@ -1381,6 +1551,486 @@ mod tests {
         let d = doc(&one_glyph(b"BT /F1 24 Tf 20 60 Td 3 Tr (ABC) Tj ET\n"));
         let err = remove_text(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap_err();
         assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+    }
+
+    /// A 1-page PDF with *two* TrueType fonts — `/F1` with all
+    /// widths 600 and `/F2` with all widths 300 — so a code shown
+    /// under `/F2` advances half as far. The same font file backs
+    /// both; only the `/Widths` differ.
+    fn two_fonts(body: &[u8]) -> Vec<u8> {
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R /F2 7 0 R >> >> /Contents 9 0 R >>"
+        );
+        let mk_font = |w: u32| -> Vec<u8> {
+            let widths = {
+                let wv = [w; 224];
+                format!(
+                    "[{}]",
+                    wv.iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                )
+                .into_bytes()
+            };
+            let mut d = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+                  /FirstChar 32 /LastChar 255 /Widths "
+                .to_vec();
+            d.extend_from_slice(&widths);
+            d.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+            d
+        };
+        push!(4, &mk_font(600));
+        push!(7, &mk_font(300));
+        push!(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs.extend_from_slice(&enc);
+        fs.extend_from_slice(b"\nendstream");
+        push!(6, &fs);
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 10\n0000000000 65535 f \n".to_vec());
+        for n in 1..10u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 10 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        parts.concat()
+    }
+
+    /// M17.1 — a font switch between shows must not leak the second
+    /// font's widths into the first op's kern. `/F1` widths are 600,
+    /// `/F2` 300: removing 'B' under `/F1` (k=600) and 'C' under
+    /// `/F2` (k=300) must each carry their own width.
+    #[test]
+    fn font_switch_uses_per_op_widths() {
+        // Two `Tj`s, one per font, on the same line — `(AB)` under
+        // /F1 (w 600) then `(C)` under /F2 (w 300). 'B' sits at
+        // origin 34.4..40.4; 'C' follows at origin 48.8 with ink
+        // 48.8..54.8 (w 300 advance 7.2 → ink 48.8..55.2 approx).
+        let d = doc(&two_fonts(
+            b"BT /F1 24 Tf 20 60 Td (AB) Tj /F2 24 Tf (C) Tj ET\n",
+        ));
+        // Remove 'B' (ink 34.4..40.4) and 'C' (ink ~48.8..55.2 —
+        // verify the actual bounds rather than guess).
+        let r = remove_text(
+            &d,
+            0,
+            &[(34.5, 55.0, 42.0, 80.0), (47.0, 55.0, 60.0, 80.0)],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.codes_removed, 2);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // 'B' kern under /F1: -(600 + 0·1000/24) = -600.
+        // 'C' kern under /F2: -(300 + 0·1000/24) = -300.
+        // The buggy end-of-stream font (/F2, w 300) would emit -300
+        // for 'B' too.
+        assert!(out.contains("[(A) -600] TJ"), "F1 kern 600: {out}");
+        assert!(out.contains("[-300] TJ"), "F2 kern 300: {out}");
+    }
+
+    /// M17.1 — `q`/`Q` restores text state (Tc/Tw/Tz are graphics
+    /// state): a `Tc` set inside `q…Q` must not leak past the `Q`,
+    /// and the kern for a glyph shown *after* `Q` uses the restored
+    /// value.
+    #[test]
+    fn q_restore_uses_restored_state() {
+        // `Tc=7` inside q…Q — `Tf` is *also* inside the q so the
+        // second BT re-selects the font after the Q restore.
+        let d = doc(&one_glyph(
+            b"q 7 Tc BT /F1 24 Tf 20 60 Td (AB) Tj ET Q\nBT /F1 24 Tf 20 120 Td (C) Tj ET\n",
+        ));
+        // 'B' advance at Tc=7: (14.4+7)=21.4 → origin 41.4, ink ~41.4..47.4.
+        // 'C' on line 2: the second BT resets Tm — origin x=20,
+        // ink 20..34.4 at y 120.
+        let r = remove_text(
+            &d,
+            0,
+            &[(40.0, 55.0, 50.0, 80.0), (15.0, 115.0, 40.0, 140.0)],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.codes_removed, 2);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // 'B' kern at Tc=7: -(600 + 7·1000/24) = -891.6667.
+        // 'C' kern at restored Tc=0: -(600 + 0) = -600.
+        assert!(out.contains("[(A) -891.6667] TJ"), "Tc=7 kern: {out}");
+        assert!(out.contains("[-600] TJ"), "restored Tc=0 kern: {out}");
+    }
+
+    /// M17.1 — trailing state ops (`Tf`/`Tc` with no following show)
+    /// must not change an earlier op's rewrite.
+    #[test]
+    fn trailing_state_ops_do_not_change_rewrite() {
+        let d = doc(&one_glyph(
+            b"BT /F1 24 Tf 2 Tc 20 60 Td (AB) Tj /F1 10 Tf 9 Tc 50 Tz ET\n",
+        ));
+        // 'B' advance at Tc=2: 16.4 → origin 36.4, ink ~36.4..42.4.
+        let r = remove_text(&d, 0, &[(35.0, 55.0, 45.0, 80.0)], &Limits::default()).unwrap();
+        assert_eq!(r.codes_removed, 1);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // Kern at Tc=2: -(600 + 2·1000/24) = -683.3333 — the trailing
+        // `9 Tc`/`50 Tz`/`10 Tf` must not alter it.
+        assert!(out.contains("[(A) -683.3333] TJ"), "op-time state: {out}");
+    }
+
+    /// M17.1 — multiple `BT`/`ET`: each `Tj` uses the state inside
+    /// its own text object.
+    #[test]
+    fn multiple_bt_et_each_use_own_state() {
+        let d = doc(&one_glyph(
+            b"BT /F1 24 Tf 4 Tc 20 60 Td (AB) Tj ET\nBT 8 Tc 20 120 Td (CD) Tj ET\n",
+        ));
+        // 'B' Tc=4: advance 18.4, origin 38.4, ink 38.4..44.4 y60.
+        // 'C' Tc=8 line2: origin x=20, ink 20..34.4 y120.
+        let r = remove_text(
+            &d,
+            0,
+            &[(37.0, 55.0, 46.0, 80.0), (15.0, 115.0, 40.0, 140.0)],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.codes_removed, 2);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // 'B': -(600 + 4·1000/24) = -766.6667. 'C': -(600 + 8·1000/24) = -933.3333.
+        assert!(out.contains("[(A) -766.6667] TJ"), "BT1 Tc=4: {out}");
+        assert!(out.contains("[-933.3333 (D)] TJ"), "BT2 Tc=8: {out}");
+    }
+
+    /// M17.1 — `'` runs under the *current* text state like any
+    /// show: a `Tc` set before it applies to its kern too.
+    #[test]
+    fn quote_uses_op_state() {
+        let d = doc(&one_glyph(b"BT /F1 24 Tf 6 Tc 14 TL 20 60 Td (AB) ' ET\n"));
+        // 'A' advance Tc=6: 20.4 → 'B' origin 40.4, ink 40.4..46.4.
+        // The `'` also emits `T*` first (line down by TL=14).
+        let r = remove_text(&d, 0, &[(39.0, 50.0, 48.0, 62.0)], &Limits::default()).unwrap();
+        assert_eq!(r.codes_removed, 1);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // `'` → T* + [(A) <-(600 + 6·1000/24)>] TJ = [(A) -850] TJ.
+        assert!(
+            out.contains("T*\n[(A) -850] TJ"),
+            "' kern must use the op's Tc=6: {out}"
+        );
+    }
+
+    /// M17.1 — `"` updates Tw/Tc *before* showing: the snapshot
+    /// carries the op's new values so the kern math matches.
+    #[test]
+    fn double_quote_uses_new_spacing() {
+        let d = doc(&one_glyph(
+            b"BT /F1 24 Tf 14 TL 20 60 Td (A) Tj 4 2 (B) \" ET\n",
+        ));
+        // `"` sets Tw=4 Tc=2, moves a line, shows (B) — 'B' origin
+        // x=20 at y 60-14=46, ink 20..34.4. Remove 'B'.
+        let r = remove_text(&d, 0, &[(15.0, 40.0, 36.0, 55.0)], &Limits::default()).unwrap();
+        assert_eq!(r.codes_removed, 1);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // `"` → Tw + Tc + T* + [-683.3333] TJ where
+        // -(600 + 2·1000/24) = -683.3333 (Tw applies to spaces only).
+        assert!(
+            out.contains("4 Tw\n2 Tc\nT*\n[-683.3333] TJ"),
+            "\" kern must use its own Tc=2: {out}"
+        );
+    }
+
+    /// A 1-page PDF with `/F1` simple TrueType (1-byte codes, w 600)
+    /// and `/F2` Type0/Identity-H (2-byte codes, DW 600). Switching
+    /// fonts changes the code *width* — the rewrite must decode each
+    /// op's string under its own font's code unit.
+    fn mixed_fonts(body: &[u8]) -> Vec<u8> {
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R /F2 7 0 R >> >> /Contents 9 0 R >>"
+        );
+        // /F1 — simple TrueType, 1-byte codes, all widths 600.
+        let widths = {
+            let w = [600u32; 224];
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut fd = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        fd.extend_from_slice(&widths);
+        fd.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push!(4, &fd);
+        push!(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>"
+        );
+        // /F2 — Type0/Identity-H, 2-byte codes, DW 600.
+        push!(
+            7,
+            b"<< /Type /Font /Subtype /Type0 /BaseFont /KasaneTest \
+              /Encoding /Identity-H /DescendantFonts [8 0 R] >>"
+        );
+        push!(
+            8,
+            b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /KasaneTest \
+              /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+              /FontDescriptor 10 0 R /CIDToGIDMap /Identity /DW 600 >>"
+        );
+        push!(
+            10,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 4 \
+              /FontBBox [0 -200 600 800] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs.extend_from_slice(&enc);
+        fs.extend_from_slice(b"\nendstream");
+        push!(6, &fs);
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        parts.concat()
+    }
+
+    /// M17.1 — a `Tf` switch from a 1-byte simple font to a 2-byte
+    /// Identity-H font: each op's string decodes under its own code
+    /// unit. `(AB)` under /F1 and `<0043 0044>` under /F2.
+    #[test]
+    fn simple_to_identity_h_switch() {
+        let d = doc(&mixed_fonts(
+            b"BT /F1 24 Tf 20 60 Td (AB) Tj /F2 24 Tf <0043 0044> Tj ET\n",
+        ));
+        // 'B' under /F1: origin 34.4..40.4. Under /F2 the CID glyphs
+        // have overlapping outlines (ink 48.8..65.6 and 63.2..80) so
+        // a clean single-code selection is impossible there — remove
+        // 'B' plus only the *second* /F2 code (rect 66..82 hits
+        // 0x44's 63.2..80 without touching 0x43's 48.8..65.6).
+        let r = remove_text(
+            &d,
+            0,
+            &[(34.5, 55.0, 42.0, 80.0), (66.0, 55.0, 82.0, 80.0)],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.codes_removed, 2);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // Both fonts w=600 → kern -600 each, but the /F2 element
+        // must keep its *2-byte* kept code (0x43) — octal-escaped
+        // bytes `(\000C)`.
+        assert!(out.contains("[(A) -600] TJ"), "F1: {out}");
+        assert!(out.contains("[(\\000C) -600] TJ"), "F2 keeps 2-byte: {out}");
+    }
+
+    /// M17.1 — the rewrite must use the *state at the op*, not the
+    /// end-of-stream state. Two `Tj`s with different font sizes: the
+    /// second `Tj`'s kern must reflect *its* 10pt size, not the last
+    /// `Tf` in the stream.
+    ///
+    /// Content: `BT /F1 24 Tf 20 60 Td (AB) Tj 10 Tf (C) Tj ET`.
+    /// Remove 'B' from the first `Tj` — the kern must be
+    /// `-(600·24/24·1000/24)` … more precisely `-(w0 + Tc·1000/Tfs)`
+    /// = `-(600 + 0)` for 24pt — but the *bug* is the walker leaves
+    /// `font_size = 10` at end-of-stream, so the old code computes
+    /// `-(600 + 0·1000/10)` = `-600` — same value here. Use a font
+    /// *size* where the kern differs: Tfs scales the kern's *effect*,
+    /// not its value, so a size change alone does not expose the bug.
+    /// The bug shows when `Tc`/`Tw`/`Tz` or the *font* changes — use
+    /// `Tc` here: set `Tc=5` before the first Tj and `Tc=0` after.
+    /// The kern for 'B' at `Tc=5` is `-(600 + 5·1000/24)` ≈ `-808.33`;
+    /// with the end-of-stream `Tc=0` the buggy code emits `-600`.
+    #[test]
+    fn state_change_uses_op_state_not_end_of_stream() {
+        let d = doc(&one_glyph(
+            b"BT /F1 24 Tf 5 Tc 20 60 Td (AB) Tj 0 Tc (C) Tj ET\n",
+        ));
+        // 'A' advance at Tc=5 is (600/1000·24 + 5)·1 = 19.4 — 'B'
+        // origin is x=39.4, ink ~39.4..45.4. Rect (36,55,46,80) hits
+        // 'B' only ('A' ink ends ~34.4).
+        let r = remove_text(&d, 0, &[(36.0, 55.0, 46.0, 80.0)], &Limits::default()).unwrap();
+        assert_eq!(r.codes_removed, 1);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // Kern must carry the op-time `Tc=5`: -(600 + 5·1000/24)
+        // = -808.3333. The buggy end-of-stream Tc=0 would give -600.
+        assert!(
+            out.contains("[(A) -808.3333] TJ"),
+            "kern must reflect the op's Tc=5, not the stream-end Tc=0: {out}"
+        );
+    }
+
+    /// M17.1 — same problem for a `Tf` *font* switch: a second font
+    /// with different widths must not change the first `Tj`'s rewrite.
+    /// Here the second font is the same file (different name only) so
+    /// widths match and the kern is the same either way — instead make
+    /// the second `Tf` a *size* change that alters `font_size`, which
+    /// the buggy code reads for the *first* Tj's kern. A kern at
+    /// `Tfs=10` for 'B' is `-(600 + 0·1000/10)` = `-600` — identical.
+    /// So this variant exercises the font *name*/code-width path: use
+    /// `Tc` again but verify the *first* op's kern only, proving the
+    /// second `Tc` did not bleed backwards.
+    #[test]
+    fn later_state_does_not_change_earlier_rewrite() {
+        // `Tc=9` before (AB), `Tc=1` before (CD) — remove 'B' AND 'C'.
+        let d = doc(&one_glyph(
+            b"BT /F1 24 Tf 9 Tc 20 60 Td (AB) Tj 1 Tc 20 100 Td (CD) Tj ET\n",
+        ));
+        // 'A' advance at Tc=9 is 14.4+9 = 23.4 — 'B' origin ≈43.4,
+        // ink ~43.4..49.4 (y 60..76.8). 'C' on line 2 sits at
+        // origin (40,160), ink ~48.4..54.4 (y 160..176.8) — `Td`
+        // moves from the line-start, not the page origin.
+        let r = remove_text(
+            &d,
+            0,
+            &[(40.0, 55.0, 50.0, 80.0), (47.0, 155.0, 55.0, 180.0)],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.codes_removed, 2);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // 'B' kern: -(600 + 9·1000/24) = -975. 'C' kern:
+        // -(600 + 1·1000/24) = -641.6667. If the walker left Tc=1 the
+        // first kern would wrongly be -641.6667 too.
+        assert!(
+            out.contains("[(A) -975] TJ"),
+            "first Tj kern must use its own Tc=9: {out}"
+        );
+        assert!(
+            out.contains("[-641.6667 (D)] TJ"),
+            "second Tj kern must use its own Tc=1: {out}"
+        );
+    }
+
+    /// M17.1 — a `LimitExceeded` from the walk must stay
+    /// `LimitExceeded`, not be flattened into `Unsupported` — the
+    /// caller distinguishes "out of scope" from "resource bound".
+    #[test]
+    fn walk_limit_stays_limit_exceeded() {
+        let d = doc(&one_glyph(b"BT /F1 24 Tf 20 60 Td (ABC) Tj ET\n"));
+        // 'A','B' fit; 'C' overflows the code-count limit.
+        let l = Limits {
+            max_text_codes: 2,
+            ..Limits::default()
+        };
+        let err = remove_text(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &l).unwrap_err();
+        assert!(
+            matches!(err, Error::LimitExceeded { .. }),
+            "limit must not be flattened to Unsupported: {err:?}"
+        );
+    }
+
+    /// Same for `max_diag_items` — a walk that reports more items than
+    /// the limit is a resource bound, not an unsupported construct.
+    #[test]
+    fn diag_items_limit_stays_limit_exceeded() {
+        let d = doc(&one_glyph(b"BT /F1 24 Tf 20 60 Td (ABC) Tj ET\n"));
+        // The first reported glyph already overflows the item limit.
+        let l = Limits {
+            max_diag_items: 1,
+            ..Limits::default()
+        };
+        let err = remove_text(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &l).unwrap_err();
+        assert!(
+            matches!(err, Error::LimitExceeded { .. }),
+            "diag-item limit must not be flattened: {err:?}"
+        );
+    }
+
+    /// And a `Structure` error — e.g. `Tj` outside `BT`/`ET` — keeps
+    /// its own kind rather than being renamed `Unsupported`.
+    #[test]
+    fn walk_structure_error_keeps_its_kind() {
+        let d = doc(&one_glyph(b"/F1 24 Tf 20 60 Td (ABC) Tj\n")); // no BT
+        let err = remove_text(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap_err();
+        assert!(
+            matches!(err, Error::Structure(_)),
+            "structural error must keep its kind: {err:?}"
+        );
     }
 
     /// Two pages share one `/Contents` — removal on page 1 writes a
