@@ -75,7 +75,7 @@ rect (page-level `Tj`/`TJ`/`'`/`"`, `Tr 0` fill, supported
 horizontal fonts only), rewrites the affected strings as `TJ` with
 numeric elements that restore the removed advance, and writes a new
 single-revision PDF through the same overlay pipeline as
-`annotate-rect`. A page with `/Annots`, any `Do`/`sh`/inline
+`annotate-rect`. A page with `/Annots`, any `sh`/inline
 image/`gs`/Pattern/`ActualText`/OC, any *shown* text mode other
 than `Tr 0` (even outside the rect), `w = 0` hairlines, unsupported
 fonts, non-finite CTM, `/UserUnit` ≠ 1, vertical text, or
@@ -89,6 +89,17 @@ stream-end state, checks eligibility page-wide instead of only
 against selected codes, and keeps typed walk errors
 (`LimitExceeded`, `Structure`, `Parse`) instead of flattening them
 into `Unsupported`.
+
+**M18 extends it to one level of `/Form`.** A page-level `Do` whose
+target is a `/Form` XObject is editable per-invocation: the form's
+inner text is rewritten into a *clone* of its stream, the clone is
+registered under a fresh `/XObject` name (`KasFm{n}`) in the page's
+effective resources, and only that `Do` is repointed — so two `Do`s
+of the same form (or two names for the same object) can be edited
+independently, and every other page sharing the original keeps the
+unmodified bytes. Nested `Do`s, images, `/Group`/`/OC`/`/Ref` forms,
+and all M17 refusals stay refused — the check is `form_path` depth
+plus the existing `blocker`/`uncertain`/mode rules.
 
 What works today:
 

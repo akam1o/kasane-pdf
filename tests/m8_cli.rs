@@ -2070,3 +2070,126 @@ fn cli_remove_text_op_state_change() {
         "kern must use the op-time Tc=5: {raw}"
     );
 }
+
+#[test]
+fn cli_remove_text_inside_form() {
+    // M18 — a Form `Do` whose inner text a rect hits is cloned
+    // per-invocation: the page's `Do` repoints at a `/KasFm0` clone
+    // carrying the rewritten TJ, while the original form object keeps
+    // its `(ABC)` bytes.
+    let dir = tmpdir("rt-form");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    let font_bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/KasaneTest.ttf"
+    ))
+    .unwrap();
+    let pdf = {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        let mut push = |n: u32, body: &[u8]| {
+            offs.push((n, parts.iter().map(|p| p.len()).sum()));
+            parts.push(format!("{n} 0 obj\n").into_bytes());
+            parts.push(body.to_vec());
+            parts.push(b"\nendobj\n".to_vec());
+        };
+        push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> /XObject << /Fm1 10 0 R >> >> \
+              /Contents 9 0 R >>",
+        );
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut fd = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        fd.extend_from_slice(&widths);
+        fd.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push(4, &fd);
+        push(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>",
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs2 = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs2.extend_from_slice(&enc);
+        fs2.extend_from_slice(b"\nendstream");
+        push(6, &fs2);
+        let body = b"q 1 0 0 1 20 60 cm /Fm1 Do Q\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push(9, &sb);
+        let fb = b"BT /F1 24 Tf 0 0 Td (ABC) Tj ET\n";
+        let mut f = b"<< /Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+              /Matrix [1 0 0 1 0 0] /Length "
+            .to_vec();
+        f.extend_from_slice(fb.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(fb);
+        f.extend_from_slice(b"\nendstream");
+        push(10, &f);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        parts.concat()
+    };
+    fs::write(&src, &pdf).unwrap();
+    let out = bin()
+        .args(["experimental-remove-text"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "34", "55", "42", "80", "--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let raw = String::from_utf8_lossy(&fs::read(&dst).unwrap()).into_owned();
+    // Cloned stream + renamed Do; original keeps (ABC).
+    assert!(raw.contains("/KasFm0 Do"), "page Do repointed: {raw}");
+    assert!(raw.contains("(ABC)"), "original form keeps (ABC): {raw}");
+    // Rect (34,55,42,80) hits 'A' (ink 20..34.4 — edge touch) and
+    // 'B' (34.4..40.4) under cm(20,60); the clone keeps only 'C'.
+    assert!(
+        raw.contains("[-1200 (C)] TJ"),
+        "clone carries the rewrite: {raw}"
+    );
+}

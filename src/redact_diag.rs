@@ -35,7 +35,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 /// resolved object ref, and the op index of the `Do` that produced
 /// it. `op_index` disambiguates two calls to the same form (or two
 /// names for the same object) at the same nesting level.
-#[derive(Debug, Clone)]
+///
+/// `Ord` is derived so a `form_path` vector can key the per-op state
+/// snapshots M18 uses (`BTreeMap<(Vec<FormFrame>, usize), _>`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FormFrame {
     /// The `/XObject` resource name used for the `Do`.
     pub name: Vec<u8>,
@@ -775,14 +778,17 @@ pub(crate) struct DiagWalker<'a> {
     pub(crate) uncertain: Vec<Uncertain>,
     /// `pub(crate)` — M17 refuses on any blocker.
     pub(crate) blockers: Vec<Blocker>,
-    /// `pub(crate)` — M17.1: the text state *at each page-level show
-    /// op* (`Tj`/`TJ`/`'`/`"`), keyed by `op_index`. Recorded at the
-    /// exact point `show_text` reads it — after `"`'s `Tw`/`Tc`
-    /// update, after `'`/`"`'s line move — so the rewrite uses the
-    /// same state the diagnosis (and renderer) saw, not the state at
-    /// end of stream. Only page-level ops are recorded (`form_path`
-    /// empty): form content is out of scope for removal anyway.
-    pub(crate) show_states: BTreeMap<usize, ShowTextState>,
+    /// `pub(crate)` — M17.1/M18: the text state *at each show op*
+    /// (`Tj`/`TJ`/`'`/`"`), keyed by `(form_path, op_index)`. The
+    /// `form_path` is the `Do` invocation chain — `[]` at page level,
+    /// `[frame]` inside a form the page called directly — so a form's
+    /// inner `op_index` never collides with a page-level one or with
+    /// another invocation of the same form. Recorded at the exact
+    /// point `show_text` reads it — after `"`'s `Tw`/`Tc` update,
+    /// after `'`/`"`'s line move — so the rewrite uses the same state
+    /// the diagnosis (and renderer) saw, not the state at end of
+    /// stream.
+    pub(crate) show_states: BTreeMap<(Vec<FormFrame>, usize), ShowTextState>,
     /// object ref → (kind, sites) for sharing analysis.
     site_map: BTreeMap<(u32, u16), (String, Vec<Site>)>,
     /// Counting budget for reported items.
@@ -916,18 +922,6 @@ impl<'a> DiagWalker<'a> {
         let mut s = self.site();
         s.code_index = Some(code_index);
         s
-    }
-
-    /// `pub(crate)` — M17 needs to reconstruct a removed code's site
-    /// (the `op_index` of the op it came from plus its `code_index`)
-    /// without re-walking the state stack.
-    pub(crate) fn text_site_at(&self, op_index: usize, code_index: usize) -> Site {
-        Site {
-            contents: self.contents_refs.clone(),
-            op_index,
-            form_path: self.form_path.clone(),
-            code_index: Some(code_index),
-        }
     }
 
     /// `max_diag_items` bounds the *total* reported items — targets,
@@ -1380,15 +1374,15 @@ impl<'a> DiagWalker<'a> {
     }
 
     /// Record the text state the current show op is about to run
-    /// under — only for page-level ops (`form_path` empty); form
-    /// content is out of scope for M17 removal and gets no snapshot.
-    /// The map is keyed by `op_index` and bounded the same way `ops`
-    /// is (`max_operations`), so no extra limit is needed.
+    /// under — keyed by `(form_path, op_index)` so the same form's
+    /// inner ops under different invocations get distinct snapshots.
+    /// Bounded the same way `ops` is (`max_operations` per stream,
+    /// `max_xobject_invocations` for the recursion) — no extra limit.
     fn capture_show_state(&mut self) {
-        if self.form_path.is_empty() {
-            self.show_states
-                .insert(self.op_index, ShowTextState::capture(&self.gs.text));
-        }
+        self.show_states.insert(
+            (self.form_path.clone(), self.op_index),
+            ShowTextState::capture(&self.gs.text),
+        );
     }
 
     /// Position one character code and record the target — mirrors the
