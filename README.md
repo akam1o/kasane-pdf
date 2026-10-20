@@ -109,7 +109,10 @@ bounds the `show_states` snapshot map (recorded only for
 `remove_text`, not `diagnose_redaction`); `max_edit_content_bytes`
 (64 MiB) bounds the cumulative generated stream bodies held in the
 `Edit` overlay before `rewrite` applies its own `max_output_bytes`
-to the final PDF.
+to the final PDF. M18.2 makes the byte budget *pre-allocation*: a
+`BoundedWriter` checks the remaining budget before every
+`push`/`extend_from_slice`, so a long `Tj` string or huge `TJ`
+array stops mid-write instead of allocating past the bound.
 
 What works today:
 

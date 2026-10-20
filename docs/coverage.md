@@ -642,7 +642,9 @@ M18.1 adds three cumulative budgets that the per-stream parse cap
   walks with snapshots off and never fills it.
 - `max_edit_content_bytes` (64 MiB) — bytes of *generated* stream
   bodies held in the `Edit` overlay at once: each cloned form body
-  plus the new page `/Contents`. Checked before `serialize_ops`
-  grows its Vec past the remaining budget, and again when the
-  finished body is charged; the writer's own `max_output_bytes`
+  plus the new page `/Contents`. `serialize_ops` receives the
+  cumulative count so a `BoundedWriter` can refuse the *next* byte
+  before it lands — a long `Tj` string or huge `TJ` array stops
+  mid-write, never allocating past the bound. `charge_generated`
+  then counts each finished body; the writer's `max_output_bytes`
   still caps the final PDF independently.
