@@ -1829,6 +1829,7 @@ fn describe_target(t: &kasane_pdf::Target) -> String {
             name,
             size,
             blockers,
+            ..
         } => format!(
             "{head} image /{} {}x{}{}{}",
             escape_bytes(name),
@@ -1996,6 +1997,7 @@ fn target_json(t: &kasane_pdf::Target) -> String {
             name,
             size,
             blockers,
+            ..
         } => s.push_str(&format!(
             ", \"image\": {{\"name\": \"{}\", \"ref\": {}, \"size\": [{}, {}], \"blockers\": [{}]}}",
             escape_bytes(name),
