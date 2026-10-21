@@ -783,6 +783,22 @@ Design choices:
   to the stack only when a child is pushed (`all_materialised`
   is still `true`); a `false` break records the result
   immediately.
+- **M22.4 — testability split** — the traversal is
+  `plan_resource_materialisation(doc, pages_with_resources) ->
+  (pages_to_strip, node_results)`. Returning `node_results` lets
+  the tests assert each node's `false`/`true` — including that a
+  3-level `false` propagates to the root and that a `false` node
+  is never re-pushed — instead of only observing the final strip
+  outcome through `remove_region`. (The earlier M22.3 tests went
+  through `remove_region` and tolerated any `Err`, which masked
+  the case where the target page itself was uneditable.)
+  Termination relies on the parser: `walk_page_tree` rejects
+  page-tree cycles (`CycleDetected`) and enforces
+  `max_page_tree_depth`/`max_page_tree_nodes` before the
+  materialisation plan ever runs, so this pass adds no `visited`
+  set of its own. Complexity is O(nodes + edges) — each `/Pages`
+  node is popped once per incoming edge at most, and each
+  finished node records exactly one `node_results` entry.
 
 CLI: `kasane-pdf experimental-remove-region in.pdf 1 --rect llx lly
 urx ury [--rect …] --output out.pdf` — same atomic-write and

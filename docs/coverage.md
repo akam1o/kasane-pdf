@@ -769,6 +769,27 @@ invocations_edited, pixels_changed, sites, scope }`:
   all_materialised` — a `false` result is *not* deferred, so the
   parent sees `false`, not `None`. This prevents infinite
   re-pushing of a failed child.
+- **M22.4** — the traversal is extracted as
+  `plan_resource_materialisation(doc, pages_with_resources) ->
+  (pages_to_strip, node_results)` so the false-propagation is
+  *asserted per node*, not merely inferred from the final strip
+  list. The M22.3 tests previously accepted any `Err` from
+  `remove_region`, which could fail *before* the traversal (a
+  direct-kid target page has `object_ref() == None` → refused);
+  they now call the planner directly. Termination is guaranteed by
+  the parser's `walk_page_tree` — it rejects cycles
+  (`CycleDetected`) and bounds the tree (`max_page_tree_depth`,
+  `max_page_tree_nodes`) before this pass runs. The pass itself
+  has no `visited` set: a node is re-pushed only while it is
+  waiting on a child (`all_materialised` still `true`), and a
+  recorded result is never recomputed — stack entries are bounded
+  by nodes + edges. Verified end-to-end on a two-branch, two-page
+  fixture (same name `/Im1` resolving to different images per
+  branch): `scripts/verify_m224.sh` checks qpdf structure, both
+  pages materialised, all `/Pages` stripped of `/Resources`,
+  identical `pdftotext`, page-2 rendering byte-identical, page-1
+  rendering differing only inside the edited region, and the
+  branch-B image kept while the orphaned original is dropped.
 - Text eligibility: `Tr 0` fill only, page-level (an out-of-rect
   `Tr 3`/`Tr 1` occurrence still refuses). `Tj`/`TJ`/`'`/`"` are
   rewritten with the same advance-preserving logic as `remove_text`.
