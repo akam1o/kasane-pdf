@@ -512,6 +512,10 @@ pub fn remove_region(
             .get(b"Pages".as_slice())
             .and_then(|o| o.as_ref())
             .ok_or_else(|| Error::Structure("catalog has no /Pages".into()))?;
+        // M22.1: traverse the *whole* page tree — a /Pages node
+        // without /Resources still has descendants that may need
+        // materialisation. The `has_resources` check is applied
+        // only when deciding whether to strip.
         let mut stack: Vec<IndirectRef> = vec![catalog_dict];
         let mut visited: HashSet<IndirectRef> = HashSet::new();
         while let Some(pages_ref) = stack.pop() {
@@ -522,44 +526,53 @@ pub fn remove_region(
             let pages_dict = pages_obj
                 .as_dict()
                 .ok_or_else(|| Error::Structure("/Pages is not a dictionary".into()))?;
-            if pages_dict.contains_key(b"Resources".as_slice()) {
-                // Check if all descendants are materialised.
-                let kids = pages_dict
-                    .get(b"Kids".as_slice())
-                    .and_then(|o| o.as_array())
-                    .ok_or_else(|| Error::Structure("/Pages has no /Kids".into()))?;
-                let mut all_materialised = true;
-                for kid in kids {
-                    if let Some(kid_ref) = kid.as_ref() {
-                        let kid_obj = doc.resolve(kid_ref)?;
-                        let kid_dict = kid_obj
-                            .as_dict()
-                            .ok_or_else(|| Error::Structure("/Kids entry is not a dict".into()))?;
-                        if kid_dict.contains_key(b"Kids".as_slice()) {
-                            // Intermediate node — push to stack.
-                            stack.push(kid_ref);
-                        } else {
-                            // Leaf page — must be in pages_with_resources.
-                            if !pages_with_resources.contains(&kid_ref) {
-                                all_materialised = false;
-                                break;
-                            }
-                        }
+            let kids = pages_dict
+                .get(b"Kids".as_slice())
+                .and_then(|o| o.as_array())
+                .ok_or_else(|| Error::Structure("/Pages has no /Kids".into()))?;
+            let mut all_materialised = true;
+            for kid in kids {
+                if let Some(kid_ref) = kid.as_ref() {
+                    let kid_obj = doc.resolve(kid_ref)?;
+                    let kid_dict = kid_obj
+                        .as_dict()
+                        .ok_or_else(|| Error::Structure("/Kids entry is not a dict".into()))?;
+                    if kid_dict.contains_key(b"Kids".as_slice()) {
+                        // Intermediate node — push to stack for
+                        // its own descendants to be checked.
+                        stack.push(kid_ref);
                     } else {
-                        // Direct kid — no ref, cannot check.
-                        all_materialised = false;
-                        break;
+                        // Leaf page — must be in pages_with_resources.
+                        if !pages_with_resources.contains(&kid_ref) {
+                            all_materialised = false;
+                            break;
+                        }
                     }
+                } else {
+                    // Direct kid — no ref, cannot check.
+                    all_materialised = false;
+                    break;
                 }
-                if all_materialised {
-                    pages_to_strip.push(pages_ref);
-                }
+            }
+            // Only strip if this node *has* /Resources and all
+            // descendants are materialised.
+            if all_materialised && pages_dict.contains_key(b"Resources".as_slice()) {
+                pages_to_strip.push(pages_ref);
             }
         }
     }
 
     // Apply materialisation: each page gets its effective Resources.
+    // The *target* page's dict is updated here — not by a separate
+    // overlay insert later — so the Contents edit and the Resources
+    // materialisation coexist in one page dict.
     for &pr in &pages_with_resources {
+        if pr == page_ref {
+            // Target page: page_dict already has Contents; add
+            // effective Resources.
+            page_dict.insert(b"Resources".to_vec(), page.resources().unwrap().clone());
+            continue;
+        }
         let p = doc
             .pages()
             .iter()
@@ -2498,5 +2511,207 @@ mod tests {
             "original image must stay (shared with page 2)"
         );
         assert!(found_edited, "edited image must be in output");
+    }
+
+    // ---- M22.1 — multi-level page tree materialisation --------------
+
+    /// A /Pages node *without* /Resources still has its descendants
+    /// materialised — the traversal does not stop at a resourceless
+    /// intermediate node.
+    #[test]
+    fn m22_1_resourceless_intermediate() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        // Root /Pages has /Resources; intermediate has none.
+        push!(
+            2,
+            b"<< /Type /Pages /Kids [10 0 R] /Count 1 \
+              /Resources << /XObject << /Im1 11 0 R >> >> >>"
+        );
+        push!(
+            10,
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 /Parent 2 0 R >>"
+        );
+        push!(
+            3,
+            b"<< /Type /Page /Parent 10 0 R /MediaBox [0 0 200 200] \
+              /Contents 9 0 R >>"
+        );
+        let img_data = [0xAAu8, 0xBB, 0xCC, 0xDD];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(11, &f);
+        let body = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 12\n0000000000 65535 f \n".to_vec());
+        for n in 1..12u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 12 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r = remove_region(&d, 0, &[(20.0, 80.0, 40.0, 100.0)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        // The intermediate /Pages (10 0 R) had no /Resources — it is
+        // still traversed, and the root /Pages (2 0 R) drops its
+        // /Resources because the leaf page is materialised.
+        let out_str = String::from_utf8_lossy(&r.output).into_owned();
+        assert!(out_str.contains("/KasIm0"), "{out_str}");
+        // Root /Pages drops /Resources.
+        let out_doc = doc(&r.output);
+        let pages_ref = out_doc
+            .catalog()
+            .get(b"Pages".as_slice())
+            .and_then(|o| o.as_ref())
+            .unwrap();
+        let pages_obj = out_doc.resolve(pages_ref).unwrap();
+        let pages_dict = pages_obj.as_dict().unwrap();
+        assert!(
+            !pages_dict.contains_key(b"Resources".as_slice()),
+            "root /Pages must drop /Resources"
+        );
+    }
+
+    /// Text-only edit on an inherited-resources page: no image
+    /// clone is created, but the page still gets its effective
+    /// /Resources materialised (the Contents edit is not lost).
+    #[test]
+    fn m22_1_text_only_materialises_resources() {
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(
+            2,
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 \
+              /Resources << /Font << /F1 4 0 R >> >> >>"
+        );
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Contents 9 0 R >>"
+        );
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut font_dict = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        font_dict.extend_from_slice(&widths);
+        font_dict.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push!(4, &font_dict);
+        push!(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs.extend_from_slice(&enc);
+        fs.extend_from_slice(b"\nendstream");
+        push!(6, &fs);
+        let body = b"BT /F1 24 Tf 20 140 Td (ABC) Tj ET\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 10\n0000000000 65535 f \n".to_vec());
+        for n in 1..10u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 10 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // Text-only edit: no image clone is created.
+        let r = remove_region(&d, 0, &[(20.0, 140.0, 30.0, 160.0)], &Limits::default()).unwrap();
+        assert_eq!(r.codes_removed, 1);
+        assert_eq!(r.invocations_edited, 0);
+        // The page still gets its effective /Resources materialised.
+        let out_doc = doc(&r.output);
+        let page_ref = out_doc.pages()[0].object_ref().unwrap();
+        let page_obj = out_doc.resolve(page_ref).unwrap();
+        let page_dict = page_obj.as_dict().unwrap();
+        assert!(
+            page_dict.contains_key(b"Resources".as_slice()),
+            "page must have /Resources materialised"
+        );
+        let page_res = page_dict.get(b"Resources".as_slice()).unwrap();
+        let page_res_obj = out_doc.deref(page_res).unwrap();
+        let page_res_dict = page_res_obj.as_dict().unwrap();
+        assert!(
+            page_res_dict.contains_key(b"Font".as_slice()),
+            "page /Resources must keep /Font"
+        );
+        // The parent /Pages drops /Resources.
+        let pages_ref = out_doc
+            .catalog()
+            .get(b"Pages".as_slice())
+            .and_then(|o| o.as_ref())
+            .unwrap();
+        let pages_obj = out_doc.resolve(pages_ref).unwrap();
+        let pages_dict = pages_obj.as_dict().unwrap();
+        assert!(
+            !pages_dict.contains_key(b"Resources".as_slice()),
+            "parent /Pages must drop /Resources"
+        );
     }
 }
