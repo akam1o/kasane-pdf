@@ -133,6 +133,20 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("experimental-remove-regions") => {
+            // experimental-remove-regions <file.pdf>
+            //   --page <n> --rect llx lly urx ury [--rect …]
+            //   [--page <m> --rect …] --output <out.pdf>
+            // Same experimental edit across multiple pages in one
+            // session — NOT a redaction tool.
+            match run_remove_regions(&args[2..]) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error [{}]: {e}", e.kind());
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("audit-residuals") => {
             // audit-residuals <file.pdf> [--format text|json]
             // Read-only inventory of residual information — never
@@ -1621,6 +1635,138 @@ fn run_remove_region(args: &[String]) -> Result<(), Error> {
     )?;
     println!(
         "experimental-remove-region {input} page {page} -> {output} ({} bytes)",
+        r.output.len()
+    );
+    println!("codes removed: {}", r.codes_removed);
+    println!("invocations edited: {}", r.invocations_edited);
+    println!("pixels changed: {}", r.pixels_changed);
+    for s in &r.scope {
+        println!("  {s}");
+    }
+    Ok(())
+}
+
+/// Usage string shared by `experimental-remove-regions`.
+fn remove_regions_usage() -> &'static str {
+    "usage: kasane-pdf experimental-remove-regions <file.pdf> \
+     --page <n> --rect <llx> <lly> <urx> <ury> [--rect …] \
+     [--page <m> --rect …] --output <out.pdf>\n\
+     Experimental multi-page region removal — NOT a redaction or \
+     sanitize tool: the same per-page edit as experimental-remove-region \
+     applied to several pages in one session and one rewrite. --page is \
+     1-based; each --rect belongs to the nearest preceding --page; a \
+     page may be repeated to add rects. The input is never modified; a \
+     failure produces no output."
+}
+
+/// `experimental-remove-regions` subcommand — multi-page variant.
+fn run_remove_regions(args: &[String]) -> Result<(), Error> {
+    if args.is_empty() {
+        return Err(Error::Structure(remove_regions_usage().to_string()));
+    }
+    let input = &args[0];
+    // (1-based page, rects) — each --rect attaches to the nearest
+    // preceding --page; the same page may repeat to add rects.
+    let mut specs: Vec<(usize, Vec<[f64; 4]>)> = Vec::new();
+    let mut output: Option<&str> = None;
+    let mut current_page: Option<usize> = None;
+    let mut i = 1;
+    while i < args.len() {
+        let need = |n: usize| -> Result<(), Error> {
+            if i + n < args.len() {
+                Ok(())
+            } else {
+                Err(Error::Structure(format!(
+                    "flag '{}' expects {n} value(s)\n{}",
+                    args[i],
+                    remove_regions_usage()
+                )))
+            }
+        };
+        let num = |s: &str| -> Result<f64, Error> {
+            s.parse::<f64>()
+                .map_err(|_| Error::Structure(format!("expected a number, got '{s}'")))
+        };
+        match args[i].as_str() {
+            "--page" => {
+                need(1)?;
+                let p: usize = args[i + 1]
+                    .parse()
+                    .ok()
+                    .filter(|&n| n >= 1)
+                    .ok_or_else(|| {
+                        Error::Structure(format!("invalid page number '{}'", args[i + 1]))
+                    })?;
+                current_page = Some(p);
+                specs.push((p, Vec::new()));
+                i += 2;
+            }
+            "--rect" => {
+                need(4)?;
+                if current_page.is_none() {
+                    return Err(Error::Structure(format!(
+                        "--rect must follow a --page\n{}",
+                        remove_regions_usage()
+                    )));
+                }
+                let r = [
+                    num(&args[i + 1])?,
+                    num(&args[i + 2])?,
+                    num(&args[i + 3])?,
+                    num(&args[i + 4])?,
+                ];
+                specs.last_mut().unwrap().1.push(r);
+                i += 5;
+            }
+            "--output" => {
+                need(1)?;
+                output = Some(&args[i + 1]);
+                i += 2;
+            }
+            other => {
+                return Err(Error::Structure(format!(
+                    "unknown option '{other}'\n{}",
+                    remove_regions_usage()
+                )));
+            }
+        }
+    }
+    if specs.is_empty() {
+        return Err(Error::Structure(format!(
+            "at least one --page is required\n{}",
+            remove_regions_usage()
+        )));
+    }
+    // A page with no rects is an error — not silently skipped.
+    for (p, rects) in &specs {
+        if rects.is_empty() {
+            return Err(Error::Structure(format!(
+                "page {p} has no --rect\n{}",
+                remove_regions_usage()
+            )));
+        }
+    }
+    let output = output.ok_or_else(|| Error::Structure(remove_regions_usage().to_string()))?;
+    refuse_same_file(input, output)?;
+    let data = std::fs::read(input)?;
+    let doc = Document::from_bytes(&data)?;
+    let api_specs: Vec<kasane_pdf::PageSpec> = specs
+        .iter()
+        .map(|(p, rs)| {
+            (
+                *p - 1,
+                rs.iter().map(|r| (r[0], r[1], r[2], r[3])).collect(),
+            )
+        })
+        .collect();
+    let r = kasane_pdf::remove_regions(&doc, &api_specs, &Limits::default())?;
+    write_atomic(
+        &r.output,
+        &format!("{output}.kasane-tmp-{}", std::process::id()),
+        output,
+    )?;
+    println!(
+        "experimental-remove-regions {input} -> {output} ({} bytes)",
         r.output.len()
     );
     println!("codes removed: {}", r.codes_removed);
