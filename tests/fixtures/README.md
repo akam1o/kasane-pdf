@@ -46,3 +46,28 @@ cjpeg -quality 90 -outfile c16.jpg c16.ppm
 `cjpeg`/`djpeg` are development-machine tools, not library
 dependencies — the JPEG decoder used by the library is the pure-Rust
 `jpeg-decoder` crate already declared in `Cargo.toml`.
+
+### M27.1 additions
+
+Three more constants exercise the coding-process check and the
+`/ColorTransform` precedence rules:
+
+- `JPEG_C8_PROG_HEX` — 8×8 DeviceRGB *progressive* JPEG, 553 bytes,
+  `cjpeg -progressive -quality 90 -outfile c8_prog.jpg c8.ppm`.
+  Must be refused as `Unsupported` (SOF2), not parsed as baseline.
+- `JPEG_C8_RGB_HEX` — 8×8 DeviceRGB baseline JPEG *encoded as RGB*
+  (Adobe APP14 `transform`=0, component IDs `R`,`G`,`B`, no chroma
+  subsampling), 374 bytes, `cjpeg -rgb -quality 90 -outfile
+  c8_rgb.jpg c8.ppm`. Decodes to raw RGB samples.
+- `JPEG_C8_NOJFIF_HEX` — 8×8 DeviceRGB baseline JPEG with the JFIF
+  APP0 segment manually removed (the first APPn segment after SOI is
+  deleted), 641 bytes. Component IDs `1,2,3` still mark it as YCbCr
+  and no Adobe APP14 is present, so the decoder's default transform
+  applies — equivalent to `/ColorTransform 1`.
+
+All are derived from the same deterministic `c8.ppm` as
+`JPEG_C8_HEX`. Expected decoded samples are taken from `djpeg`
+(libjpeg-turbo) output — e.g. `djpeg -pnm c8.jpg` starts with
+`01 00 00 16 07 0c` and `djpeg -pnm c8_rgb.jpg` (raw RGB) starts
+with `00 00 00 1f 00 0f`. jpeg-decoder's fixed-point YCbCr→RGB
+rounds ±1 from libjpeg; that tolerance is asserted in the tests.

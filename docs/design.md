@@ -706,14 +706,34 @@ logic is *how the sample buffer is obtained*.
   into `decode_image` so the JPEG's own header is checked against the
   PDF before the pixel buffer is trusted.
 - **Header check before decode**: `read_info` runs first — a corrupt
-  or truncated JPEG fails fast, and `info()`'s `width`/`height`/
-  `pixel_format` are compared to the dict. `CMYK32`, `L16`, and any
-  other format are `Unsupported`; only `L8` (1 comp) and `RGB24`
-  (3 comp) proceed.
-- **`/DecodeParms /ColorTransform`**: `0` maps to
-  `set_color_transform(ColorTransform::None)` (raw component values);
-  `1` or absent leaves the decoder's internal YCbCr→RGB decision;
-  any other key in `DecodeParms` is refused rather than ignored.
+  or truncated JPEG fails fast with a `Parse` error, and `info()`'s
+  `width`/`height`/`pixel_format` are compared to the dict. `CMYK32`,
+  `L16`, and any other format are `Unsupported`; only `L8` (1 comp)
+  and `RGB24` (3 comp) proceed.
+- **Coding process check (M27.1)**: after `read_info` and before any
+  pixel buffer is allocated, `info().coding_process` must be
+  `DctSequential`. `DctProgressive` and `Lossless` are refused with
+  `Error::Unsupported`, distinct from the `Parse` error on corrupt
+  data. **Limit**: jpeg-decoder's public `CodingProcess` does not
+  distinguish baseline (SOF0) from extended-sequential (SOF1) or
+  differential/arithmetic sequential frames — those reach
+  `decode()` and are refused there by the decoder itself
+  (`Unsupported(Hierarchical)`/`Unsupported(ArithmeticEntropyCoding)`),
+  so they are still `Unsupported`, never `Parse`.
+- **`/DecodeParms /ColorTransform` precedence (M27.1)**: ISO 32000-1
+  §7.4.8 + Adobe Technical Note #5116 — when the JPEG carries an
+  Adobe APP14 marker, *its* `transform` byte decides the conversion
+  and the PDF value is ignored. When APP14 is absent the PDF value
+  applies: `0` requests raw component values, `1` requests YCbCr→RGB
+  on a 3-component image (ignored on 1–2 components). When both are
+  absent the default is `1` for three components and `0` otherwise —
+  the decoder's component-ID/JFIF heuristics produce the same answer.
+  A minimal `scan_jpeg_markers` walk reads the APP14 flag and the
+  frame's sampling factors; **`/ColorTransform 0` on a chroma-
+  subsampled JPEG is refused** (`Unsupported`) because the decoder's
+  raw-component path cannot represent the per-plane layout as
+  interleaved pixels. Any other `DecodeParms` key is refused rather
+  than ignored.
 - **Budgets unchanged**: `max_image_dimension`/`total_samples` gate
   the dict geometry before decode; `max_image_bytes` is also set as
   the decoder's `max_decoding_buffer_size` so the JPEG cannot

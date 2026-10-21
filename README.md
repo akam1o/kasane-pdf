@@ -130,8 +130,10 @@ M19.2 fixes three accuracy issues:
   each band. Corner-touching rects and L-shaped overlaps do not
   fill the pixels between them. The intermediate structure is
   bounded by the input rect count, not image height.
-- **`pixels_changed` counts pixels, not components** — an RGB pixel
-  is 1 whether 1 or 3 channels changed; already-black pixels are 0.
+- **`pixels_changed` counts pixels, not components** — a pixel
+  counts when at least one component changed **from non-0 to 0**.
+  An RGB pixel is 1 whether 1 or 3 channels went black; an
+  already-all-0 pixel counts 0.
 - **Colour-space resolution + Default* substitution** — `/ColorSpace`
   names resolve through the page's `/Resources /ColorSpace`; a
   device name is then checked against `/DefaultGray`/`/DefaultRGB`

@@ -3420,3 +3420,61 @@ fn cli_remove_region_jpeg_failure_preserves_output() {
         "{stdout}{stderr}"
     );
 }
+
+// 8×8 DeviceRGB *progressive* JPEG — `cjpeg -progressive` on c8.ppm;
+// same bytes as `JPEG_C8_PROG_HEX` in `src/remove_region.rs`'s tests.
+const JPEG_C8_PROG_HEX: &str =
+    "ffd8ffe000104a46494600010100000100010000ffdb0043000302020302020303030304030304050805050404050a070706080c0a0c0c0b\
+     0a0b0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ffdb00430103040405040509050509140d0b0d14141414\
+     14141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414ffc20011080008000803\
+     012200021101031101ffc4001500010100000000000000000000000000000005ffc4001501010100000000000000000000000000000103ff\
+     da000c03010002100310000001921aff00ffc400161000030000000000000000000000000000000506ffda00080101000105024b207fffc4\
+     00191100010500000000000000000000000000050002041422ffda0008010301013f01026a6d26e97fffc400171100030100000000000000\
+     00000000000000020312ffda0008010201013f01951b27ffc400161000030000000000000000000000000000000122ffda0008010100063f\
+     02507fffc40015100101000000000000000000000000000000f1ffda0008010100013f2184ffda000c03010002000300000010f3ffc40016\
+     110003000000000000000000000000000000c1f0ffda0008010301013f109167ffc400161100030000000000000000000000000000001121\
+     ffda0008010201013f105f4fffc40015100101000000000000000000000000000000a1ffda0008010100013f10867fffd9";
+
+/// A *progressive* JPEG is refused as `Unsupported` — the data is
+/// well-formed, so the failure is not a parse/corrupt error. Input
+/// bytes, the sentinel output, and the absence of temp files are
+/// all preserved.
+#[test]
+fn cli_remove_region_progressive_jpeg_unsupported() {
+    let dir = tmpdir("m27-1-prog");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    let original = jpeg_page_pdf(&unhex(JPEG_C8_PROG_HEX), 8, 8, "DeviceRGB");
+    fs::write(&src, &original).unwrap();
+    fs::write(&dst, b"SENTINEL").unwrap();
+    let out = bin()
+        .args(["experimental-remove-region"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "0", "0", "200", "200", "--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    // Must say "unsupported" — not "corrupt" or "parse".
+    assert!(
+        stderr.to_ascii_lowercase().contains("unsupported"),
+        "stderr should say unsupported: {stderr}"
+    );
+    // Input untouched, sentinel preserved, no temp files.
+    assert_eq!(fs::read(&src).unwrap(), original);
+    assert_eq!(fs::read(&dst).unwrap(), b"SENTINEL");
+    let stray: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| {
+            let n = e.unwrap().file_name().to_string_lossy().into_owned();
+            n.contains("kasane-tmp").then_some(n)
+        })
+        .collect();
+    assert!(stray.is_empty(), "temp files left: {stray:?}");
+    // No document bytes leak.
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(!stdout.contains("ff d8") && !stderr.contains("ff d8"));
+    assert!(!stdout.contains("\\xff") && !stderr.contains("\\xff"));
+}
