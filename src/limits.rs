@@ -190,6 +190,12 @@ pub struct Limits {
     /// for outgoing references (arrays of arrays of refs). Default:
     /// 64.
     pub max_audit_walk_depth: usize,
+    /// Maximum container *elements* expanded across the audit's
+    /// traversals — every array item / dict entry / name-tree node
+    /// or pair examined. Separate from `max_audit_edges`, which
+    /// counts only reference edges: a wide array of integers follows
+    /// no edge yet still costs work. Default: 4,000,000.
+    pub max_audit_elements: u64,
     /// Maximum content-stream operations scanned per page while
     /// looking for marked-content `/ActualText`/`/Alt`/`E`.
     /// Default: 200,000 (same order as `max_diag_exec_ops`).
@@ -243,6 +249,7 @@ impl Default for Limits {
             max_audit_edges: 1_000_000,
             max_audit_paths: 8,
             max_audit_walk_depth: 64,
+            max_audit_elements: 4_000_000,
             max_audit_content_ops: 200_000,
         }
     }

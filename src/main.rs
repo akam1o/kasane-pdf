@@ -2186,12 +2186,14 @@ fn print_audit_text(a: &kasane_pdf::ResidualAudit) {
     println!("edges-examined: {}", a.edges_examined);
     let r = &a.reachability;
     println!(
-        "reachability: {} live / {} reachable / {} unreachable-live / {} edges{}",
+        "reachability: {} live / {} reachable / {} unreachable-live / {} unevaluated-live / {} edges / {} missing-refs{}",
         r.live_objects,
         r.reachable_live,
         r.unreachable_live,
+        r.unevaluated_live,
         r.edges_followed,
-        if r.truncated { " (truncated)" } else { "" }
+        r.missing_references,
+        if r.walk_complete { "" } else { " (walk incomplete)" }
     );
     let h = &a.history;
     println!(
@@ -2268,9 +2270,10 @@ fn print_audit_json(a: &kasane_pdf::ResidualAudit) {
     out.push_str(&format!("  \"edges_examined\": {},\n", a.edges_examined));
     let r = &a.reachability;
     out.push_str(&format!(
-        "  \"reachability\": {{\"live_objects\": {}, \"reachable\": {}, \"reachable_live\": {}, \"unreachable_live\": {}, \"edges_followed\": {}, \"truncated\": {}}},\n",
+        "  \"reachability\": {{\"live_objects\": {}, \"reachable\": {}, \"reachable_live\": {}, \"unreachable_live\": {}, \"unevaluated_live\": {}, \"edges_followed\": {}, \"missing_references\": {}, \"walk_complete\": {}}},\n",
         r.live_objects, r.reachable, r.reachable_live, r.unreachable_live,
-        r.edges_followed, r.truncated
+        r.unevaluated_live, r.edges_followed, r.missing_references,
+        r.walk_complete
     ));
     let h = &a.history;
     out.push_str(&format!(
