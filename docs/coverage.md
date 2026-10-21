@@ -723,6 +723,12 @@ invocations_edited, pixels_changed, sites, scope }`:
   becomes a `TJ` at the same `op_index`, and a `Do` that hits a
   rect gets a new name at the same `op_index`. The page's
   `/Contents` is serialised once, and `rewrite` runs once.
+- **M20.1** — the walker records the CTM at each `Image` `Do` call
+  site into `TargetDetail::Image.ctm` (method A: no re-walk). This
+  removes the O(images × ops) rescan that `ctm_at_op` used to
+  perform — the budget `max_diag_exec_ops` now covers the *entire*
+  CTM acquisition cost. `remove_image_region` benefits identically
+  (it shares `DiagWalker`).
 - Text eligibility: `Tr 0` fill only, page-level (an out-of-rect
   `Tr 3`/`Tr 1` occurrence still refuses). `Tj`/`TJ`/`'`/`"` are
   rewritten with the same advance-preserving logic as `remove_text`.
@@ -736,7 +742,8 @@ invocations_edited, pixels_changed, sites, scope }`:
 - Shared cumulative `max_edit_content_bytes` — the same budget
   bounds the cloned image bodies plus the new `/Contents` (not
   per-type). `max_image_bytes` is checked *before* each image
-  decodes. `max_diag_exec_ops` bounds the walk; `max_operations`
+  decodes. `max_diag_exec_ops` bounds the walk (including the CTM
+  recorded at each `Image` `Do` — M20.1). `max_operations`
   bounds the output op count. The final PDF is bounded by
   `max_output_bytes`.
 - `pixels_changed` counts *pixels* (≥1 channel changed), not
@@ -753,6 +760,14 @@ inline image, any `gs`/`sh`/Pattern/`ActualText`/OC, any
 is not 8-bit DeviceGray/DeviceRGB (post-resolution), a mask/non-default
 `/Decode`/non-Flate filter/non-axis-aligned CTM, or an `Image`
 target at `form_path` depth ≥ 1.
+
+An image *outside* every rect is never touched — its `hits` list is
+empty so `to_edit_image` skips it entirely, and `validate_image` is
+never reached. A JPEG outside the rect therefore leaves the call
+`Ok` (the image is unedited); a JPEG *inside* the rect refuses the
+whole call via `validate_image`. The same policy applies to text:
+`Tr 3` outside the rect is a `blocker` (refused), `Tr 3` inside the
+rect is a `hits`-non-empty `Target` (also refused).
 
 Limitations — by design and explicitly *not* done:
 

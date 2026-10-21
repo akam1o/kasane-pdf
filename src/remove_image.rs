@@ -271,11 +271,13 @@ pub fn remove_image_region(
         BTreeMap::new();
     for t in &walker.targets {
         if t.kind == TargetKind::Image && t.site.form_path.is_empty() && !t.hits.is_empty() {
-            if let TargetDetail::Image { xobj, name, .. } = &t.detail {
-                // The CTM is not stored in the target — we recompute it
-                // by re-walking the page up to this op's index.
-                let ctm = ctm_at_op(&ops, t.site.op_index)?;
-                to_edit.insert(t.site.op_index, (t.site.clone(), ctm, *xobj, name.clone()));
+            if let TargetDetail::Image {
+                xobj, name, ctm, ..
+            } = &t.detail
+            {
+                // The CTM is recorded by the walker at the `Do`
+                // call site — no re-walk needed (M20.1).
+                to_edit.insert(t.site.op_index, (t.site.clone(), *ctm, *xobj, name.clone()));
             }
         }
     }
@@ -520,32 +522,6 @@ pub fn remove_image_region(
                 .into(),
         ],
     })
-}
-
-/// Recompute the CTM at the point `op_index` executed — the `Do`'s
-/// own `cm` has already been applied. We re-walk the page ops up to
-/// but not including `op_index`, tracking only `q`/`Q`/`cm`.
-///
-/// Shared with `remove_region.rs` (M20).
-pub(crate) fn ctm_at_op(ops: &[Operation], op_index: usize) -> Result<Matrix, Error> {
-    let mut ctm = Matrix::IDENTITY;
-    let mut stack: Vec<Matrix> = Vec::new();
-    for (i, op) in ops.iter().enumerate() {
-        if i >= op_index {
-            break;
-        }
-        match op {
-            Operation::SaveState => stack.push(ctm),
-            Operation::RestoreState => {
-                ctm = stack.pop().unwrap_or(Matrix::IDENTITY);
-            }
-            Operation::ConcatMatrix(m) => {
-                ctm = ctm.concat(*m);
-            }
-            _ => {}
-        }
-    }
-    Ok(ctm)
 }
 
 /// Validate an image XObject for M19/M20 — returns `(width, height,

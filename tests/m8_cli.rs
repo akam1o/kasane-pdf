@@ -2193,3 +2193,223 @@ fn cli_remove_text_inside_form() {
         "clone carries the rewrite: {raw}"
     );
 }
+
+// M20.1 — `experimental-remove-region` CLI regression tests
+// ------------------------------------------------------------------
+
+/// A 1-page PDF with a JPEG image — the image is inside the rect
+/// so `remove_region` refuses the whole call.
+fn region_jpeg_pdf() -> Vec<u8> {
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+          /Resources << /XObject << /Im1 10 0 R >> >> /Contents 9 0 R >>",
+    );
+    // Minimal JPEG (DCTDecode).
+    let jpeg_data = [0xffu8, 0xd8, 0xff, 0xd9];
+    let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+          /ColorSpace /DeviceGray /BitsPerComponent 8 \
+          /Filter /DCTDecode /Length "
+        .to_vec();
+    f.extend_from_slice(jpeg_data.len().to_string().as_bytes());
+    f.extend_from_slice(b" >>\nstream\n");
+    f.extend_from_slice(&jpeg_data);
+    f.extend_from_slice(b"\nendstream");
+    push(10, &f);
+    let body = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+    let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+    sb.extend_from_slice(body);
+    sb.extend_from_slice(b"\nendstream");
+    push(9, &sb);
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+    for n in 1..11u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        } else {
+            parts.push(b"0000000000 00000 f \n".to_vec());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    parts.concat()
+}
+
+/// The JPEG image is inside the rect — the whole call fails and
+/// the pre-existing output file is left byte-identical.
+#[test]
+fn cli_remove_region_unsupported_image_refused() {
+    let dir = tmpdir("rr-jpeg");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    fs::write(&src, region_jpeg_pdf()).unwrap();
+    // Pre-existing output must be preserved.
+    fs::write(&dst, b"sentinel").unwrap();
+    let out = bin()
+        .args(["experimental-remove-region"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "20", "60", "60", "100", "--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "JPEG image in rect must fail");
+    let e = String::from_utf8_lossy(&out.stderr);
+    assert!(e.contains("unsupported") || e.contains("filter"), "{e}");
+    assert_eq!(fs::read(&dst).unwrap(), b"sentinel", "output untouched");
+}
+
+/// A happy-path run: the JPEG is *outside* the rect — the call
+/// succeeds because the image is never touched.
+#[test]
+fn cli_remove_region_unsupported_image_outside_rect() {
+    let dir = tmpdir("rr-jpeg-out");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    fs::write(&src, region_jpeg_pdf()).unwrap();
+    // Rect is outside the image's painted area.
+    let out = bin()
+        .args(["experimental-remove-region"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "150", "150", "200", "200", "--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "JPEG outside rect must succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("invocations edited: 0"), "{stdout}");
+}
+
+/// A `'` op expands to `T*` + `TJ` — a `Do` after it keeps its
+/// original `op_index` and is correctly repointed (M20.1 §5).
+#[test]
+fn cli_remove_region_quote_expansion_before_do() {
+    let dir = tmpdir("rr-quote");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    let pdf = {
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        let mut push = |n: u32, body: &[u8]| {
+            offs.push((n, parts.iter().map(|p| p.len()).sum()));
+            parts.push(format!("{n} 0 obj\n").into_bytes());
+            parts.push(body.to_vec());
+            parts.push(b"\nendobj\n".to_vec());
+        };
+        push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>",
+        );
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut font_dict = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        font_dict.extend_from_slice(&widths);
+        font_dict.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push(4, &font_dict);
+        push(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>",
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs_ = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs_.extend_from_slice(&enc);
+        fs_.extend_from_slice(b"\nendstream");
+        push(6, &fs_);
+        let img_data = [0x10u8, 0x20, 0x30, 0x40];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push(10, &f);
+        // ' expands to T*+TJ; the Do after it is at the same op_index.
+        let body = b"BT /F1 24 Tf 20 140 Td (ABC) ' ET\n40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        parts.concat()
+    };
+    fs::write(&src, &pdf).unwrap();
+    let out = bin()
+        .args(["experimental-remove-region"])
+        .arg(&src)
+        .arg("1")
+        .args([
+            "--rect", "20", "140", "30", "160", "--rect", "20", "80", "40", "100", "--output",
+        ])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let raw = String::from_utf8_lossy(&fs::read(&dst).unwrap()).into_owned();
+    // The Do after the expanded ' is repointed to the new name.
+    assert!(raw.contains("/KasIm0"), "Do repointed: {raw}");
+    assert!(raw.contains("T*"), "' expanded: {raw}");
+    assert!(raw.contains("TJ"), "TJ present: {raw}");
+}

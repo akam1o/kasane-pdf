@@ -710,10 +710,20 @@ Design choices:
 - **Shared internal helpers** — `remove_text::rewrite_ops_for` (TJ
   kern logic), `remove_text::serialize_ops`/`BoundedWriter`/
   `charge_generated`, `remove_image::validate_image`/`decode_image`/
-  `image_pixel_ranges`/`ctm_at_op`/`fresh_xobject_name`/
+  `image_pixel_ranges`/`fresh_xobject_name`/
   `is_default_decode`/`resolve_colorspace_name`/
   `apply_default_substitution` are all reused; nothing is
   duplicated.
+- **M20.1 — CTM recorded at walk time** — `DiagWalker::do_image`
+  stores the current `gs.ctm` into `TargetDetail::Image.ctm` at
+  each `Image` `Do` call site. Both `remove_region` and
+  `remove_image_region` read the recorded CTM instead of calling
+  `ctm_at_op` (deleted). The walk's `max_diag_exec_ops` budget now
+  covers the entire CTM acquisition cost — no O(images × ops)
+  rescan. Two `Do`s of the same image at different CTMs each
+  record their own matrix, and `q`/`Q`/`cm` are reflected
+  correctly because the walker's graphics-state stack is the
+  source of truth.
 - **M20's own eligibility** — not a union of M17+M19 refusals:
   `Tr 0` text only (page-level), image eligibility per M19.2, and
   `Form` `Do` refused (M18's form handling is *not* inherited).

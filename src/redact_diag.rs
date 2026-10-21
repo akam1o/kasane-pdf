@@ -145,6 +145,10 @@ pub enum TargetDetail {
         /// Attributes that block exact processing (`/Mask`, `/SMask`,
         /// `/ImageMask`, `/OC`, unsupported filter/colour space).
         blockers: Vec<String>,
+        /// The CTM at the `Do` call site — recorded by the walker so
+        /// callers do not need to re-walk the content stream to
+        /// recover it (M20.1: removes the O(images × ops) rescan).
+        ctm: crate::matrix::Matrix,
     },
     /// A painted path.
     Path {
@@ -1826,6 +1830,7 @@ impl<'a> DiagWalker<'a> {
                     name: name.to_vec(),
                     size: (width, height),
                     blockers,
+                    ctm: self.gs.ctm,
                 },
             });
         }
