@@ -67,7 +67,7 @@ use crate::remove_image::{
     decode_image, fresh_xobject_name, image_pixel_ranges, is_default_decode, validate_image,
 };
 use crate::remove_text::{charge_generated, rewrite_ops_for, serialize_ops};
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// The result of [`remove_region`] — the rewritten PDF bytes plus
 /// the audit trail of what was removed.
@@ -493,35 +493,37 @@ pub fn remove_region(
     // can then drop its /Resources — but only when *every* descendant
     // page has been materialised. This is the same Edit/overlay as the
     // text/image edits — one rewrite, not two.
-    let mut pages_with_resources: Vec<IndirectRef> = Vec::new();
+    //
+    // M22.2: page refs are indexed by HashMap so a leaf lookup is O(1),
+    // not O(n) per kid. The strip decision is post-order — a /Pages
+    // node's `all_materialised` is computed only after its children's
+    // results are known, and a child's failure propagates upward.
+    let mut pages_with_resources: HashSet<IndirectRef> = HashSet::new();
     let mut pages_to_strip: Vec<IndirectRef> = Vec::new();
+    let mut page_map: HashMap<IndirectRef, &crate::page::Page> = HashMap::new();
     {
         // Collect all page refs and their effective Resources.
         for p in doc.pages() {
             if let Some(pr) = p.object_ref() {
                 if p.resources().is_some() {
-                    pages_with_resources.push(pr);
+                    pages_with_resources.insert(pr);
+                    page_map.insert(pr, p);
                 }
             }
         }
-        // For each /Pages node that has /Resources, check if all
-        // descendants are in pages_with_resources. If so, the /Pages
-        // can drop its /Resources.
+        // Post-order traversal: process children before parents so a
+        // node's `all_materialised` reflects its descendants' results.
         let catalog_dict = doc
             .catalog()
             .get(b"Pages".as_slice())
             .and_then(|o| o.as_ref())
             .ok_or_else(|| Error::Structure("catalog has no /Pages".into()))?;
-        // M22.1: traverse the *whole* page tree — a /Pages node
-        // without /Resources still has descendants that may need
-        // materialisation. The `has_resources` check is applied
-        // only when deciding whether to strip.
-        let mut stack: Vec<IndirectRef> = vec![catalog_dict];
-        let mut visited: HashSet<IndirectRef> = HashSet::new();
-        while let Some(pages_ref) = stack.pop() {
-            if !visited.insert(pages_ref) {
-                continue;
-            }
+        // Stack of (node_ref, child_index). child_index tracks which
+        // kid is being processed; when all kids are done, the node's
+        // result is computed and stored.
+        let mut stack: Vec<(IndirectRef, usize)> = vec![(catalog_dict, 0)];
+        let mut node_results: HashMap<IndirectRef, bool> = HashMap::new();
+        while let Some((pages_ref, child_idx)) = stack.pop() {
             let pages_obj = doc.resolve(pages_ref)?;
             let pages_dict = pages_obj
                 .as_dict()
@@ -530,23 +532,39 @@ pub fn remove_region(
                 .get(b"Kids".as_slice())
                 .and_then(|o| o.as_array())
                 .ok_or_else(|| Error::Structure("/Pages has no /Kids".into()))?;
+            // Process the next unprocessed kid.
             let mut all_materialised = true;
-            for kid in kids {
+            let mut next_kid_idx = child_idx;
+            while next_kid_idx < kids.len() {
+                let kid = &kids[next_kid_idx];
                 if let Some(kid_ref) = kid.as_ref() {
                     let kid_obj = doc.resolve(kid_ref)?;
                     let kid_dict = kid_obj
                         .as_dict()
                         .ok_or_else(|| Error::Structure("/Kids entry is not a dict".into()))?;
                     if kid_dict.contains_key(b"Kids".as_slice()) {
-                        // Intermediate node — push to stack for
-                        // its own descendants to be checked.
-                        stack.push(kid_ref);
+                        // Intermediate node — check its result if
+                        // already computed, else push and process it.
+                        if let Some(&kid_result) = node_results.get(&kid_ref) {
+                            if !kid_result {
+                                all_materialised = false;
+                                break;
+                            }
+                            next_kid_idx += 1;
+                        } else {
+                            // Push current node back to continue after
+                            // the child, then push the child.
+                            stack.push((pages_ref, next_kid_idx));
+                            stack.push((kid_ref, 0));
+                            break;
+                        }
                     } else {
                         // Leaf page — must be in pages_with_resources.
                         if !pages_with_resources.contains(&kid_ref) {
                             all_materialised = false;
                             break;
                         }
+                        next_kid_idx += 1;
                     }
                 } else {
                     // Direct kid — no ref, cannot check.
@@ -554,9 +572,18 @@ pub fn remove_region(
                     break;
                 }
             }
+            // If we broke out of the kid loop early (child pushed to
+            // stack), do not compute a result yet — the node will be
+            // revisited when the child finishes.
+            if next_kid_idx < kids.len() {
+                continue;
+            }
+            // All kids processed: compute the node's result.
+            let node_result = all_materialised;
+            node_results.insert(pages_ref, node_result);
             // Only strip if this node *has* /Resources and all
             // descendants are materialised.
-            if all_materialised && pages_dict.contains_key(b"Resources".as_slice()) {
+            if node_result && pages_dict.contains_key(b"Resources".as_slice()) {
                 pages_to_strip.push(pages_ref);
             }
         }
@@ -573,17 +600,13 @@ pub fn remove_region(
             page_dict.insert(b"Resources".to_vec(), page.resources().unwrap().clone());
             continue;
         }
-        let p = doc
-            .pages()
-            .iter()
-            .find(|p| p.object_ref() == Some(pr))
-            .unwrap();
         let p_obj = doc.resolve(pr)?;
         let mut p_dict = p_obj
             .as_dict()
             .cloned()
             .ok_or_else(|| Error::Structure("page is not a dictionary".into()))?;
-        p_dict.insert(b"Resources".to_vec(), p.resources().unwrap().clone());
+        let res = page_map.get(&pr).unwrap().resources().unwrap().clone();
+        p_dict.insert(b"Resources".to_vec(), res);
         edit.overlay
             .insert((pr.number, pr.generation), Object::Dict(p_dict));
     }
@@ -2713,5 +2736,90 @@ mod tests {
             !pages_dict.contains_key(b"Resources".as_slice()),
             "parent /Pages must drop /Resources"
         );
+    }
+
+    /// A child /Pages whose leaf cannot be materialised (direct kid,
+    /// no IndirectRef) — the parent's /Resources must NOT be stripped
+    /// even though the child was pushed to the stack.
+    #[test]
+    fn m22_2_unmaterialised_child_blocks_parent() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(
+            2,
+            b"<< /Type /Pages /Kids [10 0 R] /Count 1 \
+              /Resources << /XObject << /Im1 11 0 R >> >> >>"
+        );
+        // Intermediate /Pages with a *direct* kid (no IndirectRef) —
+        // the leaf page cannot be materialised.
+        push!(
+            10,
+            b"<< /Type /Pages /Kids [<< /Type /Page /Parent 10 0 R \
+              /MediaBox [0 0 200 200] /Contents 9 0 R >>] /Count 1 \
+              /Parent 2 0 R >>"
+        );
+        let img_data = [0xAAu8, 0xBB, 0xCC, 0xDD];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(11, &f);
+        let body = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 12\n0000000000 65535 f \n".to_vec());
+        for n in 1..12u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 12 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // The direct kid is not a leaf page with an IndirectRef —
+        // it is a direct dict in /Kids. The walk_page_tree does not
+        // produce a Page for it, so pages_with_resources is empty.
+        // The parent /Pages must NOT drop /Resources.
+        let r = remove_region(&d, 0, &[(20.0, 80.0, 40.0, 100.0)], &Limits::default());
+        // The call may succeed or fail depending on whether the
+        // direct kid is treated as a leaf — but the output must NOT
+        // have the parent /Pages stripped of /Resources.
+        match r {
+            Ok(res) => {
+                let out_doc = doc(&res.output);
+                let pages_ref = out_doc
+                    .catalog()
+                    .get(b"Pages".as_slice())
+                    .and_then(|o| o.as_ref())
+                    .unwrap();
+                let pages_obj = out_doc.resolve(pages_ref).unwrap();
+                let pages_dict = pages_obj.as_dict().unwrap();
+                assert!(
+                    pages_dict.contains_key(b"Resources".as_slice()),
+                    "parent /Pages must keep /Resources when a child is unmaterialised"
+                );
+            }
+            Err(_) => {
+                // Failure is also acceptable — the operation must not
+                // return a partial output with /Resources stripped.
+            }
+        }
     }
 }

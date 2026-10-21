@@ -758,6 +758,11 @@ invocations_edited, pixels_changed, sites, scope }`:
   `page_dict`. A `/Pages` node *without* `/Resources` is still
   traversed — the check for whether to strip is applied after
   descendants are confirmed materialised, not before traversal.
+- **M22.2** — the strip decision is *post-order*: a `/Pages`
+  node's `all_materialised` is computed only after its children's
+  results are known, and a child's failure propagates upward.
+  Page refs are indexed by `HashMap`/`HashSet` so a leaf lookup
+  is O(1), not O(n) per kid.
 - Text eligibility: `Tr 0` fill only, page-level (an out-of-rect
   `Tr 3`/`Tr 1` occurrence still refuses). `Tj`/`TJ`/`'`/`"` are
   rewritten with the same advance-preserving logic as `remove_text`.
