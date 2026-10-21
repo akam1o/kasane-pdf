@@ -735,6 +735,15 @@ Design choices:
 - **Atomic failure** — any typed error aborts the whole call;
   no partial rewrite is returned. A rect hitting nothing produces
   `Ok` with zero counters.
+- **M21 — orphaned XObject name removal** — after the edit pass,
+  names that were edited (old `Do` names) and are no longer used
+  by any remaining `Do` in `new_ops` are removed from the page's
+  `/Resources /XObject` dict. The page's effective `/Resources`
+  is cloned (not mutated in place), so a shared inherited
+  `/Resources` is untouched. The image object itself is left to
+  the writer's reachability scan — if another page or another
+  name still references it, it is emitted. `orphaned_names_removed`
+  reports names removed from `/XObject`, not objects deleted.
 
 CLI: `kasane-pdf experimental-remove-region in.pdf 1 --rect llx lly
 urx ury [--rect …] --output out.pdf` — same atomic-write and

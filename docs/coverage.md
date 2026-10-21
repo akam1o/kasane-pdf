@@ -729,6 +729,15 @@ invocations_edited, pixels_changed, sites, scope }`:
   perform — the budget `max_diag_exec_ops` now covers the *entire*
   CTM acquisition cost. `remove_image_region` benefits identically
   (it shares `DiagWalker`).
+- **M21** — XObject names that were edited and are no longer
+  referenced by any remaining `Do` are removed from the page's
+  `/Resources /XObject` dict. The image object itself is left to
+  the writer's reachability scan: if nothing else references it
+  (another page, another `Do` via a different name, an inherited
+  `/Resources`), it is not emitted. A name is removed only when
+  the *edited* ops no longer use it — `new_ops` is scanned, not
+  the original ops, so text expansion does not confuse the check.
+  Names that were already unused before the edit are left alone.
 - Text eligibility: `Tr 0` fill only, page-level (an out-of-rect
   `Tr 3`/`Tr 1` occurrence still refuses). `Tj`/`TJ`/`'`/`"` are
   rewritten with the same advance-preserving logic as `remove_text`.
@@ -760,6 +769,13 @@ inline image, any `gs`/`sh`/Pattern/`ActualText`/OC, any
 is not 8-bit DeviceGray/DeviceRGB (post-resolution), a mask/non-default
 `/Decode`/non-Flate filter/non-axis-aligned CTM, or an `Image`
 target at `form_path` depth ≥ 1.
+
+A name removed from `/XObject` does **not** mean the object was
+deleted — the writer's reachability scan decides that. If another
+page, another `Do` under a different name, or an inherited
+`/Resources` still references the object, it is emitted. The
+`orphaned_names_removed` counter reports names removed from the
+page's `/XObject`, not objects deleted.
 
 An image *outside* every rect is never touched — its `hits` list is
 empty so `to_edit_image` skips it entirely, and `validate_image` is
