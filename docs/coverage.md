@@ -745,6 +745,14 @@ invocations_edited, pixels_changed, sites, scope }`:
   object was deleted — the writer's reachability scan decides
   that. An image can survive via an inherited `/Resources` even
   when the page's own `/XObject` no longer names it.
+- **M22** — inherited `/Resources` materialisation: each page's
+  effective `/Resources` (as resolved by the page-tree walk) is
+  written explicitly into the page dict. A parent `/Pages` can
+  then drop its `/Resources` — but only when *every* descendant
+  page has been materialised. The parent keeps `/Type`, `/Kids`,
+  `/Count`, `/MediaBox`, `/CropBox`, `/Rotate` — only `/Resources`
+  is removed. The same `Edit`/overlay applies the materialisation,
+  the text/image edits, and the `/Contents` rewrite in one pass.
 - Text eligibility: `Tr 0` fill only, page-level (an out-of-rect
   `Tr 3`/`Tr 1` occurrence still refuses). `Tj`/`TJ`/`'`/`"` are
   rewritten with the same advance-preserving logic as `remove_text`.
