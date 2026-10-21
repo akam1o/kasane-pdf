@@ -119,29 +119,44 @@ pub(crate) fn rewrite_overlay_with(
 ) -> Result<Vec<u8>, Error> {
     check_refusals(doc)?;
 
-    // The catalog's `/Metadata` is removed by injecting an overlay
-    // entry for the catalog object itself — a copy of the catalog
-    // dict minus the key. The overlay wins over `doc.resolve`, so
-    // the rewritten catalog no longer carries `/Metadata`. Its
-    // former target stays collectible only if another reference
-    // still reaches it.
+    // The catalog's `/Metadata` is removed by overlaying the catalog
+    // object itself — but if the caller already overlaid the catalog
+    // (e.g. an `Edit` that changed it), we remove `/Metadata` from
+    // *that* body instead of re-inserting a fresh clone, so earlier
+    // edits are not rolled back.
     let mut owned_overlay: HashMap<(u32, u16), Object> = HashMap::new();
     if overrides.strip_metadata {
-        // The catalog must be an indirect object to overlay it.
         if let Some(root_ref) = doc
             .trailer()
             .get(b"Root".as_slice())
             .and_then(|o| o.as_ref())
         {
-            let mut cat = doc.catalog().clone();
+            let key = (root_ref.number, root_ref.generation);
+            // Start from the *existing* overlay body when present —
+            // it may carry earlier edits — otherwise from the
+            // document's catalog.
+            let mut cat = match overlay.get(&key) {
+                Some(Object::Dict(d)) => d.clone(),
+                Some(_) => {
+                    return Err(Error::Structure(
+                        "catalog overlay is not a dictionary".into(),
+                    ))
+                }
+                None => doc.catalog().clone(),
+            };
             cat.remove(b"Metadata".as_slice());
-            owned_overlay.insert((root_ref.number, root_ref.generation), Object::Dict(cat));
+            owned_overlay.insert(key, Object::Dict(cat));
         }
     }
     let effective_overlay = if owned_overlay.is_empty() {
         overlay
     } else {
-        owned_overlay.extend(overlay.iter().map(|(k, v)| (*k, v.clone())));
+        // Caller-supplied overlay entries win for every object
+        // *except* the catalog we just rewrote (ours is the merged
+        // catalog-minus-Metadata, which must be the final body).
+        for (k, v) in overlay.iter() {
+            owned_overlay.entry(*k).or_insert_with(|| v.clone());
+        }
         &owned_overlay
     };
 

@@ -1663,13 +1663,15 @@ fn run_remove_region(args: &[String]) -> Result<(), Error> {
 fn remove_regions_usage() -> &'static str {
     "usage: kasane-pdf experimental-remove-regions <file.pdf> \
      --page <n> --rect <llx> <lly> <urx> <ury> [--rect …] \
-     [--page <m> --rect …] --output <out.pdf>\n\
+     [--page <m> --rect …] [--remove-document-metadata] --output <out.pdf>\n\
      Experimental multi-page region removal — NOT a redaction or \
      sanitize tool: the same per-page edit as experimental-remove-region \
      applied to several pages in one session and one rewrite. --page is \
      1-based; each --rect belongs to the nearest preceding --page; a \
-     page may be repeated to add rects. The input is never modified; a \
-     failure produces no output."
+     page may be repeated to add rects. --remove-document-metadata also \
+     removes the trailer /Info and catalog /Metadata *entries* in the \
+     same rewrite (not a metadata scrub). The input is never modified; \
+     a failure produces no output."
 }
 
 /// `experimental-remove-regions` subcommand — multi-page variant.
@@ -1682,6 +1684,7 @@ fn run_remove_regions(args: &[String]) -> Result<(), Error> {
     // preceding --page; the same page may repeat to add rects.
     let mut specs: Vec<(usize, Vec<[f64; 4]>)> = Vec::new();
     let mut output: Option<&str> = None;
+    let mut strip_metadata = false;
     let mut current_page: Option<usize> = None;
     let mut i = 1;
     while i < args.len() {
@@ -1736,6 +1739,10 @@ fn run_remove_regions(args: &[String]) -> Result<(), Error> {
                 output = Some(&args[i + 1]);
                 i += 2;
             }
+            "--remove-document-metadata" => {
+                strip_metadata = true;
+                i += 1;
+            }
             other => {
                 return Err(Error::Structure(format!(
                     "unknown option '{other}'\n{}",
@@ -1772,21 +1779,43 @@ fn run_remove_regions(args: &[String]) -> Result<(), Error> {
             )
         })
         .collect();
-    let r = kasane_pdf::remove_regions(&doc, &api_specs, &Limits::default())?;
-    write_atomic(
-        &r.output,
-        &format!("{output}.kasane-tmp-{}", std::process::id()),
-        output,
-    )?;
-    println!(
-        "experimental-remove-regions {input} -> {output} ({} bytes)",
-        r.output.len()
-    );
-    println!("codes removed: {}", r.codes_removed);
-    println!("invocations edited: {}", r.invocations_edited);
-    println!("pixels changed: {}", r.pixels_changed);
-    for s in &r.scope {
-        println!("  {s}");
+    if strip_metadata {
+        let r =
+            kasane_pdf::remove_regions_and_document_metadata(&doc, &api_specs, &Limits::default())?;
+        write_atomic(
+            &r.output,
+            &format!("{output}.kasane-tmp-{}", std::process::id()),
+            output,
+        )?;
+        println!(
+            "experimental-remove-regions {input} -> {output} ({} bytes)",
+            r.output.len()
+        );
+        println!("codes removed: {}", r.codes_removed);
+        println!("invocations edited: {}", r.invocations_edited);
+        println!("pixels changed: {}", r.pixels_changed);
+        println!("info entry removed: {}", r.info_removed);
+        println!("catalog /Metadata entry removed: {}", r.metadata_removed);
+        for s in &r.scope {
+            println!("  {s}");
+        }
+    } else {
+        let r = kasane_pdf::remove_regions(&doc, &api_specs, &Limits::default())?;
+        write_atomic(
+            &r.output,
+            &format!("{output}.kasane-tmp-{}", std::process::id()),
+            output,
+        )?;
+        println!(
+            "experimental-remove-regions {input} -> {output} ({} bytes)",
+            r.output.len()
+        );
+        println!("codes removed: {}", r.codes_removed);
+        println!("invocations edited: {}", r.invocations_edited);
+        println!("pixels changed: {}", r.pixels_changed);
+        for s in &r.scope {
+            println!("  {s}");
+        }
     }
     Ok(())
 }

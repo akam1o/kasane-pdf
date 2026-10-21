@@ -91,6 +91,9 @@ pub use page::{Page, Rect};
 pub use redact_diag::{diagnose_redaction, Diagnosis, Target, TargetDetail, TargetKind};
 pub use remove_image::{remove_image_region, ImageRemoval};
 pub use remove_metadata::{remove_document_metadata, MetadataRemoval};
-pub use remove_region::{remove_region, remove_regions, PageSpec, RegionRemoval, RegionsRemoval};
+pub use remove_region::{
+    remove_region, remove_regions, remove_regions_and_document_metadata, PageSpec, RegionRemoval,
+    RegionsAndMetadataRemoval, RegionsRemoval,
+};
 pub use remove_text::{remove_text, Removal};
 pub use rewrite::{rewrite, rewrite_with_limits};

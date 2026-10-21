@@ -3120,3 +3120,119 @@ fn cli_remove_document_metadata_failure_preserves_output() {
         .collect();
     assert!(stray.is_empty(), "temp files left: {stray:?}");
 }
+
+// ------------------------------------------------------------------
+// M26 — experimental-remove-regions --remove-document-metadata
+// ------------------------------------------------------------------
+
+/// Combined region edit + metadata entry removal via one CLI call.
+#[test]
+fn cli_remove_regions_with_metadata_strip() {
+    let dir = tmpdir("m26-combined");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    fs::write(&src, doc_with_metadata_pdf()).unwrap();
+    let out = bin()
+        .args(["experimental-remove-regions"])
+        .arg(&src)
+        .args([
+            "--page",
+            "1",
+            "--rect",
+            "0",
+            "0",
+            "10",
+            "10",
+            "--remove-document-metadata",
+            "--output",
+        ])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("info entry removed: true"), "{stdout}");
+    assert!(
+        stdout.contains("catalog /Metadata entry removed: true"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("Secret Title"), "{stdout}");
+    assert!(!stdout.contains("SECRET-XMP"), "{stdout}");
+    // Re-parse: both entries gone.
+    let out_doc = kasane_pdf::Document::from_bytes(&fs::read(&dst).unwrap()).unwrap();
+    assert!(!out_doc.trailer().contains_key(b"Info".as_slice()));
+    assert!(!out_doc.catalog().contains_key(b"Metadata".as_slice()));
+}
+
+/// Without the flag the metadata entries are kept — opt-in only.
+#[test]
+fn cli_remove_regions_without_flag_keeps_metadata() {
+    let dir = tmpdir("m26-noflag");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    fs::write(&src, doc_with_metadata_pdf()).unwrap();
+    let out = bin()
+        .args(["experimental-remove-regions"])
+        .arg(&src)
+        .args(["--page", "1", "--rect", "0", "0", "10", "10", "--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let out_doc = kasane_pdf::Document::from_bytes(&fs::read(&dst).unwrap()).unwrap();
+    assert!(out_doc.trailer().contains_key(b"Info".as_slice()));
+    assert!(out_doc.catalog().contains_key(b"Metadata".as_slice()));
+}
+
+/// A failing combined call leaves the sentinel output and input
+/// untouched and leaves no temp file.
+#[test]
+fn cli_remove_regions_metadata_failure_preserves_output() {
+    let dir = tmpdir("m26-fail");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    fs::write(&src, doc_with_metadata_pdf()).unwrap();
+    fs::write(&dst, b"SENTINEL").unwrap();
+    // Page 9 does not exist — the combined call fails before write.
+    let out = bin()
+        .args(["experimental-remove-regions"])
+        .arg(&src)
+        .args([
+            "--page",
+            "1",
+            "--rect",
+            "0",
+            "0",
+            "10",
+            "10",
+            "--page",
+            "9",
+            "--rect",
+            "0",
+            "0",
+            "10",
+            "10",
+            "--remove-document-metadata",
+            "--output",
+        ])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert_eq!(fs::read(&dst).unwrap(), b"SENTINEL");
+    assert_eq!(fs::read(&src).unwrap(), doc_with_metadata_pdf());
+    let stray: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| {
+            let n = e.unwrap().file_name().to_string_lossy().into_owned();
+            n.contains("kasane-tmp").then_some(n)
+        })
+        .collect();
+    assert!(stray.is_empty(), "temp files left: {stray:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(!stdout.contains("Secret Title"), "{stdout}");
+}
