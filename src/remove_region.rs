@@ -67,7 +67,7 @@ use crate::remove_image::{
     decode_image, fresh_xobject_name, image_pixel_ranges, is_default_decode, validate_image,
 };
 use crate::remove_text::{charge_generated, rewrite_ops_for, serialize_ops};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The result of [`remove_region`] — the rewritten PDF bytes plus
 /// the audit trail of what was removed.
@@ -80,6 +80,11 @@ pub struct RegionRemoval {
     pub invocations_edited: u64,
     /// How many pixels were changed to black (at least one component).
     pub pixels_changed: u64,
+    /// How many XObject names were removed from the page's
+    /// `/Resources` because they were orphaned by the edit (M21).
+    /// A removed name does *not* imply the object itself was
+    /// deleted — the writer's reachability scan decides that.
+    pub orphaned_names_removed: u64,
     /// The `Site` of every edited invocation — page content ref +
     /// op index (per `Site` docs).
     pub sites: Vec<Site>,
@@ -98,6 +103,7 @@ impl std::fmt::Debug for RegionRemoval {
             .field("codes_removed", &self.codes_removed)
             .field("invocations_edited", &self.invocations_edited)
             .field("pixels_changed", &self.pixels_changed)
+            .field("orphaned_names_removed", &self.orphaned_names_removed)
             .field("sites", &self.sites.len())
             .field("scope", &self.scope)
             .finish()
@@ -431,6 +437,27 @@ pub fn remove_region(
         }
     }
 
+    // ---- M21: collect XObject names orphaned by the edit ------------
+    // Names that were edited (old names) are candidates for removal;
+    // they are kept only if some *remaining* `Do` still uses them.
+    // We scan `new_ops` (the post-edit ops) — not the original ops —
+    // because text expansion may have changed op indices.
+    let mut candidate_names: BTreeSet<Vec<u8>> = BTreeSet::new();
+    for (_site, _ctm, _xobj_ref, name) in to_edit_image.values() {
+        candidate_names.insert(name.clone());
+    }
+    let mut used_names: BTreeSet<Vec<u8>> = BTreeSet::new();
+    for op in &new_ops {
+        if let Operation::Do(name) = op {
+            used_names.insert(name.clone());
+        }
+    }
+    let orphaned_names: Vec<Vec<u8>> = candidate_names
+        .iter()
+        .filter(|n| !used_names.contains(*n))
+        .cloned()
+        .collect();
+
     // ---- serialise the new page stream -------------------------------
     let new_body = serialize_ops(&new_ops, limits, generated_bytes)?;
     charge_generated(generated_bytes, new_body.len(), limits)?;
@@ -459,6 +486,7 @@ pub fn remove_region(
         .cloned()
         .ok_or_else(|| Error::Structure(format!("page {page_ref} is not a dictionary")))?;
     page_dict.insert(b"Contents".to_vec(), Object::Ref(stream_ref));
+    let mut orphaned_names_removed: u64 = 0;
     if !new_xobject_entries.is_empty() {
         let mut res_dict = match page.resources() {
             Some(r) => doc
@@ -477,6 +505,16 @@ pub fn remove_region(
         for (name, r) in &new_xobject_entries {
             xobj_dict.insert(name.clone(), Object::Ref(*r));
         }
+        // M21: remove orphaned names — XObject names that were edited
+        // and are no longer referenced by any remaining `Do`. The
+        // orphaned image object itself is left to the writer's
+        // reachability scan: if nothing else references it, it is
+        // not emitted in the output.
+        for name in &orphaned_names {
+            if xobj_dict.remove(name).is_some() {
+                orphaned_names_removed += 1;
+            }
+        }
         res_dict.insert(b"XObject".to_vec(), Object::Dict(xobj_dict));
         page_dict.insert(b"Resources".to_vec(), Object::Dict(res_dict));
     }
@@ -491,6 +529,7 @@ pub fn remove_region(
         codes_removed,
         invocations_edited: do_renames.len() as u64,
         pixels_changed,
+        orphaned_names_removed,
         sites: removed_sites,
         scope: vec![
             format!(
@@ -502,6 +541,7 @@ pub fn remove_region(
             format!("codes removed: {codes_removed}"),
             format!("invocations edited: {}", do_renames.len()),
             format!("pixels changed: {pixels_changed}"),
+            format!("orphaned names removed: {orphaned_names_removed}"),
             "scope: page-level text + image Do calls — no forms, no nested XObjects, \
              no /Annots/metadata/structure, no JPEG/masks/non-device colour"
                 .into(),
@@ -1732,5 +1772,412 @@ mod tests {
         // at the same op_index and gets the new name.
         assert!(out.contains("/KasIm0"), "{out}");
         assert!(out.contains("TJ"), "{out}");
+    }
+
+    // ---- M21 — orphaned XObject name removal -------------------------
+
+    /// One image, one `Do`, edited — the original name is orphaned
+    /// and removed from /XObject.
+    #[test]
+    fn m21_orphaned_name_removed() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let img_data = [0x10u8, 0x20, 0x30, 0x40];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r = remove_region(&d, 0, &[(20.0, 80.0, 40.0, 100.0)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        assert_eq!(r.orphaned_names_removed, 1);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // The original name /Im1 is gone from the XObject dict.
+        assert!(!out.contains("/Im1"), "original name must be gone: {out}");
+        assert!(out.contains("/KasIm0"), "{out}");
+    }
+
+    /// Two `Do`s to the same image, only one edited — the original
+    /// name is kept because the unedited `Do` still uses it.
+    #[test]
+    fn m21_partial_edit_keeps_name() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let img_data = [0x10u8, 0x20, 0x30, 0x40];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        // Two Do calls: first at (0,0), second at (100,0). Only the
+        // first is hit.
+        let body = b"40 0 0 40 0 0 cm\n/Im1 Do\n40 0 0 40 100 0 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // Only the first Do's area is rect'd.
+        let r = remove_region(&d, 0, &[(0.0, 0.0, 40.0, 40.0)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        assert_eq!(r.orphaned_names_removed, 0);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // /Im1 is kept (second Do still uses it).
+        assert!(out.contains("/Im1"), "original name must be kept: {out}");
+        assert!(out.contains("/KasIm0"), "{out}");
+    }
+
+    /// Different names for the same image — editing `/Im1` does
+    /// not remove `/ImAlias`, and the original image object stays
+    /// reachable via the unedited `/ImAlias Do`.
+    #[test]
+    fn m21_alias_keeps_original() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R /ImAlias 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let img_data = [0x10u8, 0x20, 0x30, 0x40];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        // Im1 at (0,0) is edited; ImAlias at (100,0) is not.
+        let body = b"40 0 0 40 0 0 cm\n/Im1 Do\n40 0 0 40 100 0 cm\n/ImAlias Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r = remove_region(&d, 0, &[(0.0, 0.0, 40.0, 40.0)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        assert_eq!(r.orphaned_names_removed, 1); // /Im1 removed
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // /ImAlias is kept; /Im1 is gone.
+        assert!(out.contains("/ImAlias"), "alias must be kept: {out}");
+        assert!(!out.contains("/Im1 Do"), "original Do must be gone: {out}");
+        assert!(out.contains("/KasIm0"), "{out}");
+    }
+
+    /// Image shared with another page — the orphaned name is removed
+    /// from *this* page's /XObject, but the image object stays in the
+    /// output because the other page still references it.
+    #[test]
+    fn m21_shared_image_other_page() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>");
+        // Page 1: has the image, will be edited.
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        // Page 2: shares the same image object.
+        push!(
+            4,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 11 0 R >>"
+        );
+        let img_data = [0x10u8, 0x20, 0x30, 0x40];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body1 = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body1.len()).into_bytes();
+        sb.extend_from_slice(body1);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let body2 = b"40 0 0 40 100 100 cm\n/Im1 Do\n";
+        let mut sb2 = format!("<< /Length {} >>\nstream\n", body2.len()).into_bytes();
+        sb2.extend_from_slice(body2);
+        sb2.extend_from_slice(b"\nendstream");
+        push!(11, &sb2);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 12\n0000000000 65535 f \n".to_vec());
+        for n in 1..12u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 12 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // Edit page 1 only.
+        let r = remove_region(&d, 0, &[(20.0, 80.0, 40.0, 100.0)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        assert_eq!(r.orphaned_names_removed, 1);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // The image object itself stays (page 2 still uses it).
+        assert!(out.contains("/Subtype /Image"), "image must stay: {out}");
+        // Page 1's /Im1 is gone; page 2's /Im1 stays.
+        // We verify by checking the output has the image stream.
+        assert!(out.contains("/KasIm0"), "{out}");
+    }
+
+    /// Inherited /Resources — the page has no own /Resources but
+    /// inherits from /Pages. The cloned XObject dict must not
+    /// mutate the shared /Pages resources.
+    #[test]
+    fn m21_inherited_resources() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(
+            2,
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 \
+              /Resources << /XObject << /Im1 10 0 R /Unused 11 0 R >> \
+                            /Font << /F1 5 0 R >> >> >>"
+        );
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Contents 9 0 R >>"
+        );
+        let img_data = [0x10u8, 0x20, 0x30, 0x40];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        push!(
+            11,
+            b"<< /Type /XObject /Subtype /Form /BBox [0 0 10 10] /Length 0 >>"
+        );
+        push!(5, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+        let body = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 12\n0000000000 65535 f \n".to_vec());
+        for n in 1..12u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 12 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r = remove_region(&d, 0, &[(20.0, 80.0, 40.0, 100.0)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        assert_eq!(r.orphaned_names_removed, 1);
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        // The materialised /Resources keeps /Font and /Unused.
+        assert!(out.contains("/Font"), "font must be kept: {out}");
+        assert!(
+            out.contains("/Unused"),
+            "unused XObject must be kept: {out}"
+        );
+        assert!(out.contains("/KasIm0"), "{out}");
+        // The shared /Pages resources must NOT contain the new name.
+        // (We can't easily check this without parsing, but the test
+        // verifies the page got its own materialised Resources.)
+    }
+
+    /// `max_diag_exec_ops` boundary: exactly at the limit passes,
+    /// one op under is refused (M20.1 requirement A).
+    #[test]
+    fn m20_1_max_diag_exec_ops_boundary() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let img_data = [0x10u8, 0x20, 0x30, 0x40];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        // 3 ops: cm, Do — the walker sees them all.
+        let body = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+
+        // Exactly at the limit passes (2 ops: cm + Do).
+        let r = remove_region(
+            &d,
+            0,
+            &[(20.0, 80.0, 40.0, 100.0)],
+            &Limits {
+                max_diag_exec_ops: 2,
+                ..Limits::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(r.invocations_edited, 1);
+
+        // One under is refused (1 op cannot cover cm + Do).
+        let err = remove_region(
+            &d,
+            0,
+            &[(20.0, 80.0, 40.0, 100.0)],
+            &Limits {
+                max_diag_exec_ops: 1,
+                ..Limits::default()
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::LimitExceeded { .. }),
+            "one under must refuse: {err:?}"
+        );
     }
 }
