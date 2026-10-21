@@ -2413,3 +2413,106 @@ fn cli_remove_region_quote_expansion_before_do() {
     assert!(raw.contains("T*"), "' expanded: {raw}");
     assert!(raw.contains("TJ"), "TJ present: {raw}");
 }
+
+// ------------------------------------------------------------------
+// M23 — audit-residuals
+// ------------------------------------------------------------------
+
+/// A PDF carrying one annotation with text — used to check the audit
+/// reports the annot *presence* without leaking its /Contents value.
+fn annot_pdf() -> Vec<u8> {
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] \
+          /Annots [4 0 R] >>",
+    );
+    push(
+        4,
+        b"<< /Type /Annot /Subtype /Text /Rect [0 0 10 10] \
+          /Contents (SECRET-NOTE-DO-NOT-PRINT) >>",
+    );
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 5\n0000000000 65535 f \n".to_vec());
+    for n in 1..5u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 5 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    parts.concat()
+}
+
+#[test]
+fn cli_audit_text_and_json() {
+    let dir = tmpdir("audit");
+    let src = dir.join("in.pdf");
+    fs::write(&src, annot_pdf()).unwrap();
+    // text mode
+    let out = bin().args(["audit-residuals"]).arg(&src).output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("audit-residuals"), "{stdout}");
+    assert!(stdout.contains("AnnotText"), "{stdout}");
+    // The annot's /Contents value must never be printed.
+    assert!(
+        !stdout.contains("SECRET-NOTE-DO-NOT-PRINT"),
+        "leaked annot contents: {stdout}"
+    );
+    // json mode — structurally check the JSON without a serde dep.
+    let out = bin()
+        .args(["audit-residuals"])
+        .arg(&src)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.trim_start().starts_with('{'), "{stdout}");
+    assert!(stdout.contains("\"kind\": \"AnnotText\""), "{stdout}");
+    assert!(stdout.contains("\"reachability\""), "{stdout}");
+    assert!(!stdout.contains("SECRET-NOTE-DO-NOT-PRINT"));
+}
+
+#[test]
+fn cli_audit_never_writes_output() {
+    let dir = tmpdir("audit-noout");
+    let src = dir.join("in.pdf");
+    fs::write(&src, minimal_pdf()).unwrap();
+    let before = fs::read(&src).unwrap();
+    let out = bin().args(["audit-residuals"]).arg(&src).output().unwrap();
+    assert!(out.status.success());
+    // No output file is created next to the input.
+    assert!(!dir.join("out.pdf").exists());
+    assert_eq!(fs::read(&src).unwrap(), before, "input unchanged");
+}
+
+#[test]
+fn cli_audit_bad_format_fails() {
+    let dir = tmpdir("audit-badfmt");
+    let src = dir.join("in.pdf");
+    fs::write(&src, minimal_pdf()).unwrap();
+    let out = bin()
+        .args(["audit-residuals"])
+        .arg(&src)
+        .args(["--format", "xml"])
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(stderr.contains("--format"), "{stderr}");
+}

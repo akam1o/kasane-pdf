@@ -255,6 +255,44 @@ impl Document {
         &self.xref.trailer
     }
 
+    /// The raw input bytes — used by the M23 audit to re-read an
+    /// earlier xref section (`read_one_section`) so superseded
+    /// object bodies can be told apart from the live view.
+    /// Read-only.
+    pub(crate) fn raw_bytes(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Byte offsets of every xref section read, newest first
+    /// (`startxref` … oldest `/Prev`). Length > 1 means the file
+    /// carries incremental-update history. Used by the M23 audit.
+    pub(crate) fn xref_section_offsets(&self) -> &[u64] {
+        &self.xref.section_offsets
+    }
+
+    /// The trailer dict of the *newest* xref section (the one at
+    /// `startxref`) — distinct from `trailer()`, which merges older
+    /// sections' keys into gaps. Used by the M23 audit to tell a
+    /// current `/Info` from one inherited via merge.
+    pub(crate) fn latest_trailer(&self) -> &Dict {
+        &self.xref.latest_trailer
+    }
+
+    /// Iterate every merged xref entry (newest-wins), in
+    /// `(number, generation)` order. Used by the M23 audit to list
+    /// live objects without scanning `0..Size`.
+    pub(crate) fn xref_entries(
+        &self,
+    ) -> impl Iterator<Item = (IndirectRef, crate::xref::XrefEntry)> + '_ {
+        self.xref.iter_entries()
+    }
+
+    /// One xref entry's classification. Used by the M23 audit to
+    /// distinguish live/free/compressed objects.
+    pub(crate) fn xref_entry_kind(&self, r: IndirectRef) -> Option<crate::xref::XrefEntry> {
+        self.xref.entry_of(r)
+    }
+
     /// The document catalog dictionary (already resolved).
     pub fn catalog(&self) -> &Dict {
         &self.catalog

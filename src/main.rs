@@ -133,6 +133,19 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("audit-residuals") => {
+            // audit-residuals <file.pdf> [--format text|json]
+            // Read-only inventory of residual information — never
+            // modifies the file, and a clean report is NOT a
+            // "safe to distribute" verdict.
+            match run_audit(&args[2..]) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error [{}]: {e}", e.kind());
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some(cmd @ ("contents" | "operations" | "render" | "text")) => {
             let (path, page_no) = match (args.get(2), args.get(3)) {
                 (Some(p), Some(n)) => (p, n),
@@ -186,6 +199,7 @@ fn main() -> ExitCode {
             eprintln!(
                 "       {prog} experimental-remove-text <file.pdf> <page-number> --rect llx lly urx ury [--rect …] --output <out.pdf>"
             );
+            eprintln!("       {prog} audit-residuals <file.pdf> [--format text|json]");
             ExitCode::from(2)
         }
     }
@@ -2074,6 +2088,262 @@ fn print_lines(t: &kasane_pdf::ExtractedText) {
             t.chars.len() - shown
         );
     }
+}
+
+// ---------------------------------------------------------------------
+// M23 — audit-residuals
+// ---------------------------------------------------------------------
+
+/// Output cap — a single audit prints at most this many findings;
+/// every truncation states the omitted count.
+const MAX_AUDIT_LINES: usize = 2_000;
+
+fn run_audit(args: &[String]) -> Result<(), Error> {
+    if args.is_empty() {
+        return Err(Error::Structure(
+            "usage: kasane-pdf audit-residuals <file.pdf> [--format text|json]".into(),
+        ));
+    }
+    let input = &args[0];
+    let mut format = "text";
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--format" => {
+                if i + 1 >= args.len() {
+                    return Err(Error::Structure("--format expects text|json".into()));
+                }
+                format = args[i + 1].as_str();
+                if format != "text" && format != "json" {
+                    return Err(Error::Structure(format!(
+                        "unknown --format '{format}' (text|json)"
+                    )));
+                }
+                i += 2;
+            }
+            other => {
+                return Err(Error::Structure(format!("unknown option '{other}'")));
+            }
+        }
+    }
+    let data = std::fs::read(input)?;
+    let doc = Document::from_bytes(&data)?;
+    let audit = kasane_pdf::audit_residuals(&doc, &Limits::default())?;
+    match format {
+        "json" => print_audit_json(&audit),
+        _ => print_audit_text(&audit),
+    }
+    Ok(())
+}
+
+/// Escape a byte string for JSON — printable ASCII passes through,
+/// everything else becomes `\u00XX` (the byte value as a codepoint).
+fn json_escape_bytes(b: &[u8]) -> String {
+    let mut out = String::with_capacity(b.len());
+    for &c in b {
+        match c {
+            b'"' => out.push_str("\\\""),
+            b'\\' => out.push_str("\\\\"),
+            0x20..=0x7e => out.push(c as char),
+            _ => out.push_str(&format!("\\u{c:04x}")),
+        }
+    }
+    out
+}
+
+fn path_steps_json(via: &[kasane_pdf::PathStep]) -> String {
+    let parts: Vec<String> = via
+        .iter()
+        .map(|s| match s {
+            kasane_pdf::PathStep::TrailerKey(k) => {
+                format!("trailer/{}", json_escape_bytes(k))
+            }
+            kasane_pdf::PathStep::Key(k) => format!("/{}", json_escape_bytes(k)),
+            kasane_pdf::PathStep::Index(i) => format!("[{i}]"),
+            kasane_pdf::PathStep::NameTreeEntry(n) => {
+                format!("name-tree:{}", json_escape_bytes(n))
+            }
+            kasane_pdf::PathStep::ResourceName { category, name } => format!(
+                "/{}/{}",
+                json_escape_bytes(category),
+                json_escape_bytes(name)
+            ),
+        })
+        .collect();
+    format!(
+        "[{}]",
+        parts
+            .iter()
+            .map(|p| format!("\"{p}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn print_audit_text(a: &kasane_pdf::ResidualAudit) {
+    println!("audit-residuals — residual-information inventory (read-only)");
+    println!("objects-examined: {}", a.objects_examined);
+    println!("edges-examined: {}", a.edges_examined);
+    let r = &a.reachability;
+    println!(
+        "reachability: {} live / {} reachable / {} unreachable-live / {} edges{}",
+        r.live_objects,
+        r.reachable_live,
+        r.unreachable_live,
+        r.edges_followed,
+        if r.truncated { " (truncated)" } else { "" }
+    );
+    let h = &a.history;
+    println!(
+        "history: {} xref section(s){}, {} free, {} compressed, {} in old region",
+        h.xref_sections,
+        h.incremental_history
+            .map(|n| format!(", {n} prior revision(s)"))
+            .unwrap_or_default(),
+        h.free_entries,
+        h.compressed_entries,
+        h.objects_in_old_region,
+    );
+    if !h.physical_slack_examined {
+        println!("history: physical slack NOT examined (xref-only audit)");
+    }
+    let (findings, omitted) = {
+        let shown = a.findings.len().min(MAX_AUDIT_LINES);
+        (&a.findings[..shown], a.findings.len() - shown)
+    };
+    println!("findings {}", a.findings.len());
+    for f in findings {
+        let obj = f
+            .object
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "-".into());
+        let bytes = f
+            .bytes
+            .map(|(enc, dec)| {
+                format!(
+                    " bytes={}{}",
+                    enc,
+                    dec.map(|d| format!("(declared {d})")).unwrap_or_default()
+                )
+            })
+            .unwrap_or_default();
+        println!(
+            "  {:?} {} reach={:?}{} {}",
+            f.kind, obj, f.reach, bytes, f.note
+        );
+    }
+    if omitted > 0 {
+        println!("  ... ({omitted} more — output capped at {MAX_AUDIT_LINES})");
+    }
+    if !a.incomplete.is_empty() {
+        println!("incomplete {}", a.incomplete.len());
+        for i in &a.incomplete {
+            println!(
+                "  {} — {}{}",
+                i.scope,
+                i.reason,
+                if i.limit { " (limit)" } else { "" }
+            );
+        }
+    }
+    if !a.unexamined.is_empty() {
+        println!("unexamined {}", a.unexamined.len());
+        for u in &a.unexamined {
+            println!("  - {u}");
+        }
+    }
+    println!(
+        "note: a listed item means 'this construct exists', not \
+         'this is sensitive'; a clean report is NOT a distribution-safety \
+         verdict."
+    );
+}
+
+fn print_audit_json(a: &kasane_pdf::ResidualAudit) {
+    let mut out = String::from("{\n");
+    out.push_str(&format!(
+        "  \"objects_examined\": {},\n",
+        a.objects_examined
+    ));
+    out.push_str(&format!("  \"edges_examined\": {},\n", a.edges_examined));
+    let r = &a.reachability;
+    out.push_str(&format!(
+        "  \"reachability\": {{\"live_objects\": {}, \"reachable\": {}, \"reachable_live\": {}, \"unreachable_live\": {}, \"edges_followed\": {}, \"truncated\": {}}},\n",
+        r.live_objects, r.reachable, r.reachable_live, r.unreachable_live,
+        r.edges_followed, r.truncated
+    ));
+    let h = &a.history;
+    out.push_str(&format!(
+        "  \"history\": {{\"xref_sections\": {}, \"incremental_history\": {}, \"free_entries\": {}, \"compressed_entries\": {}, \"objects_in_old_region\": {}, \"physical_slack_examined\": {}}},\n",
+        h.xref_sections,
+        h.incremental_history.map(|n| n.to_string()).unwrap_or_else(|| "null".into()),
+        h.free_entries, h.compressed_entries, h.objects_in_old_region,
+        h.physical_slack_examined
+    ));
+    let shown = a.findings.len().min(MAX_AUDIT_LINES);
+    out.push_str(&format!(
+        "  \"findings\": {},\n  \"finding_list\": [\n",
+        a.findings.len()
+    ));
+    for (i, f) in a.findings.iter().take(shown).enumerate() {
+        if i > 0 {
+            out.push_str(",\n");
+        }
+        out.push_str("    {");
+        out.push_str(&format!("\"kind\": \"{:?}\"", f.kind));
+        if let Some(o) = f.object {
+            out.push_str(&format!(", \"object\": \"{o}\""));
+        }
+        out.push_str(&format!(", \"reach\": \"{:?}\"", f.reach));
+        if let Some((enc, dec)) = f.bytes {
+            out.push_str(&format!(
+                ", \"bytes\": {}{}",
+                enc,
+                dec.map(|d| format!(", \"declared_length\": {d}"))
+                    .unwrap_or_default()
+            ));
+        }
+        out.push_str(&format!(
+            ", \"via\": {}, \"note\": \"{}\"",
+            path_steps_json(&f.via),
+            json_escape_bytes(f.note.as_bytes())
+        ));
+        out.push('}');
+    }
+    out.push_str("\n  ]");
+    if shown < a.findings.len() {
+        out.push_str(&format!(
+            ",\n  \"findings_omitted\": {}",
+            a.findings.len() - shown
+        ));
+    }
+    if !a.incomplete.is_empty() {
+        out.push_str(",\n  \"incomplete\": [");
+        for (i, inc) in a.incomplete.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&format!(
+                "{{\"scope\": \"{}\", \"reason\": \"{}\", \"limit\": {}}}",
+                json_escape_bytes(inc.scope.as_bytes()),
+                json_escape_bytes(inc.reason.as_bytes()),
+                inc.limit
+            ));
+        }
+        out.push(']');
+    }
+    if !a.unexamined.is_empty() {
+        out.push_str(",\n  \"unexamined\": [");
+        for (i, u) in a.unexamined.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&format!("\"{}\"", json_escape_bytes(u.as_bytes())));
+        }
+        out.push(']');
+    }
+    out.push_str("\n}\n");
+    print!("{out}");
 }
 
 #[cfg(test)]

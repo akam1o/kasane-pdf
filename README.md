@@ -217,11 +217,17 @@ What works today:
   `/Resources` only when *all* descendants are materialised — the
   post-order strip decision propagates a failed branch upward
   (`docs/design.md`, M22–M22.4).
+- `audit_residuals()` + `audit-residuals` — a read-only inventory of
+  residual information: `/Info`, XMP metadata, embedded files, form
+  fields, structure-tree alternate text, actions/JavaScript,
+  optional content, resources, free/unreachable/superseded objects.
+  It reports *that* a construct exists and where it is — never that
+  it is safe or unsafe (see `docs/coverage.md`, M23).
 - A `kasane-pdf` CLI (`info` mode + `contents`, `operations`,
   `render`, `text`, `rewrite`, `annotate-rect`, `inspect`,
   `preflight-redaction`, `experimental-remove-text`,
-  `experimental-remove-image-region`, and
-  `experimental-remove-region` subcommands).
+  `experimental-remove-image-region`, `experimental-remove-region`,
+  and `audit-residuals` subcommands).
 - Adding `/Subtype /Square` rectangle annotations to a page via an
   [`Edit`] session — opaque RGB stroke, positive width, generated
   `/AP` appearance, existing annots/links preserved, shared `/Annots`
