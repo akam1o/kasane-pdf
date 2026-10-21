@@ -11,3 +11,38 @@ tool, not a runtime dependency).
 WinAnsiEncoding tables in `src/font.rs` are derived from ISO 32000-1
 Annex D and the Adobe Glyph List (public-domain name→Unicode mapping
 shipped by fontTools).
+
+## JPEG fixtures (M27)
+
+The unit tests in `src/remove_region.rs` embed three small baseline
+JPEGs as hex constants:
+
+- `JPEG_G8_HEX` — 8×8 DeviceGray, 375 bytes
+- `JPEG_C8_HEX` — 8×8 DeviceRGB, 659 bytes
+- `JPEG_C16_HEX` — 16×16 DeviceRGB, 702 bytes
+
+All were generated with `cjpeg` (libjpeg-turbo) from deterministic
+PGM/PPM patterns — no external image data is redistributed. The
+generator script is a *build-time* tool only; the embedded bytes
+ship inside the test source so `cargo test` needs no network or
+external tools. The PPM/PGM sources are one-pixel-per-value
+gradients — trivially regenerable:
+
+```sh
+# gray 8x8: value = (x*31 + y*17) % 256
+python3 -c "
+import sys
+w=h=8
+sys.stdout.buffer.write(b'P5\n8 8\n255\n')
+sys.stdout.buffer.write(bytes((x*31+y*17)%256 for y in range(h) for x in range(w)))
+" > g8.pgm
+cjpeg -grayscale -quality 90 -outfile g8.jpg g8.pgm
+
+# RGB 8x8: r=x*32, g=y*32, b=(x+y)*16 (mod 256); RGB 16x16 similar.
+cjpeg -quality 90 -outfile c8.jpg c8.ppm
+cjpeg -quality 90 -outfile c16.jpg c16.ppm
+```
+
+`cjpeg`/`djpeg` are development-machine tools, not library
+dependencies — the JPEG decoder used by the library is the pure-Rust
+`jpeg-decoder` crate already declared in `Cargo.toml`.

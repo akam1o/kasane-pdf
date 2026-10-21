@@ -947,6 +947,49 @@ page's removed codes gone while the other page's text is intact;
 `pdfimages` shows the edited page's image pixels zeroed while the
 shared original survives on the unedited page.
 
+## JPEG image region editing (M27, inside `remove_image_region` /
+`remove_region` / `remove_regions` / `remove_regions_and_document_metadata`)
+
+**Experimental content editing — not redaction.** A `/DCTDecode`
+Image XObject is now *editable* when it is a single-filter baseline
+JPEG that decodes to 8-bit DeviceGray or DeviceRGB samples:
+
+- **Accepted**: `/Filter /DCTDecode` or `[/DCTDecode]`; the JPEG
+  must produce `L8` or `RGB24` output (jpeg-decoder's pixel
+  formats); `Width`/`Height`/`ColorSpace` in the dict must match the
+  JPEG's own header; `/DecodeParms /ColorTransform` may be `0`
+  (raw component values — no YCbCr→RGB) or `1`/absent (decoder's
+  internal transform); every other `DecodeParms` key is refused.
+- **Refused**: CMYK/YCCK/16-bit/progressive JPEGs, any filter
+  chain (`[ASCII85Decode DCTDecode]` etc.), `/JPXDecode`, corrupt
+  or truncated JPEG data, dict↔JPEG geometry or component-count
+  mismatch, and every prior refusal (masks, `/Interpolate`,
+  non-default `/Decode`, non-axis-aligned CTM, forms, annotations).
+- **Decode + edit**: the JPEG is decoded to raw samples, the
+  rect-union blackening runs on the decoded buffer exactly as for
+  raw/Flate images, and the clone is written **uncompressed**
+  (no JPEG re-encode — a `/Filter` key is never emitted on the
+  clone; `Width`/`Height`/`ColorSpace`/`BitsPerComponent` match the
+  decoded samples). EXIF and other JPEG-app metadata are *not*
+  copied to the clone — but the same information may remain
+  elsewhere in the file.
+- **Budgets**: `max_image_dimension`, `max_image_total_samples`,
+  and `max_image_bytes` gate the dict-declared geometry *before*
+  `read_info` runs; the decoder's own `max_decoding_buffer_size`
+  is set to `max_image_bytes` so a hostile JPEG cannot allocate
+  past the cap. `max_edit_content_bytes` covers the decoded clone
+  bytes cumulatively. An image whose rects miss it is skipped
+  before any decode — no budget is consumed.
+- **Preservation guarantee**: "unaltered" means *the decoded
+  sample values outside the selected rects are byte-identical*
+  in the clone. It does **not** promise identical rendering to
+  the original JPEG — a decoder, colour-transform, or interpolation
+  difference is inherent to re-encoding JPEG content.
+
+All four entry points share the same `validate_image` /
+`decode_image` / `image_pixel_ranges` helpers in
+`src/remove_image.rs`; no JPEG logic is duplicated.
+
 ## Combined region removal + metadata entry removal (M26, `remove_regions_and_document_metadata`, CLI `experimental-remove-regions --remove-document-metadata`)
 
 **Not redaction or sanitizing.** Runs the full `remove_regions`

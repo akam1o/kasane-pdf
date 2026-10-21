@@ -689,6 +689,51 @@ CLI: `kasane-pdf experimental-remove-image-region in.pdf 1 --rect llx
 lly urx ury [--rect …] --output out.pdf` — same atomic-write and
 same-file-refusal rules as `experimental-remove-text`.
 
+### M27 — JPEG (`/DCTDecode`) image editing
+
+M27 extends the M19/M20 image-edit path to single-filter baseline
+JPEGs. Nothing about the page-level eligibility rules, the rect-union
+algorithm, or the clone-and-repoint mechanics changes; the only new
+logic is *how the sample buffer is obtained*.
+
+- **Where**: `decode_image` in `src/remove_image.rs` handles
+  `/DCTDecode` by calling `dct_decode_for_edit`, which wraps
+  `jpeg_decoder::Decoder` (the same crate the renderer already uses —
+  no new dependency). `validate_image` admits a *single* `/DCTDecode`
+  or `/DCT` filter; filter chains and every other codec remain
+  refused. Both edit-side call sites (`remove_image_region`,
+  `remove_region`'s page loop) pass the dict-declared `(w,h,ncomps)`
+  into `decode_image` so the JPEG's own header is checked against the
+  PDF before the pixel buffer is trusted.
+- **Header check before decode**: `read_info` runs first — a corrupt
+  or truncated JPEG fails fast, and `info()`'s `width`/`height`/
+  `pixel_format` are compared to the dict. `CMYK32`, `L16`, and any
+  other format are `Unsupported`; only `L8` (1 comp) and `RGB24`
+  (3 comp) proceed.
+- **`/DecodeParms /ColorTransform`**: `0` maps to
+  `set_color_transform(ColorTransform::None)` (raw component values);
+  `1` or absent leaves the decoder's internal YCbCr→RGB decision;
+  any other key in `DecodeParms` is refused rather than ignored.
+- **Budgets unchanged**: `max_image_dimension`/`total_samples` gate
+  the dict geometry before decode; `max_image_bytes` is also set as
+  the decoder's `max_decoding_buffer_size` so the JPEG cannot
+  allocate past the cap; `max_edit_content_bytes` accounts for the
+  decoded clone bytes cumulatively. A non-intersecting JPEG is never
+  decoded — `image_pixel_ranges` returning empty still skips the
+  whole edit before any decoder work.
+- **Output**: the clone is written *uncompressed* — `/Filter` and
+  `/DecodeParms` are dropped, `/Length` recomputed, and the dict's
+  `Width`/`Height`/`ColorSpace`/`BitsPerComponent` are already
+  consistent with the decoded samples (the header check guarantees
+  it). JPEG-specific keys (`/K`…, `/ColorTransform` leftovers,
+  EXIF data) are never copied; the original stream is untouched.
+- **"Unaltered" defined on decoded samples**: the guarantee is that
+  samples outside the rect union are byte-identical between the
+  decoded original and the clone. JPEG is lossy — the clone is not
+  promised to render pixel-identically to the original in every
+  viewer, because decode/colour-transform/interpolation differences
+  are inherent to re-encoding JPEG content.
+
 ### M20 — scoped region removal (text + image)
 
 `src/remove_region.rs` implements `remove_region` +
