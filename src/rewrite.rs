@@ -66,6 +66,19 @@ pub fn rewrite_with_limits(doc: &Document, limits: &Limits) -> Result<Vec<u8>, E
     rewrite_overlay(doc, &HashMap::new(), &HashSet::new(), limits)
 }
 
+/// Optional overrides for [`rewrite_overlay`] — an internal knob
+/// used by `remove_document_metadata`; not a public trailer-edit
+/// API. All fields default to off.
+#[derive(Default)]
+pub(crate) struct RewriteOverrides {
+    /// Drop the trailer `/Info` entry — both as a collection root
+    /// and from the output trailer.
+    pub strip_info: bool,
+    /// Drop the catalog `/Metadata` entry — the catalog object is
+    /// overlaid with a copy that lacks `/Metadata`.
+    pub strip_metadata: bool,
+}
+
 /// Rewrite with an *overlay*: `(old obj num, gen) → replacement body`.
 /// When the collector reaches a reference present in `overlay`, the
 /// overlay body is used instead of `doc.resolve` — this is how the
@@ -86,12 +99,56 @@ pub(crate) fn rewrite_overlay(
     synth_numbers: &HashSet<(u32, u16)>,
     limits: &Limits,
 ) -> Result<Vec<u8>, Error> {
+    rewrite_overlay_with(
+        doc,
+        overlay,
+        synth_numbers,
+        limits,
+        &RewriteOverrides::default(),
+    )
+}
+
+/// [`rewrite_overlay`] plus internal-only `overrides` — see
+/// [`RewriteOverrides`] for what each flag does.
+pub(crate) fn rewrite_overlay_with(
+    doc: &Document,
+    overlay: &HashMap<(u32, u16), Object>,
+    synth_numbers: &HashSet<(u32, u16)>,
+    limits: &Limits,
+    overrides: &RewriteOverrides,
+) -> Result<Vec<u8>, Error> {
     check_refusals(doc)?;
+
+    // The catalog's `/Metadata` is removed by injecting an overlay
+    // entry for the catalog object itself — a copy of the catalog
+    // dict minus the key. The overlay wins over `doc.resolve`, so
+    // the rewritten catalog no longer carries `/Metadata`. Its
+    // former target stays collectible only if another reference
+    // still reaches it.
+    let mut owned_overlay: HashMap<(u32, u16), Object> = HashMap::new();
+    if overrides.strip_metadata {
+        // The catalog must be an indirect object to overlay it.
+        if let Some(root_ref) = doc
+            .trailer()
+            .get(b"Root".as_slice())
+            .and_then(|o| o.as_ref())
+        {
+            let mut cat = doc.catalog().clone();
+            cat.remove(b"Metadata".as_slice());
+            owned_overlay.insert((root_ref.number, root_ref.generation), Object::Dict(cat));
+        }
+    }
+    let effective_overlay = if owned_overlay.is_empty() {
+        overlay
+    } else {
+        owned_overlay.extend(overlay.iter().map(|(k, v)| (*k, v.clone())));
+        &owned_overlay
+    };
 
     // ---- Phase 1: collect reachable objects, assign new numbers ----
     let mut c = Collector {
         doc,
-        overlay,
+        overlay: effective_overlay,
         synth_numbers,
         limits,
         map: HashMap::new(),
@@ -106,8 +163,10 @@ pub(crate) fn rewrite_overlay(
     if let Some(r) = trailer.get(b"Root".as_slice()).and_then(|o| o.as_ref()) {
         root_refs.push((r, RootKind::Root));
     }
-    if let Some(r) = trailer.get(b"Info".as_slice()).and_then(|o| o.as_ref()) {
-        root_refs.push((r, RootKind::Info));
+    if !overrides.strip_info {
+        if let Some(r) = trailer.get(b"Info".as_slice()).and_then(|o| o.as_ref()) {
+            root_refs.push((r, RootKind::Info));
+        }
     }
     for (r, kind) in root_refs {
         c.walk(r, kind, 0, false)?;
