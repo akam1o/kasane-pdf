@@ -33,8 +33,17 @@
 //!   rewrite.
 //! - Any non-default `/Decode` array — inverted or remapped samples
 //!   are not rewritten.
-//! - Any image with a `/Filter` other than none or `/FlateDecode` —
-//!   JPEG (`/DCTDecode`) and every other codec are out of scope.
+//! - Any image with a `/Filter` other than none, a single
+//!   `/FlateDecode`, or a single `/DCTDecode` — filter chains,
+//!   `/JPXDecode`, and every other codec are out of scope. For
+//!   DCTDecode only baseline JPEGs decoding to 8-bit Gray or RGB
+//!   samples are accepted (the decoder's `L8`/`RGB24` formats);
+//!   CMYK/YCCK, 16-bit, and progressive files are refused. The
+//!   JPEG's own width/height/component count must match the PDF
+//!   dict. `/DecodeParms /ColorTransform` is honoured — `0` keeps
+//!   the raw component values, `1` or absent lets the decoder
+//!   apply the JPEG's internal transform — and any other key in
+//!   `DecodeParms` is refused rather than ignored.
 //! - Any image whose CTM is not axis-aligned, positive-scale, and
 //!   non-singular — rotation, shear, reflection, and degenerate
 //!   transforms are refused.
@@ -345,7 +354,7 @@ pub fn remove_image_region(
             });
         }
         charge_generated(generated_bytes, expected as usize, limits)?;
-        let decoded = decode_image(dict, raw, limits)?;
+        let decoded = decode_image(dict, raw, limits, (width, height, ncomps))?;
         if decoded.len() as u64 != expected {
             return Err(Error::Structure(format!(
                 "image /{} data length {} does not match {}x{}x{} = {}",
@@ -518,7 +527,10 @@ pub fn remove_image_region(
             format!("invocations edited: {}", do_renames.len()),
             format!("pixels changed: {pixels_changed}"),
             "scope: page-level /Image Do calls only — no forms, no inline images, \
-             no masks, no non-device colour, no non-default /Decode, no JPEG"
+             no masks, no non-device colour, no non-default /Decode. Images: no \
+             filter / FlateDecode / single DCTDecode (8-bit Gray/RGB only); \
+             JPEG is decoded to samples and written back uncompressed — other \
+             copies of the same data are not removed."
                 .into(),
         ],
     })
@@ -671,16 +683,22 @@ pub(crate) fn validate_image(
         }
     };
 
-    // Filter must be absent or exactly [FlateDecode].
+    // Filter must be absent, or a *single* FlateDecode or DCTDecode.
+    // Filter chains are refused — the caller only ever decodes the
+    // first filter anyway, so a chain would silently ignore part of
+    // the encoding.
     let filters = crate::filter::normalize_filters(dict.get(b"Filter".as_slice()))?;
     match filters.len() {
         0 => {}
-        1 if filters[0] == b"FlateDecode" || filters[0] == b"Fl" => {}
+        1 if filters[0] == b"FlateDecode"
+            || filters[0] == b"Fl"
+            || filters[0] == b"DCTDecode"
+            || filters[0] == b"DCT" => {}
         _ => {
             return Err(Error::Unsupported {
                 feature: "image stream filter",
                 detail: format!(
-                    "{:?} — only none or FlateDecode are supported",
+                    "{:?} — only none, FlateDecode, or DCTDecode are supported",
                     filters
                         .iter()
                         .map(|f| String::from_utf8_lossy(f).into_owned())
@@ -690,18 +708,35 @@ pub(crate) fn validate_image(
         }
     }
 
+    // For DCTDecode the JPEG's own header must agree with the PDF
+    // dict — checked inside `decode_image` where the decoder runs.
     Ok((width as u32, height as u32, ncomps))
 }
 
 /// Decode image sample data — reuses the stream decoder with the
-/// image's own limits. No DCTDecode, no custom filters.
+/// image's own limits. Supports no filter, a single `/FlateDecode`,
+/// or a single `/DCTDecode` (baseline JPEG). Anything else is
+/// `Error::Unsupported`.
+///
+/// `expected` is the dict-declared `(width, height, ncomps)` — for
+/// DCTDecode the JPEG's own header is checked against it *before*
+/// the pixel buffer is allocated, so a mismatched stream fails fast.
+/// For raw/Flate the caller re-checks `decoded.len() == w*h*ncomps`
+/// after decode, so no extra check is needed here.
 ///
 /// `max_image_bytes` is checked *before* the buffer grows: a raw
-/// image larger than the cap is refused without cloning, and a
-/// Flate stream stops mid-decode when the output would exceed it.
+/// image larger than the cap is refused without cloning, a Flate
+/// stream stops mid-decode when the output would exceed it, and the
+/// JPEG decoder's own `max_decoding_buffer_size` is set to the same
+/// cap so a hostile JPEG cannot allocate past it.
 ///
-/// Shared with `remove_region.rs` (M20).
-pub(crate) fn decode_image(dict: &Dict, raw: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
+/// Shared with `remove_region.rs` (M20) and the M26 combined entry.
+pub(crate) fn decode_image(
+    dict: &Dict,
+    raw: &[u8],
+    limits: &Limits,
+    expected: (u32, u32, usize),
+) -> Result<Vec<u8>, Error> {
     let filters = crate::filter::normalize_filters(dict.get(b"Filter".as_slice()))?;
     if filters.is_empty() {
         // Raw data — check the cap before cloning.
@@ -755,6 +790,7 @@ pub(crate) fn decode_image(dict: &Dict, raw: &[u8], limits: &Limits) -> Result<V
                 }
                 crate::filter::apply_predictor(out, parm, limits)?
             }
+            b"DCTDecode" | b"DCT" => dct_decode_for_edit(&buf, parm, limits, expected)?,
             other => {
                 return Err(Error::Unsupported {
                     feature: "image stream filter",
@@ -764,6 +800,108 @@ pub(crate) fn decode_image(dict: &Dict, raw: &[u8], limits: &Limits) -> Result<V
         };
     }
     Ok(buf)
+}
+
+/// JPEG via `jpeg-decoder` for the *edit* path — returns raw 8-bit
+/// samples whose `width × height × ncomps` must match the PDF dict's
+/// declared shape (`expected`). The dict is authoritative: a JPEG
+/// whose own header disagrees is refused, not silently resized.
+///
+/// `DecodeParms /ColorTransform` is honoured the same way the
+/// renderer does: absent or `1` lets the decoder apply the JPEG's
+/// internal YCbCr→RGB conversion; `0` suppresses it so the raw
+/// component values are used. Any other value is `Unsupported`.
+///
+/// CMYK/YCCK and 16-bit JPEGs are refused — they are out of scope
+/// for the edit path even though the renderer also refuses them.
+fn dct_decode_for_edit(
+    data: &[u8],
+    parms: Option<&Dict>,
+    limits: &Limits,
+    expected: (u32, u32, usize),
+) -> Result<Vec<u8>, Error> {
+    // DecodeParms for DCTDecode: only /ColorTransform is defined.
+    // `None`/`null` → let the decoder decide; `0` → raw components
+    // (no YCbCr→RGB); `1` → apply the transform; anything else is
+    // out of scope.
+    let mut color_transform: Option<jpeg_decoder::ColorTransform> = None;
+    if let Some(p) = parms {
+        match p.get(b"ColorTransform".as_slice()) {
+            None | Some(Object::Null) => {}
+            Some(o) => {
+                let v = o
+                    .as_i64()
+                    .ok_or_else(|| Error::Structure("/ColorTransform is not an integer".into()))?;
+                match v {
+                    0 => color_transform = Some(jpeg_decoder::ColorTransform::None),
+                    1 => {} // decoder default — YCbCr when the JPEG says so
+                    _ => {
+                        return Err(Error::Unsupported {
+                            feature: "DCTDecode /ColorTransform",
+                            detail: format!("{v} (only 0 or 1 defined)"),
+                        })
+                    }
+                }
+            }
+        }
+        // Any other key in DecodeParms is unrecognised — refuse so a
+        // typo or unsupported parameter is never silently ignored.
+        for k in p.keys() {
+            if k.as_slice() != b"ColorTransform" {
+                return Err(Error::Unsupported {
+                    feature: "DCTDecode /DecodeParms",
+                    detail: format!(
+                        "/{} is not a defined DCTDecode parameter",
+                        String::from_utf8_lossy(k)
+                    ),
+                });
+            }
+        }
+    }
+
+    let mut dec = jpeg_decoder::Decoder::new(data);
+    dec.set_max_decoding_buffer_size(limits.max_image_bytes as usize);
+    if let Some(ct) = color_transform {
+        dec.set_color_transform(ct);
+    }
+    // Read the header *before* the pixel buffer is allocated so a
+    // malformed JPEG fails fast and the geometry check below runs on
+    // real metadata, not on the decode result.
+    dec.read_info()
+        .map_err(|e| Error::Parse(format!("DCTDecode (JPEG) header: {e}")))?;
+    let info = dec
+        .info()
+        .ok_or_else(|| Error::Parse("DCTDecode produced no image info".into()))?;
+    let (exp_w, exp_h, exp_n) = expected;
+    if info.width as u32 != exp_w || info.height as u32 != exp_h {
+        return Err(Error::Structure(format!(
+            "JPEG dimensions {}x{} do not match the image dict {}x{}",
+            info.width, info.height, exp_w, exp_h
+        )));
+    }
+    let jpeg_ncomps = match info.pixel_format {
+        jpeg_decoder::PixelFormat::L8 => 1usize,
+        jpeg_decoder::PixelFormat::RGB24 => 3usize,
+        // CMYK32, L16, and anything else are refused — the decoder
+        // can produce them but the edit path only writes 8-bit
+        // Gray/RGB.
+        _ => {
+            return Err(Error::Unsupported {
+                feature: "DCTDecode image",
+                detail: format!(
+                    "unsupported JPEG pixel format {:?} — only 8-bit gray/RGB",
+                    info.pixel_format
+                ),
+            })
+        }
+    };
+    if jpeg_ncomps != exp_n {
+        return Err(Error::Structure(format!(
+            "JPEG has {jpeg_ncomps} components but the image dict declares {exp_n}"
+        )));
+    }
+    dec.decode()
+        .map_err(|e| Error::Parse(format!("DCTDecode (JPEG) failed: {e}")))
 }
 
 /// Resolve a colour-space name through the page's `/Resources`
@@ -2016,7 +2154,9 @@ mod tests {
         );
     }
 
-    /// A JPEG image is refused — `/DCTDecode` is out of scope.
+    /// A truncated/corrupt JPEG is refused — `/DCTDecode` is in
+    /// scope but the bytes must actually decode. The fake header
+    /// here fails `read_info` before any pixels are allocated.
     #[test]
     fn jpeg_image_is_refused() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
@@ -2066,8 +2206,8 @@ mod tests {
         let err = remove_image_region(&d, 0, &[(20.0, 60.0, 60.0, 100.0)], &Limits::default())
             .unwrap_err();
         assert!(
-            matches!(err, Error::Unsupported { .. }),
-            "JPEG image must be refused: {err:?}"
+            matches!(err, Error::Parse(_)),
+            "corrupt JPEG must be a Parse error: {err:?}"
         );
     }
 

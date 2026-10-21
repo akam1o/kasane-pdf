@@ -28,9 +28,10 @@
 //! - Any image that is not 8-bit `/DeviceGray` or `/DeviceRGB` (after
 //!   colour-space resolution and `Default*` substitution) with no
 //!   `/Mask`/`SMask`/`SMaskInData`/`OC`/`ImageMask`/`Interpolate`,
-//!   a non-default `/Decode`, a `/Filter` other than none or
-//!   `/FlateDecode`, or a non-axis-aligned/negative-scale/non-finite
-//!   CTM.
+//!   a non-default `/Decode`, a `/Filter` other than none, a single
+//!   `/FlateDecode`, or a single `/DCTDecode` (baseline JPEG decoding
+//!   to 8-bit Gray/RGB; CMYK/16-bit/progressive refused), or a
+//!   non-axis-aligned/negative-scale/non-finite CTM.
 //! - Any `Image` target at `form_path` depth ≥ 1 — images inside a
 //!   form are out of scope.
 //!
@@ -335,7 +336,7 @@ pub fn remove_region(
             });
         }
         charge_generated(generated_bytes, expected as usize, limits)?;
-        let decoded = decode_image(dict, raw, limits)?;
+        let decoded = decode_image(dict, raw, limits, (width, height, ncomps))?;
         if decoded.len() as u64 != expected {
             return Err(Error::Structure(format!(
                 "image /{} data length {} does not match {}x{}x{} = {}",
@@ -606,7 +607,10 @@ pub fn remove_region(
             format!("pixels changed: {pixels_changed}"),
             format!("orphaned names removed: {orphaned_names_removed}"),
             "scope: page-level text + image Do calls — no forms, no nested XObjects, \
-             no /Annots/metadata/structure, no JPEG/masks/non-device colour"
+             no /Annots/metadata/structure, no masks/non-device colour. Images: \
+             no filter / FlateDecode / single DCTDecode (8-bit Gray/RGB only); \
+             JPEG is decoded to samples and written back uncompressed — other \
+             copies of the same data are not removed."
                 .into(),
         ],
     })
@@ -985,7 +989,7 @@ fn regions_edit_session<'a>(
                 });
             }
             charge_generated(generated_bytes, expected as usize, limits)?;
-            let decoded = decode_image(dict, raw, limits)?;
+            let decoded = decode_image(dict, raw, limits, (width, height, ncomps))?;
             if decoded.len() as u64 != expected {
                 return Err(Error::Structure(format!(
                     "image /{} data length {} does not match {}x{}x{} = {}",
@@ -1278,7 +1282,9 @@ pub fn remove_regions(
             format!("pixels changed: {}", s.pixels_changed_total),
             format!("orphaned names removed: {}", s.orphaned_names_removed_total),
             "scope: page-level text + image Do calls — no forms, no nested XObjects, \
-             no /Annots/metadata/structure, no JPEG/masks/non-device colour. \
+             no /Annots/metadata/structure, no masks/non-device colour. Images: \
+             no filter / FlateDecode / single DCTDecode (8-bit Gray/RGB only); \
+             JPEG is decoded to samples and written back uncompressed. \
              Experimental content editing — other copies of the same data \
              (metadata, annotations, structure tree, other pages) may remain."
                 .into(),
@@ -1396,7 +1402,9 @@ pub fn remove_regions_and_document_metadata(
             format!("trailer /Info entry removed: {info_present}"),
             format!("catalog /Metadata entry removed: {metadata_present}"),
             "scope: page-level text + image Do calls — no forms, no nested XObjects, \
-             no /Annots/metadata/structure, no JPEG/masks/non-device colour. \
+             no /Annots/metadata/structure, no masks/non-device colour. Images: \
+             no filter / FlateDecode / single DCTDecode (8-bit Gray/RGB only); \
+             JPEG is decoded to samples and written back uncompressed. \
              Removed the trailer /Info and catalog /Metadata entries only; \
              page/XObject /Metadata and any data still reachable through \
              other keys may remain. Experimental content editing — complete \
@@ -1522,6 +1530,7 @@ fn plan_resource_materialisation(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::remove_image::remove_image_region;
 
     /// Build a PDF with one page containing both text and an image.
     /// Text: `(ABC) Tj` at 24pt — 'A' at x=20..34.4, 'B' at 34.4..40.4,
@@ -2327,7 +2336,8 @@ mod tests {
         fs.extend_from_slice(&enc);
         fs.extend_from_slice(b"\nendstream");
         push!(6, &fs);
-        // JPEG image — DCTDecode, refused.
+        // JPEG image — DCTDecode is in scope, but these bytes are
+        // truncated junk so the decode fails.
         let jpeg_data = [0xffu8, 0xd8, 0xff, 0xd9]; // minimal JPEG markers
         let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
               /ColorSpace /DeviceGray /BitsPerComponent 8 \
@@ -2355,9 +2365,9 @@ mod tests {
         parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
         parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
         let d = doc(&parts.concat());
-        // Text is editable but the image is JPEG — when the rect
-        // hits the JPEG image the whole call fails. A JPEG image
-        // *outside* the rect is left alone (M20's existing policy).
+        // Text is editable but the image's JPEG bytes are truncated
+        // junk — when the rect hits it the whole call fails. A JPEG
+        // image *outside* the rect is left alone (M20's policy).
         let err = remove_region(
             &d,
             0,
@@ -2366,8 +2376,8 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            matches!(err, Error::Unsupported { .. }),
-            "JPEG image in rect must refuse the whole call: {err:?}"
+            matches!(err, Error::Parse(_)),
+            "corrupt JPEG in rect must fail the whole call: {err:?}"
         );
     }
 
@@ -5378,5 +5388,1148 @@ mod tests {
         assert!(!dbg.contains("SECRET-XMP"), "{dbg}");
         assert!(!dbg.contains("(ABC)"), "{dbg}");
         assert!(dbg.contains("info_removed"));
+    }
+
+    // ---- M27 — JPEG (DCTDecode) image editing -----------------------
+
+    /// Decode a hex string — test fixture helper only.
+    fn unhex(s: &str) -> Vec<u8> {
+        assert!(s.len() % 2 == 0, "odd-length hex");
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// g8.jpg — 8×8 DeviceGray JPEG, 375 bytes, generated with
+    /// `cjpeg` (libjpeg-turbo, `-grayscale -quality 90`) from a
+    /// deterministic PGM; embedded so tests need no external tools.
+    const JPEG_G8_HEX: &str =
+        "ffd8ffe000104a46494600010100000100010000ffdb0043000302020302020303030304030304050805050404050a07\
+         0706080c0a0c0c0b0a0b0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ffc0000b080008\
+         000801011100ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b51000020103\
+         03020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f024336272\
+         82090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475\
+         767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9\
+         cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f003e12c1a5fecabf03\
+         a5f19ded9f9daac98d3f42b46b569a3b9d49e37681240acb888796cee4bafc88c14972aadfffd9";
+
+    /// c8.jpg — 8×8 DeviceRGB JPEG, 659 bytes, same provenance.
+    const JPEG_C8_HEX: &str =
+        "ffd8ffe000104a46494600010100000100010000ffdb0043000302020302020303030304030304050805050404050a07\
+         0706080c0a0c0c0b0a0b0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ffdb0043010304\
+         0405040509050509140d0b0d141414141414141414141414141414141414141414141414141414141414141414141414\
+         1414141414141414141414141414ffc00011080008000803012200021101031101ffc4001f0000010501010101010100\
+         000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d010203000411051221\
+         31410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a\
+         434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a9293949596979899\
+         9aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1\
+         f2f3f4f5f6f7f8f9faffc4001f0100030101010101010101010000000000000102030405060708090a0bffc400b51100\
+         020102040403040705040400010277000102031104052131061241510761711322328108144291a1b1c109233352f015\
+         6272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a63646566676869\
+         6a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4\
+         c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c03010002110311003f00e5\
+         3e0bfec87fea3fd0bd3f868a28aac2626afb25a9d5c07c6b9d7f62d3fdeff5f79fffd9";
+
+    /// c16.jpg — 16×16 DeviceRGB JPEG, 702 bytes, same provenance.
+    const JPEG_C16_HEX: &str =
+        "ffd8ffe000104a46494600010100000100010000ffdb0043000302020302020303030304030304050805050404050a07\
+         0706080c0a0c0c0b0a0b0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ffdb0043010304\
+         0405040509050509140d0b0d141414141414141414141414141414141414141414141414141414141414141414141414\
+         1414141414141414141414141414ffc00011080010001003012200021101031101ffc4001f0000010501010101010100\
+         000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d010203000411051221\
+         31410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a\
+         434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a9293949596979899\
+         9aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1\
+         f2f3f4f5f6f7f8f9faffc4001f0100030101010101010101010000000000000102030405060708090a0bffc400b51100\
+         020102040403040705040400010277000102031104052131061241510761711322328108144291a1b1c109233352f015\
+         6272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a63646566676869\
+         6a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4\
+         c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c03010002110311003f00f8\
+         dbc29f0a7c8d9fb9ce7dba57bd784fe14f93b3f739cfb74af62f09fc2af2367ee73f874af53f09fc29f2367ee73f874a\
+         fcbf39e30fec2bfbd7bfcb92df7f3735fe5ffa4f6f86dc7bed793df3ffd9";
+
+    /// A 1-page PDF with one JPEG image painted at `cm` over the
+    /// MediaBox. `cs_name` must match the JPEG's own component count.
+    fn jpeg_page_pdf(jpeg: &[u8], w: u32, h: u32, cs_name: &str, cm: &str) -> Vec<u8> {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let mut f = format!(
+            "<< /Type /XObject /Subtype /Image /Width {w} /Height {h} \
+              /ColorSpace /{cs_name} /BitsPerComponent 8 \
+              /Filter /DCTDecode /Length {} >>\nstream\n",
+            jpeg.len()
+        )
+        .into_bytes();
+        f.extend_from_slice(jpeg);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = format!("{cm}\n/Im1 Do\n").into_bytes();
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(&body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        parts.concat()
+    }
+
+    /// A 2-page PDF: both pages invoke the *same* JPEG image object.
+    fn two_page_jpeg_pdf(jpeg: &[u8], w: u32, h: u32, cs_name: &str) -> Vec<u8> {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>");
+        for (n, cm) in [(3u32, "80 0 0 80 20 60 cm"), (4u32, "80 0 0 80 100 100 cm")] {
+            let contents = 9 + (n - 3); // 9 and 10
+            let page = format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /XObject << /Im1 11 0 R >> >> \
+                  /Contents {contents} 0 R >>"
+            );
+            push!(n, page.as_bytes());
+            let body = format!("{cm}\n/Im1 Do\n").into_bytes();
+            let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+            sb.extend_from_slice(&body);
+            sb.extend_from_slice(b"\nendstream");
+            push!(contents, &sb);
+        }
+        let mut f = format!(
+            "<< /Type /XObject /Subtype /Image /Width {w} /Height {h} \
+              /ColorSpace /{cs_name} /BitsPerComponent 8 \
+              /Filter /DCTDecode /Length {} >>\nstream\n",
+            jpeg.len()
+        )
+        .into_bytes();
+        f.extend_from_slice(jpeg);
+        f.extend_from_slice(b"\nendstream");
+        push!(11, &f);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 12\n0000000000 65535 f \n".to_vec());
+        for n in 1..12u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 12 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        parts.concat()
+    }
+
+    /// Fetch the decoded samples of the *edited* `KasIm0` image on a
+    /// page — the clone the first edited `Do` points at.
+    fn edited_image_samples(d: &Document, page: &crate::page::Page) -> Vec<u8> {
+        let r = page_xobject_ref(d, page, b"KasIm0").expect("no KasIm0 on page");
+        let obj = d.resolve(r).unwrap();
+        match obj {
+            Object::Stream { dict, data } => {
+                assert!(
+                    !dict.contains_key(b"Filter".as_slice()),
+                    "edited JPEG clone must be written uncompressed"
+                );
+                data
+            }
+            _ => panic!("KasIm0 is not a stream"),
+        }
+    }
+
+    // -- basic JPEG editing -------------------------------------------
+
+    /// Gray JPEG: a quarter-rect blacks exactly the top-left 2×2
+    /// pixels of the 8×8 image (rect in user space maps to pixel
+    /// rows 0..2, cols 0..2 after the y-flip).
+    #[test]
+    fn m27_gray_jpeg_partial_edit() {
+        // 8×8 gray JPEG painted over the whole 200×200 page.
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_G8_HEX),
+            8,
+            8,
+            "DeviceGray",
+            "200 0 0 200 0 0 cm",
+        ));
+        // Decode the original samples for comparison.
+        let orig = d
+            .deref(&Object::Ref(IndirectRef {
+                number: 10,
+                generation: 0,
+            }))
+            .unwrap();
+        let orig_data = match orig {
+            Object::Stream { ref dict, .. } => decode_image(
+                dict,
+                &match orig {
+                    Object::Stream { ref data, .. } => data.clone(),
+                    _ => unreachable!(),
+                },
+                &Limits::default(),
+                (8, 8, 1),
+            )
+            .unwrap(),
+            _ => panic!("not a stream"),
+        };
+        // Top-left quarter of the page in user space → pixel
+        // rows 6..8?  No: image y is top-down, so user-space rect
+        // (0,150)-(50,200) covers pixel rows 0..2, cols 0..2.
+        let r =
+            remove_image_region(&d, 0, &[(0.0, 150.0, 50.0, 200.0)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        // The decoder's top-left pixel is already 0 — 3 of the 4
+        // covered pixels change; `pixels_changed` counts only real
+        // changes.
+        assert_eq!(r.pixels_changed, 3);
+        let out = doc(&r.output);
+        let new = edited_image_samples(&out, out.pages().first().unwrap());
+        assert_eq!(new.len(), 64);
+        for y in 0..8u32 {
+            for x in 0..8u32 {
+                let i = (y * 8 + x) as usize;
+                if y < 2 && x < 2 {
+                    assert_eq!(new[i], 0, "edited pixel ({x},{y}) not black");
+                } else {
+                    assert_eq!(new[i], orig_data[i], "unaltered pixel ({x},{y}) changed");
+                }
+            }
+        }
+    }
+
+    /// RGB JPEG: same geometry — each changed pixel zeroes all 3
+    /// channels but counts as one pixel.
+    #[test]
+    fn m27_rgb_jpeg_partial_edit() {
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_C8_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        let r =
+            remove_image_region(&d, 0, &[(0.0, 150.0, 50.0, 200.0)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        assert_eq!(r.pixels_changed, 4); // pixels, not components
+        let out = doc(&r.output);
+        let new = edited_image_samples(&out, out.pages().first().unwrap());
+        assert_eq!(new.len(), 8 * 8 * 3);
+        // Top-left 2×2 pixels all-zero; everything else unchanged.
+        for y in 0..8u32 {
+            for x in 0..8u32 {
+                let base = ((y * 8 + x) * 3) as usize;
+                if y < 2 && x < 2 {
+                    assert_eq!(&new[base..base + 3], &[0, 0, 0]);
+                } else {
+                    assert_ne!(&new[base..base + 3], &[0, 0, 0], "unedited pixel blackened");
+                }
+            }
+        }
+    }
+
+    /// Whole-image rect blacks every pixel; `pixels_changed` counts
+    /// only pixels that were not already black.
+    #[test]
+    fn m27_jpeg_whole_image() {
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_G8_HEX),
+            8,
+            8,
+            "DeviceGray",
+            "200 0 0 200 0 0 cm",
+        ));
+        // Count the decoder's non-zero samples — that's how many
+        // will actually change.
+        let orig = d
+            .deref(&Object::Ref(IndirectRef {
+                number: 10,
+                generation: 0,
+            }))
+            .unwrap();
+        let orig_data = match orig {
+            Object::Stream { ref dict, ref data } => {
+                decode_image(dict, data, &Limits::default(), (8, 8, 1)).unwrap()
+            }
+            _ => panic!("not a stream"),
+        };
+        let nonzero = orig_data.iter().filter(|&&b| b != 0).count() as u64;
+        let r =
+            remove_image_region(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap();
+        assert_eq!(r.pixels_changed, nonzero);
+        let out = doc(&r.output);
+        assert!(edited_image_samples(&out, out.pages().first().unwrap())
+            .iter()
+            .all(|&b| b == 0));
+    }
+
+    /// Two disjoint rects produce an L-shape — the pixels between
+    /// them are *not* filled.
+    #[test]
+    fn m27_jpeg_disjoint_rects_l_shape() {
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_G8_HEX),
+            8,
+            8,
+            "DeviceGray",
+            "200 0 0 200 0 0 cm",
+        ));
+        // Top-left 2×2 + bottom-right 2×2 (user space). Two of the
+        // covered pixels are already 0 in the decoded data.
+        let orig_obj = d
+            .deref(&Object::Ref(IndirectRef {
+                number: 10,
+                generation: 0,
+            }))
+            .unwrap();
+        let orig_data = match orig_obj {
+            Object::Stream { ref dict, ref data } => {
+                decode_image(dict, data, &Limits::default(), (8, 8, 1)).unwrap()
+            }
+            _ => panic!("not a stream"),
+        };
+        let r = remove_image_region(
+            &d,
+            0,
+            &[(0.0, 150.0, 50.0, 200.0), (150.0, 0.0, 200.0, 50.0)],
+            &Limits::default(),
+        )
+        .unwrap();
+        // 8 covered pixels minus those already black (index 0 and
+        // index 45 = (5,6) is inside the bottom-right rect).
+        let covered = |y: u32, x: u32| (y < 2 && x < 2) || (y >= 6 && x >= 6);
+        let expected_changed = (0..8u32)
+            .flat_map(|y| (0..8u32).map(move |x| (y, x)))
+            .filter(|&(y, x)| covered(y, x) && orig_data[(y * 8 + x) as usize] != 0)
+            .count() as u64;
+        assert_eq!(r.pixels_changed, expected_changed);
+        let out = doc(&r.output);
+        let new = edited_image_samples(&out, out.pages().first().unwrap());
+        assert_eq!(new.len(), 64);
+        for y in 0..8u32 {
+            for x in 0..8u32 {
+                let i = (y * 8 + x) as usize;
+                if covered(y, x) {
+                    assert_eq!(new[i], 0, "({x},{y})");
+                } else {
+                    assert_eq!(new[i], orig_data[i], "({x},{y})");
+                }
+            }
+        }
+    }
+
+    /// Overlapping rects count each pixel once — no double-count.
+    #[test]
+    fn m27_jpeg_overlapping_rects_count_once() {
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_G8_HEX),
+            8,
+            8,
+            "DeviceGray",
+            "200 0 0 200 0 0 cm",
+        ));
+        // Two rects covering the same 2×2 corner; the decoder's
+        // top-left pixel is already 0 so only 3 pixels change.
+        let r = remove_image_region(
+            &d,
+            0,
+            &[(0.0, 150.0, 50.0, 200.0), (0.0, 160.0, 40.0, 200.0)],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.pixels_changed, 3);
+    }
+
+    /// Unselected decoded samples are preserved — the *exact* byte
+    /// the JPEG decoder produced stays in the clone.
+    #[test]
+    fn m27_jpeg_unselected_samples_unchanged() {
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_C8_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        let orig_obj = d
+            .deref(&Object::Ref(IndirectRef {
+                number: 10,
+                generation: 0,
+            }))
+            .unwrap();
+        let orig_data = match orig_obj {
+            Object::Stream { ref dict, ref data } => {
+                decode_image(dict, data, &Limits::default(), (8, 8, 3)).unwrap()
+            }
+            _ => panic!("not a stream"),
+        };
+        let r =
+            remove_image_region(&d, 0, &[(0.0, 150.0, 50.0, 200.0)], &Limits::default()).unwrap();
+        let out = doc(&r.output);
+        let new = edited_image_samples(&out, out.pages().first().unwrap());
+        // Only the top-left 2×2 pixels changed.
+        for y in 0..8u32 {
+            for x in 0..8u32 {
+                let base = ((y * 8 + x) * 3) as usize;
+                if y < 2 && x < 2 {
+                    assert_eq!(&new[base..base + 3], &[0, 0, 0]);
+                } else {
+                    assert_eq!(
+                        &new[base..base + 3],
+                        &orig_data[base..base + 3],
+                        "({x},{y})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A JPEG outside every rect is never decoded — the clone is
+    /// not made and the original stream survives.
+    #[test]
+    fn m27_jpeg_outside_rect_not_decoded() {
+        let jpeg = unhex(JPEG_G8_HEX);
+        // The image covers a small corner (40×40 at 20,60); a rect
+        // in the opposite corner misses it entirely — the stream is
+        // never decoded for editing.
+        let d2 = doc(&jpeg_page_pdf(
+            &jpeg,
+            8,
+            8,
+            "DeviceGray",
+            "40 0 0 40 20 60 cm",
+        ));
+        let r = remove_image_region(&d2, 0, &[(150.0, 150.0, 200.0, 200.0)], &Limits::default())
+            .unwrap();
+        assert_eq!(r.invocations_edited, 0);
+        // The original JPEG bytes are still in the output — the
+        // stream was never decoded for editing.
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        assert!(
+            out.contains("DCTDecode"),
+            "original JPEG's /Filter must remain"
+        );
+    }
+
+    /// An already-black region contributes zero to pixels_changed.
+    #[test]
+    fn m27_jpeg_already_black_not_counted() {
+        // First edit blacks the corner; second edit on the output
+        // finds nothing to change.
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_G8_HEX),
+            8,
+            8,
+            "DeviceGray",
+            "200 0 0 200 0 0 cm",
+        ));
+        let r =
+            remove_image_region(&d, 0, &[(0.0, 150.0, 50.0, 200.0)], &Limits::default()).unwrap();
+        assert_eq!(r.pixels_changed, 3); // one covered pixel was already 0
+                                         // Second call on the *output* — the same rect is now black.
+        let d2 = doc(&r.output);
+        let r2 =
+            remove_image_region(&d2, 0, &[(0.0, 150.0, 50.0, 200.0)], &Limits::default()).unwrap();
+        assert_eq!(r2.pixels_changed, 0, "already-black pixels not counted");
+        assert_eq!(
+            r2.invocations_edited, 0,
+            "no new clone for unchanged pixels"
+        );
+    }
+
+    // -- sharing / integration -----------------------------------------
+
+    /// One `Do` edited, the other untouched — same JPEG object.
+    #[test]
+    fn m27_jpeg_two_invocations_one_edited() {
+        // Two Do calls to the same image: first painted in the rect,
+        // second outside it.
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let jpeg = unhex(JPEG_G8_HEX);
+        let mut f = format!(
+            "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 \
+              /Filter /DCTDecode /Length {} >>\nstream\n",
+            jpeg.len()
+        )
+        .into_bytes();
+        f.extend_from_slice(&jpeg);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        // Im1 painted twice: (20,60) inside the rect, (120,120) outside.
+        let body = b"40 0 0 40 20 60 cm\n/Im1 Do\n40 0 0 40 120 120 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r =
+            remove_image_region(&d, 0, &[(20.0, 60.0, 60.0, 100.0)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        let out = doc(&r.output);
+        // First Do repointed to KasIm0, second still calls /Im1.
+        let names = do_names_in_contents(&out, out.pages().first().unwrap());
+        assert!(names.iter().any(|n| n == b"KasIm0"));
+        assert!(names.iter().any(|n| n == b"Im1"));
+        // The original JPEG stream is still reachable via /Im1.
+        let orig_ref = page_xobject_ref(&out, out.pages().first().unwrap(), b"Im1").unwrap();
+        let orig_obj = out.resolve(orig_ref).unwrap();
+        match orig_obj {
+            Object::Stream { dict, .. } => {
+                assert_eq!(
+                    dict.get(b"Filter".as_slice()).and_then(|o| o.as_name()),
+                    Some(b"DCTDecode".as_slice()),
+                    "unedited invocation must keep the original JPEG"
+                );
+            }
+            _ => panic!("orig not a stream"),
+        }
+    }
+
+    /// Two pages share one JPEG; each is edited in a different rect.
+    #[test]
+    fn m27_jpeg_shared_two_pages_different_rects() {
+        let d = doc(&two_page_jpeg_pdf(&unhex(JPEG_G8_HEX), 8, 8, "DeviceGray"));
+        let r = remove_regions(
+            &d,
+            &[
+                (0, vec![(20.0, 60.0, 100.0, 140.0)]), // page 1: whole 80×80 image
+                (1, vec![(100.0, 100.0, 140.0, 140.0)]), // page 2: bottom-left quarter
+            ],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.invocations_edited, 2);
+        let out = doc(&r.output);
+        // Page 1's clone is fully black; page 2's is quarter-black.
+        let p1 = out.pages().first().unwrap();
+        let p2 = out.pages().get(1).unwrap();
+        let s1 = edited_image_samples(&out, p1);
+        let s2 = edited_image_samples(&out, p2);
+        assert!(s1.iter().all(|&b| b == 0), "page 1 fully black");
+        // Page 2's rect (100,100)-(140,140): image at 80×80 at
+        // (100,100) → unit square maps to (100,100)-(180,180); the
+        // rect covers x∈[0,0.5], y∈[0,0.5] → pixel cols 0..4,
+        // rows 4..8 → 16 pixels black.
+        let orig_obj = d
+            .deref(&Object::Ref(IndirectRef {
+                number: 11,
+                generation: 0,
+            }))
+            .unwrap();
+        let orig_data = match orig_obj {
+            Object::Stream { ref dict, ref data } => {
+                decode_image(dict, data, &Limits::default(), (8, 8, 1)).unwrap()
+            }
+            _ => panic!("not a stream"),
+        };
+        for y in 0..8u32 {
+            for x in 0..8u32 {
+                let i = (y * 8 + x) as usize;
+                if y >= 4 && x < 4 {
+                    assert_eq!(s2[i], 0, "({x},{y})");
+                } else {
+                    assert_eq!(s2[i], orig_data[i], "({x},{y})");
+                }
+            }
+        }
+        // Both pages edited — no live reference to the original
+        // JPEG remains, so the collector drops it.
+        let streams = image_streams(&out);
+        assert!(
+            !streams
+                .iter()
+                .any(|(_, d)| d.len() == JPEG_G8_HEX.len() / 2),
+            "unreferenced original JPEG should not be emitted"
+        );
+    }
+
+    /// The unedited page keeps the original JPEG stream.
+    #[test]
+    fn m27_jpeg_unedited_page_keeps_original() {
+        let d = doc(&two_page_jpeg_pdf(&unhex(JPEG_G8_HEX), 8, 8, "DeviceGray"));
+        let r = remove_regions(
+            &d,
+            &[(0, vec![(20.0, 60.0, 60.0, 100.0)])],
+            &Limits::default(),
+        )
+        .unwrap();
+        let out = doc(&r.output);
+        // Page 2 still invokes /Im1 and the stream is the original JPEG.
+        let p2 = out.pages().get(1).unwrap();
+        let names = do_names_in_contents(&out, p2);
+        assert!(names.iter().any(|n| n == b"Im1"));
+        let orig_ref = page_xobject_ref(&out, p2, b"Im1").unwrap();
+        let orig_obj = out.resolve(orig_ref).unwrap();
+        match orig_obj {
+            Object::Stream { dict, data } => {
+                assert_eq!(
+                    dict.get(b"Filter".as_slice()).and_then(|o| o.as_name()),
+                    Some(b"DCTDecode".as_slice())
+                );
+                assert_eq!(data.len(), JPEG_G8_HEX.len() / 2);
+            }
+            _ => panic!("not a stream"),
+        }
+    }
+
+    /// Text + JPEG on one page are edited together.
+    #[test]
+    fn m27_text_and_jpeg_together() {
+        // One page with text `(ABC)` and an 8×8 gray JPEG.
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 5 0 R >> \
+              /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut font_dict = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        font_dict.extend_from_slice(&widths);
+        font_dict.extend_from_slice(b" /FontDescriptor 6 0 R /Encoding /WinAnsiEncoding >>");
+        push!(5, &font_dict);
+        push!(
+            6,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 7 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs.extend_from_slice(&enc);
+        fs.extend_from_slice(b"\nendstream");
+        push!(7, &fs);
+        let jpeg = unhex(JPEG_G8_HEX);
+        let mut f = format!(
+            "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 \
+              /Filter /DCTDecode /Length {} >>\nstream\n",
+            jpeg.len()
+        )
+        .into_bytes();
+        f.extend_from_slice(&jpeg);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"BT /F1 24 Tf 20 140 Td (ABC) Tj ET\n80 0 0 80 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // 'ABC' is fully inside the text rect and the image rect
+        // covers the whole image — both edits land in one pass.
+        let r = remove_region(
+            &d,
+            0,
+            &[(20.0, 140.0, 50.0, 160.0), (20.0, 60.0, 100.0, 140.0)],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.codes_removed, 3); // "ABC"
+        assert_eq!(r.invocations_edited, 1);
+        assert!(r.pixels_changed > 0);
+    }
+
+    /// Combined API: page edit + metadata strip with JPEG.
+    #[test]
+    fn m27_combined_jpeg_and_metadata() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R /Metadata 6 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let jpeg = unhex(JPEG_G8_HEX);
+        let mut f = format!(
+            "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 \
+              /Filter /DCTDecode /Length {} >>\nstream\n",
+            jpeg.len()
+        )
+        .into_bytes();
+        f.extend_from_slice(&jpeg);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"80 0 0 80 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xmp = b"<x:xmpmeta>doc</x:xmpmeta>";
+        let mut m = b"<< /Type /Metadata /Subtype /XML /Length ".to_vec();
+        m.extend_from_slice(xmp.len().to_string().as_bytes());
+        m.extend_from_slice(b" >>\nstream\n");
+        m.extend_from_slice(xmp);
+        m.extend_from_slice(b"\nendstream");
+        push!(6, &m);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r = remove_regions_and_document_metadata(
+            &d,
+            &[(0, vec![(20.0, 60.0, 100.0, 140.0)])],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        assert!(r.metadata_removed);
+        let out = doc(&r.output);
+        assert!(!out.catalog().contains_key(b"Metadata".as_slice()));
+        let names = do_names_in_contents(&out, out.pages().first().unwrap());
+        assert!(names.iter().any(|n| n.starts_with(b"KasIm")));
+    }
+
+    // -- refusals ------------------------------------------------------
+
+    /// A corrupt JPEG fails with Parse, not a panic.
+    #[test]
+    fn m27_jpeg_corrupt_data_refused() {
+        let d = doc(&jpeg_page_pdf(
+            &[0xffu8, 0xd8, 0xff],
+            8,
+            8,
+            "DeviceGray",
+            "200 0 0 200 0 0 cm",
+        ));
+        let e = remove_image_region(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default())
+            .unwrap_err();
+        assert!(matches!(e, Error::Parse(_)), "{e:?}");
+    }
+
+    /// Dict declares 8×8 but the JPEG is 16×16 → refused.
+    #[test]
+    fn m27_jpeg_dimension_mismatch_refused() {
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_C16_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        let e = remove_image_region(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default())
+            .unwrap_err();
+        match e {
+            Error::Structure(msg) => assert!(msg.contains("dimensions"), "{msg}"),
+            other => panic!("expected Structure(dimensions), got {other:?}"),
+        }
+    }
+
+    /// Dict declares DeviceRGB (3 comp) but the JPEG is gray (1) →
+    /// refused on the component count.
+    #[test]
+    fn m27_jpeg_ncomps_mismatch_refused() {
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_G8_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        let e = remove_image_region(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default())
+            .unwrap_err();
+        match e {
+            Error::Structure(msg) => assert!(msg.contains("components"), "{msg}"),
+            other => panic!("expected Structure(components), got {other:?}"),
+        }
+    }
+
+    /// An unsupported DecodeParms key is refused, not ignored.
+    #[test]
+    fn m27_jpeg_unknown_decodeparms_refused() {
+        let jpeg = unhex(JPEG_G8_HEX);
+        // Build the fixture manually so we can inject DecodeParms.
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let mut f = format!(
+            "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 \
+              /Filter /DCTDecode \
+              /DecodeParms << /BogusKey 1 >> \
+              /Length {} >>\nstream\n",
+            jpeg.len()
+        )
+        .into_bytes();
+        f.extend_from_slice(&jpeg);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"200 0 0 200 0 0 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let e = remove_image_region(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default())
+            .unwrap_err();
+        match e {
+            Error::Unsupported { feature, detail } => {
+                assert!(
+                    feature.contains("DecodeParms") || detail.contains("DecodeParms"),
+                    "{feature}: {detail}"
+                );
+            }
+            other => panic!("expected Unsupported(DecodeParms), got {other:?}"),
+        }
+    }
+
+    /// A multi-filter chain ending in DCTDecode is refused — we only
+    /// accept a *single* DCTDecode.
+    #[test]
+    fn m27_jpeg_filter_chain_refused() {
+        let jpeg = unhex(JPEG_G8_HEX);
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let mut f = format!(
+            "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 \
+              /Filter [/ASCII85Decode /DCTDecode] /Length {} >>\nstream\n",
+            jpeg.len()
+        )
+        .into_bytes();
+        f.extend_from_slice(&jpeg);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"200 0 0 200 0 0 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let e = remove_image_region(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default())
+            .unwrap_err();
+        match e {
+            Error::Unsupported { feature, .. } => assert!(feature.contains("filter"), "{feature}"),
+            other => panic!("expected Unsupported(filter), got {other:?}"),
+        }
+    }
+
+    /// `max_image_bytes` bounds the JPEG decode — a tiny cap refuses
+    /// before the pixel buffer is held.
+    #[test]
+    fn m27_jpeg_max_image_bytes() {
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_G8_HEX),
+            8,
+            8,
+            "DeviceGray",
+            "200 0 0 200 0 0 cm",
+        ));
+        let limits = Limits {
+            max_image_bytes: 32,
+            ..Default::default()
+        }; // < 8*8
+        let e = remove_image_region(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &limits).unwrap_err();
+        match e {
+            Error::LimitExceeded { limit, .. } => assert_eq!(limit, "max_image_bytes"),
+            other => panic!("expected LimitExceeded(max_image_bytes), got {other:?}"),
+        }
+    }
+
+    /// Cumulative `max_edit_content_bytes` over two JPEG edits on
+    /// one call is still enforced.
+    #[test]
+    fn m27_jpeg_cumulative_budget() {
+        let d = doc(&two_page_jpeg_pdf(&unhex(JPEG_G8_HEX), 8, 8, "DeviceGray"));
+        // Two 64-byte clones fit individually but not together.
+        let limits = Limits {
+            max_edit_content_bytes: 100,
+            ..Default::default()
+        };
+        let e = remove_regions(
+            &d,
+            &[
+                (0, vec![(20.0, 60.0, 100.0, 140.0)]),
+                (1, vec![(100.0, 100.0, 180.0, 180.0)]),
+            ],
+            &limits,
+        )
+        .unwrap_err();
+        match e {
+            Error::LimitExceeded { limit, .. } => {
+                assert_eq!(limit, "max_edit_content_bytes")
+            }
+            other => panic!("expected LimitExceeded(max_edit_content_bytes), got {other:?}"),
+        }
+    }
+
+    /// A failure on the second page fails the whole combined call —
+    /// even when the JPEG on page 1 was fine.
+    #[test]
+    fn m27_jpeg_failure_on_later_page_fails_all() {
+        let jpeg = unhex(JPEG_G8_HEX);
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        push!(
+            4,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Annots [6 0 R] /Contents 11 0 R >>"
+        );
+        push!(6, b"<< /Type /Annot /Subtype /Text /Rect [0 0 5 5] >>");
+        let mut f = format!(
+            "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 \
+              /Filter /DCTDecode /Length {} >>\nstream\n",
+            jpeg.len()
+        )
+        .into_bytes();
+        f.extend_from_slice(&jpeg);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"80 0 0 80 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        push!(11, b"<< /Length 0 >>\nstream\n\nendstream");
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 12\n0000000000 65535 f \n".to_vec());
+        for n in 1..12u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 12 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let e = remove_regions(
+            &d,
+            &[
+                (0, vec![(20.0, 60.0, 100.0, 140.0)]),
+                (1, vec![(0.0, 0.0, 10.0, 10.0)]),
+            ],
+            &Limits::default(),
+        )
+        .unwrap_err();
+        match e {
+            Error::Unsupported { feature, .. } => assert!(feature.contains("Annots"), "{feature}"),
+            other => panic!("expected Unsupported(/Annots), got {other:?}"),
+        }
+    }
+
+    /// New `/Contents` + `/Resources` both exist and are consistent.
+    #[test]
+    fn m27_jpeg_contents_and_resources_consistent() {
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_G8_HEX),
+            8,
+            8,
+            "DeviceGray",
+            "200 0 0 200 0 0 cm",
+        ));
+        let r =
+            remove_image_region(&d, 0, &[(0.0, 150.0, 50.0, 200.0)], &Limits::default()).unwrap();
+        let out = doc(&r.output);
+        let page = out.pages().first().unwrap();
+        let pd = out.resolve(page.object_ref().unwrap()).unwrap();
+        let dict = pd.as_dict().unwrap();
+        assert!(dict.contains_key(b"Contents".as_slice()));
+        assert!(dict.contains_key(b"Resources".as_slice()));
+        // The new Contents invokes KasIm0 and the XObject dict maps it.
+        let names = do_names_in_contents(&out, page);
+        assert!(names.iter().any(|n| n == b"KasIm0"));
+        assert!(page_xobject_ref(&out, page, b"KasIm0").is_some());
     }
 }

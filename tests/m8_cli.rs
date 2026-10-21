@@ -2245,8 +2245,9 @@ fn region_jpeg_pdf() -> Vec<u8> {
     parts.concat()
 }
 
-/// The JPEG image is inside the rect — the whole call fails and
-/// the pre-existing output file is left byte-identical.
+/// The JPEG image is inside the rect but its bytes are truncated
+/// junk — the whole call fails and the pre-existing output file is
+/// left byte-identical. (DCTDecode itself is in scope since M27.)
 #[test]
 fn cli_remove_region_unsupported_image_refused() {
     let dir = tmpdir("rr-jpeg");
@@ -2263,9 +2264,12 @@ fn cli_remove_region_unsupported_image_refused() {
         .arg(&dst)
         .output()
         .unwrap();
-    assert!(!out.status.success(), "JPEG image in rect must fail");
+    assert!(!out.status.success(), "corrupt JPEG in rect must fail");
     let e = String::from_utf8_lossy(&out.stderr);
-    assert!(e.contains("unsupported") || e.contains("filter"), "{e}");
+    assert!(
+        e.contains("parse") || e.contains("JPEG") || e.contains("DCT"),
+        "{e}"
+    );
     assert_eq!(fs::read(&dst).unwrap(), b"sentinel", "output untouched");
 }
 
@@ -3235,4 +3239,184 @@ fn cli_remove_regions_metadata_failure_preserves_output() {
     assert!(stray.is_empty(), "temp files left: {stray:?}");
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(!stdout.contains("Secret Title"), "{stdout}");
+}
+
+// ------------------------------------------------------------------
+// M27 — JPEG (DCTDecode) region editing via CLI
+// ------------------------------------------------------------------
+
+/// A 1-page PDF whose only content is an 8×8 gray JPEG painted over
+/// the whole 200×200 MediaBox.
+fn jpeg_page_pdf(jpeg: &[u8], w: u32, h: u32, cs: &str) -> Vec<u8> {
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+          /Resources << /XObject << /Im1 10 0 R >> >> /Contents 9 0 R >>",
+    );
+    let mut f = format!(
+        "<< /Type /XObject /Subtype /Image /Width {w} /Height {h} \
+          /ColorSpace /{cs} /BitsPerComponent 8 \
+          /Filter /DCTDecode /Length {} >>\nstream\n",
+        jpeg.len()
+    )
+    .into_bytes();
+    f.extend_from_slice(jpeg);
+    f.extend_from_slice(b"\nendstream");
+    push(10, &f);
+    let body = b"200 0 0 200 0 0 cm\n/Im1 Do\n";
+    let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+    sb.extend_from_slice(body);
+    sb.extend_from_slice(b"\nendstream");
+    push(9, &sb);
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+    for n in 1..11u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        } else {
+            parts.push(b"0000000000 00000 f \n".to_vec());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    parts.concat()
+}
+
+// 8×8 DeviceGray JPEG generated with `cjpeg -grayscale -quality 90`
+// from a deterministic PGM — same bytes as `JPEG_G8_HEX` in
+// `src/remove_region.rs`'s tests.
+const JPEG_G8_HEX: &str =
+    "ffd8ffe000104a46494600010100000100010000ffdb0043000302020302020303030304030304050805050404050a07\
+     0706080c0a0c0c0b0a0b0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ffc0000b080008\
+     000801011100ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b51000020103\
+     03020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f024336272\
+     82090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475\
+     767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9\
+     cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f003e12c1a5fecabf03\
+     a5f19ded9f9daac98d3f42b46b569a3b9d49e37681240acb888796cee4bafc88c14972aadfffd9";
+
+fn unhex(s: &str) -> Vec<u8> {
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+        .collect()
+}
+
+/// `experimental-remove-image-region` on a real JPEG succeeds and
+/// the output re-parses with the edited clone uncompressed.
+#[test]
+fn cli_remove_image_region_jpeg_success() {
+    let dir = tmpdir("m27-img-jpeg");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    fs::write(&src, jpeg_page_pdf(&unhex(JPEG_G8_HEX), 8, 8, "DeviceGray")).unwrap();
+    let out = bin()
+        .args(["experimental-remove-image-region"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "0", "150", "50", "200", "--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("pixels changed: 3"), "{stdout}");
+    let out_doc = kasane_pdf::Document::from_bytes(&fs::read(&dst).unwrap()).unwrap();
+    // The clone exists and is uncompressed.
+    let page = out_doc.pages().first().unwrap();
+    let ops = out_doc.page_operations(page).unwrap();
+    let names: Vec<_> = ops
+        .iter()
+        .filter_map(|o| match o {
+            kasane_pdf::Operation::Do(n) => Some(n.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(names.iter().any(|n| n == b"KasIm0"), "{names:?}");
+}
+
+/// `experimental-remove-region` on the same JPEG works through the
+/// mixed text+image path.
+#[test]
+fn cli_remove_region_jpeg_success() {
+    let dir = tmpdir("m27-reg-jpeg");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    fs::write(&src, jpeg_page_pdf(&unhex(JPEG_G8_HEX), 8, 8, "DeviceGray")).unwrap();
+    let out = bin()
+        .args(["experimental-remove-region"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "0", "150", "50", "200", "--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("pixels changed: 3"), "{stdout}");
+}
+
+/// A failing JPEG edit (corrupt bytes in the *rect*) leaves the
+/// sentinel output and input untouched and drops no temp file.
+#[test]
+fn cli_remove_region_jpeg_failure_preserves_output() {
+    let dir = tmpdir("m27-fail");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    // Truncated JPEG — SOI + a partial marker, no image data.
+    let bad_jpeg = [0xffu8, 0xd8, 0xff, 0xe0, 0x00];
+    fs::write(&src, jpeg_page_pdf(&bad_jpeg, 8, 8, "DeviceGray")).unwrap();
+    fs::write(&dst, b"SENTINEL").unwrap();
+    let out = bin()
+        .args(["experimental-remove-region"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "0", "0", "200", "200", "--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert_eq!(fs::read(&dst).unwrap(), b"SENTINEL");
+    assert_eq!(
+        fs::read(&src).unwrap(),
+        jpeg_page_pdf(&bad_jpeg, 8, 8, "DeviceGray")
+    );
+    let stray: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| {
+            let n = e.unwrap().file_name().to_string_lossy().into_owned();
+            n.contains("kasane-tmp").then_some(n)
+        })
+        .collect();
+    assert!(stray.is_empty(), "temp files left: {stray:?}");
+    // The error may name the filter ("DCTDecode (JPEG) header: …")
+    // but must not dump document bytes or sample data.
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        !stdout.contains("ff d8") && !stderr.contains("ff d8"),
+        "{stdout}{stderr}"
+    );
+    assert!(
+        !stdout.contains("\\xff") && !stderr.contains("\\xff"),
+        "{stdout}{stderr}"
+    );
 }

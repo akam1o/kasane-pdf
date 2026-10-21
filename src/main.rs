@@ -1441,11 +1441,11 @@ fn remove_image_region_usage() -> String {
      Experimental image-region removal — NOT a redaction or sanitize \
      tool: replaces image samples whose painted positions hit a rect \
      with opaque black in a *new* image object (8-bit DeviceGray/\
-     DeviceRGB, no filter or FlateDecode only). The original stream \
-     is never mutated; other copies of the same image data are \
-     preserved. A page with Form XObjects, annotations, masks, \
-     non-default /Decode, JPEG, or any blocker/uncertain diagnosis \
-     entry is refused."
+     DeviceRGB; no filter, FlateDecode, or single DCTDecode JPEG). \
+     The original stream is never mutated; other copies of the same \
+     image data are preserved. A page with Form XObjects, annotations, \
+     masks, non-default /Decode, CMYK/unsupported JPEG, or any \
+     blocker/uncertain diagnosis entry is refused."
         .into()
 }
 
@@ -1556,8 +1556,9 @@ fn remove_region_usage() -> &'static str {
      samples whose painted positions hit the same rect, in one pass. \
      The input is never modified; the original text and image data \
      are preserved elsewhere in the file. A page with Form XObjects, \
-     annotations, masks, non-default /Decode, JPEG, non-device colour, \
-     or any blocker/uncertain diagnosis entry is refused."
+     annotations, masks, non-default /Decode, non-device colour, \
+     CMYK/unsupported JPEG, or any blocker/uncertain diagnosis \
+     entry is refused."
 }
 
 /// `experimental-remove-region` subcommand:
@@ -1671,7 +1672,10 @@ fn remove_regions_usage() -> &'static str {
      page may be repeated to add rects. --remove-document-metadata also \
      removes the trailer /Info and catalog /Metadata *entries* in the \
      same rewrite (not a metadata scrub). The input is never modified; \
-     a failure produces no output."
+     a failure produces no output. Images: 8-bit DeviceGray/RGB, no \
+     filter / FlateDecode / single DCTDecode (baseline JPEG, Gray/RGB \
+     only); CMYK, masks, non-default /Decode, and filter chains are \
+     refused."
 }
 
 /// `experimental-remove-regions` subcommand — multi-page variant.
