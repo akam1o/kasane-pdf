@@ -212,7 +212,11 @@ What works today:
 - `remove_region()` + `experimental-remove-region` — experimental
   scoped region removal that removes text codes *and* blackens
   image pixels in one pass, writing one PDF (not a redaction tool;
-  see `docs/coverage.md`).
+  see `docs/coverage.md`). Inherited `/Resources` are materialised
+  into every page dict first, and a `/Pages` node drops its
+  `/Resources` only when *all* descendants are materialised — the
+  post-order strip decision propagates a failed branch upward
+  (`docs/design.md`, M22–M22.4).
 - A `kasane-pdf` CLI (`info` mode + `contents`, `operations`,
   `render`, `text`, `rewrite`, `annotate-rect`, `inspect`,
   `preflight-redaction`, `experimental-remove-text`,
