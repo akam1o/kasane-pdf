@@ -822,6 +822,19 @@ Design choices:
   fields, structure tree, name trees and every live xref object;
   (3) the xref/history pass re-reads each `/Prev` section so
   superseded bodies are reported *as superseded*, not merged away.
+- **Completeness is explicit.** `walk_complete` is `true` only when
+  the BFS drained its queue — an edges-cap, element-cap or depth
+  stop leaves it `false`. Only then is `unreachable_live` a
+  complete count; otherwise unvisited live objects are
+  `unevaluated_live`. This is *separate* from `findings` output
+  truncation (`max_audit_findings`), which never claims anything
+  about reachability.
+- **Missing references are findings, not objects.** An edge whose
+  target is not in the xref is recorded as a `MissingReference`
+  finding carrying the referrer path; the target counts as
+  `missing_references`, never as `objects_examined` or `reachable`.
+  It does not itself mark the walk incomplete (the queue still
+  drains) — but it is never silently absent either.
 - **Findings carry no content.** `/Info` contributes key names only;
   annot `/Contents`, field `/V`, JavaScript and stream bodies never
   enter a `note`. Streams report `(encoded_len, declared_/Length)`.
@@ -844,6 +857,21 @@ Design choices:
   NameTreeEntry, ResourceName}` covers dict keys, array indices,
   name-tree leaf names and `/Resources` category+name; binary names
   are escaped at print time (`json_escape_bytes` / `escape_bytes`).
+- **Name-tree traversal is iterative** (explicit stack, no call-stack
+  growth) with two distinct guards: `seen` — nodes already fully
+  expanded (shared kids walk exactly once and are reported as
+  shared, not silently skipped) — and `path_refs` — the refs on the
+  current root-to-node path (a kid whose ref is already an ancestor
+  is a cycle, reported as `cycle:` in `incomplete`). Depth is
+  `max_audit_walk_depth`; total work is `max_audit_elements` shared
+  with the other traversals. Missing `/Kids` refs and resolution
+  failures are recorded, never `if let Ok`-dropped.
+- **Depth counts nesting, not breadth.** `walk_object_refs` carries
+  the real container depth per frame; a 100-element array at depth
+  1 does not trip a depth cap, while a 100-deep nest does — and
+  only that branch is dropped (siblings still walk). Container
+  *elements* are a separate `max_audit_elements` budget so wide
+  structures are still bounded.
 
 CLI: `kasane-pdf audit-residuals in.pdf [--format text|json]` —
 prints to stdout, writes no file, exit 0 on a completed audit.

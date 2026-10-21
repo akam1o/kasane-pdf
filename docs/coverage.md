@@ -912,13 +912,18 @@ Detected, per finding — *existence and location only*; a finding is
 
 **Reachability classes** — the audit walks a root set of trailer
 `/Root`, trailer `/Info`, and every page object. Each object-bearing
-finding is `Reachable`, `UnreachableLive` (in the merged xref but
-not reached), `PreviousRevision` (a superseded body from an older
-xref section still present), or `Unevaluated` (physical regions the
-audit does not scan). `referrers` records the bounded set of
+finding is `Reachable`, `UnreachableLive` (in the merged xref and
+*confirmed* unreachable — reported only when the walk drained its
+queue), `PreviousRevision` (a superseded body from an older xref
+section still present), or `Unevaluated` (the walk was cut short or
+the ref was missing — never reported as "unreachable" while the
+walk is incomplete). `referrers` records the bounded set of
 `(object, key/index)` paths that point at an object; `via` carries a
 representative `PathStep` list (dict key, array index, name-tree
-entry, resource name).
+entry, resource name). A reference edge whose target has no xref
+entry is a `MissingReference` finding — the referrer path is
+recorded, the target is not an object and counts as neither
+examined nor reachable.
 
 **History / physical data** — `xref_sections`, `incremental_history`
 (`Some(n)` = n prior `/Prev` sections; `None` = single section —
@@ -931,15 +936,23 @@ under `unexamined`, never as "absent".
 
 **Partial results** — `incomplete` records each scope that stopped
 early (limit name, or a non-limit reason like an unparsable content
-stream), so truncated coverage is never reported as "none found".
-`unexamined` lists scopes not evaluated at all.
+stream, a name-tree cycle, or a missing `/Kids` ref), so truncated
+coverage is never reported as "none found". `unexamined` lists
+scopes not evaluated at all. The walk's completeness is reported
+separately: `walk_complete` is `false` whenever the BFS stopped
+early, and in that case unvisited live objects count as
+`unevaluated_live`, never `unreachable_live`.
 
 **Budgets** (all in `Limits`): `max_audit_findings`,
-`max_audit_edges`, `max_audit_paths` (referrers kept per object),
-`max_audit_walk_depth` (one object's container depth),
-`max_audit_content_ops` (per-page ops scanned for marked content).
-The document's own `max_reference_depth` and
-`max_total_decoded_bytes` still apply to resolutions/decodes.
+`max_audit_edges` (reference edges followed), `max_audit_paths`
+(referrers kept per object), `max_audit_walk_depth` (container
+nesting depth inside one object — **not** element count),
+`max_audit_elements` (container elements expanded across every
+traversal — name-tree nodes, `/Names` pairs, `/Kids` entries, array
+items, dict entries), `max_audit_content_ops` (per-page ops
+scanned for marked content). The document's own
+`max_reference_depth` and `max_total_decoded_bytes` still apply to
+resolutions/decodes.
 
 **Leakage** — notes carry keys, types, counts and refs only: Info
 values, annot contents, field values, JavaScript, XMP and stream

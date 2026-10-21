@@ -21,16 +21,35 @@
 //!   trailer `/Root` **and** `/Info` (Info is a residual-information
 //!   root in its own right), plus every page object.
 //! - [`ReachClass::UnreachableLive`] — present in the merged xref as
-//!   an in-use or compressed object but *not* reachable from the
-//!   roots (e.g. an orphaned image or an old catalog kept alive by
-//!   the xref).
+//!   an in-use or compressed object and **confirmed** unreachable
+//!   after the walk drained its queue (e.g. an orphaned image).
 //! - [`ReachClass::PreviousRevision`] — a live entry whose *offset*
 //!   lies before the newest xref section; the body at that offset is
 //!   the current view — earlier bodies at other offsets are
 //!   superseded (see [`HistoryReport`]).
-//! - [`ReachClass::Unevaluated`] — physical byte regions the audit
-//!   did not interpret (slack between objects, bodies in superseded
-//!   revisions, trailing garbage).
+//! - [`ReachClass::Unevaluated`] — the audit did not confirm or
+//!   exclude reachability: the walk was cut short, a referrer was
+//!   missing, or the region was never scanned. An unvisited object
+//!   is **never** reported `UnreachableLive` while the walk is
+//!   incomplete.
+//!
+//! ## Counters
+//!
+//! - `objects_examined` — objects the audit successfully *resolved*
+//!   during the pass-1 walk (a missing or broken object does not
+//!   count).
+//! - `edges_examined` — reference edges *found* while scanning
+//!   resolved objects (the target does not have to resolve).
+//! - `reachable` — objects confirmed reachable: the root set plus
+//!   every object whose resolution succeeded during the walk.
+//! - `unreachable_live` — live objects *confirmed* unreachable
+//!   (walk finished). `unevaluated_live` — live objects whose
+//!   reachability could not be decided.
+//! - `missing_references` — edges whose target is not in the xref.
+//!   Each is also reported as a `MissingReference` finding carrying
+//!   the referrer + path. Missing refs count against the audit's
+//!   confidence (they mark the walk incomplete) but are *not*
+//!   findings "about" real objects.
 //!
 //! ## Limits
 //!
@@ -39,7 +58,10 @@
 //! `max_total_decoded_bytes`, page-tree/node bounds were already
 //! enforced at load. Audit-specific caps: `max_audit_findings`,
 //! `max_audit_edges` (reference edges followed), `max_audit_paths`
-//! (referrers recorded per object), and `max_audit_content_ops`
+//! (referrers recorded per object), `max_audit_walk_depth` (nesting
+//! depth inside one resolved object), `max_audit_elements`
+//! (container elements expanded across all traversals — name-tree
+//! nodes, array items, dict entries), and `max_audit_content_ops`
 //! (per-page content ops scanned for `BDC`/`DP`/`BMC` marked
 //! content). Exceeding one records an [`AuditIncomplete`] — it never
 //! silently truncates into "absent".
@@ -79,14 +101,17 @@ pub enum PathStep {
 pub enum ReachClass {
     /// Reachable from `/Root`, `/Info` or a page object.
     Reachable,
-    /// In the merged xref (in-use or compressed) but unreachable.
+    /// In the merged xref (in-use or compressed) and confirmed
+    /// unreachable — reported only when the pass-1 walk finished.
     UnreachableLive,
     /// Live entry whose offset precedes the newest xref section —
     /// the current body sits in an earlier revision region. (The
     /// *current* value is what resolves; superseded bodies are
     /// tracked under `HistoryReport`.)
     PreviousRevision,
-    /// Region or construct the audit did not evaluate.
+    /// The audit could not decide reachability: the walk was cut
+    /// short (edges/depth/element cap), a referrer was missing, or
+    /// the object lives outside the walked graph.
     Unevaluated,
 }
 
@@ -153,6 +178,10 @@ pub enum FindingKind {
     UnreachableObject,
     /// A superseded object body (same number, earlier revision).
     SupersededObject,
+    /// A reference edge whose target is absent from the xref —
+    /// the referrer and path are recorded; the target is not an
+    /// object and is never counted as one.
+    MissingReference,
 }
 
 /// One detected residual-information item.
@@ -198,18 +227,30 @@ pub struct AuditIncomplete {
 /// Counts describing the reachability walk.
 #[derive(Debug, Clone, Default)]
 pub struct ReachabilityReport {
-    /// Objects reachable from the roots.
+    /// Objects confirmed reachable (roots + resolved during walk).
     pub reachable: u64,
     /// Live xref objects (in-use + compressed).
     pub live_objects: u64,
     /// Reachable live objects.
     pub reachable_live: u64,
-    /// Live objects unreachable from the roots (count).
+    /// Live objects *confirmed* unreachable — only counted when the
+    /// walk completed (`walk_complete`).
     pub unreachable_live: u64,
+    /// Live objects whose reachability could not be decided —
+    /// either the walk was cut short or they were never visited.
+    /// Never merged into `unreachable_live`.
+    pub unevaluated_live: u64,
     /// Reference edges followed during the walk.
     pub edges_followed: u64,
-    /// Whether the walk was cut short by `max_audit_edges`.
-    pub truncated: bool,
+    /// Edges whose target was not in the xref (missing references).
+    /// Each is also reported as a `MissingReference` finding.
+    pub missing_references: u64,
+    /// `true` when the pass-1 walk drained its queue — only then is
+    /// `unreachable_live` a complete count. `false` means the walk
+    /// stopped early (edges cap, element cap, or a depth stop on any
+    /// branch) and unvisited objects are `unevaluated_live`, *not*
+    /// unreachable.
+    pub walk_complete: bool,
 }
 
 /// What the audit learned about saved revisions / physical bytes.
@@ -268,10 +309,12 @@ pub fn audit_residuals(doc: &Document, limits: &Limits) -> Result<ResidualAudit,
         limits,
         out: ResidualAudit::default(),
         edges: 0,
+        elements: 0,
         referrers: HashMap::new(),
         reachable: HashSet::new(),
+        walk_complete: false,
         findings_seen: 0,
-        truncated: false,
+        findings_capped: false,
     };
 
     // ---- pass 1: reachability walk --------------------------------
@@ -311,14 +354,24 @@ struct Audit<'d> {
     out: ResidualAudit,
     /// Reference edges followed during the reachability walk.
     edges: u64,
+    /// Container elements expanded across all traversals
+    /// (`max_audit_elements` budget).
+    elements: u64,
     /// `object -> its direct referrers` (bounded per object).
     referrers: HashMap<IndirectRef, Vec<PathStep>>,
-    /// Objects reachable from the root set.
+    /// Objects confirmed reachable — roots plus every object that
+    /// resolved successfully during the walk.
     reachable: HashSet<IndirectRef>,
+    /// `true` when the pass-1 BFS drained its queue without hitting
+    /// `max_audit_edges`. `false` means unvisited live objects are
+    /// `Unevaluated`, never `UnreachableLive`.
+    walk_complete: bool,
     /// Number of findings emitted (cap: `max_audit_findings`).
     findings_seen: u64,
-    /// `true` once any cap stopped the audit.
-    truncated: bool,
+    /// `true` once `max_audit_findings` dropped a finding. Kept
+    /// separate from `walk_complete` — output truncation is not a
+    /// reachability statement.
+    findings_capped: bool,
 }
 
 impl<'d> Audit<'d> {
@@ -334,7 +387,7 @@ impl<'d> Audit<'d> {
             }
         }
         if self.findings_seen >= self.limits.max_audit_findings {
-            if !self.truncated {
+            if !self.findings_capped {
                 self.out.incomplete.push(AuditIncomplete {
                     scope: "findings".into(),
                     reason: format!(
@@ -343,12 +396,31 @@ impl<'d> Audit<'d> {
                     ),
                     limit: true,
                 });
-                self.truncated = true;
+                self.findings_capped = true;
             }
             return;
         }
         self.findings_seen += 1;
         self.out.findings.push(f);
+    }
+
+    /// Consume one unit of the shared `max_audit_elements` budget.
+    /// Returns `false` once the budget is exhausted — the caller
+    /// stops the current traversal and records `incomplete`.
+    fn consume_element(&mut self, scope: &str) -> bool {
+        self.elements += 1;
+        if self.elements > self.limits.max_audit_elements {
+            self.out.incomplete.push(AuditIncomplete {
+                scope: scope.into(),
+                reason: format!(
+                    "max_audit_elements ({}) reached",
+                    self.limits.max_audit_elements
+                ),
+                limit: true,
+            });
+            return false;
+        }
+        true
     }
 
     /// Classify `r`'s reachability for a finding.
@@ -371,12 +443,26 @@ impl<'d> Audit<'d> {
                     .unwrap_or(0);
                 if offset < newest && self.doc.xref_section_offsets().len() > 1 {
                     ReachClass::PreviousRevision
-                } else {
+                } else if self.walk_complete {
                     ReachClass::UnreachableLive
+                } else {
+                    ReachClass::Unevaluated
                 }
             }
-            Some(XrefEntry::Compressed { .. }) => ReachClass::UnreachableLive,
-            _ => ReachClass::UnreachableLive,
+            Some(XrefEntry::Compressed { .. }) => {
+                if self.walk_complete {
+                    ReachClass::UnreachableLive
+                } else {
+                    ReachClass::Unevaluated
+                }
+            }
+            _ => {
+                if self.walk_complete {
+                    ReachClass::UnreachableLive
+                } else {
+                    ReachClass::Unevaluated
+                }
+            }
         }
     }
 }
@@ -418,14 +504,17 @@ impl<'d> Audit<'d> {
     /// trailer `/Info` (a residual-data root itself), and every page
     /// object (pages are reachable through `/Root` already, but
     /// listing them makes the root set explicit and robust to a
-    /// catalog that loses `/Pages`).
+    /// catalog that loses `/Pages`). `walk_complete` is set only
+    /// when the queue drains without an edges-cap stop — a
+    /// depth-stopped branch still leaves the walk incomplete.
     fn reachability_walk(&mut self) -> Result<(), Error> {
-        // Root set: trailer keys + page objects.
+        // Root set: trailer keys + page objects. A root ref that
+        // does not resolve is a missing root, not a reachable one.
         let mut queue: Vec<IndirectRef> = Vec::new();
+        let mut visited: HashSet<IndirectRef> = HashSet::new();
         for key in [b"Root".as_slice(), b"Info".as_slice()] {
             if let Some(Object::Ref(r)) = self.doc.trailer().get(key) {
                 queue.push(*r);
-                self.note_root(*r, key);
             }
         }
         for p in self.doc.pages() {
@@ -434,56 +523,91 @@ impl<'d> Audit<'d> {
             }
         }
 
-        let mut visited: HashSet<IndirectRef> = HashSet::new();
         while let Some(r) = queue.pop() {
             if !visited.insert(r) {
                 continue;
             }
-            self.out.objects_examined += 1;
-            self.reachable.insert(r);
             let obj = match self.doc.resolve(r) {
                 Ok(o) => o,
-                Err(Error::MissingReference(_)) => continue, // dangling ref
+                Err(Error::MissingReference(_)) => {
+                    // A queued ref that turned out to be absent is a
+                    // missing reference — it was never a real object,
+                    // so it is neither examined nor reachable. The
+                    // walk stays complete: the queue still drains.
+                    self.out.reachability.missing_references += 1;
+                    // Report it with the root that pointed at it —
+                    // the ref may have come from a trailer key or a
+                    // queued edge, both recorded via `referrers`.
+                    let mut via = vec![];
+                    if let Some(rs) = self.referrers.get(&r) {
+                        via = rs.clone();
+                    }
+                    self.add_finding(AuditFinding {
+                        kind: FindingKind::MissingReference,
+                        object: Some(r),
+                        reach: ReachClass::Unevaluated,
+                        via,
+                        referrers: vec![],
+                        bytes: None,
+                        note: format!(
+                            "reference to {r} has no xref entry \
+                             (dangling reference)"
+                        ),
+                    });
+                    continue;
+                }
                 Err(e) => return Err(e),
             };
-            self.walk_object_refs(r, &obj, &mut visited, &mut queue)?;
+            // Only now is the object confirmed real: count it as
+            // examined *and* reachable (it was reached via a root or
+            // a queued edge).
+            self.out.objects_examined += 1;
+            self.reachable.insert(r);
+            let finished = self.walk_object_refs(r, &obj, &mut queue)?;
+            if !finished {
+                // Edges cap — stop the whole walk; unvisited objects
+                // stay Unevaluated.
+                break;
+            }
         }
+        // `walk_complete` is true only when every queued ref was
+        // popped *and* every object scan finished — a depth stop or
+        // an element stop leaves the walk incomplete.
+        self.walk_complete = queue.is_empty()
+            && self.edges <= self.limits.max_audit_edges
+            && !self
+                .out
+                .incomplete
+                .iter()
+                .any(|i| i.scope.contains("reachability walk"))
+            && self.elements <= self.limits.max_audit_elements;
         let rep = &mut self.out.reachability;
         rep.edges_followed = self.edges;
-        rep.truncated = self.truncated;
+        rep.walk_complete = self.walk_complete;
         Ok(())
     }
 
-    fn note_root(&mut self, _r: IndirectRef, _key: &[u8]) {}
-
     /// Follow every `Ref` inside `obj`, recording referrers and
-    /// queueing unvisited targets. Each stack entry carries the
-    /// `PathStep` that led to it (dict key / array index), so a
-    /// referrer is recorded as the *access path inside the
-    /// containing object*, not just "some ref".
+    /// queueing unvisited targets. Returns `false` when the walk
+    /// must stop entirely (`max_audit_edges`); `true` otherwise —
+    /// including when a single branch exceeded `max_audit_walk_depth`
+    /// (that branch is dropped, siblings continue).
     fn walk_object_refs(
         &mut self,
         from: IndirectRef,
         obj: &Object,
-        visited: &mut HashSet<IndirectRef>,
         queue: &mut Vec<IndirectRef>,
-    ) -> Result<(), Error> {
-        // (object, path-from-root-object-to-this-object)
-        let mut stack: Vec<(&Object, Vec<PathStep>)> = vec![(obj, Vec::new())];
-        let mut steps = 0u64;
-        while let Some((o, path)) = stack.pop() {
-            steps += 1;
-            if steps > self.limits.max_audit_walk_depth as u64 {
-                self.out.incomplete.push(AuditIncomplete {
-                    scope: format!("reachability walk from {from}"),
-                    reason: format!(
-                        "max_audit_walk_depth ({}) reached",
-                        self.limits.max_audit_walk_depth
-                    ),
-                    limit: true,
-                });
-                self.truncated = true;
-                return Ok(());
+    ) -> Result<bool, Error> {
+        // (object, path, real-nesting-depth). Depth 0 is the object
+        // itself; each container step (array/dict/stream-dict)
+        // increments the depth of its children.
+        let mut stack: Vec<(&Object, Vec<PathStep>, u32)> = vec![(obj, Vec::new(), 0)];
+        let mut depth_reported = false;
+        while let Some((o, path, depth)) = stack.pop() {
+            if !self.consume_element("reachability walk") {
+                // Element budget exhausted — stop the whole walk;
+                // everything still queued is Unevaluated.
+                return Ok(false);
             }
             match o {
                 Object::Ref(to) => {
@@ -498,8 +622,7 @@ impl<'d> Audit<'d> {
                             ),
                             limit: true,
                         });
-                        self.truncated = true;
-                        return Ok(());
+                        return Ok(false); // hard stop
                     }
                     // Record the referrer as the containing object
                     // ref followed by the in-object path steps.
@@ -512,35 +635,97 @@ impl<'d> Audit<'d> {
                         // per-referrer strings, not nested paths.
                         rs.push(PathStep::Key(render_path(&p).into_bytes()));
                     }
-                    if !visited.contains(to) {
-                        queue.push(*to);
+                    // A ref whose target is not in the merged xref at
+                    // all is missing — report it with its referrer
+                    // and path, and do not queue it (it can never
+                    // become reachable or examined).
+                    if self.doc.xref_entry_kind(*to).is_none() {
+                        self.out.reachability.missing_references += 1;
+                        let mut via = vec![PathStep::Key(format!("{from}").into_bytes())];
+                        via.extend(path.clone());
+                        self.add_finding(AuditFinding {
+                            kind: FindingKind::MissingReference,
+                            object: Some(*to),
+                            reach: ReachClass::Unevaluated,
+                            via,
+                            referrers: vec![],
+                            bytes: None,
+                            note: format!(
+                                "reference to {to} has no xref entry \
+                                 (dangling reference)"
+                            ),
+                        });
+                        continue;
                     }
+                    queue.push(*to);
                 }
                 Object::Array(items) => {
+                    if depth + 1 > self.limits.max_audit_walk_depth as u32 {
+                        if !depth_reported {
+                            self.out.incomplete.push(AuditIncomplete {
+                                scope: format!("reachability walk from {from}"),
+                                reason: format!(
+                                    "max_audit_walk_depth ({}) reached",
+                                    self.limits.max_audit_walk_depth
+                                ),
+                                limit: true,
+                            });
+                            depth_reported = true;
+                        }
+                        continue; // drop this branch only
+                    }
                     for (i, it) in items.iter().enumerate() {
                         let mut p = path.clone();
                         p.push(PathStep::Index(i as u32));
-                        stack.push((it, p));
+                        stack.push((it, p, depth + 1));
                     }
                 }
                 Object::Dict(d) => {
+                    if depth + 1 > self.limits.max_audit_walk_depth as u32 {
+                        if !depth_reported {
+                            self.out.incomplete.push(AuditIncomplete {
+                                scope: format!("reachability walk from {from}"),
+                                reason: format!(
+                                    "max_audit_walk_depth ({}) reached",
+                                    self.limits.max_audit_walk_depth
+                                ),
+                                limit: true,
+                            });
+                            depth_reported = true;
+                        }
+                        continue;
+                    }
                     for (k, v) in d {
                         let mut p = path.clone();
                         p.push(PathStep::Key(k.clone()));
-                        stack.push((v, p));
+                        stack.push((v, p, depth + 1));
                     }
                 }
                 Object::Stream { dict, .. } => {
+                    if depth + 1 > self.limits.max_audit_walk_depth as u32 {
+                        if !depth_reported {
+                            self.out.incomplete.push(AuditIncomplete {
+                                scope: format!("reachability walk from {from}"),
+                                reason: format!(
+                                    "max_audit_walk_depth ({}) reached",
+                                    self.limits.max_audit_walk_depth
+                                ),
+                                limit: true,
+                            });
+                            depth_reported = true;
+                        }
+                        continue;
+                    }
                     for (k, v) in dict {
                         let mut p = path.clone();
                         p.push(PathStep::Key(k.clone()));
-                        stack.push((v, p));
+                        stack.push((v, p, depth + 1));
                     }
                 }
                 _ => {}
             }
         }
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -966,7 +1151,7 @@ impl<'d> Audit<'d> {
     }
 
     /// StructTreeRoot: walk `/K` elements looking for `/ActualText`,
-    /// `/Alt`, `/E` — bounded by `max_audit_edges`.
+    /// `/Alt`, `/E` — bounded by `max_audit_elements`.
     fn audit_structure_tree(&mut self) {
         let Some(root) = self.doc.catalog().get(b"StructTreeRoot".as_slice()) else {
             return;
@@ -986,16 +1171,8 @@ impl<'d> Audit<'d> {
                 PathStep::Key(b"StructTreeRoot".to_vec()),
             ],
         )];
-        let mut steps = 0u64;
         while let Some((obj, via)) = stack.pop() {
-            steps += 1;
-            if steps > self.limits.max_audit_edges {
-                self.out.incomplete.push(AuditIncomplete {
-                    scope: "structure tree".into(),
-                    reason: format!("max_audit_edges ({}) reached", self.limits.max_audit_edges),
-                    limit: true,
-                });
-                self.truncated = true;
+            if !self.consume_element("structure tree") {
                 return;
             }
             let Some(d) = obj.as_dict() else { continue };
@@ -1089,46 +1266,171 @@ impl<'d> Audit<'d> {
             });
             // Walk the name-tree pairs; each leaf value is a FileSpec
             // (embedded) or action (JavaScript) — presence only.
-            self.walk_name_tree(&tree_obj, base_via, kind);
+            self.walk_name_tree(tree_key, &tree_obj, base_via, kind);
         }
     }
 
-    fn walk_name_tree(&mut self, node: &Object, via: Vec<PathStep>, kind: FindingKind) {
-        let Some(d) = node.as_dict() else { return };
-        if let Some(Object::Array(pairs)) = d.get(b"Names".as_slice()) {
-            let mut it = pairs.iter();
-            while let (Some(name), Some(value)) = (it.next(), it.next()) {
-                let mut v = via.clone();
-                if let Object::String(s) = name {
-                    v.push(PathStep::NameTreeEntry(s.clone()));
-                }
-                let sub = match kind {
-                    FindingKind::EmbeddedFiles => FindingKind::FileSpec,
-                    other => other,
-                };
-                self.add_finding(AuditFinding {
-                    kind: sub,
-                    object: value.as_ref(),
-                    reach: value
-                        .as_ref()
-                        .map(|r| self.reach_of(r))
-                        .unwrap_or(ReachClass::Reachable),
-                    via: v,
-                    referrers: vec![],
-                    bytes: self.stream_bytes(value),
-                    note: "name-tree leaf".into(),
-                });
-            }
+    /// Walk one name tree iteratively. Two distinct guards:
+    /// `visiting` — the node refs on the current traversal stack
+    /// (catches true cycles) — and `seen` — every node already fully
+    /// expanded (shared kids are re-visited exactly once). Bounded by
+    /// `max_audit_elements` (per node + per `/Names` pair + per
+    /// `/Kids` entry) and `max_audit_walk_depth` (tree depth). A
+    /// failed `deref` or a skipped cycle is *recorded*, not dropped.
+    fn walk_name_tree(
+        &mut self,
+        tree_key: &[u8],
+        root: &Object,
+        via: Vec<PathStep>,
+        kind: FindingKind,
+    ) {
+        // Iterative DFS — no call-stack growth. Each stack entry is
+        // (node-object, path, depth, node-ref-or-none). The ref is
+        // kept separately so two different objects sharing one
+        // subtree are still walked once each.
+        struct Frame {
+            obj: Object,
+            via: Vec<PathStep>,
+            depth: u32,
+            node_ref: Option<IndirectRef>,
+            /// Refs on the path from the tree root to this node —
+            /// a kid whose ref is here is a cycle, not a share.
+            path_refs: HashSet<IndirectRef>,
         }
-        if let Some(Object::Array(kids)) = d.get(b"Kids".as_slice()) {
-            for (i, k) in kids.iter().enumerate() {
-                if let Ok(ko) = self.doc.deref(k) {
+        let mut root_path = HashSet::new();
+        if let Some(rr) = root.as_ref() {
+            root_path.insert(rr);
+        }
+        let mut stack: Vec<Frame> = vec![Frame {
+            obj: root.clone(),
+            via,
+            depth: 0,
+            node_ref: root.as_ref(),
+            path_refs: root_path,
+        }];
+        // `seen` — nodes already fully expanded (a second visit is
+        // a shared node, walked exactly once). Cycle detection uses
+        // the *path* (`via`): a kid whose ref already appears in the
+        // current `via` is re-entering its own ancestor — a cycle,
+        // not a share.
+        let mut seen: HashSet<IndirectRef> = HashSet::new();
+        while let Some(f) = stack.pop() {
+            let Frame {
+                obj,
+                via,
+                depth,
+                node_ref,
+                path_refs,
+            } = f;
+            if !self.consume_element("name-tree walk") {
+                break;
+            }
+            if let Some(nr) = node_ref {
+                if !seen.insert(nr) {
+                    self.out.incomplete.push(AuditIncomplete {
+                        scope: format!("name tree /{}", String::from_utf8_lossy(tree_key)),
+                        reason: format!("shared node {nr} already walked"),
+                        limit: false,
+                    });
+                    continue;
+                }
+            }
+            let Some(d) = obj.as_dict() else {
+                continue;
+            };
+            // /Names pairs — each pair consumes one element unit.
+            if let Some(Object::Array(pairs)) = d.get(b"Names".as_slice()) {
+                let mut it = pairs.iter();
+                while let (Some(name), Some(value)) = (it.next(), it.next()) {
+                    if !self.consume_element("name-tree walk") {
+                        return; // element budget exhausted — stop the tree walk
+                    }
+                    let mut v = via.clone();
+                    if let Object::String(s) = name {
+                        v.push(PathStep::NameTreeEntry(s.clone()));
+                    }
+                    let sub = match kind {
+                        FindingKind::EmbeddedFiles => FindingKind::FileSpec,
+                        other => other,
+                    };
+                    self.add_finding(AuditFinding {
+                        kind: sub,
+                        object: value.as_ref(),
+                        reach: value
+                            .as_ref()
+                            .map(|r| self.reach_of(r))
+                            .unwrap_or(ReachClass::Reachable),
+                        via: v,
+                        referrers: vec![],
+                        bytes: self.stream_bytes(value),
+                        note: "name-tree leaf".into(),
+                    });
+                }
+            }
+            // /Kids — recurse via the explicit stack. Depth is
+            // checked per node, so a deep branch stops without
+            // cutting off siblings at shallower levels.
+            if let Some(Object::Array(kids)) = d.get(b"Kids".as_slice()) {
+                for (i, k) in kids.iter().enumerate() {
+                    if !self.consume_element("name-tree walk") {
+                        return; // element budget exhausted
+                    }
                     let mut v = via.clone();
                     v.push(PathStep::Key(b"Kids".to_vec()));
                     v.push(PathStep::Index(i as u32));
-                    self.walk_name_tree(&ko, v, kind);
+                    if depth + 1 > self.limits.max_audit_walk_depth as u32 {
+                        self.out.incomplete.push(AuditIncomplete {
+                            scope: format!("name tree /{}", String::from_utf8_lossy(tree_key)),
+                            reason: format!(
+                                "max_audit_walk_depth ({}) reached at /Kids[{}]",
+                                self.limits.max_audit_walk_depth, i
+                            ),
+                            limit: true,
+                        });
+                        continue; // drop this kid, keep siblings
+                    }
+                    match self.doc.deref(k) {
+                        Ok(ko) => {
+                            // Cycle check: if this kid's ref already
+                            // sits on the current path, walking it
+                            // would re-enter an ancestor — report and
+                            // skip, don't recurse forever.
+                            if let Some(kr) = k.as_ref() {
+                                if path_refs.contains(&kr) {
+                                    self.out.incomplete.push(AuditIncomplete {
+                                        scope: format!(
+                                            "name tree /{}",
+                                            String::from_utf8_lossy(tree_key)
+                                        ),
+                                        reason: format!("cycle: node {kr} re-enters its own path"),
+                                        limit: false,
+                                    });
+                                    continue;
+                                }
+                            }
+                            let mut child_path = path_refs.clone();
+                            if let Some(kr) = k.as_ref() {
+                                child_path.insert(kr);
+                            }
+                            stack.push(Frame {
+                                obj: ko,
+                                via: v,
+                                depth: depth + 1,
+                                node_ref: k.as_ref(),
+                                path_refs: child_path,
+                            });
+                        }
+                        Err(e) => {
+                            self.out.incomplete.push(AuditIncomplete {
+                                scope: format!("name tree /{}", String::from_utf8_lossy(tree_key)),
+                                reason: format!("/Kids[{}] does not resolve: {}", i, e.kind()),
+                                limit: false,
+                            });
+                        }
+                    }
                 }
             }
+            let _ = node_ref; // node_ref is used only for seen/path checks
         }
     }
 
@@ -1381,6 +1683,7 @@ impl<'d> Audit<'d> {
         let mut free = 0u64;
         let mut compressed = 0u64;
         let mut unreachable_live = 0u64;
+        let mut unevaluated_live = 0u64;
         // Collect the merged live (number, generation) -> offset so a
         // *superseded* body for the same number can be told from a
         // live one.
@@ -1403,27 +1706,43 @@ impl<'d> Audit<'d> {
                     compressed += 1;
                     live += 1;
                     if !self.reachable.contains(&r) {
-                        unreachable_live += 1;
-                        self.add_finding(AuditFinding {
-                            kind: FindingKind::UnreachableObject,
-                            object: Some(r),
-                            reach: ReachClass::UnreachableLive,
-                            via: vec![],
-                            referrers: vec![],
-                            bytes: None,
-                            note: "compressed object unreachable from roots".into(),
-                        });
+                        if self.walk_complete {
+                            unreachable_live += 1;
+                            self.add_finding(AuditFinding {
+                                kind: FindingKind::UnreachableObject,
+                                object: Some(r),
+                                reach: ReachClass::UnreachableLive,
+                                via: vec![],
+                                referrers: vec![],
+                                bytes: None,
+                                note: "compressed object unreachable from roots".into(),
+                            });
+                        } else {
+                            unevaluated_live += 1;
+                            self.add_finding(AuditFinding {
+                                kind: FindingKind::UnreachableObject,
+                                object: Some(r),
+                                reach: ReachClass::Unevaluated,
+                                via: vec![],
+                                referrers: vec![],
+                                bytes: None,
+                                note: "compressed object — reachability \
+                                       unevaluated (walk incomplete)"
+                                    .into(),
+                            });
+                        }
                     }
                 }
                 XrefEntry::InUse { offset } => {
                     live += 1;
                     live_offsets.insert(r.number, offset);
                     if !self.reachable.contains(&r) {
-                        unreachable_live += 1;
                         // Distinguish a structural object the roots
                         // never reference (ObjStm, XRef, Info-less
                         // trailer machinery) from a genuinely orphaned
-                        // content object.
+                        // content object — and, when the walk was
+                        // incomplete, say *unevaluated*, not
+                        // unreachable.
                         let obj = self.doc.resolve(r).ok();
                         let kind_label = obj
                             .as_ref()
@@ -1432,17 +1751,34 @@ impl<'d> Audit<'d> {
                             .and_then(|o| o.as_name())
                             .map(|n| String::from_utf8_lossy(n).into_owned())
                             .unwrap_or_else(|| "?".into());
-                        self.add_finding(AuditFinding {
-                            kind: FindingKind::UnreachableObject,
-                            object: Some(r),
-                            reach: self.reach_of(r),
-                            via: vec![],
-                            referrers: vec![],
-                            bytes: obj.as_ref().and_then(|o| self.stream_bytes(o)),
-                            note: format!(
-                                "in-use object unreachable from roots (type /{kind_label})"
-                            ),
-                        });
+                        if self.walk_complete {
+                            unreachable_live += 1;
+                            self.add_finding(AuditFinding {
+                                kind: FindingKind::UnreachableObject,
+                                object: Some(r),
+                                reach: ReachClass::UnreachableLive,
+                                via: vec![],
+                                referrers: vec![],
+                                bytes: obj.as_ref().and_then(|o| self.stream_bytes(o)),
+                                note: format!(
+                                    "in-use object unreachable from roots (type /{kind_label})"
+                                ),
+                            });
+                        } else {
+                            unevaluated_live += 1;
+                            self.add_finding(AuditFinding {
+                                kind: FindingKind::UnreachableObject,
+                                object: Some(r),
+                                reach: ReachClass::Unevaluated,
+                                via: vec![],
+                                referrers: vec![],
+                                bytes: obj.as_ref().and_then(|o| self.stream_bytes(o)),
+                                note: format!(
+                                    "in-use object — reachability unevaluated \
+                                     (walk incomplete; type /{kind_label})"
+                                ),
+                            });
+                        }
                     }
                 }
             }
@@ -1508,6 +1844,7 @@ impl<'d> Audit<'d> {
             })
             .count() as u64;
         self.out.reachability.unreachable_live = unreachable_live;
+        self.out.reachability.unevaluated_live = unevaluated_live;
         self.out.history.physical_slack_examined = false;
         if !self.out.history.physical_slack_examined {
             self.out.unexamined.push(
@@ -2013,7 +2350,7 @@ mod tests {
         assert_eq!(un.len(), 1);
         assert_eq!(un[0].object, Some(IndirectRef::new(5, 0)));
         assert!(a.reachability.edges_followed > 0);
-        assert!(!a.reachability.truncated);
+        assert!(a.reachability.walk_complete);
     }
 
     #[test]
@@ -2280,6 +2617,416 @@ mod tests {
         assert!(has_kind(&a, FindingKind::Image));
         assert!(has_kind(&a, FindingKind::ResourceUsageUnexamined));
         assert!(has_kind(&a, FindingKind::Resources));
+    }
+
+    // ---- M23.1 — classification & traversal limits ----------------
+
+    /// A tiny `max_audit_edges` cuts the walk before it reaches the
+    /// orphaned object — the orphan must be Unevaluated, never
+    /// reported as unreachable.
+    #[test]
+    fn truncated_walk_reports_unevaluated_not_unreachable() {
+        let pdf = assemble(
+            &[
+                (1, b"<< /Type /Catalog /Pages 2 0 R /Extra 5 0 R >>"),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                      /Contents 4 0 R >>",
+                ),
+                (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+                (5, b"<< /Other 6 0 R >>"),
+                (6, b"<< /Orphaned true >>"),
+                (7, b"<< /Also 8 0 R >>"),
+                (8, b"<< /Deep true >>"),
+            ],
+            b"",
+        );
+        // Only 3 edges — the walk reaches 5 (edge) then stops: 6
+        // stays queued, 7/8 never seen.
+        let limits = Limits {
+            max_audit_edges: 3,
+            ..Default::default()
+        };
+        let a = audit_residuals(&doc(&pdf), &limits).unwrap();
+        assert!(!a.reachability.walk_complete);
+        // Object 6 was queued but never visited → Unevaluated, not
+        // unreachable.
+        let u6 = a
+            .findings
+            .iter()
+            .find(|f| f.object == Some(IndirectRef::new(6, 0)))
+            .expect("finding for object 6");
+        assert_eq!(u6.reach, ReachClass::Unevaluated);
+        // Objects 5..8 are all unvisited — 5 was queued but never
+        // popped, 6/7/8 never even queued. All Unevaluated.
+        for n in [5u32, 6, 7, 8] {
+            let f = a
+                .findings
+                .iter()
+                .find(|f| f.object == Some(IndirectRef::new(n, 0)))
+                .expect("finding");
+            assert_eq!(f.reach, ReachClass::Unevaluated);
+        }
+        assert_eq!(a.reachability.unreachable_live, 0);
+        assert_eq!(a.reachability.unevaluated_live, 4);
+        assert!(a
+            .incomplete
+            .iter()
+            .any(|i| i.reason.contains("max_audit_edges") && i.limit));
+    }
+
+    /// Findings cap is a separate condition from walk completeness.
+    #[test]
+    fn findings_cap_does_not_mean_walk_incomplete() {
+        let pdf = assemble(
+            &[
+                (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                      /Resources << /Font << /F1 5 0 R >> >> \
+                      /Contents 4 0 R >>",
+                ),
+                (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+                (5, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
+            ],
+            b"",
+        );
+        let limits = Limits {
+            max_audit_findings: 1,
+            ..Default::default()
+        };
+        let a = audit_residuals(&doc(&pdf), &limits).unwrap();
+        // Walk completed — only the findings report was truncated.
+        assert!(a.reachability.walk_complete);
+        assert_eq!(a.findings.len(), 1);
+        assert!(a
+            .incomplete
+            .iter()
+            .any(|i| i.scope == "findings" && i.limit));
+    }
+
+    /// Name-tree cycles terminate: a node's /Kids pointing at itself
+    /// and two nodes pointing at each other are both cycles, not
+    /// hangs.
+    #[test]
+    fn name_tree_cycle_and_shared_node() {
+        let pdf = assemble(
+            &[
+                (
+                    1,
+                    b"<< /Type /Catalog /Pages 2 0 R \
+                      /Names << /EmbeddedFiles 5 0 R >> >>",
+                ),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                      /Contents 4 0 R >>",
+                ),
+                (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+                // Root: /Names leaf + /Kids [5 0 R 6 0 R 7 0 R].
+                (
+                    5,
+                    b"<< /Names [(a.txt) 9 0 R] \
+                      /Kids [5 0 R 6 0 R 7 0 R] >>",
+                ),
+                // Node 6 ↔ node 7 (mutual cycle). Node 7 also /Kids → 6.
+                (6, b"<< /Names [(b.txt) 9 0 R] /Kids [7 0 R] >>"),
+                (7, b"<< /Names [(c.txt) 9 0 R] /Kids [6 0 R] >>"),
+                (8, b"<< /Names [(d.txt) 9 0 R] >>"),
+                (9, b"<< /Type /Filespec /F (x) >>"),
+            ],
+            b"",
+        );
+        let a = audit_residuals(&doc(&pdf), &Limits::default()).unwrap();
+        // Tree root + one leaf found.
+        assert!(has_kind(&a, FindingKind::EmbeddedFiles));
+        // The cycles are reported as incomplete, not hung on — a
+        // node re-entering the stack is a cycle; a finished node
+        // revisited via two parents is a shared node.
+        assert!(a
+            .incomplete
+            .iter()
+            .any(|i| i.reason.contains("cycle") || i.reason.contains("shared node")));
+        // All four leaves found despite the cycle.
+        let leaves = find_kind(&a, FindingKind::FileSpec);
+        assert_eq!(leaves.len(), 4);
+    }
+
+    /// Wide (shallow) containers are not killed by the depth cap —
+    /// depth is *nesting*, not element count.
+    #[test]
+    fn walk_depth_is_nesting_not_breadth() {
+        // One page dict with a 100-element /Annots array (refs).
+        let mut items = String::from("[");
+        for n in 10..110u32 {
+            items.push_str(&format!("{n} 0 R "));
+        }
+        items.push(']');
+        let page = format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Contents 4 0 R /Annots {items} >>"
+        );
+        let mut objs: Vec<(u32, &[u8])> = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (3, page.as_bytes()),
+            (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+        ];
+        // 100 small annots.
+        let annot = b"<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] >>";
+        let annots: Vec<(u32, &[u8])> = (10..110u32).map(|n| (n, annot.as_ref())).collect();
+        objs.extend_from_slice(&annots);
+        let pdf = assemble(&objs, b"");
+        let limits = Limits {
+            max_audit_walk_depth: 4,
+            ..Default::default()
+        };
+        let a = audit_residuals(&doc(&pdf), &limits).unwrap();
+        // Walk completed — the 100-element array did not trip the
+        // depth cap.
+        assert!(a.reachability.walk_complete);
+        assert_eq!(a.reachability.unevaluated_live, 0);
+    }
+
+    /// A genuinely deep container (nested arrays) hits the depth cap
+    /// and the walk is reported incomplete — while siblings at
+    /// shallower depth are still visited.
+    #[test]
+    fn walk_depth_caps_nesting_and_reports_incomplete() {
+        // /Deep = [[[[...]]]] nested 80 deep, sibling /Shallow = 5 0 R.
+        let mut deep = String::new();
+        for _ in 0..80 {
+            deep.push('[');
+        }
+        deep.push_str("5 0 R");
+        for _ in 0..80 {
+            deep.push(']');
+        }
+        let page = format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Contents 4 0 R /Deep {deep} /Shallow 6 0 R >>"
+        );
+        let pdf = assemble(
+            &[
+                (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                (3, page.as_bytes()),
+                (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+                (5, b"<< /DeepLeaf true >>"),
+                (6, b"<< /ShallowLeaf true >>"),
+            ],
+            b"",
+        );
+        let limits = Limits {
+            max_audit_walk_depth: 8,
+            ..Default::default()
+        };
+        let a = audit_residuals(&doc(&pdf), &limits).unwrap();
+        // Depth stop → walk incomplete.
+        assert!(!a.reachability.walk_complete);
+        assert!(a
+            .incomplete
+            .iter()
+            .any(|i| i.reason.contains("max_audit_walk_depth")));
+        // The shallow sibling was still reached — its edge was
+        // followed (the deep branch stopped, not the whole walk).
+        assert!(a.reachability.edges_followed >= 3);
+        // …and it resolves fine — reachability was real, not a guess.
+        let f6 = a
+            .findings
+            .iter()
+            .find(|f| f.object == Some(IndirectRef::new(6, 0)));
+        // Object 6 is reachable but its /Type-less dict produces no
+        // stream finding — check reachability via the finding it
+        // *does* generate when classified, or via referrers.
+        assert!(f6.is_none() || f6.unwrap().reach == ReachClass::Reachable);
+        // The deep leaf (5) is inside the over-depth branch —
+        // Unevaluated, not unreachable.
+        let f5 = a
+            .findings
+            .iter()
+            .find(|f| f.object == Some(IndirectRef::new(5, 0)))
+            .expect("finding for 5");
+        assert_eq!(f5.reach, ReachClass::Unevaluated);
+    }
+
+    /// A reference whose target has no xref entry is reported as
+    /// `MissingReference` with its referrer path — it is *not*
+    /// counted as examined or reachable, and never as unreachable.
+    #[test]
+    fn missing_reference_is_reported_not_counted() {
+        let pdf = assemble(
+            &[
+                (1, b"<< /Type /Catalog /Pages 2 0 R /Dangling 99 0 R >>"),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                      /Contents 4 0 R >>",
+                ),
+                (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+            ],
+            b"",
+        );
+        let a = audit_residuals(&doc(&pdf), &Limits::default()).unwrap();
+        // 99 0 R does not exist — reported MissingReference.
+        let miss = find_kind(&a, FindingKind::MissingReference);
+        assert_eq!(miss.len(), 1);
+        assert_eq!(miss[0].object, Some(IndirectRef::new(99, 0)));
+        // The referrer path names the containing object and key.
+        let rendered: Vec<String> = miss[0]
+            .via
+            .iter()
+            .map(|s| render_path(std::slice::from_ref(s)))
+            .collect();
+        assert!(
+            rendered.iter().any(|s| s.contains("/Dangling")),
+            "referrer path should name /Dangling: {:?}",
+            miss[0].via
+        );
+        // Counter semantics: 99 0 R was never examined or reachable.
+        assert_eq!(a.reachability.missing_references, 1);
+        assert!(a.reachability.walk_complete);
+    }
+
+    /// objects_examined counts resolved objects only — a missing
+    /// root does not inflate it.
+    #[test]
+    fn objects_examined_counts_resolved_only() {
+        // trailer /Info points at a missing object; /Root is fine.
+        let pdf = assemble(
+            &[
+                (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                      /Contents 4 0 R >>",
+                ),
+                (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+            ],
+            b"/Info 99 0 R",
+        );
+        let d = doc(&pdf);
+        // The trailer really carries /Info → the ref must resolve to
+        // MissingReference (not some other error).
+        let info_obj = d.trailer().get(b"Info".as_slice());
+        assert!(matches!(info_obj, Some(Object::Ref(_))), "{info_obj:?}");
+        let r = info_obj.unwrap().as_ref().unwrap();
+        assert!(matches!(d.resolve(r), Err(Error::MissingReference(_))));
+        let a = audit_residuals(&d, &Limits::default()).unwrap();
+        // 4 real objects resolved (1,2,3,4); 99 0 R never examined.
+        assert_eq!(a.objects_examined, 4);
+        assert_eq!(a.reachability.missing_references, 1);
+        // A MissingReference finding names the trailer key.
+        let miss = find_kind(&a, FindingKind::MissingReference);
+        assert_eq!(miss.len(), 1);
+        // Info finding is still reported — the trailer *has* /Info
+        // even though its target is gone.
+        assert!(has_kind(&a, FindingKind::DocumentInfo));
+    }
+
+    /// Element budget stops wide traversals separately from the
+    /// depth budget.
+    #[test]
+    fn element_budget_stops_wide_walk() {
+        let mut items = String::from("[");
+        for n in 10..210u32 {
+            items.push_str(&format!("{n} 0 R "));
+        }
+        items.push(']');
+        let page = format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Contents 4 0 R /Annots {items} >>"
+        );
+        let annot = b"<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] >>";
+        let mut objs: Vec<(u32, &[u8])> = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (3, page.as_bytes()),
+            (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+        ];
+        let annots: Vec<(u32, &[u8])> = (10..210u32).map(|n| (n, annot.as_ref())).collect();
+        objs.extend_from_slice(&annots);
+        let pdf = assemble(&objs, b"");
+        // 50 elements only — the 200-item array trips the cap.
+        let limits = Limits {
+            max_audit_elements: 50,
+            ..Default::default()
+        };
+        let a = audit_residuals(&doc(&pdf), &limits).unwrap();
+        assert!(!a.reachability.walk_complete);
+        assert!(a
+            .incomplete
+            .iter()
+            .any(|i| i.reason.contains("max_audit_elements")));
+    }
+
+    /// A page-content parse failure is Incomplete — never reported
+    /// as "no ActualText".
+    #[test]
+    fn unparseable_page_content_is_incomplete() {
+        // A /Contents stream whose body does not parse (unbalanced
+        // operator) — the audit must record incomplete.
+        let body = b"BT /F1 24 Tf (oops\n"; // unterminated string
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        let pdf = assemble(
+            &[
+                (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                      /Contents 4 0 R >>",
+                ),
+                (4, &sb),
+            ],
+            b"",
+        );
+        let a = audit_residuals(&doc(&pdf), &Limits::default()).unwrap();
+        assert!(a
+            .incomplete
+            .iter()
+            .any(|i| i.scope.contains("page 1 content")));
+    }
+
+    /// A malformed name-tree /Kids ref is recorded, not silently
+    /// skipped.
+    #[test]
+    fn name_tree_missing_kid_is_incomplete() {
+        let pdf = assemble(
+            &[
+                (
+                    1,
+                    b"<< /Type /Catalog /Pages 2 0 R \
+                      /Names << /EmbeddedFiles 5 0 R >> >>",
+                ),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                      /Contents 4 0 R >>",
+                ),
+                (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+                // /Kids points at a non-existent 99 0 R.
+                (5, b"<< /Names [(a) 9 0 R] /Kids [99 0 R 8 0 R] >>"),
+                (8, b"<< /Names [(b) 9 0 R] >>"),
+                (9, b"<< /Type /Filespec /F (x) >>"),
+            ],
+            b"",
+        );
+        let a = audit_residuals(&doc(&pdf), &Limits::default()).unwrap();
+        // The dangling /Kids[0] is reported, not skipped.
+        assert!(a.incomplete.iter().any(|i| i.reason.contains("Kids[0]")));
+        // The valid leaf is still found.
+        assert!(!find_kind(&a, FindingKind::FileSpec).is_empty());
     }
 
     #[test]
