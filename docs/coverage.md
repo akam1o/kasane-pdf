@@ -975,6 +975,9 @@ that yields its children lazily, so a low `max_audit_elements`
 budget stops the walk before all children are expanded into frames
 or paths. A `Vec<PathStep>` is cloned only when a `Ref` is found or
 a container is descended into, not for every element visited.
+(M23.3: the test-only `max_walk_stack` field on `Audit` plus a
+`push_frame!` macro let tests assert this against the *production*
+walker — no duplicated scan.)
 
 **Leakage** — notes carry keys, types, counts and refs only: Info
 values, annot contents, field values, JavaScript, XMP and stream

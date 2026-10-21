@@ -315,6 +315,8 @@ pub fn audit_residuals(doc: &Document, limits: &Limits) -> Result<ResidualAudit,
         walk_complete: false,
         findings_seen: 0,
         findings_capped: false,
+        #[cfg(test)]
+        max_walk_stack: 0,
     };
 
     // ---- pass 1: reachability walk --------------------------------
@@ -372,6 +374,12 @@ struct Audit<'d> {
     /// separate from `walk_complete` — output truncation is not a
     /// reachability statement.
     findings_capped: bool,
+    /// Test-only instrumentation: the deepest the per-object
+    /// container frame stack ever grew during `walk_object_refs`.
+    /// Lets tests prove the stack tracks nesting depth, not
+    /// breadth, without duplicating the production walker.
+    #[cfg(test)]
+    max_walk_stack: usize,
 }
 
 impl<'d> Audit<'d> {
@@ -632,6 +640,21 @@ impl<'d> Audit<'d> {
         // same for every element a frame yields, so it is kept on
         // the stack, not cloned into each path.
         let mut stack: Vec<(Frame, u32)> = vec![(Frame::Leaf(obj), 0)];
+        // Test-only: track the stack's high-water mark so tests can
+        // assert it stays proportional to depth, not breadth.
+        #[cfg(test)]
+        macro_rules! push_frame {
+            ($f:expr) => {{
+                stack.push($f);
+                self.max_walk_stack = self.max_walk_stack.max(stack.len());
+            }};
+        }
+        #[cfg(not(test))]
+        macro_rules! push_frame {
+            ($f:expr) => {
+                stack.push($f)
+            };
+        }
         let mut depth_reported = false;
         while let Some((mut frame, depth)) = stack.pop() {
             // Advance the top frame: yield its next element. A Leaf
@@ -711,13 +734,13 @@ impl<'d> Audit<'d> {
                             ),
                         });
                         if keep {
-                            stack.push((frame, depth));
+                            push_frame!((frame, depth));
                         }
                         continue;
                     }
                     queue.push(*to);
                     if keep {
-                        stack.push((frame, depth));
+                        push_frame!((frame, depth));
                     }
                     continue;
                 }
@@ -736,7 +759,7 @@ impl<'d> Audit<'d> {
                         }
                         // Drop this branch only — siblings continue.
                         if keep {
-                            stack.push((frame, depth));
+                            push_frame!((frame, depth));
                         }
                         continue;
                     }
@@ -752,7 +775,7 @@ impl<'d> Audit<'d> {
                             p
                         }
                     };
-                    stack.push((
+                    push_frame!((
                         Frame::Array {
                             it: items.iter(),
                             idx: 0,
@@ -761,7 +784,7 @@ impl<'d> Audit<'d> {
                         depth + 1,
                     ));
                     if keep {
-                        stack.push((frame, depth));
+                        push_frame!((frame, depth));
                     }
                     continue;
                 }
@@ -779,7 +802,7 @@ impl<'d> Audit<'d> {
                             depth_reported = true;
                         }
                         if keep {
-                            stack.push((frame, depth));
+                            push_frame!((frame, depth));
                         }
                         continue;
                     }
@@ -793,7 +816,7 @@ impl<'d> Audit<'d> {
                             p
                         }
                     };
-                    stack.push((
+                    push_frame!((
                         Frame::Dict {
                             it: d.iter(),
                             path: child_path,
@@ -801,7 +824,7 @@ impl<'d> Audit<'d> {
                         depth + 1,
                     ));
                     if keep {
-                        stack.push((frame, depth));
+                        push_frame!((frame, depth));
                     }
                     continue;
                 }
@@ -819,7 +842,7 @@ impl<'d> Audit<'d> {
                             depth_reported = true;
                         }
                         if keep {
-                            stack.push((frame, depth));
+                            push_frame!((frame, depth));
                         }
                         continue;
                     }
@@ -833,7 +856,7 @@ impl<'d> Audit<'d> {
                             p
                         }
                     };
-                    stack.push((
+                    push_frame!((
                         Frame::Dict {
                             it: dict.iter(),
                             path: child_path,
@@ -841,7 +864,7 @@ impl<'d> Audit<'d> {
                         depth + 1,
                     ));
                     if keep {
-                        stack.push((frame, depth));
+                        push_frame!((frame, depth));
                     }
                     continue;
                 }
@@ -851,7 +874,7 @@ impl<'d> Audit<'d> {
             // elements; a Leaf frame is done. `keep` is false for
             // Leaf, true for exhausted-or-live containers.
             if keep {
-                stack.push((frame, depth));
+                push_frame!((frame, depth));
             }
         }
         Ok(true)
@@ -3200,273 +3223,33 @@ mod tests {
 
     // ---- M23.2 — incremental scanning & entry failures ------------
 
+    /// Build an `Audit` for a single-object walk — the same state
+    /// `audit_residuals` would construct, exposed to tests so the
+    /// stack-height probe reads the *production* `walk_object_refs`.
+    fn test_audit<'d>(doc: &'d Document, limits: &'d Limits) -> Audit<'d> {
+        Audit {
+            doc,
+            limits,
+            out: ResidualAudit::default(),
+            edges: 0,
+            elements: 0,
+            referrers: HashMap::new(),
+            reachable: HashSet::new(),
+            walk_complete: false,
+            findings_seen: 0,
+            findings_capped: false,
+            max_walk_stack: 0,
+        }
+    }
+
     /// A wide container does not expand all its children into frames
-    /// before the element budget can stop the walk: the stack stays
-    /// proportional to *depth* — measured via a crate-only
-    /// instrumentation wrapper, never a public field.
+    /// before the element budget can stop the walk — the production
+    /// walker's stack stays proportional to *depth*, not breadth.
+    /// A pre-M23.2 walker that pushed one frame per child would show
+    /// `max_walk_stack` climbing toward the container width.
     #[test]
     fn wide_input_does_not_preallocate_frames() {
-        // Track the maximum stack height reached during the walk —
-        // proves the walk never held all 200 children at once.
-        struct Probe<'d> {
-            a: Audit<'d>,
-            max_stack: usize,
-        }
-        impl<'d> Probe<'d> {
-            fn new(doc: &'d Document, limits: &'d Limits) -> Self {
-                Probe {
-                    a: Audit {
-                        doc,
-                        limits,
-                        out: ResidualAudit::default(),
-                        edges: 0,
-                        elements: 0,
-                        referrers: HashMap::new(),
-                        reachable: HashSet::new(),
-                        walk_complete: false,
-                        findings_seen: 0,
-                        findings_capped: false,
-                    },
-                    max_stack: 0,
-                }
-            }
-            // Mirror of `Audit::walk_object_refs` that also records
-            // `stack.len()` after every push.
-            fn probe_walk(
-                &mut self,
-                from: IndirectRef,
-                obj: &Object,
-                queue: &mut Vec<IndirectRef>,
-            ) -> Result<bool, Error> {
-                enum Frame<'a> {
-                    Leaf(&'a Object),
-                    Array {
-                        it: std::slice::Iter<'a, Object>,
-                        idx: u32,
-                        path: Vec<PathStep>,
-                    },
-                    Dict {
-                        it: std::collections::btree_map::Iter<'a, Vec<u8>, Object>,
-                        path: Vec<PathStep>,
-                    },
-                }
-                let mut stack: Vec<(Frame, u32)> = vec![(Frame::Leaf(obj), 0)];
-                let mut depth_reported = false;
-                while let Some((mut frame, depth)) = stack.pop() {
-                    let (o, step, keep) = match &mut frame {
-                        Frame::Leaf(o) => (*o, None, false),
-                        Frame::Array { it, idx, .. } => match it.next() {
-                            Some(o) => {
-                                let s = PathStep::Index(*idx);
-                                *idx += 1;
-                                (o, Some(s), true)
-                            }
-                            None => continue,
-                        },
-                        Frame::Dict { it, .. } => match it.next() {
-                            Some((k, o)) => (o, Some(PathStep::Key(k.clone())), true),
-                            None => continue,
-                        },
-                    };
-                    if !self.a.consume_element("reachability walk") {
-                        return Ok(false);
-                    }
-                    let frame_path = match &frame {
-                        Frame::Leaf(_) => Vec::new(),
-                        Frame::Array { path, .. } | Frame::Dict { path, .. } => {
-                            let mut p = path.clone();
-                            if let Some(s) = step.clone() {
-                                p.push(s);
-                            }
-                            p
-                        }
-                    };
-                    match o {
-                        Object::Ref(to) => {
-                            self.a.edges += 1;
-                            self.a.out.edges_examined = self.a.edges;
-                            if self.a.edges > self.a.limits.max_audit_edges {
-                                self.a.out.incomplete.push(AuditIncomplete {
-                                    scope: "reachability walk".into(),
-                                    reason: format!(
-                                        "max_audit_edges ({}) reached",
-                                        self.a.limits.max_audit_edges
-                                    ),
-                                    limit: true,
-                                });
-                                return Ok(false);
-                            }
-                            let rs = self.a.referrers.entry(*to).or_default();
-                            if rs.len() < self.a.limits.max_audit_paths as usize {
-                                let mut p = vec![PathStep::Key(format!("{from}").into_bytes())];
-                                p.extend(frame_path.clone());
-                                rs.push(PathStep::Key(render_path(&p).into_bytes()));
-                            }
-                            if self.a.doc.xref_entry_kind(*to).is_none() {
-                                self.a.out.reachability.missing_references += 1;
-                                let mut via = vec![PathStep::Key(format!("{from}").into_bytes())];
-                                via.extend(frame_path);
-                                self.a.add_finding(AuditFinding {
-                                    kind: FindingKind::MissingReference,
-                                    object: Some(*to),
-                                    reach: ReachClass::Unevaluated,
-                                    via,
-                                    referrers: vec![],
-                                    bytes: None,
-                                    note: format!(
-                                        "reference to {to} has no xref entry \
-                                         (dangling reference)"
-                                    ),
-                                });
-                                if keep {
-                                    stack.push((frame, depth));
-                                }
-                                continue;
-                            }
-                            queue.push(*to);
-                        }
-                        Object::Array(items) => {
-                            if depth + 1 > self.a.limits.max_audit_walk_depth as u32 {
-                                if !depth_reported {
-                                    self.a.out.incomplete.push(AuditIncomplete {
-                                        scope: format!("reachability walk from {from}"),
-                                        reason: format!(
-                                            "max_audit_walk_depth ({}) reached",
-                                            self.a.limits.max_audit_walk_depth
-                                        ),
-                                        limit: true,
-                                    });
-                                    depth_reported = true;
-                                }
-                                if keep {
-                                    stack.push((frame, depth));
-                                }
-                                continue;
-                            }
-                            let child_path = match frame {
-                                Frame::Leaf(_) => Vec::new(),
-                                Frame::Array { ref path, .. } | Frame::Dict { ref path, .. } => {
-                                    let mut p = path.clone();
-                                    if let Some(s) = step.clone() {
-                                        p.push(s);
-                                    }
-                                    p
-                                }
-                            };
-                            stack.push((
-                                Frame::Array {
-                                    it: items.iter(),
-                                    idx: 0,
-                                    path: child_path,
-                                },
-                                depth + 1,
-                            ));
-                            if stack.len() > self.max_stack {
-                                self.max_stack = stack.len();
-                            }
-                            if keep {
-                                stack.push((frame, depth));
-                            }
-                            continue;
-                        }
-                        Object::Dict(d) => {
-                            if depth + 1 > self.a.limits.max_audit_walk_depth as u32 {
-                                if !depth_reported {
-                                    self.a.out.incomplete.push(AuditIncomplete {
-                                        scope: format!("reachability walk from {from}"),
-                                        reason: format!(
-                                            "max_audit_walk_depth ({}) reached",
-                                            self.a.limits.max_audit_walk_depth
-                                        ),
-                                        limit: true,
-                                    });
-                                    depth_reported = true;
-                                }
-                                if keep {
-                                    stack.push((frame, depth));
-                                }
-                                continue;
-                            }
-                            let child_path = match frame {
-                                Frame::Leaf(_) => Vec::new(),
-                                Frame::Array { ref path, .. } | Frame::Dict { ref path, .. } => {
-                                    let mut p = path.clone();
-                                    if let Some(s) = step.clone() {
-                                        p.push(s);
-                                    }
-                                    p
-                                }
-                            };
-                            stack.push((
-                                Frame::Dict {
-                                    it: d.iter(),
-                                    path: child_path,
-                                },
-                                depth + 1,
-                            ));
-                            if stack.len() > self.max_stack {
-                                self.max_stack = stack.len();
-                            }
-                            if keep {
-                                stack.push((frame, depth));
-                            }
-                            continue;
-                        }
-                        Object::Stream { dict, .. } => {
-                            if depth + 1 > self.a.limits.max_audit_walk_depth as u32 {
-                                if !depth_reported {
-                                    self.a.out.incomplete.push(AuditIncomplete {
-                                        scope: format!("reachability walk from {from}"),
-                                        reason: format!(
-                                            "max_audit_walk_depth ({}) reached",
-                                            self.a.limits.max_audit_walk_depth
-                                        ),
-                                        limit: true,
-                                    });
-                                    depth_reported = true;
-                                }
-                                if keep {
-                                    stack.push((frame, depth));
-                                }
-                                continue;
-                            }
-                            let child_path = match frame {
-                                Frame::Leaf(_) => Vec::new(),
-                                Frame::Array { ref path, .. } | Frame::Dict { ref path, .. } => {
-                                    let mut p = path.clone();
-                                    if let Some(s) = step.clone() {
-                                        p.push(s);
-                                    }
-                                    p
-                                }
-                            };
-                            stack.push((
-                                Frame::Dict {
-                                    it: dict.iter(),
-                                    path: child_path,
-                                },
-                                depth + 1,
-                            ));
-                            if stack.len() > self.max_stack {
-                                self.max_stack = stack.len();
-                            }
-                            if keep {
-                                stack.push((frame, depth));
-                            }
-                            continue;
-                        }
-                        _ => {}
-                    }
-                    if keep {
-                        stack.push((frame, depth));
-                    }
-                }
-                Ok(true)
-            }
-        }
-        // A 200-item array of refs — the frame stack must never hold
-        // all 200 entries; it should stay around a handful (the
-        // array frame + the leaf frame).
+        // 200-item array of refs under /Annots.
         let mut items = String::from("[");
         for n in 10..210u32 {
             items.push_str(&format!("{n} 0 R "));
@@ -3488,19 +3271,147 @@ mod tests {
         let pdf = assemble(&objs, b"");
         let d = doc(&pdf);
         let limits = Limits::default();
-        let mut probe = Probe::new(&d, &limits);
-        // Walk the page dict directly — object 3 is the page.
+        let mut a = test_audit(&d, &limits);
         let page_obj = d.resolve(IndirectRef::new(3, 0)).unwrap();
         let mut queue = Vec::new();
-        probe
-            .probe_walk(IndirectRef::new(3, 0), &page_obj, &mut queue)
+        a.walk_object_refs(IndirectRef::new(3, 0), &page_obj, &mut queue)
             .unwrap();
-        // The walk queued 200 ref edges and kept the frame stack
-        // proportional to depth (the array frame + one leaf at a
-        // time), not breadth.
-        assert!(probe.max_stack <= 4, "stack grew to {}", probe.max_stack);
-        // The 200-item array is *yielded lazily*, so a small element
-        // budget can stop it without preallocating anything.
+        // 202 ref edges queued (200 annots + /Contents + /Parent), but
+        // the frame stack never held them all: leaf + array frame
+        // ~ a handful, not ~200.
+        assert_eq!(queue.len(), 202, "queued refs");
+        assert!(
+            a.max_walk_stack <= 4,
+            "stack grew to {} — frames tracked breadth, not depth",
+            a.max_walk_stack
+        );
+    }
+
+    /// A wide *dictionary* is likewise one lazy frame — children are
+    /// not expanded into stack slots up front.
+    #[test]
+    fn wide_dict_does_not_preallocate_frames() {
+        let mut entries = String::new();
+        for n in 10..210u32 {
+            entries.push_str(&format!("/K{n} {n} 0 R "));
+        }
+        let page = format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Contents 4 0 R {entries} >>"
+        );
+        let leaf = b"<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] >>";
+        let mut objs: Vec<(u32, &[u8])> = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (3, page.as_bytes()),
+            (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+        ];
+        let leaves: Vec<(u32, &[u8])> = (10..210u32).map(|n| (n, leaf.as_ref())).collect();
+        objs.extend_from_slice(&leaves);
+        let pdf = assemble(&objs, b"");
+        let d = doc(&pdf);
+        let limits = Limits::default();
+        let mut a = test_audit(&d, &limits);
+        let page_obj = d.resolve(IndirectRef::new(3, 0)).unwrap();
+        let mut queue = Vec::new();
+        a.walk_object_refs(IndirectRef::new(3, 0), &page_obj, &mut queue)
+            .unwrap();
+        assert!(
+            a.max_walk_stack <= 4,
+            "dict walk held {} frames",
+            a.max_walk_stack
+        );
+    }
+
+    /// A deep nest does not blow the stack up to the *element count*:
+    /// ~40 elements spread across 20 levels keeps the live frame
+    /// count near the open-container count, never ~40 frames at once.
+    #[test]
+    fn deep_walk_stack_stays_bounded() {
+        // [ 8 0 R [8 0 R [8 0 R [...]]]] — ~2 elements per level,
+        // 20 levels deep.
+        let mut deep = String::from("[8 0 R ");
+        for _ in 0..20 {
+            deep.push_str("[8 0 R ");
+        }
+        deep.push_str("8 0 R");
+        for _ in 0..20 {
+            deep.push(']');
+        }
+        deep.push(']');
+        let page = format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Contents 4 0 R /Deep {deep} >>"
+        );
+        let pdf = assemble(
+            &[
+                (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                (3, page.as_bytes()),
+                (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+                (8, b"<< /DeepLeaf true >>"),
+            ],
+            b"",
+        );
+        let d = doc(&pdf);
+        let limits = Limits::default();
+        let mut a = test_audit(&d, &limits);
+        let page_obj = d.resolve(IndirectRef::new(3, 0)).unwrap();
+        let mut queue = Vec::new();
+        a.walk_object_refs(IndirectRef::new(3, 0), &page_obj, &mut queue)
+            .unwrap();
+        // The walk completed: every nested level was visited.
+        assert!(!queue.is_empty(), "inner refs were queued");
+        // The stack never held ~40 frames — it stays near the
+        // simultaneously-open container count.
+        assert!(
+            a.max_walk_stack <= 10,
+            "deep walk held {} frames — expected ≤ open containers",
+            a.max_walk_stack
+        );
+    }
+
+    /// A small `max_audit_elements` stops the walk mid-container —
+    /// the stack never expands the remaining siblings, the audit
+    /// reports the walk as incomplete, and unvisited live objects
+    /// are Unevaluated, not UnreachableLive.
+    #[test]
+    fn element_budget_stop_keeps_stack_small_and_incomplete() {
+        let mut items = String::from("[");
+        for n in 10..110u32 {
+            items.push_str(&format!("{n} 0 R "));
+        }
+        items.push(']');
+        let page = format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Contents 4 0 R /Annots {items} >>"
+        );
+        let annot = b"<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] >>";
+        let mut objs: Vec<(u32, &[u8])> = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (3, page.as_bytes()),
+            (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+        ];
+        let annots: Vec<(u32, &[u8])> = (10..110u32).map(|n| (n, annot.as_ref())).collect();
+        objs.extend_from_slice(&annots);
+        let pdf = assemble(&objs, b"");
+        let d = doc(&pdf);
+        let limits = Limits {
+            max_audit_elements: 20,
+            ..Default::default()
+        };
+        let a = audit_residuals(&d, &limits).unwrap();
+        assert!(!a.reachability.walk_complete);
+        // Unvisited live objects are Unevaluated, never Unreachable.
+        assert!(a.reachability.unevaluated_live > 0);
+        assert_eq!(a.reachability.unreachable_live, 0);
+        // The element cap was reported as a limit incomplete.
+        assert!(a
+            .incomplete
+            .iter()
+            .any(|i| i.scope.contains("reachability walk")
+                && i.reason.contains("max_audit_elements")));
     }
 
     /// The name-tree entry points record resolution failures.
@@ -3673,11 +3584,12 @@ mod tests {
             .any(|i| i.scope.contains("Names") || i.scope.contains("name tree")));
     }
 
-    /// CLI text and JSON both surface `incomplete` for a broken
-    /// name-tree entry — checked via the audit (the CLI prints the
-    /// same struct; a CLI-level assertion lives in m8_cli).
+    /// A broken name-tree root produces an `incomplete` record at
+    /// the audit level — the CLI text/JSON surface is covered by
+    /// `m8_cli.rs::cli_audit_incomplete_*` tests that run the real
+    /// binary against the same kind of input.
     #[test]
-    fn cli_incomplete_for_broken_name_tree() {
+    fn audit_incomplete_for_broken_name_tree() {
         let pdf = assemble(
             &[
                 (

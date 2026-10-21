@@ -914,6 +914,31 @@ Design choices:
   entries, not ObjStm member bodies. The docs now state this
   distinction and that no classification feature was added.
 
+- **Stack-height probe moved into production (M23.3).** M23.2's
+  `Probe` test duplicated `walk_object_refs` to record
+  `stack.len()` — a copy that could not detect a regression in the
+  real walker. M23.3 replaces it with a `#[cfg(test)]`-only field
+  `max_walk_stack` on the `Audit` struct plus a `push_frame!`
+  macro that records the high-water mark at every stack push.
+  Tests call the production `walk_object_refs` through a small
+  `test_audit()` builder; the field and macro compile out in
+  non-test builds, and no public API gains a measurement field.
+  Wide-array, wide-dict, deep-nest, and budget-stop inputs all
+  assert the frame count stays proportional to open containers
+  (never to breadth), and `element_budget_stop_keeps_stack_small_and_incomplete`
+  checks that a budget stop reports `walk_complete = false` with
+  unvisited objects as `Unevaluated`, not `UnreachableLive`.
+- **CLI-level incomplete verification (M23.3).** `cli_audit_incomplete_text_names_scope_and_reason`
+  and `cli_audit_incomplete_json_structure` run the real binary
+  (`CARGO_BIN_EXE_kasane-pdf`) against a PDF whose
+  `/EmbeddedFiles` root is a dangling ref: text output shows the
+  failing `scope` and `reason` (never a bare "incomplete"), JSON
+  output shows the `{"scope","reason","limit":false}` object, the
+  good `/JavaScript` sibling finding survives, the input bytes are
+  unchanged, no PDF is written, and a `/Contents` secret never
+  reaches stdout. `cli_audit_no_name_tree_no_incomplete` asserts a
+  file with no `/Names` produces no name-tree incomplete.
+
 CLI: `kasane-pdf audit-residuals in.pdf [--format text|json]` —
 prints to stdout, writes no file, exit 0 on a completed audit.
 
