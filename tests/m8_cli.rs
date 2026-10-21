@@ -2516,3 +2516,148 @@ fn cli_audit_bad_format_fails() {
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(stderr.contains("--format"), "{stderr}");
 }
+
+/// A PDF whose `/EmbeddedFiles` name-tree root is a dangling ref —
+/// the audit cannot evaluate that tree, so it must report an
+/// `incomplete` scope naming the tree and the failure kind, never
+/// claim "no attachments" and never let a good sibling tree drop.
+fn broken_name_tree_pdf() -> Vec<u8> {
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    // /EmbeddedFiles 99 0 R is dangling; /JavaScript 5 0 R is fine.
+    push(
+        1,
+        b"<< /Type /Catalog /Pages 2 0 R \
+          /Names << /EmbeddedFiles 99 0 R \
+                   /JavaScript 5 0 R >> >>",
+    );
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] \
+          /Annots [4 0 R] >>",
+    );
+    push(
+        4,
+        b"<< /Type /Annot /Subtype /Text /Rect [0 0 10 10] \
+          /Contents (SECRET-BROKEN-TREE-DO-NOT-PRINT) >>",
+    );
+    push(5, b"<< /Names [(app.js) 6 0 R] >>");
+    push(6, b"<< /Type /Action /S /JavaScript /JS (x) >>");
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 7\n0000000000 65535 f \n".to_vec());
+    for n in 1..7u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 7 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    parts.concat()
+}
+
+#[test]
+fn cli_audit_incomplete_text_names_scope_and_reason() {
+    let dir = tmpdir("audit-inc");
+    let src = dir.join("in.pdf");
+    let before = broken_name_tree_pdf();
+    fs::write(&src, &before).unwrap();
+    let out = bin().args(["audit-residuals"]).arg(&src).output().unwrap();
+    // Completed audit → exit 0 (not a safety verdict, just ran).
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    // The failing tree is named, with its resolution failure —
+    // never flattened to a bare "incomplete" word.
+    assert!(
+        stdout.contains("name tree /EmbeddedFiles"),
+        "scope missing: {stdout}"
+    );
+    assert!(
+        stdout.contains("does not resolve"),
+        "reason missing: {stdout}"
+    );
+    // The good sibling tree's finding still made it through.
+    assert!(stdout.contains("JavaScript"), "sibling lost: {stdout}");
+    // Input bytes untouched; no stray PDF written next to it.
+    assert_eq!(fs::read(&src).unwrap(), before, "input changed");
+    assert!(!dir.join("out.pdf").exists());
+    // The annot's /Contents text never reaches stdout.
+    assert!(
+        !stdout.contains("SECRET-BROKEN-TREE-DO-NOT-PRINT"),
+        "leaked body: {stdout}"
+    );
+    // "walk incomplete" wording is present (the reachability walk is
+    // fine — the *tree* scope is incomplete; the two are distinct).
+    assert!(
+        stdout.contains("incomplete"),
+        "no incomplete section: {stdout}"
+    );
+}
+
+#[test]
+fn cli_audit_incomplete_json_structure() {
+    let dir = tmpdir("audit-inc-json");
+    let src = dir.join("in.pdf");
+    fs::write(&src, broken_name_tree_pdf()).unwrap();
+    let out = bin()
+        .args(["audit-residuals"])
+        .arg(&src)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.trim_start().starts_with('{'), "{stdout}");
+    // Structural check: the incomplete array carries the failing
+    // scope, reason and a limit flag — not just a bare keyword.
+    assert!(
+        stdout.contains("\"scope\": \"name tree /EmbeddedFiles\""),
+        "scope missing: {stdout}"
+    );
+    assert!(
+        stdout.contains("\"reason\": \"root does not resolve"),
+        "reason missing: {stdout}"
+    );
+    // A missing ref is *not* a limit failure.
+    assert!(
+        stdout.contains("\"limit\": false"),
+        "limit misclassified: {stdout}"
+    );
+    // The JavaScript sibling finding survives in JSON too.
+    assert!(stdout.contains("\"kind\": \"JavaScript\""), "{stdout}");
+    // Body text still never reaches the JSON output.
+    assert!(!stdout.contains("SECRET-BROKEN-TREE-DO-NOT-PRINT"));
+}
+
+/// No name trees at all → no name-tree incomplete in CLI output —
+/// absence is not incompleteness.
+#[test]
+fn cli_audit_no_name_tree_no_incomplete() {
+    let dir = tmpdir("audit-no-tree");
+    let src = dir.join("in.pdf");
+    fs::write(&src, minimal_pdf()).unwrap();
+    let out = bin().args(["audit-residuals"]).arg(&src).output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    // The catalog has no /Names key at all, so no name-tree scope
+    // may appear under `incomplete`.
+    assert!(
+        !stdout.contains("name tree"),
+        "spurious name-tree incomplete: {stdout}"
+    );
+    assert!(
+        !stdout.contains("EmbeddedFiles"),
+        "spurious EmbeddedFiles: {stdout}"
+    );
+    // Exit 0 means the audit ran — it is not a "safe" verdict.
+}
