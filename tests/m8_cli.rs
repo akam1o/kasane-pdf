@@ -2861,22 +2861,17 @@ fn cli_remove_regions_failure_preserves_output() {
     assert_eq!(fs::read(&dst).unwrap(), b"SENTINEL");
 }
 
-/// M24.1 — a rect count exceeding max_diag_rects via repeated
-/// --page specs fails the whole call; the existing output and the
-/// input bytes are preserved and no temp file remains.
+/// M24.1 — `--page 0` is refused at argument validation; the
+/// existing output and the input bytes are preserved and no temp
+/// file remains.
 #[test]
-fn cli_remove_regions_rect_count_over_limit() {
+fn cli_remove_regions_page_zero_refused() {
     let dir = tmpdir("m24-1-rects");
     let src = dir.join("in.pdf");
     let dst = dir.join("out.pdf");
     fs::write(&src, two_page_text_image_pdf()).unwrap();
     fs::write(&dst, b"SENTINEL").unwrap();
-    // Two specs for the same page, each with one rect — the merged
-    // count is 2, but we cannot reach max_diag_rects (default 256)
-    // with tiny args; instead use --page 0 which is invalid, so it
-    // fails on page-number validation. For the rect-count check we
-    // need the library — the CLI takes the default limits. Instead
-    // verify that --page 0 and an oversized page are refused before
+    // --page 0 is invalid (CLI pages are 1-based) — refused before
     // any output is written.
     let out = bin()
         .args(["experimental-remove-regions"])
@@ -2888,6 +2883,67 @@ fn cli_remove_regions_rect_count_over_limit() {
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(stderr.contains("invalid page number"), "{stderr}");
+    // Existing output and input are preserved.
+    assert_eq!(fs::read(&dst).unwrap(), b"SENTINEL");
+    assert_eq!(fs::read(&src).unwrap(), two_page_text_image_pdf());
+    // No temp file remains.
+    let stray: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| {
+            let n = e.unwrap().file_name().to_string_lossy().into_owned();
+            n.contains("kasane-tmp").then_some(n)
+        })
+        .collect();
+    assert!(stray.is_empty(), "temp files left: {stray:?}");
+    // stdout/stderr carry no document content.
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(!stdout.contains("(ABC)"), "leaked text: {stdout}");
+    assert!(!stdout.contains("(XYZ)"), "leaked text: {stdout}");
+    assert!(!stderr.contains("(ABC)"), "leaked text: {stderr}");
+}
+
+/// M24.2 — `max_diag_rects` exceeded via the real CLI: the merged
+/// per-page rect count crosses the default limit (256) and the
+/// call fails as a `LimitExceeded`, leaving the sentinel output
+/// and the input untouched.
+#[test]
+fn cli_remove_regions_rect_count_over_limit() {
+    let dir = tmpdir("m24-2-rects");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    fs::write(&src, two_page_text_image_pdf()).unwrap();
+    fs::write(&dst, b"SENTINEL").unwrap();
+    // Limits::default().max_diag_rects is 256 — pass 257 rects for
+    // the same page. The rects may be identical; the cap counts
+    // input entries, not distinct regions.
+    let over = kasane_pdf::Limits::default().max_diag_rects + 1;
+    let mut args: Vec<String> = vec!["--page".into(), "1".into()];
+    for _ in 0..over {
+        args.extend(
+            ["--rect", "0", "0", "10", "10"]
+                .iter()
+                .map(|s| s.to_string()),
+        );
+    }
+    args.push("--output".into());
+    args.push(dst.to_string_lossy().into_owned());
+    let out = bin()
+        .args(["experimental-remove-regions"])
+        .arg(&src)
+        .args(&args)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    // The refusal is the rect-count limit, not an argument-parse
+    // error or a per-page eligibility refusal.
+    assert!(
+        stderr.contains("limit exceeded") && stderr.contains("max_diag_rects"),
+        "expected a max_diag_rects refusal, got: {stderr}"
+    );
+    // Not an argument error and not a page-level unsupported refusal.
+    assert!(!stderr.contains("usage:"), "{stderr}");
+    assert!(!stderr.contains("unsupported"), "{stderr}");
     // Existing output and input are preserved.
     assert_eq!(fs::read(&dst).unwrap(), b"SENTINEL");
     assert_eq!(fs::read(&src).unwrap(), two_page_text_image_pdf());
