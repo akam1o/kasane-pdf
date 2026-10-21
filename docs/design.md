@@ -750,6 +750,17 @@ Design choices:
   does not imply the object was deleted; an image can survive
   via an inherited `/Resources` even when the page's `/XObject`
   no longer names it.
+- **M22 — inherited `/Resources` materialisation** — each page's
+  effective `/Resources` (as resolved by the page-tree walk) is
+  written explicitly into the page dict. A parent `/Pages` can
+  then drop its `/Resources` — but only when *every* descendant
+  page has been materialised. The parent keeps `/Type`, `/Kids`,
+  `/Count`, `/MediaBox`, `/CropBox`, `/Rotate` — only `/Resources`
+  is removed. The same `Edit`/overlay applies the materialisation,
+  the text/image edits, and the `/Contents` rewrite in one pass.
+  This is a *structural* cleanup, not a redaction guarantee: an
+  image that survives via another page, another `Do` name, or an
+  unmaterialised `/Pages` is still emitted.
 
 CLI: `kasane-pdf experimental-remove-region in.pdf 1 --rect llx lly
 urx ury [--rect …] --output out.pdf` — same atomic-write and

@@ -67,7 +67,7 @@ use crate::remove_image::{
     decode_image, fresh_xobject_name, image_pixel_ranges, is_default_decode, validate_image,
 };
 use crate::remove_text::{charge_generated, rewrite_ops_for, serialize_ops};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 /// The result of [`remove_region`] — the rewritten PDF bytes plus
 /// the audit trail of what was removed.
@@ -486,6 +486,109 @@ pub fn remove_region(
         .cloned()
         .ok_or_else(|| Error::Structure(format!("page {page_ref} is not a dictionary")))?;
     page_dict.insert(b"Contents".to_vec(), Object::Ref(stream_ref));
+
+    // ---- M22: materialise inherited Resources -----------------------
+    // Each page's *effective* Resources (as resolved by the page-tree
+    // walk) is written explicitly into the page dict. A parent /Pages
+    // can then drop its /Resources — but only when *every* descendant
+    // page has been materialised. This is the same Edit/overlay as the
+    // text/image edits — one rewrite, not two.
+    let mut pages_with_resources: Vec<IndirectRef> = Vec::new();
+    let mut pages_to_strip: Vec<IndirectRef> = Vec::new();
+    {
+        // Collect all page refs and their effective Resources.
+        for p in doc.pages() {
+            if let Some(pr) = p.object_ref() {
+                if p.resources().is_some() {
+                    pages_with_resources.push(pr);
+                }
+            }
+        }
+        // For each /Pages node that has /Resources, check if all
+        // descendants are in pages_with_resources. If so, the /Pages
+        // can drop its /Resources.
+        let catalog_dict = doc
+            .catalog()
+            .get(b"Pages".as_slice())
+            .and_then(|o| o.as_ref())
+            .ok_or_else(|| Error::Structure("catalog has no /Pages".into()))?;
+        let mut stack: Vec<IndirectRef> = vec![catalog_dict];
+        let mut visited: HashSet<IndirectRef> = HashSet::new();
+        while let Some(pages_ref) = stack.pop() {
+            if !visited.insert(pages_ref) {
+                continue;
+            }
+            let pages_obj = doc.resolve(pages_ref)?;
+            let pages_dict = pages_obj
+                .as_dict()
+                .ok_or_else(|| Error::Structure("/Pages is not a dictionary".into()))?;
+            if pages_dict.contains_key(b"Resources".as_slice()) {
+                // Check if all descendants are materialised.
+                let kids = pages_dict
+                    .get(b"Kids".as_slice())
+                    .and_then(|o| o.as_array())
+                    .ok_or_else(|| Error::Structure("/Pages has no /Kids".into()))?;
+                let mut all_materialised = true;
+                for kid in kids {
+                    if let Some(kid_ref) = kid.as_ref() {
+                        let kid_obj = doc.resolve(kid_ref)?;
+                        let kid_dict = kid_obj
+                            .as_dict()
+                            .ok_or_else(|| Error::Structure("/Kids entry is not a dict".into()))?;
+                        if kid_dict.contains_key(b"Kids".as_slice()) {
+                            // Intermediate node — push to stack.
+                            stack.push(kid_ref);
+                        } else {
+                            // Leaf page — must be in pages_with_resources.
+                            if !pages_with_resources.contains(&kid_ref) {
+                                all_materialised = false;
+                                break;
+                            }
+                        }
+                    } else {
+                        // Direct kid — no ref, cannot check.
+                        all_materialised = false;
+                        break;
+                    }
+                }
+                if all_materialised {
+                    pages_to_strip.push(pages_ref);
+                }
+            }
+        }
+    }
+
+    // Apply materialisation: each page gets its effective Resources.
+    for &pr in &pages_with_resources {
+        let p = doc
+            .pages()
+            .iter()
+            .find(|p| p.object_ref() == Some(pr))
+            .unwrap();
+        let p_obj = doc.resolve(pr)?;
+        let mut p_dict = p_obj
+            .as_dict()
+            .cloned()
+            .ok_or_else(|| Error::Structure("page is not a dictionary".into()))?;
+        p_dict.insert(b"Resources".to_vec(), p.resources().unwrap().clone());
+        edit.overlay
+            .insert((pr.number, pr.generation), Object::Dict(p_dict));
+    }
+    // Strip /Resources from /Pages nodes where all descendants are
+    // materialised.
+    for &pages_ref in &pages_to_strip {
+        let pages_obj = doc.resolve(pages_ref)?;
+        let mut pages_dict = pages_obj
+            .as_dict()
+            .cloned()
+            .ok_or_else(|| Error::Structure("/Pages is not a dictionary".into()))?;
+        pages_dict.remove(b"Resources".as_slice());
+        edit.overlay.insert(
+            (pages_ref.number, pages_ref.generation),
+            Object::Dict(pages_dict),
+        );
+    }
+
     let mut orphaned_names_removed: u64 = 0;
     if !new_xobject_entries.is_empty() {
         let mut res_dict = match page.resources() {
@@ -2100,8 +2203,10 @@ mod tests {
         );
         assert!(out_str.contains("/KasIm0"), "{out_str}");
 
-        // The parent /Pages resources must still contain the original
-        // /Im1 — the parent is shared and must not be mutated.
+        // M22: the parent /Pages has had /Resources stripped (all
+        // descendants were materialised). The page's own /Resources
+        // is the materialised copy — it has /Font and /Unused but
+        // /Im1 was orphaned and removed.
         let pages_ref = out_doc
             .catalog()
             .get(b"Pages".as_slice())
@@ -2109,26 +2214,32 @@ mod tests {
             .unwrap();
         let pages_obj = out_doc.resolve(pages_ref).unwrap();
         let pages_dict = pages_obj.as_dict().unwrap();
-        let pages_res = pages_dict.get(b"Resources".as_slice()).unwrap();
-        let pages_res_obj = out_doc.deref(pages_res).unwrap();
-        let pages_res_dict = pages_res_obj.as_dict().unwrap();
-        let pages_xobj = pages_res_dict.get(b"XObject".as_slice()).unwrap();
-        let pages_xobj_obj = out_doc.deref(pages_xobj).unwrap();
-        let pages_xobj_dict = pages_xobj_obj.as_dict().unwrap();
-        // Parent /XObject still has /Im1 (unchanged).
+        // Parent /Pages no longer has /Resources.
         assert!(
-            pages_xobj_dict.contains_key(b"Im1".as_slice()),
-            "parent /XObject must keep /Im1"
+            !pages_dict.contains_key(b"Resources".as_slice()),
+            "parent /Pages must drop /Resources after materialisation"
         );
-        // Parent /XObject does NOT have the new name.
+        // The page's own /Resources has /Font and /Unused but not /Im1.
+        let page_ref = out_doc.pages()[0].object_ref().unwrap();
+        let page_obj = out_doc.resolve(page_ref).unwrap();
+        let page_dict = page_obj.as_dict().unwrap();
+        let page_res = page_dict.get(b"Resources".as_slice()).unwrap();
+        let page_res_obj = out_doc.deref(page_res).unwrap();
+        let page_res_dict = page_res_obj.as_dict().unwrap();
+        let page_xobj = page_res_dict.get(b"XObject".as_slice()).unwrap();
+        let page_xobj_obj = out_doc.deref(page_xobj).unwrap();
+        let page_xobj_dict = page_xobj_obj.as_dict().unwrap();
         assert!(
-            !pages_xobj_dict.contains_key(b"KasIm0".as_slice()),
-            "parent /XObject must not get /KasIm0"
+            page_xobj_dict.contains_key(b"KasIm0".as_slice()),
+            "page /XObject must have /KasIm0"
         );
-        // Parent /XObject has /Unused (unchanged).
         assert!(
-            pages_xobj_dict.contains_key(b"Unused".as_slice()),
-            "parent /XObject must keep /Unused"
+            !page_xobj_dict.contains_key(b"Im1".as_slice()),
+            "page /XObject must not have /Im1 (orphaned)"
+        );
+        assert!(
+            page_xobj_dict.contains_key(b"Unused".as_slice()),
+            "page /XObject must keep /Unused"
         );
     }
 
