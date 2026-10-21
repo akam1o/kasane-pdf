@@ -991,6 +991,15 @@ Key choices:
   keeps the original image stream and content; the writer's
   reachability scan drops the orphaned original only when nothing
   references it.
+- **M24.1 — per-page rect cap + panic-free errors.** The merged
+  per-page rect count is checked against `max_diag_rects` inside
+  the merge loop with `checked_add` — a page repeated across
+  several specs accumulates toward the same limit, so splitting a
+  page's rects across repeated specs cannot bypass it. The cap is
+  *per page* (matching the single-page API), not a document-wide
+  budget. Every `page_index + 1` in an error message routes through
+  `page_label()`, which uses `checked_add` — a `usize::MAX` index
+  produces a `Structure` refusal instead of overflowing.
 
 CLI `experimental-remove-regions` mirrors `experimental-remove-region`
 with `--page <n> --rect … [--page <m> --rect …] --output <out>`:

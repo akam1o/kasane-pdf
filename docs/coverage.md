@@ -889,6 +889,14 @@ where `specs` is `(0-based_page_index, rects)` pairs:
   into one plan; pages are processed in ascending order regardless
   of input order. Empty specs, empty rect lists, out-of-range page
   indices and malformed rects are all refused *before* any walk.
+- **Per-page `max_diag_rects`** (M24.1) — the merged per-page rect
+  count is bounded by the same `max_diag_rects` limit as the
+  single-page API; a page repeated across several specs cannot
+  bypass it. The count is per page, not a document-wide rect
+  budget — different pages each within the limit pass even when
+  their sum exceeds it. Out-of-range page indices refuse without
+  panicking — a `usize::MAX` index never overflows the error
+  message (`page_label` uses `checked_add`).
 - **Per-page rules unchanged** — every `remove_region` refusal
   (`/Annots`, forms, masks/JPEG/non-device colour, non-`Tr 0` text,
   `/UserUnit` ≠ 1, `blocker`/`uncertain`) applies per page. A

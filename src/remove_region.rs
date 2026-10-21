@@ -141,7 +141,7 @@ pub fn remove_region(
     let page = doc.pages().get(page_index).ok_or_else(|| {
         Error::Structure(format!(
             "page {} does not exist (document has {} pages)",
-            page_index + 1,
+            page_label(page_index),
             doc.page_count()
         ))
     })?;
@@ -597,7 +597,7 @@ pub fn remove_region(
         scope: vec![
             format!(
                 "page {} ({} rect{})",
-                page_index + 1,
+                page_label(page_index),
                 validated.len(),
                 if validated.len() == 1 { "" } else { "s" }
             ),
@@ -653,6 +653,17 @@ impl std::fmt::Debug for RegionsRemoval {
 /// The same page may appear more than once; its rect lists are merged.
 pub type PageSpec = (usize, Vec<(f64, f64, f64, f64)>);
 
+/// Format a 0-based page index for an error message without
+/// overflowing: valid pages display 1-based (`page_index + 1`), an
+/// out-of-range index that cannot be converted (e.g. `usize::MAX`)
+/// is shown raw so the error itself never panics.
+fn page_label(page_index: usize) -> String {
+    match page_index.checked_add(1) {
+        Some(n) => n.to_string(),
+        None => page_index.to_string(),
+    }
+}
+
 /// M24 — experimental scoped region removal over **multiple pages**
 /// in one edit session and one rewrite.
 ///
@@ -684,27 +695,45 @@ pub fn remove_regions(
         ));
     }
     // Merge per-page rect lists; keep them sorted by page index.
+    // `max_diag_rects` bounds the *merged* per-page rect count — a
+    // page repeated across several specs cannot bypass it. The
+    // check runs before extend so an over-limit page is refused
+    // regardless of spec order.
     let mut by_page: BTreeMap<usize, Vec<(f64, f64, f64, f64)>> = BTreeMap::new();
     for (page_index, rects) in specs {
         if rects.is_empty() {
             return Err(Error::Structure(format!(
                 "page {} has an empty rect list",
-                page_index + 1
+                page_label(*page_index)
             )));
         }
         let entry = by_page.entry(*page_index).or_default();
+        let merged = entry
+            .len()
+            .checked_add(rects.len())
+            .ok_or(Error::LimitExceeded {
+                limit: "max_diag_rects",
+                max: limits.max_diag_rects,
+            })?;
+        if merged as u64 > limits.max_diag_rects {
+            return Err(Error::LimitExceeded {
+                limit: "max_diag_rects",
+                max: limits.max_diag_rects,
+            });
+        }
         entry.extend_from_slice(rects);
     }
     // Validate every rect and page index *before* walking anything.
     for (page_index, rects) in &by_page {
         for (i, r) in rects.iter().enumerate() {
-            check_rect(i, r.0, r.1, r.2, r.3)
-                .map_err(|e| Error::Structure(format!("page {} rect {i}: {e}", page_index + 1)))?;
+            check_rect(i, r.0, r.1, r.2, r.3).map_err(|e| {
+                Error::Structure(format!("page {} rect {i}: {e}", page_label(*page_index)))
+            })?;
         }
         if doc.pages().get(*page_index).is_none() {
             return Err(Error::Structure(format!(
                 "page {} does not exist (document has {} pages)",
-                page_index + 1,
+                page_label(*page_index),
                 doc.page_count()
             )));
         }
@@ -4144,5 +4173,539 @@ mod tests {
         assert!(!dbg.contains("\\x10\\x20"), "leaked image: {dbg}");
         // The scope reports page counts, not content.
         assert!(dbg.contains("codes_removed"));
+    }
+
+    /// Enumerate every `/Subtype /Image` stream in a re-parsed output
+    /// document, returning `(ref, decoded_data)` pairs.
+    fn image_streams(d: &Document) -> Vec<(IndirectRef, Vec<u8>)> {
+        let mut v = Vec::new();
+        for i in 1..40u32 {
+            let r = IndirectRef {
+                number: i,
+                generation: 0,
+            };
+            if let Ok(Object::Stream { dict, data }) = d.resolve(r) {
+                if dict.get(b"Subtype".as_slice()).and_then(|o| o.as_name())
+                    == Some(b"Image".as_slice())
+                {
+                    v.push((r, data));
+                }
+            }
+        }
+        v
+    }
+
+    /// The XObject name(s) a page's `/Contents` invokes — decoded
+    /// text of every `Do` op in the resolved stream.
+    fn do_names_in_contents(d: &Document, page: &crate::page::Page) -> Vec<Vec<u8>> {
+        let ops = d.page_operations(page).unwrap();
+        ops.iter()
+            .filter_map(|o| match o {
+                Operation::Do(n) => Some(n.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Resolve a page's `/XObject /{name}` entry to its indirect ref.
+    fn page_xobject_ref(
+        d: &Document,
+        page: &crate::page::Page,
+        name: &[u8],
+    ) -> Option<IndirectRef> {
+        let res = page.resources()?;
+        let entry = d.resolve_resource_raw(res, "XObject", name).ok()??;
+        entry.as_ref()
+    }
+
+    // ---- M24.1 — per-page rect count limit -------------------------
+
+    /// `max_diag_rects` bounds the *merged* per-page rect count —
+    /// repeated specs for one page cannot bypass it.
+    #[test]
+    fn m24_1_rect_count_limit() {
+        let d = doc(&two_page_text_image_pdf());
+        // A tiny cap — one rect fits, two do not.
+        let limits = Limits {
+            max_diag_rects: 1,
+            ..Default::default()
+        };
+        // Two rects in one spec.
+        let e = remove_regions(
+            &d,
+            &[(0, vec![(0.0, 0.0, 10.0, 10.0), (1.0, 1.0, 2.0, 2.0)])],
+            &limits,
+        )
+        .unwrap_err();
+        match e {
+            Error::LimitExceeded { limit, .. } => assert_eq!(limit, "max_diag_rects"),
+            other => panic!("expected LimitExceeded(max_diag_rects), got {other:?}"),
+        }
+        // Two specs for the same page — merged count 2 > 1.
+        let e = remove_regions(
+            &d,
+            &[
+                (0, vec![(0.0, 0.0, 10.0, 10.0)]),
+                (0, vec![(1.0, 1.0, 2.0, 2.0)]),
+            ],
+            &limits,
+        )
+        .unwrap_err();
+        match e {
+            Error::LimitExceeded { limit, .. } => assert_eq!(limit, "max_diag_rects"),
+            other => panic!("expected LimitExceeded(max_diag_rects), got {other:?}"),
+        }
+        // Non-adjacent specs for the same page still merge.
+        let e = remove_regions(
+            &d,
+            &[
+                (0, vec![(0.0, 0.0, 10.0, 10.0)]),
+                (1, vec![(0.0, 0.0, 10.0, 10.0)]),
+                (0, vec![(1.0, 1.0, 2.0, 2.0)]),
+            ],
+            &limits,
+        )
+        .unwrap_err();
+        match e {
+            Error::LimitExceeded { limit, .. } => assert_eq!(limit, "max_diag_rects"),
+            other => panic!("expected LimitExceeded(max_diag_rects), got {other:?}"),
+        }
+        // Duplicate identical rects still count as input entries.
+        let e = remove_regions(
+            &d,
+            &[(0, vec![(0.0, 0.0, 10.0, 10.0), (0.0, 0.0, 10.0, 10.0)])],
+            &limits,
+        )
+        .unwrap_err();
+        match e {
+            Error::LimitExceeded { limit, .. } => assert_eq!(limit, "max_diag_rects"),
+            other => panic!("expected LimitExceeded(max_diag_rects), got {other:?}"),
+        }
+        // Two pages each within the limit pass — the cap is per
+        // page, not a document-wide rect budget.
+        let r = remove_regions(
+            &d,
+            &[
+                (0, vec![(20.0, 140.0, 30.0, 160.0)]),
+                (1, vec![(100.0, 100.0, 140.0, 140.0)]),
+            ],
+            &limits,
+        )
+        .unwrap();
+        assert_eq!(r.codes_removed + r.invocations_edited, 2);
+    }
+
+    /// The limit boundary exactly succeeds.
+    #[test]
+    fn m24_1_rect_count_boundary() {
+        let d = doc(&two_page_text_image_pdf());
+        let limits = Limits {
+            max_diag_rects: 2,
+            ..Default::default()
+        };
+        let r = remove_regions(
+            &d,
+            &[(0, vec![(0.0, 0.0, 10.0, 10.0), (1.0, 1.0, 2.0, 2.0)])],
+            &limits,
+        )
+        .unwrap();
+        assert_eq!(r.per_page.len(), 1);
+    }
+
+    // ---- M24.1 — page-index overflow -------------------------------
+
+    /// `usize::MAX` as a page index must not overflow the `page + 1`
+    /// error path — the refusal is `Error::Structure`, not a panic.
+    #[test]
+    fn m24_1_page_index_overflow() {
+        let d = doc(&two_page_text_image_pdf());
+        // usize::MAX + 1 would wrap in release and panic in debug.
+        let e = remove_regions(
+            &d,
+            &[(usize::MAX, vec![(0.0, 0.0, 10.0, 10.0)])],
+            &Limits::default(),
+        )
+        .unwrap_err();
+        match e {
+            Error::Structure(_) => {}
+            other => panic!("expected Structure, got {other:?}"),
+        }
+        // The first out-of-range index (page_count == 2 → index 2).
+        let e = remove_regions(&d, &[(2, vec![(0.0, 0.0, 10.0, 10.0)])], &Limits::default())
+            .unwrap_err();
+        match e {
+            Error::Structure(msg) => assert!(msg.contains("page 3"), "{msg}"),
+            other => panic!("expected Structure, got {other:?}"),
+        }
+        // Out-of-range page + empty rects — both are refusals; the
+        // first check (empty rects) wins, and it must not panic.
+        let e = remove_regions(&d, &[(usize::MAX, vec![])], &Limits::default()).unwrap_err();
+        match e {
+            Error::Structure(_) => {}
+            other => panic!("expected Structure, got {other:?}"),
+        }
+        // Out-of-range page + a malformed rect — rect validation
+        // runs first; still a typed error, never a panic.
+        let e = remove_regions(
+            &d,
+            &[(usize::MAX, vec![(10.0, 10.0, 0.0, 0.0)])],
+            &Limits::default(),
+        )
+        .unwrap_err();
+        match e {
+            Error::Structure(_) => {}
+            other => panic!("expected Structure, got {other:?}"),
+        }
+        // Valid first and last pages still work.
+        let r = remove_regions(
+            &d,
+            &[
+                (0, vec![(20.0, 140.0, 30.0, 160.0)]),
+                (1, vec![(20.0, 140.0, 30.0, 160.0)]),
+            ],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.per_page.len(), 2);
+    }
+
+    // ---- M24.1 — shared image across two edited pages --------------
+
+    /// Two pages share the same image object; different rects edit
+    /// different pixels. Each page's clone is independent — page 1's
+    /// edit does not leak into page 2's clone and vice versa.
+    #[test]
+    fn m24_1_shared_image_two_edited_pages() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        push!(
+            4,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 11 0 R >>"
+        );
+        // Identifiable 2x2 gray image.
+        let img_data = [0xAAu8, 0xBB, 0xCC, 0xDD];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        // Page 1: image at (20,60); page 2: image at (100,100).
+        let body1 = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body1.len()).into_bytes();
+        sb.extend_from_slice(body1);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let body2 = b"40 0 0 40 100 100 cm\n/Im1 Do\n";
+        let mut sb2 = format!("<< /Length {} >>\nstream\n", body2.len()).into_bytes();
+        sb2.extend_from_slice(body2);
+        sb2.extend_from_slice(b"\nendstream");
+        push!(11, &sb2);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 12\n0000000000 65535 f \n".to_vec());
+        for n in 1..12u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 12 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // Page 1 edits pixel (0,1) — the painted image's lower-left
+        // quadrant (unit-space y<0.5 maps to the bottom pixel row).
+        // Page 2 edits pixel (1,0) — the upper-right quadrant.
+        let r = remove_regions(
+            &d,
+            &[
+                (0, vec![(20.0, 60.0, 40.0, 80.0)]),     // paints (0,1)
+                (1, vec![(120.0, 120.0, 140.0, 140.0)]), // paints (1,0)
+            ],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.invocations_edited, 2);
+        assert_eq!(r.pixels_changed, 2);
+        // Re-parse and inspect every image stream.
+        let out = doc(&r.output);
+        let streams = image_streams(&out);
+        // What must exist are the two *distinct* edited clones.
+        let has = |pat: &[u8]| streams.iter().any(|(_, d)| d == pat);
+        // Page 1 painted (0,1) → pixel index 2 (row 1, col 0).
+        assert!(has(&[0xAA, 0xBB, 0x00, 0xDD]), "page-1 clone missing");
+        // Page 2 painted (1,0) → pixel index 1 (row 0, col 1).
+        assert!(has(&[0xAA, 0x00, 0xCC, 0xDD]), "page-2 clone missing");
+        // Each page's content references a generated KasIm name —
+        // the name may coincide (`KasIm0` on both) since it only
+        // needs to be unique within *that page's* /XObject dict.
+        let p1_names = do_names_in_contents(&out, out.pages().first().unwrap());
+        let p2_names = do_names_in_contents(&out, out.pages().get(1).unwrap());
+        let n1 = p1_names
+            .iter()
+            .find(|n| n.starts_with(b"KasIm"))
+            .expect("p1 KasIm");
+        let n2 = p2_names
+            .iter()
+            .find(|n| n.starts_with(b"KasIm"))
+            .expect("p2 KasIm");
+        // The names resolve through each page's own /XObject dict to
+        // the two different clones.
+        let r1 = page_xobject_ref(&out, out.pages().first().unwrap(), n1).unwrap();
+        let r2 = page_xobject_ref(&out, out.pages().get(1).unwrap(), n2).unwrap();
+        let d1 = match out.resolve(r1).unwrap() {
+            Object::Stream { data, .. } => data,
+            _ => panic!("p1 clone is not a stream"),
+        };
+        let d2 = match out.resolve(r2).unwrap() {
+            Object::Stream { data, .. } => data,
+            _ => panic!("p2 clone is not a stream"),
+        };
+        assert_eq!(d1.as_slice(), &[0xAA, 0xBB, 0x00, 0xDD]);
+        assert_eq!(d2.as_slice(), &[0xAA, 0x00, 0xCC, 0xDD]);
+    }
+
+    /// Different branches of the page tree give `/Im1` different
+    /// effective resources — each page edits *its own* image.
+    #[test]
+    fn m24_1_same_name_different_image_per_branch() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        // Two branches — each has its own /Resources naming /Im1 to
+        // a different image object.
+        push!(2, b"<< /Type /Pages /Kids [10 0 R 11 0 R] /Count 2 >>");
+        push!(
+            10,
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 /Parent 2 0 R \
+              /Resources << /XObject << /Im1 12 0 R >> >> >>"
+        );
+        push!(
+            11,
+            b"<< /Type /Pages /Kids [4 0 R] /Count 1 /Parent 2 0 R \
+              /Resources << /XObject << /Im1 13 0 R >> >> >>"
+        );
+        push!(
+            3,
+            b"<< /Type /Page /Parent 10 0 R /MediaBox [0 0 200 200] \
+              /Contents 9 0 R >>"
+        );
+        push!(
+            4,
+            b"<< /Type /Page /Parent 11 0 R /MediaBox [0 0 200 200] \
+              /Contents 14 0 R >>"
+        );
+        // Branch-1 image 12: 0x10,0x20,0x30,0x40 — branch-2 image 13:
+        // 0x90,0xA0,0xB0,0xC0.
+        for (n, data) in [
+            (12, [0x10u8, 0x20, 0x30, 0x40]),
+            (13, [0x90u8, 0xA0, 0xB0, 0xC0]),
+        ] {
+            let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+                  /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+                .to_vec();
+            f.extend_from_slice(data.len().to_string().as_bytes());
+            f.extend_from_slice(b" >>\nstream\n");
+            f.extend_from_slice(&data);
+            f.extend_from_slice(b"\nendstream");
+            push!(n, &f);
+        }
+        for (n, body) in [
+            (9, b"40 0 0 40 20 60 cm\n/Im1 Do\n" as &[u8]),
+            (14, b"40 0 0 40 100 100 cm\n/Im1 Do\n"),
+        ] {
+            let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+            sb.extend_from_slice(body);
+            sb.extend_from_slice(b"\nendstream");
+            push!(n, &sb);
+        }
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 15\n0000000000 65535 f \n".to_vec());
+        for n in 1..15u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 15 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // Page 1 paints pixel (0,1) (lower-left); page 2 paints
+        // pixel (1,0) (upper-right) — different quadrants.
+        let r = remove_regions(
+            &d,
+            &[
+                (0, vec![(20.0, 60.0, 40.0, 80.0)]),     // paints (0,1)
+                (1, vec![(120.0, 120.0, 140.0, 140.0)]), // paints (1,0)
+            ],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.invocations_edited, 2);
+        assert_eq!(r.pixels_changed, 2);
+        let out = doc(&r.output);
+        let p1 = out.pages().first().unwrap();
+        let p2 = out.pages().get(1).unwrap();
+        // Each page's contents + materialised resources coexist.
+        for p in [p1, p2] {
+            let pd = p.object_ref().unwrap();
+            let obj = out.resolve(pd).unwrap();
+            let dict = obj.as_dict().unwrap();
+            assert!(
+                dict.get(b"Contents".as_slice()).is_some(),
+                "page missing /Contents"
+            );
+            assert!(
+                dict.get(b"Resources".as_slice()).is_some(),
+                "page missing /Resources"
+            );
+        }
+        // Page 1's KasIm resolves to a clone of branch-1's image
+        // (first pixel 0 → 0x00), page 2's to a clone of branch-2's.
+        let n1 = do_names_in_contents(&out, p1)
+            .into_iter()
+            .find(|n| n.starts_with(b"KasIm"))
+            .unwrap();
+        let n2 = do_names_in_contents(&out, p2)
+            .into_iter()
+            .find(|n| n.starts_with(b"KasIm"))
+            .unwrap();
+        let d1 = match out
+            .resolve(page_xobject_ref(&out, p1, &n1).unwrap())
+            .unwrap()
+        {
+            Object::Stream { data, .. } => data,
+            _ => panic!("not a stream"),
+        };
+        let d2 = match out
+            .resolve(page_xobject_ref(&out, p2, &n2).unwrap())
+            .unwrap()
+        {
+            Object::Stream { data, .. } => data,
+            _ => panic!("not a stream"),
+        };
+        assert_eq!(d1.as_slice(), &[0x10, 0x20, 0x00, 0x40], "branch-1 clone");
+        assert_eq!(d2.as_slice(), &[0x90, 0x00, 0xB0, 0xC0], "branch-2 clone");
+    }
+
+    /// An unedited page sharing the image keeps the original —
+    /// the edited page's clone does not leak back.
+    #[test]
+    fn m24_1_unedited_page_keeps_shared_original() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        push!(
+            4,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 11 0 R >>"
+        );
+        let img_data = [0xAAu8, 0xBB, 0xCC, 0xDD];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body1 = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body1.len()).into_bytes();
+        sb.extend_from_slice(body1);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let body2 = b"40 0 0 40 100 100 cm\n/Im1 Do\n";
+        let mut sb2 = format!("<< /Length {} >>\nstream\n", body2.len()).into_bytes();
+        sb2.extend_from_slice(body2);
+        sb2.extend_from_slice(b"\nendstream");
+        push!(11, &sb2);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 12\n0000000000 65535 f \n".to_vec());
+        for n in 1..12u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 12 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // Only page 1 is edited — its clone blackens pixel (0,1).
+        let r = remove_regions(
+            &d,
+            &[(0, vec![(20.0, 60.0, 40.0, 80.0)])],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        assert_eq!(r.pixels_changed, 1);
+        let out = doc(&r.output);
+        // The unedited page's `/Im1` must still resolve to the
+        // original stream content.
+        let p2 = out.pages().get(1).unwrap();
+        let orig_ref = page_xobject_ref(&out, p2, b"Im1").unwrap();
+        let data = match out.resolve(orig_ref).unwrap() {
+            Object::Stream { data, .. } => data,
+            _ => panic!("not a stream"),
+        };
+        assert_eq!(
+            data.as_slice(),
+            &[0xAA, 0xBB, 0xCC, 0xDD],
+            "unedited page must keep the original image"
+        );
+        // The original image still exists somewhere in the output.
+        let streams = image_streams(&out);
+        assert!(
+            streams
+                .iter()
+                .any(|(_, d)| d.as_slice() == [0xAA, 0xBB, 0xCC, 0xDD]),
+            "original image dropped even though page 2 references it"
+        );
     }
 }
