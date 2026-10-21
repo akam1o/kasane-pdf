@@ -634,10 +634,10 @@ pixels_changed, sites, scope }`:
   (image rows top-down) are unchanged. The intermediate `Vec` is
   bounded by `rects.len()` (`max_diag_rects`), never by image height.
 - **Pixel count, not component count (M19.1)**: `pixels_changed`
-  counts *pixels* — a pixel is one unit regardless of how many of
-  its channels were non-zero. RGB `[r,g,b]` → `[0,0,0]` counts as 1;
-  `[0,128,0]` → `[0,0,0]` also counts as 1; an already-black pixel
-  counts as 0. Gray follows the same definition.
+  counts *pixels* — a pixel is one unit when at least one of its
+  components changed **from non-0 to 0**. RGB `[r,g,b]` → `[0,0,0]`
+  counts as 1; `[0,128,0]` → `[0,0,0]` also counts as 1; an
+  already-all-0 pixel counts as 0. Gray follows the same definition.
 - **Colour-space resolution + Default* substitution (M19.2)**:
   `/ColorSpace` names are resolved through the page's effective
   `/Resources /ColorSpace` dict — `/CS1` → `/DeviceGray` works.
@@ -807,7 +807,7 @@ invocations_edited, pixels_changed, sites, scope }`:
   recorded at each `Image` `Do` — M20.1). `max_operations`
   bounds the output op count. The final PDF is bounded by
   `max_output_bytes`.
-- `pixels_changed` counts *pixels* (≥1 channel changed), not
+- `pixels_changed` counts *pixels* (≥1 channel went non-0 → 0), not
   components — same definition as M19.1/M19.2.
 - A rect that hits nothing produces an empty edit set — `Ok` with
   `codes_removed = 0`, `invocations_edited = 0`, `pixels_changed = 0`.
@@ -955,16 +955,24 @@ Image XObject is now *editable* when it is a single-filter baseline
 JPEG that decodes to 8-bit DeviceGray or DeviceRGB samples:
 
 - **Accepted**: `/Filter /DCTDecode` or `[/DCTDecode]`; the JPEG
-  must produce `L8` or `RGB24` output (jpeg-decoder's pixel
-  formats); `Width`/`Height`/`ColorSpace` in the dict must match the
-  JPEG's own header; `/DecodeParms /ColorTransform` may be `0`
-  (raw component values — no YCbCr→RGB) or `1`/absent (decoder's
-  internal transform); every other `DecodeParms` key is refused.
-- **Refused**: CMYK/YCCK/16-bit/progressive JPEGs, any filter
-  chain (`[ASCII85Decode DCTDecode]` etc.), `/JPXDecode`, corrupt
-  or truncated JPEG data, dict↔JPEG geometry or component-count
-  mismatch, and every prior refusal (masks, `/Interpolate`,
-  non-default `/Decode`, non-axis-aligned CTM, forms, annotations).
+  must be **sequential DCT** (`DctSequential` — baseline or
+  extended-sequential) and produce `L8` or `RGB24` output
+  (jpeg-decoder's pixel formats); `Width`/`Height`/`ColorSpace` in
+  the dict must match the JPEG's own header. `/DecodeParms
+  /ColorTransform` may be `0` or `1` — but per spec (ISO 32000-1
+  §7.4.8) an Adobe APP14 marker in the JPEG *overrides* the PDF
+  value, and `0` is refused on chroma-subsampled JPEGs because the
+  decoder cannot emit raw subsampled planes as interleaved pixels.
+  Every other `DecodeParms` key is refused.
+- **Refused**: progressive (`DctProgressive`), lossless, CMYK/YCCK/
+  16-bit JPEGs; differential or arithmetic-coded sequential frames
+  (refused by the decoder itself as `Unsupported`); any filter chain
+  (`[ASCII85Decode DCTDecode]` etc.); `/JPXDecode`; corrupt or
+  truncated JPEG data (`Parse`, distinct from `Unsupported`);
+  `/ColorTransform 0` on a subsampled JPEG; dict↔JPEG geometry or
+  component-count mismatch; and every prior refusal (masks,
+  `/Interpolate`, non-default `/Decode`, non-axis-aligned CTM,
+  forms, annotations).
 - **Decode + edit**: the JPEG is decoded to raw samples, the
   rect-union blackening runs on the decoded buffer exactly as for
   raw/Flate images, and the clone is written **uncompressed**

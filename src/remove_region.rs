@@ -5431,6 +5431,51 @@ mod tests {
          c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c03010002110311003f00e5\
          3e0bfec87fea3fd0bd3f868a28aac2626afb25a9d5c07c6b9d7f62d3fdeff5f79fffd9";
 
+    /// c8_prog.jpg — 8×8 DeviceRGB *progressive* JPEG, 553 bytes,
+    /// `cjpeg -progressive -quality 90` from c8.ppm; must be refused
+    /// as Unsupported (progressive is out of scope), not Parse.
+    const JPEG_C8_PROG_HEX: &str =
+        "ffd8ffe000104a46494600010100000100010000ffdb0043000302020302020303030304030304050805050404050a070706080c0a0c0c0b\
+         0a0b0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ffdb00430103040405040509050509140d0b0d14141414\
+         14141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414ffc20011080008000803\
+         012200021101031101ffc4001500010100000000000000000000000000000005ffc4001501010100000000000000000000000000000103ff\
+         da000c03010002100310000001921aff00ffc400161000030000000000000000000000000000000506ffda00080101000105024b207fffc4\
+         00191100010500000000000000000000000000050002041422ffda0008010301013f01026a6d26e97fffc400171100030100000000000000\
+         00000000000000020312ffda0008010201013f01951b27ffc400161000030000000000000000000000000000000122ffda0008010100063f\
+         02507fffc40015100101000000000000000000000000000000f1ffda0008010100013f2184ffda000c03010002000300000010f3ffc40016\
+         110003000000000000000000000000000000c1f0ffda0008010301013f109167ffc400161100030000000000000000000000000000001121\
+         ffda0008010201013f105f4fffc40015100101000000000000000000000000000000a1ffda0008010100013f10867fffd9";
+
+    /// c8_rgb.jpg — 8×8 DeviceRGB baseline JPEG *encoded as RGB*
+    /// (Adobe APP14 transform=0, component IDs R/G/B, no subsampling),
+    /// 374 bytes, `cjpeg -rgb -quality 90` from c8.ppm. Decodes to
+    /// raw RGB — first six samples `00 00 00 1f 00 0f`.
+    const JPEG_C8_RGB_HEX: &str =
+        "ffd8ffee000e41646f626500640000000000ffdb0043000302020302020303030304030304050805050404050a070706080c0a0c0c0b0a0b\
+         0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ffc00011080008000803521100471100421100ffc4001f0000\
+         010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d0102030004110512\
+         2131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a43444546474849\
+         4a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6\
+         b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda000c03520047004200003f00\
+         e53fe09b7ff30bff0080d729ff000edbff00a85ffe43ae53f66dfd9b7fe3d7fd17d3f86bffd9";
+
+    /// c8_nojfif.jpg — 8×8 DeviceRGB baseline JPEG with the JFIF
+    /// APP0 segment manually removed, 641 bytes. Component IDs are
+    /// still (1,2,3) so the decoder picks YCbCr; Adobe APP14 absent.
+    const JPEG_C8_NOJFIF_HEX: &str =
+        "ffd8ffdb0043000302020302020303030304030304050805050404050a070706080c0a0c0c0b0a0b0b0d0e12100d0e110e0b0b1016101113\
+         141515150c0f171816141812141514ffdb00430103040405040509050509140d0b0d14141414141414141414141414141414141414141414\
+         14141414141414141414141414141414141414141414141414141414ffc00011080008000803012200021101031101ffc4001f0000010501\
+         010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d0102030004110512213141\
+         0613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a5354\
+         55565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9\
+         bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffc4001f01000301010101010101010100\
+         00000000000102030405060708090a0bffc400b5110002010204040304070504040001027700010203110405213106124151076171132232\
+         8108144291a1b1c109233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a63\
+         6465666768696a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6\
+         c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c03010002110311003f00e53e0bfec87fea3fd0bd3f\
+         868a28aac2626afb25a9d5c07c6b9d7f62d3fdeff5f79fffd9";
+
     /// c16.jpg — 16×16 DeviceRGB JPEG, 702 bytes, same provenance.
     const JPEG_C16_HEX: &str =
         "ffd8ffe000104a46494600010100000100010000ffdb0043000302020302020303030304030304050805050404050a07\
@@ -5451,7 +5496,16 @@ mod tests {
 
     /// A 1-page PDF with one JPEG image painted at `cm` over the
     /// MediaBox. `cs_name` must match the JPEG's own component count.
-    fn jpeg_page_pdf(jpeg: &[u8], w: u32, h: u32, cs_name: &str, cm: &str) -> Vec<u8> {
+    /// `decode_parms` is inserted verbatim into the image dict —
+    /// pass `""` for none, e.g. `"/DecodeParms << /ColorTransform 0 >>"`.
+    fn jpeg_page_pdf_parms(
+        jpeg: &[u8],
+        w: u32,
+        h: u32,
+        cs_name: &str,
+        cm: &str,
+        decode_parms: &str,
+    ) -> Vec<u8> {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -5473,7 +5527,7 @@ mod tests {
         let mut f = format!(
             "<< /Type /XObject /Subtype /Image /Width {w} /Height {h} \
               /ColorSpace /{cs_name} /BitsPerComponent 8 \
-              /Filter /DCTDecode /Length {} >>\nstream\n",
+              /Filter /DCTDecode {decode_parms} /Length {} >>\nstream\n",
             jpeg.len()
         )
         .into_bytes();
@@ -5497,6 +5551,11 @@ mod tests {
         parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
         parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
         parts.concat()
+    }
+
+    /// Convenience wrapper without `/DecodeParms`.
+    fn jpeg_page_pdf(jpeg: &[u8], w: u32, h: u32, cs_name: &str, cm: &str) -> Vec<u8> {
+        jpeg_page_pdf_parms(jpeg, w, h, cs_name, cm, "")
     }
 
     /// A 2-page PDF: both pages invoke the *same* JPEG image object.
@@ -6506,6 +6565,304 @@ mod tests {
         match e {
             Error::Unsupported { feature, .. } => assert!(feature.contains("Annots"), "{feature}"),
             other => panic!("expected Unsupported(/Annots), got {other:?}"),
+        }
+    }
+
+    // -- M27.1 — coding-process check + ColorTransform precedence ----
+
+    /// A progressive JPEG is `Unsupported`, not `Parse` — the data is
+    /// well-formed, just out of scope. Checked *before* decode so no
+    /// partial output is produced.
+    #[test]
+    fn m27_1_progressive_jpeg_unsupported() {
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_C8_PROG_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        let e = remove_image_region(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default())
+            .unwrap_err();
+        match e {
+            Error::Unsupported { feature, detail } => {
+                assert!(
+                    feature.contains("coding process")
+                        || feature.contains("DCTDecode")
+                        || detail.contains("rogressive")
+                        || detail.contains("DctProgressive"),
+                    "unexpected Unsupported: {feature}: {detail}"
+                );
+            }
+            other => panic!("expected Unsupported(progressive), got {other:?}"),
+        }
+    }
+
+    /// The same progressive refusal through `remove_regions` — the
+    /// shared `decode_image` path refuses it identically.
+    #[test]
+    fn m27_1_progressive_via_remove_regions() {
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_C8_PROG_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        let e = remove_regions(
+            &d,
+            &[(0, vec![(0.0, 0.0, 200.0, 200.0)])],
+            &Limits::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(e, Error::Unsupported { .. }), "{e:?}");
+    }
+
+    /// A progressive refusal inside `remove_regions_and_document_metadata`
+    /// still fails the whole call — no partial output.
+    #[test]
+    fn m27_1_progressive_via_combined_entry() {
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_C8_PROG_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        let e = remove_regions_and_document_metadata(
+            &d,
+            &[(0, vec![(0.0, 0.0, 200.0, 200.0)])],
+            &Limits::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(e, Error::Unsupported { .. }), "{e:?}");
+    }
+
+    /// `/ColorTransform 0` on a *subsampled* YCbCr JPEG is refused —
+    /// the decoder's `ColorTransform::None` path cannot represent
+    /// the per-component planes as interleaved RGB, so we refuse
+    /// explicitly rather than emit a wrong shape.
+    #[test]
+    fn m27_1_ct0_on_subsampled_jpeg_refused() {
+        let d = doc(&jpeg_page_pdf_parms(
+            &unhex(JPEG_C8_HEX), // subsampled YCbCr (comp 1 = 2×2)
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+            "/DecodeParms << /ColorTransform 0 >>",
+        ));
+        let e = remove_image_region(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default())
+            .unwrap_err();
+        match e {
+            Error::Unsupported { feature, detail } => {
+                assert!(
+                    feature.contains("ColorTransform") || detail.contains("subsampled"),
+                    "{feature}: {detail}"
+                );
+            }
+            other => panic!("expected Unsupported(ColorTransform 0), got {other:?}"),
+        }
+    }
+
+    /// `/ColorTransform 0` on a *non-subsampled* RGB-encoded JPEG
+    /// (c8_rgb: Adobe APP14 transform=0, all components 1×1) is
+    /// accepted — the raw component values *are* RGB, and the APP14
+    /// marker's transform=0 agrees with the PDF request.
+    #[test]
+    fn m27_1_ct0_on_rgb_jpeg_accepted() {
+        let d = doc(&jpeg_page_pdf_parms(
+            &unhex(JPEG_C8_RGB_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+            "/DecodeParms << /ColorTransform 0 >>",
+        ));
+        let r =
+            remove_image_region(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+    }
+
+    /// `/ColorTransform 0` is ignored when the JPEG carries an Adobe
+    /// APP14 marker — the in-data transform byte wins over the PDF
+    /// entry (ISO 32000-1 §7.4.8). c8_rgb's APP14 transform=0 already
+    /// says RGB, so the result equals CT=0 anyway, but the *reason*
+    /// it's accepted is the marker, not the PDF value.
+    ///
+    /// A conflicting combination — `/ColorTransform 1` on the RGB
+    /// JPEG — must therefore still decode as raw RGB (the marker's
+    /// transform=0 wins); asserting the *samples* distinguishes
+    /// "marker honoured" from "PDF honoured".
+    #[test]
+    fn m27_1_app14_wins_over_pdf_ct() {
+        let d = doc(&jpeg_page_pdf_parms(
+            &unhex(JPEG_C8_RGB_HEX), // APP14 transform=0 → raw RGB
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+            "/DecodeParms << /ColorTransform 1 >>", // PDF says YCbCr
+        ));
+        // Decode the image directly to inspect the samples — the
+        // marker must win, so the first pixels are the RGB-encoded
+        // values, not YCbCr→RGB of them.
+        let orig = d
+            .deref(&Object::Ref(IndirectRef {
+                number: 10,
+                generation: 0,
+            }))
+            .unwrap();
+        let samples = match orig {
+            Object::Stream { ref dict, ref data } => {
+                decode_image(dict, data, &Limits::default(), (8, 8, 3)).unwrap()
+            }
+            _ => panic!("not a stream"),
+        };
+        // c8_rgb first pixel is (0,0,0) and second is (0x1f,0x00,0x0f)
+        // when read as raw RGB (djpeg reference: `00 00 00 1f 00 0f`).
+        // YCbCr→RGB of those bytes would give a *different* value.
+        assert_eq!(&samples[0..3], &[0x00, 0x00, 0x00], "pixel 0");
+        assert_eq!(&samples[3..6], &[0x1f, 0x00, 0x0f], "pixel 1");
+    }
+
+    /// `/ColorTransform 1` on a JPEG *without* APP14 forces the
+    /// YCbCr→RGB conversion — same result as the default (the decoder
+    /// picks YCbCr from component IDs 1,2,3 anyway).
+    #[test]
+    fn m27_1_ct1_forces_ycbcr_without_app14() {
+        let d = doc(&jpeg_page_pdf_parms(
+            &unhex(JPEG_C8_NOJFIF_HEX), // no JFIF, no APP14
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+            "/DecodeParms << /ColorTransform 1 >>",
+        ));
+        let orig = d
+            .deref(&Object::Ref(IndirectRef {
+                number: 10,
+                generation: 0,
+            }))
+            .unwrap();
+        let samples = match orig {
+            Object::Stream { ref dict, ref data } => {
+                decode_image(dict, data, &Limits::default(), (8, 8, 3)).unwrap()
+            }
+            _ => panic!("not a stream"),
+        };
+        // Same chromatic content as c8: djpeg gives `01 00 00 16 07 0c`
+        // for the first two pixels; jpeg-decoder's fixed-point YCbCr→RGB
+        // rounds ±1 (documented tolerance — not a colour-space swap).
+        let expected = [0x01u8, 0x00, 0x00, 0x16, 0x07, 0x0c];
+        for (i, (&a, &b)) in samples.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                a.abs_diff(b) <= 1,
+                "sample {i}: got {a:#04x}, expected ~{b:#04x}"
+            );
+        }
+    }
+
+    /// The default (no `/ColorTransform`, no APP14) on a 3-component
+    /// JPEG applies YCbCr→RGB — the spec default for three components.
+    #[test]
+    fn m27_1_default_ct_is_ycbcr_on_3comp() {
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_C8_NOJFIF_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        let orig = d
+            .deref(&Object::Ref(IndirectRef {
+                number: 10,
+                generation: 0,
+            }))
+            .unwrap();
+        let samples = match orig {
+            Object::Stream { ref dict, ref data } => {
+                decode_image(dict, data, &Limits::default(), (8, 8, 3)).unwrap()
+            }
+            _ => panic!("not a stream"),
+        };
+        // Same chromatic YCbCr→RGB content as m27_1_ct1 — the default
+        // matches the explicit CT=1 result on 3-component data.
+        let expected = [0x01u8, 0x00, 0x00, 0x16, 0x07, 0x0c];
+        for (i, (&a, &b)) in samples.iter().zip(expected.iter()).enumerate() {
+            assert!(a.abs_diff(b) <= 1, "sample {i}: {a:#04x} vs {b:#04x}");
+        }
+    }
+
+    /// `/ColorTransform 1` on a *gray* JPEG is ignored per spec (the
+    /// transform applies only to 3- or 4-component data) — decode
+    /// succeeds and the samples are the plain gray values.
+    #[test]
+    fn m27_1_ct1_on_gray_ignored() {
+        let d = doc(&jpeg_page_pdf_parms(
+            &unhex(JPEG_G8_HEX),
+            8,
+            8,
+            "DeviceGray",
+            "200 0 0 200 0 0 cm",
+            "/DecodeParms << /ColorTransform 1 >>",
+        ));
+        let orig = d
+            .deref(&Object::Ref(IndirectRef {
+                number: 10,
+                generation: 0,
+            }))
+            .unwrap();
+        let samples = match orig {
+            Object::Stream { ref dict, ref data } => {
+                decode_image(dict, data, &Limits::default(), (8, 8, 1)).unwrap()
+            }
+            _ => panic!("not a stream"),
+        };
+        // g8 row 0 = 0 35 61 90 125 156 184 215 — same as the
+        // no-ColorTransform decode; CT=1 changes nothing on gray.
+        let row0 = [0u8, 35, 61, 90, 125, 156, 184, 215];
+        for (i, (&a, &b)) in samples.iter().zip(row0.iter()).enumerate() {
+            assert!(a.abs_diff(b) <= 1, "gray sample {i}: {a} vs {b}");
+        }
+    }
+
+    /// `/ColorTransform` with a non-integer value is a typed
+    /// `Structure` error, not a silent default.
+    #[test]
+    fn m27_1_ct_bad_type_refused() {
+        let d = doc(&jpeg_page_pdf_parms(
+            &unhex(JPEG_G8_HEX),
+            8,
+            8,
+            "DeviceGray",
+            "200 0 0 200 0 0 cm",
+            "/DecodeParms << /ColorTransform /Bad >>",
+        ));
+        let e = remove_image_region(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default())
+            .unwrap_err();
+        assert!(matches!(e, Error::Structure(_)), "{e:?}");
+    }
+
+    /// `/ColorTransform` outside {0,1} is `Unsupported`, distinct
+    /// from a parse error on corrupt data.
+    #[test]
+    fn m27_1_ct_bad_value_refused() {
+        let d = doc(&jpeg_page_pdf_parms(
+            &unhex(JPEG_G8_HEX),
+            8,
+            8,
+            "DeviceGray",
+            "200 0 0 200 0 0 cm",
+            "/DecodeParms << /ColorTransform 7 >>",
+        ));
+        let e = remove_image_region(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default())
+            .unwrap_err();
+        match e {
+            Error::Unsupported { feature, .. } => {
+                assert!(feature.contains("ColorTransform"), "{feature}")
+            }
+            other => panic!("expected Unsupported(ColorTransform), got {other:?}"),
         }
     }
 
