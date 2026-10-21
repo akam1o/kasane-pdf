@@ -53,12 +53,13 @@ pub(crate) struct XrefTable {
     /// keys (e.g. `/Root` and `/Size` surviving across increments).
     pub(crate) trailer: Dict,
     /// The trailer closest to `startxref` (the authoritative one).
-    /// Retained for future diagnostics and trailer-key provenance.
-    #[allow(dead_code)]
+    /// Used by the M23 audit for trailer-key provenance — the merged
+    /// `trailer` can carry keys (e.g. a stale `/Info`) that the
+    /// newest trailer no longer has.
     pub(crate) latest_trailer: Dict,
     /// Byte offsets of all xref sections read, newest first.
-    /// Retained for diagnostics (e.g. explaining /Prev chain failures).
-    #[allow(dead_code)]
+    /// Retained for diagnostics (e.g. explaining /Prev chain failures)
+    /// and for the M23 audit's revision history.
     pub(crate) section_offsets: Vec<u64>,
 }
 
@@ -97,6 +98,21 @@ impl XrefTable {
             .range((num, 0)..=(num, u16::MAX))
             .next()
             .is_some()
+    }
+
+    /// One entry's classification, if present in the merged view.
+    pub(crate) fn entry_of(&self, r: IndirectRef) -> Option<XrefEntry> {
+        self.entries.get(&(r.number, r.generation)).copied()
+    }
+
+    /// Iterate every merged xref entry (newest-wins view), in
+    /// `(number, generation)` order. Used by the M23 residual audit
+    /// to enumerate live objects without scanning every object number
+    /// up to `/Size`.
+    pub(crate) fn iter_entries(&self) -> impl Iterator<Item = (IndirectRef, XrefEntry)> + '_ {
+        self.entries
+            .iter()
+            .map(|(&(n, g), &e)| (IndirectRef::new(n, g), e))
     }
 }
 
@@ -193,7 +209,10 @@ pub(crate) fn read_xref_chain(
 }
 
 /// Read one xref section at `offset`. Returns its trailer dictionary.
-fn read_one_section(
+/// `pub(crate)` so the M23 audit can enumerate per-section entries —
+/// the merged view discards superseded bodies that an audit must
+/// still report.
+pub(crate) fn read_one_section(
     input: &[u8],
     limits: &Limits,
     offset: u64,

@@ -873,9 +873,90 @@ codes are absent and survivors keep positions; `pdfimages`
 extraction confirms only selected pixels are zeroed and the
 original image is preserved elsewhere in the file.
 
-## Robustness
+## Residual-information audit (M23, `audit`, CLI `audit-residuals`)
 
-Guaranteed (tested): bad xref offset, missing referenced objects, cyclic
+**Read-only.** `audit_residuals(&Document, &Limits)` returns a
+`ResidualAudit`; nothing is written, nothing is deleted, and the
+input `Document`/bytes are never mutated. The CLI prints the same
+result as text or `--format json` and writes no output file.
+
+Detected, per finding — *existence and location only*; a finding is
+**not** a "sensitive data" verdict and a clean report is **not** a
+"safe to distribute" one:
+
+- **Document info** — trailer `/Info` (key names only, never
+  values; distinguished as `PreviousRevision` when the newest
+  trailer has no `/Info` and the entry arrived via the merged
+  trailer). Catalog `/Metadata` (XMP stream). Page `/Thumb`.
+- **Attachments** — `/Names /EmbeddedFiles` name tree, `/Filespec`
+  dicts and `/EF` streams (including annotation `/FS`), catalog
+  `/AF`, `/Subtype /FileAttachment` annots.
+- **Annotations / forms** — annot text-bearing keys (`/Contents`,
+  `/RC`, `/T`, `/Subj`, `/Title`) by *presence* only, `/AP`, `/A` /
+  `/AA` action keys, `/Subtype /Widget`, field `/V`/`/DV` on widget
+  dicts, catalog `/AcroForm`, `/AcroForm /XFA`.
+- **Structure / alternate text** — `/StructTreeRoot`; `/ActualText`,
+  `/Alt`, `/E` inside structure elements (via `/K`) *and* inside
+  page-content `BDC`/`DP` property lists (both inline dicts and
+  `/Properties` name lookups).
+- **Actions / optional content** — catalog `/OpenAction` and `/AA`,
+  any dict carrying `/S` (with `/S /JavaScript` reported as
+  `JavaScript`, other `/S` values as `Action`), `/Names /JavaScript`,
+  catalog `/OCProperties` and its `/OCGs`.
+- **Resources & streams** — each page's effective `/Resources`,
+  every registered `/Font`/`/XObject` name (as
+  `ResourceUsageUnexamined` — *not* "unused"), every live xref stream
+  classified as `Image`, `FormXObject`, `ToUnicode` (via a font
+  dict's `/ToUnicode`), or `EmbeddedFont` (a `/FontFile*` inside a
+  `/FontDescriptor`).
+
+**Reachability classes** — the audit walks a root set of trailer
+`/Root`, trailer `/Info`, and every page object. Each object-bearing
+finding is `Reachable`, `UnreachableLive` (in the merged xref but
+not reached), `PreviousRevision` (a superseded body from an older
+xref section still present), or `Unevaluated` (physical regions the
+audit does not scan). `referrers` records the bounded set of
+`(object, key/index)` paths that point at an object; `via` carries a
+representative `PathStep` list (dict key, array index, name-tree
+entry, resource name).
+
+**History / physical data** — `xref_sections`, `incremental_history`
+(`Some(n)` = n prior `/Prev` sections; `None` = single section —
+*not* proof that no old bytes exist), `free_entries`,
+`compressed_entries`, `objects_in_old_region` (superseded bodies
+found by re-reading each `/Prev` section and comparing offsets —
+the merged xref's newest-wins shadow is undone). Physical slack
+(between objects, after `%%EOF`, unreferenced regions) is listed
+under `unexamined`, never as "absent".
+
+**Partial results** — `incomplete` records each scope that stopped
+early (limit name, or a non-limit reason like an unparsable content
+stream), so truncated coverage is never reported as "none found".
+`unexamined` lists scopes not evaluated at all.
+
+**Budgets** (all in `Limits`): `max_audit_findings`,
+`max_audit_edges`, `max_audit_paths` (referrers kept per object),
+`max_audit_walk_depth` (one object's container depth),
+`max_audit_content_ops` (per-page ops scanned for marked content).
+The document's own `max_reference_depth` and
+`max_total_decoded_bytes` still apply to resolutions/decodes.
+
+**Leakage** — notes carry keys, types, counts and refs only: Info
+values, annot contents, field values, JavaScript, XMP and stream
+bodies never appear in findings, `Debug`, or CLI output. External
+check: `scripts/verify_m23.sh` compares findings against qpdf's
+view on representative fixtures.
+
+CLI:
+
+```sh
+kasane-pdf audit-residuals <file.pdf> [--format text|json]
+```
+
+Exit code 0 on a completed audit (findings or not), 1 on a hard
+error — it is an *execution status*, not a safety verdict.
+
+
 page tree, indirect reference loops, truncated input, freed-object reuse,
 generation mismatch, bad xref-stream entry types, truncated Flate data,
 oversized decoded streams → typed errors, no panic, no unbounded work.

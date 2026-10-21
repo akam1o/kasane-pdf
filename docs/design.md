@@ -804,6 +804,50 @@ CLI: `kasane-pdf experimental-remove-region in.pdf 1 --rect llx lly
 urx ury [--rect …] --output out.pdf` — same atomic-write and
 same-file-refusal rules as the other experimental commands.
 
+## Residual-information audit (M23)
+
+`audit_residuals(doc, limits) -> ResidualAudit` is a **read-only**
+inventory of where a PDF can still carry information. It exists so a
+caller deciding what a "distributable" file must contain has an
+enumerated list to work from — the audit deliberately does *not*
+decide sensitivity, never deletes anything, and a clean report is
+not a safety verdict.
+
+Design choices:
+
+- **Three passes, one structure.** (1) a BFS reachability walk from
+  the audit roots (trailer `/Root`, trailer `/Info`, every page
+  object) builds `reachable` and `referrers`; (2) structure-keyed
+  passes read the trailer/catalog/page dicts, annotations, form
+  fields, structure tree, name trees and every live xref object;
+  (3) the xref/history pass re-reads each `/Prev` section so
+  superseded bodies are reported *as superseded*, not merged away.
+- **Findings carry no content.** `/Info` contributes key names only;
+  annot `/Contents`, field `/V`, JavaScript and stream bodies never
+  enter a `note`. Streams report `(encoded_len, declared_/Length)`.
+- **Reachability is explicit.** `ReachClass` distinguishes
+  `Reachable` / `UnreachableLive` / `PreviousRevision` /
+  `Unevaluated`. "No history" (one xref section) is reported as a
+  single section — *not* as proof of no old bytes; physical slack
+  stays under `unexamined`.
+- **Partial coverage is stated.** `incomplete` records every scope
+  stopped by a cap or an unreadable construct (with `limit: bool`);
+  `unexamined` lists scopes never entered. A truncated audit never
+  reads as a clean one.
+- **Budgets are additive, not reusing parse limits silently.** New
+  `Limits` fields: `max_audit_findings`, `max_audit_edges`,
+  `max_audit_paths` (per-object referrer cap), `max_audit_walk_depth`
+  (one object's container scan depth), `max_audit_content_ops`
+  (per-page ops scanned for `/ActualText`). Document-level
+  `max_reference_depth`/`max_total_decoded_bytes` still apply.
+- **Path representation.** `PathStep::{TrailerKey, Key, Index,
+  NameTreeEntry, ResourceName}` covers dict keys, array indices,
+  name-tree leaf names and `/Resources` category+name; binary names
+  are escaped at print time (`json_escape_bytes` / `escape_bytes`).
+
+CLI: `kasane-pdf audit-residuals in.pdf [--format text|json]` —
+prints to stdout, writes no file, exit 0 on a completed audit.
+
 ## Specification references
 
 - ISO 32000-1:2008 (PDF 1.7) + Adobe errata — section numbers cited in

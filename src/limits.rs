@@ -173,6 +173,27 @@ pub struct Limits {
     /// hundred small clones can fail here long before the writer
     /// limit is reached. Default: 64 MiB.
     pub max_edit_content_bytes: u64,
+
+    /// Maximum findings one `audit_residuals` call may emit —
+    /// further findings are dropped and an `AuditIncomplete` records
+    /// the truncation. Default: 10,000.
+    pub max_audit_findings: u64,
+    /// Maximum reference edges followed during the audit's
+    /// reachability walk — bounds the BFS over the object graph.
+    /// Default: 1,000,000.
+    pub max_audit_edges: u64,
+    /// Maximum referrers recorded per object — each object's
+    /// `referrers` list is capped so a heavily-referenced object
+    /// cannot grow unbounded memory. Default: 8.
+    pub max_audit_paths: u64,
+    /// Maximum container depth followed while scanning one object
+    /// for outgoing references (arrays of arrays of refs). Default:
+    /// 64.
+    pub max_audit_walk_depth: usize,
+    /// Maximum content-stream operations scanned per page while
+    /// looking for marked-content `/ActualText`/`/Alt`/`E`.
+    /// Default: 200,000 (same order as `max_diag_exec_ops`).
+    pub max_audit_content_ops: u64,
 }
 
 impl Default for Limits {
@@ -218,6 +239,11 @@ impl Default for Limits {
             max_diag_exec_ops: 200_000,
             max_show_states: 200_000,
             max_edit_content_bytes: 64 * 1024 * 1024,
+            max_audit_findings: 10_000,
+            max_audit_edges: 1_000_000,
+            max_audit_paths: 8,
+            max_audit_walk_depth: 64,
+            max_audit_content_ops: 200_000,
         }
     }
 }

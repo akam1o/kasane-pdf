@@ -47,6 +47,7 @@
 //! # Ok::<(), kasane_pdf::Error>(())
 //! ```
 
+pub mod audit;
 mod content;
 mod document;
 pub mod edit;
@@ -76,6 +77,10 @@ pub use matrix::Matrix;
 pub use render::{pixmap_to_png, render_page, Color, RenderOptions, RenderedPage};
 pub use text_extract::{extract_text, CharInfo, ExtractedText, ResolveKind};
 
+pub use audit::{
+    audit_residuals, AuditFinding, AuditIncomplete, FindingKind, HistoryReport, PathStep,
+    ReachClass, ReachabilityReport, ResidualAudit,
+};
 pub use document::Document;
 pub use edit::Edit;
 pub use error::Error;
