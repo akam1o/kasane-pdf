@@ -2088,17 +2088,48 @@ mod tests {
         let r = remove_region(&d, 0, &[(20.0, 80.0, 40.0, 100.0)], &Limits::default()).unwrap();
         assert_eq!(r.invocations_edited, 1);
         assert_eq!(r.orphaned_names_removed, 1);
-        let out = String::from_utf8_lossy(&r.output).into_owned();
+
+        // M21.1: re-parse the output and verify by structure.
+        let out_doc = doc(&r.output);
+        let out_str = String::from_utf8_lossy(&r.output).into_owned();
         // The materialised /Resources keeps /Font and /Unused.
-        assert!(out.contains("/Font"), "font must be kept: {out}");
+        assert!(out_str.contains("/Font"), "font must be kept: {out_str}");
         assert!(
-            out.contains("/Unused"),
-            "unused XObject must be kept: {out}"
+            out_str.contains("/Unused"),
+            "unused XObject must be kept: {out_str}"
         );
-        assert!(out.contains("/KasIm0"), "{out}");
-        // The shared /Pages resources must NOT contain the new name.
-        // (We can't easily check this without parsing, but the test
-        // verifies the page got its own materialised Resources.)
+        assert!(out_str.contains("/KasIm0"), "{out_str}");
+
+        // The parent /Pages resources must still contain the original
+        // /Im1 — the parent is shared and must not be mutated.
+        let pages_ref = out_doc
+            .catalog()
+            .get(b"Pages".as_slice())
+            .and_then(|o| o.as_ref())
+            .unwrap();
+        let pages_obj = out_doc.resolve(pages_ref).unwrap();
+        let pages_dict = pages_obj.as_dict().unwrap();
+        let pages_res = pages_dict.get(b"Resources".as_slice()).unwrap();
+        let pages_res_obj = out_doc.deref(pages_res).unwrap();
+        let pages_res_dict = pages_res_obj.as_dict().unwrap();
+        let pages_xobj = pages_res_dict.get(b"XObject".as_slice()).unwrap();
+        let pages_xobj_obj = out_doc.deref(pages_xobj).unwrap();
+        let pages_xobj_dict = pages_xobj_obj.as_dict().unwrap();
+        // Parent /XObject still has /Im1 (unchanged).
+        assert!(
+            pages_xobj_dict.contains_key(b"Im1".as_slice()),
+            "parent /XObject must keep /Im1"
+        );
+        // Parent /XObject does NOT have the new name.
+        assert!(
+            !pages_xobj_dict.contains_key(b"KasIm0".as_slice()),
+            "parent /XObject must not get /KasIm0"
+        );
+        // Parent /XObject has /Unused (unchanged).
+        assert!(
+            pages_xobj_dict.contains_key(b"Unused".as_slice()),
+            "parent /XObject must keep /Unused"
+        );
     }
 
     /// `max_diag_exec_ops` boundary: exactly at the limit passes,
@@ -2179,5 +2210,182 @@ mod tests {
             matches!(err, Error::LimitExceeded { .. }),
             "one under must refuse: {err:?}"
         );
+    }
+
+    // ---- M21.1 — content-based image verification ---------------------
+
+    /// Re-parse the output and verify by *content* (not object number):
+    /// the edited image stream exists, the original does not.
+    #[test]
+    fn m21_1_original_image_absent_by_content() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        // Identifiable image: 0xAA, 0xBB, 0xCC, 0xDD
+        let img_data = [0xAAu8, 0xBB, 0xCC, 0xDD];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r = remove_region(&d, 0, &[(20.0, 80.0, 40.0, 100.0)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        assert_eq!(r.orphaned_names_removed, 1);
+
+        // Re-parse the output and enumerate image streams by content.
+        let out_doc = doc(&r.output);
+        let mut found_original = false;
+        let mut found_edited = false;
+        for i in 1..20 {
+            if let Ok(Object::Stream { dict, data }) = out_doc.resolve(crate::object::IndirectRef {
+                number: i,
+                generation: 0,
+            }) {
+                if dict.get(b"Subtype".as_slice()).and_then(|o| o.as_name())
+                    == Some(b"Image".as_slice())
+                {
+                    // Check content: original has 0xAA, 0xBB, 0xCC, 0xDD;
+                    // edited has 0x00 in top-left pixel.
+                    if data.as_slice() == [0xAA, 0xBB, 0xCC, 0xDD] {
+                        found_original = true;
+                    }
+                    if data.as_slice() == [0x00, 0xBB, 0xCC, 0xDD] {
+                        found_edited = true;
+                    }
+                }
+            }
+        }
+        assert!(!found_original, "original image must not be in output");
+        assert!(found_edited, "edited image must be in output");
+    }
+
+    /// Shared image with another page — the original image object
+    /// stays in the output because the other page still references it.
+    #[test]
+    fn m21_1_shared_image_present_by_content() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>");
+        // Page 1: has the image, will be edited.
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        // Page 2: shares the same image object.
+        push!(
+            4,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 11 0 R >>"
+        );
+        // Identifiable image: 0xAA, 0xBB, 0xCC, 0xDD
+        let img_data = [0xAAu8, 0xBB, 0xCC, 0xDD];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body1 = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body1.len()).into_bytes();
+        sb.extend_from_slice(body1);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let body2 = b"40 0 0 40 100 100 cm\n/Im1 Do\n";
+        let mut sb2 = format!("<< /Length {} >>\nstream\n", body2.len()).into_bytes();
+        sb2.extend_from_slice(body2);
+        sb2.extend_from_slice(b"\nendstream");
+        push!(11, &sb2);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 12\n0000000000 65535 f \n".to_vec());
+        for n in 1..12u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 12 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // Edit page 1 only.
+        let r = remove_region(&d, 0, &[(20.0, 80.0, 40.0, 100.0)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        assert_eq!(r.orphaned_names_removed, 1);
+
+        // Re-parse the output and enumerate image streams by content.
+        let out_doc = doc(&r.output);
+        let mut found_original = false;
+        let mut found_edited = false;
+        for i in 1..20 {
+            if let Ok(Object::Stream { dict, data }) = out_doc.resolve(crate::object::IndirectRef {
+                number: i,
+                generation: 0,
+            }) {
+                if dict.get(b"Subtype".as_slice()).and_then(|o| o.as_name())
+                    == Some(b"Image".as_slice())
+                {
+                    if data.as_slice() == [0xAA, 0xBB, 0xCC, 0xDD] {
+                        found_original = true;
+                    }
+                    if data.as_slice() == [0x00, 0xBB, 0xCC, 0xDD] {
+                        found_edited = true;
+                    }
+                }
+            }
+        }
+        assert!(
+            found_original,
+            "original image must stay (shared with page 2)"
+        );
+        assert!(found_edited, "edited image must be in output");
     }
 }

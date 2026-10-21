@@ -738,6 +738,13 @@ invocations_edited, pixels_changed, sites, scope }`:
   the *edited* ops no longer use it — `new_ops` is scanned, not
   the original ops, so text expansion does not confuse the check.
   Names that were already unused before the edit are left alone.
+- **M21.1** — verification is by *content*, not object number:
+  re-parse the output and match image streams by their decoded
+  sample bytes, not by original object number (the writer
+  renumbers objects). A removed name does **not** imply the
+  object was deleted — the writer's reachability scan decides
+  that. An image can survive via an inherited `/Resources` even
+  when the page's own `/XObject` no longer names it.
 - Text eligibility: `Tr 0` fill only, page-level (an out-of-rect
   `Tr 3`/`Tr 1` occurrence still refuses). `Tj`/`TJ`/`'`/`"` are
   rewritten with the same advance-preserving logic as `remove_text`.
@@ -776,6 +783,14 @@ page, another `Do` under a different name, or an inherited
 `/Resources` still references the object, it is emitted. The
 `orphaned_names_removed` counter reports names removed from the
 page's `/XObject`, not objects deleted.
+
+Object numbers are *not* a reliable signal: the writer renumbers
+objects, so a missing original number does not prove the object
+is absent. Verification must re-parse the output and match image
+streams by their decoded sample bytes (M21.1). `pdfimages` lists
+only images that are actually `Do`-drawn on a page — an image
+that survives via an inherited `/Resources` but is not drawn is
+still emitted in the PDF but invisible to `pdfimages`.
 
 An image *outside* every rect is never touched — its `hits` list is
 empty so `to_edit_image` skips it entirely, and `validate_image` is
