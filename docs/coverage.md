@@ -763,6 +763,12 @@ invocations_edited, pixels_changed, sites, scope }`:
   results are known, and a child's failure propagates upward.
   Page refs are indexed by `HashMap`/`HashSet` so a leaf lookup
   is O(1), not O(n) per kid.
+- **M22.3** — a node that finishes processing records its result
+  in `node_results` whether it succeeded or failed. The
+  `continue` guard is `next_kid_idx < kids.len() &&
+  all_materialised` — a `false` result is *not* deferred, so the
+  parent sees `false`, not `None`. This prevents infinite
+  re-pushing of a failed child.
 - Text eligibility: `Tr 0` fill only, page-level (an out-of-rect
   `Tr 3`/`Tr 1` occurrence still refuses). `Tj`/`TJ`/`'`/`"` are
   rewritten with the same advance-preserving logic as `remove_text`.

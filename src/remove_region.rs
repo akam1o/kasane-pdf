@@ -572,13 +572,18 @@ pub fn remove_region(
                     break;
                 }
             }
-            // If we broke out of the kid loop early (child pushed to
-            // stack), do not compute a result yet — the node will be
-            // revisited when the child finishes.
-            if next_kid_idx < kids.len() {
+            // If we broke out of the kid loop early *because a child
+            // was pushed to the stack*, do not compute a result yet —
+            // the node will be revisited when the child finishes.
+            // But if we broke out because a leaf failed or a kid had
+            // no IndirectRef, the result is `false` and must be
+            // recorded now — otherwise the parent would re-push the
+            // same child indefinitely.
+            if next_kid_idx < kids.len() && all_materialised {
                 continue;
             }
-            // All kids processed: compute the node's result.
+            // All kids processed (or a failure was found): record the
+            // result so the parent sees `false`, not `None`.
             let node_result = all_materialised;
             node_results.insert(pages_ref, node_result);
             // Only strip if this node *has* /Resources and all
@@ -2819,6 +2824,182 @@ mod tests {
             Err(_) => {
                 // Failure is also acceptable — the operation must not
                 // return a partial output with /Resources stripped.
+            }
+        }
+    }
+
+    /// A 3-level tree: root has /Resources, middle has none, lower
+    /// has a leaf that cannot be materialised (direct kid). The
+    /// failure must propagate up to the root — /Resources is kept.
+    #[test]
+    fn m22_3_failure_propagates_three_levels() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(
+            2,
+            b"<< /Type /Pages /Kids [10 0 R] /Count 1 \
+              /Resources << /XObject << /Im1 11 0 R >> >> >>"
+        );
+        // Middle /Pages has no /Resources — still traversed.
+        push!(
+            10,
+            b"<< /Type /Pages /Kids [12 0 R] /Count 1 /Parent 2 0 R >>"
+        );
+        // Lower /Pages has a direct kid (no IndirectRef) — the leaf
+        // cannot be materialised.
+        push!(
+            12,
+            b"<< /Type /Pages /Kids [<< /Type /Page /Parent 12 0 R \
+              /MediaBox [0 0 200 200] /Contents 9 0 R >>] /Count 1 \
+              /Parent 10 0 R >>"
+        );
+        let img_data = [0xAAu8, 0xBB, 0xCC, 0xDD];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(11, &f);
+        let body = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 13\n0000000000 65535 f \n".to_vec());
+        for n in 1..13u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 13 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r = remove_region(&d, 0, &[(20.0, 80.0, 40.0, 100.0)], &Limits::default());
+        match r {
+            Ok(res) => {
+                let out_doc = doc(&res.output);
+                let pages_ref = out_doc
+                    .catalog()
+                    .get(b"Pages".as_slice())
+                    .and_then(|o| o.as_ref())
+                    .unwrap();
+                let pages_obj = out_doc.resolve(pages_ref).unwrap();
+                let pages_dict = pages_obj.as_dict().unwrap();
+                // The root /Pages must keep /Resources — the lower
+                // /Pages has an unmaterialised direct kid.
+                assert!(
+                    pages_dict.contains_key(b"Resources".as_slice()),
+                    "root /Pages must keep /Resources when a descendant is unmaterialised"
+                );
+            }
+            Err(_) => {
+                // Failure is acceptable — no partial output with
+                // /Resources stripped.
+            }
+        }
+    }
+
+    /// Two branches: first succeeds, second has an unmaterialised
+    /// leaf. The parent /Pages must NOT drop /Resources.
+    #[test]
+    fn m22_3_mixed_branches() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(
+            2,
+            b"<< /Type /Pages /Kids [10 0 R 11 0 R] /Count 2 \
+              /Resources << /XObject << /Im1 12 0 R >> >> >>"
+        );
+        // Branch 1: materialised leaf.
+        push!(
+            10,
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 /Parent 2 0 R >>"
+        );
+        push!(
+            3,
+            b"<< /Type /Page /Parent 10 0 R /MediaBox [0 0 200 200] \
+              /Contents 9 0 R >>"
+        );
+        // Branch 2: unmaterialised leaf (direct kid).
+        push!(
+            11,
+            b"<< /Type /Pages /Kids [<< /Type /Page /Parent 11 0 R \
+              /MediaBox [0 0 200 200] /Contents 13 0 R >>] /Count 1 \
+              /Parent 2 0 R >>"
+        );
+        let img_data = [0xAAu8, 0xBB, 0xCC, 0xDD];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(12, &f);
+        let body1 = b"40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body1.len()).into_bytes();
+        sb.extend_from_slice(body1);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let body2 = b"40 0 0 40 100 100 cm\n/Im1 Do\n";
+        let mut sb2 = format!("<< /Length {} >>\nstream\n", body2.len()).into_bytes();
+        sb2.extend_from_slice(body2);
+        sb2.extend_from_slice(b"\nendstream");
+        push!(13, &sb2);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 14\n0000000000 65535 f \n".to_vec());
+        for n in 1..14u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 14 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r = remove_region(&d, 0, &[(20.0, 80.0, 40.0, 100.0)], &Limits::default());
+        match r {
+            Ok(res) => {
+                let out_doc = doc(&res.output);
+                let pages_ref = out_doc
+                    .catalog()
+                    .get(b"Pages".as_slice())
+                    .and_then(|o| o.as_ref())
+                    .unwrap();
+                let pages_obj = out_doc.resolve(pages_ref).unwrap();
+                let pages_dict = pages_obj.as_dict().unwrap();
+                // Branch 2 is unmaterialised — parent keeps /Resources.
+                assert!(
+                    pages_dict.contains_key(b"Resources".as_slice()),
+                    "parent /Pages must keep /Resources when one branch is unmaterialised"
+                );
+            }
+            Err(_) => {
+                // Failure is acceptable.
             }
         }
     }

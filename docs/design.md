@@ -774,6 +774,15 @@ Design choices:
   `/Resources` when a descendant is unmaterialised. Page refs are
   indexed by `HashMap`/`HashSet` (O(1) lookup) instead of a
   `Vec::contains` linear scan (O(n) per kid).
+- **M22.3 — end-state fix** — a node that finishes processing
+  records its result in `node_results` whether it succeeded or
+  failed. The `continue` guard is `next_kid_idx < kids.len() &&
+  all_materialised` — a `false` result is *not* deferred, so the
+  parent sees `false`, not `None`. This prevents infinite
+  re-pushing of a failed child. A `/Pages` node is pushed back
+  to the stack only when a child is pushed (`all_materialised`
+  is still `true`); a `false` break records the result
+  immediately.
 
 CLI: `kasane-pdf experimental-remove-region in.pdf 1 --rect llx lly
 urx ury [--rect …] --output out.pdf` — same atomic-write and
