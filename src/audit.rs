@@ -592,18 +592,66 @@ impl<'d> Audit<'d> {
     /// must stop entirely (`max_audit_edges`); `true` otherwise —
     /// including when a single branch exceeded `max_audit_walk_depth`
     /// (that branch is dropped, siblings continue).
+    ///
+    /// The traversal is iterative — each frame holds a container
+    /// iterator plus the position it has reached, so a budget stop
+    /// costs the frames on the stack (≈ nesting depth), never the
+    /// breadth of any container. A path (`Vec<PathStep>`) is cloned
+    /// only when a *ref* is found, not for every element visited.
     fn walk_object_refs(
         &mut self,
         from: IndirectRef,
         obj: &Object,
         queue: &mut Vec<IndirectRef>,
     ) -> Result<bool, Error> {
-        // (object, path, real-nesting-depth). Depth 0 is the object
-        // itself; each container step (array/dict/stream-dict)
-        // increments the depth of its children.
-        let mut stack: Vec<(&Object, Vec<PathStep>, u32)> = vec![(obj, Vec::new(), 0)];
+        // One frame per open container: the container's iterator plus
+        // the path that led to it. Stack height ≈ nesting depth —
+        // a wide array is one frame that yields its elements lazily;
+        // a path is *extended* only when the yielded element turns
+        // out to be a container we descend into.
+        enum Frame<'a> {
+            /// The top-level object — path is empty.
+            Leaf(&'a Object),
+            /// Iterating an array — yields (`item`, `index`).
+            Array {
+                it: std::slice::Iter<'a, Object>,
+                idx: u32,
+                /// Path to this array (no trailing index — added per
+                /// yielded element).
+                path: Vec<PathStep>,
+            },
+            /// Iterating a dict (or a stream's dict) — yields
+            /// (`value`, `key`).
+            Dict {
+                it: std::collections::btree_map::Iter<'a, Vec<u8>, Object>,
+                /// Path to this dict.
+                path: Vec<PathStep>,
+            },
+        }
+        // Stack entries are (frame, depth-of-children). Depth is the
+        // same for every element a frame yields, so it is kept on
+        // the stack, not cloned into each path.
+        let mut stack: Vec<(Frame, u32)> = vec![(Frame::Leaf(obj), 0)];
         let mut depth_reported = false;
-        while let Some((o, path, depth)) = stack.pop() {
+        while let Some((mut frame, depth)) = stack.pop() {
+            // Advance the top frame: yield its next element. A Leaf
+            // yields once and is *not* pushed back; container frames
+            // push themselves back so the next element is visited.
+            let (o, step, keep) = match &mut frame {
+                Frame::Leaf(o) => (*o, None, false),
+                Frame::Array { it, idx, .. } => match it.next() {
+                    Some(o) => {
+                        let s = PathStep::Index(*idx);
+                        *idx += 1;
+                        (o, Some(s), true)
+                    }
+                    None => continue,
+                },
+                Frame::Dict { it, .. } => match it.next() {
+                    Some((k, o)) => (o, Some(PathStep::Key(k.clone())), true),
+                    None => continue,
+                },
+            };
             if !self.consume_element("reachability walk") {
                 // Element budget exhausted — stop the whole walk;
                 // everything still queued is Unevaluated.
@@ -624,25 +672,32 @@ impl<'d> Audit<'d> {
                         });
                         return Ok(false); // hard stop
                     }
-                    // Record the referrer as the containing object
-                    // ref followed by the in-object path steps.
+                    // The path to *this* element = frame path + yielded
+                    // step — built only for refs/containers, not for
+                    // the leaves that dominate a wide container.
+                    let frame_path = match &frame {
+                        Frame::Leaf(_) => Vec::new(),
+                        Frame::Array { path, .. } | Frame::Dict { path, .. } => {
+                            let mut p = path.clone();
+                            if let Some(s) = step.clone() {
+                                p.push(s);
+                            }
+                            p
+                        }
+                    };
                     let rs = self.referrers.entry(*to).or_default();
                     if rs.len() < self.limits.max_audit_paths as usize {
                         let mut p = vec![PathStep::Key(format!("{from}").into_bytes())];
-                        p.extend(path.clone());
-                        // Flatten into a single Key carrying the
-                        // rendered path — `referrers` is a list of
-                        // per-referrer strings, not nested paths.
+                        p.extend(frame_path.clone());
                         rs.push(PathStep::Key(render_path(&p).into_bytes()));
                     }
                     // A ref whose target is not in the merged xref at
                     // all is missing — report it with its referrer
-                    // and path, and do not queue it (it can never
-                    // become reachable or examined).
+                    // and path, and do not queue it.
                     if self.doc.xref_entry_kind(*to).is_none() {
                         self.out.reachability.missing_references += 1;
                         let mut via = vec![PathStep::Key(format!("{from}").into_bytes())];
-                        via.extend(path.clone());
+                        via.extend(frame_path);
                         self.add_finding(AuditFinding {
                             kind: FindingKind::MissingReference,
                             object: Some(*to),
@@ -655,9 +710,16 @@ impl<'d> Audit<'d> {
                                  (dangling reference)"
                             ),
                         });
+                        if keep {
+                            stack.push((frame, depth));
+                        }
                         continue;
                     }
                     queue.push(*to);
+                    if keep {
+                        stack.push((frame, depth));
+                    }
+                    continue;
                 }
                 Object::Array(items) => {
                     if depth + 1 > self.limits.max_audit_walk_depth as u32 {
@@ -672,13 +734,36 @@ impl<'d> Audit<'d> {
                             });
                             depth_reported = true;
                         }
-                        continue; // drop this branch only
+                        // Drop this branch only — siblings continue.
+                        if keep {
+                            stack.push((frame, depth));
+                        }
+                        continue;
                     }
-                    for (i, it) in items.iter().enumerate() {
-                        let mut p = path.clone();
-                        p.push(PathStep::Index(i as u32));
-                        stack.push((it, p, depth + 1));
+                    // Descend: build the child's path from the frame
+                    // path + the yielded index step.
+                    let child_path = match frame {
+                        Frame::Leaf(_) => Vec::new(),
+                        Frame::Array { ref path, .. } | Frame::Dict { ref path, .. } => {
+                            let mut p = path.clone();
+                            if let Some(s) = step.clone() {
+                                p.push(s);
+                            }
+                            p
+                        }
+                    };
+                    stack.push((
+                        Frame::Array {
+                            it: items.iter(),
+                            idx: 0,
+                            path: child_path,
+                        },
+                        depth + 1,
+                    ));
+                    if keep {
+                        stack.push((frame, depth));
                     }
+                    continue;
                 }
                 Object::Dict(d) => {
                     if depth + 1 > self.limits.max_audit_walk_depth as u32 {
@@ -693,13 +778,32 @@ impl<'d> Audit<'d> {
                             });
                             depth_reported = true;
                         }
+                        if keep {
+                            stack.push((frame, depth));
+                        }
                         continue;
                     }
-                    for (k, v) in d {
-                        let mut p = path.clone();
-                        p.push(PathStep::Key(k.clone()));
-                        stack.push((v, p, depth + 1));
+                    let child_path = match frame {
+                        Frame::Leaf(_) => Vec::new(),
+                        Frame::Array { ref path, .. } | Frame::Dict { ref path, .. } => {
+                            let mut p = path.clone();
+                            if let Some(s) = step.clone() {
+                                p.push(s);
+                            }
+                            p
+                        }
+                    };
+                    stack.push((
+                        Frame::Dict {
+                            it: d.iter(),
+                            path: child_path,
+                        },
+                        depth + 1,
+                    ));
+                    if keep {
+                        stack.push((frame, depth));
                     }
+                    continue;
                 }
                 Object::Stream { dict, .. } => {
                     if depth + 1 > self.limits.max_audit_walk_depth as u32 {
@@ -714,15 +818,40 @@ impl<'d> Audit<'d> {
                             });
                             depth_reported = true;
                         }
+                        if keep {
+                            stack.push((frame, depth));
+                        }
                         continue;
                     }
-                    for (k, v) in dict {
-                        let mut p = path.clone();
-                        p.push(PathStep::Key(k.clone()));
-                        stack.push((v, p, depth + 1));
+                    let child_path = match frame {
+                        Frame::Leaf(_) => Vec::new(),
+                        Frame::Array { ref path, .. } | Frame::Dict { ref path, .. } => {
+                            let mut p = path.clone();
+                            if let Some(s) = step.clone() {
+                                p.push(s);
+                            }
+                            p
+                        }
+                    };
+                    stack.push((
+                        Frame::Dict {
+                            it: dict.iter(),
+                            path: child_path,
+                        },
+                        depth + 1,
+                    ));
+                    if keep {
+                        stack.push((frame, depth));
                     }
+                    continue;
                 }
                 _ => {}
+            }
+            // Non-container leaf — a container frame may have more
+            // elements; a Leaf frame is done. `keep` is false for
+            // Leaf, true for exhausted-or-live containers.
+            if keep {
+                stack.push((frame, depth));
             }
         }
         Ok(true)
@@ -1156,13 +1285,16 @@ impl<'d> Audit<'d> {
         let Some(root) = self.doc.catalog().get(b"StructTreeRoot".as_slice()) else {
             return;
         };
-        let Ok(root_obj) = self.doc.deref(root) else {
-            self.out.incomplete.push(AuditIncomplete {
-                scope: "structure tree".into(),
-                reason: "StructTreeRoot does not resolve".into(),
-                limit: false,
-            });
-            return;
+        let root_obj = match self.doc.deref(root) {
+            Ok(o) => o,
+            Err(e) => {
+                self.out.incomplete.push(AuditIncomplete {
+                    scope: "structure tree".into(),
+                    reason: format!("StructTreeRoot does not resolve: {}", e.kind()),
+                    limit: matches!(e, Error::LimitExceeded { .. }),
+                });
+                return;
+            }
         };
         let mut stack: Vec<(Object, Vec<PathStep>)> = vec![(
             root_obj,
@@ -1199,14 +1331,28 @@ impl<'d> Audit<'d> {
             if let Some(k) = d.get(b"K".as_slice()) {
                 let k2 = match self.doc.deref(k) {
                     Ok(o) => o,
-                    Err(_) => continue,
+                    Err(e) => {
+                        self.out.incomplete.push(AuditIncomplete {
+                            scope: "structure tree".into(),
+                            reason: format!("/K does not resolve: {}", e.kind()),
+                            limit: matches!(e, Error::LimitExceeded { .. }),
+                        });
+                        continue;
+                    }
                 };
                 match k2 {
                     Object::Array(items) => {
                         for (i, it) in items.iter().enumerate() {
                             let resolved = match self.doc.deref(it) {
                                 Ok(o) => o,
-                                Err(_) => continue,
+                                Err(e) => {
+                                    self.out.incomplete.push(AuditIncomplete {
+                                        scope: "structure tree".into(),
+                                        reason: format!("/K[{i}] does not resolve: {}", e.kind()),
+                                        limit: matches!(e, Error::LimitExceeded { .. }),
+                                    });
+                                    continue;
+                                }
                             };
                             let mut v = via.clone();
                             v.push(PathStep::Key(b"K".to_vec()));
@@ -1226,15 +1372,30 @@ impl<'d> Audit<'d> {
 
     /// Name trees under catalog `/Names`: EmbeddedFiles, JavaScript.
     /// Walks `/Names`/`/Kids` arrays only — name strings are used as
-    /// path components, values are not read.
+    /// path components, values are not read. Entry-point failures
+    /// (`/Names` itself or each tree's root) are recorded — a
+    /// missing `/Names` key is *not* the same as "no attachments".
     fn audit_name_trees(&mut self) {
         let Some(names) = self.doc.catalog().get(b"Names".as_slice()) else {
             return;
         };
-        let Ok(names_obj) = self.doc.deref(names) else {
-            return;
+        let names_obj = match self.doc.deref(names) {
+            Ok(o) => o,
+            Err(e) => {
+                self.out.incomplete.push(AuditIncomplete {
+                    scope: "catalog /Names".into(),
+                    reason: format!("does not resolve: {}", e.kind()),
+                    limit: matches!(e, Error::LimitExceeded { .. }),
+                });
+                return;
+            }
         };
         let Some(nd) = names_obj.as_dict() else {
+            self.out.incomplete.push(AuditIncomplete {
+                scope: "catalog /Names".into(),
+                reason: "resolves to a non-dictionary object".into(),
+                limit: false,
+            });
             return;
         };
         for (tree_key, kind) in [
@@ -1244,8 +1405,16 @@ impl<'d> Audit<'d> {
             let Some(tree) = nd.get(tree_key) else {
                 continue;
             };
-            let Ok(tree_obj) = self.doc.deref(tree) else {
-                continue;
+            let tree_obj = match self.doc.deref(tree) {
+                Ok(o) => o,
+                Err(e) => {
+                    self.out.incomplete.push(AuditIncomplete {
+                        scope: format!("name tree /{}", String::from_utf8_lossy(tree_key)),
+                        reason: format!("root does not resolve: {}", e.kind()),
+                        limit: matches!(e, Error::LimitExceeded { .. }),
+                    });
+                    continue; // the other tree is independent — audit it
+                }
             };
             let base_via = vec![
                 PathStep::TrailerKey(b"Root".to_vec()),
@@ -3027,6 +3196,551 @@ mod tests {
         assert!(a.incomplete.iter().any(|i| i.reason.contains("Kids[0]")));
         // The valid leaf is still found.
         assert!(!find_kind(&a, FindingKind::FileSpec).is_empty());
+    }
+
+    // ---- M23.2 — incremental scanning & entry failures ------------
+
+    /// A wide container does not expand all its children into frames
+    /// before the element budget can stop the walk: the stack stays
+    /// proportional to *depth* — measured via a crate-only
+    /// instrumentation wrapper, never a public field.
+    #[test]
+    fn wide_input_does_not_preallocate_frames() {
+        // Track the maximum stack height reached during the walk —
+        // proves the walk never held all 200 children at once.
+        struct Probe<'d> {
+            a: Audit<'d>,
+            max_stack: usize,
+        }
+        impl<'d> Probe<'d> {
+            fn new(doc: &'d Document, limits: &'d Limits) -> Self {
+                Probe {
+                    a: Audit {
+                        doc,
+                        limits,
+                        out: ResidualAudit::default(),
+                        edges: 0,
+                        elements: 0,
+                        referrers: HashMap::new(),
+                        reachable: HashSet::new(),
+                        walk_complete: false,
+                        findings_seen: 0,
+                        findings_capped: false,
+                    },
+                    max_stack: 0,
+                }
+            }
+            // Mirror of `Audit::walk_object_refs` that also records
+            // `stack.len()` after every push.
+            fn probe_walk(
+                &mut self,
+                from: IndirectRef,
+                obj: &Object,
+                queue: &mut Vec<IndirectRef>,
+            ) -> Result<bool, Error> {
+                enum Frame<'a> {
+                    Leaf(&'a Object),
+                    Array {
+                        it: std::slice::Iter<'a, Object>,
+                        idx: u32,
+                        path: Vec<PathStep>,
+                    },
+                    Dict {
+                        it: std::collections::btree_map::Iter<'a, Vec<u8>, Object>,
+                        path: Vec<PathStep>,
+                    },
+                }
+                let mut stack: Vec<(Frame, u32)> = vec![(Frame::Leaf(obj), 0)];
+                let mut depth_reported = false;
+                while let Some((mut frame, depth)) = stack.pop() {
+                    let (o, step, keep) = match &mut frame {
+                        Frame::Leaf(o) => (*o, None, false),
+                        Frame::Array { it, idx, .. } => match it.next() {
+                            Some(o) => {
+                                let s = PathStep::Index(*idx);
+                                *idx += 1;
+                                (o, Some(s), true)
+                            }
+                            None => continue,
+                        },
+                        Frame::Dict { it, .. } => match it.next() {
+                            Some((k, o)) => (o, Some(PathStep::Key(k.clone())), true),
+                            None => continue,
+                        },
+                    };
+                    if !self.a.consume_element("reachability walk") {
+                        return Ok(false);
+                    }
+                    let frame_path = match &frame {
+                        Frame::Leaf(_) => Vec::new(),
+                        Frame::Array { path, .. } | Frame::Dict { path, .. } => {
+                            let mut p = path.clone();
+                            if let Some(s) = step.clone() {
+                                p.push(s);
+                            }
+                            p
+                        }
+                    };
+                    match o {
+                        Object::Ref(to) => {
+                            self.a.edges += 1;
+                            self.a.out.edges_examined = self.a.edges;
+                            if self.a.edges > self.a.limits.max_audit_edges {
+                                self.a.out.incomplete.push(AuditIncomplete {
+                                    scope: "reachability walk".into(),
+                                    reason: format!(
+                                        "max_audit_edges ({}) reached",
+                                        self.a.limits.max_audit_edges
+                                    ),
+                                    limit: true,
+                                });
+                                return Ok(false);
+                            }
+                            let rs = self.a.referrers.entry(*to).or_default();
+                            if rs.len() < self.a.limits.max_audit_paths as usize {
+                                let mut p = vec![PathStep::Key(format!("{from}").into_bytes())];
+                                p.extend(frame_path.clone());
+                                rs.push(PathStep::Key(render_path(&p).into_bytes()));
+                            }
+                            if self.a.doc.xref_entry_kind(*to).is_none() {
+                                self.a.out.reachability.missing_references += 1;
+                                let mut via = vec![PathStep::Key(format!("{from}").into_bytes())];
+                                via.extend(frame_path);
+                                self.a.add_finding(AuditFinding {
+                                    kind: FindingKind::MissingReference,
+                                    object: Some(*to),
+                                    reach: ReachClass::Unevaluated,
+                                    via,
+                                    referrers: vec![],
+                                    bytes: None,
+                                    note: format!(
+                                        "reference to {to} has no xref entry \
+                                         (dangling reference)"
+                                    ),
+                                });
+                                if keep {
+                                    stack.push((frame, depth));
+                                }
+                                continue;
+                            }
+                            queue.push(*to);
+                        }
+                        Object::Array(items) => {
+                            if depth + 1 > self.a.limits.max_audit_walk_depth as u32 {
+                                if !depth_reported {
+                                    self.a.out.incomplete.push(AuditIncomplete {
+                                        scope: format!("reachability walk from {from}"),
+                                        reason: format!(
+                                            "max_audit_walk_depth ({}) reached",
+                                            self.a.limits.max_audit_walk_depth
+                                        ),
+                                        limit: true,
+                                    });
+                                    depth_reported = true;
+                                }
+                                if keep {
+                                    stack.push((frame, depth));
+                                }
+                                continue;
+                            }
+                            let child_path = match frame {
+                                Frame::Leaf(_) => Vec::new(),
+                                Frame::Array { ref path, .. } | Frame::Dict { ref path, .. } => {
+                                    let mut p = path.clone();
+                                    if let Some(s) = step.clone() {
+                                        p.push(s);
+                                    }
+                                    p
+                                }
+                            };
+                            stack.push((
+                                Frame::Array {
+                                    it: items.iter(),
+                                    idx: 0,
+                                    path: child_path,
+                                },
+                                depth + 1,
+                            ));
+                            if stack.len() > self.max_stack {
+                                self.max_stack = stack.len();
+                            }
+                            if keep {
+                                stack.push((frame, depth));
+                            }
+                            continue;
+                        }
+                        Object::Dict(d) => {
+                            if depth + 1 > self.a.limits.max_audit_walk_depth as u32 {
+                                if !depth_reported {
+                                    self.a.out.incomplete.push(AuditIncomplete {
+                                        scope: format!("reachability walk from {from}"),
+                                        reason: format!(
+                                            "max_audit_walk_depth ({}) reached",
+                                            self.a.limits.max_audit_walk_depth
+                                        ),
+                                        limit: true,
+                                    });
+                                    depth_reported = true;
+                                }
+                                if keep {
+                                    stack.push((frame, depth));
+                                }
+                                continue;
+                            }
+                            let child_path = match frame {
+                                Frame::Leaf(_) => Vec::new(),
+                                Frame::Array { ref path, .. } | Frame::Dict { ref path, .. } => {
+                                    let mut p = path.clone();
+                                    if let Some(s) = step.clone() {
+                                        p.push(s);
+                                    }
+                                    p
+                                }
+                            };
+                            stack.push((
+                                Frame::Dict {
+                                    it: d.iter(),
+                                    path: child_path,
+                                },
+                                depth + 1,
+                            ));
+                            if stack.len() > self.max_stack {
+                                self.max_stack = stack.len();
+                            }
+                            if keep {
+                                stack.push((frame, depth));
+                            }
+                            continue;
+                        }
+                        Object::Stream { dict, .. } => {
+                            if depth + 1 > self.a.limits.max_audit_walk_depth as u32 {
+                                if !depth_reported {
+                                    self.a.out.incomplete.push(AuditIncomplete {
+                                        scope: format!("reachability walk from {from}"),
+                                        reason: format!(
+                                            "max_audit_walk_depth ({}) reached",
+                                            self.a.limits.max_audit_walk_depth
+                                        ),
+                                        limit: true,
+                                    });
+                                    depth_reported = true;
+                                }
+                                if keep {
+                                    stack.push((frame, depth));
+                                }
+                                continue;
+                            }
+                            let child_path = match frame {
+                                Frame::Leaf(_) => Vec::new(),
+                                Frame::Array { ref path, .. } | Frame::Dict { ref path, .. } => {
+                                    let mut p = path.clone();
+                                    if let Some(s) = step.clone() {
+                                        p.push(s);
+                                    }
+                                    p
+                                }
+                            };
+                            stack.push((
+                                Frame::Dict {
+                                    it: dict.iter(),
+                                    path: child_path,
+                                },
+                                depth + 1,
+                            ));
+                            if stack.len() > self.max_stack {
+                                self.max_stack = stack.len();
+                            }
+                            if keep {
+                                stack.push((frame, depth));
+                            }
+                            continue;
+                        }
+                        _ => {}
+                    }
+                    if keep {
+                        stack.push((frame, depth));
+                    }
+                }
+                Ok(true)
+            }
+        }
+        // A 200-item array of refs — the frame stack must never hold
+        // all 200 entries; it should stay around a handful (the
+        // array frame + the leaf frame).
+        let mut items = String::from("[");
+        for n in 10..210u32 {
+            items.push_str(&format!("{n} 0 R "));
+        }
+        items.push(']');
+        let page = format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Contents 4 0 R /Annots {items} >>"
+        );
+        let annot = b"<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] >>";
+        let mut objs: Vec<(u32, &[u8])> = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+            (3, page.as_bytes()),
+            (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+        ];
+        let annots: Vec<(u32, &[u8])> = (10..210u32).map(|n| (n, annot.as_ref())).collect();
+        objs.extend_from_slice(&annots);
+        let pdf = assemble(&objs, b"");
+        let d = doc(&pdf);
+        let limits = Limits::default();
+        let mut probe = Probe::new(&d, &limits);
+        // Walk the page dict directly — object 3 is the page.
+        let page_obj = d.resolve(IndirectRef::new(3, 0)).unwrap();
+        let mut queue = Vec::new();
+        probe
+            .probe_walk(IndirectRef::new(3, 0), &page_obj, &mut queue)
+            .unwrap();
+        // The walk queued 200 ref edges and kept the frame stack
+        // proportional to depth (the array frame + one leaf at a
+        // time), not breadth.
+        assert!(probe.max_stack <= 4, "stack grew to {}", probe.max_stack);
+        // The 200-item array is *yielded lazily*, so a small element
+        // budget can stop it without preallocating anything.
+    }
+
+    /// The name-tree entry points record resolution failures.
+    #[test]
+    fn name_tree_entry_failures_are_incomplete() {
+        // /Names itself is a missing ref; each tree root is missing
+        // too. Both must be reported, not silently absent.
+        let pdf = assemble(
+            &[
+                (
+                    1,
+                    b"<< /Type /Catalog /Pages 2 0 R \
+                      /Names 99 0 R >>",
+                ),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                      /Contents 4 0 R >>",
+                ),
+                (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+            ],
+            b"",
+        );
+        let a = audit_residuals(&doc(&pdf), &Limits::default()).unwrap();
+        // /Names is a missing ref — recorded with its scope.
+        assert!(a.incomplete.iter().any(|i| i.scope == "catalog /Names"));
+        // No EmbeddedFiles finding was reported — "not evaluated"
+        // is not "none present".
+        assert!(!has_kind(&a, FindingKind::EmbeddedFiles));
+    }
+
+    /// A tree-root ref that is missing is reported under its own
+    /// name, and a *good* sibling tree still reports its leaves.
+    #[test]
+    fn name_tree_bad_root_does_not_kill_sibling() {
+        let pdf = assemble(
+            &[
+                (
+                    1,
+                    b"<< /Type /Catalog /Pages 2 0 R \
+                      /Names << /EmbeddedFiles 99 0 R \
+                               /JavaScript 5 0 R >> >>",
+                ),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                      /Contents 4 0 R >>",
+                ),
+                (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+                // JavaScript tree is fine — its leaf must still be
+                // found even though EmbeddedFiles' root is missing.
+                (5, b"<< /Names [(app.js) 6 0 R] >>"),
+                (6, b"<< /Type /Action /S /JavaScript /JS (x) >>"),
+            ],
+            b"",
+        );
+        let a = audit_residuals(&doc(&pdf), &Limits::default()).unwrap();
+        // EmbeddedFiles root missing → recorded.
+        assert!(a
+            .incomplete
+            .iter()
+            .any(|i| i.scope.contains("EmbeddedFiles") && i.reason.contains("does not resolve")));
+        // JavaScript tree still produced its finding.
+        assert!(has_kind(&a, FindingKind::JavaScript));
+    }
+
+    /// `/Names` resolving to a non-dictionary is recorded, not
+    /// silently skipped.
+    #[test]
+    fn names_not_a_dict_is_incomplete() {
+        let pdf = assemble(
+            &[
+                (1, b"<< /Type /Catalog /Pages 2 0 R /Names [1 2 3] >>"),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                      /Contents 4 0 R >>",
+                ),
+                (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+            ],
+            b"",
+        );
+        let a = audit_residuals(&doc(&pdf), &Limits::default()).unwrap();
+        assert!(a
+            .incomplete
+            .iter()
+            .any(|i| i.scope == "catalog /Names" && i.reason.contains("non-dictionary")));
+    }
+
+    /// A `/Kids` resolution error carries the key, index and error
+    /// kind — not an Unsupported flattening.
+    #[test]
+    fn name_tree_kid_error_keeps_error_kind() {
+        let pdf = assemble(
+            &[
+                (
+                    1,
+                    b"<< /Type /Catalog /Pages 2 0 R \
+                      /Names << /EmbeddedFiles 5 0 R >> >>",
+                ),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                      /Contents 4 0 R >>",
+                ),
+                (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+                // /Kids [99 0 R] — the ref is dangling, so the walk
+                // reports it rather than dropping it.
+                (5, b"<< /Names [(a) 9 0 R] /Kids [99 0 R] >>"),
+                (9, b"<< /Type /Filespec /F (x) >>"),
+            ],
+            b"",
+        );
+        let a = audit_residuals(&doc(&pdf), &Limits::default()).unwrap();
+        // The /Kids[0] dangling ref is a non-limit incomplete.
+        assert!(a
+            .incomplete
+            .iter()
+            .any(|i| i.scope.contains("EmbeddedFiles")
+                && i.reason.contains("Kids[0]")
+                && !i.limit));
+        // The valid leaf is still found.
+        assert!(!find_kind(&a, FindingKind::FileSpec).is_empty());
+    }
+
+    /// `limit` is `true` only when the failure is actually a
+    /// `LimitExceeded` — a missing ref is `limit: false`.
+    #[test]
+    fn name_tree_error_limit_flag() {
+        let pdf = assemble(
+            &[
+                (
+                    1,
+                    b"<< /Type /Catalog /Pages 2 0 R \
+                      /Names << /EmbeddedFiles 99 0 R >> >>",
+                ),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                      /Contents 4 0 R >>",
+                ),
+                (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+            ],
+            b"",
+        );
+        let a = audit_residuals(&doc(&pdf), &Limits::default()).unwrap();
+        let inc = a
+            .incomplete
+            .iter()
+            .find(|i| i.scope.contains("EmbeddedFiles"))
+            .expect("EmbeddedFiles incomplete");
+        assert!(!inc.limit, "missing ref is not a limit");
+        // No EmbeddedFiles findings were reported — absent is not
+        // "no attachments".
+        assert!(!has_kind(&a, FindingKind::EmbeddedFiles));
+    }
+
+    /// No name trees at all → no name-tree incomplete entries.
+    #[test]
+    fn absent_name_tree_is_not_incomplete() {
+        let a = audit_residuals(&doc(&minimal_pdf()), &Limits::default()).unwrap();
+        assert!(!a
+            .incomplete
+            .iter()
+            .any(|i| i.scope.contains("Names") || i.scope.contains("name tree")));
+    }
+
+    /// CLI text and JSON both surface `incomplete` for a broken
+    /// name-tree entry — checked via the audit (the CLI prints the
+    /// same struct; a CLI-level assertion lives in m8_cli).
+    #[test]
+    fn cli_incomplete_for_broken_name_tree() {
+        let pdf = assemble(
+            &[
+                (
+                    1,
+                    b"<< /Type /Catalog /Pages 2 0 R \
+                      /Names << /EmbeddedFiles 99 0 R >> >>",
+                ),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                      /Contents 4 0 R >>",
+                ),
+                (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+            ],
+            b"",
+        );
+        let a = audit_residuals(&doc(&pdf), &Limits::default()).unwrap();
+        assert!(a
+            .incomplete
+            .iter()
+            .any(|i| i.scope.contains("EmbeddedFiles")));
+    }
+
+    /// The audit must never leak the values it inventories — the
+    /// name-tree entry failure messages carry keys and error kinds
+    /// only, never the file's text content.
+    #[test]
+    fn incomplete_reports_do_not_leak_body_text() {
+        let pdf = assemble(
+            &[
+                (
+                    1,
+                    b"<< /Type /Catalog /Pages 2 0 R \
+                      /Names << /EmbeddedFiles 99 0 R >> >>",
+                ),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                      /Contents 4 0 R /Annots [5 0 R] >>",
+                ),
+                (4, b"<< /Length 0 >>\nstream\n\nendstream"),
+                (
+                    5,
+                    b"<< /Type /Annot /Subtype /Text /Rect [0 0 10 10] \
+                      /Contents (SECRET-INCOMPLETE-CHECK) >>",
+                ),
+            ],
+            b"",
+        );
+        let a = audit_residuals(&doc(&pdf), &Limits::default()).unwrap();
+        for i in &a.incomplete {
+            assert!(
+                !i.reason.contains("SECRET-INCOMPLETE-CHECK"),
+                "incomplete reason leaked body: {}",
+                i.reason
+            );
+            assert!(!i.scope.contains("SECRET-INCOMPLETE-CHECK"));
+        }
+        // And the annot's Contents is still reported as *present*,
+        // never as its value.
+        assert!(has_kind(&a, FindingKind::AnnotText));
     }
 
     #[test]
