@@ -744,6 +744,12 @@ Design choices:
   the writer's reachability scan — if another page or another
   name still references it, it is emitted. `orphaned_names_removed`
   reports names removed from `/XObject`, not objects deleted.
+- **M21.1 — content-based verification** — re-parse the output
+  and match image streams by decoded sample bytes, not by
+  original object number (the writer renumbers). A removed name
+  does not imply the object was deleted; an image can survive
+  via an inherited `/Resources` even when the page's `/XObject`
+  no longer names it.
 
 CLI: `kasane-pdf experimental-remove-region in.pdf 1 --rect llx lly
 urx ury [--rect …] --output out.pdf` — same atomic-write and
