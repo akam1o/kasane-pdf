@@ -89,6 +89,6 @@ pub use object::{Dict, IndirectRef, Object};
 pub use page::{Page, Rect};
 pub use redact_diag::{diagnose_redaction, Diagnosis, Target, TargetDetail, TargetKind};
 pub use remove_image::{remove_image_region, ImageRemoval};
-pub use remove_region::{remove_region, RegionRemoval};
+pub use remove_region::{remove_region, remove_regions, PageSpec, RegionRemoval, RegionsRemoval};
 pub use remove_text::{remove_text, Removal};
 pub use rewrite::{rewrite, rewrite_with_limits};

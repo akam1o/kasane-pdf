@@ -2661,3 +2661,202 @@ fn cli_audit_no_name_tree_no_incomplete() {
     );
     // Exit 0 means the audit ran — it is not a "safe" verdict.
 }
+
+// ------------------------------------------------------------------
+// M24 — experimental-remove-regions
+// ------------------------------------------------------------------
+
+/// A 2-page fixture: page 1 has text at (20,140), page 2 shares the
+/// same image at (100,100). Used to verify multi-page CLI removal.
+fn two_page_text_image_pdf() -> Vec<u8> {
+    let font_bytes = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/KasaneTest.ttf"
+    ))
+    .unwrap();
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+          /Resources << /Font << /F1 5 0 R >> \
+          /XObject << /Im1 10 0 R >> >> \
+          /Contents 9 0 R >>",
+    );
+    push(
+        4,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+          /Resources << /Font << /F1 5 0 R >> \
+          /XObject << /Im1 10 0 R >> >> \
+          /Contents 12 0 R >>",
+    );
+    let widths = {
+        let mut w = [600u32; 224];
+        w[0] = 250;
+        format!(
+            "[{}]",
+            w.iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+        .into_bytes()
+    };
+    let mut font_dict = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+          /FirstChar 32 /LastChar 255 /Widths "
+        .to_vec();
+    font_dict.extend_from_slice(&widths);
+    font_dict.extend_from_slice(b" /FontDescriptor 6 0 R /Encoding /WinAnsiEncoding >>");
+    push(5, &font_dict);
+    push(
+        6,
+        b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+          /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+          /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 7 0 R >>",
+    );
+    let enc = {
+        use std::io::Write;
+        let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(&font_bytes).unwrap();
+        e.finish().unwrap()
+    };
+    let mut fs = format!(
+        "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+        enc.len(),
+        font_bytes.len()
+    )
+    .into_bytes();
+    fs.extend_from_slice(&enc);
+    fs.extend_from_slice(b"\nendstream");
+    push(7, &fs);
+    let img_data = [0x10u8, 0x20, 0x30, 0x40];
+    let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+          /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+        .to_vec();
+    f.extend_from_slice(img_data.len().to_string().as_bytes());
+    f.extend_from_slice(b" >>\nstream\n");
+    f.extend_from_slice(&img_data);
+    f.extend_from_slice(b"\nendstream");
+    push(10, &f);
+    let body1 = b"BT /F1 24 Tf 20 140 Td (ABC) Tj ET\n40 0 0 40 20 60 cm\n/Im1 Do\n";
+    let mut sb = format!("<< /Length {} >>\nstream\n", body1.len()).into_bytes();
+    sb.extend_from_slice(body1);
+    sb.extend_from_slice(b"\nendstream");
+    push(9, &sb);
+    let body2 = b"BT /F1 24 Tf 20 140 Td (XYZ) Tj ET\n40 0 0 40 100 100 cm\n/Im1 Do\n";
+    let mut sb2 = format!("<< /Length {} >>\nstream\n", body2.len()).into_bytes();
+    sb2.extend_from_slice(body2);
+    sb2.extend_from_slice(b"\nendstream");
+    push(12, &sb2);
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 13\n0000000000 65535 f \n".to_vec());
+    for n in 1..13u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        } else {
+            parts.push(b"0000000000 00000 f \n".to_vec());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 13 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    parts.concat()
+}
+
+#[test]
+fn cli_remove_regions_success() {
+    let dir = tmpdir("m24-ok");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    fs::write(&src, two_page_text_image_pdf()).unwrap();
+    let out = bin()
+        .args(["experimental-remove-regions"])
+        .arg(&src)
+        .args([
+            "--page", "1", "--rect", "20", "140", "30", "160", "--page", "2", "--rect", "100",
+            "100", "140", "140", "--output",
+        ])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    // Page numbers and counts only — no text/image bytes.
+    assert!(stdout.contains("codes removed"), "{stdout}");
+    assert!(stdout.contains("page"), "{stdout}");
+    assert!(!stdout.contains("(ABC)"), "leaked text: {stdout}");
+    assert!(!stdout.contains("(XYZ)"), "leaked text: {stdout}");
+    // Output written and parses.
+    assert!(dst.exists());
+    let out_bytes = fs::read(&dst).unwrap();
+    let _ = kasane_pdf::Document::from_bytes(&out_bytes).unwrap();
+    // Input untouched.
+    assert_eq!(fs::read(&src).unwrap(), two_page_text_image_pdf());
+}
+
+#[test]
+fn cli_remove_regions_validation() {
+    let dir = tmpdir("m24-val");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    fs::write(&src, two_page_text_image_pdf()).unwrap();
+    // --rect before --page is refused.
+    let out = bin()
+        .args(["experimental-remove-regions"])
+        .arg(&src)
+        .args(["--rect", "0", "0", "10", "10", "--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(stderr.contains("--rect must follow a --page"), "{stderr}");
+    // --page with no rect is refused.
+    let out = bin()
+        .args(["experimental-remove-regions"])
+        .arg(&src)
+        .args(["--page", "1", "--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(stderr.contains("has no --rect"), "{stderr}");
+    // Failure leaves no output.
+    assert!(!dst.exists());
+}
+
+#[test]
+fn cli_remove_regions_failure_preserves_output() {
+    let dir = tmpdir("m24-fail");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    fs::write(&src, two_page_text_image_pdf()).unwrap();
+    fs::write(&dst, b"SENTINEL").unwrap();
+    // Page 2 is refused (annot fixture would be needed — use a page
+    // that does not exist to force a Structure error).
+    let out = bin()
+        .args(["experimental-remove-regions"])
+        .arg(&src)
+        .args([
+            "--page", "1", "--rect", "20", "140", "30", "160", "--page", "9", "--rect", "0", "0",
+            "10", "10", "--output",
+        ])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    // Existing output is untouched.
+    assert_eq!(fs::read(&dst).unwrap(), b"SENTINEL");
+}

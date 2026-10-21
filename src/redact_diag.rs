@@ -991,6 +991,23 @@ impl<'a> DiagWalker<'a> {
         Ok(())
     }
 
+    /// Cumulative counters the caller may read after `run` — M24's
+    /// `remove_regions` carries each page's spend into the next
+    /// page's budget so a multi-page call cannot spend N× the
+    /// documented limits.
+    pub(crate) fn exec_ops_consumed(&self) -> u64 {
+        self.exec_ops
+    }
+    pub(crate) fn text_codes_consumed(&self) -> u64 {
+        self.text_codes
+    }
+    pub(crate) fn xobject_invocations_consumed(&self) -> u64 {
+        self.xobject_invocations
+    }
+    pub(crate) fn show_states_len(&self) -> u64 {
+        self.show_states.len() as u64
+    }
+
     pub(crate) fn run(&mut self, ops: &[crate::content::Operation]) -> Result<(), Error> {
         for (i, op) in ops.iter().enumerate() {
             self.op_index = i;

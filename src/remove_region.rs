@@ -612,6 +612,613 @@ pub fn remove_region(
     })
 }
 
+/// The result of [`remove_regions`] — the rewritten PDF bytes plus
+/// a per-page audit trail of what was edited.
+pub struct RegionsRemoval {
+    /// The new single-revision PDF.
+    pub output: Vec<u8>,
+    /// Total character codes removed across all edited pages.
+    pub codes_removed: u64,
+    /// Total `Do` invocations edited across all edited pages.
+    pub invocations_edited: u64,
+    /// Total pixels changed to black across all edited pages.
+    pub pixels_changed: u64,
+    /// XObject names orphaned by the edit, removed from each edited
+    /// page's `/Resources` (M21) — total across pages.
+    pub orphaned_names_removed: u64,
+    /// `(page_index, sites)` pairs — each entry carries the 0-based
+    /// page index plus the `Site`s edited on that page.
+    pub per_page: Vec<(usize, Vec<Site>)>,
+    /// Human-readable scope statement — never contains document
+    /// text or image bytes.
+    pub scope: Vec<String>,
+}
+
+/// Terse summary — never prints `output` bytes or site content.
+impl std::fmt::Debug for RegionsRemoval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegionsRemoval")
+            .field("output_bytes", &self.output.len())
+            .field("codes_removed", &self.codes_removed)
+            .field("invocations_edited", &self.invocations_edited)
+            .field("pixels_changed", &self.pixels_changed)
+            .field("orphaned_names_removed", &self.orphaned_names_removed)
+            .field("pages", &self.per_page.len())
+            .field("scope", &self.scope)
+            .finish()
+    }
+}
+
+/// A page spec for [`remove_regions`] — `(0-based_page_index, rects)`.
+/// The same page may appear more than once; its rect lists are merged.
+pub type PageSpec = (usize, Vec<(f64, f64, f64, f64)>);
+
+/// M24 — experimental scoped region removal over **multiple pages**
+/// in one edit session and one rewrite.
+///
+/// `specs` is `(0-based_page_index, rects)` pairs; rects use the same
+/// un-rotated user-space convention as [`remove_region`]. The same
+/// page may appear more than once — its rect lists are merged.
+/// Pages are processed in ascending page order regardless of input
+/// order.
+///
+/// Every per-page eligibility rule from [`remove_region`] applies
+/// unchanged (no `/Annots`, no forms, no masks/JPEG/non-device
+/// colour, `Tr 0` text only, …). All pages share the *same* `Edit`
+/// session and one final `rewrite` — no per-page PDFs, no chained
+/// rewrites, no per-page budget resets. Cumulative limits
+/// (`max_diag_exec_ops`, `max_text_codes`, `max_show_states`,
+/// `max_edit_content_bytes`, `max_edit_objects`, `max_output_bytes`)
+/// bound the *whole call*, not each page.
+///
+/// On any failure nothing is emitted — there is no partial rewrite.
+pub fn remove_regions(
+    doc: &Document,
+    specs: &[PageSpec],
+    limits: &Limits,
+) -> Result<RegionsRemoval, Error> {
+    // ---- input validation (all before any edit work) --------------
+    if specs.is_empty() {
+        return Err(Error::Structure(
+            "remove_regions requires at least one (page, rects) spec".into(),
+        ));
+    }
+    // Merge per-page rect lists; keep them sorted by page index.
+    let mut by_page: BTreeMap<usize, Vec<(f64, f64, f64, f64)>> = BTreeMap::new();
+    for (page_index, rects) in specs {
+        if rects.is_empty() {
+            return Err(Error::Structure(format!(
+                "page {} has an empty rect list",
+                page_index + 1
+            )));
+        }
+        let entry = by_page.entry(*page_index).or_default();
+        entry.extend_from_slice(rects);
+    }
+    // Validate every rect and page index *before* walking anything.
+    for (page_index, rects) in &by_page {
+        for (i, r) in rects.iter().enumerate() {
+            check_rect(i, r.0, r.1, r.2, r.3)
+                .map_err(|e| Error::Structure(format!("page {} rect {i}: {e}", page_index + 1)))?;
+        }
+        if doc.pages().get(*page_index).is_none() {
+            return Err(Error::Structure(format!(
+                "page {} does not exist (document has {} pages)",
+                page_index + 1,
+                doc.page_count()
+            )));
+        }
+    }
+
+    // ---- shared edit session & cumulative budgets -----------------
+    let mut edit_guard: Option<Edit> = None;
+    // Cumulative counters the multi-page call must not exceed —
+    // each page's spend is subtracted from the next page's budget.
+    let mut spent_exec_ops: u64 = 0;
+    let mut spent_text_codes: u64 = 0;
+    let mut spent_xobject_invocations: u64 = 0;
+    let mut spent_show_states: u64 = 0;
+    let mut generated_bytes: u64 = 0;
+
+    let mut codes_removed_total: u64 = 0;
+    let mut invocations_edited_total: u64 = 0;
+    let mut pixels_changed_total: u64 = 0;
+    let mut orphaned_names_removed_total: u64 = 0;
+    let mut per_page: Vec<(usize, Vec<Site>)> = Vec::new();
+    let mut page_dicts: Vec<(IndirectRef, Dict)> = Vec::new();
+    let mut pages_with_resources: HashSet<IndirectRef> = HashSet::new();
+    let mut page_map: HashMap<IndirectRef, &crate::page::Page> = HashMap::new();
+
+    for p in doc.pages() {
+        if let Some(pr) = p.object_ref() {
+            if p.resources().is_some() {
+                pages_with_resources.insert(pr);
+                page_map.insert(pr, p);
+            }
+        }
+    }
+
+    for (page_index, raw_rects) in &by_page {
+        let page = doc.pages().get(*page_index).unwrap();
+        let page_ref = page.object_ref().ok_or_else(|| {
+            Error::Structure("cannot edit a page that has no indirect reference".into())
+        })?;
+
+        // Per-page validation (same rules as `remove_region`).
+        let mut validated = Vec::with_capacity(raw_rects.len());
+        for (i, r) in raw_rects.iter().enumerate() {
+            validated.push(check_rect(i, r.0, r.1, r.2, r.3)?);
+        }
+        if page_dict_entry(doc, page, b"Annots")?.is_some() {
+            return Err(Error::Unsupported {
+                feature: "region removal on a page with /Annots",
+                detail: "annotations are out of scope — their content is \
+                         not evaluated"
+                    .into(),
+            });
+        }
+        if let Some(uu) = page_dict_entry(doc, page, b"UserUnit")? {
+            match uu.as_number() {
+                Some(v) if (v - 1.0).abs() > f64::EPSILON => {
+                    return Err(Error::Unsupported {
+                        feature: "/UserUnit other than 1",
+                        detail: "coordinates are not default units".into(),
+                    })
+                }
+                Some(_) => {}
+                None => return Err(Error::Structure("/UserUnit is not a number".into())),
+            }
+        }
+
+        // ---- walk with remaining budgets ---------------------------
+        // Subtract what earlier pages spent so the multi-page call
+        // cannot exceed the documented cumulative limits.
+        let ops = doc.page_operations(page)?;
+        let page_limits = Limits {
+            max_diag_exec_ops: limits.max_diag_exec_ops.checked_sub(spent_exec_ops).ok_or(
+                Error::LimitExceeded {
+                    limit: "max_diag_exec_ops",
+                    max: limits.max_diag_exec_ops,
+                },
+            )?,
+            max_text_codes: limits.max_text_codes.checked_sub(spent_text_codes).ok_or(
+                Error::LimitExceeded {
+                    limit: "max_text_codes",
+                    max: limits.max_text_codes,
+                },
+            )?,
+            max_xobject_invocations: limits
+                .max_xobject_invocations
+                .checked_sub(spent_xobject_invocations)
+                .ok_or(Error::LimitExceeded {
+                    limit: "max_xobject_invocations",
+                    max: limits.max_xobject_invocations,
+                })?,
+            max_show_states: limits
+                .max_show_states
+                .checked_sub(spent_show_states)
+                .ok_or(Error::LimitExceeded {
+                    limit: "max_show_states",
+                    max: limits.max_show_states,
+                })?,
+            ..limits.clone()
+        };
+        let mut walker = DiagWalker::new(doc, page, &page_limits, &validated);
+        walker.run(&ops)?;
+        // Carry this page's spend forward — the next page gets the
+        // remaining budget, not a fresh one.
+        spent_exec_ops += walker.exec_ops_consumed();
+        spent_text_codes += walker.text_codes_consumed();
+        spent_xobject_invocations += walker.xobject_invocations_consumed();
+        spent_show_states += walker.show_states_len();
+
+        if let Some(b) = walker.blockers.first() {
+            return Err(Error::Unsupported {
+                feature: "region removal on a page with blockers",
+                detail: format!("{}: {}", b.what, b.detail),
+            });
+        }
+        if let Some(u) = walker.uncertain.first() {
+            return Err(Error::Unsupported {
+                feature: "region removal on a page with uncertain content",
+                detail: u.reason.clone(),
+            });
+        }
+        if let Some((i, _)) = ops
+            .iter()
+            .enumerate()
+            .find(|(_, o)| matches!(o, Operation::Shading(_)))
+        {
+            return Err(Error::Unsupported {
+                feature: "region removal on a page with sh",
+                detail: format!("op #{i} — shading content is out of scope"),
+            });
+        }
+
+        // ---- page-level eligibility ---------------------------------
+        for t in &walker.targets {
+            if t.site.form_path.len() > 1 {
+                return Err(Error::Unsupported {
+                    feature: "region removal on a page with nested XObjects",
+                    detail: "a Do inside a form is out of scope".into(),
+                });
+            }
+            match t.kind {
+                TargetKind::Text => {
+                    if let TargetDetail::Text { render_mode, .. } = &t.detail {
+                        if *render_mode != 0u8 {
+                            return Err(Error::Unsupported {
+                                feature: "region removal on a page with non-fill text",
+                                detail: format!(
+                                    "Tr {render_mode} text is out of scope — only Tr 0 fill \
+                                     is rewritten (op #{}, code #{:?})",
+                                    t.site.op_index, t.site.code_index
+                                ),
+                            });
+                        }
+                    }
+                }
+                TargetKind::Image if t.site.form_path.is_empty() => {}
+                TargetKind::Form | TargetKind::Image | TargetKind::Other => {
+                    return Err(Error::Unsupported {
+                        feature: "region removal on a page with non-image XObjects",
+                        detail: format!(
+                            "an {:?} occurrence at op #{} is out of scope",
+                            t.kind, t.site.op_index
+                        ),
+                    });
+                }
+                TargetKind::Path => {}
+            }
+        }
+
+        // ---- collect this page's removal plan -----------------------
+        let mut to_remove_text: BTreeMap<(Vec<crate::redact_diag::FormFrame>, usize), Vec<usize>> =
+            BTreeMap::new();
+        let mut site_lookup: BTreeMap<(Vec<crate::redact_diag::FormFrame>, usize, usize), Site> =
+            BTreeMap::new();
+        let mut to_edit_image: BTreeMap<usize, (Site, Matrix, Option<IndirectRef>, Vec<u8>)> =
+            BTreeMap::new();
+        for t in &walker.targets {
+            match t.kind {
+                TargetKind::Text if !t.hits.is_empty() => {
+                    let ci = t
+                        .site
+                        .code_index
+                        .ok_or_else(|| Error::Structure("text target without code_index".into()))?;
+                    let key = (t.site.form_path.clone(), t.site.op_index);
+                    site_lookup
+                        .entry((t.site.form_path.clone(), t.site.op_index, ci))
+                        .or_insert_with(|| t.site.clone());
+                    to_remove_text.entry(key).or_default().push(ci);
+                }
+                TargetKind::Image if t.site.form_path.is_empty() && !t.hits.is_empty() => {
+                    if let TargetDetail::Image {
+                        xobj, name, ctm, ..
+                    } = &t.detail
+                    {
+                        to_edit_image
+                            .insert(t.site.op_index, (t.site.clone(), *ctm, *xobj, name.clone()));
+                    }
+                }
+                _ => {}
+            }
+        }
+        for v in to_remove_text.values_mut() {
+            v.sort_unstable();
+        }
+
+        // ---- clone images for this page's edited invocations -------
+        let mut do_renames: BTreeMap<usize, Vec<u8>> = BTreeMap::new();
+        let mut removed_sites: Vec<Site> = Vec::new();
+        let mut codes_removed: u64 = 0;
+        let mut pixels_changed: u64 = 0;
+        let mut new_xobject_entries: Vec<(Vec<u8>, IndirectRef)> = Vec::new();
+
+        for (op_index, (site, ctm, _xobj_ref, name)) in &to_edit_image {
+            let entry = doc
+                .resolve_resource_raw(
+                    page.resources()
+                        .ok_or_else(|| Error::Structure("page has no /Resources".into()))?,
+                    "XObject",
+                    name.as_slice(),
+                )?
+                .ok_or_else(|| {
+                    Error::Structure(format!(
+                        "/XObject /{} no longer resolves",
+                        String::from_utf8_lossy(name)
+                    ))
+                })?;
+            let obj = doc.deref(&entry)?;
+            let (dict, raw) = obj
+                .as_stream()
+                .ok_or_else(|| Error::Structure("image XObject is not a stream".into()))?;
+
+            let (width, height, ncomps) = validate_image(dict, page.resources(), doc, limits)?;
+
+            let ranges = image_pixel_ranges(ctm, width, height, &validated)?;
+            if ranges.is_empty() {
+                continue;
+            }
+            let expected = (width as u64)
+                .checked_mul(height as u64)
+                .and_then(|s| s.checked_mul(ncomps as u64))
+                .ok_or(Error::LimitExceeded {
+                    limit: "max_image_bytes",
+                    max: limits.max_image_bytes,
+                })?;
+            if expected > limits.max_image_bytes {
+                return Err(Error::LimitExceeded {
+                    limit: "max_image_bytes",
+                    max: limits.max_image_bytes,
+                });
+            }
+            charge_generated(generated_bytes, expected as usize, limits)?;
+            let decoded = decode_image(dict, raw, limits)?;
+            if decoded.len() as u64 != expected {
+                return Err(Error::Structure(format!(
+                    "image /{} data length {} does not match {}x{}x{} = {}",
+                    String::from_utf8_lossy(name),
+                    decoded.len(),
+                    width,
+                    height,
+                    ncomps,
+                    expected
+                )));
+            }
+            let mut new_data = decoded;
+            let mut changed_here: u64 = 0;
+            for &(x0, y0, x1, y1) in &ranges {
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let idx = ((y as u64) * (width as u64) + (x as u64)) * (ncomps as u64);
+                        let mut pixel_changed = false;
+                        for c in 0..ncomps {
+                            let i = (idx + c as u64) as usize;
+                            if new_data[i] != 0 {
+                                new_data[i] = 0;
+                                pixel_changed = true;
+                            }
+                        }
+                        if pixel_changed {
+                            changed_here += 1;
+                        }
+                    }
+                }
+            }
+            if changed_here == 0 {
+                continue;
+            }
+            pixels_changed += changed_here;
+
+            let mut new_dict = dict.clone();
+            new_dict.remove(b"Filter".as_slice());
+            new_dict.remove(b"DecodeParms".as_slice());
+            new_dict.remove(b"Length".as_slice());
+            new_dict.insert(b"Length".to_vec(), Object::Integer(new_data.len() as i64));
+            if let Some(d) = dict.get(b"Decode".as_slice()) {
+                if !is_default_decode(d, ncomps) {
+                    return Err(Error::Unsupported {
+                        feature: "image with non-default /Decode",
+                        detail: "inverted or remapped samples are not rewritten".into(),
+                    });
+                }
+            }
+
+            if edit_guard.is_none() {
+                edit_guard = Some(Edit::new(doc, limits.clone())?);
+            }
+            let edit = edit_guard.as_mut().unwrap();
+            let clone_ref = edit.alloc()?;
+            generated_bytes = charge_generated(generated_bytes, new_data.len(), limits)?;
+            edit.overlay.insert(
+                (clone_ref.number, clone_ref.generation),
+                Object::Stream {
+                    dict: new_dict,
+                    data: new_data,
+                },
+            );
+
+            let allocated: Vec<Vec<u8>> =
+                new_xobject_entries.iter().map(|(n, _)| n.clone()).collect();
+            let new_name = fresh_xobject_name(page, doc, do_renames.len() as u64, &allocated)?;
+            do_renames.insert(*op_index, new_name.clone());
+            new_xobject_entries.push((new_name, clone_ref));
+            removed_sites.push(site.clone());
+        }
+
+        // ---- rewrite this page's content stream ---------------------
+        let mut new_ops: Vec<Operation> = Vec::with_capacity(ops.len());
+        for (op_index, op) in ops.iter().enumerate() {
+            match op {
+                Operation::Do(_) => {
+                    if let Some(new_name) = do_renames.get(&op_index) {
+                        new_ops.push(Operation::Do(new_name.clone()));
+                    } else {
+                        new_ops.push(op.clone());
+                    }
+                }
+                _ => new_ops.extend(rewrite_ops_for(
+                    &walker,
+                    &to_remove_text,
+                    &site_lookup,
+                    &[],
+                    op_index,
+                    op,
+                    &mut codes_removed,
+                    &mut removed_sites,
+                )?),
+            }
+        }
+
+        // ---- M21: orphaned XObject names for this page --------------
+        let mut candidate_names: BTreeSet<Vec<u8>> = BTreeSet::new();
+        for (_site, _ctm, _xobj_ref, name) in to_edit_image.values() {
+            candidate_names.insert(name.clone());
+        }
+        let mut used_names: BTreeSet<Vec<u8>> = BTreeSet::new();
+        for op in &new_ops {
+            if let Operation::Do(name) = op {
+                used_names.insert(name.clone());
+            }
+        }
+        let orphaned_names: Vec<Vec<u8>> = candidate_names
+            .iter()
+            .filter(|n| !used_names.contains(*n))
+            .cloned()
+            .collect();
+
+        // ---- serialise + page dict update ---------------------------
+        let new_body = serialize_ops(&new_ops, limits, generated_bytes)?;
+        charge_generated(generated_bytes, new_body.len(), limits)?;
+        // Share the *same* Edit across pages — a synthetic ref from an
+        // earlier page must resolve through the same overlay.
+        if edit_guard.is_none() {
+            edit_guard = Some(Edit::new(doc, limits.clone())?);
+        }
+        let edit = edit_guard.as_mut().unwrap();
+        let stream_ref = edit.alloc()?;
+        edit.overlay.insert(
+            (stream_ref.number, stream_ref.generation),
+            Object::Stream {
+                dict: {
+                    let mut d = crate::object::Dict::new();
+                    d.insert(b"Length".to_vec(), Object::Integer(new_body.len() as i64));
+                    d
+                },
+                data: new_body,
+            },
+        );
+        let page_obj = doc.resolve(page_ref)?;
+        let mut page_dict = page_obj
+            .as_dict()
+            .cloned()
+            .ok_or_else(|| Error::Structure(format!("page {page_ref} is not a dictionary")))?;
+        // Contents and Resources coexist in *this* page dict — the
+        // M22.1 rule: never write Contents separately from the
+        // materialised Resources.
+        page_dict.insert(b"Contents".to_vec(), Object::Ref(stream_ref));
+        if let Some(res) = page.resources() {
+            page_dict.insert(b"Resources".to_vec(), res.clone());
+        }
+
+        let mut orphaned_names_removed: u64 = 0;
+        if !new_xobject_entries.is_empty() {
+            let mut res_dict = match page.resources() {
+                Some(r) => doc
+                    .deref(r)?
+                    .as_dict()
+                    .cloned()
+                    .ok_or_else(|| Error::Structure("/Resources is not a dictionary".into()))?,
+                None => Dict::new(),
+            };
+            let mut xobj_dict = match res_dict.get(b"XObject".as_slice()) {
+                Some(o) => doc.deref(o)?.as_dict().cloned().ok_or_else(|| {
+                    Error::Structure("/Resources /XObject is not a dictionary".into())
+                })?,
+                None => Dict::new(),
+            };
+            for (name, r) in &new_xobject_entries {
+                xobj_dict.insert(name.clone(), Object::Ref(*r));
+            }
+            for name in &orphaned_names {
+                if xobj_dict.remove(name).is_some() {
+                    orphaned_names_removed += 1;
+                }
+            }
+            res_dict.insert(b"XObject".to_vec(), Object::Dict(xobj_dict));
+            page_dict.insert(b"Resources".to_vec(), Object::Dict(res_dict));
+        }
+        // Stash the completed page dict — the overlay insert happens
+        // after every page's edits are computed, so one page's
+        // Resources materialisation cannot clobber another's
+        // Contents.
+        page_dicts.push((page_ref, page_dict));
+
+        codes_removed_total += codes_removed;
+        invocations_edited_total += do_renames.len() as u64;
+        pixels_changed_total += pixels_changed;
+        orphaned_names_removed_total += orphaned_names_removed;
+        per_page.push((*page_index, removed_sites));
+    }
+
+    // ---- Resources materialisation across the document -------------
+    // Every page's effective Resources is written into its page dict
+    // *here* — after all per-page edits are computed — so a parent
+    // /Pages can drop /Resources only when *every* descendant has
+    // been materialised.
+    let mut edit = match edit_guard {
+        Some(e) => e,
+        None => Edit::new(doc, limits.clone())?,
+    };
+    let (pages_to_strip, _node_results) =
+        plan_resource_materialisation(doc, &pages_with_resources)?;
+    let edited_refs: HashSet<IndirectRef> = page_dicts.iter().map(|(r, _)| *r).collect();
+    for &pr in &pages_with_resources {
+        if edited_refs.contains(&pr) {
+            // Edited page — its Resources was already materialised
+            // into `page_dicts` together with Contents.
+            continue;
+        }
+        let p_obj = doc.resolve(pr)?;
+        let mut p_dict = p_obj
+            .as_dict()
+            .cloned()
+            .ok_or_else(|| Error::Structure("page is not a dictionary".into()))?;
+        let res = page_map.get(&pr).unwrap().resources().unwrap().clone();
+        p_dict.insert(b"Resources".to_vec(), res);
+        edit.overlay
+            .insert((pr.number, pr.generation), Object::Dict(p_dict));
+    }
+    // Strip /Resources from /Pages nodes where all descendants are
+    // materialised.
+    for &pages_ref in &pages_to_strip {
+        let pages_obj = doc.resolve(pages_ref)?;
+        let mut pages_dict = pages_obj
+            .as_dict()
+            .cloned()
+            .ok_or_else(|| Error::Structure("/Pages is not a dictionary".into()))?;
+        pages_dict.remove(b"Resources".as_slice());
+        edit.overlay.insert(
+            (pages_ref.number, pages_ref.generation),
+            Object::Dict(pages_dict),
+        );
+    }
+    // Commit every edited page dict — Contents + Resources together.
+    for (page_ref, page_dict) in page_dicts {
+        edit.overlay.insert(
+            (page_ref.number, page_ref.generation),
+            Object::Dict(page_dict),
+        );
+    }
+    let output = edit.rewrite()?;
+
+    Ok(RegionsRemoval {
+        output,
+        codes_removed: codes_removed_total,
+        invocations_edited: invocations_edited_total,
+        pixels_changed: pixels_changed_total,
+        orphaned_names_removed: orphaned_names_removed_total,
+        per_page,
+        scope: vec![
+            format!(
+                "{} page{} edited",
+                by_page.len(),
+                if by_page.len() == 1 { "" } else { "s" }
+            ),
+            format!("codes removed: {codes_removed_total}"),
+            format!("invocations edited: {invocations_edited_total}"),
+            format!("pixels changed: {pixels_changed_total}"),
+            format!("orphaned names removed: {orphaned_names_removed_total}"),
+            "scope: page-level text + image Do calls — no forms, no nested XObjects, \
+             no /Annots/metadata/structure, no JPEG/masks/non-device colour. \
+             Experimental content editing — other copies of the same data \
+             (metadata, annotations, structure tree, other pages) may remain."
+                .into(),
+        ],
+    })
+}
+
 /// M22.4 — post-order traversal over the `/Pages` tree that decides
 /// which intermediate nodes may drop their `/Resources`.
 ///
@@ -3204,5 +3811,338 @@ mod tests {
         // strip candidate. Root (no /Resources, false) and node 11
         // (false) are not.
         assert_eq!(pages_to_strip, vec![IndirectRef::new(10, 0)]);
+    }
+
+    // ---- M24 — multi-page region removal ---------------------------
+
+    /// A 2-page fixture: page 1 has text `(ABC)` at (20,140) and a
+    /// 2x2 gray image at (20,60); page 2 has text `(XYZ)` at (20,140)
+    /// and shares the same image object at (100,100).
+    fn two_page_text_image_pdf() -> Vec<u8> {
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 5 0 R >> \
+              /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        push!(
+            4,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 5 0 R >> \
+              /XObject << /Im1 10 0 R >> >> \
+              /Contents 12 0 R >>"
+        );
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut font_dict = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        font_dict.extend_from_slice(&widths);
+        font_dict.extend_from_slice(b" /FontDescriptor 6 0 R /Encoding /WinAnsiEncoding >>");
+        push!(5, &font_dict);
+        push!(
+            6,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 7 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs.extend_from_slice(&enc);
+        fs.extend_from_slice(b"\nendstream");
+        push!(7, &fs);
+        // 2x2 gray image shared by both pages.
+        let img_data = [0x10u8, 0x20, 0x30, 0x40];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        // Page 1: text at (20,140) + image at (20,60).
+        let body1 = b"BT /F1 24 Tf 20 140 Td (ABC) Tj ET\n40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body1.len()).into_bytes();
+        sb.extend_from_slice(body1);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        // Page 2: text at (20,140) + image at (100,100).
+        let body2 = b"BT /F1 24 Tf 20 140 Td (XYZ) Tj ET\n40 0 0 40 100 100 cm\n/Im1 Do\n";
+        let mut sb2 = format!("<< /Length {} >>\nstream\n", body2.len()).into_bytes();
+        sb2.extend_from_slice(body2);
+        sb2.extend_from_slice(b"\nendstream");
+        push!(12, &sb2);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 13\n0000000000 65535 f \n".to_vec());
+        for n in 1..13u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 13 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        parts.concat()
+    }
+
+    /// Two pages, different rect regions — both edits land in one
+    /// output through one Edit/rewrite.
+    #[test]
+    fn m24_two_pages_different_rects() {
+        let d = doc(&two_page_text_image_pdf());
+        // Page 1: cover 'A' text. Page 2: cover image pixels.
+        let r = remove_regions(
+            &d,
+            &[
+                (0, vec![(20.0, 140.0, 30.0, 160.0)]),
+                (1, vec![(100.0, 100.0, 140.0, 140.0)]),
+            ],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.codes_removed, 1); // 'A' on page 1
+        assert_eq!(r.invocations_edited, 1); // /Im1 on page 2
+        assert_eq!(r.pixels_changed, 4); // all 4 pixels of 2x2
+        assert_eq!(r.per_page.len(), 2);
+        // Per-page site lists.
+        assert_eq!(r.per_page[0].0, 0);
+        assert_eq!(r.per_page[1].0, 1);
+        assert_eq!(r.per_page[0].1.len(), 1, "page 1 site");
+        assert_eq!(r.per_page[1].1.len(), 1, "page 2 site");
+    }
+
+    /// Text edit on one page, image edit on the other — a mixed
+    /// multi-page pass.
+    #[test]
+    fn m24_mixed_text_and_image_pages() {
+        let d = doc(&two_page_text_image_pdf());
+        let r = remove_regions(
+            &d,
+            &[
+                (0, vec![(20.0, 140.0, 30.0, 160.0)]),   // text on p1
+                (1, vec![(100.0, 100.0, 140.0, 140.0)]), // image on p2
+            ],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.codes_removed, 1);
+        assert_eq!(r.invocations_edited, 1);
+        // The original shared image survives — each edited page gets
+        // its own clone; the unedited page 2 keeps the original.
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        assert!(out.contains("/Subtype /Image"), "image must stay");
+    }
+
+    /// Same page repeated with multiple rect groups — merged into
+    /// one plan, not double-counted.
+    #[test]
+    fn m24_same_page_repeated_merges_rects() {
+        let d = doc(&two_page_text_image_pdf());
+        // Page 1 listed twice — rects merge.
+        let r = remove_regions(
+            &d,
+            &[
+                (0, vec![(20.0, 140.0, 30.0, 160.0)]),
+                (0, vec![(20.0, 80.0, 40.0, 100.0)]), // overlaps image top-left
+            ],
+            &Limits::default(),
+        )
+        .unwrap();
+        // 'A' text + image top-left pixel, each counted once.
+        assert_eq!(r.codes_removed, 1);
+        assert_eq!(r.invocations_edited, 1);
+        assert_eq!(r.pixels_changed, 1);
+        assert_eq!(r.per_page.len(), 1);
+    }
+
+    /// A failure on page 2 fails the whole call — no partial output.
+    #[test]
+    fn m24_failure_on_later_page_fails_all() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 5 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        // Page 2 has /Annots — refused by eligibility.
+        push!(
+            4,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Annots [6 0 R] \
+              /Resources << >> /Contents 11 0 R >>"
+        );
+        push!(6, b"<< /Type /Annot /Subtype /Text /Rect [0 0 5 5] >>");
+        push!(5, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+        push!(9, b"<< /Length 0 >>\nstream\n\nendstream");
+        push!(11, b"<< /Length 0 >>\nstream\n\nendstream");
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 12\n0000000000 65535 f \n".to_vec());
+        for n in 1..12u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 12 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let e = remove_regions(
+            &d,
+            &[
+                (0, vec![(0.0, 0.0, 10.0, 10.0)]),
+                (1, vec![(0.0, 0.0, 10.0, 10.0)]),
+            ],
+            &Limits::default(),
+        )
+        .unwrap_err();
+        // Typed error — annotations refusal, not a generic failure.
+        match e {
+            Error::Unsupported { feature, .. } => {
+                assert!(feature.contains("/Annots"), "{feature}");
+            }
+            other => panic!("expected Unsupported(/Annots), got {other:?}"),
+        }
+    }
+
+    /// A cumulative limit that fits one page but not two is refused
+    /// — `max_diag_exec_ops` carries across pages.
+    #[test]
+    fn m24_cumulative_exec_ops_budget() {
+        let d = doc(&two_page_text_image_pdf());
+        // Each page runs ~9 ops (BT/ET/Tj/cm/Do). A cap of 5 allows
+        // page 1 but not both.
+        let limits = Limits {
+            max_diag_exec_ops: 5,
+            ..Default::default()
+        };
+        let e = remove_regions(
+            &d,
+            &[
+                (0, vec![(20.0, 140.0, 30.0, 160.0)]),
+                (1, vec![(100.0, 100.0, 140.0, 140.0)]),
+            ],
+            &limits,
+        )
+        .unwrap_err();
+        match e {
+            Error::LimitExceeded { limit, .. } => {
+                assert_eq!(limit, "max_diag_exec_ops");
+            }
+            other => panic!("expected LimitExceeded, got {other:?}"),
+        }
+    }
+
+    /// Same cumulative boundary — the exact limit succeeds.
+    #[test]
+    fn m24_cumulative_budget_boundary() {
+        let d = doc(&two_page_text_image_pdf());
+        // Generous enough for both pages.
+        let r = remove_regions(
+            &d,
+            &[
+                (0, vec![(20.0, 140.0, 30.0, 160.0)]),
+                (1, vec![(100.0, 100.0, 140.0, 140.0)]),
+            ],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert!(r.codes_removed > 0);
+    }
+
+    /// Empty specs, empty rect list, bad page index — all refused
+    /// up front, before any walk runs.
+    #[test]
+    fn m24_input_validation() {
+        let d = doc(&two_page_text_image_pdf());
+        // Empty specs.
+        assert!(matches!(
+            remove_regions(&d, &[], &Limits::default()),
+            Err(Error::Structure(_))
+        ));
+        // Empty rect list for a page.
+        assert!(matches!(
+            remove_regions(&d, &[(0, vec![])], &Limits::default()),
+            Err(Error::Structure(_))
+        ));
+        // Page index out of range.
+        assert!(matches!(
+            remove_regions(&d, &[(5, vec![(0.0, 0.0, 10.0, 10.0)])], &Limits::default()),
+            Err(Error::Structure(_))
+        ));
+        // Reversed rect.
+        assert!(matches!(
+            remove_regions(&d, &[(0, vec![(10.0, 10.0, 0.0, 0.0)])], &Limits::default()),
+            Err(Error::Structure(_))
+        ));
+    }
+
+    /// Debug must not leak output bytes or site content.
+    #[test]
+    fn m24_debug_no_leak() {
+        let d = doc(&two_page_text_image_pdf());
+        let r = remove_regions(
+            &d,
+            &[(0, vec![(20.0, 140.0, 30.0, 160.0)])],
+            &Limits::default(),
+        )
+        .unwrap();
+        let dbg = format!("{r:?}");
+        assert!(!dbg.contains("(ABC)"), "leaked text: {dbg}");
+        assert!(!dbg.contains("\\x10\\x20"), "leaked image: {dbg}");
+        // The scope reports page counts, not content.
+        assert!(dbg.contains("codes_removed"));
     }
 }
