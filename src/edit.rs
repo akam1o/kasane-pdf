@@ -234,9 +234,27 @@ impl<'a> Edit<'a> {
     ///
     /// All appearance streams and `/Annots` edits are committed here —
     /// a failure leaves the underlying `Document` untouched.
-    pub fn rewrite(mut self) -> Result<Vec<u8>, Error> {
+    pub fn rewrite(self) -> Result<Vec<u8>, Error> {
+        self.rewrite_with_overrides(&rewrite::RewriteOverrides::default())
+    }
+
+    /// `pub(crate)` — M26's combined region-removal + metadata-strip
+    /// call needs the same overlay+commit pipeline but with the
+    /// writer's internal trailer/catalog overrides applied in the
+    /// same rewrite. Behaviour is identical to [`Edit::rewrite`]
+    /// when `overrides` is default.
+    pub(crate) fn rewrite_with_overrides(
+        mut self,
+        overrides: &rewrite::RewriteOverrides,
+    ) -> Result<Vec<u8>, Error> {
         self.commit()?;
-        rewrite::rewrite_overlay(self.doc, &self.overlay, &self.synth_numbers, &self.limits)
+        rewrite::rewrite_overlay_with(
+            self.doc,
+            &self.overlay,
+            &self.synth_numbers,
+            &self.limits,
+            overrides,
+        )
     }
 
     /// Build the annotation dicts + appearance streams and splice them

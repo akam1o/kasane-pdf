@@ -664,30 +664,32 @@ fn page_label(page_index: usize) -> String {
     }
 }
 
-/// M24 — experimental scoped region removal over **multiple pages**
-/// in one edit session and one rewrite.
+/// The workhorse behind [`remove_regions`] and
+/// [`remove_regions_and_document_metadata`]: validates `specs`,
+/// runs every page's region-removal edits, applies the document-wide
+/// `/Resources` materialisation, and returns the accumulated `Edit`
+/// session plus the aggregated counters — *without* writing.
 ///
-/// `specs` is `(0-based_page_index, rects)` pairs; rects use the same
-/// un-rotated user-space convention as [`remove_region`]. The same
-/// page may appear more than once — its rect lists are merged.
-/// Pages are processed in ascending page order regardless of input
-/// order.
-///
-/// Every per-page eligibility rule from [`remove_region`] applies
-/// unchanged (no `/Annots`, no forms, no masks/JPEG/non-device
-/// colour, `Tr 0` text only, …). All pages share the *same* `Edit`
-/// session and one final `rewrite` — no per-page PDFs, no chained
-/// rewrites, no per-page budget resets. Cumulative limits
-/// (`max_diag_exec_ops`, `max_text_codes`, `max_show_states`,
-/// `max_edit_content_bytes`, `max_edit_objects`, `max_output_bytes`)
-/// bound the *whole call*, not each page.
-///
-/// On any failure nothing is emitted — there is no partial rewrite.
-pub fn remove_regions(
-    doc: &Document,
+/// The caller decides what to do with the session: `remove_regions`
+/// calls `edit.rewrite()`; the M26 combined entry point calls
+/// `edit.rewrite_with_overrides` so the trailer `/Info` and catalog
+/// `/Metadata` entries are stripped in the *same* rewrite.
+struct RegionsEdit<'a> {
+    edit: Edit<'a>,
+    codes_removed_total: u64,
+    invocations_edited_total: u64,
+    pixels_changed_total: u64,
+    orphaned_names_removed_total: u64,
+    per_page: Vec<(usize, Vec<Site>)>,
+    /// Number of distinct pages edited (for the scope line).
+    page_count: usize,
+}
+
+fn regions_edit_session<'a>(
+    doc: &'a Document,
     specs: &[PageSpec],
     limits: &Limits,
-) -> Result<RegionsRemoval, Error> {
+) -> Result<RegionsEdit<'a>, Error> {
     // ---- input validation (all before any edit work) --------------
     if specs.is_empty() {
         return Err(Error::Structure(
@@ -1220,29 +1222,185 @@ pub fn remove_regions(
             Object::Dict(page_dict),
         );
     }
-    let output = edit.rewrite()?;
 
+    Ok(RegionsEdit {
+        edit,
+        codes_removed_total,
+        invocations_edited_total,
+        pixels_changed_total,
+        orphaned_names_removed_total,
+        per_page,
+        page_count: by_page.len(),
+    })
+}
+
+/// M24 — experimental scoped region removal over **multiple pages**
+/// in one edit session and one rewrite.
+///
+/// `specs` is `(0-based_page_index, rects)` pairs; rects use the same
+/// un-rotated user-space convention as [`remove_region`]. The same
+/// page may appear more than once — its rect lists are merged.
+/// Pages are processed in ascending page order regardless of input
+/// order.
+///
+/// Every per-page eligibility rule from [`remove_region`] applies
+/// unchanged (no `/Annots`, no forms, no masks/JPEG/non-device
+/// colour, `Tr 0` text only, …). All pages share the *same* `Edit`
+/// session and one final `rewrite` — no per-page PDFs, no chained
+/// rewrites, no per-page budget resets. Cumulative limits
+/// (`max_diag_exec_ops`, `max_text_codes`, `max_show_states`,
+/// `max_edit_content_bytes`, `max_edit_objects`, `max_output_bytes`)
+/// bound the *whole call*, not each page.
+///
+/// On any failure nothing is emitted — there is no partial rewrite.
+pub fn remove_regions(
+    doc: &Document,
+    specs: &[PageSpec],
+    limits: &Limits,
+) -> Result<RegionsRemoval, Error> {
+    let s = regions_edit_session(doc, specs, limits)?;
+    let output = s.edit.rewrite()?;
     Ok(RegionsRemoval {
         output,
-        codes_removed: codes_removed_total,
-        invocations_edited: invocations_edited_total,
-        pixels_changed: pixels_changed_total,
-        orphaned_names_removed: orphaned_names_removed_total,
-        per_page,
+        codes_removed: s.codes_removed_total,
+        invocations_edited: s.invocations_edited_total,
+        pixels_changed: s.pixels_changed_total,
+        orphaned_names_removed: s.orphaned_names_removed_total,
+        per_page: s.per_page,
         scope: vec![
             format!(
                 "{} page{} edited",
-                by_page.len(),
-                if by_page.len() == 1 { "" } else { "s" }
+                s.page_count,
+                if s.page_count == 1 { "" } else { "s" }
             ),
-            format!("codes removed: {codes_removed_total}"),
-            format!("invocations edited: {invocations_edited_total}"),
-            format!("pixels changed: {pixels_changed_total}"),
-            format!("orphaned names removed: {orphaned_names_removed_total}"),
+            format!("codes removed: {}", s.codes_removed_total),
+            format!("invocations edited: {}", s.invocations_edited_total),
+            format!("pixels changed: {}", s.pixels_changed_total),
+            format!("orphaned names removed: {}", s.orphaned_names_removed_total),
             "scope: page-level text + image Do calls — no forms, no nested XObjects, \
              no /Annots/metadata/structure, no JPEG/masks/non-device colour. \
              Experimental content editing — other copies of the same data \
              (metadata, annotations, structure tree, other pages) may remain."
+                .into(),
+        ],
+    })
+}
+
+/// The result of [`remove_regions_and_document_metadata`] — the
+/// region-removal tallies plus the two metadata-entry flags.
+pub struct RegionsAndMetadataRemoval {
+    /// The new single-revision PDF.
+    pub output: Vec<u8>,
+    /// Total character codes removed across all edited pages.
+    pub codes_removed: u64,
+    /// Total `Do` invocations edited across all edited pages.
+    pub invocations_edited: u64,
+    /// Total pixels changed to black across all edited pages.
+    pub pixels_changed: u64,
+    /// XObject names orphaned by the edit, removed from each edited
+    /// page's `/Resources` — total across pages.
+    pub orphaned_names_removed: u64,
+    /// `(page_index, sites)` pairs — 0-based page index plus the
+    /// `Site`s edited on that page.
+    pub per_page: Vec<(usize, Vec<Site>)>,
+    /// `true` when the trailer had an `/Info` entry that was
+    /// removed — *not* a guarantee the data is gone from the file.
+    pub info_removed: bool,
+    /// `true` when the catalog had a `/Metadata` entry that was
+    /// removed — *not* a guarantee the stream is gone.
+    pub metadata_removed: bool,
+    /// Human-readable scope statement — never contains document
+    /// text, image bytes, or metadata values.
+    pub scope: Vec<String>,
+}
+
+/// Terse summary — never prints `output` bytes, site content, or
+/// metadata values.
+impl std::fmt::Debug for RegionsAndMetadataRemoval {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegionsAndMetadataRemoval")
+            .field("output_bytes", &self.output.len())
+            .field("codes_removed", &self.codes_removed)
+            .field("invocations_edited", &self.invocations_edited)
+            .field("pixels_changed", &self.pixels_changed)
+            .field("orphaned_names_removed", &self.orphaned_names_removed)
+            .field("pages", &self.per_page.len())
+            .field("info_removed", &self.info_removed)
+            .field("metadata_removed", &self.metadata_removed)
+            .field("scope", &self.scope)
+            .finish()
+    }
+}
+
+/// M26 — experimental scoped region removal over multiple pages
+/// **and** document-metadata entry removal in *one* edit session and
+/// *one* rewrite.
+///
+/// Runs the exact `remove_regions` plan for every requested page
+/// (same input rules, same per-page eligibility, same cumulative
+/// budgets) and additionally removes the trailer `/Info` and catalog
+/// `/Metadata` *entries* in the same change set — no intermediate
+/// PDF is ever produced or re-parsed.
+///
+/// This is experimental content editing plus a narrow entry
+/// deletion — **not** redaction, sanitizing, or guaranteed data
+/// erasure. The metadata *values* are never parsed; the removed
+/// Info dictionary / XMP stream may still be emitted if another key
+/// references it, page/XObject `/Metadata` is untouched, and the
+/// same information may exist elsewhere in the file.
+///
+/// All `rewrite` refusals apply; on any failure nothing is emitted
+/// and the input `Document` is unchanged.
+pub fn remove_regions_and_document_metadata(
+    doc: &Document,
+    specs: &[PageSpec],
+    limits: &Limits,
+) -> Result<RegionsAndMetadataRemoval, Error> {
+    // Presence is checked on the *input* — flags report whether an
+    // entry was there to remove, not whether its data vanished.
+    let info_present = doc.trailer().contains_key(b"Info".as_slice());
+    let metadata_present = doc.catalog().contains_key(b"Metadata".as_slice());
+
+    let s = regions_edit_session(doc, specs, limits)?;
+    // One rewrite for everything: the region edits accumulated in
+    // `s.edit.overlay` plus the trailer/catalog overrides. The
+    // metadata-strip runs against the *effective* overlay — an
+    // already-edited catalog (none today, but the writer handles it)
+    // loses only /Metadata, never its other edits.
+    let output = s
+        .edit
+        .rewrite_with_overrides(&crate::rewrite::RewriteOverrides {
+            strip_info: true,
+            strip_metadata: true,
+        })?;
+
+    Ok(RegionsAndMetadataRemoval {
+        output,
+        codes_removed: s.codes_removed_total,
+        invocations_edited: s.invocations_edited_total,
+        pixels_changed: s.pixels_changed_total,
+        orphaned_names_removed: s.orphaned_names_removed_total,
+        per_page: s.per_page,
+        info_removed: info_present,
+        metadata_removed: metadata_present,
+        scope: vec![
+            format!(
+                "{} page{} edited",
+                s.page_count,
+                if s.page_count == 1 { "" } else { "s" }
+            ),
+            format!("codes removed: {}", s.codes_removed_total),
+            format!("invocations edited: {}", s.invocations_edited_total),
+            format!("pixels changed: {}", s.pixels_changed_total),
+            format!("orphaned names removed: {}", s.orphaned_names_removed_total),
+            format!("trailer /Info entry removed: {info_present}"),
+            format!("catalog /Metadata entry removed: {metadata_present}"),
+            "scope: page-level text + image Do calls — no forms, no nested XObjects, \
+             no /Annots/metadata/structure, no JPEG/masks/non-device colour. \
+             Removed the trailer /Info and catalog /Metadata entries only; \
+             page/XObject /Metadata and any data still reachable through \
+             other keys may remain. Experimental content editing — complete \
+             erasure is not guaranteed."
                 .into(),
         ],
     })
@@ -4707,5 +4865,518 @@ mod tests {
                 .any(|(_, d)| d.as_slice() == [0xAA, 0xBB, 0xCC, 0xDD]),
             "original image dropped even though page 2 references it"
         );
+    }
+
+    // ---- M26 — region removal + document-metadata entry removal ----
+
+    /// 2-page fixture with trailer /Info and catalog /Metadata.
+    /// Page 1: text `(ABC)` at (20,140) + shared 2x2 image at
+    /// (20,60); page 2: text `(XYZ)` + same image at (100,100).
+    fn two_page_text_image_metadata_pdf() -> Vec<u8> {
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R /Metadata 13 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 5 0 R >> \
+              /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        push!(
+            4,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 5 0 R >> \
+              /XObject << /Im1 10 0 R >> >> \
+              /Contents 12 0 R >>"
+        );
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut font_dict = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        font_dict.extend_from_slice(&widths);
+        font_dict.extend_from_slice(b" /FontDescriptor 6 0 R /Encoding /WinAnsiEncoding >>");
+        push!(5, &font_dict);
+        push!(
+            6,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 7 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs.extend_from_slice(&enc);
+        fs.extend_from_slice(b"\nendstream");
+        push!(7, &fs);
+        // Shared 2x2 gray image.
+        let img_data = [0x10u8, 0x20, 0x30, 0x40];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body1 = b"BT /F1 24 Tf 20 140 Td (ABC) Tj ET\n40 0 0 40 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body1.len()).into_bytes();
+        sb.extend_from_slice(body1);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let body2 = b"BT /F1 24 Tf 20 140 Td (XYZ) Tj ET\n40 0 0 40 100 100 cm\n/Im1 Do\n";
+        let mut sb2 = format!("<< /Length {} >>\nstream\n", body2.len()).into_bytes();
+        sb2.extend_from_slice(body2);
+        sb2.extend_from_slice(b"\nendstream");
+        push!(12, &sb2);
+        // Document-level XMP.
+        let xmp = b"<x:xmpmeta>SECRET-XMP</x:xmpmeta>";
+        let mut m = b"<< /Type /Metadata /Subtype /XML /Length ".to_vec();
+        m.extend_from_slice(xmp.len().to_string().as_bytes());
+        m.extend_from_slice(b" >>\nstream\n");
+        m.extend_from_slice(xmp);
+        m.extend_from_slice(b"\nendstream");
+        push!(13, &m);
+        // Info dict.
+        push!(14, b"<< /Title (Secret Title) /Author (Secret Author) >>");
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 15\n0000000000 65535 f \n".to_vec());
+        for n in 1..15u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 15 /Root 1 0 R /Info 14 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        parts.concat()
+    }
+
+    /// Both edits and both metadata entries are removed in one
+    /// rewrite — verified by re-parsing the output.
+    #[test]
+    fn m26_combined_edit_and_metadata_removal() {
+        let d = doc(&two_page_text_image_metadata_pdf());
+        let r = remove_regions_and_document_metadata(
+            &d,
+            &[
+                (0, vec![(20.0, 140.0, 30.0, 160.0)]),   // 'A' on p1
+                (1, vec![(100.0, 100.0, 140.0, 140.0)]), // image on p2
+            ],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.codes_removed, 1);
+        assert_eq!(r.invocations_edited, 1);
+        assert_eq!(r.pixels_changed, 4);
+        assert!(r.info_removed);
+        assert!(r.metadata_removed);
+        // Re-parse: trailer /Info and catalog /Metadata are gone;
+        // the page edits landed.
+        let out = doc(&r.output);
+        assert!(!out.trailer().contains_key(b"Info".as_slice()));
+        assert!(!out.catalog().contains_key(b"Metadata".as_slice()));
+        assert!(out.catalog().contains_key(b"Pages".as_slice()));
+        // Page contents still carry the edits.
+        let p1 = out.pages().first().unwrap();
+        let names = do_names_in_contents(&out, p1);
+        // Page 1 had only the text hit — no image edit, so no KasIm.
+        assert!(!names.iter().any(|n| n.starts_with(b"KasIm")));
+        // Page 2's image was cloned and repointed.
+        let p2 = out.pages().get(1).unwrap();
+        let names2 = do_names_in_contents(&out, p2);
+        assert!(names2.iter().any(|n| n.starts_with(b"KasIm")));
+    }
+
+    /// Metadata absent — the call still succeeds and the flags are
+    /// false.
+    #[test]
+    fn m26_metadata_absent_succeeds() {
+        let d = doc(&two_page_text_image_pdf()); // no /Info, no /Metadata
+        let r = remove_regions_and_document_metadata(
+            &d,
+            &[(0, vec![(20.0, 140.0, 30.0, 160.0)])],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert!(!r.info_removed);
+        assert!(!r.metadata_removed);
+        let out = doc(&r.output);
+        assert!(!out.trailer().contains_key(b"Info".as_slice()));
+    }
+
+    /// A dangling /Info ref is still removed without resolving it.
+    #[test]
+    fn m26_info_dangling_ref_removed() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>"
+        );
+        push!(4, b"<< /Length 0 >>\nstream\n\nendstream");
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 5\n0000000000 65535 f \n".to_vec());
+        for n in 1..5u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 5 /Root 1 0 R /Info 99 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r = remove_regions_and_document_metadata(
+            &d,
+            &[(0, vec![(0.0, 0.0, 10.0, 10.0)])],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert!(r.info_removed);
+        let out = doc(&r.output);
+        assert!(!out.trailer().contains_key(b"Info".as_slice()));
+    }
+
+    /// Page-level /Metadata is kept — only the catalog one is
+    /// removed.
+    #[test]
+    fn m26_page_metadata_kept() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R /Metadata 6 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Metadata 7 0 R /Contents 4 0 R >>"
+        );
+        push!(4, b"<< /Length 0 >>\nstream\n\nendstream");
+        let xmp = b"<x:xmpmeta>doc</x:xmpmeta>";
+        let mut m = b"<< /Type /Metadata /Subtype /XML /Length ".to_vec();
+        m.extend_from_slice(xmp.len().to_string().as_bytes());
+        m.extend_from_slice(b" >>\nstream\n");
+        m.extend_from_slice(xmp);
+        m.extend_from_slice(b"\nendstream");
+        push!(6, &m);
+        let xmp2 = b"<x:xmpmeta>page</x:xmpmeta>";
+        let mut m2 = b"<< /Type /Metadata /Subtype /XML /Length ".to_vec();
+        m2.extend_from_slice(xmp2.len().to_string().as_bytes());
+        m2.extend_from_slice(b" >>\nstream\n");
+        m2.extend_from_slice(xmp2);
+        m2.extend_from_slice(b"\nendstream");
+        push!(7, &m2);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 8\n0000000000 65535 f \n".to_vec());
+        for n in 1..8u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 8 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r = remove_regions_and_document_metadata(
+            &d,
+            &[(0, vec![(0.0, 0.0, 10.0, 10.0)])],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert!(r.metadata_removed);
+        let out = doc(&r.output);
+        assert!(!out.catalog().contains_key(b"Metadata".as_slice()));
+        let page = out.pages().first().unwrap();
+        let pd = out.resolve(page.object_ref().unwrap()).unwrap();
+        assert!(
+            pd.as_dict().unwrap().contains_key(b"Metadata".as_slice()),
+            "page /Metadata must be preserved"
+        );
+    }
+
+    /// An Info dict shared through another catalog key stays
+    /// reachable — the *entry* is removed, not the data.
+    #[test]
+    fn m26_shared_info_kept_via_other_ref() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R /Custom 5 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>"
+        );
+        push!(4, b"<< /Length 0 >>\nstream\n\nendstream");
+        push!(5, b"<< /Title (Shared Title) >>");
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 6\n0000000000 65535 f \n".to_vec());
+        for n in 1..6u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 6 /Root 1 0 R /Info 5 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r = remove_regions_and_document_metadata(
+            &d,
+            &[(0, vec![(0.0, 0.0, 10.0, 10.0)])],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert!(r.info_removed);
+        let out = doc(&r.output);
+        assert!(!out.trailer().contains_key(b"Info".as_slice()));
+        // But the dict itself survives via /Custom.
+        let custom = out.catalog().get(b"Custom".as_slice()).unwrap();
+        let obj = out.deref(custom).unwrap();
+        assert!(obj.as_dict().unwrap().contains_key(b"Title".as_slice()));
+    }
+
+    /// Without the metadata strip, `remove_regions` still keeps
+    /// Info and /Metadata — the combined entry point is opt-in.
+    #[test]
+    fn m26_remove_regions_still_keeps_metadata() {
+        let d = doc(&two_page_text_image_metadata_pdf());
+        let r = remove_regions(
+            &d,
+            &[(0, vec![(20.0, 140.0, 30.0, 160.0)])],
+            &Limits::default(),
+        )
+        .unwrap();
+        let out = doc(&r.output);
+        assert!(out.trailer().contains_key(b"Info".as_slice()));
+        assert!(out.catalog().contains_key(b"Metadata".as_slice()));
+    }
+
+    /// A failure on a later page fails the whole combined call —
+    /// no partial output, and metadata is not stripped either.
+    #[test]
+    fn m26_failure_on_later_page_fails_all() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 9 0 R >>"
+        );
+        push!(
+            4,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Annots [6 0 R] /Contents 11 0 R >>"
+        );
+        push!(6, b"<< /Type /Annot /Subtype /Text /Rect [0 0 5 5] >>");
+        push!(9, b"<< /Length 0 >>\nstream\n\nendstream");
+        push!(11, b"<< /Length 0 >>\nstream\n\nendstream");
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 12\n0000000000 65535 f \n".to_vec());
+        for n in 1..12u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 12 /Root 1 0 R /Info 9 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let e = remove_regions_and_document_metadata(
+            &d,
+            &[
+                (0, vec![(0.0, 0.0, 10.0, 10.0)]),
+                (1, vec![(0.0, 0.0, 10.0, 10.0)]),
+            ],
+            &Limits::default(),
+        )
+        .unwrap_err();
+        match e {
+            Error::Unsupported { feature, .. } => {
+                assert!(feature.contains("/Annots"), "{feature}");
+            }
+            other => panic!("expected Unsupported(/Annots), got {other:?}"),
+        }
+    }
+
+    /// A cumulative budget that fits one page but not two is still
+    /// enforced when the metadata strip is also requested.
+    #[test]
+    fn m26_cumulative_budget_still_applies() {
+        let d = doc(&two_page_text_image_metadata_pdf());
+        let limits = Limits {
+            max_diag_exec_ops: 5,
+            ..Default::default()
+        };
+        let e = remove_regions_and_document_metadata(
+            &d,
+            &[
+                (0, vec![(20.0, 140.0, 30.0, 160.0)]),
+                (1, vec![(20.0, 140.0, 30.0, 160.0)]),
+            ],
+            &limits,
+        )
+        .unwrap_err();
+        match e {
+            Error::LimitExceeded { limit, .. } => {
+                assert_eq!(limit, "max_diag_exec_ops");
+            }
+            other => panic!("expected LimitExceeded, got {other:?}"),
+        }
+    }
+
+    /// An inherited rewrite refusal (signed document) still fires
+    /// through the combined entry point.
+    #[test]
+    fn m26_rewrite_refusal_inherited() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(
+            1,
+            b"<< /Type /Catalog /Pages 2 0 R /Perms << /DocMDP 5 0 R >> >>"
+        );
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>"
+        );
+        push!(4, b"<< /Length 0 >>\nstream\n\nendstream");
+        push!(5, b"<< /Type /Sig >>");
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 6\n0000000000 65535 f \n".to_vec());
+        for n in 1..6u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 6 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let e = remove_regions_and_document_metadata(
+            &d,
+            &[(0, vec![(0.0, 0.0, 10.0, 10.0)])],
+            &Limits::default(),
+        )
+        .unwrap_err();
+        match e {
+            Error::Unsupported { feature, .. } => {
+                assert!(feature.contains("signed"), "{feature}");
+            }
+            other => panic!("expected Unsupported(signed), got {other:?}"),
+        }
+    }
+
+    /// Input document is unchanged and the bytes are not mutated.
+    #[test]
+    fn m26_input_not_mutated() {
+        let bytes = two_page_text_image_metadata_pdf();
+        let d = doc(&bytes);
+        let _ = remove_regions_and_document_metadata(
+            &d,
+            &[(0, vec![(20.0, 140.0, 30.0, 160.0)])],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert!(d.trailer().contains_key(b"Info".as_slice()));
+        assert!(d.catalog().contains_key(b"Metadata".as_slice()));
+    }
+
+    /// Debug output never leaks output bytes, site content, or
+    /// metadata values.
+    #[test]
+    fn m26_debug_no_leak() {
+        let d = doc(&two_page_text_image_metadata_pdf());
+        let r = remove_regions_and_document_metadata(
+            &d,
+            &[(0, vec![(20.0, 140.0, 30.0, 160.0)])],
+            &Limits::default(),
+        )
+        .unwrap();
+        let dbg = format!("{r:?}");
+        assert!(!dbg.contains("Secret Title"), "{dbg}");
+        assert!(!dbg.contains("SECRET-XMP"), "{dbg}");
+        assert!(!dbg.contains("(ABC)"), "{dbg}");
+        assert!(dbg.contains("info_removed"));
     }
 }
