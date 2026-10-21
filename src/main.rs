@@ -147,6 +147,18 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("remove-document-metadata") => {
+            // remove-document-metadata <file.pdf> --output <out.pdf>
+            // Removes the trailer /Info and catalog /Metadata
+            // *entries* — not a metadata scrubber or redaction tool.
+            match run_remove_document_metadata(&args[2..]) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error [{}]: {e}", e.kind());
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("audit-residuals") => {
             // audit-residuals <file.pdf> [--format text|json]
             // Read-only inventory of residual information — never
@@ -214,6 +226,7 @@ fn main() -> ExitCode {
                 "       {prog} experimental-remove-text <file.pdf> <page-number> --rect llx lly urx ury [--rect …] --output <out.pdf>"
             );
             eprintln!("       {prog} audit-residuals <file.pdf> [--format text|json]");
+            eprintln!("       {prog} remove-document-metadata <file.pdf> --output <out.pdf>");
             ExitCode::from(2)
         }
     }
@@ -1772,6 +1785,68 @@ fn run_remove_regions(args: &[String]) -> Result<(), Error> {
     println!("codes removed: {}", r.codes_removed);
     println!("invocations edited: {}", r.invocations_edited);
     println!("pixels changed: {}", r.pixels_changed);
+    for s in &r.scope {
+        println!("  {s}");
+    }
+    Ok(())
+}
+
+/// Usage string shared by `remove-document-metadata`.
+fn remove_document_metadata_usage() -> &'static str {
+    "usage: kasane-pdf remove-document-metadata <file.pdf> --output <out.pdf>\n\
+     Removes the trailer /Info and catalog /Metadata *entries* and writes a\n\
+     new PDF. This is NOT a metadata scrubber or redaction tool — it removes\n\
+     two specific references only; the underlying data may remain reachable\n\
+     through other keys, and copies may exist elsewhere in the file."
+}
+
+/// `remove-document-metadata` subcommand.
+fn run_remove_document_metadata(args: &[String]) -> Result<(), Error> {
+    if args.is_empty() {
+        return Err(Error::Structure(
+            remove_document_metadata_usage().to_string(),
+        ));
+    }
+    let input = &args[0];
+    let mut output: Option<&str> = None;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--output" => {
+                if i + 1 >= args.len() {
+                    return Err(Error::Structure(format!(
+                        "flag '--output' expects a value\n{}",
+                        remove_document_metadata_usage()
+                    )));
+                }
+                output = Some(&args[i + 1]);
+                i += 2;
+            }
+            other => {
+                return Err(Error::Structure(format!(
+                    "unknown option '{other}'\n{}",
+                    remove_document_metadata_usage()
+                )));
+            }
+        }
+    }
+    let output =
+        output.ok_or_else(|| Error::Structure(remove_document_metadata_usage().to_string()))?;
+    refuse_same_file(input, output)?;
+    let data = std::fs::read(input)?;
+    let doc = Document::from_bytes(&data)?;
+    let r = kasane_pdf::remove_document_metadata(&doc, &Limits::default())?;
+    write_atomic(
+        &r.output,
+        &format!("{output}.kasane-tmp-{}", std::process::id()),
+        output,
+    )?;
+    println!(
+        "remove-document-metadata {input} -> {output} ({} bytes)",
+        r.output.len()
+    );
+    println!("info entry removed: {}", r.info_removed);
+    println!("catalog /Metadata entry removed: {}", r.metadata_removed);
     for s in &r.scope {
         println!("  {s}");
     }

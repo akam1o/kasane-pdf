@@ -2962,3 +2962,161 @@ fn cli_remove_regions_rect_count_over_limit() {
     assert!(!stdout.contains("(XYZ)"), "leaked text: {stdout}");
     assert!(!stderr.contains("(ABC)"), "leaked text: {stderr}");
 }
+
+// ------------------------------------------------------------------
+// M25 — remove-document-metadata
+// ------------------------------------------------------------------
+
+/// A 1-page fixture with trailer /Info and catalog /Metadata.
+fn doc_with_metadata_pdf() -> Vec<u8> {
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R /Metadata 6 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>",
+    );
+    push(4, b"<< /Length 0 >>\nstream\n\nendstream");
+    push(5, b"<< /Title (Secret Title) /Author (Secret Author) >>");
+    let xmp = b"<x:xmpmeta>SECRET-XMP</x:xmpmeta>";
+    let mut m = b"<< /Type /Metadata /Subtype /XML /Length ".to_vec();
+    m.extend_from_slice(xmp.len().to_string().as_bytes());
+    m.extend_from_slice(b" >>\nstream\n");
+    m.extend_from_slice(xmp);
+    m.extend_from_slice(b"\nendstream");
+    push(6, &m);
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 7\n0000000000 65535 f \n".to_vec());
+    for n in 1..7u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        } else {
+            parts.push(b"0000000000 00000 f \n".to_vec());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 7 /Root 1 0 R /Info 5 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    parts.concat()
+}
+
+#[test]
+fn cli_remove_document_metadata_success() {
+    let dir = tmpdir("m25-ok");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    fs::write(&src, doc_with_metadata_pdf()).unwrap();
+    let out = bin()
+        .args(["remove-document-metadata"])
+        .arg(&src)
+        .args(["--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    // Reports which entries were removed — no metadata values.
+    assert!(stdout.contains("info entry removed: true"), "{stdout}");
+    assert!(
+        stdout.contains("catalog /Metadata entry removed: true"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("Secret Title"), "leaked title: {stdout}");
+    assert!(!stdout.contains("SECRET-XMP"), "leaked xmp: {stdout}");
+    assert!(!stdout.contains("safe"), "{stdout}");
+    assert!(!stdout.contains("sanitiz"), "{stdout}");
+    // Output parses and the entries are gone.
+    let out_doc = kasane_pdf::Document::from_bytes(&fs::read(&dst).unwrap()).unwrap();
+    assert!(!out_doc.trailer().contains_key(b"Info".as_slice()));
+    assert!(!out_doc.catalog().contains_key(b"Metadata".as_slice()));
+    // Input unchanged.
+    assert_eq!(fs::read(&src).unwrap(), doc_with_metadata_pdf());
+}
+
+#[test]
+fn cli_remove_document_metadata_same_file() {
+    let dir = tmpdir("m25-same");
+    let src = dir.join("in.pdf");
+    fs::write(&src, doc_with_metadata_pdf()).unwrap();
+    let out = bin()
+        .args(["remove-document-metadata"])
+        .arg(&src)
+        .args(["--output"])
+        .arg(&src)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(stderr.contains("same file"), "{stderr}");
+    assert_eq!(fs::read(&src).unwrap(), doc_with_metadata_pdf());
+}
+
+#[test]
+fn cli_remove_document_metadata_failure_preserves_output() {
+    let dir = tmpdir("m25-fail");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    // A signed document — refused by the inherited rewrite checks.
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(
+        1,
+        b"<< /Type /Catalog /Pages 2 0 R /Perms << /DocMDP 5 0 R >> >>",
+    );
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>",
+    );
+    push(4, b"<< /Length 0 >>\nstream\n\nendstream");
+    push(5, b"<< /Type /Sig >>");
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 6\n0000000000 65535 f \n".to_vec());
+    for n in 1..6u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        } else {
+            parts.push(b"0000000000 00000 f \n".to_vec());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 6 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    fs::write(&src, parts.concat()).unwrap();
+    fs::write(&dst, b"SENTINEL").unwrap();
+    let out = bin()
+        .args(["remove-document-metadata"])
+        .arg(&src)
+        .args(["--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(stderr.contains("signed"), "{stderr}");
+    assert_eq!(fs::read(&dst).unwrap(), b"SENTINEL");
+    // No temp file remains.
+    let stray: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| {
+            let n = e.unwrap().file_name().to_string_lossy().into_owned();
+            n.contains("kasane-tmp").then_some(n)
+        })
+        .collect();
+    assert!(stray.is_empty(), "temp files left: {stray:?}");
+}
