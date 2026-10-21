@@ -761,6 +761,12 @@ Design choices:
   This is a *structural* cleanup, not a redaction guarantee: an
   image that survives via another page, another `Do` name, or an
   unmaterialised `/Pages` is still emitted.
+- **M22.1 — traversal fix** — a `/Pages` node *without*
+  `/Resources` is still traversed for descendants; the
+  `has_resources` check is applied only when deciding whether to
+  strip. The target page's dict is built once: `Contents` and the
+  materialised `/Resources` coexist in one `page_dict`, not via
+  two overlay inserts.
 
 CLI: `kasane-pdf experimental-remove-region in.pdf 1 --rect llx lly
 urx ury [--rect …] --output out.pdf` — same atomic-write and

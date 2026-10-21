@@ -753,6 +753,11 @@ invocations_edited, pixels_changed, sites, scope }`:
   `/Count`, `/MediaBox`, `/CropBox`, `/Rotate` — only `/Resources`
   is removed. The same `Edit`/overlay applies the materialisation,
   the text/image edits, and the `/Contents` rewrite in one pass.
+- **M22.1** — the target page's dict is built once, not twice:
+  `Contents` and the materialised `/Resources` coexist in one
+  `page_dict`. A `/Pages` node *without* `/Resources` is still
+  traversed — the check for whether to strip is applied after
+  descendants are confirmed materialised, not before traversal.
 - Text eligibility: `Tr 0` fill only, page-level (an out-of-rect
   `Tr 3`/`Tr 1` occurrence still refuses). `Tj`/`TJ`/`'`/`"` are
   rewritten with the same advance-preserving logic as `remove_text`.
