@@ -767,6 +767,13 @@ Design choices:
   strip. The target page's dict is built once: `Contents` and the
   materialised `/Resources` coexist in one `page_dict`, not via
   two overlay inserts.
+- **M22.2 — post-order strip decision** — a `/Pages` node's
+  `all_materialised` is computed only after its children's
+  results are known (`node_results: HashMap<IndirectRef, bool>`).
+  A child's failure propagates upward — a parent never strips
+  `/Resources` when a descendant is unmaterialised. Page refs are
+  indexed by `HashMap`/`HashSet` (O(1) lookup) instead of a
+  `Vec::contains` linear scan (O(n) per kid).
 
 CLI: `kasane-pdf experimental-remove-region in.pdf 1 --rect llx lly
 urx ury [--rect …] --output out.pdf` — same atomic-write and
