@@ -873,6 +873,47 @@ Design choices:
   *elements* are a separate `max_audit_elements` budget so wide
   structures are still bounded.
 
+- **Incremental traversal (M23.2).** `walk_object_refs` no longer
+  expands a container's children into the stack up front. A frame
+  is one of:
+  ```text
+  enum Frame<'a> {
+      Leaf(&'a Object),
+      Array { it: slice::Iter<'a, Object>, idx: u32, path: Vec<PathStep> },
+      Dict  { it: btree_map::Iter<'a, Vec<u8>, Object>, path: Vec<PathStep> },
+  }
+  ```
+  Each `stack.pop()` yields the *next* element of the top
+  container — `it.next()` — and pushes the (still-live) frame back,
+  so a wide array keeps exactly one frame for its whole breadth.
+  `max_audit_elements` is consumed at yield time, before any
+  sibling paths are built, and the `Vec<PathStep>` is cloned only
+  when the yielded element is a `Ref` (for the referrer record) or
+  a container being descended into — never for a leaf element.
+  The `path` inside each frame is the path *to the container*,
+  extended with the yielded `Index`/`Key` step when a child is
+  descended into. `enum Frame` holds no per-element state beyond
+  the iterator position, so a budget stop never held the whole
+  container in memory.
+- **Name-tree entry failures are recorded (M23.2).** `audit_name_trees`
+  used to `let Ok(..) = deref(..)` on the `/Names` root and on each
+  tree root (`/EmbeddedFiles`, `/JavaScript`) — a missing or
+  unresolvable ref silently produced "no attachments". Now each
+  entry-point `Err` pushes `AuditIncomplete { scope, reason:
+  "<key> does not resolve: <err-kind>", limit: matches!(e,
+  LimitExceeded{..}) }` and the *sibling* tree continues. `/Names`
+  resolving to a non-dict is likewise recorded. A legitimately
+  absent `/Names` adds nothing — absence is not incompleteness.
+  The same `Err → incomplete` rule applies to `audit_structure_tree`'s
+  `StructTreeRoot`/`/K`/`/K[i]` derefs for consistency.
+- **ObjStm wording corrected.** An earlier draft described objects
+  "inside ObjStm (e.g. Image)" as undetected; streams cannot
+  legally appear inside `/ObjStm` (only non-stream dicts can), so
+  the actual gap is narrower: a compressed *dict* (annot,
+  Filespec, etc.) goes unclassified because the audit reads xref
+  entries, not ObjStm member bodies. The docs now state this
+  distinction and that no classification feature was added.
+
 CLI: `kasane-pdf audit-residuals in.pdf [--format text|json]` —
 prints to stdout, writes no file, exit 0 on a completed audit.
 

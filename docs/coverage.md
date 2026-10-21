@@ -934,10 +934,22 @@ the merged xref's newest-wins shadow is undone). Physical slack
 (between objects, after `%%EOF`, unreferenced regions) is listed
 under `unexamined`, never as "absent".
 
+**ObjStm note** — stream objects cannot live inside `/ObjStm` (they
+must appear as top-level indirect objects), so "an Image inside an
+ObjStm" is impossible by construction. What the audit may still
+miss is a *non-stream* dictionary inside an `/ObjStm` — e.g. a
+`Filespec` or an annot dict — because the compressed-objects pass
+reads only xref entries, not the ObjStm member bodies. This is
+listed under `unexamined` as `compressed-objects`, not counted as
+"absent".
+
 **Partial results** — `incomplete` records each scope that stopped
 early (limit name, or a non-limit reason like an unparsable content
-stream, a name-tree cycle, or a missing `/Kids` ref), so truncated
-coverage is never reported as "none found". `unexamined` lists
+stream, a name-tree cycle, a missing `/Kids` ref, or a name-tree
+*entry point* that fails to resolve), so truncated coverage is never
+reported as "none found". A name-tree entry-point failure (`/Names`
+itself or a tree root ref) is recorded under its own scope —
+unresolved does not mean "no attachments". `unexamined` lists
 scopes not evaluated at all. The walk's completeness is reported
 separately: `walk_complete` is `false` whenever the BFS stopped
 early, and in that case unvisited live objects count as
@@ -953,6 +965,16 @@ items, dict entries), `max_audit_content_ops` (per-page ops
 scanned for marked content). The document's own
 `max_reference_depth` and `max_total_decoded_bytes` still apply to
 resolutions/decodes.
+
+**Incremental traversal** — `walk_object_refs` keeps one frame per
+*open container* (a `Vec` of `enum Frame` holding a `slice::Iter`
+for arrays or a `btree_map::Iter` for dicts/stream-dicts) rather
+than one frame per child element. Stack height is proportional to
+*nesting depth*, never breadth — a 200-element array is one frame
+that yields its children lazily, so a low `max_audit_elements`
+budget stops the walk before all children are expanded into frames
+or paths. A `Vec<PathStep>` is cloned only when a `Ref` is found or
+a container is descended into, not for every element visited.
 
 **Leakage** — notes carry keys, types, counts and refs only: Info
 values, annot contents, field values, JavaScript, XMP and stream
