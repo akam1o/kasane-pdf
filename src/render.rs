@@ -1352,10 +1352,16 @@ impl<'a> Renderer<'a> {
                         });
                     }
                 }
-                // HT halftone & FL flatness & SM smoothness are
-                // device-rendering knobs with no PDF-semantics change
-                // on our rasteriser → accepted.
-                b"HT" | b"HTP" | b"FL" | b"SM" => {}
+                // FL = flatness tolerance — the same curve-flattening
+                // knob the `i` operator sets (§8.4.3.8); apply it like
+                // the op does rather than dropping it.
+                b"FL" => {
+                    self.gs.flatness = num_param(v, "FL")?;
+                }
+                // HT halftone & SM smoothness are device-rendering
+                // knobs with no PDF-semantics change on our rasteriser
+                // → accepted.
+                b"HT" | b"HTP" | b"SM" => {}
                 // `/Font [ref size]` sets the text font via gs. It is
                 // an *object reference*, not a resource name, so it
                 // can't go through load_font's name lookup; rather than
@@ -1652,6 +1658,31 @@ impl<'a> Renderer<'a> {
     /// square of the *current* user space (§8.9.4 — the CTM maps the
     /// unit square to the destination parallelogram).
     fn paint_image(&mut self, dict: &Dict, raw: &[u8], name: &[u8]) -> Result<(), Error> {
+        // A non-separable blend mode (Hue/Saturation/Color/Luminosity)
+        // on an image needs a per-pixel colour-space conversion our
+        // raster path doesn't perform — rather than silently draw it
+        // as Normal (a mis-render) we refuse. Separable modes are
+        // applied per-channel in paint_decoded_image.
+        if !matches!(
+            self.gs.blend_mode,
+            tiny_skia::BlendMode::SourceOver
+                | tiny_skia::BlendMode::Multiply
+                | tiny_skia::BlendMode::Screen
+                | tiny_skia::BlendMode::Overlay
+                | tiny_skia::BlendMode::Darken
+                | tiny_skia::BlendMode::Lighten
+                | tiny_skia::BlendMode::ColorDodge
+                | tiny_skia::BlendMode::ColorBurn
+                | tiny_skia::BlendMode::HardLight
+                | tiny_skia::BlendMode::SoftLight
+                | tiny_skia::BlendMode::Difference
+                | tiny_skia::BlendMode::Exclusion
+        ) {
+            return Err(Error::Unsupported {
+                feature: "non-separable blend mode on image",
+                detail: "Hue/Saturation/Color/Luminosity blend on an image needs per-pixel colour conversion".into(),
+            });
+        }
         // ---- required geometry & format --------------------------
         let width = dict
             .get(b"Width".as_slice())
@@ -2010,22 +2041,33 @@ impl<'a> Renderer<'a> {
                 }
                 // §11.3.7.2: non-stroking alpha `ca` applies to image
                 // painting — composite source-over the destination
-                // when ca < 1. (Blend modes beyond Normal on images are
-                // a transparency-group concern; Normal/`ca` covers the
-                // corpus.)
+                // when ca < 1. `BM` blend modes other than Normal apply
+                // their separable blend function per channel before the
+                // alpha composite; non-separable modes (Hue/Saturation/
+                // Color/Luminosity) need a colour-space conversion we
+                // don't do per-pixel — those are refused upstream.
                 let i = (py as u64 * pw as u64 + px as u64) as usize * 4;
                 let buf = self.pixmap.data_mut();
                 let sa = self.gs.fill_alpha;
+                // Source colour through the active blend function.
+                let (sr, sg, sb) = match self.gs.blend_mode {
+                    tiny_skia::BlendMode::SourceOver => (r, g, b),
+                    bm => (
+                        blend_mode_channel(bm, r, buf[i]),
+                        blend_mode_channel(bm, g, buf[i + 1]),
+                        blend_mode_channel(bm, b, buf[i + 2]),
+                    ),
+                };
                 if sa >= 1.0 {
-                    buf[i] = r;
-                    buf[i + 1] = g;
-                    buf[i + 2] = b;
+                    buf[i] = sr;
+                    buf[i + 1] = sg;
+                    buf[i + 2] = sb;
                     buf[i + 3] = 255;
                 } else {
                     let a = clamp01(sa);
-                    buf[i] = blend_chan(r, buf[i], a);
-                    buf[i + 1] = blend_chan(g, buf[i + 1], a);
-                    buf[i + 2] = blend_chan(b, buf[i + 2], a);
+                    buf[i] = blend_chan(sr, buf[i], a);
+                    buf[i + 1] = blend_chan(sg, buf[i + 1], a);
+                    buf[i + 2] = blend_chan(sb, buf[i + 2], a);
                     buf[i + 3] =
                         (buf[i + 3] as u16 + ((255 - buf[i + 3] as u16) as f64 * a) as u16) as u8;
                 }
@@ -2452,6 +2494,73 @@ fn ts_color(c: Color) -> tiny_skia::Color {
 /// constant alpha modulates an opaque source pixel.
 fn blend_chan(src: u8, dst: u8, a: f64) -> u8 {
     (src as f64 * a + dst as f64 * (1.0 - a)).round() as u8
+}
+
+/// One separable blend-mode function `B(cb, cs)` (§11.3.5) evaluated
+/// on a single 8-bit channel. `cb` = backdrop, `cs` = source, both in
+/// [0,255]; returns the blended channel [0,255]. Only the separable
+/// modes (each channel independent) are handled — non-separable modes
+/// are refused at `paint_image` and never reach here.
+fn blend_mode_channel(mode: tiny_skia::BlendMode, cs: u8, cb: u8) -> u8 {
+    let s = cs as f64 / 255.0;
+    let b = cb as f64 / 255.0;
+    let v = match mode {
+        tiny_skia::BlendMode::Multiply => b * s,
+        tiny_skia::BlendMode::Screen => b + s - b * s,
+        tiny_skia::BlendMode::Overlay => {
+            // §11.3.5: Overlay = HardLight with source/backdrop swapped.
+            if b <= 0.5 {
+                2.0 * b * s
+            } else {
+                1.0 - 2.0 * (1.0 - b) * (1.0 - s)
+            }
+        }
+        tiny_skia::BlendMode::Darken => b.min(s),
+        tiny_skia::BlendMode::Lighten => b.max(s),
+        tiny_skia::BlendMode::ColorDodge => {
+            if b >= 1.0 {
+                1.0
+            } else if s >= 1.0 {
+                1.0
+            } else {
+                (b / (1.0 - s)).min(1.0)
+            }
+        }
+        tiny_skia::BlendMode::ColorBurn => {
+            if b <= 0.0 {
+                0.0
+            } else if s <= 0.0 {
+                0.0
+            } else {
+                1.0 - ((1.0 - b) / s).min(1.0)
+            }
+        }
+        tiny_skia::BlendMode::HardLight => {
+            if s <= 0.5 {
+                b * 2.0 * s
+            } else {
+                1.0 - 2.0 * (1.0 - b) * (1.0 - (2.0 * s - 1.0))
+            }
+        }
+        tiny_skia::BlendMode::SoftLight => {
+            if s <= 0.5 {
+                b - (1.0 - 2.0 * s) * b * (1.0 - b)
+            } else {
+                let d = if b <= 0.25 {
+                    ((16.0 * b - 12.0) * b + 4.0) * b
+                } else {
+                    b.sqrt()
+                };
+                b + (2.0 * s - 1.0) * (d - b)
+            }
+        }
+        tiny_skia::BlendMode::Difference => (b - s).abs(),
+        tiny_skia::BlendMode::Exclusion => b + s - 2.0 * b * s,
+        // SourceOver handled by the caller's composite; anything else
+        // (non-separable) is refused upstream — treat as Normal.
+        _ => s,
+    };
+    (clamp01(v) * 255.0).round() as u8
 }
 
 // --------------------------------------------------------------------

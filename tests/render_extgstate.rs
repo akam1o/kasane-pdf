@@ -283,3 +283,90 @@ fn gs_no_resources_errors() {
     let r = render_page(&doc, &doc.pages()[0], &RenderOptions::default());
     assert!(r.is_err(), "expected error, got {r:?}");
 }
+
+// -------------------------------------------------------------------
+// Blend mode on an Image XObject — the mis-render guard.
+// -------------------------------------------------------------------
+
+/// Build a 1-page PDF: a grey image XObject painted under an ExtGState
+/// with a chosen `/BM`. Object 5 = image, gs in page resources.
+fn pdf_image_with_gs(bm: &str) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(b"%PDF-1.4\n");
+    let mut offsets = Vec::new();
+    // image: 2x2 mid-grey RGB, 8bpc, raw (Length=12)
+    let img_data = vec![128u8; 2 * 2 * 3];
+    let page = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+        /Resources << /ExtGState << /GS0 << /BM /BMX >> >> \
+        /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>"
+        .replace("BMX", bm);
+    let contents = b"/GS0 gs 100 0 0 100 0 0 cm /Im0 Do\n";
+    let bodies = [
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, page.into_bytes()),
+        (
+            4,
+            [
+                format!("<< /Length {} >>\nstream\n", contents.len()).into_bytes(),
+                contents.to_vec(),
+                b"\nendstream".to_vec(),
+            ]
+            .concat(),
+        ),
+        (
+            5,
+            [
+                b"<< /Type /XObject /Subtype /Image /Width 2 /Height 2 \
+                  /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length 12 >>\nstream\n"
+                    .to_vec(),
+                img_data,
+                b"\nendstream".to_vec(),
+            ]
+            .concat(),
+        ),
+    ];
+    for (n, b) in &bodies {
+        offsets.push((*n, out.len()));
+        out.extend_from_slice(format!("{n} 0 obj\n").as_bytes());
+        out.extend_from_slice(b);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    out.extend_from_slice(b"xref\n0 6\n");
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for (_n, off) in &offsets {
+        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(b"trailer\n<< /Size 6 /Root 1 0 R >>\n");
+    out.extend_from_slice(format!("startxref\n{xref}\n%%EOF\n").as_bytes());
+    out
+}
+
+#[test]
+fn image_multiply_blend_darkens() {
+    // Grey image over white page under /Multiply → 128*255/255 ≈ 128
+    // but multiplied over white stays ~128 (grey). Over a painted
+    // black backdrop it darkens toward black.
+    let pdf = pdf_image_with_gs("Multiply");
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let r = render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap();
+    // Image fills the whole page; multiply of mid-grey over white ≈ grey.
+    let p = px(&r, 50, 50);
+    assert!(p[0] > 100 && p[0] < 160, "multiply grey, got {p:?}");
+}
+
+#[test]
+fn image_nonseparable_blend_refused() {
+    // /Hue on an image: needs per-pixel colour conversion → refuse
+    // rather than mis-render as Normal.
+    let pdf = pdf_image_with_gs("Hue");
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let r = render_page(&doc, &doc.pages()[0], &RenderOptions::default());
+    match r {
+        Err(Error::Unsupported { feature, .. }) => {
+            assert_eq!(feature, "non-separable blend mode on image");
+        }
+        other => panic!("expected non-separable refusal, got {other:?}"),
+    }
+}
