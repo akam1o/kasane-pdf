@@ -161,9 +161,9 @@ to dump one file's fonts. This drove the Type1 implementation split:
 |---|---|---|
 | `/FontFile3` raw CFF (`/Type1` + `/MMType1`) | **implemented** — outlines via `ttf_parser::cff`, glyph ids via CFF charset + `/Encoding` | few (`pattern_text_embedded_font`, parts of `tamreview`) |
 | non-embedded Type1 (Standard-14-style) | **metrics-only** — `/Widths`+encoding feed text extraction (`bounds`→`None`); render refuses | ~21 files |
-| `/FontFile` Adobe Type 1 (eexec) | **implemented** — `src/type1.rs` eexec-decrypts + interprets the charstring VM (paths, hints, subrs, flex, `seac`) | ~7 files (the arXiv family) — all *also* blocked by `/Annots` + non-embedded + a `bfrange` bug, so eexec alone unblocks 0 renders today |
+| `/FontFile` Adobe Type 1 (eexec) | **implemented** — `src/type1.rs` eexec-decrypts + interprets the charstring VM (paths, hints, subrs, flex, hint replacement, `seac`; `-|`/`|-` RD aliases; 32-bit integer operands) — every glyph of all 19 real arXiv fonts (CM, cm-super, Nimbus) interprets | ~7 files (the arXiv family): text now passes on `arxiv-2204.06125`, `arxiv-2305.14334`, `attention-is-all-you-need`; render stays blocked by `/Annots` + non-embedded fonts |
 | `/FontFile3` CIDFontType0C | **refused** — CID font, not simple Type1 | — |
-| `/Type3` (`/CharProcs` streams) | **implemented** — each glyph runs like a mini Form XObject under `ctm×trm×/FontMatrix`; `d0`/`d1` parsed; `in_text` reset allows nested `BT…ET` (Type3-in-Type3) bounded by `max_xobject_depth` | 4 files (2 now pass; 2 blocked on `/Pattern`) |
+| `/Type3` (`/CharProcs` streams) | **implemented** — each glyph runs like a mini Form XObject under `/FontMatrix × Trm × CTM`; `d0`/`d1` parsed; `in_text` reset allows nested `BT…ET` (Type3-in-Type3) bounded by `max_xobject_depth` | 4 files (2 now pass; 2 blocked on `/Pattern`) |
 
 Measured after Type1 + Type3 (vs the 13/67 render, 17/67 text,
 13 full-PASS ExtGState baseline): render **15/67**, text **25/67**,
@@ -178,6 +178,30 @@ font load to a separate `bfrange` ToUnicode `Structure` bug — but
 sole blocker; the other 6 remain `/Annots`-blocked before fonts are
 reached. Correctness is carried by the `src/type1.rs` unit tests and
 the real `eexec_cmsy10.bin` fixture.
+
+Measured after the fidelity-driven fixes (run-1792685132, same
+conditions): render **17/67**, text **34/67**, full PASS **17**
+(+`truetype_without_cmap`, +`arial_unicode_ab_cidfont`), 0 newly
+failing, 0 cause-set changes, 0 crash/timeout, robustness 13/13. The
+fixes came from reading the saved ours/ref/diff images rather than
+from the pass counts:
+
+| root cause | symptom in the corpus | fix |
+|---|---|---|
+| `cm`, form `/Matrix` and Type3 `/FontMatrix` composed *after* the CTM instead of before (`ctm.concat(m)`) | every Type3 glyph drawn at the page origin (`simpletype3font` SSIM 0.997 yet completely misplaced; `type3wordspacing` SSIM 0.733); a synthetic nested-`cm` oracle put a square at (200,200) where Poppler put it at (100,100) | `m.concat(ctm)` at all three sites; `nested_cm_order`, `form_matrix_under_cm_order`, `type3_glyph_lands_at_text_position` tests |
+| TrueType outlines ignored the `hmtx` bearing when it disagrees with the `glyf` xMin | `cidfont_cmap_overflow` glyphs 80 units right of Poppler (SSIM 0.962) | FreeType phantom-point rule (`lsb − xMin`, `USE_MY_METRICS` for composites) → SSIM 0.999 |
+| `callothersubr` popped `N` before `othersubr#`; OtherSubrs 3 dropped the Subr index; 5-byte numbers read as 16.16; only literal `RD` accepted | `type1 callothersubr underflow` on 6 arXiv files once text extraction reached their eexec fonts | operand order, hint-replacement push-back, 32-bit ints, positional RD token |
+| `/Widths 12 0 R` not dereferenced | `/Widths is not an array` on 2 files | `doc.deref` |
+| `bfrange` checked the whole UTF-16 unit against 0xFF, and incremented once past the last entry | `bfrange increment overflows last byte` on 4 files (any destination above U+00FF) | low-byte check, no increment after the final entry |
+| `/Annots` refused in *extraction* | 10 files' text blocked by a layer that is not page text | extraction ignores `/Annots` (render still refuses) |
+
+Remaining fidelity gaps after this run: `type3wordspacing` (SSIM
+0.921) is Poppler's minimum-stroke-width policy on 0.5 pt dashed
+strokes, `complex_ttf_font` (0.962) is rasteriser/anti-aliasing
+difference with no systematic shift (best shift (−1,0) does not lower
+the diff), and `truetype_without_cmap` (0.971) sits one pixel low
+(best shift (0,−1)) — a baseline rounding question, not a placement
+bug.
 
 ## Failure-cause analysis
 
@@ -207,6 +231,43 @@ The **Development priorities** table ranks features by
 *guess* in `analysis.rs` (`PrioritiesConfig`) — shown as an estimate,
 never a measured value. The probe deliberately does **not** change
 engine failure behaviour; it only enumerates what *would* block.
+
+### Feature-set priorities (combinations)
+
+Most failing files carry *several* blockers, so a single-feature
+ranking undersells the work that actually turns files green. The
+**Feature-set priorities** table (`analysis::combo_analysis`) evaluates
+sets of 1–4 features:
+
+- A file's blocker set is the probe's causes **plus** the cause id of
+  every failing stage (a rewrite-only blocker such as named
+  destinations still prevents a full PASS). Files whose parse failed
+  contribute nothing — their blockers are *unknown*, never "none" —
+  and `expect: reject` files are excluded (refusing them is the goal).
+- Candidate sets come from the data (each failing file's own set and
+  pairwise unions of those sets) plus a fixed hypothesis list
+  (non-embedded fonts + annotations, OC + annotations, Pattern + Type3,
+  Vertical/CJK + CIDFont, colour spaces + transparency, ToUnicode +
+  fonts), which are always reported even when they unblock nothing.
+- Sets are closed over a dependency table (`PrioritiesConfig::deps`:
+  Pattern colours need Shading, the ExtGState residue needs
+  transparency-group XObjects) and charged the prerequisites' effort.
+- **Expected newly PASS** = failing well-formed files whose *entire
+  known* blocker set lies in the closure. The bracketed
+  **fully probed** figure additionally requires every page walked, no
+  walk errors and no Form XObjects (the probe cannot see inside a
+  form); even that is an estimate — the probe mirrors the renderer's
+  rules, it does not run them. **Confidence** is driven by that
+  coverage ratio. Data-derived sets that add nothing over a strict
+  subset are dropped as dominated.
+- Each set lists the candidate file ids with their full blocker sets
+  and coverage so the claim can be checked by hand.
+
+Current ranking (run-1792685132): non-embedded font rendering alone
+→ 7 (6 fully probed); + annotations + named destinations → 14 (10);
+adding non-device colour spaces → 21 (14). Annotations are never a
+sole blocker in this corpus; they only pay off together with
+non-embedded fonts.
 
 ## Result classification
 
@@ -244,20 +305,43 @@ keeps two independent measures:
   | `render_mae` | mean absolute luminance error, 0.0–1.0 |
   | `render_diff_px_ratio` | fraction of pixels differing by >8/255 |
   | `render_pages_ok/total` | per-page render success |
+  | `render_pages[]` | every compared page with all metrics below (the file-level values are the worst page's) |
+  | `render_quality.content_ssim` | SSIM averaged over 8×8 windows that contain ink in *either* image — blank area cannot inflate it |
+  | `render_quality.diff_px_tol1` | different-pixel ratio where a pixel counts only if no 3×3 neighbour in the other image matches — tolerant of ±1 px anti-aliasing/hinting |
+  | `render_quality.ink_ours` / `ink_ref` | ink coverage (luma < 200) — a ratio far from 1 is missing or extra content |
+  | `render_quality.best_shift` / `diff_px_at_best_shift` | the integer shift within ±3 px that minimises diff-px; a non-zero shift with a sharp drop is a systematic position offset (metrics, bearing, matrix) |
+  | `render_quality.size_mismatch` | reference dimensions differed before resampling |
 
-  A file **meets the fidelity bar** when its worst page has SSIM ≥ 0.98
-  *and* diff-pixels ≤ 2% *and* MAE ≤ 0.05 — loose enough to absorb
-  legitimate anti-aliasing/rasteriser differences between us and
-  Poppler, tight enough to catch a genuinely broken glyph/stream.
-  Files below the bar are listed with a saved diff image. For each
-  measured file the runner writes `{id}-p{n}-ours.pgm`,
-  `-ref.pgm`, `-diff.pgm` under `reports/diff/` so a divergent page can
-  be eyeballed without re-running.
+  Two bars are reported side by side, and neither changes the render
+  stage's PASS: a page that executes but diverges is a render PASS
+  and a fidelity failure.
 
-  Current run (run-1792678862): 15 rendered files measured, **12 meet
-  the bar**; mean SSIM 0.976, worst 0.733 (`type3wordspacing`), plus
-  `cidfont_cmap_overflow`/`complex_ttf_font` at SSIM 0.962 — all three
-  flagged with diff images for follow-up.
+  - **Comparability bar** (unchanged, so runs stay comparable): worst
+    page SSIM ≥ 0.98 *and* diff-pixels ≤ 2% *and* MAE ≤ 0.05.
+  - **Content bar**: ink coverage within ×0.7–1.4 of the reference
+    *and* (content-SSIM ≥ 0.85 *or* ±1 px-tolerant diff ≤ 0.5%).
+
+  Why the second bar exists: `simpletype3font` scored whole-page SSIM
+  0.997 while every glyph sat at the page origin — on a mostly blank
+  page the blank windows dominate. Its content-SSIM was 0.009. The
+  same run's `type3wordspacing` had ink coverage 0.002 vs 0.048 in the
+  reference: content was missing, which no SSIM threshold expresses.
+  The tolerant diff and best-shift figures separate rasteriser
+  differences (`complex_ttf_font`: same ink, no shift that helps) from
+  placement bugs (`cidfont_cmap_overflow` before the fix: best shift
+  (−3,0) cut diff-px from 0.021 to 0.008).
+
+  Files below either bar are listed with the bar they failed and a
+  saved diff image. For each measured file the runner writes
+  `{id}-p{n}-ours.pgm`, `-ref.pgm`, `-diff.pgm` under `reports/diff/`
+  so a divergent page can be eyeballed without re-running. The
+  comparison is deterministic: same DPI, grayscale, nearest-neighbour
+  resample to our pixmap size.
+
+  Current run (run-1792685132): 17 rendered files measured; mean SSIM
+  0.991 (was 0.976), worst 0.921 (`type3wordspacing`, was 0.733);
+  `cidfont_cmap_overflow` 0.962 → 0.999, `simpletype3font` 0.997 →
+  1.000. Three files remain below a bar, all explained above.
 
   The reference engine is Poppler as an *external* oracle only — its
   code is never linked or embedded; the comparison is process-level
