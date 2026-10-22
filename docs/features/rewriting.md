@@ -26,7 +26,7 @@ skipped at collection and recomputed at write time).
 | incremental input | ✅ | xref-chain merge already yields the latest revision |
 | link annots | ✅ | `/Subtype /Link` `/Rect`, `/A` `/URI`/`/GoTo`, `/D` dest arrays — refs remapped |
 | direct destination arrays | ✅ | `[page /XYZ …]`, `[page /Fit]` — refs remapped |
-| **named destinations** | ❌ | `Error::Unsupported` — `/Dests`, `/Names /Dests`, link `/Dest` name/string, `GoTo` `/D` name/string, `OpenAction` `/D` name/string are all refused (name trees are not resolved) |
+| **named destinations** | ✅ | preserved: the catalog `/Names` → `/Dests` name tree (`/Kids`, `/Names`, `/Limits`), the legacy catalog `/Dests` dictionary, destination arrays and `/D` dictionaries, and every link `/Dest`, `GoTo` `/D` and `OpenAction` `/D` name/string operand are copied verbatim with renumbered references — the name → page binding is identical before and after. `kasane_pdf::named_destinations` / `resolve_named_destination` (`src/dests.rs`) read the structure (bounded by `max_page_tree_depth` / `max_page_tree_nodes`, cyclic `/Kids` → `CycleDetected` before any output) and the round-trip tests assert input and output agree. A dangling name is the input's defect and is copied as-is, never repaired or dropped. No page-removal/reorder feature exists, so no destination needs remapping; region-removal edits go through the same `rewrite_overlay` and keep the tree untouched |
 | encrypted input | ❌ | refused at `Document::from_bytes` |
 | `/Perms` `/DocMDP`/`/UR`/`/UR3`, filled `/Sig` fields | ❌ | `Error::Unsupported` — a signature cannot survive a rewrite; blank unsigned fields pass |
 | `/AcroForm` `/XFA`, `/OCProperties`, `/RichMedia`, `/AA` | ❌ | `Error::Unsupported` — outside the profile |

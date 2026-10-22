@@ -160,7 +160,7 @@ to dump one file's fonts. This drove the Type1 implementation split:
 | program | status | corpus hit |
 |---|---|---|
 | `/FontFile3` raw CFF (`/Type1` + `/MMType1`) | **implemented** — outlines via `ttf_parser::cff`, glyph ids via CFF charset + `/Encoding` | few (`pattern_text_embedded_font`, parts of `tamreview`) |
-| non-embedded Type1 (Standard-14-style) | **metrics-only** — `/Widths`+encoding feed text extraction (`bounds`→`None`); render refuses | ~21 files |
+| non-embedded Type1 (Standard-14-style) | **substituted** — bundled Liberation faces (OFL) by name/flags, PDF `/Widths` kept, substitute `hmtx` only when `/Widths` is absent; reported in `RenderedPage::font_substitutions` and listed in the fidelity section; Symbol/ZapfDingbats/unknown-symbolic/non-ASCII names still refuse | ~21 files; 7 render only because of this |
 | `/FontFile` Adobe Type 1 (eexec) | **implemented** — `src/type1.rs` eexec-decrypts + interprets the charstring VM (paths, hints, subrs, flex, hint replacement, `seac`; `-|`/`|-` RD aliases; 32-bit integer operands) — every glyph of all 19 real arXiv fonts (CM, cm-super, Nimbus) interprets | ~7 files (the arXiv family): text now passes on `arxiv-2204.06125`, `arxiv-2305.14334`, `attention-is-all-you-need`; render stays blocked by `/Annots` + non-embedded fonts |
 | `/FontFile3` CIDFontType0C | **refused** — CID font, not simple Type1 | — |
 | `/Type3` (`/CharProcs` streams) | **implemented** — each glyph runs like a mini Form XObject under `/FontMatrix × Trm × CTM`; `d0`/`d1` parsed; `in_text` reset allows nested `BT…ET` (Type3-in-Type3) bounded by `max_xobject_depth` | 4 files (2 now pass; 2 blocked on `/Pattern`) |
@@ -202,6 +202,27 @@ difference with no systematic shift (best shift (−1,0) does not lower
 the diff), and `truetype_without_cmap` (0.971) sits one pixel low
 (best shift (0,−1)) — a baseline rounding question, not a placement
 bug.
+
+Measured after non-embedded font substitution, annotation appearance
+streams and named-destination-preserving rewrite (run-1792687472,
+same conditions): render **24/67**, text **35/67**, rewrite
+**60/67**, full PASS **24** (+`arxiv-2204.06125`, `basicapi`,
+`mlp-mixer`, `helloworld`, `bad-pagelabels`, `standard_fonts`,
+`text_rise_eol_bug`), 0 newly failing, 0 crash/timeout, robustness
+13/13. The 17 files measured in both runs have identical fidelity
+(mean SSIM 0.9906 → 0.9906); the 7 newly measured files draw
+Standard 14 text with Liberation substitutes and Poppler draws them
+with its own substitutes, so their SSIM (0.886–0.998) is bounded by
+the two substitute choices, not by the engine — the report lists
+which fonts were substituted per file. Reading those new diffs also
+exposed a Type 1 interpreter bug: `hvcurveto` ended its curve
+horizontally instead of vertically, distorting every round CM glyph
+(`attention-is-all-you-need` 0.793 → 0.901, `mlp-mixer` 0.767 → 0.870
+after the fix). What still blocks the watch-list files: image
+`/SMask` (`attention-is-all-you-need`, `arxiv-2305.14334`,
+`arxiv-2307.06435`, `arxiv-2310.06825`, `blendmode`), non-device
+colour spaces (`arxiv-2303.18223`), inline images (`tamreview`),
+the `UniJIS-UTF16-H` predefined CMap (`mixedfonts`).
 
 ## Failure-cause analysis
 
