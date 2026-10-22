@@ -50,8 +50,12 @@ use ttf_parser::{Face, GlyphId, OutlineBuilder};
 /// outline extraction. Holds the decoded font program plus the
 /// PDF-side encoding/widths data.
 pub(crate) struct SimpleFont {
-    /// Decoded `/FontFile2` bytes — kept alive for `face`.
-    program: Vec<u8>,
+    /// Decoded `/FontFile2` bytes — kept alive for `face`. Borrowed
+    /// (static) when a bundled substitute stands in for a non-embedded
+    /// font.
+    program: std::borrow::Cow<'static, [u8]>,
+    /// The substitution in effect for a non-embedded font.
+    subst: Option<crate::fontsubst::FontSubstitution>,
     /// Encoding table: char code (0..=255) → glyph name.
     /// `None` means the code is not encodable (renders as .notdef).
     encoding: [Option<&'static str>; 256],
@@ -98,6 +102,14 @@ pub(crate) struct Type1Font {
     /// Lazily-built CFF table over `program` (same borrow pattern as
     /// `SimpleFont::face`).
     cff: RefCell<Option<CffTable<'static>>>,
+    /// Bundled substitute for a non-embedded font (see
+    /// [`crate::fontsubst`]). `Some` only when both `program` and
+    /// `t1_program` are `None` and a sound substitute exists.
+    subst: Option<crate::fontsubst::SubstFace>,
+    /// Whether the PDF supplied `/Widths`. Without it a substituted
+    /// Standard 14 font takes advances from the (metric-compatible)
+    /// substitute's `hmtx`.
+    has_widths: bool,
 }
 
 /// The resolved font behind a `Tf` selection — a simple TrueType
@@ -293,29 +305,53 @@ pub(crate) fn load_simple_font(
             });
         }
     }
-    let ff2_obj = fd_dict
-        .get(b"FontFile2".as_slice())
-        .ok_or_else(|| Error::Unsupported {
-            feature: "non-embedded TrueType font",
-            detail: "/FontFile2 is required; OS substitution is not performed".into(),
-        })?;
-    let ff2 = doc.deref(ff2_obj)?;
-    let (ff2_dict, ff2_raw) = ff2
-        .as_stream()
-        .ok_or_else(|| Error::Structure("/FontFile2 is not a stream".into()))?;
-    let program = doc.decode_stream(ff2_dict, ff2_raw)?;
-    if program.len() as u64 > limits.max_stream_bytes {
-        return Err(Error::LimitExceeded {
-            limit: "max_stream_bytes (embedded font)",
-            max: limits.max_stream_bytes,
-        });
-    }
+    let (program, subst): (
+        std::borrow::Cow<'static, [u8]>,
+        Option<crate::fontsubst::FontSubstitution>,
+    ) = match fd_dict.get(b"FontFile2".as_slice()) {
+        Some(ff2_obj) => {
+            let ff2 = doc.deref(ff2_obj)?;
+            let (ff2_dict, ff2_raw) = ff2
+                .as_stream()
+                .ok_or_else(|| Error::Structure("/FontFile2 is not a stream".into()))?;
+            let program = doc.decode_stream(ff2_dict, ff2_raw)?;
+            if program.len() as u64 > limits.max_stream_bytes {
+                return Err(Error::LimitExceeded {
+                    limit: "max_stream_bytes (embedded font)",
+                    max: limits.max_stream_bytes,
+                });
+            }
+            (std::borrow::Cow::Owned(program), None)
+        }
+        None => {
+            // Non-embedded: a bundled substitute, never a host font.
+            // The Symbolic refusal above already excluded fonts whose
+            // glyph set is unknowable; `pick` still returns `None` for
+            // names it cannot read (legacy code-page CJK names).
+            let base = dict
+                .get(b"BaseFont".as_slice())
+                .and_then(|o| o.as_name())
+                .unwrap_or(b"");
+            match crate::fontsubst::pick(base, Some(fd_dict))? {
+                Some(s) => (std::borrow::Cow::Borrowed(s.data), Some(s.record())),
+                None => {
+                    return Err(Error::Unsupported {
+                        feature: "non-embedded TrueType font",
+                        detail: "/FontFile2 absent and no sound substitute for this font \
+                                 name; OS substitution is not performed"
+                            .into(),
+                    })
+                }
+            }
+        }
+    };
 
     // ---- ToUnicode (optional) ------------------------------------
     let tounicode = crate::tounicode::load_tounicode(doc, dict, limits)?;
 
     Ok(Rc::new(SimpleFont {
         program,
+        subst,
         encoding,
         widths,
         tounicode,
@@ -345,6 +381,7 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         .and_then(|o| o.as_i64())
         .unwrap_or(255);
     let mut widths = [0.0f64; 256];
+    let has_widths = dict.contains_key(b"Widths".as_slice());
     if let Some(w_obj) = dict.get(b"Widths".as_slice()) {
         let w = doc.deref(w_obj)?;
         let arr = w
@@ -364,6 +401,7 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
 
     // ---- Encoding → byte-name table ------------------------------
     let (encoding, builtin) = resolve_type1_encoding(doc, dict)?;
+    let mut fd_for_subst: Option<Dict> = None;
 
     // ---- Font program (optional) --------------------------------
     // Resolve the program:
@@ -380,6 +418,7 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         let fd_dict = fd
             .as_dict()
             .ok_or_else(|| Error::Structure("/FontDescriptor is not a dictionary".into()))?;
+        fd_for_subst = Some(fd_dict.clone());
         if let Some(ff_obj) = fd_dict.get(b"FontFile".as_slice()) {
             // eexec Type 1 — the real PFB/PFA program.
             let ff = doc.deref(ff_obj)?;
@@ -425,6 +464,22 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         // no font-file key → metrics-only (both stay None).
     }
 
+    // ---- Non-embedded: bundled substitute ------------------------
+    // Standard 14 names (and their Arial/Times New Roman/Courier New
+    // aliases) get a metric-compatible Liberation face; unknown Latin
+    // fonts a flag-driven generic one; Symbol/ZapfDingbats are refused
+    // by `pick` itself; names we cannot read stay metrics-only (render
+    // refuses, extraction still works).
+    let subst = if program.is_none() && t1_program.is_none() {
+        let base = dict
+            .get(b"BaseFont".as_slice())
+            .and_then(|o| o.as_name())
+            .unwrap_or(b"");
+        crate::fontsubst::pick(base, fd_for_subst.as_ref())?
+    } else {
+        None
+    };
+
     let tounicode = crate::tounicode::load_tounicode(doc, dict, limits)?;
 
     Ok(Rc::new(Type1Font {
@@ -435,6 +490,8 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         tounicode,
         builtin_cff_encoding: builtin,
         cff: RefCell::new(None),
+        subst,
+        has_widths,
     }))
 }
 
@@ -691,6 +748,11 @@ impl SimpleFont {
         self.encoding[code as usize]
     }
 
+    /// The substitution in effect, if any — for render reporting.
+    pub(crate) fn substitution(&self) -> Option<crate::fontsubst::FontSubstitution> {
+        self.subst.clone()
+    }
+
     /// Char code → glyph advance in 1/1000-em units (PDF `/Widths`).
     pub(crate) fn width(&self, code: u8) -> f64 {
         self.widths[code as usize]
@@ -809,7 +871,7 @@ fn find_cmap<'a>(
 }
 
 /// glyph name → Unicode scalar via the AGL-derived table.
-fn name_to_unicode(name: &str) -> Option<u32> {
+pub(crate) fn name_to_unicode(name: &str) -> Option<u32> {
     GLYPH_NAME_TO_UNICODE
         .iter()
         .find(|(n, _)| *n == name)
@@ -988,7 +1050,9 @@ impl Type1Font {
         match &self.program {
             None => Err(Error::Unsupported {
                 feature: "non-embedded Type1 font",
-                detail: "no embedded font program — glyph outlines unavailable".into(),
+                detail: "no embedded font program and no sound substitute (unknown or \
+                         symbolic font) — glyph outlines unavailable"
+                    .into(),
             }),
             Some(program) => {
                 {
@@ -1016,8 +1080,36 @@ impl Type1Font {
     }
 
     /// Char code → glyph advance in 1/1000-em units (PDF `/Widths`).
+    /// A substituted Standard 14 font without `/Widths` takes the
+    /// advance from the metric-compatible substitute.
     pub(crate) fn width(&self, code: u8) -> f64 {
+        if !self.has_widths {
+            if let Some(s) = &self.subst {
+                if let Some(gid) = self.subst_glyph(code) {
+                    if let Some(w) = s.advance_1000(gid) {
+                        return w;
+                    }
+                }
+            }
+        }
         self.widths[code as usize]
+    }
+
+    /// The glyph name for `code` when a substitute is in use: the PDF
+    /// `/Encoding` name, else StandardEncoding (the built-in encoding
+    /// of every non-symbolic Standard 14 Type 1 font).
+    fn subst_glyph(&self, code: u8) -> Option<GlyphId> {
+        let s = self.subst.as_ref()?;
+        let name: Vec<u8> = match self.glyph_name_bytes(code) {
+            Some(n) => n.to_vec(),
+            None => crate::type1::std_encoding_name(code as i64)?.to_vec(),
+        };
+        s.glyph_for_name(std::str::from_utf8(&name).ok()?)
+    }
+
+    /// The substitution in effect, if any — for render reporting.
+    pub(crate) fn substitution(&self) -> Option<crate::fontsubst::FontSubstitution> {
+        self.subst.as_ref().map(|s| s.record())
     }
 
     /// Char code → glyph id. Order (§9.6.5.1):
@@ -1027,9 +1119,14 @@ impl Type1Font {
     /// the code; `.notdef` otherwise.
     /// **CFF `/FontFile3`:** `/Encoding` name → `glyph_index_by_name`,
     /// else the program's built-in `glyph_index`, else `.notdef`.
+    /// **Substitute:** encoding name (or StandardEncoding) → Unicode →
+    /// the substitute's cmap; `.notdef` when the substitute lacks it.
     /// **No program** → `.notdef`; `outline` refuses, keeping render
     /// honest for metrics-only fonts.
     pub(crate) fn glyph_id(&self, code: u8) -> Result<Option<GlyphId>, Error> {
+        if self.subst.is_some() {
+            return Ok(Some(self.subst_glyph(code).unwrap_or(GlyphId(0))));
+        }
         // eexec program — name→CharString.
         if let Some(t1) = &self.t1_program {
             if let Some(name) = self.glyph_name_bytes(code) {
@@ -1070,6 +1167,12 @@ impl Type1Font {
         glyph: GlyphId,
         builder: &mut dyn OutlineBuilder,
     ) -> Result<bool, Error> {
+        if let Some(s) = &self.subst {
+            if glyph.0 == 0 {
+                return Ok(false); // .notdef — draw nothing, still advance
+            }
+            return Ok(outline_glyph_lsb_adjusted(s.face(), glyph, builder));
+        }
         if let Some(t1) = &self.t1_program {
             let code = glyph.0 as u8;
             let name = match self.glyph_name_bytes(code) {
@@ -1111,6 +1214,9 @@ impl Type1Font {
     /// for the standard matrix) — `GlyphPath` then produces
     /// text-space coordinates directly.
     pub(crate) fn units_per_em(&self) -> Result<f64, Error> {
+        if let Some(s) = &self.subst {
+            return Ok(f64::from(s.face().units_per_em()));
+        }
         if let Some(t1) = &self.t1_program {
             let a = t1.font_matrix().a;
             if a != 0.0 && a.is_finite() {
@@ -1629,6 +1735,16 @@ impl Font {
             // 0.001) into text space; the nominal em is 1000 units,
             // matching the 1/1000-em /Widths convention.
             Font::Type3(_) => Ok(1000.0),
+        }
+    }
+
+    /// The bundled-substitute record when this font is non-embedded
+    /// and drawn with a substitute; `None` for embedded fonts.
+    pub(crate) fn substitution(&self) -> Option<crate::fontsubst::FontSubstitution> {
+        match self {
+            Font::Simple(f) => f.substitution(),
+            Font::Type1(f) => f.substitution(),
+            Font::Composite(_) | Font::Type3(_) => None,
         }
     }
 

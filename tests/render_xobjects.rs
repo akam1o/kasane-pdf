@@ -104,8 +104,51 @@ fn form_self_recursion_rejected() {
 }
 
 #[test]
-fn form_group_refused() {
-    let err = render("xobject_form_group.pdf").unwrap_err();
+fn form_group_opaque_normal_runs_inline() {
+    // /Group /S /Transparency under the initial (opaque, Normal) state
+    // composites exactly like direct painting (§11.4.7) — it renders.
+    // The group's 10×10 black square lands at the page origin.
+    let r = render("xobject_form_group.pdf").unwrap();
+    assert_eq!(pixel(&r, 5, r.height - 5), (0, 0, 0, 255));
+}
+
+#[test]
+fn form_group_under_alpha_is_refused() {
+    // The same group under ca < 1 needs real group compositing.
+    let pdf = {
+        let objs: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+               /Resources << /XObject << /FmG 5 0 R >> /ExtGState << /H << /ca 0.5 >> >> >> \
+               /Contents 4 0 R >>"
+                .to_vec(),
+            b"<< /Length 14 >>\nstream\n/H gs /FmG Do\nendstream".to_vec(),
+            b"<< /Type /XObject /Subtype /Form /BBox [0 0 100 100] \
+               /Group << /S /Transparency /CS /DeviceRGB >> /Length 23 >>\nstream\n\
+               0 0 0 rg 0 0 10 10 re f\nendstream"
+                .to_vec(),
+        ];
+        let mut out = b"%PDF-1.4\n".to_vec();
+        let mut offs = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offs.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+            out.extend_from_slice(o);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let xref = out.len();
+        out.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+        for o in offs {
+            out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+        );
+        out
+    };
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let err = render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap_err();
     assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
 }
 

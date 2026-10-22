@@ -1,6 +1,6 @@
 //! Full-rewrite / round-trip integration tests (milestone M8).
 
-use kasane_pdf::{rewrite, Document, Error, Object};
+use kasane_pdf::{rewrite, Document, Error, Limits, Object};
 
 // ------------------------------------------------------------------
 // helpers
@@ -582,122 +582,6 @@ fn names_javascript_refused() {
 }
 
 #[test]
-fn catalog_dests_refused() {
-    // Legacy /Dests dict on the catalog — named destination tree.
-    let p = pdf_with(1, "/Dests << /Chap1 [3 0 R /Fit] >>", "");
-    let doc = Document::from_bytes(&p).unwrap();
-    match rewrite(&doc) {
-        Err(Error::Unsupported { feature, .. }) => assert_eq!(feature, "named destination"),
-        other => panic!("expected Unsupported, got {other:?}"),
-    }
-}
-
-#[test]
-fn names_dests_refused() {
-    // /Names /Dests name tree.
-    let p = pdf_with(
-        1,
-        "/Names << /Dests << /Names [(Chap1) [3 0 R /Fit]] >> >>",
-        "",
-    );
-    let doc = Document::from_bytes(&p).unwrap();
-    match rewrite(&doc) {
-        Err(Error::Unsupported { feature, .. }) => assert_eq!(feature, "named destination"),
-        other => panic!("expected Unsupported, got {other:?}"),
-    }
-}
-
-#[test]
-fn link_dest_name_refused() {
-    // /Annots /Dest as a name — named destination.
-    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
-    let mut offs: Vec<(u32, usize)> = Vec::new();
-    let mut push = |n: u32, body: &[u8]| {
-        offs.push((n, parts.iter().map(|p| p.len()).sum()));
-        parts.push(format!("{n} 0 obj\n").into_bytes());
-        parts.push(body.to_vec());
-        parts.push(b"\nendobj\n".to_vec());
-    };
-    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
-    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
-    push(
-        3,
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [9 0 R] >>",
-    );
-    push(
-        9,
-        b"<< /Type /Annot /Subtype /Link /Rect [10 10 100 30] /Dest /Chap1 >>",
-    );
-    let xref: usize = parts.iter().map(|p| p.len()).sum();
-    parts.push(b"xref\n0 10\n0000000000 65535 f \n".to_vec());
-    for n in 1..10u32 {
-        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
-            parts.push(format!("{o:010} 00000 n \n").into_bytes());
-        } else {
-            parts.push(b"0000000000 00000 f \n".to_vec());
-        }
-    }
-    parts.push(b"trailer\n<< /Size 10 /Root 1 0 R >>\n".to_vec());
-    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
-    let src = parts.concat();
-    let doc = Document::from_bytes(&src).unwrap();
-    match rewrite(&doc) {
-        Err(Error::Unsupported { feature, .. }) => assert_eq!(feature, "named destination"),
-        other => panic!("expected Unsupported, got {other:?}"),
-    }
-}
-
-#[test]
-fn goto_d_name_refused() {
-    // /GoTo /D as a string — named destination.
-    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
-    let mut offs: Vec<(u32, usize)> = Vec::new();
-    let mut push = |n: u32, body: &[u8]| {
-        offs.push((n, parts.iter().map(|p| p.len()).sum()));
-        parts.push(format!("{n} 0 obj\n").into_bytes());
-        parts.push(body.to_vec());
-        parts.push(b"\nendobj\n".to_vec());
-    };
-    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
-    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
-    push(
-        3,
-        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Annots [9 0 R] >>",
-    );
-    push(
-        9,
-        b"<< /Type /Annot /Subtype /Link /Rect [10 10 100 30] /A << /S /GoTo /D (Chap1) >> >>",
-    );
-    let xref: usize = parts.iter().map(|p| p.len()).sum();
-    parts.push(b"xref\n0 10\n0000000000 65535 f \n".to_vec());
-    for n in 1..10u32 {
-        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
-            parts.push(format!("{o:010} 00000 n \n").into_bytes());
-        } else {
-            parts.push(b"0000000000 00000 f \n".to_vec());
-        }
-    }
-    parts.push(b"trailer\n<< /Size 10 /Root 1 0 R >>\n".to_vec());
-    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
-    let src = parts.concat();
-    let doc = Document::from_bytes(&src).unwrap();
-    match rewrite(&doc) {
-        Err(Error::Unsupported { feature, .. }) => assert_eq!(feature, "named destination"),
-        other => panic!("expected Unsupported, got {other:?}"),
-    }
-}
-
-#[test]
-fn openaction_d_name_refused() {
-    let p = pdf_with(1, "/OpenAction << /S /GoTo /D /Chap1 >>", "");
-    let doc = Document::from_bytes(&p).unwrap();
-    match rewrite(&doc) {
-        Err(Error::Unsupported { feature, .. }) => assert_eq!(feature, "named destination"),
-        other => panic!("expected Unsupported, got {other:?}"),
-    }
-}
-
-#[test]
 fn goto_d_array_accepted() {
     // Direct destination *array* must still pass — not a named dest.
     let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
@@ -920,3 +804,211 @@ fn incremental_input_latest_state() {
 // ------------------------------------------------------------------
 // §9  serialization edge cases
 // ------------------------------------------------------------------
+
+// --------------------------------------------------------------------
+// Named destinations — preserved through the rewrite (M8.1 B revisited)
+// --------------------------------------------------------------------
+
+/// Assemble a PDF from `(number, body)` pairs; object 1 must be the
+/// catalog. Numbers may be sparse.
+fn pdf_objs(objs: &[(u32, String)]) -> Vec<u8> {
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    for (n, body) in objs {
+        offs.push((*n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.as_bytes().to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    }
+    let size = objs.iter().map(|(n, _)| *n).max().unwrap() + 1;
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(format!("xref\n0 {size}\n0000000000 65535 f \n").into_bytes());
+    for n in 1..size {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        } else {
+            parts.push(b"0000000000 00000 f \n".to_vec());
+        }
+    }
+    parts.push(format!("trailer\n<< /Size {size} /Root 1 0 R >>\n").into_bytes());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    parts.concat()
+}
+
+fn two_pages(extra_catalog: &str, extra_page1: &str, extra: &[(u32, String)]) -> Vec<u8> {
+    let mut objs = vec![
+        (1, format!("<< /Type /Catalog /Pages 2 0 R {extra_catalog} >>")),
+        (2, "<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_string()),
+        (
+            3,
+            format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 4 0 R {extra_page1} >>"),
+        ),
+        (4, "<< /Length 4 >>\nstream\nq Q\nendstream".to_string()),
+        (5, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Contents 6 0 R >>".to_string()),
+        (6, "<< /Length 4 >>\nstream\nq Q\nendstream".to_string()),
+    ];
+    objs.extend(extra.iter().cloned());
+    pdf_objs(&objs)
+}
+
+fn dests_of(bytes: &[u8]) -> Vec<kasane_pdf::NamedDest> {
+    let doc = Document::from_bytes(bytes).unwrap();
+    kasane_pdf::named_destinations(&doc, &Limits::default()).unwrap()
+}
+
+#[test]
+fn legacy_catalog_dests_survive_rewrite() {
+    let src = two_pages(
+        "/Dests << /Chap1 [5 0 R /Fit] /Chap0 [3 0 R /XYZ 0 100 null] >>",
+        "",
+        &[],
+    );
+    let before = dests_of(&src);
+    assert_eq!(before.len(), 2);
+    let out = rewrite(&Document::from_bytes(&src).unwrap()).unwrap();
+    let after = dests_of(&out);
+    assert_eq!(before, after, "named destinations must round-trip");
+    let c1 = after.iter().find(|d| d.name == b"Chap1").unwrap();
+    assert_eq!(c1.page, Some(1));
+    assert_eq!(c1.source, kasane_pdf::DestSource::LegacyDests);
+    let c0 = after.iter().find(|d| d.name == b"Chap0").unwrap();
+    assert_eq!(c0.page, Some(0));
+    assert_eq!(c0.view.len(), 4);
+}
+
+#[test]
+fn names_dests_tree_with_kids_and_dict_dests_survives_rewrite() {
+    // Root → two Kids (with /Limits); values are a direct array, an
+    // indirect array and an indirect destination *dictionary* (/D).
+    let extra = vec![
+        (10, "<< /Kids [11 0 R 12 0 R] >>".to_string()),
+        (
+            11,
+            "<< /Limits [(A) (B)] /Names [(A) [3 0 R /Fit] (B) 13 0 R] >>".to_string(),
+        ),
+        (
+            12,
+            "<< /Limits [(C) (C)] /Names [(C) 14 0 R] >>".to_string(),
+        ),
+        (13, "[5 0 R /FitH 150]".to_string()),
+        (14, "<< /D [5 0 R /XYZ 10 20 1.5] >>".to_string()),
+    ];
+    let src = two_pages("/Names << /Dests 10 0 R >>", "", &extra);
+    let before = dests_of(&src);
+    assert_eq!(before.len(), 3);
+    assert_eq!(
+        before.iter().map(|d| d.name.clone()).collect::<Vec<_>>(),
+        [b"A".to_vec(), b"B".to_vec(), b"C".to_vec()]
+    );
+    assert_eq!(before[1].page, Some(1));
+    assert_eq!(before[2].page, Some(1));
+    assert_eq!(before[2].view[0], kasane_pdf::Object::Name(b"XYZ".to_vec()));
+    let out = rewrite(&Document::from_bytes(&src).unwrap()).unwrap();
+    assert_eq!(dests_of(&out), before);
+    // The tree *structure* is still a tree — Kids and Limits intact.
+    let doc = Document::from_bytes(&out).unwrap();
+    let names = doc
+        .deref(doc.catalog().get(b"Names".as_slice()).unwrap())
+        .unwrap();
+    let dests = doc
+        .deref(names.as_dict().unwrap().get(b"Dests".as_slice()).unwrap())
+        .unwrap();
+    let kids = doc
+        .deref(dests.as_dict().unwrap().get(b"Kids".as_slice()).unwrap())
+        .unwrap();
+    assert_eq!(kids.as_array().unwrap().len(), 2);
+    let kid0 = doc.deref(&kids.as_array().unwrap()[0]).unwrap();
+    assert!(kid0.as_dict().unwrap().contains_key(b"Limits".as_slice()));
+}
+
+#[test]
+fn link_goto_and_openaction_named_refs_survive_rewrite() {
+    let extra = vec![
+        (
+            9,
+            "<< /Type /Annot /Subtype /Link /Rect [10 10 100 30] /Dest /Chap1 >>".to_string(),
+        ),
+        (
+            15,
+            "<< /Type /Annot /Subtype /Link /Rect [10 40 100 60] /A << /S /GoTo /D (Chap1) >> >>"
+                .to_string(),
+        ),
+    ];
+    let src = two_pages(
+        "/Dests << /Chap1 [5 0 R /Fit] >> /OpenAction << /S /GoTo /D /Chap1 >>",
+        "/Annots [9 0 R 15 0 R]",
+        &extra,
+    );
+    let out = rewrite(&Document::from_bytes(&src).unwrap()).unwrap();
+    let doc = Document::from_bytes(&out).unwrap();
+    // The name operands are still names/strings — not resolved away,
+    // not dropped — and still resolve to page 2.
+    let page = doc.resolve(doc.pages()[0].object_ref().unwrap()).unwrap();
+    let annots = doc
+        .deref(page.as_dict().unwrap().get(b"Annots".as_slice()).unwrap())
+        .unwrap();
+    let annots = annots.as_array().unwrap();
+    let a0 = doc.deref(&annots[0]).unwrap();
+    assert_eq!(
+        a0.as_dict().unwrap().get(b"Dest".as_slice()),
+        Some(&kasane_pdf::Object::Name(b"Chap1".to_vec()))
+    );
+    let a1 = doc.deref(&annots[1]).unwrap();
+    let act = doc
+        .deref(a1.as_dict().unwrap().get(b"A".as_slice()).unwrap())
+        .unwrap();
+    assert_eq!(
+        act.as_dict().unwrap().get(b"D".as_slice()),
+        Some(&kasane_pdf::Object::String(b"Chap1".to_vec()))
+    );
+    let oa = doc
+        .deref(doc.catalog().get(b"OpenAction".as_slice()).unwrap())
+        .unwrap();
+    assert_eq!(
+        oa.as_dict().unwrap().get(b"D".as_slice()),
+        Some(&kasane_pdf::Object::Name(b"Chap1".to_vec()))
+    );
+    let d = kasane_pdf::resolve_named_destination(&doc, b"Chap1", &Limits::default())
+        .unwrap()
+        .unwrap();
+    assert_eq!(d.page, Some(1));
+}
+
+#[test]
+fn dangling_named_dest_is_copied_not_repaired() {
+    // No tree at all; the link names a destination that does not exist.
+    // The input's defect is preserved verbatim — nothing is invented.
+    let extra = vec![(
+        9,
+        "<< /Type /Annot /Subtype /Link /Rect [10 10 100 30] /Dest /Nowhere >>".to_string(),
+    )];
+    let src = two_pages("", "/Annots [9 0 R]", &extra);
+    let out = rewrite(&Document::from_bytes(&src).unwrap()).unwrap();
+    let doc = Document::from_bytes(&out).unwrap();
+    assert!(
+        kasane_pdf::resolve_named_destination(&doc, b"Nowhere", &Limits::default())
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn unresolvable_dest_page_reports_none() {
+    // Page entry is a bare integer (remote-style) → page None, kept.
+    let src = two_pages("/Dests << /R [1 /Fit] >>", "", &[]);
+    let d = dests_of(&src);
+    assert_eq!(d[0].page, None);
+    let out = rewrite(&Document::from_bytes(&src).unwrap()).unwrap();
+    assert_eq!(dests_of(&out), d);
+}
+
+#[test]
+fn cyclic_name_tree_is_refused_before_output() {
+    let extra = vec![
+        (10, "<< /Kids [11 0 R] >>".to_string()),
+        (11, "<< /Kids [10 0 R] >>".to_string()),
+    ];
+    let src = two_pages("/Names << /Dests 10 0 R >>", "", &extra);
+    let doc = Document::from_bytes(&src).unwrap();
+    assert!(matches!(rewrite(&doc), Err(Error::CycleDetected { .. })));
+}

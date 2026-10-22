@@ -791,13 +791,13 @@ impl Interp {
                     }
                 }
                 30 => {
-                    // vhcurveto: dy1 dx2 dy2 dx3 {alternating curves}
+                    // vhcurveto: dy1 dx2 dy2 dx3 (ends horizontal)
                     let a = self.popall();
                     self.need_moveto()?;
                     elems += self.vh_hv_curve(&a, true, b)?;
                 }
                 31 => {
-                    // hvcurveto: dx1 dy1 dy2 dx3 {alternating}
+                    // hvcurveto: dx1 dx2 dy2 dy3 (ends vertical)
                     let a = self.popall();
                     self.need_moveto()?;
                     elems += self.vh_hv_curve(&a, false, b)?;
@@ -1130,64 +1130,51 @@ impl Interp {
         self.open = true;
     }
 
-    /// `vhcurveto`/`hvcurveto` (ops 30/31). Per the Type 1 spec and
-    /// fontTools: a sequence of curves that alternate their first
-    /// tangent axis. `vert_first`=true starts vertical (`vhcurveto`).
-    /// Each curve consumes 4 operands; a trailing lone operand is the
-    /// final axis delta on the *complementary* axis.
+    /// `vhcurveto` (30: `dy1 dx2 dy2 dx3`) and `hvcurveto` (31: `dx1
+    /// dx2 dy2 dy3`) — one Bézier whose first tangent is vertical
+    /// resp. horizontal and whose *last* tangent is the other axis
+    /// (Type 1 spec §6.4: `vhcurveto` ≡ `0 dy1 dx2 dy2 dx3 0
+    /// rrcurveto`, `hvcurveto` ≡ `dx1 0 dx2 dy2 0 dy3 rrcurveto`).
+    /// Type 1 takes exactly four operands; the alternating multi-curve
+    /// forms belong to Type 2 and are refused here.
     fn vh_hv_curve(
         &mut self,
         args: &[f64],
         vert_first: bool,
         b: &mut dyn ttf_parser::OutlineBuilder,
     ) -> Result<usize, Error> {
-        let mut elems = 0;
-        let mut i = 0usize;
-        let mut vert = vert_first;
-        while i < args.len() {
-            if i + 4 <= args.len() {
-                let a = &args[i..i + 4];
-                let (x1, y1, x2, y2, x3, y3);
-                if vert {
-                    // dy1 dx2 dy2 dx3 — first tangent vertical
-                    y1 = self.y + a[0];
-                    x1 = self.x;
-                    x2 = x1 + a[1];
-                    y2 = y1 + a[2];
-                    x3 = x2 + a[3];
-                    y3 = y2;
-                } else {
-                    // dx1 dy1 dy2 dx3 — first tangent horizontal
-                    x1 = self.x + a[0];
-                    y1 = self.y;
-                    x2 = x1 + a[1];
-                    y2 = y1 + a[2];
-                    x3 = x2 + a[3];
-                    y3 = y2;
-                }
-                b.curve_to(
-                    x1 as f32, y1 as f32, x2 as f32, y2 as f32, x3 as f32, y3 as f32,
-                );
-                self.x = x3;
-                self.y = y3;
-                elems += 1;
-                self.open = true;
-                i += 4;
-            } else {
-                // Single trailing operand — the final axis delta for the
-                // *complementary* tangent (per fontTools vcurveto/hcurveto
-                // `dyc`/`dxc` lone-operand handling).
-                let v = args[i];
-                if vert {
-                    self.y += v;
-                } else {
-                    self.x += v;
-                }
-                i += 1;
-            }
-            vert = !vert;
+        if args.len() != 4 {
+            return Err(Error::Structure(format!(
+                "type1 {} takes 4 operands, got {}",
+                if vert_first { "vhcurveto" } else { "hvcurveto" },
+                args.len()
+            )));
         }
-        Ok(elems)
+        let (x1, y1, x2, y2, x3, y3);
+        if vert_first {
+            y1 = self.y + args[0];
+            x1 = self.x;
+            x2 = x1 + args[1];
+            y2 = y1 + args[2];
+            x3 = x2 + args[3];
+            y3 = y2;
+        } else {
+            // Ending this curve horizontally instead of vertically
+            // distorted every round glyph of the arXiv CM fonts.
+            x1 = self.x + args[0];
+            y1 = self.y;
+            x2 = x1 + args[1];
+            y2 = y1 + args[2];
+            x3 = x2;
+            y3 = y2 + args[3];
+        }
+        b.curve_to(
+            x1 as f32, y1 as f32, x2 as f32, y2 as f32, x3 as f32, y3 as f32,
+        );
+        self.x = x3;
+        self.y = y3;
+        self.open = true;
+        Ok(1)
     }
 
     /// `seac` — composite glyph from a base + accent charstring.
@@ -1250,7 +1237,7 @@ impl Interp {
 /// StandardEncoding charcode → glyph name (Adobe table). `None` for
 /// unassigned slots. Used only by `seac` (which references the
 /// *standard* encoding regardless of the font's `/Encoding`).
-fn std_encoding_name(code: i64) -> Option<&'static [u8]> {
+pub(crate) fn std_encoding_name(code: i64) -> Option<&'static [u8]> {
     static NAMES: [&[u8]; 256] = {
         let mut t: [&[u8]; 256] = [b".notdef"; 256];
         // The 46 assigned StandardEncoding names (code → name), from
@@ -1714,6 +1701,53 @@ mod tests {
         cs.push(14);
         let (ops, _) = outline(b"c", &cs, &[]);
         assert!(ops.iter().any(|(o, ..)| *o == b'c'), "no curve: {ops:?}");
+    }
+
+    #[test]
+    fn hvcurveto_ends_vertical_vhcurveto_ends_horizontal() {
+        // hsbw 0 0; rmoveto 100 100; hvcurveto 10 20 30 40 → end (130,170)
+        // (dx1=10, dx2=20, dy2=30, dy3=40); then vhcurveto 5 6 7 8 →
+        // end (130+6+8, 170+5+7) = (144,182).
+        let mut cs = enc_num(0);
+        cs.extend(enc_num(0));
+        cs.push(13);
+        cs.extend(enc_num(100));
+        cs.extend(enc_num(100));
+        cs.push(21);
+        for v in [10, 20, 30, 40] {
+            cs.extend(enc_num(v));
+        }
+        cs.push(31); // hvcurveto
+        for v in [5, 6, 7, 8] {
+            cs.extend(enc_num(v));
+        }
+        cs.push(30); // vhcurveto
+        cs.push(9);
+        cs.push(14);
+        let (ops, _) = outline(b"c", &cs, &[]);
+        let curves: Vec<_> = ops.iter().filter(|(o, ..)| *o == b'c').collect();
+        assert_eq!(curves.len(), 2, "{ops:?}");
+        assert_eq!((curves[0].1, curves[0].2), (130.0, 170.0), "{ops:?}");
+        assert_eq!((curves[1].1, curves[1].2), (144.0, 182.0), "{ops:?}");
+        // Type 1 has no alternating 8-operand form.
+        let mut bad = enc_num(0);
+        bad.extend(enc_num(0));
+        bad.push(13);
+        bad.extend(enc_num(0));
+        bad.extend(enc_num(0));
+        bad.push(21);
+        for v in [1, 2, 3, 4, 5, 6, 7, 8] {
+            bad.extend(enc_num(v));
+        }
+        bad.push(31);
+        bad.push(14);
+        let prog = make_prog(b"bad", &bad, &[]);
+        let p = parse_type1_program(&prog).unwrap();
+        let mut b = Cap(Vec::new());
+        assert!(matches!(
+            p.charstring(b"bad", &mut b),
+            Err(Error::Structure(_))
+        ));
     }
 
     #[test]

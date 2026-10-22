@@ -1506,6 +1506,23 @@ impl<'a> DiagWalker<'a> {
             return Ok(());
         }
         let origin = trm.transform(0.0, 0.0);
+        // A non-embedded font drawn with a bundled *substitute* has
+        // outlines — but they are the substitute's, not the font the
+        // file names. For redaction the real ink extent is unknown, so
+        // the glyph is reported as uncertain exactly as a font with no
+        // outlines was before substitution existed.
+        if let Some(s) = font.substitution() {
+            return self.glyph_error(
+                code,
+                Error::Unsupported {
+                    feature: "non-embedded font (substitute outlines)",
+                    detail: format!(
+                        "/{} is drawn with the bundled {} — its true ink extent is unknown",
+                        s.base_font, s.substitute
+                    ),
+                },
+            );
+        }
         // Distinguish "the glyph has no outline" (space, .notdef,
         // unresolvable code → a Cell estimate) from "outline lookup
         // failed" (broken font, limit, unsupported → uncertain). An
