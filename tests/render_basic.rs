@@ -1,5 +1,6 @@
-//! M3 integration tests: page → pixmap rendering, PNG output, and the
-//! error/limits surface for unsupported content.
+//! Page→pixmap rendering integration tests (milestone M3):
+//! raster rendering, PNG output, and the error/limits surface
+//! for unsupported content.
 
 use kasane_pdf::{pixmap_to_png, render_page, Document, Error, Limits, RenderOptions};
 

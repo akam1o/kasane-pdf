@@ -1,276 +1,85 @@
 # kasane-pdf
 
-A PDF parsing/processing engine written in Rust. Early development —
-currently at milestone **M8**: lexical parsing, classic and stream
-cross-reference tables, indirect-reference resolution, stream decoding
-(`FlateDecode` + predictors), object streams, page-tree reading,
-content-stream parsing into typed drawing instructions, raster
-rendering to PNG, and Form/Image XObject painting.
+A PDF parsing/processing engine written in Rust. This is **not** a
+wrapper around an existing PDF engine (PDFium, MuPDF, Poppler are not
+used) — the syntax parser, document model, renderer, and writer are
+implemented here.
 
-This is **not** a wrapper around an existing PDF engine (PDFium, MuPDF,
-Poppler are not used). The syntax parser, document model, and (future)
-renderer and writer are implemented here.
+Early development; the API is not yet stable.
 
-## Status
+## Design policy
 
-**M8 / M8.1 / M8.2 / M9 are complete.** Rewrite any loaded document
-to a fresh single-revision PDF via `kasane-pdf rewrite in.pdf
---output out.pdf` or the `rewrite(&Document)` API — preserving page
-tree, contents, fonts, text and basic links. M8.1/M8.2 tightened and
-validated the write guarantees; `scripts/verify_rewrite.sh` runs
-`qpdf --check` (12.4.2) on every well-formed fixture — exit 0, zero
-warnings.
+- **Independent implementation** — the only external PDF code is a few
+  permissively-licensed codec/raster crates (`flate2`, `tiny-skia`,
+  `png`, `jpeg-decoder`, `ttf-parser`); all PDF interpretation is ours.
+- **Everything is bounded** — every unbounded operation is capped by
+  [`Limits`](src/limits.rs) (input size, reference depth, decoded
+  bytes, op counts, pixel buffers, edit budgets, …).
+- **No partial results** — a construct the engine cannot process
+  *exactly* produces a typed [`Error`](src/error.rs)
+  (`Error::Unsupported`/`Error::Structure`), never a silent skip or a
+  best-effort guess. `Error::kind()` gives a stable machine-readable
+  category.
+- **Never panics** on hostile input; no `unsafe`.
+- **Not a redaction tool, not a sanitizer** — the `experimental-*`
+  editing commands rewrite selected content into a new object but do
+  not prove the old data is gone. See [`docs/security.md`](docs/security.md).
 
-**M9 / M9.1 adds `/Square` annotation editing.** `Document::edit()`
-opens a session; `add_square(page, rect, rgb, width)` queues an
-annotation; `rewrite()` emits a normal single-revision file. CLI:
-`kasane-pdf annotate-rect in.pdf 1 --rect 20 30 120 80 --color 1 0 0
---width 2 --output out.pdf`. `rect` = lower-left x,y then upper-right
-x,y in un-rotated PDF user space, and is the annotation's *outer*
-bounding box (the stroke is drawn inside it). M9.1 corrected the
-appearance transform (BBox `[0 0 w h]` + `Matrix` translate so the
-stroke width is never rescaled) and hardened the synthetic
-object-number allocator to never alias a real object. M9.2 extended
-that: a number present in the input xref at *any* generation or entry
-type is reserved, and an input reference landing on a synthetic
-number is treated as a dangling ref — never silently resolved to a
-synthetic body. See [`docs/coverage.md`](docs/coverage.md) for the
-matrix and [`docs/design.md`](docs/design.md) for notes.
+## Features
 
-**M10 / M11 add an `inspect` command** — `kasane-pdf inspect file.pdf
-1` prints a fixed-order structural summary of a single page
-(MediaBox, CropBox, rotation, annotation count, `/Contents`
-reference(s), `/UserUnit`), enumerates named resources per category
-(`font F1 Type1 /Helvetica`, `xobject Im1 Form /BBox=[…]`, …), dumps
-`tokens`/`operators`/`opstats` content-stream statistics, then one
-`annot <i> <subtype> rect …` line per annotation. Diagnostic only —
-never renders, edits or extracts. The file must contain exactly one
-page.
+- **Parsing** — full object layer (names/`#xx` escapes, hex/literal
+  strings, arrays, dicts), classic `xref` tables + `/Prev` chains,
+  xref streams (`/W`/`/Index`, types 0/1/2), hybrid `/XRefStm`
+  references, object streams (`/ObjStm`), `FlateDecode` + PNG/TIFF
+  predictors, indirect resolution with cycle detection. Document
+  catalog + page tree with inherited `MediaBox`/`CropBox`/`Rotate`/
+  `Resources`; `page_contents`/`page_operations`/`page_resource` APIs.
+- **Rendering** — `render_page` → pixmap + `pixmap_to_png`: paths,
+  clipping (nonzero/even-odd), DeviceGray/RGB/CMYK, Form & Image
+  XObjects (`/Matrix`, `/BBox`, `/Decode`, raw + Flate + `DCTDecode`),
+  embedded TrueType text (`/FontFile2`, WinAnsi), Type0/Identity-H/
+  CIDFontType2, honouring `MediaBox`/`CropBox`/`Rotate`/DPI. Operator
+  placement is checked per ISO 32000-1 §8.2 Figure 9.
+- **Text extraction** — `extract_text` → positioned `CharInfo` per
+  code (origin, advance, bounds): `/ToUnicode` CMap (`bfchar`/`bfrange`,
+  UTF-16BE, surrogate pairs) with WinAnsi/AGL fallback; unresolved
+  codes return `None`, never a guess. Headless — `/ActualText`/OC
+  content is refused, not silently ignored.
+- **Rewrite** — `rewrite(&Document)` → fresh single-revision PDF:
+  DFS from trailer `/Root`+`/Info`, dense renumbering, `/Length`
+  recomputed, stream bytes verbatim, links/annots carried.
+  Signed/XFA/OCProperties/RichMedia/AA input is refused.
+- **Editing** — `Document::edit()` session: add `/Square` annotations
+  (`add_square`, generated `/AP`), and the experimental scoped
+  `remove_text`/`remove_image_region`/`remove_region`/`remove_regions`
+  (multi-page, inherited-`/Resources` materialisation) family plus
+  `remove_document_metadata` — all through the atomic-overlay +
+  rewrite pipeline, never mutating the input.
+- **Diagnosis & audit** — `diagnose_redaction`/`preflight-redaction`
+  (read-only report of painted content inside rects: targets,
+  blockers, uncertain, shared, unexamined — deliberately *no* "safe"
+  verdict) and `audit_residuals`/`audit-residuals` (read-only
+  inventory of residual information).
 
-**M16 adds `diagnose_redaction` + `preflight-redaction`** — the first
-step toward a real redaction feature: a read-only, in-memory
-diagnostic of what painted content falls inside caller-supplied
-rectangles. It reports each shown character, image placement, Form
-invocation, and painted path with a bounding box and
-site identity (`/Contents` ref + op index + `Do` call-site chain +
-character index within the string), enumerates
-blockers (Optional Content, `/ActualText`, unsupported XObjects),
-locations it could not pin down (`uncertain`), sharing that would
-make an edit unsafe (`shared`), page annotations, and document areas
-never examined (`unexamined`). It deliberately returns no "safe"
-verdict — the name is `preflight-redaction` because a clean report
-means only "the scan completed", never "redaction would work".
-"Conservative" bounds are only claimed where the reach is provable —
-a stroke's extent uses `√2 × max(|col₁|, |col₂|)` of the CTM (never
-`sqrt(|det|)`, which under-reports non-uniform scaling), a `w = 0`
-hairline (device-resolution dependent, unboundable in user space)
-reports as `uncertain` instead of a certain target, and state a
-`gs`/`sh`/Pattern changed marks everything after `uncertain` until
-`Q` or a form's end restores known state.
+## Current limitations
 
-**M17 adds `remove_text` + `experimental-remove-text`** — an
-*experimental* scoped text removal, **not** a redaction tool. It
-deletes the shown character codes whose filled-ink bounds hit a
-rect (page-level `Tj`/`TJ`/`'`/`"`, `Tr 0` fill, supported
-horizontal fonts only), rewrites the affected strings as `TJ` with
-numeric elements that restore the removed advance, and writes a new
-single-revision PDF through the same overlay pipeline as
-`annotate-rect`. A page with `/Annots`, any `sh`/inline
-image/`gs`/Pattern/`ActualText`/OC, any *shown* text mode other
-than `Tr 0` (even outside the rect), `w = 0` hairlines, unsupported
-fonts, non-finite CTM, `/UserUnit` ≠ 1, vertical text, or
-`Tfs`/`Tz` = 0 is refused outright — never half-edited. The input
-document and its bytes are never modified, and other pages sharing
-the original `/Contents` keep it (the removed bytes still exist in
-the shared stream — this is content editing, not secure redaction).
-M17.1 pins the rewrite to the *op-time* text state (font, `Tfs`,
-`Tc`, `Tw`, `Tz` as the op ran under them) rather than the
-stream-end state, checks eligibility page-wide instead of only
-against selected codes, and keeps typed walk errors
-(`LimitExceeded`, `Structure`, `Parse`) instead of flattening them
-into `Unsupported`.
+Encrypted documents; stream filters other than `/FlateDecode` and
+`/DCTDecode` (images only); inline images (`BI`/`ID`/`EI`); text
+extraction beyond TrueType+WinAnsi and Type0+Identity-H+CIDFontType2;
+non-embedded/Type1/Type3/CFF fonts, non-Identity-H Type0 encodings,
+`gs`/`sh`/patterns, non-device colour, `/ImageMask`/`/Mask`/`/SMask`,
+transparency, `/UserUnit` ≠ 1, singular CTMs; annotation subtypes
+other than `/Square`; `/UseCMap`-chained or multi-byte-codespace
+ToUnicode CMaps. Each is a distinct typed error — never a partial
+result. Full list: [`docs/features/`](docs/features/).
 
-**M18 extends it to one level of `/Form`.** A page-level `Do` whose
-target is a `/Form` XObject is editable per-invocation: the form's
-inner text is rewritten into a *clone* of its stream, the clone is
-registered under a fresh `/XObject` name (`KasFm{n}`) in the page's
-effective resources, and only that `Do` is repointed — so two `Do`s
-of the same form (or two names for the same object) can be edited
-independently, and every other page sharing the original keeps the
-unmodified bytes. Nested `Do`s, images, `/Group`/`/OC`/`/Ref` forms,
-and all M17 refusals stay refused — the check is `form_path` depth
-plus the existing `blocker`/`uncertain`/mode rules.
+## Build
 
-**M18.1 adds cumulative budgets** the per-stream `max_operations`
-parse cap cannot express: `max_diag_exec_ops` (200,000) counts every
-content-stream *execution* across page and form recursion (a form
-invoked N times costs N× its ops); `max_show_states` (200,000)
-bounds the `show_states` snapshot map (recorded only for
-`remove_text`, not `diagnose_redaction`); `max_edit_content_bytes`
-(64 MiB) bounds the cumulative generated stream bodies held in the
-`Edit` overlay before `rewrite` applies its own `max_output_bytes`
-to the final PDF. M18.2 makes the byte budget *pre-allocation*: a
-`BoundedWriter` checks the remaining budget before every
-`push`/`extend_from_slice`, so a long `Tj` string or huge `TJ`
-array stops mid-write instead of allocating past the bound. Note:
-`BoundedWriter` bounds *logical* bytes written; it does not
-guarantee a capacity or RSS ceiling — a single huge `Vec` can still
-be allocated elsewhere (e.g. image decode) under its own limit.
+- Rust 1.70+ (`edition = "2021"`)
 
-**M19 adds experimental image-region removal** — `remove_image_region`
-+ `experimental-remove-image-region` replaces image samples whose
-painted positions hit a caller rect with opaque black in a *new*
-image object (per-invocation `KasIm{n}` cloning, same as M18 forms).
-The original stream is never mutated; other copies are preserved.
-M19.2 fixes three accuracy issues:
-
-- **Exact pixel union, not a bounding box** — each rect maps to its
-  own `(x0,y0,x1,y1)` via inverse CTM; the union is computed by
-  splitting into horizontal bands and merging x-intervals within
-  each band. Corner-touching rects and L-shaped overlaps do not
-  fill the pixels between them. The intermediate structure is
-  bounded by the input rect count, not image height.
-- **`pixels_changed` counts pixels, not components** — a pixel
-  counts when at least one component changed **from non-0 to 0**.
-  An RGB pixel is 1 whether 1 or 3 channels went black; an
-  already-all-0 pixel counts 0.
-- **Colour-space resolution + Default* substitution** — `/ColorSpace`
-  names resolve through the page's `/Resources /ColorSpace`; a
-  device name is then checked against `/DefaultGray`/`/DefaultRGB`
-  in the same dict. A non-device result is refused.
-- **Pre-decode budget check** — `max_image_bytes` and
-  `max_edit_content_bytes` are both checked *before* decoding;
-  a non-intersecting image is skipped without decoding.
-
-What works today:
-
-- PDF basic objects: null, bool, integer, real, name (with `#xx`
-  escapes), literal and hexadecimal strings, arrays, dictionaries.
-- Classic `xref` tables with subsections, `trailer` dictionaries, and
-  `/Prev` chains (incremental updates in classic format).
-- xref streams (`/Type /XRef`) with `/W`, `/Index`, and entries of type
-  0, 1, and 2.
-- Hybrid-reference files (classic table + `/XRefStm` stream).
-- Object streams (`/Type /ObjStm`) with cached decoding.
-- Indirect reference resolution with cycle detection and a resolution
-  budget.
-- Stream decoding: no filter, `/FlateDecode` (zlib/DEFLATE), multiple
-  filters in order, `/DecodeParms`, PNG predictors 10–15 and TIFF
-  predictor 2 for 8-bit components.
-- Document catalog and page tree with inherited `MediaBox`, `CropBox`,
-  `Rotate`, `Resources`.
-- `Document::page_contents()` returning decoded content streams in
-  order.
-- `Document::page_operations()` parsing content streams into typed
-  operations (`Operation`) — graphics state, paths, painting, colour,
-  text, XObject/shading invocation, marked content — with balanced
-  `q`/`Q`, `BT`/`ET`, `BX`/`EX`, `BMC`/`BDC`/`EMC` checks. Concatenated
-  `/Contents` arrays are parsed as one logical stream.
-- `Document::page_resource()` resolving named entries in a page's
-  (inherited) `/Resources` dictionary: `Font`, `XObject`, `ExtGState`,
-  `ColorSpace`, `Pattern`, `Shading`, `Properties`, …
-- `render_page()` rendering pages that use basic drawing (paths,
-  clipping, DeviceGray/RGB/CMYK colours) plus Form and Image XObjects
-  to a pixmap, honouring `MediaBox`/`CropBox`/`Rotate` and DPI; PNG
-  output via `pixmap_to_png`.
-- `Do` invocation: Form XObjects (own `/Matrix`, `/BBox` clipping,
-  own `/Resources`, nesting, recursion detection) and Image XObjects
-  (8-bit `/DeviceGray`/`/DeviceRGB`, raw + `FlateDecode` +
-  `DCTDecode`, `/Decode`, `/Interpolate`, clipping). Unsupported
-  attributes (`/ImageMask`, `/Mask`, `/SMask`, `/SMaskInData` ≠ 0,
-  `/OC`, `/Group`, `/Ref`, unknown subtypes) are refused explicitly.
-- Text rendering with embedded TrueType fonts: `/Subtype /TrueType`
-  + `/FontFile2` + `WinAnsiEncoding` (named or via an `/Encoding`
-  dictionary's `/BaseEncoding`/`/Differences`). `BT`/`ET`, `Tf`,
-  `Tc`/`Tw`/`Tz`/`TL`/`Tr`/`Ts`, `Tm`/`Td`/`TD`/`T*`,
-  `Tj`/`TJ`/`'`/`"`, rendering modes 0–3. Positioning uses the PDF
-  `/Widths` array — never the font's own advance widths.
-  Operator placement is checked per ISO 32000-1 §8.2 Figure 9 —
-  out-of-order sequences inside a path object (e.g. `cm`, `q`/`Q`,
-  colour ops between path construction and painting, or path
-  construction after `W`/`W*`) are refused with a typed error.
-- `extract_text()` positioned text extraction (`CharInfo` per
-  character code, content order): `/ToUnicode` CMap (`bfchar`,
-  `bfrange` sequential + array, UTF-16BE incl. surrogate pairs,
-  multi-scalar mappings) with WinAnsi-name→AGL→Unicode fallback;
-  unresolved codes report `None`, never a guess. `/UseCMap`,
-  `usecmap`/`usefont`, non-1-byte codespaces → `Error::Unsupported`.
-  Extraction is headless — no rasterising, clip masks, or image
-  decoding — `/Span` `/ActualText` or `/OC` membership in the
-  executed stream is refused rather than silently ignored, and a
-  cumulative `max_extracted_unicode_bytes` budget bounds the
-  Unicode a page can emit (UTF-8 bytes, counted per emitted code
-  so repeated/split strings cannot evade it).
-- `diagnose_redaction()` + `preflight-redaction` pre-redaction
-  diagnosis — targets (text/image/form/path), blockers, uncertain
-  positions, shared resources, page annotations, and unexamined
-  document areas, with no "safe" verdict.
-- `remove_text()` + `experimental-remove-text` — experimental scoped
-  text removal that deletes hit codes and preserves survivors'
-  positions (not a redaction tool; see `docs/coverage.md`).
-- `remove_image_region()` + `experimental-remove-image-region` —
-  experimental image-region removal that blackens hit pixels in a
-  cloned image object (not a redaction tool; see `docs/coverage.md`).
-- `remove_region()` + `experimental-remove-region` — experimental
-  scoped region removal that removes text codes *and* blackens
-  image pixels in one pass, writing one PDF (not a redaction tool;
-  see `docs/coverage.md`). Inherited `/Resources` are materialised
-  into every page dict first, and a `/Pages` node drops its
-  `/Resources` only when *all* descendants are materialised — the
-  post-order strip decision propagates a failed branch upward
-  (`docs/design.md`, M22–M22.4).
-- `audit_residuals()` + `audit-residuals` — a read-only inventory of
-  residual information: `/Info`, XMP metadata, embedded files, form
-  fields, structure-tree alternate text, actions/JavaScript,
-  optional content, resources, free/unreachable/superseded objects.
-  It reports *that* a construct exists and where it is — never that
-  it is safe or unsafe (see `docs/coverage.md`, M23).
-- A `kasane-pdf` CLI (`info` mode + `contents`, `operations`,
-  `render`, `text`, `rewrite`, `annotate-rect`, `inspect`,
-  `preflight-redaction`, `experimental-remove-text`,
-  `experimental-remove-image-region`, `experimental-remove-region`,
-  and `audit-residuals` subcommands).
-- Adding `/Subtype /Square` rectangle annotations to a page via an
-  [`Edit`] session — opaque RGB stroke, positive width, generated
-  `/AP` appearance, existing annots/links preserved, shared `/Annots`
-  arrays never mutated in place.
-
-What is deliberately **not** supported yet (produces a distinct error,
-never a partial result presented as success):
-
-- Encrypted documents
-- Stream filters other than `/FlateDecode` and `/DCTDecode` (images
-  only) — `/LZWDecode`, `/ASCIIHexDecode`, `/ASCII85Decode`,
-  `/RunLengthDecode`, `/CCITTFaxDecode`, `/JBIG2Decode`, `/JPXDecode`,
-  `/Crypt`
-- PNG predictors for components other than 8-bit, and unknown predictor
-  values (e.g. `/Predictor 16`)
-- Inline images (`BI`/`ID`/`EI`) — the binary image data cannot be
-  tokenized reliably, so the construct is rejected outright rather than
-  guessed
-- Text extraction for fonts other than simple TrueType +
-  WinAnsiEncoding or Type0+Identity-H+CIDFontType2; `/ActualText`
-  replacement, Optional Content membership (`/OC`/`/OCMD` blocks,
-  form `/OC`), and `/UseCMap`-chained or multi-byte-codespace
-  ToUnicode CMaps — refused with `Error::Unsupported`, not silently
-  ignored
-- Rendering of text with non-TrueType fonts, Type 0 fonts with
-  non-Identity-H encodings (Identity-V, CMap streams, predefined
-  CMaps like UniJIS-*/90ms-*), CIDFontType0/CFF, Type 1, Type 3,
-  non-embedded fonts, symbolic fonts, non-WinAnsi simple encodings,
-  text clipping modes (`Tr` 4–7), or any shaping/ligature behaviour;
-  shading (`sh`), extended graphics state (`gs`), pattern colours,
-  non-device colour spaces beyond DeviceGray/RGB,
-  `/ImageMask`/`/Mask`/`/SMask`, transparency groups, annotations,
-  `/UserUnit` ≠ 1
-- Painting under a singular (non-invertible) CTM — refused with
-  `Error::Unsupported`
-- Annotation subtypes other than `/Square`; editing or deleting
-  existing annotations, page edits, flattening, redaction
-
-## Requirements
-
-- Rust 1.70 or later (`edition = "2021"`)
+```console
+$ cargo build
+```
 
 ## Usage
 
@@ -287,102 +96,79 @@ for page in doc.pages() {
 # Ok::<(), kasane_pdf::Error>(())
 ```
 
-CLI:
+CLI (subcommands):
 
-```console
-$ cargo run -- tests/fixtures/pages.pdf
-file: tests/fixtures/pages.pdf
-pages: 3
-  page 1: media box [0 0 612 792] (612 x 792 pts), rotate 90  (3 0 R)
-  page 2: media box [0 0 400 400] (400 x 400 pts)  (6 0 R)
-  page 3: media box [0 0 200 100] (200 x 100 pts)  (7 0 R)
-
-$ cargo run -- contents tests/fixtures/flate_contents.pdf 1
-file: tests/fixtures/flate_contents.pdf
-page: 1 (1 content stream(s))
---- stream 1 (52 bytes) ---
-q 1 0 0 1 0 0 cm BT /F1 12 Tf (compressed page) Tj ET Q
-
-$ cargo run -- operations tests/fixtures/hello.pdf 1
-file: tests/fixtures/hello.pdf
-page: 1 (5 operation(s))
-    0  BT
-    1  /F1 24 Tf
-    2  72 720 Td
-    3  ("Hello, PDF!") Tj
-    4  ET
-
-$ cargo run -- render tests/fixtures/render_rects.pdf 1 --output out.png --dpi 144
-rendered page 1 -> out.png (400x400 px, 200 pts, dpi 144)
-
-$ cargo run -- preflight-redaction tests/fixtures/text_basic.pdf 1 \
-    --rect 15 55 70 80
-preflight-redaction — diagnosis, not a redaction
-page: 1
-rects: 1
-  rect 0: 15 55 70 80
-targets 3
-  Text bounds [20 60 34.40000057220459 76.80000114440918] rects 0 @ contents[4 0 R] op#3 text code=0x0041 unicode="A" font=/F1 mode=0 origin=(20 60) via=Outline
-  ...
-unexamined 9
-  - /Info and /XMP metadata
-  - embedded files and attachments
-  ...
-note: a clean report means 'no obstacle found in the examined scope' — it is NOT a redaction-safety verdict.
-
-$ cargo run -- experimental-remove-text tests/fixtures/text_basic.pdf 1 \
-    --rect 35 60 38 80 --output /tmp/out.pdf
-experimental-remove-text tests/fixtures/text_basic.pdf page 1 -> /tmp/out.pdf (2946 bytes)
-codes removed: 1
-  page 1 (1 rect)
-  codes removed: 1
-  scope: page-level content only — no Form/Annots/metadata/structure
-# the output's Contents is now: BT /F1 24 Tf 20 60 Td [(A) -600 (C)] TJ ET
-# — 'B' is gone and 'C' keeps its origin.
+```text
+kasane-pdf <file.pdf>                          # info: page list
+kasane-pdf contents <pdf> <page>               # decoded content stream
+kasane-pdf operations <pdf> <page>             # typed op dump
+kasane-pdf render <pdf> <page> --output out.png [--dpi N]
+kasane-pdf text <pdf> <page> [--format text|json|lines]
+kasane-pdf rewrite <in.pdf> --output <out.pdf>
+kasane-pdf annotate-rect <in> <page> --rect .. --color .. --width .. --output ..
+kasane-pdf inspect <pdf> <page>                # structural dump
+kasane-pdf preflight-redaction <pdf> <page> --rect .. [--format json]
+kasane-pdf audit-residuals <pdf> [--format json]
+kasane-pdf experimental-remove-text <in> <page> --rect .. --output ..
+kasane-pdf experimental-remove-image-region <in> <page> --rect .. --output ..
+kasane-pdf experimental-remove-region <in> <page> --rect .. --output ..
+kasane-pdf experimental-remove-regions <in> --rect .. [--pages ..] --output ..
+kasane-pdf remove-document-metadata <in> --output ..
 ```
 
-Errors are printed with a stable category in brackets, e.g.
-`error [unsupported feature]: unsupported PDF feature: stream filter (/LZWDecode)`.
+Example:
+
+```console
+$ kasane-pdf render tests/fixtures/render_rects.pdf 1 --output out.png --dpi 144
+rendered page 1 -> out.png (400x400 px, 200 pts, dpi 144)
+
+$ kasane-pdf experimental-remove-text tests/fixtures/text_basic.pdf 1 \
+    --rect 35 60 38 80 --output /tmp/out.pdf
+experimental-remove-text ... codes removed: 1
+# output Contents: BT /F1 24 Tf 20 60 Td [(A) -600 (C)] TJ ET
+# — 'B' gone, 'C' keeps its origin. (Content edit, not redaction.)
+```
+
+Errors carry a stable category: `error [unsupported feature]: …`.
 
 ## Testing
 
 ```console
-$ cargo test            # unit + integration tests (fixtures in tests/fixtures/)
+$ cargo test            # unit + integration tests
 $ cargo fmt --check
 $ cargo clippy --all-targets
 ```
 
-The fixtures are hand-crafted and deterministic; regenerate them with
-`python3 tests/fixtures/make_fixtures.py` (no dependency on any other
-PDF tool).
+Tests are feature-organised (see [`tests/README.md`](tests/README.md));
+fixtures in `tests/fixtures/` are deterministic — regenerate with
+`python3 tests/fixtures/make_fixtures.py`. External checks:
+`scripts/verify-rewrite.sh` (`qpdf --check` on rewrite output),
+`scripts/verify-audit.sh`, `scripts/verify-resources-materialize.sh`.
+See [`docs/testing.md`](docs/testing.md).
 
-## Safety-oriented design
+## Documentation
 
-All parsing is bounded by [`Limits`](src/limits.rs): input size, indirect
-reference budget, page-tree depth/nodes, collection sizes, string
-lengths, nesting depth. Malformed input returns a typed
-[`Error`](src/error.rs); it must never panic or loop without bound.
+- [`docs/architecture.md`](docs/architecture.md) — goals, module map,
+  core decisions, `Limits`, licensing, roadmap.
+- [`docs/features/`](docs/features/) — support matrix per area
+  (parsing, rendering, rewriting, editing, diagnosis, audit).
+- [`docs/security.md`](docs/security.md) — safety/`Limits` posture and
+  the not-a-redaction/sanitizer guarantees.
+- [`docs/decisions/`](docs/decisions/) — design-decision records.
+- [`docs/testing.md`](docs/testing.md) — test layout & verification.
+- [`docs/redaction-design.md`](docs/redaction-design.md) — recorded
+  redaction constraints.
 
 ## License
 
-Not yet decided. Until it is, the source is all rights reserved.
-The dependency policy (permissive licenses only, no AGPL/GPL engine
-cores) is documented in [`docs/design.md`](docs/design.md). Current
-dependencies: `flate2` (MIT/Apache-2.0, `rust_backend`) for
-`/FlateDecode`, `tiny-skia` (BSD-3-Clause) as the raster backend,
-`png` (MIT/Apache-2.0) for PNG encoding.
-
-## Naming
-
-`kasane-pdf` (crate), `kasane_pdf` (Rust path), `kasane-pdf` (CLI).
-The crates.io name availability and any trademark considerations have
-not been confirmed; nothing is published yet.
+Not yet decided. Until it is, all rights reserved. The dependency
+policy (permissive only, no AGPL/GPL engine cores) is in
+[`docs/architecture.md`](docs/architecture.md).
 
 ## References
 
-- ISO 32000-1:2008 — *Document management — Portable document format —
-  Part 1: PDF 1.7* (and its errata).
-- ISO 32000-2:2020 — PDF 2.0, for features beyond 1.7.
+- ISO 32000-1:2008 — *PDF 1.7* (and errata).
+- ISO 32000-2:2020 — PDF 2.0.
 
 Section numbers cited in source comments refer to ISO 32000-1 unless
 noted otherwise.

@@ -1,6 +1,6 @@
-//! M2 integration tests: content-stream parsing into typed operations,
-//! the affine `Matrix` type, resource lookup, structural balance, and
-//! the M2 resource limits.
+//! Content-stream parsing integration tests (milestone M2):
+//! typed operations, the affine `Matrix` type, resource lookup,
+//! structural balance, and the M2 resource limits.
 
 use kasane_pdf::{Document, Error, Limits, Matrix, Object, Operation, TJItem};
 

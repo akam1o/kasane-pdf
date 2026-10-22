@@ -1,5 +1,6 @@
-//! M1 integration tests: stream decoding, xref streams, object streams,
-//! page contents, free-entry invalidation, and resource limits.
+//! Stream-decoding and object-layer integration tests (milestone M1):
+//! stream decoding, xref streams, object streams, page contents,
+//! free-entry invalidation, and resource limits.
 
 use kasane_pdf::{Document, Error, IndirectRef, Limits};
 
