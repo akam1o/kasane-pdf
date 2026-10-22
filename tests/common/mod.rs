@@ -34,6 +34,41 @@ pub fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
+/// Serialise numbered object bodies into a classic-xref PDF (object
+/// `1` must be the catalog). Mirrors `make_fixtures.py::build_pdf`
+/// so render tests can build small deterministic files inline.
+pub fn build_pdf(objects: &[(u32, Vec<u8>)]) -> Vec<u8> {
+    let mut out = b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n".to_vec();
+    let mut offsets: Vec<(u32, usize)> = Vec::new();
+    for (n, body) in objects {
+        offsets.push((*n, out.len()));
+        out.extend_from_slice(format!("{n} 0 obj\n").as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let size = objects.iter().map(|(n, _)| *n).max().unwrap_or(0) + 1;
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f \n").as_bytes());
+    for n in 1..size {
+        match offsets.iter().find(|(on, _)| *on == n) {
+            Some((_, off)) => out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes()),
+            None => out.extend_from_slice(b"0000000000 65535 f \n"),
+        }
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {size} /Root 1 0 R >>\n").as_bytes());
+    out.extend_from_slice(format!("startxref\n{xref}\n%%EOF\n").as_bytes());
+    out
+}
+
+/// A stream object body: `dict_entries` (without `<< >>`) plus
+/// `/Length`, then the raw data.
+pub fn stream_obj(dict_entries: &str, data: &[u8]) -> Vec<u8> {
+    let mut out = format!("<< {dict_entries} /Length {} >>\nstream\n", data.len()).into_bytes();
+    out.extend_from_slice(data);
+    out.extend_from_slice(b"\nendstream");
+    out
+}
+
 /// A minimal 1-page PDF the writer accepts — kept inline so the test
 /// does not depend on a fixture that may itself evolve.
 pub fn minimal_pdf() -> Vec<u8> {

@@ -45,6 +45,10 @@
 //! `q`/`Q` save/restore it; nested clips intersect via
 //! `Mask::intersect_path`.
 
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use crate::colorspace::ColorSpace;
 use crate::content::Operation;
 use crate::document::Document;
 use crate::error::Error;
@@ -65,8 +69,11 @@ struct GraphicsState {
     miter_limit: f64,
     dash: Option<(Vec<f64>, f64)>,
     flatness: f64,
-    stroke_space: DeviceSpace,
-    fill_space: DeviceSpace,
+    /// Current colour spaces (`CS`/`cs`, or the device space the
+    /// `G`/`RG`/`K` family selects). Shared `Rc` so `q`/`Q` cloning
+    /// never re-parses an ICC profile or tint transform.
+    stroke_space: Rc<ColorSpace>,
+    fill_space: Rc<ColorSpace>,
     stroke_color: Color,
     fill_color: Color,
     /// Non-stroking alpha `ca` (§11.3.7.2) — multiplies the fill
@@ -130,14 +137,6 @@ impl Default for TextState {
     }
 }
 
-/// Device colour space actually selected (after `Default*` mapping).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DeviceSpace {
-    Gray,
-    Rgb,
-    Cmyk,
-}
-
 /// An RGBA8 colour produced from a device colour space.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Color {
@@ -188,8 +187,8 @@ impl GraphicsState {
             miter_limit: 10.0,
             dash: None,
             flatness: 1.0,
-            stroke_space: DeviceSpace::Gray,
-            fill_space: DeviceSpace::Gray,
+            stroke_space: Rc::new(ColorSpace::DeviceGray),
+            fill_space: Rc::new(ColorSpace::DeviceGray),
             stroke_color: Color::BLACK,
             fill_color: Color::BLACK,
             fill_alpha: 1.0,
@@ -304,6 +303,13 @@ pub struct RenderedPage {
     /// approximations of the named fonts and the image must not be
     /// treated as a faithful render of them.
     pub font_substitutions: Vec<crate::fontsubst::FontSubstitution>,
+    /// Colour spaces that were converted through an *approximation*
+    /// (an `/ICCBased` profile we cannot evaluate, so its `/Alternate`
+    /// was used — §8.6.5.5). Empty means every colour on the page went
+    /// through an exact conversion; non-empty means hues may differ
+    /// from a CMS-backed viewer and the image must not be treated as
+    /// a faithful render of those colours.
+    pub color_approximations: Vec<String>,
 }
 
 /// Render `page` of `doc` to a pixel buffer. On failure no
@@ -400,7 +406,10 @@ pub fn render_page(
         extract_unicode_bytes: 0,
         extraction_only: false,
         substitutions: Vec::new(),
-        isolated_groups: 0,
+        color_approximations: Vec::new(),
+        default_spaces: None,
+        blend_restricted: 0,
+        layer_bytes: 0,
     };
     renderer.run(&ops)?;
     // Annotation appearance streams paint *over* the page content, in
@@ -408,6 +417,7 @@ pub fn render_page(
     let page_resources = renderer.resources.clone();
     renderer.draw_annotations(page, &page_resources)?;
     let font_substitutions = std::mem::take(&mut renderer.substitutions);
+    let color_approximations = std::mem::take(&mut renderer.color_approximations);
 
     Ok(RenderedPage {
         pixmap,
@@ -416,6 +426,7 @@ pub fn render_page(
         dpi: opts.dpi,
         page_size_pts: (w_pts, h_pts),
         font_substitutions,
+        color_approximations,
     })
 }
 
@@ -580,12 +591,23 @@ pub(crate) struct Renderer<'a> {
     /// Non-embedded fonts drawn with a bundled substitute this page
     /// (deduplicated) — surfaced on [`RenderedPage`].
     substitutions: Vec<crate::fontsubst::FontSubstitution>,
-    /// Nesting depth of *isolated* transparency groups being painted
-    /// inline. Inside one, a non-Normal blend mode would composite
-    /// against the group's transparent backdrop rather than the page —
-    /// a difference inline painting cannot reproduce, so `gs` refuses
-    /// it while this is non-zero.
-    isolated_groups: u32,
+    /// Colour-space approximations recorded this page (deduplicated)
+    /// — surfaced on [`RenderedPage::color_approximations`].
+    color_approximations: Vec<String>,
+    /// `/DefaultGray`, `/DefaultRGB`, `/DefaultCMYK` of the current
+    /// resources (§8.6.5.6), resolved lazily and dropped whenever
+    /// `resources` changes — see [`Self::device_space`].
+    default_spaces: Option<[Rc<ColorSpace>; 3]>,
+    /// Nesting depth of transparency groups whose *contents* must use
+    /// Normal blending for our rendering of them to be exact: an
+    /// isolated group painted inline (a non-Normal mode inside would
+    /// see the page instead of a transparent backdrop) and a
+    /// non-isolated group painted through an offscreen layer (the
+    /// reverse). `gs` refuses a non-Normal `BM` while this is non-zero.
+    blend_restricted: u32,
+    /// Bytes of offscreen group layers currently alive — bounded by
+    /// `max_render_buffer_bytes` together with the page pixmap.
+    layer_bytes: u64,
 }
 
 impl<'a> Renderer<'a> {
@@ -635,8 +657,19 @@ impl<'a> Renderer<'a> {
             extract_unicode_bytes: 0,
             extraction_only: true,
             substitutions: Vec::new(),
-            isolated_groups: 0,
+            color_approximations: Vec::new(),
+            default_spaces: None,
+            blend_restricted: 0,
+            layer_bytes: 0,
         })
+    }
+
+    /// Replace the effective `/Resources`, returning the previous one.
+    /// Every switch goes through here so the `/Default*` colour-space
+    /// cache never outlives the dictionary it was read from.
+    fn swap_resources(&mut self, resources: Object) -> Object {
+        self.default_spaces = None;
+        std::mem::replace(&mut self.resources, resources)
     }
 
     /// Take the extracted character buffer (extraction mode only).
@@ -855,36 +888,20 @@ impl<'a> Renderer<'a> {
             }
 
             // ---- colour --------------------------------------------
-            Operation::SetGrayStroke(g) => {
-                self.gs.stroke_space = DeviceSpace::Gray;
-                self.gs.stroke_color = gray_to_rgba(*g);
-            }
-            Operation::SetGrayFill(g) => {
-                self.gs.fill_space = DeviceSpace::Gray;
-                self.gs.fill_color = gray_to_rgba(*g);
-            }
-            Operation::SetRgbStroke(r, g, b) => {
-                self.gs.stroke_space = DeviceSpace::Rgb;
-                self.gs.stroke_color = rgb_to_rgba(*r, *g, *b);
-            }
-            Operation::SetRgbFill(r, g, b) => {
-                self.gs.fill_space = DeviceSpace::Rgb;
-                self.gs.fill_color = rgb_to_rgba(*r, *g, *b);
-            }
+            // §8.6.8: G/RG/K select the device space (or its /Default*
+            // replacement) *and* set the colour, like `cs` + `sc`.
+            Operation::SetGrayStroke(g) => self.select_device_color(0, &[*g], true)?,
+            Operation::SetGrayFill(g) => self.select_device_color(0, &[*g], false)?,
+            Operation::SetRgbStroke(r, g, b) => self.select_device_color(1, &[*r, *g, *b], true)?,
+            Operation::SetRgbFill(r, g, b) => self.select_device_color(1, &[*r, *g, *b], false)?,
             Operation::SetCmykStroke(c, m, y, k) => {
-                self.gs.stroke_space = DeviceSpace::Cmyk;
-                self.gs.stroke_color = cmyk_to_rgba(*c, *m, *y, *k);
+                self.select_device_color(2, &[*c, *m, *y, *k], true)?
             }
             Operation::SetCmykFill(c, m, y, k) => {
-                self.gs.fill_space = DeviceSpace::Cmyk;
-                self.gs.fill_color = cmyk_to_rgba(*c, *m, *y, *k);
+                self.select_device_color(2, &[*c, *m, *y, *k], false)?
             }
-            Operation::SetColorSpaceStroke(n) => {
-                self.gs.stroke_space = self.resolve_colorspace(n)?;
-            }
-            Operation::SetColorSpaceFill(n) => {
-                self.gs.fill_space = self.resolve_colorspace(n)?;
-            }
+            Operation::SetColorSpaceStroke(n) => self.select_colorspace(n, true)?,
+            Operation::SetColorSpaceFill(n) => self.select_colorspace(n, false)?,
             Operation::SetColorStroke(ops) => self.set_color(ops, true)?,
             Operation::SetColorFill(ops) => self.set_color(ops, false)?,
 
@@ -1139,29 +1156,92 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    fn resolve_colorspace(&self, name: &Name) -> Result<DeviceSpace, Error> {
-        match name.as_slice() {
-            b"DeviceGray" | b"DefaultGray" => Ok(DeviceSpace::Gray),
-            b"DeviceRGB" | b"DefaultRGB" => Ok(DeviceSpace::Rgb),
-            b"DeviceCMYK" | b"DefaultCMYK" => Ok(DeviceSpace::Cmyk),
-            other => Err(Error::Unsupported {
-                feature: "non-device colour space",
-                detail: format!(
-                    "/{} — only DeviceGray/DeviceRGB/DeviceCMYK and Default* are supported in M3",
-                    String::from_utf8_lossy(other)
-                ),
-            }),
+    /// The device space the `G`/`RG`/`K` family selects (`idx` 0 =
+    /// Gray, 1 = RGB, 2 = CMYK), honouring a `/DefaultGray`-style
+    /// override in the current resources (§8.6.5.6). Resolved once per
+    /// resources dictionary and cached in `default_spaces`.
+    fn device_space(&mut self, idx: usize) -> Result<Rc<ColorSpace>, Error> {
+        if self.default_spaces.is_none() {
+            let mut parsed: Vec<Rc<ColorSpace>> = Vec::with_capacity(3);
+            for name in [&b"DeviceGray"[..], b"DeviceRGB", b"DeviceCMYK"] {
+                let cs = ColorSpace::parse(
+                    self.doc,
+                    &Object::Name(name.to_vec()),
+                    &self.resources,
+                    self.limits,
+                )?;
+                parsed.push(Rc::new(cs));
+            }
+            let cmyk = parsed.pop().expect("three parsed");
+            let rgb = parsed.pop().expect("three parsed");
+            let gray = parsed.pop().expect("three parsed");
+            self.default_spaces = Some([gray, rgb, cmyk]);
+        }
+        let cs = self.default_spaces.as_ref().expect("filled above")[idx].clone();
+        self.note_approximation(&cs);
+        Ok(cs)
+    }
+
+    /// `G`/`RG`/`K` and their lowercase forms: select the device
+    /// space and set the colour in one step.
+    fn select_device_color(
+        &mut self,
+        idx: usize,
+        comps: &[f64],
+        stroke: bool,
+    ) -> Result<(), Error> {
+        let cs = self.device_space(idx)?;
+        let color = color_in(&cs, comps)?;
+        if stroke {
+            self.gs.stroke_space = cs;
+            self.gs.stroke_color = color;
+        } else {
+            self.gs.fill_space = cs;
+            self.gs.fill_color = color;
+        }
+        Ok(())
+    }
+
+    /// `CS`/`cs`: select a colour space by name and reset the colour
+    /// to the space's initial value (§8.6.8).
+    fn select_colorspace(&mut self, name: &Name, stroke: bool) -> Result<(), Error> {
+        let cs = ColorSpace::parse(
+            self.doc,
+            &Object::Name(name.clone()),
+            &self.resources,
+            self.limits,
+        )?;
+        self.note_approximation(&cs);
+        let cs = Rc::new(cs);
+        let color = color_in(&cs, &cs.initial_components())?;
+        if stroke {
+            self.gs.stroke_space = cs;
+            self.gs.stroke_color = color;
+        } else {
+            self.gs.fill_space = cs;
+            self.gs.fill_color = color;
+        }
+        Ok(())
+    }
+
+    /// Record that colours through `cs` are approximated (ICC profile
+    /// not evaluated), once per distinct reason.
+    fn note_approximation(&mut self, cs: &ColorSpace) {
+        if let Some(a) = cs.approximation() {
+            if !self.color_approximations.contains(&a) {
+                self.color_approximations.push(a);
+            }
         }
     }
 
-    /// `SC`/`SCN`/`sc`/`scn` operands → colour in the active device
+    /// `SC`/`SCN`/`sc`/`scn` operands → colour in the active colour
     /// space. A trailing pattern name (the `N` forms) needs pattern
     /// support → `Error::Unsupported`.
     fn set_color(&mut self, ops: &[Object], stroke: bool) -> Result<(), Error> {
         let space = if stroke {
-            self.gs.stroke_space
+            self.gs.stroke_space.clone()
         } else {
-            self.gs.fill_space
+            self.gs.fill_space.clone()
         };
         let (comps, name) = match ops.split_last() {
             Some((last @ Object::Name(_), rest)) => (rest, Some(last)),
@@ -1170,10 +1250,7 @@ impl<'a> Renderer<'a> {
         if let Some(Object::Name(n)) = name {
             return Err(Error::Unsupported {
                 feature: "pattern colour (SCN/scn name operand)",
-                detail: format!(
-                    "/{} — pattern painting is not implemented in M3",
-                    show_name(n)
-                ),
+                detail: format!("/{} — pattern painting is not implemented", show_name(n)),
             });
         }
         let nums: Vec<f64> = comps
@@ -1181,35 +1258,14 @@ impl<'a> Renderer<'a> {
             .map(|o| o.as_number())
             .collect::<Option<Vec<_>>>()
             .ok_or_else(|| Error::Parse("SC/sc operands must be numbers".into()))?;
-        let color = match space {
-            DeviceSpace::Gray => {
-                if nums.len() != 1 {
-                    return Err(Error::Parse(format!(
-                        "DeviceGray expects 1 component, got {}",
-                        nums.len()
-                    )));
-                }
-                gray_to_rgba(nums[0])
-            }
-            DeviceSpace::Rgb => {
-                if nums.len() != 3 {
-                    return Err(Error::Parse(format!(
-                        "DeviceRGB expects 3 components, got {}",
-                        nums.len()
-                    )));
-                }
-                rgb_to_rgba(nums[0], nums[1], nums[2])
-            }
-            DeviceSpace::Cmyk => {
-                if nums.len() != 4 {
-                    return Err(Error::Parse(format!(
-                        "DeviceCMYK expects 4 components, got {}",
-                        nums.len()
-                    )));
-                }
-                cmyk_to_rgba(nums[0], nums[1], nums[2], nums[3])
-            }
-        };
+        if nums.len() != space.ncomps() {
+            return Err(Error::Parse(format!(
+                "colour space expects {} component(s), got {}",
+                space.ncomps(),
+                nums.len()
+            )));
+        }
+        let color = color_in(&space, &nums)?;
         if stroke {
             self.gs.stroke_color = color;
         } else {
@@ -1333,12 +1389,13 @@ impl<'a> Renderer<'a> {
                 }
                 b"BM" => {
                     let bm = parse_blend_mode(v)?;
-                    if bm != tiny_skia::BlendMode::SourceOver && self.isolated_groups > 0 {
+                    if bm != tiny_skia::BlendMode::SourceOver && self.blend_restricted > 0 {
                         return Err(Error::Unsupported {
                             feature: "group XObject (/Group in a form dictionary)",
-                            detail: "a non-Normal blend mode inside an isolated transparency \
-                                     group composites against the group's own backdrop, \
-                                     which inline painting cannot reproduce"
+                            detail: "a non-Normal blend mode inside this transparency group \
+                                     would composite against a backdrop (the group's own, \
+                                     or the page's) that our rendering of the group does \
+                                     not provide"
                                 .into(),
                         });
                     }
@@ -1564,15 +1621,24 @@ impl<'a> Renderer<'a> {
             return Err(Error::Structure("/Matrix has non-finite values".into()));
         }
 
-        // Group XObjects (§8.10.3, §11.4.7): a transparency group is
-        // composited as a whole. When the current state is opaque
-        // (CA = ca = 1), the blend mode is Normal and the group is not
-        // a knockout group, compositing the group result equals
-        // painting its content directly, so it can run inline with no
-        // approximation. Anything else needs real group compositing →
-        // refuse. Isolated groups additionally forbid non-Normal blend
-        // modes *inside* (tracked via `isolated_groups`).
-        let mut isolated = false;
+        // Group XObjects (§8.10.3, §11.4.7, §11.6.6): a transparency
+        // group is composited as a whole. Which rendering is *exact*:
+        //  * opaque (CA = ca = 1), Normal blend, not knockout, not
+        //    isolated → painting the contents inline on the page;
+        //  * opaque, Normal, isolated → inline too, provided nothing
+        //    inside uses a non-Normal blend mode (it would see the
+        //    page where the spec gives it a transparent backdrop) —
+        //    `blend_restricted` makes `gs` refuse that;
+        //  * non-opaque or non-Normal → an offscreen layer: the
+        //    contents are painted onto transparency with alpha and
+        //    blend reset (§11.6.6), then the layer is composited once
+        //    with the group's `ca` and `BM`. Exact for an isolated
+        //    group; for a non-isolated one only while its contents
+        //    blend Normal (then the backdrop makes no difference) —
+        //    again enforced through `blend_restricted`;
+        //  * knockout groups need per-object backdrop replacement →
+        //    refused.
+        let mut group = GroupMode::None;
         if let Some(g) = dict.get(b"Group".as_slice()) {
             let g = self.doc.deref(g)?;
             let gd = g
@@ -1589,19 +1655,33 @@ impl<'a> Renderer<'a> {
                 });
             }
             let knockout = gd.get(b"K".as_slice()).and_then(|o| o.as_bool()) == Some(true);
-            let opaque_normal = self.gs.fill_alpha >= 1.0
-                && self.gs.stroke_alpha >= 1.0
-                && self.gs.blend_mode == tiny_skia::BlendMode::SourceOver;
-            if knockout || !opaque_normal {
+            if knockout {
                 return Err(Error::Unsupported {
                     feature: "group XObject (/Group in a form dictionary)",
-                    detail: "transparency group under non-opaque alpha, a non-Normal blend \
-                             mode, or with /K true needs group compositing, which is not \
-                             implemented"
+                    detail: "knockout transparency group (/K true) needs per-object backdrop \
+                             replacement, which is not implemented"
                         .into(),
                 });
             }
-            isolated = gd.get(b"I".as_slice()).and_then(|o| o.as_bool()) == Some(true);
+            if !is_separable_blend(self.gs.blend_mode) {
+                return Err(Error::Unsupported {
+                    feature: "group XObject (/Group in a form dictionary)",
+                    detail: "a non-separable blend mode on a transparency group needs \
+                             per-pixel colour conversion"
+                        .into(),
+                });
+            }
+            let isolated = gd.get(b"I".as_slice()).and_then(|o| o.as_bool()) == Some(true);
+            let opaque_normal = self.gs.fill_alpha >= 1.0
+                && self.gs.stroke_alpha >= 1.0
+                && self.gs.blend_mode == tiny_skia::BlendMode::SourceOver;
+            group = if opaque_normal {
+                GroupMode::Inline { restrict: isolated }
+            } else {
+                GroupMode::Layer {
+                    restrict: !isolated,
+                }
+            };
         }
         // A form may carry /OC (optional content membership) or /Ref
         // (reference XObject); both change what's painted — refuse
@@ -1641,7 +1721,7 @@ impl<'a> Renderer<'a> {
             None | Some(Object::Null) => self.resources.clone(),
             Some(r) => r.clone(),
         };
-        let saved_resources = std::mem::replace(&mut self.resources, form_resources);
+        let saved_resources = self.swap_resources(form_resources);
 
         // §8.10.1 Do(): (a) save gs, (b) concat Matrix into CTM,
         // (c) clip to BBox, (d) run form ops, (e) restore gs.
@@ -1672,23 +1752,71 @@ impl<'a> Renderer<'a> {
             let decoded = self.doc.decode_stream(dict, raw)?;
             let ops = crate::content::parse_content_stream(&[decoded], self.limits)?;
             self.xobject_depth += 1;
-            if isolated {
-                self.isolated_groups += 1;
-            }
-            let r = self.run(&ops);
-            if isolated {
-                self.isolated_groups -= 1;
-            }
+            let r = match group {
+                GroupMode::None => self.run(&ops),
+                GroupMode::Inline { restrict } => self.run_blend_restricted(&ops, restrict),
+                GroupMode::Layer { restrict } => self.run_in_layer(&ops, restrict),
+            };
             self.xobject_depth -= 1;
             r
         })();
 
-        self.resources = saved_resources;
+        self.swap_resources(saved_resources);
         if pop_ref {
             self.xobject_stack.pop();
         }
         self.gs = self.gs_stack.pop().expect("pushed above");
         run_result
+    }
+
+    /// Run `ops`, refusing non-Normal blend modes inside when
+    /// `restrict` (see `blend_restricted`).
+    fn run_blend_restricted(&mut self, ops: &[Operation], restrict: bool) -> Result<(), Error> {
+        if restrict {
+            self.blend_restricted += 1;
+        }
+        let r = self.run(ops);
+        if restrict {
+            self.blend_restricted -= 1;
+        }
+        r
+    }
+
+    /// Paint `ops` into a fresh, fully transparent layer the size of
+    /// the page, then composite that layer onto the current pixmap
+    /// with the group's constant alpha (`ca`) and blend mode. Inside
+    /// the layer the alpha constants are 1 and the blend mode Normal
+    /// (§11.6.6); the caller's `gs` pop restores them afterwards.
+    fn run_in_layer(&mut self, ops: &[Operation], restrict: bool) -> Result<(), Error> {
+        if self.extraction_only {
+            return self.run_blend_restricted(ops, restrict);
+        }
+        let (w, h) = (self.pixmap.width(), self.pixmap.height());
+        let bytes = w as u64 * h as u64 * 4;
+        // The page pixmap plus every live layer must fit the budget.
+        if self.layer_bytes.saturating_add(bytes).saturating_add(bytes)
+            > self.limits.max_render_buffer_bytes
+        {
+            return Err(Error::LimitExceeded {
+                limit: "max_render_buffer_bytes",
+                max: self.limits.max_render_buffer_bytes,
+            });
+        }
+        let mut layer = Pixmap::new(w, h)
+            .ok_or_else(|| Error::Structure("cannot allocate transparency-group layer".into()))?;
+        let alpha = self.gs.fill_alpha;
+        let bm = self.gs.blend_mode;
+        self.gs.fill_alpha = 1.0;
+        self.gs.stroke_alpha = 1.0;
+        self.gs.blend_mode = tiny_skia::BlendMode::SourceOver;
+        std::mem::swap(&mut *self.pixmap, &mut layer);
+        self.layer_bytes += bytes;
+        let r = self.run_blend_restricted(ops, restrict);
+        self.layer_bytes -= bytes;
+        std::mem::swap(&mut *self.pixmap, &mut layer);
+        r?;
+        self.composite_layer(&layer, alpha, bm);
+        Ok(())
     }
 
     /// Draw the page's annotation appearance streams (§12.5.5).
@@ -1883,7 +2011,7 @@ impl<'a> Renderer<'a> {
             self.text_tm = Matrix::IDENTITY;
             self.text_tlm = Matrix::IDENTITY;
             self.path.reset();
-            self.resources = page_resources.clone();
+            self.swap_resources(page_resources.clone());
             if self.xobject_invocations >= self.limits.max_xobject_invocations {
                 return Err(Error::LimitExceeded {
                     limit: "max_xobject_invocations",
@@ -1931,11 +2059,13 @@ impl<'a> Renderer<'a> {
         Ok(())
     }
 
-    /// Paint an Image XObject (§8.9). Supports 8-bit
-    /// `/DeviceGray`/`/DeviceRGB` with no filter, `/FlateDecode`, or
-    /// `/DCTDecode` (baseline JPEG via `jpeg-decoder`). Image masks,
-    /// `/Mask`, `/SMask`, `/SMaskInData`, `/OC`, and non-8-bit or
-    /// non-device colour spaces are refused.
+    /// Paint an Image XObject (§8.9): `/BitsPerComponent` 1/2/4/8/16,
+    /// every colour space [`ColorSpace`] resolves, `/Decode`,
+    /// `/ImageMask` stencils in the fill colour, `/SMask` soft masks
+    /// (straight alpha; nearest-resampled when the mask size differs)
+    /// and stencil / colour-key `/Mask`. Refused: `/OC`,
+    /// `/SMaskInData ≠ 0`, `/Matte` (pre-blended soft masks) and
+    /// non-separable blend modes.
     fn do_image(&mut self, dict: &Dict, raw: &[u8], name: &[u8]) -> Result<(), Error> {
         self.paint_image(dict, raw, name)
     }
@@ -1948,32 +2078,45 @@ impl<'a> Renderer<'a> {
         // on an image needs a per-pixel colour-space conversion our
         // raster path doesn't perform — rather than silently draw it
         // as Normal (a mis-render) we refuse. Separable modes are
-        // applied per-channel in paint_decoded_image.
-        if !matches!(
-            self.gs.blend_mode,
-            tiny_skia::BlendMode::SourceOver
-                | tiny_skia::BlendMode::Multiply
-                | tiny_skia::BlendMode::Screen
-                | tiny_skia::BlendMode::Overlay
-                | tiny_skia::BlendMode::Darken
-                | tiny_skia::BlendMode::Lighten
-                | tiny_skia::BlendMode::ColorDodge
-                | tiny_skia::BlendMode::ColorBurn
-                | tiny_skia::BlendMode::HardLight
-                | tiny_skia::BlendMode::SoftLight
-                | tiny_skia::BlendMode::Difference
-                | tiny_skia::BlendMode::Exclusion
-        ) {
+        // applied per-channel in `composite_px`.
+        if !is_separable_blend(self.gs.blend_mode) {
             return Err(Error::Unsupported {
                 feature: "non-separable blend mode on image",
                 detail: "Hue/Saturation/Color/Luminosity blend on an image needs per-pixel colour conversion".into(),
             });
         }
-        // ---- required geometry & format --------------------------
+        if dict.contains_key(b"OC".as_slice()) {
+            return Err(Error::Unsupported {
+                feature: "optional content on an image XObject (/OC)",
+                detail: format!(
+                    "/OC on /{} — OC visibility evaluation is not implemented",
+                    show_name(name)
+                ),
+            });
+        }
+        // `SMaskInData 0` is the defined default; non-zero means the
+        // alpha lives inside JPX data we do not decode.
+        if let Some(v) = dict.get(b"SMaskInData".as_slice()) {
+            if v.as_i64().unwrap_or(0) != 0 {
+                return Err(Error::Unsupported {
+                    feature: "image attribute",
+                    detail: format!(
+                        "/SMaskInData on /{} (JPX-embedded alpha) is not implemented",
+                        show_name(name)
+                    ),
+                });
+            }
+        }
+        let src = self.decode_image_source(dict, raw, name, false)?;
+        self.composite_image(&src)
+    }
+
+    /// `/Width` × `/Height` with the image limits applied.
+    fn image_dims(&self, dict: &Dict, name: &[u8]) -> Result<(u32, u32), Error> {
         let width = dict
             .get(b"Width".as_slice())
             .and_then(|o| o.as_i64())
-            .ok_or_else(|| Error::Structure("image has no /Width".into()))?;
+            .ok_or_else(|| Error::Structure(format!("image /{} has no /Width", show_name(name))))?;
         let height = dict
             .get(b"Height".as_slice())
             .and_then(|o| o.as_i64())
@@ -2005,127 +2148,351 @@ impl<'a> Renderer<'a> {
                 max: self.limits.max_image_total_samples,
             });
         }
+        Ok((width as u32, height as u32))
+    }
 
-        // ---- optional attributes we must not silently ignore -------
-        if dict.get(b"ImageMask".as_slice()).and_then(|o| o.as_bool()) == Some(true) {
-            return Err(Error::Unsupported {
-                feature: "image mask (/ImageMask true)",
-                detail: "stencil-masked images are not implemented".into(),
-            });
-        }
-        for key in [&b"Mask"[..], &b"SMask"[..], &b"SMaskInData"[..], &b"OC"[..]] {
-            if let Some(v) = dict.get(key) {
-                // `SMaskInData 0` is the defined default — not a
-                // refusal; the others have no "inert" value.
-                if key == b"SMaskInData" && v.as_i64() == Some(0) {
-                    continue;
-                }
-                return Err(Error::Unsupported {
-                    feature: "image attribute",
-                    detail: format!(
-                        "/{} on /{} is not implemented",
-                        String::from_utf8_lossy(key),
-                        show_name(name)
-                    ),
-                });
-            }
+    /// Decode an image XObject into a straight-alpha RGBA8 buffer
+    /// (`w × h × 4`): samples unpacked per `/BitsPerComponent`,
+    /// `/Decode` applied, converted through the image colour space,
+    /// then `/SMask` or `/Mask` folded into the alpha channel. Image
+    /// masks (`/ImageMask true`) take their colour from the current
+    /// fill colour and their alpha from the stencil bits.
+    ///
+    /// `as_stencil` is set when decoding a `/Mask` stream: the stream
+    /// must be an image mask and its own `/Mask`/`/SMask` entries are
+    /// never consulted (so the recursion is one level deep at most).
+    fn decode_image_source(
+        &mut self,
+        dict: &Dict,
+        raw: &[u8],
+        name: &[u8],
+        as_stencil: bool,
+    ) -> Result<ImageSource, Error> {
+        let (width, height) = self.image_dims(dict, name)?;
+        let (w, h) = (width as usize, height as usize);
+        let is_mask = dict.get(b"ImageMask".as_slice()).and_then(|o| o.as_bool()) == Some(true);
+        if as_stencil && !is_mask {
+            return Err(Error::Structure(format!(
+                "/Mask stream /{} is not an image mask (/ImageMask true)",
+                show_name(name)
+            )));
         }
 
-        // ---- colour space & bit depth -----------------------------
-        let bpc = dict
+        // ---- bit depth & colour space ------------------------------
+        let bpc_entry = dict
             .get(b"BitsPerComponent".as_slice())
-            .and_then(|o| o.as_i64())
-            .ok_or_else(|| Error::Structure("image has no /BitsPerComponent".into()))?;
-        if bpc != 8 {
-            return Err(Error::Unsupported {
-                feature: "image BitsPerComponent",
-                detail: format!("{bpc} (only 8 supported)"),
-            });
-        }
-        let cs_obj = dict
-            .get(b"ColorSpace".as_slice())
-            .ok_or_else(|| Error::Structure("image has no /ColorSpace".into()))?;
-        let cs = self.resolve_image_colorspace(cs_obj)?;
-        let ncomps = match cs {
-            DeviceSpace::Gray => 1usize,
-            DeviceSpace::Rgb => 3usize,
-            DeviceSpace::Cmyk => {
-                return Err(Error::Unsupported {
-                    feature: "image colour space",
-                    detail: "DeviceCMYK images are not implemented".into(),
-                })
+            .and_then(|o| o.as_i64());
+        let bpc: u32 = if is_mask {
+            match bpc_entry {
+                None | Some(1) => 1,
+                Some(other) => {
+                    return Err(Error::Structure(format!(
+                        "image mask /{} has /BitsPerComponent {other} (must be 1)",
+                        show_name(name)
+                    )))
+                }
+            }
+        } else {
+            match bpc_entry {
+                Some(b @ (1 | 2 | 4 | 8 | 16)) => b as u32,
+                Some(other) => {
+                    return Err(Error::Unsupported {
+                        feature: "image BitsPerComponent",
+                        detail: format!("{other} on /{}", show_name(name)),
+                    })
+                }
+                None => {
+                    return Err(Error::Structure(format!(
+                        "image /{} has no /BitsPerComponent",
+                        show_name(name)
+                    )))
+                }
             }
         };
+        let cs: Option<Rc<ColorSpace>> =
+            if is_mask {
+                None
+            } else {
+                let cs_obj = dict.get(b"ColorSpace".as_slice()).ok_or_else(|| {
+                    Error::Structure(format!("image /{} has no /ColorSpace", show_name(name)))
+                })?;
+                let cs = ColorSpace::parse(self.doc, cs_obj, &self.resources, self.limits)
+                    .map_err(|e| match e {
+                        Error::Unsupported {
+                            feature: "pattern colour space",
+                            detail,
+                        } => Error::Unsupported {
+                            feature: "image colour space",
+                            detail,
+                        },
+                        other => other,
+                    })?;
+                self.note_approximation(&cs);
+                Some(Rc::new(cs))
+            };
+        let ncomps = cs.as_ref().map(|c| c.ncomps()).unwrap_or(1);
+        let default_decode = cs
+            .as_ref()
+            .map(|c| c.default_decode(bpc))
+            .unwrap_or_else(|| vec![(0.0, 1.0)]);
+        let decode = self.image_decode_array(dict, ncomps, &default_decode)?;
 
-        // ---- decode the sample data --------------------------------
-        // /Filter is applied to the raw stream bytes by the image
-        // pipeline; predictors ride along via /DecodeParms.
-        let decoded = self.decode_image_data(dict, raw)?;
-        let expected = (width as u64)
-            .checked_mul(height as u64)
-            .and_then(|s| s.checked_mul(ncomps as u64))
+        // ---- sample data -------------------------------------------
+        let filters = crate::filter::normalize_filters(dict.get(b"Filter".as_slice()))?;
+        let is_dct = filters
+            .last()
+            .map(|f| f == b"DCTDecode" || f == b"DCT")
+            .unwrap_or(false);
+        let data = self.decode_image_data(dict, raw)?;
+        if is_dct {
+            // JPEG always yields 8-bit interleaved samples; the dict's
+            // declared depth and component count must agree.
+            if bpc != 8 || is_mask {
+                return Err(Error::Structure(format!(
+                    "DCTDecode image /{} must be an 8-bit colour image",
+                    show_name(name)
+                )));
+            }
+            let got = data.len() / (w * h).max(1);
+            if got != ncomps || data.len() != w * h * ncomps {
+                return Err(Error::Structure(format!(
+                    "JPEG in /{} decodes to {got} components, /ColorSpace has {ncomps}",
+                    show_name(name)
+                )));
+            }
+        }
+        let row_bytes = (w as u64 * ncomps as u64 * bpc as u64 + 7) / 8;
+        let need = row_bytes * h as u64;
+        if (data.len() as u64) < need {
+            return Err(Error::Structure(format!(
+                "image /{} data length {} is shorter than {}x{}x{}@{}bpc = {}",
+                show_name(name),
+                data.len(),
+                w,
+                h,
+                ncomps,
+                bpc,
+                need
+            )));
+        }
+        let px_bytes = (w as u64 * h as u64)
+            .checked_mul(4)
             .ok_or(Error::LimitExceeded {
                 limit: "max_image_bytes",
                 max: self.limits.max_image_bytes,
             })?;
-        if expected > self.limits.max_image_bytes {
+        if px_bytes > self.limits.max_image_bytes {
             return Err(Error::LimitExceeded {
                 limit: "max_image_bytes",
                 max: self.limits.max_image_bytes,
             });
         }
-        if decoded.len() as u64 != expected {
-            return Err(Error::Structure(format!(
-                "image /{} data length {} does not match {}x{}x{} = {}",
-                show_name(name),
-                decoded.len(),
-                width,
-                height,
-                ncomps,
-                expected
-            )));
+        let mut rgba = vec![0u8; w * h * 4];
+
+        if is_mask {
+            // §8.9.6.2: with the default Decode [0 1] a sample of 0
+            // paints; Decode [1 0] flips that. Stencil `/Mask` streams
+            // share the rule (§8.9.6.4: 1 = masked out = not painted).
+            let paint_sample: u32 = if decode[0].0 >= 0.5 { 1 } else { 0 };
+            let fill = if as_stencil {
+                Color::BLACK
+            } else {
+                self.gs.fill_color
+            };
+            for y in 0..h {
+                let row_bit = y as u64 * row_bytes * 8;
+                for x in 0..w {
+                    let s = read_bits(&data, row_bit + x as u64, 1);
+                    let i = (y * w + x) * 4;
+                    rgba[i] = fill.r;
+                    rgba[i + 1] = fill.g;
+                    rgba[i + 2] = fill.b;
+                    rgba[i + 3] = if s == paint_sample { fill.a } else { 0 };
+                }
+            }
+            return Ok(ImageSource {
+                w: width,
+                h: height,
+                rgba,
+            });
         }
 
-        // ---- Decode array -----------------------------------------
-        let decode = self.image_decode_array(dict, ncomps)?;
+        let cs = cs.expect("colour image has a colour space");
+        // Colour-key masking (§8.9.6.4, `/Mask` array): ranges are in
+        // raw sample units, a pixel is masked when every component is
+        // inside its range.
+        let mask_entry = match dict.get(b"Mask".as_slice()) {
+            Some(o) => Some(self.doc.deref(o)?),
+            None => None,
+        };
+        let color_key: Option<Vec<(u32, u32)>> = match &mask_entry {
+            Some(Object::Array(a)) => {
+                if a.len() != ncomps * 2 {
+                    return Err(Error::Structure(format!(
+                        "/Mask colour-key array has {} entries, expected {}",
+                        a.len(),
+                        ncomps * 2
+                    )));
+                }
+                let mut ranges = Vec::with_capacity(ncomps);
+                for p in a.chunks_exact(2) {
+                    let lo = p[0].as_i64().ok_or_else(|| {
+                        Error::Structure("/Mask colour-key entries must be integers".into())
+                    })?;
+                    let hi = p[1].as_i64().ok_or_else(|| {
+                        Error::Structure("/Mask colour-key entries must be integers".into())
+                    })?;
+                    ranges.push((
+                        lo.clamp(0, u32::MAX as i64) as u32,
+                        hi.clamp(0, u32::MAX as i64) as u32,
+                    ));
+                }
+                Some(ranges)
+            }
+            _ => None,
+        };
+        let paints_nothing = cs.paints_nothing();
+        let mut conv = SampleConverter::new(cs.clone(), bpc, &decode)?;
+        let mut comps = vec![0u32; ncomps];
+        for y in 0..h {
+            let row_bit = y as u64 * row_bytes * 8;
+            for x in 0..w {
+                let base = row_bit + x as u64 * ncomps as u64 * bpc as u64;
+                for (c, slot) in comps.iter_mut().enumerate() {
+                    *slot = read_bits(&data, base + c as u64 * bpc as u64, bpc);
+                }
+                let rgb = conv.convert(&comps)?;
+                let i = (y * w + x) * 4;
+                rgba[i] = rgb[0];
+                rgba[i + 1] = rgb[1];
+                rgba[i + 2] = rgb[2];
+                let masked = color_key
+                    .as_ref()
+                    .map(|r| {
+                        comps
+                            .iter()
+                            .zip(r)
+                            .all(|(v, (lo, hi))| *v >= *lo && *v <= *hi)
+                    })
+                    .unwrap_or(false);
+                rgba[i + 3] = if masked || paints_nothing { 0 } else { 255 };
+            }
+        }
 
-        // ---- paint -------------------------------------------------
-        // The image fills the unit square of current user space; the
-        // CTM (plus page transform) maps it to the destination. We
-        // rasterize by inverse-mapping each covered pixel.
-        self.paint_decoded_image(&decoded, width as u32, height as u32, ncomps, &decode)
+        // ---- soft mask / stencil mask → alpha ----------------------
+        // §8.9.6.4: when both are present /SMask wins.
+        if let Some(sm) = dict.get(b"SMask".as_slice()) {
+            let alpha = self.decode_soft_mask(sm, w, h)?;
+            for (i, a) in alpha.iter().enumerate() {
+                rgba[i * 4 + 3] = mul255(rgba[i * 4 + 3], *a);
+            }
+        } else if let Some(Object::Stream {
+            dict: md,
+            data: mraw,
+        }) = &mask_entry
+        {
+            let (md, mraw) = (md.clone(), mraw.clone());
+            let stencil = self.decode_image_source(&md, &mraw, b"Mask", true)?;
+            let (sw, sh) = (stencil.w as usize, stencil.h as usize);
+            for y in 0..h {
+                let sy = y * sh / h;
+                for x in 0..w {
+                    let sx = x * sw / w;
+                    let a = stencil.rgba[(sy * sw + sx) * 4 + 3];
+                    let i = (y * w + x) * 4 + 3;
+                    rgba[i] = mul255(rgba[i], a);
+                }
+            }
+        }
+        Ok(ImageSource {
+            w: width,
+            h: height,
+            rgba,
+        })
     }
 
-    /// Resolve an image `/ColorSpace` — a name in the current
-    /// `/Resources /ColorSpace` or a direct device-space name.
-    fn resolve_image_colorspace(&self, obj: &Object) -> Result<DeviceSpace, Error> {
-        match obj {
-            Object::Name(n) => match n.as_slice() {
-                b"DeviceGray" | b"DefaultGray" => Ok(DeviceSpace::Gray),
-                b"DeviceRGB" | b"DefaultRGB" => Ok(DeviceSpace::Rgb),
-                b"DeviceCMYK" | b"DefaultCMYK" => Ok(DeviceSpace::Cmyk),
-                other => {
-                    // Try the current resources' /ColorSpace dict.
-                    let resolved =
-                        self.doc
-                            .resolve_resource(&self.resources, "ColorSpace", other)?;
-                    match resolved {
-                        Some(o) => self.resolve_image_colorspace(&o),
-                        None => Err(Error::Unsupported {
-                            feature: "image colour space",
-                            detail: format!(
-                                "/{} — only DeviceGray/DeviceRGB are supported",
-                                String::from_utf8_lossy(other)
-                            ),
-                        }),
-                    }
-                }
-            },
-            _ => Err(Error::Unsupported {
-                feature: "image colour space",
-                detail: "non-name colour spaces (arrays, ICCBased, …) are not implemented".into(),
-            }),
+    /// Decode an image `/SMask` (§11.6.5.3) into a `w × h` alpha
+    /// plane (0–255), nearest-resampled when the mask's own size
+    /// differs. The mask must be a one-component image; `/Matte`
+    /// (pre-blended colour) is refused rather than approximated.
+    fn decode_soft_mask(&mut self, obj: &Object, w: usize, h: usize) -> Result<Vec<u8>, Error> {
+        let sm = self.doc.deref(obj)?;
+        let Some((sd, sraw)) = sm.as_stream() else {
+            return Err(Error::Structure("image /SMask is not a stream".into()));
+        };
+        if let Some(st) = sd.get(b"Subtype".as_slice()).and_then(|o| o.as_name()) {
+            if st != b"Image" {
+                return Err(Error::Structure(
+                    "image /SMask is not an image XObject".into(),
+                ));
+            }
         }
+        if sd.contains_key(b"Matte".as_slice()) {
+            return Err(Error::Unsupported {
+                feature: "pre-blended soft-mask image (/Matte)",
+                detail: "un-premultiplying against /Matte is not implemented".into(),
+            });
+        }
+        let (sw, sh) = self.image_dims(sd, b"SMask")?;
+        let (sw, sh) = (sw as usize, sh as usize);
+        let bpc = match sd
+            .get(b"BitsPerComponent".as_slice())
+            .and_then(|o| o.as_i64())
+        {
+            Some(b @ (1 | 2 | 4 | 8 | 16)) => b as u32,
+            Some(other) => {
+                return Err(Error::Unsupported {
+                    feature: "image BitsPerComponent",
+                    detail: format!("{other} on /SMask"),
+                })
+            }
+            None => {
+                return Err(Error::Structure(
+                    "image /SMask has no /BitsPerComponent".into(),
+                ))
+            }
+        };
+        let cs_obj = sd
+            .get(b"ColorSpace".as_slice())
+            .ok_or_else(|| Error::Structure("image /SMask has no /ColorSpace".into()))?;
+        let cs = ColorSpace::parse(self.doc, cs_obj, &self.resources, self.limits)?;
+        if cs.ncomps() != 1 {
+            return Err(Error::Structure(format!(
+                "image /SMask colour space has {} components (must be DeviceGray)",
+                cs.ncomps()
+            )));
+        }
+        let decode = self.image_decode_array(sd, 1, &[(0.0, 1.0)])?;
+        let data = self.decode_image_data(sd, sraw)?;
+        let row_bytes = (sw as u64 * bpc as u64 + 7) / 8;
+        if (data.len() as u64) < row_bytes * sh as u64 {
+            return Err(Error::Structure(format!(
+                "image /SMask data length {} is shorter than {sw}x{sh}@{bpc}bpc",
+                data.len()
+            )));
+        }
+        let maxv = ((1u64 << bpc) - 1) as f64;
+        let (dmin, dmax) = decode[0];
+        let mut plane = vec![0u8; sw * sh];
+        for y in 0..sh {
+            let row_bit = y as u64 * row_bytes * 8;
+            for x in 0..sw {
+                let s = read_bits(&data, row_bit + x as u64 * bpc as u64, bpc) as f64;
+                let v = dmin + s / maxv * (dmax - dmin);
+                plane[y * sw + x] = to_u8(v);
+            }
+        }
+        if sw == w && sh == h {
+            return Ok(plane);
+        }
+        let mut out = vec![0u8; w * h];
+        for y in 0..h {
+            let sy = y * sh / h;
+            for x in 0..w {
+                out[y * w + x] = plane[sy * sw + x * sw / w];
+            }
+        }
+        Ok(out)
     }
 
     /// Decode the image's byte stream — applies `/Filter` chain in
@@ -2209,17 +2576,35 @@ impl<'a> Renderer<'a> {
         // the decoder allocates its frame buffers.
         dec.read_info()
             .map_err(|e| Error::Parse(format!("DCTDecode (JPEG) header: {e}")))?;
-        let pixels = dec
+        let mut pixels = dec
             .decode()
             .map_err(|e| Error::Parse(format!("DCTDecode (JPEG) failed: {e}")))?;
+        // `jpeg-decoder` hands back four-component data *inverted*
+        // (255 − value), as a viewer of Adobe "Inverted CMYK" JPEGs
+        // would want. PDF semantics are the stored sample values with
+        // the dictionary's `/Decode` applied (Photoshop-produced files
+        // carry `/Decode [1 0 1 0 1 0 1 0]` for exactly this reason),
+        // so undo the decoder's inversion.
+        if dec.info().map(|i| i.pixel_format) == Some(jpeg_decoder::PixelFormat::CMYK32) {
+            for b in &mut pixels {
+                *b = 255 - *b;
+            }
+        }
         Ok(pixels)
     }
 
-    /// The image's `/Decode` array (default [0 1] per component).
-    fn image_decode_array(&self, dict: &Dict, ncomps: usize) -> Result<Vec<(f64, f64)>, Error> {
+    /// The image's `/Decode` array; `default` is the colour space's
+    /// per-component default (§8.9.5.2 Table 90).
+    fn image_decode_array(
+        &self,
+        dict: &Dict,
+        ncomps: usize,
+        default: &[(f64, f64)],
+    ) -> Result<Vec<(f64, f64)>, Error> {
         match dict.get(b"Decode".as_slice()) {
-            None | Some(Object::Null) => Ok(vec![(0.0, 1.0); ncomps]),
+            None | Some(Object::Null) => Ok(default.to_vec()),
             Some(o) => {
+                let o = self.doc.deref(o)?;
                 let arr = o
                     .as_array()
                     .ok_or_else(|| Error::Structure("/Decode is not an array".into()))?;
@@ -2238,6 +2623,9 @@ impl<'a> Renderer<'a> {
                     let hi = pair[1].as_number().ok_or_else(|| {
                         Error::Structure("/Decode entries must be numbers".into())
                     })?;
+                    if !(lo.is_finite() && hi.is_finite()) {
+                        return Err(Error::Structure("/Decode entries must be finite".into()));
+                    }
                     out.push((lo, hi));
                 }
                 Ok(out)
@@ -2245,18 +2633,17 @@ impl<'a> Renderer<'a> {
         }
     }
 
-    /// Rasterize decoded image samples into the pixmap. The CTM maps
-    /// the unit square of user space to the destination; we invert it
-    /// to find each covered pixel's source sample (nearest-neighbour —
-    /// `/Interpolate` is ignored, which the spec explicitly allows).
-    fn paint_decoded_image(
-        &mut self,
-        data: &[u8],
-        w: u32,
-        h: u32,
-        ncomps: usize,
-        decode: &[(f64, f64)],
-    ) -> Result<(), Error> {
+    /// Composite a decoded image (straight RGBA) into the current
+    /// pixmap. The CTM maps the unit square of user space to the
+    /// destination; each covered device pixel is inverse-mapped to the
+    /// source. Magnified images sample nearest-neighbour (as before —
+    /// `/Interpolate` is a hint the spec lets us ignore); minified ones
+    /// average a `k × k` grid of sub-samples per device pixel so that
+    /// down-scaled photos and the image's own edges are area-weighted
+    /// rather than aliased. The clip mask's coverage, the image alpha
+    /// and `ca` multiply into one source alpha, then the pixel is
+    /// composited with the active blend mode via [`composite_px`].
+    fn composite_image(&mut self, src: &ImageSource) -> Result<(), Error> {
         let ts = self.paint_ts()?;
         let Some(inv) = ts.invert() else {
             return Err(Error::Unsupported {
@@ -2264,6 +2651,7 @@ impl<'a> Renderer<'a> {
                 detail: "CTM is not invertible".into(),
             });
         };
+        let (w, h) = (src.w as usize, src.h as usize);
         // Bounding box of the unit square under `ts`.
         let corners = [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)];
         let mut minx = f32::INFINITY;
@@ -2283,83 +2671,96 @@ impl<'a> Renderer<'a> {
         let y0 = miny.floor().max(0.0) as i32;
         let x1 = maxx.ceil().min(pw as f32) as i32;
         let y1 = maxy.ceil().min(ph as f32) as i32;
-
+        if x0 >= x1 || y0 >= y1 {
+            return Ok(());
+        }
+        // Device-pixel length of the image's unit edges → source
+        // samples per device pixel → sub-sample grid size.
+        let ex = (ts.sx * ts.sx + ts.ky * ts.ky).sqrt().max(1e-6);
+        let ey = (ts.kx * ts.kx + ts.sy * ts.sy).sqrt().max(1e-6);
+        let density = (w as f32 / ex).max(h as f32 / ey);
+        let k = if density.is_finite() {
+            (density.ceil() as usize).clamp(1, 4)
+        } else {
+            1
+        };
+        let kk = (k * k) as f64;
+        let fill_alpha = clamp01(self.gs.fill_alpha);
+        let bm = self.gs.blend_mode;
+        let clip = self.gs.clip.take();
         for py in y0..y1 {
             for px in x0..x1 {
-                // Pixel centre → user space → image space.
-                let mut up = tiny_skia::Point {
-                    x: px as f32 + 0.5,
-                    y: py as f32 + 0.5,
+                let coverage = match &clip {
+                    Some(mask) => {
+                        let idx = (py as u64 * mask.width() as u64 + px as u64) as usize;
+                        mask.data().get(idx).copied().unwrap_or(0) as f64 / 255.0
+                    }
+                    None => 1.0,
                 };
-                inv.map_point(&mut up);
-                // Image space (§8.9.4): sample (0,0) is the top-left
-                // and sits at user-space (0,1); user-space y runs
-                // *up*, image-space y runs *down* — hence 1 - y.
-                let sx = (up.x * w as f32) as i64;
-                let sy = ((1.0 - up.y) * h as f32) as i64;
-                if sx < 0 || sx >= w as i64 || sy < 0 || sy >= h as i64 {
+                if coverage <= 0.0 {
                     continue;
                 }
-                let si = ((sy as u64 * w as u64 + sx as u64) * ncomps as u64) as usize;
-                if si + ncomps > data.len() {
+                // Accumulate premultiplied sub-samples; sub-samples
+                // that fall outside the image count as transparent.
+                let (mut sr, mut sg, mut sb, mut sa) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+                for j in 0..k {
+                    for i in 0..k {
+                        let mut up = tiny_skia::Point {
+                            x: px as f32 + (i as f32 + 0.5) / k as f32,
+                            y: py as f32 + (j as f32 + 0.5) / k as f32,
+                        };
+                        inv.map_point(&mut up);
+                        // Image space (§8.9.4): sample (0,0) is the
+                        // top-left and sits at user-space (0,1).
+                        let sx = (up.x * w as f32).floor();
+                        let sy = ((1.0 - up.y) * h as f32).floor();
+                        if sx < 0.0 || sy < 0.0 || sx >= w as f32 || sy >= h as f32 {
+                            continue;
+                        }
+                        let si = (sy as usize * w + sx as usize) * 4;
+                        let a = src.rgba[si + 3] as f64 / 255.0;
+                        if a == 0.0 {
+                            continue;
+                        }
+                        sr += src.rgba[si] as f64 / 255.0 * a;
+                        sg += src.rgba[si + 1] as f64 / 255.0 * a;
+                        sb += src.rgba[si + 2] as f64 / 255.0 * a;
+                        sa += a;
+                    }
+                }
+                if sa <= 0.0 {
                     continue;
                 }
-                let comps = &data[si..si + ncomps];
-                let (r, g, b) = match ncomps {
-                    1 => {
-                        let v = apply_decode(comps[0], decode[0]);
-                        (v, v, v)
-                    }
-                    3 => (
-                        apply_decode(comps[0], decode[0]),
-                        apply_decode(comps[1], decode[1]),
-                        apply_decode(comps[2], decode[2]),
-                    ),
-                    _ => unreachable!("ncomps checked above"),
-                };
-                // Honour the current clip: only write where the clip
-                // mask allows.
-                if let Some(mask) = &self.gs.clip {
-                    let idx = (py as u64 * mask.width() as u64 + px as u64) as usize;
-                    if mask.data().get(idx).copied().unwrap_or(0) == 0 {
-                        continue;
-                    }
-                }
-                // §11.3.7.2: non-stroking alpha `ca` applies to image
-                // painting — composite source-over the destination
-                // when ca < 1. `BM` blend modes other than Normal apply
-                // their separable blend function per channel before the
-                // alpha composite; non-separable modes (Hue/Saturation/
-                // Color/Luminosity) need a colour-space conversion we
-                // don't do per-pixel — those are refused upstream.
+                let rgb = [sr / sa, sg / sa, sb / sa];
+                let alpha = (sa / kk) * fill_alpha * coverage;
                 let i = (py as u64 * pw as u64 + px as u64) as usize * 4;
                 let buf = self.pixmap.data_mut();
-                let sa = self.gs.fill_alpha;
-                // Source colour through the active blend function.
-                let (sr, sg, sb) = match self.gs.blend_mode {
-                    tiny_skia::BlendMode::SourceOver => (r, g, b),
-                    bm => (
-                        blend_mode_channel(bm, r, buf[i]),
-                        blend_mode_channel(bm, g, buf[i + 1]),
-                        blend_mode_channel(bm, b, buf[i + 2]),
-                    ),
-                };
-                if sa >= 1.0 {
-                    buf[i] = sr;
-                    buf[i + 1] = sg;
-                    buf[i + 2] = sb;
-                    buf[i + 3] = 255;
-                } else {
-                    let a = clamp01(sa);
-                    buf[i] = blend_chan(sr, buf[i], a);
-                    buf[i + 1] = blend_chan(sg, buf[i + 1], a);
-                    buf[i + 2] = blend_chan(sb, buf[i + 2], a);
-                    buf[i + 3] =
-                        (buf[i + 3] as u16 + ((255 - buf[i + 3] as u16) as f64 * a) as u16) as u8;
-                }
+                composite_px(&mut buf[i..i + 4], rgb, alpha, bm);
             }
         }
+        self.gs.clip = clip;
         Ok(())
+    }
+
+    /// Composite a finished transparency-group layer (premultiplied,
+    /// same size as the page pixmap) onto the current pixmap with the
+    /// group's constant alpha and blend mode (§11.4.7, §11.6.6).
+    fn composite_layer(&mut self, layer: &Pixmap, alpha: f64, bm: tiny_skia::BlendMode) {
+        let alpha = clamp01(alpha);
+        let src = layer.data();
+        let dst = self.pixmap.data_mut();
+        for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+            let la = s[3] as f64 / 255.0;
+            if la == 0.0 {
+                continue;
+            }
+            let rgb = [
+                s[0] as f64 / 255.0 / la,
+                s[1] as f64 / 255.0 / la,
+                s[2] as f64 / 255.0 / la,
+            ];
+            composite_px(d, rgb, la * alpha, bm);
+        }
     }
 
     // ----------------------------------------------------------------
@@ -2723,7 +3124,7 @@ impl<'a> Renderer<'a> {
                 }
                 self.gs_stack.push(self.gs.clone());
                 let saved_resources = match t3.resources() {
-                    Some(r) => std::mem::replace(&mut self.resources, r.clone()),
+                    Some(r) => self.swap_resources(r.clone()),
                     None => self.resources.clone(), // inherit caller's
                 };
                 self.gs.ctm = glyph_ctm;
@@ -2742,7 +3143,7 @@ impl<'a> Renderer<'a> {
                     r
                 })();
                 self.in_text = saved_in_text;
-                self.resources = saved_resources;
+                self.swap_resources(saved_resources);
                 self.gs = self.gs_stack.pop().expect("pushed above");
                 run_result?;
             }
@@ -2906,6 +3307,190 @@ enum PaintKind {
     FillStroke(FillRule),
 }
 
+/// How a form's transparency group is rendered (see `do_form`).
+#[derive(Clone, Copy)]
+enum GroupMode {
+    /// Not a transparency group.
+    None,
+    /// Painted directly on the current pixmap.
+    Inline { restrict: bool },
+    /// Painted into an offscreen layer, composited afterwards.
+    Layer { restrict: bool },
+}
+
+/// Colour components → RGBA8 through `cs`. A `/None` Separation
+/// yields alpha 0 — painting with it marks nothing, exactly as
+/// §8.6.6.4 requires.
+fn color_in(cs: &ColorSpace, comps: &[f64]) -> Result<Color, Error> {
+    let [r, g, b] = cs.to_rgb(comps)?;
+    let mut c = rgb_to_rgba(r, g, b);
+    if cs.paints_nothing() {
+        c.a = 0;
+    }
+    Ok(c)
+}
+
+/// A decoded image: straight (non-premultiplied) RGBA8, `w × h`.
+struct ImageSource {
+    w: u32,
+    h: u32,
+    rgba: Vec<u8>,
+}
+
+/// Read `bpc` bits (1/2/4/8/16) at bit offset `bit` (MSB first, as
+/// PDF packs samples — §8.9.3). Out-of-range reads yield 0; callers
+/// validate the data length up front.
+fn read_bits(data: &[u8], bit: u64, bpc: u32) -> u32 {
+    let byte = (bit / 8) as usize;
+    match bpc {
+        8 => data.get(byte).copied().unwrap_or(0) as u32,
+        16 => {
+            ((data.get(byte).copied().unwrap_or(0) as u32) << 8)
+                | data.get(byte + 1).copied().unwrap_or(0) as u32
+        }
+        1 | 2 | 4 => {
+            let b = data.get(byte).copied().unwrap_or(0) as u32;
+            let shift = 8 - bpc - (bit % 8) as u32;
+            (b >> shift) & ((1 << bpc) - 1)
+        }
+        _ => 0,
+    }
+}
+
+/// `a × b / 255` for two 0–255 alphas.
+fn mul255(a: u8, b: u8) -> u8 {
+    ((a as u32 * b as u32 + 127) / 255) as u8
+}
+
+/// Only the separable blend modes (§11.3.5.2) can be applied per
+/// channel by `composite_px`; the non-separable ones need a colour-
+/// space conversion we do not perform.
+fn is_separable_blend(bm: tiny_skia::BlendMode) -> bool {
+    use tiny_skia::BlendMode as B;
+    matches!(
+        bm,
+        B::SourceOver
+            | B::Multiply
+            | B::Screen
+            | B::Overlay
+            | B::Darken
+            | B::Lighten
+            | B::ColorDodge
+            | B::ColorBurn
+            | B::HardLight
+            | B::SoftLight
+            | B::Difference
+            | B::Exclusion
+    )
+}
+
+/// Composite one straight-colour source pixel (`rgb` 0..=1, alpha
+/// `a_s`) onto a premultiplied RGBA8 destination pixel with a
+/// separable blend mode — the basic compositing formula of §11.3.8
+/// including a non-opaque backdrop (transparency-group layers):
+///
+/// ```text
+/// αr = αb + αs − αb·αs
+/// Cr·αr = (1 − αs)·αb·Cb + αs·[(1 − αb)·Cs + αb·B(Cb, Cs)]
+/// ```
+fn composite_px(dst: &mut [u8], rgb: [f64; 3], a_s: f64, bm: tiny_skia::BlendMode) {
+    let a_s = clamp01(a_s);
+    if a_s == 0.0 {
+        return;
+    }
+    let ab = dst[3] as f64 / 255.0;
+    let ar = ab + a_s - ab * a_s;
+    for ch in 0..3 {
+        let cb = if ab > 0.0 {
+            (dst[ch] as f64 / 255.0 / ab).min(1.0)
+        } else {
+            0.0
+        };
+        let cs = clamp01(rgb[ch]);
+        let blended = if bm == tiny_skia::BlendMode::SourceOver {
+            cs
+        } else {
+            blend_mode_channel(bm, to_u8(cs), to_u8(cb)) as f64 / 255.0
+        };
+        let pr = (1.0 - a_s) * ab * cb + a_s * ((1.0 - ab) * cs + ab * blended);
+        dst[ch] = to_u8(pr);
+    }
+    dst[3] = to_u8(ar);
+}
+
+/// Converts raw integer samples of one pixel to sRGB8 through a
+/// colour space, with `/Decode` applied. One-component spaces at ≤ 8
+/// bits use a full lookup table; everything else goes through a
+/// bounded per-image cache keyed by the raw sample tuple (tint
+/// transforms and ICC curves are far too slow to run per pixel).
+struct SampleConverter {
+    cs: Rc<ColorSpace>,
+    maxv: f64,
+    decode: Vec<(f64, f64)>,
+    lut: Option<Vec<[u8; 3]>>,
+    direct_rgb8: bool,
+    cache: HashMap<Vec<u32>, [u8; 3]>,
+    vals: Vec<f64>,
+}
+
+impl SampleConverter {
+    const CACHE_MAX: usize = 1 << 16;
+
+    fn new(cs: Rc<ColorSpace>, bpc: u32, decode: &[(f64, f64)]) -> Result<Self, Error> {
+        let maxv = ((1u64 << bpc) - 1) as f64;
+        let ncomps = cs.ncomps();
+        let mut conv = SampleConverter {
+            cs,
+            maxv,
+            decode: decode.to_vec(),
+            lut: None,
+            direct_rgb8: false,
+            cache: HashMap::new(),
+            vals: vec![0.0; ncomps],
+        };
+        if ncomps == 1 && bpc <= 8 {
+            let n = 1usize << bpc;
+            let mut lut = Vec::with_capacity(n);
+            for v in 0..n {
+                lut.push(conv.compute(&[v as u32])?);
+            }
+            conv.lut = Some(lut);
+        } else if matches!(&*conv.cs, ColorSpace::DeviceRGB)
+            && bpc == 8
+            && decode == [(0.0, 1.0); 3]
+        {
+            conv.direct_rgb8 = true;
+        }
+        Ok(conv)
+    }
+
+    fn compute(&mut self, comps: &[u32]) -> Result<[u8; 3], Error> {
+        for (i, c) in comps.iter().enumerate() {
+            let (lo, hi) = self.decode[i];
+            self.vals[i] = lo + (*c as f64 / self.maxv) * (hi - lo);
+        }
+        let rgb = self.cs.to_rgb(&self.vals)?;
+        Ok([to_u8(rgb[0]), to_u8(rgb[1]), to_u8(rgb[2])])
+    }
+
+    fn convert(&mut self, comps: &[u32]) -> Result<[u8; 3], Error> {
+        if let Some(l) = &self.lut {
+            return Ok(l[(comps[0] as usize).min(l.len() - 1)]);
+        }
+        if self.direct_rgb8 {
+            return Ok([comps[0] as u8, comps[1] as u8, comps[2] as u8]);
+        }
+        if let Some(v) = self.cache.get(comps) {
+            return Ok(*v);
+        }
+        let v = self.compute(comps)?;
+        if self.cache.len() < Self::CACHE_MAX {
+            self.cache.insert(comps.to_vec(), v);
+        }
+        Ok(v)
+    }
+}
+
 // --------------------------------------------------------------------
 // Colour helpers (device spaces → RGBA8)
 // --------------------------------------------------------------------
@@ -2921,16 +3506,6 @@ fn to_u8(v: f64) -> u8 {
     (clamp01(v) * 255.0).round() as u8
 }
 
-fn gray_to_rgba(g: f64) -> Color {
-    let v = to_u8(g);
-    Color {
-        r: v,
-        g: v,
-        b: v,
-        a: 255,
-    }
-}
-
 fn rgb_to_rgba(r: f64, g: f64, b: f64) -> Color {
     Color {
         r: to_u8(r),
@@ -2942,27 +3517,8 @@ fn rgb_to_rgba(r: f64, g: f64, b: f64) -> Color {
 
 /// DeviceCMYK → RGBA, naive subtractive form `1 − min(1, c + k)`
 /// (§10.4.3 note). Not colour-managed; ICC is out of M3 scope.
-fn cmyk_to_rgba(c: f64, m: f64, y: f64, k: f64) -> Color {
-    let c = clamp01(c);
-    let m = clamp01(m);
-    let y = clamp01(y);
-    let k = clamp01(k);
-    rgb_to_rgba(
-        1.0 - (c + k).min(1.0),
-        1.0 - (m + k).min(1.0),
-        1.0 - (y + k).min(1.0),
-    )
-}
-
 fn ts_color(c: Color) -> tiny_skia::Color {
     tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a)
-}
-
-/// Source-over blend of a single channel: `src` over `dst` at
-/// coverage `a` (0..=1). Used by image painting where the `ca`
-/// constant alpha modulates an opaque source pixel.
-fn blend_chan(src: u8, dst: u8, a: f64) -> u8 {
-    (src as f64 * a + dst as f64 * (1.0 - a)).round() as u8
 }
 
 /// One separable blend-mode function `B(cb, cs)` (§11.3.5) evaluated
@@ -3110,13 +3666,6 @@ fn matrix_from_array(o: &Object) -> Option<Matrix> {
     }
     let v: Vec<f64> = arr.iter().map(|x| x.as_number()).collect::<Option<_>>()?;
     Some(Matrix::new(v[0], v[1], v[2], v[3], v[4], v[5]))
-}
-
-/// Apply a `/Decode` range to an 8-bit sample. `x` in [0,255] maps
-/// linearly onto [dmin, dmax], clamped to [0,1] for output.
-fn apply_decode(x: u8, (dmin, dmax): (f64, f64)) -> u8 {
-    let v = dmin + (x as f64 / 255.0) * (dmax - dmin);
-    (clamp01(v) * 255.0).round() as u8
 }
 
 /// PDF line width 0 is a hairline — "as thin as can be rendered"

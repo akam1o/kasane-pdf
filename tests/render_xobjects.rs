@@ -113,8 +113,9 @@ fn form_group_opaque_normal_runs_inline() {
 }
 
 #[test]
-fn form_group_under_alpha_is_refused() {
-    // The same group under ca < 1 needs real group compositing.
+fn form_group_under_alpha_composites_as_layer() {
+    // The same group under ca 0.5 is painted into an offscreen layer
+    // and composited once: the black square lands at 50% over white.
     let pdf = {
         let objs: Vec<Vec<u8>> = vec![
             b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
@@ -148,8 +149,14 @@ fn form_group_under_alpha_is_refused() {
         out
     };
     let doc = Document::from_bytes(&pdf).unwrap();
-    let err = render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+    let r = render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap();
+    let (r_, g, b, a) = pixel(&r, 5, r.height - 5);
+    assert!(
+        (126..=129).contains(&r_) && r_ == g && g == b && a == 255,
+        "{:?}",
+        (r_, g, b, a)
+    );
+    assert_eq!(pixel(&r, 50, 50), (255, 255, 255, 255));
 }
 
 #[test]
@@ -249,15 +256,21 @@ fn image_decode_inverts() {
 }
 
 #[test]
-fn image_mask_refused() {
-    let err = render("xobject_image_mask.pdf").unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+fn image_mask_all_ones_paints_nothing() {
+    // 8×1 stencil, every bit 1, default Decode → sample 1 = unpainted
+    // (§8.9.6.2). Drawn into the unit square at the origin: that pixel
+    // must stay white.
+    let r = render("xobject_image_mask.pdf").unwrap();
+    assert_eq!(pixel(&r, 0, r.height - 1), (255, 255, 255, 255));
 }
 
 #[test]
-fn image_smask_refused() {
-    let err = render("xobject_image_smask.pdf").unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+fn image_smask_opaque_mask_paints_image() {
+    // 2×1 RGB (red, green) with an all-0xFF /SMask: fully opaque. The
+    // whole image lands in one device pixel, which area-averages the
+    // two samples (minification) — half red, half green, alpha 255.
+    let r = render("xobject_image_smask.pdf").unwrap();
+    assert_eq!(pixel(&r, 0, r.height - 1), (128, 128, 0, 255));
 }
 
 #[test]
