@@ -46,7 +46,11 @@ pub struct FeatureStat {
 /// (e.g. all `*.font.*` font-family blockers → "embedded-fonts").
 pub fn feature_bucket(cause: &str) -> &'static str {
     // Buckets chosen to match natural implementation units.
-    if cause.contains("extgstate") {
+    if cause.contains("smask") || cause.contains("image.smask") || cause.contains("image.mask") {
+        "Image masks / SMask"
+    } else if cause.contains("blendmode") || cause.contains("transfer")
+        || cause.contains("extgstate")
+    {
         "ExtGState (gs)"
     } else if cause.contains("shading") {
         "Shading (sh)"
@@ -68,8 +72,6 @@ pub fn feature_bucket(cause: &str) -> &'static str {
         "Optional Content (OC/OCMD)"
     } else if cause.contains("colorspace") {
         "Non-device colour spaces"
-    } else if cause.contains("image.smask") || cause.contains("image.mask") {
-        "Image masks / SMask"
     } else if cause.contains("image.dct") || cause.contains("image.") {
         "Image filters/decode"
     } else if cause.contains("filter.jpx") {
@@ -109,7 +111,13 @@ impl Default for PrioritiesConfig {
         let mut e = BTreeMap::new();
         // Rough person-day estimates — order-of-magnitude, flagged as
         // guesses in the report. Adjust in the config, not the code.
-        e.insert("ExtGState (gs)".into(), 8);
+        //
+        // ExtGState: the basic set + alpha + separable blend modes are
+        // now IMPLEMENTED (render.rs `apply_extgstate`). What remains is
+        // the transparency-group / soft-mask layer — genuinely harder
+        // (nested group compositing), so the residual estimate is
+        // higher than the original 8pd, not lower.
+        e.insert("ExtGState (gs)".into(), 18);
         e.insert("Shading (sh)".into(), 15);
         e.insert("Pattern colours".into(), 12);
         e.insert("Type1 fonts".into(), 12);
@@ -231,6 +239,87 @@ pub struct StageCounts {
     pub pass_rate_attempted: f64,
     /// success rate over the *whole corpus* (0..1).
     pub pass_rate_all: f64,
+}
+
+/// Compatibility-vs-Robustness split.
+///
+/// Each file's `expect` tag (from the manifest) decides which rate it
+/// feeds. `pass` files are *well-formed* documents the engine should
+/// handle → the Compatibility rate (per-stage pass / count).
+/// `reject` files are adversarial/malformed/encrypted — the Robustness
+/// score counts a file OK when the engine *refuses it safely* (any
+/// non-crash non-timeout result; a clean `Unsupported`/`Error` is a
+/// pass, but actually rendering a hostile file to completion is also
+/// acceptable behaviour — only CRASH/TIMEOUT fail). `any` files are
+/// excluded from both rates.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SplitSummary {
+    /// well-formed files (expect=pass): stage pass-rates.
+    pub compat_total: usize,
+    pub compat_parse_pass: usize,
+    pub compat_render_pass: usize,
+    pub compat_text_pass: usize,
+    pub compat_rewrite_pass: usize,
+    /// adversarial files (expect=reject).
+    pub robust_total: usize,
+    /// safely handled (no crash/hang) — the robustness criterion.
+    pub robust_safe: usize,
+    /// rejected with a classified error (not just crashed on).
+    pub robust_refused: usize,
+    /// crash/timeout on adversarial input — robustness failures.
+    pub robust_failures: Vec<String>,
+    /// expect=any files, excluded from both rates.
+    pub other_total: usize,
+}
+
+pub fn split_summary(files: &[FileResult]) -> SplitSummary {
+    let mut s = SplitSummary {
+        compat_total: 0,
+        compat_parse_pass: 0,
+        compat_render_pass: 0,
+        compat_text_pass: 0,
+        compat_rewrite_pass: 0,
+        robust_total: 0,
+        robust_safe: 0,
+        robust_refused: 0,
+        robust_failures: Vec::new(),
+        other_total: 0,
+    };
+    for f in files {
+        match f.expect.as_str() {
+            "pass" => {
+                s.compat_total += 1;
+                if f.parse.class == Class::Pass {
+                    s.compat_parse_pass += 1;
+                }
+                if f.render.class == Class::Pass {
+                    s.compat_render_pass += 1;
+                }
+                if f.text.class == Class::Pass {
+                    s.compat_text_pass += 1;
+                }
+                if f.rewrite.class == Class::Pass {
+                    s.compat_rewrite_pass += 1;
+                }
+            }
+            "reject" => {
+                s.robust_total += 1;
+                match f.verdict {
+                    Class::Crash | Class::Timeout => {
+                        s.robust_failures.push(f.id.clone());
+                    }
+                    _ => {
+                        s.robust_safe += 1;
+                        if f.verdict == Class::Error || f.verdict == Class::Unsupported {
+                            s.robust_refused += 1;
+                        }
+                    }
+                }
+            }
+            _ => s.other_total += 1,
+        }
+    }
+    s
 }
 
 /// Per-category pass rates (verdict + per-stage).
@@ -369,6 +458,7 @@ mod tests {
             rewrite: StageResult::pass(0),
             causes: causes.iter().map(|s| s.to_string()).collect(),
             cause_pages: causes.iter().map(|s| (s.to_string(), 1)).collect(),
+            expect: "pass".into(),
             metrics: Metrics {
                 total_ms: 0,
                 max_rss_bytes: 0,
@@ -446,6 +536,28 @@ mod tests {
         // effort = 2 pd, unblocked = 1 → score 0.5
         assert_eq!(uu.effort, Some(2));
         assert_eq!(uu.score, Some(0.5));
+    }
+
+    #[test]
+    fn split_summary_separates_compat_and_robust() {
+        let mut compat_ok = file("ok", &[]);
+        compat_ok.expect = "pass".into();
+        let mut hostile_safe = file("hostile", &[]);
+        hostile_safe.expect = "reject".into();
+        hostile_safe.verdict = Class::Error; // refused safely
+        let mut hostile_crash = file("boom", &[]);
+        hostile_crash.expect = "reject".into();
+        hostile_crash.verdict = Class::Crash;
+        let mut other = file("edge", &[]);
+        other.expect = "any".into();
+
+        let s = split_summary(&[compat_ok, hostile_safe, hostile_crash, other]);
+        assert_eq!(s.compat_total, 1);
+        assert_eq!(s.compat_parse_pass, 1);
+        assert_eq!(s.robust_total, 2);
+        assert_eq!(s.robust_safe, 1);
+        assert_eq!(s.robust_failures, vec!["boom"]);
+        assert_eq!(s.other_total, 1);
     }
 
     #[test]

@@ -8,6 +8,7 @@ files:
   category: images
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/images.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: cmykjpeg
@@ -15,6 +16,7 @@ files:
   category: images
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/cmykjpeg.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: scan-bad
@@ -22,6 +24,7 @@ files:
   category: images
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/scan-bad.pdf
   license: Apache-2.0
+  expect: reject
   pages: 0
   notes: ''
 - id: xobject-image
@@ -29,6 +32,7 @@ files:
   category: images
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/xobject-image.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: large_jpeg_downscale
@@ -36,6 +40,7 @@ files:
   category: images
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/large_jpeg_downscale.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: images_1bit_grayscale
@@ -43,6 +48,7 @@ files:
   category: images
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/images_1bit_grayscale.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: bug_jpx
@@ -50,6 +56,7 @@ files:
   category: images
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/bug_jpx.pdf
   license: Apache-2.0
+  expect: any
   pages: 0
   notes: ''
 - id: jbig2_file_header
@@ -57,6 +64,7 @@ files:
   category: images
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/jbig2_file_header.pdf
   license: Apache-2.0
+  expect: any
   pages: 0
   notes: ''
 - id: image-rotated-black-white-ratio
@@ -64,6 +72,7 @@ files:
   category: images
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/image-rotated-black-white-ratio.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: alphatrans
@@ -71,6 +80,7 @@ files:
   category: images
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/alphatrans.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: smaskdim
@@ -78,6 +88,7 @@ files:
   category: images
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/smaskdim.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: 90ms_rksj_h_sample
@@ -85,6 +96,7 @@ files:
   category: japanese
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/90ms_rksj_h_sample.pdf
   license: Apache-2.0
+  expect: any
   pages: 0
   notes: ''
 - id: arial_unicode_ab_cidfont
@@ -92,6 +104,7 @@ files:
   category: japanese
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/arial_unicode_ab_cidfont.pdf
   license: Apache-2.0
+  expect: any
   pages: 0
   notes: ''
 - id: arial_unicode_en_cidfont
@@ -99,6 +112,7 @@ files:
   category: japanese
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/arial_unicode_en_cidfont.pdf
   license: Apache-2.0
+  expect: any
   pages: 0
   notes: ''
 - id: cid_cff
@@ -106,6 +120,7 @@ files:
   category: japanese
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/cid_cff.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: noembed-eucjp
@@ -113,6 +128,7 @@ files:
   category: japanese
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/noembed-eucjp.pdf
   license: Apache-2.0
+  expect: any
   pages: 0
   notes: ''
 - id: vertical
@@ -120,6 +136,7 @@ files:
   category: japanese
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/vertical.pdf
   license: Apache-2.0
+  expect: any
   pages: 0
   notes: ''
 - id: simfang-variant
@@ -127,6 +144,7 @@ files:
   category: japanese
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/SimFang-variant.pdf
   license: Apache-2.0
+  expect: any
   pages: 0
   notes: ''
 - id: xiaobiaosong
@@ -134,6 +152,7 @@ files:
   category: japanese
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/XiaoBiaoSong.pdf
   license: Apache-2.0
+  expect: any
   pages: 0
   notes: ''
 - id: axial_shading_many_inputs
@@ -141,6 +160,7 @@ files:
   category: graphics
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/axial_shading_many_inputs.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: blendmode
@@ -148,6 +168,7 @@ files:
   category: graphics
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/blendmode.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: function_based_shading
@@ -155,6 +176,7 @@ files:
   category: graphics
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/function_based_shading.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: issue7847_radial
@@ -162,6 +184,7 @@ files:
   category: graphics
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/issue7847_radial.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: radial_gradients
@@ -169,6 +192,7 @@ files:
   category: graphics
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/radial_gradients.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: shading_extend
@@ -176,6 +200,7 @@ files:
   category: graphics
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/shading_extend.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: tiling-pattern-box
@@ -183,6 +208,7 @@ files:
   category: graphics
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/tiling-pattern-box.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: tiling_patterns_variations
@@ -190,6 +216,7 @@ files:
   category: graphics
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/tiling_patterns_variations.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: transparency_group
@@ -197,6 +224,7 @@ files:
   category: graphics
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/transparency_group.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: transparent
@@ -204,6 +232,7 @@ files:
   category: graphics
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/transparent.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: colorspace_atan
@@ -211,6 +240,7 @@ files:
   category: graphics
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/colorspace_atan.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: pattern_text_embedded_font
@@ -218,6 +248,7 @@ files:
   category: graphics
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/pattern_text_embedded_font.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: annotation-highlight
@@ -225,6 +256,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/annotation-highlight.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: annotation-square-circle
@@ -232,6 +264,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/annotation-square-circle.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: annotation-stamp
@@ -239,6 +272,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/annotation-stamp.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: annotation-text-widget
@@ -246,6 +280,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/annotation-text-widget.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: annotation-fileattachment
@@ -253,6 +288,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/annotation-fileattachment.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: annotation-freetext
@@ -260,6 +296,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/annotation-freetext.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: annotation-ink-without-appearance
@@ -267,6 +304,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/annotation-ink-without-appearance.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: annotation-line
@@ -274,6 +312,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/annotation-line.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: annotation-polyline-polygon
@@ -281,6 +320,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/annotation-polyline-polygon.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: annotation-squiggly
@@ -288,6 +328,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/annotation-squiggly.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: annotation-strikeout
@@ -295,6 +336,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/annotation-strikeout.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: annotation-underline
@@ -302,6 +344,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/annotation-underline.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: annotation-caret-ink
@@ -309,6 +352,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/annotation-caret-ink.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: annotation-border-styles
@@ -316,6 +360,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/annotation-border-styles.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: annotation-button-widget
@@ -323,6 +368,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/annotation-button-widget.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: annotation-choice-widget
@@ -330,6 +376,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/annotation-choice-widget.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: extract_link
@@ -337,6 +384,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/extract_link.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: highlights
@@ -344,6 +392,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/highlights.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: inks
@@ -351,6 +400,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/inks.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: stamps
@@ -358,6 +408,7 @@ files:
   category: annotations
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/stamps.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: empty_protected
@@ -365,6 +416,7 @@ files:
   category: encrypted
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/empty_protected.pdf
   license: Apache-2.0
+  expect: reject
   pages: 0
   notes: ''
 - id: encrypted-attachment
@@ -372,6 +424,7 @@ files:
   category: encrypted
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/encrypted-attachment.pdf
   license: Apache-2.0
+  expect: reject
   pages: 0
   notes: ''
 - id: print_protection
@@ -379,6 +432,7 @@ files:
   category: encrypted
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/print_protection.pdf
   license: Apache-2.0
+  expect: reject
   pages: 0
   notes: ''
 - id: pages-tree-refs
@@ -386,6 +440,7 @@ files:
   category: incremental
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/Pages-tree-refs.pdf
   license: Apache-2.0
+  expect: reject
   pages: 0
   notes: ''
 - id: xref_command_missing
@@ -393,6 +448,7 @@ files:
   category: incremental
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/xref_command_missing.pdf
   license: Apache-2.0
+  expect: reject
   pages: 0
   notes: ''
 - id: basicapi
@@ -400,6 +456,7 @@ files:
   category: misc
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/basicapi.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: tamreview
@@ -407,6 +464,7 @@ files:
   category: misc
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/TAMReview.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: s2
@@ -414,6 +472,7 @@ files:
   category: misc
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/S2.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: test-plusminus
@@ -421,6 +480,7 @@ files:
   category: misc
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/Test-plusminus.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: mixedfonts
@@ -428,6 +488,7 @@ files:
   category: misc
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/mixedfonts.pdf
   license: Apache-2.0
+  expect: any
   pages: 0
   notes: ''
 - id: standard_fonts
@@ -435,6 +496,7 @@ files:
   category: misc
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/standard_fonts.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: simpletype3font
@@ -442,6 +504,7 @@ files:
   category: misc
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/simpletype3font.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: type3wordspacing
@@ -449,6 +512,7 @@ files:
   category: misc
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/Type3WordSpacing.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: truetype_without_cmap
@@ -456,6 +520,7 @@ files:
   category: misc
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/TrueType_without_cmap.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: complex_ttf_font
@@ -463,6 +528,7 @@ files:
   category: misc
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/complex_ttf_font.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: font_ascent_descent
@@ -470,6 +536,7 @@ files:
   category: misc
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/font_ascent_descent.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: embedded_font
@@ -477,6 +544,7 @@ files:
   category: misc
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/Embedded_font.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: text_rise_eol_bug
@@ -484,6 +552,7 @@ files:
   category: misc
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/text_rise_eol_bug.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: helloworld-bad
@@ -491,6 +560,7 @@ files:
   category: malformed
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/helloworld-bad.pdf
   license: Apache-2.0
+  expect: reject
   pages: 0
   notes: ''
 - id: indexedcs_negative_and_high
@@ -498,6 +568,7 @@ files:
   category: malformed
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/IndexedCS_negative_and_high.pdf
   license: Apache-2.0
+  expect: any
   pages: 0
   notes: ''
 - id: ghostscript-698804-1-fuzzed
@@ -505,6 +576,7 @@ files:
   category: malformed
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/GHOSTSCRIPT-698804-1-fuzzed.pdf
   license: Apache-2.0
+  expect: reject
   pages: 0
   notes: ''
 - id: pdfbox-4352-0
@@ -512,6 +584,7 @@ files:
   category: malformed
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/PDFBOX-4352-0.pdf
   license: Apache-2.0
+  expect: reject
   pages: 0
   notes: ''
 - id: redhat-1531897-0
@@ -519,6 +592,7 @@ files:
   category: malformed
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/REDHAT-1531897-0.pdf
   license: Apache-2.0
+  expect: reject
   pages: 0
   notes: ''
 - id: bad-pagelabels
@@ -526,6 +600,7 @@ files:
   category: malformed
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/bad-PageLabels.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: boundingbox_invalid
@@ -533,6 +608,7 @@ files:
   category: malformed
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/boundingBox_invalid.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
 - id: cidfont_cmap_overflow
@@ -540,6 +616,7 @@ files:
   category: malformed
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/cidfont_cmap_overflow.pdf
   license: Apache-2.0
+  expect: any
   pages: 0
   notes: ''
 - id: operator_list_cycle
@@ -547,6 +624,7 @@ files:
   category: malformed
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/operator_list_cycle.pdf
   license: Apache-2.0
+  expect: reject
   pages: 0
   notes: ''
 - id: poppler-395-0-fuzzed
@@ -554,6 +632,7 @@ files:
   category: malformed
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/poppler-395-0-fuzzed.pdf
   license: Apache-2.0
+  expect: reject
   pages: 0
   notes: ''
 - id: poppler-90-0-fuzzed
@@ -561,6 +640,7 @@ files:
   category: malformed
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/poppler-90-0-fuzzed.pdf
   license: Apache-2.0
+  expect: reject
   pages: 0
   notes: ''
 - id: contentstreamnocycletype3insidetype3
@@ -568,6 +648,7 @@ files:
   category: malformed
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/ContentStreamNoCycleType3insideType3.pdf
   license: Apache-2.0
+  expect: any
   pages: 0
   notes: ''
 - id: verapdf_test_suite_6-2-3-2-t01-pass-a
@@ -575,6 +656,7 @@ files:
   category: graphics
   source: https://github.com/veraPDF/veraPDF-corpus
   license: GPLv3+MPL (internal)
+  expect: pass
   pages: 0
   notes: ''
 - id: verapdf_test_suite_6-2-5-t02-fail-a
@@ -582,6 +664,7 @@ files:
   category: graphics
   source: https://github.com/veraPDF/veraPDF-corpus
   license: GPLv3+MPL (internal)
+  expect: pass
   pages: 0
   notes: ''
 - id: verapdf_test_suite_6-2-5-t02-pass-a
@@ -589,6 +672,7 @@ files:
   category: graphics
   source: https://github.com/veraPDF/veraPDF-corpus
   license: GPLv3+MPL (internal)
+  expect: pass
   pages: 0
   notes: ''
 - id: verapdf_test_suite_6-2-5-t03-fail-a
@@ -596,6 +680,7 @@ files:
   category: graphics
   source: https://github.com/veraPDF/veraPDF-corpus
   license: GPLv3+MPL (internal)
+  expect: pass
   pages: 0
   notes: ''
 - id: verapdf_test_suite_6-2-5-t03-pass-a
@@ -603,6 +688,7 @@ files:
   category: graphics
   source: https://github.com/veraPDF/veraPDF-corpus
   license: GPLv3+MPL (internal)
+  expect: pass
   pages: 0
   notes: ''
 - id: verapdf_test_suite_6-2-8-t02-pass-a
@@ -610,6 +696,7 @@ files:
   category: graphics
   source: https://github.com/veraPDF/veraPDF-corpus
   license: GPLv3+MPL (internal)
+  expect: pass
   pages: 0
   notes: ''
 - id: verapdf_test_suite_6-2-8-t03-fail-a
@@ -617,6 +704,7 @@ files:
   category: graphics
   source: https://github.com/veraPDF/veraPDF-corpus
   license: GPLv3+MPL (internal)
+  expect: pass
   pages: 0
   notes: ''
 - id: verapdf_test_suite_6-4-t01-pass-a
@@ -624,6 +712,7 @@ files:
   category: graphics
   source: https://github.com/veraPDF/veraPDF-corpus
   license: GPLv3+MPL (internal)
+  expect: pass
   pages: 0
   notes: ''
 - id: verapdf_test_suite_6-4-t02-fail-b
@@ -631,6 +720,7 @@ files:
   category: graphics
   source: https://github.com/veraPDF/veraPDF-corpus
   license: GPLv3+MPL (internal)
+  expect: pass
   pages: 0
   notes: ''
 - id: verapdf_test_suite_6-4-t03-pass-a
@@ -638,6 +728,7 @@ files:
   category: graphics
   source: https://github.com/veraPDF/veraPDF-corpus
   license: GPLv3+MPL (internal)
+  expect: pass
   pages: 0
   notes: ''
 - id: verapdf_test_suite_6-4-t03-pass-b
@@ -645,6 +736,7 @@ files:
   category: graphics
   source: https://github.com/veraPDF/veraPDF-corpus
   license: GPLv3+MPL (internal)
+  expect: pass
   pages: 0
   notes: ''
 - id: verapdf_test_suite_6-4-t04-fail-a
@@ -652,6 +744,7 @@ files:
   category: graphics
   source: https://github.com/veraPDF/veraPDF-corpus
   license: GPLv3+MPL (internal)
+  expect: pass
   pages: 0
   notes: ''
 - id: verapdf_test_suite_6-9-t01-fail-a
@@ -659,6 +752,7 @@ files:
   category: graphics
   source: https://github.com/veraPDF/veraPDF-corpus
   license: GPLv3+MPL (internal)
+  expect: pass
   pages: 0
   notes: ''
 - id: arxiv-2204.06125
@@ -666,6 +760,7 @@ files:
   category: latex
   source: https://arxiv.org/pdf/2204.06125
   license: arXiv (author-submitted)
+  expect: pass
   pages: 0
   notes: ''
 - id: arxiv-2303.18223
@@ -673,6 +768,7 @@ files:
   category: latex
   source: https://arxiv.org/pdf/2303.18223
   license: arXiv (author-submitted)
+  expect: pass
   pages: 0
   notes: ''
 - id: arxiv-2305.14334
@@ -680,6 +776,7 @@ files:
   category: latex
   source: https://arxiv.org/pdf/2305.14334
   license: arXiv (author-submitted)
+  expect: pass
   pages: 0
   notes: ''
 - id: arxiv-2307.06435
@@ -687,6 +784,7 @@ files:
   category: latex
   source: https://arxiv.org/pdf/2307.06435
   license: arXiv (author-submitted)
+  expect: pass
   pages: 0
   notes: ''
 - id: arxiv-2310.06825
@@ -694,6 +792,7 @@ files:
   category: latex
   source: https://arxiv.org/pdf/2310.06825
   license: arXiv (author-submitted)
+  expect: pass
   pages: 0
   notes: ''
 - id: attention-is-all-you-need
@@ -701,6 +800,7 @@ files:
   category: latex
   source: https://arxiv.org/pdf/1706.03762
   license: arXiv (author-submitted)
+  expect: pass
   pages: 0
   notes: ''
 - id: mlp-mixer
@@ -708,6 +808,7 @@ files:
   category: latex
   source: https://arxiv.org/pdf/2103.00020
   license: arXiv (author-submitted)
+  expect: pass
   pages: 0
   notes: ''
 - id: adobe-explain
@@ -715,6 +816,7 @@ files:
   category: office
   source: https://www.adobe.com/support/products/enterprise/knowledgecenter/media/c4611_sample_explain.pdf
   license: Adobe sample (internal use)
+  expect: any
   pages: 0
   notes: ''
 - id: irs-f1040
@@ -722,6 +824,7 @@ files:
   category: office
   source: https://www.irs.gov/pub/irs-pdf/f1040.pdf
   license: US Gov public domain
+  expect: pass
   pages: 0
   notes: ''
 - id: irs-fw4
@@ -729,6 +832,7 @@ files:
   category: annotations
   source: https://www.irs.gov/pub/irs-pdf/fw4.pdf
   license: US Gov public domain
+  expect: pass
   pages: 0
   notes: ''
 - id: w3c-dummy
@@ -736,6 +840,7 @@ files:
   category: misc
   source: https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf
   license: W3C test doc
+  expect: pass
   pages: 0
   notes: ''
 - id: helloworld
@@ -743,5 +848,6 @@ files:
   category: misc
   source: https://github.com/mozilla/pdf.js/blob/master/examples/learning/helloworld.pdf
   license: Apache-2.0
+  expect: pass
   pages: 0
   notes: ''
