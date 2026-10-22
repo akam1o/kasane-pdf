@@ -29,6 +29,10 @@ pub struct ProbeResult {
     pub walk_errors: usize,
     /// total pages probed.
     pub pages: usize,
+    /// Form XObjects encountered. The probe does not recurse into a
+    /// form's content stream, so each one is an *unprobed region* —
+    /// blockers hidden inside are invisible to the analysis.
+    pub forms: usize,
 }
 
 /// Probe a document: enumerate blockers for render+text per page.
@@ -376,6 +380,7 @@ fn probe_xobject(
     let Some(dict) = xobj.as_dict() else { return };
     match dict.get(b"Subtype".as_slice()).and_then(|o| o.as_name()) {
         Some(b"Form") => {
+            res.forms += 1;
             if dict.contains_key(b"Group".as_slice()) {
                 record(res, "render.xobject.group.unsupported", pi);
             }

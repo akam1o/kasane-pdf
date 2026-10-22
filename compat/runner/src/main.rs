@@ -133,6 +133,22 @@ struct FileResult {
     /// used to split the Compatibility vs Robustness rates.
     #[serde(default)]
     expect: String,
+    /// Probe coverage — how much of the file the blocker set actually
+    /// describes. All `default` for older reports.
+    /// Total page count of the document (0 when parse failed).
+    #[serde(default)]
+    pub total_pages: usize,
+    /// Pages the probe walked (first `--max-pages`).
+    #[serde(default)]
+    pub probe_pages: usize,
+    /// Pages the probe could not walk (structure errors) — their
+    /// blockers are unknown.
+    #[serde(default)]
+    pub probe_walk_errors: usize,
+    /// Form XObjects seen; the probe does not look inside them, so
+    /// each is an unprobed region.
+    #[serde(default)]
+    pub probe_forms: usize,
     /// Extra metrics collected regardless of verdict.
     metrics: Metrics,
 }
@@ -166,9 +182,58 @@ struct Metrics {
     /// Path to the reference (Poppler) page-1 render (PGM).
     #[serde(default)]
     render_ref_png: Option<String>,
+    /// Content-aware quality of the worst page (see [`RenderQuality`]).
+    #[serde(default)]
+    render_quality: Option<RenderQuality>,
+    /// Every compared page, in page order.
+    #[serde(default)]
+    render_pages: Vec<PageQuality>,
     text_match_ratio: Option<f64>,
     rewrite_qpdf_ok: Option<bool>,
     rewrite_reparsed: Option<bool>,
+}
+
+/// Content-aware fidelity metrics that complement the whole-page
+/// MAE/SSIM/diff-pixel trio. The whole-page numbers stay as the
+/// comparable baseline; these exist because a mostly-blank page scores
+/// SSIM ≈ 1 even when every glyph is in the wrong place (the Type3
+/// origin bug scored 0.997 on `simpletype3font`), and because a 1-px
+/// anti-aliasing difference between rasterisers is not a defect.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RenderQuality {
+    /// SSIM averaged only over 8×8 windows that contain ink (luma <
+    /// 200) in *either* image — blank windows cannot inflate it.
+    content_ssim: f64,
+    /// Number of ink-bearing windows the content SSIM was averaged over.
+    ink_windows: usize,
+    /// Different-pixel ratio where a pixel only counts as different
+    /// when no pixel in the other image's 3×3 neighbourhood is within
+    /// the luma threshold — tolerant of ±1 px AA / hinting placement.
+    diff_px_tol1: f64,
+    /// Ink coverage (fraction of pixels with luma < 200), ours and the
+    /// reference. A ratio far from 1 means content is missing or
+    /// extra, whatever SSIM says.
+    ink_ours: f64,
+    ink_ref: f64,
+    /// Integer (dx, dy) shift of our image, within ±3 px, that
+    /// minimises the different-pixel ratio, and that ratio. A non-zero
+    /// shift with a large drop points at a systematic glyph/position
+    /// offset (metrics, lsb, matrix) rather than shape differences.
+    best_shift: (i32, i32),
+    diff_px_at_best_shift: f64,
+    /// Reference dimensions differed from ours before resampling
+    /// (page-size / DPI rounding) — the comparison is approximate.
+    size_mismatch: bool,
+}
+
+/// One compared page — whole-page metrics plus the content-aware set.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PageQuality {
+    page: usize,
+    mae: f64,
+    ssim: f64,
+    diff_px_ratio: f64,
+    quality: RenderQuality,
 }
 
 // ------------------------------------------------------------------
@@ -223,9 +288,161 @@ struct Fidelity {
     /// fraction of pixels whose luminance differs by >8 (≈3%) — the
     /// "different pixel" ratio the task asks for.
     diff_px_ratio: f64,
+    quality: RenderQuality,
     diff_path: Option<String>,
     ours_path: Option<String>,
     ref_path: Option<String>,
+}
+
+/// Luma below which a pixel counts as "ink" for coverage/windows.
+const INK_LUMA: u8 = 200;
+/// Luma delta above which two pixels count as different.
+const DIFF_LUMA: i32 = 8;
+
+/// Fraction of pixels darker than `INK_LUMA`.
+fn ink_coverage(a: &[u8]) -> f64 {
+    if a.is_empty() {
+        return 0.0;
+    }
+    a.iter().filter(|&&v| v < INK_LUMA).count() as f64 / a.len() as f64
+}
+
+/// SSIM averaged over the 8×8 windows (stride 4) that contain ink in
+/// either image. Returns (ssim, windows); ssim = 1.0 when nothing is
+/// inked anywhere (two blank pages agree).
+fn content_ssim_gray(a: &[u8], b: &[u8], w: usize, h: usize) -> (f64, usize) {
+    const C1: f64 = (0.01 * 255.0) * (0.01 * 255.0);
+    const C2: f64 = (0.03 * 255.0) * (0.03 * 255.0);
+    let mut sum = 0.0;
+    let mut n = 0usize;
+    let mut y = 0usize;
+    while y + 8 <= h {
+        let mut x = 0usize;
+        while x + 8 <= w {
+            let (mut sa, mut sb, mut saa, mut sbb, mut sab) = (0.0, 0.0, 0.0, 0.0, 0.0);
+            let mut ink = false;
+            for yy in y..y + 8 {
+                let row = yy * w;
+                for xx in x..x + 8 {
+                    let pa = a[row + xx];
+                    let pb = b[row + xx];
+                    ink |= pa < INK_LUMA || pb < INK_LUMA;
+                    let (pa, pb) = (pa as f64, pb as f64);
+                    sa += pa;
+                    sb += pb;
+                    saa += pa * pa;
+                    sbb += pb * pb;
+                    sab += pa * pb;
+                }
+            }
+            if ink {
+                let ua = sa / 64.0;
+                let ub = sb / 64.0;
+                let va = saa / 64.0 - ua * ua;
+                let vb = sbb / 64.0 - ub * ub;
+                let cov = sab / 64.0 - ua * ub;
+                let num = (2.0 * ua * ub + C1) * (2.0 * cov + C2);
+                let den = (ua * ua + ub * ub + C1) * (va + vb + C2);
+                sum += num / den;
+                n += 1;
+            }
+            x += 4;
+        }
+        y += 4;
+    }
+    if n == 0 {
+        (1.0, 0)
+    } else {
+        (sum / n as f64, n)
+    }
+}
+
+/// Different-pixel ratio with a 3×3 neighbourhood tolerance, symmetric
+/// (ours→ref and ref→ours averaged): a pixel is different only when no
+/// neighbour in the other image is within `DIFF_LUMA`.
+fn diff_px_tolerant(a: &[u8], b: &[u8], w: usize, h: usize) -> f64 {
+    fn one_way(a: &[u8], b: &[u8], w: usize, h: usize) -> usize {
+        let mut c = 0usize;
+        for y in 0..h {
+            for x in 0..w {
+                let v = a[y * w + x] as i32;
+                if (v - b[y * w + x] as i32).abs() <= DIFF_LUMA {
+                    continue;
+                }
+                let mut matched = false;
+                'nb: for dy in -1i32..=1 {
+                    let yy = y as i32 + dy;
+                    if yy < 0 || yy >= h as i32 {
+                        continue;
+                    }
+                    for dx in -1i32..=1 {
+                        let xx = x as i32 + dx;
+                        if xx < 0 || xx >= w as i32 {
+                            continue;
+                        }
+                        if (v - b[yy as usize * w + xx as usize] as i32).abs() <= DIFF_LUMA {
+                            matched = true;
+                            break 'nb;
+                        }
+                    }
+                }
+                if !matched {
+                    c += 1;
+                }
+            }
+        }
+        c
+    }
+    let n = (w * h).max(1) as f64;
+    (one_way(a, b, w, h) + one_way(b, a, w, h)) as f64 / (2.0 * n)
+}
+
+/// Different-pixel ratio of `a` shifted by (dx, dy) against `b`, over
+/// the overlapping region.
+fn diff_px_shifted(a: &[u8], b: &[u8], w: usize, h: usize, dx: i32, dy: i32) -> f64 {
+    let mut diffs = 0usize;
+    let mut n = 0usize;
+    let y0 = (-dy).max(0) as usize;
+    let y1 = (h as i32 - dy.max(0)) as usize;
+    let x0 = (-dx).max(0) as usize;
+    let x1 = (w as i32 - dx.max(0)) as usize;
+    for y in y0..y1 {
+        let ra = y * w;
+        let rb = (y as i32 + dy) as usize * w;
+        for x in x0..x1 {
+            let va = a[ra + x] as i32;
+            let vb = b[rb + (x as i32 + dx) as usize] as i32;
+            if (va - vb).abs() > DIFF_LUMA {
+                diffs += 1;
+            }
+            n += 1;
+        }
+    }
+    if n == 0 {
+        0.0
+    } else {
+        diffs as f64 / n as f64
+    }
+}
+
+/// The integer shift within ±`max` that minimises the different-pixel
+/// ratio, with that ratio. Ties prefer the smaller shift.
+fn best_shift(a: &[u8], b: &[u8], w: usize, h: usize, max: i32) -> ((i32, i32), f64) {
+    let mut best: ((i32, i32), f64) = ((0, 0), diff_px_shifted(a, b, w, h, 0, 0));
+    for dy in -max..=max {
+        for dx in -max..=max {
+            if (dx, dy) == (0, 0) {
+                continue;
+            }
+            let r = diff_px_shifted(a, b, w, h, dx, dy);
+            let cur_mag = best.0 .0.abs() + best.0 .1.abs();
+            let mag = dx.abs() + dy.abs();
+            if r < best.1 - 1e-9 || (r <= best.1 + 1e-9 && mag < cur_mag) {
+                best = ((dx, dy), r);
+            }
+        }
+    }
+    best
 }
 
 /// Render the same page with `pdftoppm` and compare against our pixmap's
@@ -284,6 +501,21 @@ fn compare_render(
     let diff_px_ratio = diffs as f64 / (kw * kh) as f64;
     let ssim = ssim_gray(&kpix, &ref_sized, kw, kh);
 
+    // Content-aware metrics (see `RenderQuality`).
+    let (content_ssim, ink_windows) = content_ssim_gray(&kpix, &ref_sized, kw, kh);
+    let diff_px_tol1 = diff_px_tolerant(&kpix, &ref_sized, kw, kh);
+    let (shift, diff_px_at_best_shift) = best_shift(&kpix, &ref_sized, kw, kh, 3);
+    let quality = RenderQuality {
+        content_ssim,
+        ink_windows,
+        diff_px_tol1,
+        ink_ours: ink_coverage(&kpix),
+        ink_ref: ink_coverage(&ref_sized),
+        best_shift: shift,
+        diff_px_at_best_shift,
+        size_mismatch: rw != kw || rh != kh,
+    };
+
     // Save ours, reference (resized), and diff images for inspection.
     let ours_path = diff_dir.join(format!("{tag}-ours.pgm"));
     let refr_path = diff_dir.join(format!("{tag}-ref.pgm"));
@@ -295,6 +527,7 @@ fn compare_render(
         mae,
         ssim,
         diff_px_ratio,
+        quality,
         diff_path: Some(diff_path.to_string_lossy().into_owned()),
         ours_path: Some(ours_path.to_string_lossy().into_owned()),
         ref_path: Some(refr_path.to_string_lossy().into_owned()),
@@ -485,6 +718,8 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         render_diff_png: None,
         render_ours_png: None,
         render_ref_png: None,
+        render_quality: None,
+        render_pages: Vec::new(),
         text_match_ratio: None,
         rewrite_qpdf_ok: None,
         rewrite_reparsed: None,
@@ -518,6 +753,10 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                 causes: Vec::new(),
                 cause_pages: BTreeMap::new(),
                 expect: String::new(),
+                total_pages: 0,
+                probe_pages: 0,
+                probe_walk_errors: 0,
+                probe_forms: 0,
                 metrics: {
                     metrics.total_ms = start.elapsed().as_millis();
                     metrics.max_rss_bytes = max_rss_bytes();
@@ -561,6 +800,13 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                     if let Some(f) =
                         compare_render(&r, path, i + 1, args.dpi as u32, &diff_dir, &tag)
                     {
+                        metrics.render_pages.push(PageQuality {
+                            page: i + 1,
+                            mae: f.mae,
+                            ssim: f.ssim,
+                            diff_px_ratio: f.diff_px_ratio,
+                            quality: f.quality.clone(),
+                        });
                         let worse = match worst {
                             Some((s, _)) => f.ssim < s,
                             None => true,
@@ -600,6 +846,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         metrics.render_diff_png = f.diff_path;
         metrics.render_ours_png = f.ours_path;
         metrics.render_ref_png = f.ref_path;
+        metrics.render_quality = Some(f.quality);
         let _ = best_pgno;
     }
 
@@ -692,6 +939,10 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         causes,
         cause_pages,
         expect: String::new(),
+        total_pages: pages.len(),
+        probe_pages: probe.pages,
+        probe_walk_errors: probe.walk_errors,
+        probe_forms: probe.forms,
         metrics,
     }
 }
@@ -851,6 +1102,7 @@ fn main() {
     // ---- analysis ----------------------------------------------------
     let cfg = PrioritiesConfig::default();
     let feature_stats = analysis::analyze(&results, &cfg);
+    let combos = analysis::combo_analysis(&results, &cfg, 4);
     let stage_summary = analysis::stage_summary(&results);
     let categories = analysis::category_summary(&results);
     let split = analysis::split_summary(&results);
@@ -878,6 +1130,7 @@ fn main() {
             categories,
             features: feature_stats,
             split: Some(split),
+            combos,
             effort_is_estimate: true,
         }),
     };
@@ -949,6 +1202,10 @@ struct Analysis {
     /// Compatibility-vs-Robustness split (expect-tag driven).
     #[serde(default)]
     split: Option<analysis::SplitSummary>,
+    /// Feature-*set* priorities: what implementing 1–4 features
+    /// together would unblock (see `analysis::combo_analysis`).
+    #[serde(default)]
+    combos: Vec<analysis::ComboStat>,
     /// effort values are person-day *estimates*, flagged so readers
     /// don't treat them as measured.
     effort_is_estimate: bool,
@@ -1208,13 +1465,52 @@ fn render_markdown(r: &RunReport) -> String {
                 .iter()
                 .map(|f| f.metrics.render_pages_total as u64)
                 .sum();
+            // Content bar — the whole-page trio stays the comparable
+            // baseline; this second bar cannot be inflated by blank
+            // area and catches missing/extra content: ink coverage
+            // within ×0.7–1.4 of the reference AND either content-SSIM
+            // ≥ 0.85 over ink windows or a ±1 px-tolerant diff ≤ 0.5%
+            // (a page whose only ink is a few thin strokes one pixel
+            // off scores a poor content-SSIM yet is not misdrawn).
+            // Files with no ink anywhere pass it.
+            let content_ok = |q: &RenderQuality| {
+                let ratio = if q.ink_ref > 0.0 {
+                    q.ink_ours / q.ink_ref
+                } else if q.ink_ours > 0.0 {
+                    f64::INFINITY
+                } else {
+                    1.0
+                };
+                (0.7..=1.4).contains(&ratio) && (q.content_ssim >= 0.85 || q.diff_px_tol1 <= 0.005)
+            };
+            let with_q: Vec<&&FileResult> = measured
+                .iter()
+                .filter(|f| f.metrics.render_quality.is_some())
+                .collect();
+            let content_pass = with_q
+                .iter()
+                .filter(|f| content_ok(f.metrics.render_quality.as_ref().unwrap()))
+                .count();
+            let mean_cssim = mean(&|f| f.metrics.render_quality.as_ref().map(|q| q.content_ssim));
+            let min_cssim = with_q
+                .iter()
+                .filter_map(|f| f.metrics.render_quality.as_ref().map(|q| q.content_ssim))
+                .fold(f64::INFINITY, f64::min);
+            let mean_tol1 = mean(&|f| f.metrics.render_quality.as_ref().map(|q| q.diff_px_tol1));
+            let pages_compared: usize = measured.iter().map(|f| f.metrics.render_pages.len()).sum();
             s.push_str("## Render Visual Fidelity\n\n");
             s.push_str(&format!(
-                "*measured on {} file(s) with a Poppler reference — \
-                 {fid_pass} meet the fidelity bar \
-                 (SSIM ≥ 0.98, diff-pixels ≤ 2%, MAE ≤ 0.05). \
-                 Per-page render success: {pages_ok}/{pages_total}.*\n\n",
-                n
+                "*measured on {} file(s) / {pages_compared} page(s) with a Poppler \
+                 reference — {fid_pass} meet the comparability bar \
+                 (SSIM ≥ 0.98, diff-pixels ≤ 2%, MAE ≤ 0.05) and {content_pass} of \
+                 {} meet the content bar (ink coverage within ×0.7–1.4 of the \
+                 reference, and content-SSIM ≥ 0.85 over ink windows or a ±1 px \
+                 tolerant diff ≤ 0.5%). \
+                 Per-page render execution: {pages_ok}/{pages_total}. Execution \
+                 success and fidelity are counted separately — a page that renders \
+                 but diverges is a render PASS and a fidelity failure.*\n\n",
+                n,
+                with_q.len()
             ));
             s.push_str("| metric | mean | worst |\n|---|---:|---:|\n");
             s.push_str(&format!(
@@ -1222,34 +1518,89 @@ fn render_markdown(r: &RunReport) -> String {
                 mean_ssim, min_ssim
             ));
             s.push_str(&format!(
+                "| content-SSIM (ink windows only) | {:.4} | {:.4} (min) |\n",
+                mean_cssim,
+                if min_cssim.is_finite() {
+                    min_cssim
+                } else {
+                    1.0
+                }
+            ));
+            s.push_str(&format!(
                 "| MAE (lower = closer) | {:.4} | {:.4} (max) |\n",
                 mean_mae, max_mae
             ));
-            s.push_str(&format!("| diff-pixel ratio | {:.4} | — |\n\n", mean_dpx));
-            // list the files that diverged beyond the bar
+            s.push_str(&format!("| diff-pixel ratio | {:.4} | — |\n", mean_dpx));
+            s.push_str(&format!(
+                "| diff-pixel ratio, ±1 px tolerant | {:.4} | — |\n\n",
+                mean_tol1
+            ));
+            // list the files that diverged beyond either bar
             let divergent: Vec<_> = measured
                 .iter()
                 .filter(|f| {
-                    !(f.metrics.render_ssim.unwrap_or(0.0) >= 0.98
+                    let comparability = f.metrics.render_ssim.unwrap_or(0.0) >= 0.98
                         && f.metrics.render_diff_px_ratio.unwrap_or(1.0) <= 0.02
-                        && f.metrics.render_mae.unwrap_or(1.0) <= 0.05)
+                        && f.metrics.render_mae.unwrap_or(1.0) <= 0.05;
+                    let content = f
+                        .metrics
+                        .render_quality
+                        .as_ref()
+                        .map(content_ok)
+                        .unwrap_or(true);
+                    !(comparability && content)
                 })
                 .collect();
             if !divergent.is_empty() {
                 s.push_str(&format!(
-                    "**{} file(s) diverge from the reference** (image saved):\n\n",
+                    "**{} file(s) diverge from the reference** (worst page shown; \
+                     ours/ref/diff images saved):\n\n",
                     divergent.len()
                 ));
                 s.push_str(
-                    "| file | SSIM | MAE | diff-px | diff image |\n|---|---:|---:|---:|---|\n",
+                    "| file | page | SSIM | content-SSIM | MAE | diff-px | ±1px | ink ours/ref | best shift | bar failed | diff image |\n\
+                     |---|---:|---:|---:|---:|---:|---:|---|---|---|---|\n",
                 );
-                for f in divergent.iter().take(25) {
+                for f in divergent.iter().take(30) {
+                    let q = f.metrics.render_quality.as_ref();
+                    let worst_page = f
+                        .metrics
+                        .render_pages
+                        .iter()
+                        .min_by(|a, b| a.ssim.partial_cmp(&b.ssim).unwrap())
+                        .map(|p| p.page)
+                        .unwrap_or(1);
+                    let comparability = f.metrics.render_ssim.unwrap_or(0.0) >= 0.98
+                        && f.metrics.render_diff_px_ratio.unwrap_or(1.0) <= 0.02
+                        && f.metrics.render_mae.unwrap_or(1.0) <= 0.05;
+                    let content = q.map(content_ok).unwrap_or(true);
+                    let failed = match (comparability, content) {
+                        (false, false) => "both",
+                        (false, true) => "comparability",
+                        (true, false) => "content",
+                        (true, true) => "—",
+                    };
                     s.push_str(&format!(
-                        "| `{}` | {:.3} | {:.3} | {:.3} | {} |\n",
+                        "| `{}` | {} | {:.3} | {} | {:.3} | {:.3} | {} | {} | {} | {} | {} |\n",
                         f.id,
+                        worst_page,
                         f.metrics.render_ssim.unwrap_or(0.0),
+                        q.map(|q| format!("{:.3}", q.content_ssim))
+                            .unwrap_or_else(|| "—".into()),
                         f.metrics.render_mae.unwrap_or(0.0),
                         f.metrics.render_diff_px_ratio.unwrap_or(0.0),
+                        q.map(|q| format!("{:.3}", q.diff_px_tol1))
+                            .unwrap_or_else(|| "—".into()),
+                        q.map(|q| format!("{:.3}/{:.3}", q.ink_ours, q.ink_ref))
+                            .unwrap_or_else(|| "—".into()),
+                        q.map(|q| {
+                            format!(
+                                "({:+},{:+}) → {:.3}",
+                                q.best_shift.0, q.best_shift.1, q.diff_px_at_best_shift
+                            )
+                        })
+                        .unwrap_or_else(|| "—".into()),
+                        failed,
                         f.metrics
                             .render_diff_png
                             .as_deref()
@@ -1258,6 +1609,13 @@ fn render_markdown(r: &RunReport) -> String {
                     ));
                 }
                 s.push('\n');
+                s.push_str(
+                    "*How to read: a low SSIM with a high content-SSIM and a small ±1px \
+                     ratio is rasteriser/anti-aliasing noise; a low content-SSIM with ink \
+                     coverage ≈ reference is misplaced content; ink coverage far from the \
+                     reference is missing or extra content; a non-zero best shift that \
+                     sharply lowers diff-px is a systematic position offset.*\n\n",
+                );
             }
         }
 
@@ -1329,6 +1687,9 @@ fn render_markdown(r: &RunReport) -> String {
         s.push_str("## Development priorities\n\n");
         s.push_str(&priorities_table(&a.features));
         s.push('\n');
+        if !a.combos.is_empty() {
+            s.push_str(&analysis::combos_table(&a.combos, 12));
+        }
         if a.effort_is_estimate {
             s.push_str(
                 "*effort values are person-day **estimates** set in\n\
