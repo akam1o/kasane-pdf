@@ -9,7 +9,8 @@ demand; PDFs are never committed to git.
 - Endpoint: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`
 - Layout: `pdfs/<category>/<sha256>.pdf`
 - Manifest: [`../compat/manifest.yaml`](../compat/manifest.yaml) —
-  the single source of truth (id, sha256, category, source, license).
+  the single source of truth (id, sha256, category, source, license,
+  `expect` for the Compatibility/Robustness split).
 
 ## Credentials
 
@@ -86,6 +87,35 @@ newly PASS/FAIL files, verdict changes, cause-set and MAE deltas):
 $ kasane-compat report compat/reports/latest.json \
       --compare compat/reports/run-<prev-ts>.json
 ```
+
+## Compatibility vs Robustness
+
+The report splits the corpus into two independent rates, driven by a
+per-file `expect:` tag in `manifest.yaml`:
+
+| `expect` | meaning | feeds |
+|---|---|---|
+| `pass` | well-formed document the engine should handle | **Compatibility** rate |
+| `reject` | adversarial / malformed / fuzzed / encrypted — must be *refused safely* | **Robustness** score |
+| `any` | valid doc using out-of-scope features | neither rate |
+
+- **Compatibility** = per-stage pass rate over the `pass` files.
+- **Robustness** = a `reject` file is OK when the engine refuses it
+  *without crashing or hanging* (a classified `Error`/`Unsupported`);
+  only `CRASH`/`TIMEOUT` fail the robustness check. A `reject` file
+  that happens to render is still "safe" — refusal is the goal, not
+  mandatory failure.
+
+Tag files by *document intent*, never by the engine's current result —
+a well-formed PDF our parser can't read yet is `expect: pass` (a
+compatibility gap), not `reject`.
+
+## ExtGState usage audit
+
+`kasane-compat run --corpus … --gs-audit` walks every corpus PDF and
+prints which `/ExtGState` keys appear, on how many files, and which gs
+names are actually `gs`-invoked — the data behind the phased
+implementation decision in `docs/decisions/`.
 
 ## Failure-cause analysis
 

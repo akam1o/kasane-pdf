@@ -15,6 +15,7 @@
 
 mod analysis;
 mod cause;
+mod gsaudit;
 mod probe;
 
 use analysis::{priorities_table, PrioritiesConfig};
@@ -127,6 +128,10 @@ struct FileResult {
     /// cause id → # pages it was seen on (probe).
     #[serde(default)]
     cause_pages: BTreeMap<String, usize>,
+    /// Expected outcome from the manifest (`pass`/`reject`/`any`),
+    /// used to split the Compatibility vs Robustness rates.
+    #[serde(default)]
+    expect: String,
     /// Extra metrics collected regardless of verdict.
     metrics: Metrics,
 }
@@ -411,6 +416,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                 rewrite: StageResult::skip("parse failed"),
                 causes: Vec::new(),
                 cause_pages: BTreeMap::new(),
+                expect: String::new(),
                 metrics: {
                     metrics.total_ms = start.elapsed().as_millis();
                     metrics.max_rss_bytes = max_rss_bytes();
@@ -562,6 +568,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         rewrite: rewrite_res,
         causes,
         cause_pages,
+        expect: String::new(),
         metrics,
     }
 }
@@ -609,6 +616,8 @@ struct Args {
     report_format: String,
     /// Previous run JSON to diff against (`report --compare old.json`).
     compare: Option<PathBuf>,
+    /// Run the ExtGState usage audit instead of a compat run.
+    gs_audit: bool,
 }
 
 fn parse_args() -> Args {
@@ -623,6 +632,7 @@ fn parse_args() -> Args {
         report: None,
         report_format: "md".into(),
         compare: None,
+        gs_audit: false,
     };
     let mut it = std::env::args().skip(1).peekable();
     while let Some(arg) = it.next() {
@@ -648,6 +658,7 @@ fn parse_args() -> Args {
             "--only" => a.only = it.next(),
             "--format" => a.report_format = it.next().unwrap_or_else(|| "md".into()),
             "--compare" => a.compare = it.next().map(PathBuf::from),
+            "--gs-audit" => a.gs_audit = true,
             _ => {}
         }
     }
@@ -661,9 +672,9 @@ fn main() {
         return;
     }
 
-    // id → category map from the manifest (flat yaml, parsed by hand
-    // to avoid a yaml dep in the runner).
-    let cats = load_categories(&args.corpus.join("../manifest.yaml"));
+    // id → (category, expect) map from the manifest (flat yaml, parsed
+    // by hand to avoid a yaml dep in the runner).
+    let manifest = load_manifest(&args.corpus.join("../manifest.yaml"));
 
     let mut files: Vec<PathBuf> = Vec::new();
     if args.corpus.is_dir() {
@@ -677,6 +688,12 @@ fn main() {
     files.sort();
     fs::create_dir_all(&args.out).ok();
 
+    // ---- ExtGState usage audit (diagnostic, not a compat run) ------
+    if args.gs_audit {
+        run_gs_audit(&files, &args);
+        return;
+    }
+
     let mut results = Vec::new();
     for path in &files {
         let id = path.file_stem().unwrap().to_string_lossy().into_owned();
@@ -685,21 +702,27 @@ fn main() {
                 continue;
             }
         }
-        let cat = cats
-            .get(id.as_str())
-            .cloned()
-            .unwrap_or_else(|| "misc".into());
+        let entry = manifest.get(id.as_str()).cloned().unwrap_or_default();
+        let cat = if entry.category.is_empty() {
+            "misc".to_string()
+        } else {
+            entry.category.clone()
+        };
         eprint!("  {id} ... ");
-        let r = process_file(path, &id, &cat, &args);
+        let mut r = process_file(path, &id, &cat, &args);
+        r.expect = entry.expect.clone();
         eprintln!("{}", r.verdict.label());
         results.push(r);
     }
+
+    // ---- analysis ----------------------------------------------------
 
     // ---- analysis ----------------------------------------------------
     let cfg = PrioritiesConfig::default();
     let feature_stats = analysis::analyze(&results, &cfg);
     let stage_summary = analysis::stage_summary(&results);
     let categories = analysis::category_summary(&results);
+    let split = analysis::split_summary(&results);
 
     let run = RunReport {
         generated: now_iso(),
@@ -710,6 +733,7 @@ fn main() {
             stage_summary,
             categories,
             features: feature_stats,
+            split: Some(split),
             effort_is_estimate: true,
         }),
     };
@@ -727,24 +751,43 @@ fn main() {
     eprintln!("\nWrote {json_path:?} and {md_path:?}");
 }
 
-/// id → category from `manifest.yaml`'s flat `files:` list. Parses the
-/// simple `- id:`/`category:` line pairs without a yaml dep; entries
-/// that don't match are simply absent (callers default to "misc").
-fn load_categories(path: &Path) -> BTreeMap<String, String> {
+/// Manifest metadata for one corpus file.
+#[derive(Debug, Default, Clone)]
+struct ManifestEntry {
+    category: String,
+    /// Expected outcome: `pass` (well-formed, engine should handle),
+    /// `reject` (adversarial/malformed/encrypted — must refuse
+    /// safely), or `any` (valid but uses out-of-scope features —
+    /// counted in neither the compatibility nor robustness rate).
+    expect: String,
+}
+
+/// id → (category, expect) from `manifest.yaml`'s flat `files:` list.
+/// Parses `- id:` / `category:` / `expect:` line pairs without a yaml
+/// dep; entries that don't match are simply absent (callers default).
+fn load_manifest(path: &Path) -> BTreeMap<String, ManifestEntry> {
     let mut map = BTreeMap::new();
     let Ok(text) = fs::read_to_string(path) else {
         return map;
     };
     let mut cur_id: Option<String> = None;
+    let mut cur = ManifestEntry::default();
     for line in text.lines() {
         let l = line.trim();
         if let Some(v) = l.strip_prefix("- id:").or_else(|| l.strip_prefix("id:")) {
+            if let Some(id) = cur_id.take() {
+                map.insert(id, cur.clone());
+                cur = ManifestEntry::default();
+            }
             cur_id = Some(v.trim().trim_matches('"').into());
         } else if let Some(v) = l.strip_prefix("category:") {
-            if let Some(id) = cur_id.take() {
-                map.insert(id, v.trim().trim_matches('"').into());
-            }
+            cur.category = v.trim().trim_matches('"').into();
+        } else if let Some(v) = l.strip_prefix("expect:") {
+            cur.expect = v.trim().trim_matches('"').into();
         }
+    }
+    if let Some(id) = cur_id.take() {
+        map.insert(id, cur);
     }
     map
 }
@@ -759,6 +802,9 @@ struct Analysis {
     stage_summary: analysis::StageSummary,
     categories: Vec<analysis::CategorySummary>,
     features: Vec<analysis::FeatureStat>,
+    /// Compatibility-vs-Robustness split (expect-tag driven).
+    #[serde(default)]
+    split: Option<analysis::SplitSummary>,
     /// effort values are person-day *estimates*, flagged so readers
     /// don't treat them as measured.
     effort_is_estimate: bool,
@@ -967,6 +1013,52 @@ fn render_markdown(r: &RunReport) -> String {
         }
         s.push('\n');
 
+        // Compatibility vs Robustness — the two independent rates.
+        if let Some(sp) = &a.split {
+            s.push_str("## Compatibility vs Robustness\n\n");
+            s.push_str(&format!(
+                "**Compatibility** — {} well-formed files (`expect: pass`):\n\n",
+                sp.compat_total
+            ));
+            s.push_str(
+                "| stage | pass | rate |\n|---|---:|---:|\n",
+            );
+            for (name, n) in [
+                ("parse", sp.compat_parse_pass),
+                ("render", sp.compat_render_pass),
+                ("text", sp.compat_text_pass),
+                ("rewrite", sp.compat_rewrite_pass),
+            ] {
+                s.push_str(&format!(
+                    "| {} | {} | {:.0}% |\n",
+                    name,
+                    n,
+                    n as f64 / sp.compat_total.max(1) as f64 * 100.0
+                ));
+            }
+            s.push_str(&format!(
+                "\n**Robustness** — {} adversarial files (`expect: reject`):\n\
+                 safely handled {} ({:.0}%), cleanly refused {} — \
+                 **{} crash/hang failure(s)**.\n\n",
+                sp.robust_total,
+                sp.robust_safe,
+                sp.robust_safe as f64 / sp.robust_total.max(1) as f64 * 100.0,
+                sp.robust_refused,
+                sp.robust_failures.len()
+            ));
+            if !sp.robust_failures.is_empty() {
+                for id in &sp.robust_failures {
+                    s.push_str(&format!("- `{id}` — crashed or hung on hostile input\n"));
+                }
+                s.push('\n');
+            }
+            s.push_str(&format!(
+                "*{} files tagged `expect: any` are excluded from both rates\n\
+                 (valid documents exercising out-of-scope features).*\n\n",
+                sp.other_total
+            ));
+        }
+
         // categories
         s.push_str("## By category\n\n");
         s.push_str(
@@ -1160,4 +1252,79 @@ fn render_html(r: &RunReport) -> String {
     }
     s.push_str("</table>");
     s
+}
+
+// ------------------------------------------------------------------
+// ExtGState usage audit
+// ------------------------------------------------------------------
+
+/// Walk every corpus PDF, audit its `/ExtGState` resources, and print
+/// a per-key usage table. Which keys appear, on how many files/pages,
+/// and whether the gs was actually `gs`-invoked (vs merely defined).
+fn run_gs_audit(files: &[PathBuf], args: &Args) {
+    // key → (files_using, pages_using, sample_values)
+    let mut key_files: BTreeMap<String, usize> = BTreeMap::new();
+    let mut key_values: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+    let mut files_with_gs = 0usize;
+    let mut files_invoked = 0usize;
+    let mut total_entries = 0usize;
+    let mut referenced_entries = 0usize;
+
+    for path in files {
+        let id = path.file_stem().unwrap().to_string_lossy().into_owned();
+        if let Some(only) = &args.only {
+            if &id != only {
+                continue;
+            }
+        }
+        let data = fs::read(path).unwrap_or_default();
+        let doc = match Document::from_bytes(&data) {
+            Ok(d) => d,
+            Err(_) => continue, // parse-fail files carry no gs info
+        };
+        let a = gsaudit::audit(&doc);
+        if a.entries.is_empty() {
+            continue;
+        }
+        files_with_gs += 1;
+        if !a.referenced.is_empty() {
+            files_invoked += 1;
+        }
+        total_entries += a.entries.len();
+        referenced_entries += a.referenced.len();
+
+        // per-file key set (a file counts once per key regardless of
+        // how many gs dicts use it)
+        let mut file_keys: std::collections::BTreeSet<String> = Default::default();
+        for e in &a.entries {
+            for (k, v) in &e.keys {
+                file_keys.insert(k.clone());
+                *key_values.entry(k.clone()).or_default().entry(v.clone()).or_default() += 1;
+            }
+        }
+        for k in file_keys {
+            *key_files.entry(k).or_default() += 1;
+        }
+    }
+
+    println!("# ExtGState audit — {} corpus files", files.len());
+    println!("files with any /ExtGState defined : {files_with_gs}");
+    println!("files where a gs is invoked       : {files_invoked}");
+    println!("total /ExtGState dicts            : {total_entries}");
+    println!("referenced gs names               : {referenced_entries}");
+    println!();
+    println!("| key | files | common values |");
+    println!("|---|---:|---|");
+    let mut rows: Vec<_> = key_files.iter().collect();
+    rows.sort_by_key(|(_, c)| std::cmp::Reverse(**c));
+    for (k, c) in rows {
+        let mut vals: Vec<_> = key_values[k].iter().collect();
+        vals.sort_by_key(|(_, c)| std::cmp::Reverse(**c));
+        let sample: Vec<String> = vals
+            .iter()
+            .take(4)
+            .map(|(v, n)| format!("{v}×{n}"))
+            .collect();
+        println!("| `{k}` | {c} | {} |", sample.join(", "));
+    }
 }

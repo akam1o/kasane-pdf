@@ -112,7 +112,9 @@ fn scan_ops(
     }
     for op in ops {
         match op {
-            Operation::SetExtGState(_) => record(res, "render.extgstate.unsupported", pi),
+            Operation::SetExtGState(n) => {
+                probe_extgstate(doc, resources, n, pi, res, record)
+            }
             Operation::Shading(_) => record(res, "render.shading.unsupported", pi),
             Operation::SetColorSpaceFill(n) | Operation::SetColorSpaceStroke(n) => {
                 if !is_device_space_name(n) {
@@ -153,6 +155,73 @@ fn is_device_space_name(n: &[u8]) -> bool {
             | b"DefaultRGB"
             | b"DefaultCMYK"
             | b"Pattern"
+    )
+}
+
+/// Mirror `apply_extgstate`: resolve the `/ExtGState` dict and record a
+/// blocker only for keys the renderer *can't* apply — a real soft mask
+/// (`/SMask` ≠ `/None`), a non-`/Default` transfer/black-generation
+/// function, `/Font` selection via gs, an unrecognised blend mode, or
+/// an unknown key. Applied/no-op keys produce no blocker.
+fn probe_extgstate(
+    doc: &Document,
+    resources: &Object,
+    name: &[u8],
+    pi: usize,
+    res: &mut ProbeResult,
+    record: &mut impl FnMut(&mut ProbeResult, &str, usize),
+) {
+    let obj = match doc.resolve_resource(resources, "ExtGState", name) {
+        Ok(Some(o)) => o,
+        _ => return,
+    };
+    let Some(d) = obj.as_dict() else { return };
+    for (k, v) in d {
+        match k.as_slice() {
+            // keys that always apply or are accepted no-ops
+            b"Type" | b"LW" | b"LC" | b"LJ" | b"ML" | b"D" | b"RI" | b"ca" | b"CA" | b"OP"
+            | b"op" | b"OPM" | b"SA" | b"AIS" | b"TK" | b"HT" | b"HTP" | b"FL" | b"SM" => {}
+            b"BM" => {
+                // only unsupported blend modes block
+                if let Some(mode) = first_bm_name(doc, v) {
+                    if !is_supported_bm(&mode) {
+                        record(res, "render.blendmode.unsupported", pi);
+                    }
+                }
+            }
+            b"SMask" => {
+                if !matches!(v.as_name(), Some(b"None")) {
+                    record(res, "render.smask.unsupported", pi);
+                }
+            }
+            b"TR" | b"TR2" | b"BG" | b"BG2" | b"UCR" | b"UCR2" => {
+                if !matches!(v.as_name(), Some(b"Default")) {
+                    record(res, "render.transfer.unsupported", pi);
+                }
+            }
+            b"Font" => record(res, "render.extgstate.font.unsupported", pi),
+            _ => record(res, "render.extgstate.unsupported", pi),
+        }
+    }
+}
+
+fn first_bm_name(doc: &Document, v: &Object) -> Option<Vec<u8>> {
+    match doc.deref(v).ok()? {
+        Object::Name(n) => Some(n),
+        Object::Array(a) => a
+            .first()
+            .and_then(|x| doc.deref(x).ok())
+            .and_then(|o| o.as_name().map(|n| n.to_vec())),
+        _ => None,
+    }
+}
+
+fn is_supported_bm(n: &[u8]) -> bool {
+    matches!(
+        n,
+        b"Normal" | b"Compatible" | b"Multiply" | b"Screen" | b"Overlay" | b"Darken" | b"Lighten"
+            | b"ColorDodge" | b"ColorBurn" | b"HardLight" | b"SoftLight" | b"Difference"
+            | b"Exclusion" | b"Hue" | b"Saturation" | b"Color" | b"Luminosity"
     )
 }
 
