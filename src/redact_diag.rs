@@ -2492,8 +2492,15 @@ mod tests {
         let doc = crate::document::Document::from_bytes(&parts.concat()).unwrap();
         let d =
             diagnose_redaction(&doc, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap();
-        assert!(d.incomplete.is_some(), "Type1 → incomplete expected");
-        assert!(d.targets.is_empty());
+        // A non-embedded Type1 font *loads* (metrics only) but its
+        // outline call refuses → each glyph becomes an `uncertain`
+        // entry, not a certain target. `targets` stays empty — the
+        // caller still must not read that as "nothing to redact".
+        assert!(d.targets.is_empty(), "no certain targets expected");
+        assert!(
+            !d.uncertain.is_empty(),
+            "non-embedded Type1 → uncertain glyphs expected"
+        );
     }
 
     #[test]

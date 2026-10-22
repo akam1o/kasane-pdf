@@ -39,6 +39,7 @@ use crate::object::{Dict, Object};
 use crate::Document;
 use std::cell::RefCell;
 use std::rc::Rc;
+use ttf_parser::cff::Table as CffTable;
 use ttf_parser::{Face, GlyphId, OutlineBuilder};
 
 // --------------------------------------------------------------------
@@ -63,15 +64,47 @@ pub(crate) struct SimpleFont {
     face: RefCell<Option<Face<'static>>>,
 }
 
+/// A resolved `/Type1` (or `/MMType1`) font backed by an embedded
+/// CFF program (`/FontDescriptor /FontFile3`). Outlines and glyph-id
+/// lookup come from `ttf_parser`'s raw-CFF `Table`; encoding and
+/// widths come from the PDF font dict. Single-byte codes.
+///
+/// `/FontFile` (Adobe Type1 / eexec) is **not** handled — that is a
+/// different charstring format (Type 1, not Type 2) and is refused
+/// at load time with `Error::Unsupported`.
+pub(crate) struct Type1Font {
+    /// Decoded `/FontFile3` CFF bytes — kept alive for `cff`.
+    /// `None` for a non-embedded (Standard-14-style) Type1 font: such
+    /// fonts carry no program, so [`Type1Font::outline`] refuses — the
+    /// renderer fails, but text extraction still gets widths + Unicode.
+    program: Option<Vec<u8>>,
+    /// Encoding table: char code (0..=255) → glyph-name bytes. For
+    /// CFF, names resolve via the font's charset, so we keep raw
+    /// bytes (e.g. `/G36`) rather than an AGL `&'static str`.
+    encoding: EncodingTable,
+    /// Glyph advances in PDF 1/1000-em units, indexed by char code.
+    widths: [f64; 256],
+    /// `/ToUnicode` CMap — `None` if the font lacks one.
+    tounicode: Option<crate::tounicode::ToUnicode>,
+    /// When `true`, codes with no explicit `/Encoding` name resolve
+    /// through the CFF program's own encoding + charset (the built-in
+    /// Type1 behaviour). Always true for our CFF-backed Type1 fonts.
+    builtin_cff_encoding: bool,
+    /// Lazily-built CFF table over `program` (same borrow pattern as
+    /// `SimpleFont::face`).
+    cff: RefCell<Option<CffTable<'static>>>,
+}
+
 /// The resolved font behind a `Tf` selection — a simple TrueType
-/// font (M5) or a composite Type 0 / CIDFontType2 font (M7).
-/// Both share the TrueType program, outline extraction, and the
-/// §9.4 text-state machinery; they differ in how string bytes become
-/// codes, how codes become glyph ids, and where widths come from.
+/// font (M5), a CFF Type1 font, or a composite Type 0 / CIDFontType2
+/// font (M7). They share outline extraction and the §9.4 text-state
+/// machinery; they differ in how string bytes become codes, how codes
+/// become glyph ids, and where widths come from.
 #[derive(Clone)]
 pub(crate) enum Font {
     Simple(Rc<SimpleFont>),
     Composite(Rc<CompositeFont>),
+    Type1(Rc<Type1Font>),
 }
 
 /// Resolve `name` in `/Resources /Font` — dispatch on `/Subtype`:
@@ -102,11 +135,12 @@ pub(crate) fn load_font(
         Some(b"TrueType") => Ok(Font::Simple(load_simple_font(
             doc, resources, name, limits,
         )?)),
+        Some(b"Type1") | Some(b"MMType1") => Ok(Font::Type1(load_type1_font(doc, dict, limits)?)),
         Some(b"Type0") => Ok(Font::Composite(load_composite_font(doc, dict, limits)?)),
         Some(other) => Err(Error::Unsupported {
             feature: "font subtype",
             detail: format!(
-                "/{} — only /TrueType and /Type0 (CIDFontType2, Identity-H) are supported",
+                "/{} — only /TrueType, /Type1 (CFF /FontFile3), /MMType1, and /Type0 are supported",
                 String::from_utf8_lossy(other)
             ),
         }),
@@ -253,6 +287,200 @@ pub(crate) fn load_simple_font(
         tounicode,
         face: RefCell::new(None),
     }))
+}
+
+/// Load a `/Type1` (or `/MMType1`) font dictionary backed by an
+/// embedded CFF program (`/FontDescriptor /FontFile3`).
+///
+/// Accepted: `/Subtype /Type1` or `/MMType1`, `/FontFile3` (raw CFF —
+/// parsed by `ttf_parser::tables::cff::Table`), `/Encoding` absent,
+/// `/WinAnsiEncoding`, or a dict whose `/Differences` name the glyphs.
+///
+/// Refused: `/FontFile` (Adobe Type1 / eexec — Type 1 charstrings, a
+/// different bytecode), `/FontFile2` (that is TrueType), non-embedded
+/// fonts (no outlines → would render blank). A `/BaseEncoding` other
+/// than `/WinAnsiEncoding` is refused like the TrueType path.
+fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Type1Font>, Error> {
+    // ---- FirstChar / LastChar / Widths --------------------------
+    let first_char = dict
+        .get(b"FirstChar".as_slice())
+        .and_then(|o| o.as_i64())
+        .unwrap_or(0);
+    let last_char = dict
+        .get(b"LastChar".as_slice())
+        .and_then(|o| o.as_i64())
+        .unwrap_or(255);
+    let mut widths = [0.0f64; 256];
+    if let Some(w_obj) = dict.get(b"Widths".as_slice()) {
+        let w = doc.deref(w_obj)?;
+        let arr = w
+            .as_array()
+            .ok_or_else(|| Error::Structure("/Widths is not an array".into()))?;
+        let expect = (last_char - first_char + 1).max(0) as usize;
+        for (i, e) in arr.iter().enumerate().take(expect.min(arr.len())) {
+            // Entries may themselves be indirect.
+            let e = doc.deref(e).unwrap_or_else(|_| e.clone());
+            if let Some(v) = e.as_number() {
+                if v.is_finite() && v >= 0.0 {
+                    widths[first_char as usize + i] = v;
+                }
+            }
+        }
+    }
+
+    // ---- Encoding → byte-name table ------------------------------
+    let (encoding, builtin) = resolve_type1_encoding(doc, dict)?;
+
+    // ---- FontDescriptor + FontFile3 (CFF) -------------------------
+    // ---- Font program (optional) --------------------------------
+    // Resolve the program bytes:
+    //   * `/FontFile3` (CFF) → decode + validate.
+    //   * `/FontFile` (Adobe Type 1 / eexec) → present but unparseable
+    //     → Unsupported (don't degrade to metrics-only: the file *has*
+    //     outlines, we just can't read them — calling it "supported for
+    //     text" while the program is present is misleading).
+    //   * no font-file / no descriptor → `None` → metrics-only font.
+    //     Text extraction still gets widths/encoding/Unicode; outline
+    //     calls refuse so render honestly reports Unsupported.
+    let program: Option<Vec<u8>> = match dict.get(b"FontDescriptor".as_slice()) {
+        None => None,
+        Some(fd_obj) => {
+            let fd = doc.deref(fd_obj)?;
+            let fd_dict = fd
+                .as_dict()
+                .ok_or_else(|| Error::Structure("/FontDescriptor is not a dictionary".into()))?;
+            if fd_dict.get(b"FontFile".as_slice()).is_some() {
+                return Err(Error::Unsupported {
+                    feature: "Type1 /FontFile (Adobe Type 1 program)",
+                    detail: "only CFF /FontFile3 Type1 programs are supported".into(),
+                });
+            }
+            match fd_dict.get(b"FontFile3".as_slice()) {
+                None => None,
+                Some(ff3_obj) => {
+                    let ff3 = doc.deref(ff3_obj)?;
+                    let (ff3_dict, ff3_raw) = ff3
+                        .as_stream()
+                        .ok_or_else(|| Error::Structure("/FontFile3 is not a stream".into()))?;
+                    // `/Subtype /CIDFontType0C` inside /FontFile3.
+                    if let Some(st) = ff3_dict
+                        .get(b"Subtype".as_slice())
+                        .and_then(|o| o.as_name())
+                    {
+                        if st == b"CIDFontType0C" {
+                            return Err(Error::Unsupported {
+                                feature: "CIDFontType0 CFF",
+                                detail: "/FontFile3 CIDFontType0C is a CID font, not simple Type1"
+                                    .into(),
+                            });
+                        }
+                    }
+                    let program = doc.decode_stream(ff3_dict, ff3_raw)?;
+                    if program.len() as u64 > limits.max_stream_bytes {
+                        return Err(Error::LimitExceeded {
+                            limit: "max_stream_bytes (embedded font)",
+                            max: limits.max_stream_bytes,
+                        });
+                    }
+                    CffTable::parse(&program).ok_or_else(|| {
+                        Error::Structure("/FontFile3 is not a valid CFF program".into())
+                    })?;
+                    Some(program)
+                }
+            }
+        }
+    };
+
+    let tounicode = crate::tounicode::load_tounicode(doc, dict, limits)?;
+
+    Ok(Rc::new(Type1Font {
+        program,
+        encoding,
+        widths,
+        tounicode,
+        builtin_cff_encoding: builtin,
+        cff: RefCell::new(None),
+    }))
+}
+
+/// A 256-entry encoding table mapping a char code to glyph-name bytes.
+/// `None` = no explicit name → the font's built-in encoding applies.
+type EncodingTable = [Option<Vec<u8>>; 256];
+
+/// Build the Type1 encoding table.
+///
+/// Returns `(table, use_builtin)`. `table[c]` is the glyph-name bytes
+/// for code `c` when an explicit encoding applies; `use_builtin`
+/// tells [`Type1Font::glyph_id`] to fall back to the CFF program's own
+/// encoding/charset when a code has no explicit name (the common case
+/// for embedded Type1 without `/Encoding`).
+fn resolve_type1_encoding(
+    doc: &Document,
+    font_dict: &Dict,
+) -> Result<(EncodingTable, bool), Error> {
+    let enc_obj = match font_dict.get(b"Encoding".as_slice()) {
+        None | Some(Object::Null) => {
+            // No explicit encoding → the font's built-in (CFF) encoding
+            // and charset apply. Signal the caller to use them.
+            return Ok(([const { None }; 256], true));
+        }
+        Some(o) => o.clone(),
+    };
+    let enc = doc.deref(&enc_obj)?;
+    let mut table: EncodingTable = [const { None }; 256];
+
+    // Seed with WinAnsi base when present (named or /BaseEncoding).
+    let has_winansi = match &enc {
+        Object::Name(n) => n.as_slice() == b"WinAnsiEncoding",
+        Object::Dict(d) => {
+            matches!(
+                d.get(b"BaseEncoding".as_slice()).and_then(|o| o.as_name()),
+                Some(b"WinAnsiEncoding")
+            )
+        }
+        _ => false,
+    };
+    if has_winansi {
+        for (i, n) in WINANSI.iter().enumerate() {
+            table[i] = n.map(|s| s.as_bytes().to_vec());
+        }
+    }
+
+    // Apply /Differences over whatever base is in effect.
+    if let Object::Dict(d) = &enc {
+        if let Some(diff_obj) = d.get(b"Differences".as_slice()) {
+            let arr = doc.deref(diff_obj)?;
+            let arr = arr
+                .as_array()
+                .ok_or_else(|| Error::Structure("/Differences is not an array".into()))?;
+            let mut idx: Option<usize> = None;
+            for e in arr {
+                match e {
+                    Object::Integer(i) => idx = Some((*i).clamp(0, 255) as usize),
+                    Object::Real(r) => idx = Some((*r as i64).clamp(0, 255) as usize),
+                    Object::Name(n) => {
+                        let i = idx.ok_or_else(|| {
+                            Error::Structure("/Differences entry has a name before any code".into())
+                        })?;
+                        if i > 255 {
+                            return Err(Error::Structure("/Differences code exceeds 255".into()));
+                        }
+                        table[i] = Some(n.clone());
+                        idx = Some(i + 1);
+                    }
+                    _ => {
+                        return Err(Error::Structure(
+                            "/Differences entries must be integers or names".into(),
+                        ))
+                    }
+                }
+            }
+        }
+    }
+    // When a name (WinAnsi) or dict encoding was given, codes with no
+    // explicit name still fall back to the CFF built-in encoding — so
+    // `builtin` stays true in all cases for Type1/CFF.
+    Ok((table, true))
 }
 
 /// Build the char-code → glyph-name table the font will use.
@@ -558,6 +786,120 @@ fn name_to_unicode(name: &str) -> Option<u32> {
 /// WinAnsi; `None` for anything else.
 fn mac_roman_code(name: &str) -> Option<u8> {
     MAC_ROMAN.iter().find(|(n, _)| *n == name).map(|(_, c)| *c)
+}
+
+// --------------------------------------------------------------------
+// Type 1 / CFF font (Subtype /Type1 or /MMType1 + /FontFile3)
+// --------------------------------------------------------------------
+
+impl Type1Font {
+    /// The CFF program parsed as a `cff::Table`. Lazily built and
+    /// cached — the table borrows `program`, so we transmute the
+    /// lifetime to `'static` (safe: `self` owns `program`, never moved).
+    /// `Err` when the font is non-embedded (`program: None`).
+    fn cff(&self) -> Result<std::cell::Ref<'_, CffTable<'static>>, Error> {
+        match &self.program {
+            None => Err(Error::Unsupported {
+                feature: "non-embedded Type1 font",
+                detail: "no embedded font program — glyph outlines unavailable".into(),
+            }),
+            Some(program) => {
+                {
+                    let mut slot = self.cff.borrow_mut();
+                    if slot.is_none() {
+                        let t = CffTable::parse(program)
+                            .ok_or_else(|| Error::Structure("invalid CFF program".into()))?;
+                        // SAFETY: `t` borrows `self.program`; `self` owns
+                        // both and `program` never moves or mutates.
+                        let t: CffTable<'static> = unsafe { std::mem::transmute(t) };
+                        *slot = Some(t);
+                    }
+                }
+                Ok(std::cell::Ref::map(self.cff.borrow(), |o| {
+                    o.as_ref().unwrap()
+                }))
+            }
+        }
+    }
+
+    /// Char code (0..=255) → glyph-name bytes per the PDF encoding.
+    /// `None` = rely on the CFF built-in encoding / .notdef.
+    fn glyph_name_bytes(&self, code: u8) -> Option<&[u8]> {
+        self.encoding[code as usize].as_deref()
+    }
+
+    /// Char code → glyph advance in 1/1000-em units (PDF `/Widths`).
+    pub(crate) fn width(&self, code: u8) -> f64 {
+        self.widths[code as usize]
+    }
+
+    /// Char code → glyph id. Order (§9.6.5.1):
+    /// 1. `/Encoding` name → CFF `glyph_index_by_name` (charset lookup).
+    /// 2. Fall back to the CFF program's own encoding via `glyph_index`.
+    /// 3. `.notdef` (0). A non-embedded font has no program → `.notdef`;
+    ///    `outline` is what actually refuses, keeping render honest.
+    pub(crate) fn glyph_id(&self, code: u8) -> Result<Option<GlyphId>, Error> {
+        let cff = match self.cff() {
+            Ok(c) => c,
+            Err(_) => return Ok(Some(GlyphId(0))), // no program → .notdef
+        };
+        if let Some(name) = self.glyph_name_bytes(code) {
+            if let Ok(s) = std::str::from_utf8(name) {
+                if let Some(g) = cff.glyph_index_by_name(s) {
+                    return Ok(Some(g));
+                }
+            }
+        }
+        // Built-in CFF encoding (StandardEncoding/custom charset).
+        if self.builtin_cff_encoding {
+            if let Some(g) = cff.glyph_index(code) {
+                return Ok(Some(g));
+            }
+        }
+        Ok(Some(GlyphId(0)))
+    }
+
+    /// Extract `glyph`'s outline into `builder` in font units.
+    /// `false` = empty. Non-embedded fonts have no program → propagate
+    /// the `cff()` Unsupported error so rendering refuses honestly.
+    pub(crate) fn outline(
+        &self,
+        glyph: GlyphId,
+        builder: &mut dyn OutlineBuilder,
+    ) -> Result<bool, Error> {
+        let cff = self.cff()?; // Unsupported for non-embedded fonts
+        Ok(cff.outline(glyph, builder).is_ok())
+    }
+
+    /// Code → Unicode via `/ToUnicode`, else glyph name → AGL →
+    /// Unicode (only meaningful for named glyphs, not subset `/Gxx`).
+    pub(crate) fn unicode(&self, code: u8) -> Option<String> {
+        if let Some(tu) = &self.tounicode {
+            return tu.decode(code as u32);
+        }
+        let name = self.glyph_name_bytes(code)?;
+        let s = std::str::from_utf8(name).ok()?;
+        let u = name_to_unicode(s)?;
+        char::from_u32(u).map(|c| c.to_string())
+    }
+
+    /// `true` when the font carries a `/ToUnicode` CMap.
+    pub(crate) fn has_tounicode(&self) -> bool {
+        self.tounicode.is_some()
+    }
+
+    /// `true` when `code` is the space char (§9.3.3, single-byte 32).
+    pub(crate) fn is_space_code(&self, code: u32) -> bool {
+        code == 0x20
+    }
+
+    /// CFF fonts are nominally 1000 units/em (FontMatrix 0.001). The
+    /// `/FontMatrix` scale is already baked into the charstring
+    /// coordinates for CFF, so we report 1000 — matching the PDF glyph
+    /// space that `Tm`'s `Tfs` then scales.
+    pub(crate) fn units_per_em(&self) -> Result<f64, Error> {
+        Ok(1000.0)
+    }
 }
 
 // --------------------------------------------------------------------
@@ -972,7 +1314,7 @@ impl Font {
     /// byte on a 2-byte font). Codes never span string boundaries.
     pub(crate) fn read_code(&self, bytes: &[u8], pos: usize) -> Result<(u32, usize), Error> {
         match self {
-            Font::Simple(_) => Ok((bytes[pos] as u32, 1)),
+            Font::Simple(_) | Font::Type1(_) => Ok((bytes[pos] as u32, 1)),
             Font::Composite(_) => {
                 if pos + 1 >= bytes.len() {
                     return Err(Error::Structure(
@@ -990,6 +1332,7 @@ impl Font {
         match self {
             Font::Simple(f) => f.is_space_code(code),
             Font::Composite(f) => f.is_space_code(code),
+            Font::Type1(f) => f.is_space_code(code),
         }
     }
 
@@ -999,6 +1342,7 @@ impl Font {
         match self {
             Font::Simple(f) => f.width(code as u8),
             Font::Composite(f) => f.width(code),
+            Font::Type1(f) => f.width(code as u8),
         }
     }
 
@@ -1008,6 +1352,7 @@ impl Font {
         match self {
             Font::Simple(f) => Ok(f.glyph_id(code as u8)?.unwrap_or(GlyphId(0))),
             Font::Composite(f) => f.glyph_id(code),
+            Font::Type1(f) => Ok(f.glyph_id(code as u8)?.unwrap_or(GlyphId(0))),
         }
     }
 
@@ -1020,6 +1365,7 @@ impl Font {
         match self {
             Font::Simple(f) => f.outline(glyph, builder),
             Font::Composite(f) => f.outline(glyph, builder),
+            Font::Type1(f) => f.outline(glyph, builder),
         }
     }
 
@@ -1030,6 +1376,7 @@ impl Font {
         match self {
             Font::Simple(f) => f.unicode(code as u8),
             Font::Composite(f) => f.unicode(code),
+            Font::Type1(f) => f.unicode(code as u8),
         }
     }
 
@@ -1038,6 +1385,7 @@ impl Font {
         match self {
             Font::Simple(f) => f.has_tounicode(),
             Font::Composite(f) => f.has_tounicode(),
+            Font::Type1(f) => f.has_tounicode(),
         }
     }
 
@@ -1046,6 +1394,7 @@ impl Font {
         match self {
             Font::Simple(f) => f.units_per_em(),
             Font::Composite(f) => f.units_per_em(),
+            Font::Type1(f) => f.units_per_em(),
         }
     }
 }
