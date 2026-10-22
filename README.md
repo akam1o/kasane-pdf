@@ -177,7 +177,8 @@ noted otherwise.
 
 The engine is continuously measured against a real-world PDF corpus
 (~100+ files: arXiv/LaTeX, IRS forms, veraPDF, pdf.js test files)
-stored in **Cloudflare R2** and downloaded on demand. See
+fetched from an **S3-compatible object store you configure** (or a
+local directory) and never committed to git. See
 [`docs/compat-corpus.md`](docs/compat-corpus.md).
 
 ```console

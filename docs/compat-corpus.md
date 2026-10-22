@@ -1,28 +1,59 @@
 # Real-world PDF compatibility corpus
 
 kasane-pdf measures engine maturity against real, in-the-wild PDFs —
-not just the hand-crafted `tests/fixtures/`. The corpus lives in
-**Cloudflare R2** (private bucket, S3 API) and is downloaded on
-demand; PDFs are never committed to git.
+not just the hand-crafted `tests/fixtures/`. The corpus lives in an
+**S3-compatible object store** (Cloudflare R2, AWS S3, MinIO,
+Backblaze B2, …) and is downloaded on demand; PDFs are never committed
+to git, and no endpoint, bucket, or credential is hard-coded in the
+repo.
 
-- Bucket: `<CORPUS_BUCKET>`
-- Endpoint: `https://<ACCOUNT_ID>.r2.cloudflarestorage.com`
-- Layout: `pdfs/<category>/<sha256>.pdf`
+- Layout: `<prefix>/<category>/<sha256>.pdf` (prefix defaults to `pdfs`)
 - Manifest: [`../compat/manifest.yaml`](../compat/manifest.yaml) —
   the single source of truth (id, sha256, category, source, license,
-  `expect` for the Compatibility/Robustness split).
+  `expect` for the Compatibility/Robustness split). The manifest names
+  sources and licences but **no** endpoint or credentials.
+
+## Configuration
+
+Copy [`../compat/corpus.env.example`](../compat/corpus.env.example) to
+`.env` (git-ignored) or export the variables:
+
+| variable | meaning |
+|---|---|
+| `KASANE_CORPUS_ENDPOINT` | S3 endpoint URL for your store |
+| `KASANE_CORPUS_BUCKET` | bucket holding the corpus objects |
+| `KASANE_CORPUS_PREFIX` | object-key prefix (default `pdfs`) |
+
+Back-compat: `R2_ENDPOINT`/`CLOUDFLARE_R2_ENDPOINT`/`R2_BUCKET` (and
+generic `AWS_ENDPOINT_URL`/`S3_BUCKET`) are also honoured.
 
 ## Credentials
 
-Read/write keys live in `~/.cloudflare/` (not in the repo):
+Credentials resolve through the **standard AWS/boto3 provider
+chain** — nothing is stored in the repo:
 
-```
-~/.cloudflare/r2-<CORPUS_BUCKET>.access_key_id
-~/.cloudflare/r2-<CORPUS_BUCKET>.secret_access_key
+- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, or
+- `AWS_PROFILE` → `~/.aws/credentials`, or
+- an IAM role / instance-metadata / SSO.
+
+Scope the token to the corpus bucket only.
+
+## No store? Use a local directory
+
+The runner reads a plain directory of PDFs. Build one from files you
+already have (matched to the manifest by sha256):
+
+```console
+$ .venv-corpus/bin/python compat/fetch-corpus.py seed \
+    --from /path/to/my/pdfs --dir compat/corpus
 ```
 
-or as `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. The token is
-scoped to this bucket only.
+…or run the runner straight at any directory:
+
+```console
+$ compat/runner/target/release/kasane-compat run \
+    --corpus /path/to/my/pdfs --out compat/reports
+```
 
 ## Setup
 

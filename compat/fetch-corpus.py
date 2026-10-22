@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Download / upload the real-world PDF compatibility corpus (R2).
+"""Download / upload the real-world PDF compatibility corpus.
 
-PDFs live in Cloudflare R2 (S3 API), keyed by content SHA-256 so the
-manifest is immutable and cache-friendly. Nothing PDF-shaped is ever
-committed to git.
+The corpus lives in an S3-compatible object store, keyed by content
+SHA-256 so the manifest is immutable and cache-friendly. Nothing
+PDF-shaped is ever committed to git. The store is intentionally
+generic — Cloudflare R2, AWS S3, MinIO, Backblaze B2, etc. all work;
+nothing here is tied to a specific provider or account.
 
 Layout in the bucket:
     pdfs/<category>/<sha256>.pdf
@@ -14,11 +16,21 @@ Usage:
     fetch-corpus.py add <file> --category C --source S --license L [--notes N]
     fetch-corpus.py add-url <url>  ...        # download then add
     fetch-corpus.py verify                    # re-hash local files vs manifest
+    fetch-corpus.py seed --dir DIR            # build a corpus dir from local PDFs (no store)
 
-Credentials come from the environment (or ~/.cloudflare/r2-* files):
-    R2_ACCOUNT_ENDPOINT / CLOUDFLARE_R2_ENDPOINT   — S3 endpoint URL
-    AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY     — token
-    R2_BUCKET                                       — default <CORPUS_BUCKET>
+Configuration comes from the environment — no endpoint, bucket, or
+credential is hard-coded. Copy `corpus.env.example` to `.env` (or set
+the variables directly):
+
+    KASANE_CORPUS_ENDPOINT   — S3 endpoint URL (e.g. an R2/S3/MinIO URL)
+    KASANE_CORPUS_BUCKET     — bucket name
+    KASANE_CORPUS_PREFIX     — object key prefix (default "pdfs")
+    AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY  — credentials via the
+                               standard boto3/AWS provider chain
+                               (env, ~/.aws/credentials, IAM role, …).
+
+`--dir DIR` with a locally-populated corpus skips the store entirely —
+`download`/`verify`/`seed` all work against a plain directory.
 """
 
 import argparse
@@ -38,38 +50,57 @@ except ImportError:  # pragma: no cover - dependency hint
 ROOT = Path(__file__).resolve().parent
 MANIFEST = ROOT / "manifest.yaml"
 DEFAULT_DIR = ROOT / "corpus"
-KEY_PREFIX = "pdfs"
-DEFAULT_BUCKET = "<CORPUS_BUCKET>"
-DEFAULT_ENDPOINT = "https://<ACCOUNT_ID>.r2.cloudflarestorage.com"
+# Object-key prefix inside the bucket. Overridable via env for anyone
+# mirroring the corpus under a different layout.
+KEY_PREFIX = os.environ.get("KASANE_CORPUS_PREFIX", "pdfs")
 
 
-def _cred(name, filename):
-    v = os.environ.get(name)
-    if v:
-        return v.strip()
-    p = Path.home() / ".cloudflare" / filename
-    return p.read_text().strip() if p.exists() else None
+def _endpoint():
+    """S3 endpoint URL — required for store access, never defaulted."""
+    return (
+        os.environ.get("KASANE_CORPUS_ENDPOINT")
+        # Back-compat with the original variable names.
+        or os.environ.get("R2_ENDPOINT")
+        or os.environ.get("CLOUDFLARE_R2_ENDPOINT")
+        or os.environ.get("AWS_ENDPOINT_URL")
+        or os.environ.get("AWS_ENDPOINT_URL_S3")
+    )
+
+
+def _bucket():
+    """Bucket name — required for store access, never defaulted."""
+    return (
+        os.environ.get("KASANE_CORPUS_BUCKET")
+        or os.environ.get("R2_BUCKET")
+        or os.environ.get("S3_BUCKET")
+        or os.environ.get("AWS_S3_BUCKET")
+    )
 
 
 def client():
-    ep = os.environ.get("R2_ENDPOINT") or os.environ.get("CLOUDFLARE_R2_ENDPOINT") \
-        or DEFAULT_ENDPOINT
-    ak = _cred("AWS_ACCESS_KEY_ID", "r2-<CORPUS_BUCKET>.access_key_id")
-    sk = _cred("AWS_SECRET_ACCESS_KEY", "r2-<CORPUS_BUCKET>.secret_access_key")
-    if not ak or not sk:
-        sys.exit("no R2 credentials: set AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY "
-                 "or write ~/.cloudflare/r2-<CORPUS_BUCKET>.*")
+    ep = _endpoint()
+    bk = _bucket()
+    if not ep or not bk:
+        sys.exit(
+            "no corpus store configured: set KASANE_CORPUS_ENDPOINT and\n"
+            "KASANE_CORPUS_BUCKET (see compat/corpus.env.example), or use\n"
+            "a local directory with --dir."
+        )
+    # Credentials resolve through the standard boto3 provider chain —
+    # env vars, ~/.aws/credentials + AWS_PROFILE, container/EC2 roles,
+    # SSO — so no key material ever lives in this file or its config.
     return boto3.client(
         "s3",
         endpoint_url=ep,
-        aws_access_key_id=ak,
-        aws_secret_access_key=sk,
-        config=Config(signature_version="s3v4", region_name="auto"),
+        config=Config(
+            signature_version="s3v4",
+            region_name=os.environ.get("AWS_REGION", "auto"),
+        ),
     )
 
 
 def bucket():
-    return os.environ.get("R2_BUCKET", DEFAULT_BUCKET)
+    return _bucket()
 
 
 def sha256(path):
@@ -111,8 +142,23 @@ def cmd_download(args):
     m = load_manifest()
     out = Path(args.dir)
     out.mkdir(parents=True, exist_ok=True)
-    s3 = client()
     files = m.get("files", [])
+    # If every file is already present+valid locally, no store needed.
+    need = [
+        e for e in files
+        if not ((out / f"{e['id']}.pdf").exists()
+                and sha256(out / f"{e['id']}.pdf") == e["sha256"])
+    ]
+    if not need:
+        print(f"corpus already complete ({len(files)}) → {out}")
+        return 0
+    if not (_endpoint() and _bucket()):
+        sys.exit(
+            f"{len(need)} file(s) missing and no corpus store configured.\n"
+            "Set KASANE_CORPUS_ENDPOINT/KASANE_CORPUS_BUCKET to fetch them,\n"
+            "or point --dir at a locally-populated corpus."
+        )
+    s3 = client()
     ok = miss = 0
     for e in files:
         dest = out / f"{e['id']}.pdf"
@@ -133,6 +179,30 @@ def cmd_download(args):
         ok += 1
     print(f"downloaded {ok}, missing {miss} → {out}")
     return 0 if miss == 0 else 1
+
+
+def cmd_seed(args):
+    """Populate a corpus dir from local PDFs matching the manifest's
+    sha256 — no object store required. Point `--from` at a directory of
+    PDFs; each manifest entry is linked/copied in if its hash matches."""
+    m = load_manifest()
+    src = Path(args.source_dir)
+    out = Path(args.dir)
+    out.mkdir(parents=True, exist_ok=True)
+    want = {e["sha256"]: e for e in m.get("files", [])}
+    placed = 0
+    for pdf in sorted(src.rglob("*.pdf")):
+        digest = sha256(pdf)
+        e = want.get(digest)
+        if not e:
+            continue
+        dest = out / f"{e['id']}.pdf"
+        if not dest.exists():
+            dest.hardlink_to(pdf) if hasattr(Path, "hardlink_to") else \
+                dest.write_bytes(pdf.read_bytes())
+        placed += 1
+    print(f"seeded {placed}/{len(want)} manifest entries → {out}")
+    return 0
 
 
 def _register(path, category, source, license_, notes, pages):
@@ -221,10 +291,16 @@ def main():
     vf = sub.add_parser("verify")
     vf.add_argument("--dir", default=str(DEFAULT_DIR))
 
+    sd = sub.add_parser("seed",
+                        help="build a corpus dir from local PDFs (no store)")
+    sd.add_argument("--from", dest="source_dir", required=True,
+                    help="directory of PDFs to match against the manifest")
+    sd.add_argument("--dir", default=str(DEFAULT_DIR))
+
     args = ap.parse_args()
     fn = {
         "list": cmd_list, "download": cmd_download, "add": cmd_add,
-        "add-url": cmd_add_url, "verify": cmd_verify,
+        "add-url": cmd_add_url, "verify": cmd_verify, "seed": cmd_seed,
     }[args.cmd]
     sys.exit(fn(args) or 0)
 

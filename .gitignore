@@ -1,6 +1,18 @@
 target/
 
-# compatibility corpus (downloaded from R2, never committed)
+# local secrets / environment config — never committed
+.env
+.env.*
+!.env.example
+!*.env.example
+*.pem
+*.key
+
+# compatibility corpus (downloaded object store, never committed)
 compat/corpus/
 .venv-corpus/
 compat/reports/
+
+# Python bytecode from the corpus tooling
+__pycache__/
+*.pyc
