@@ -1,1 +1,6 @@
-/target
+target/
+
+# compatibility corpus (downloaded from R2, never committed)
+compat/corpus/
+.venv-corpus/
+compat/reports/

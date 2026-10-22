@@ -20,7 +20,9 @@ way).
    editing/diagnosis subsystem).
 5. [`testing.md`](testing.md) — test layout, fixtures, and external
    verification.
-6. [`redaction-design.md`](redaction-design.md) — the recorded
+6. [`compat-corpus.md`](compat-corpus.md) — the R2-backed real-world
+   PDF compatibility corpus and runner.
+7. [`redaction-design.md`](redaction-design.md) — the recorded
    constraints that shape document-model choices.
 
 ## Feature support matrix (`features/`)

@@ -1,30 +1,35 @@
 //! # kasane-pdf
 //!
-//! A PDF engine written in Rust (early development, milestone M3).
+//! A PDF engine written in Rust — parsing, document model, content
+//! interpretation, rendering, text extraction, editing, and writing
+//! are all implemented here (not a wrapper around PDFium/MuPDF/
+//! Poppler).
 //!
-//! Scope so far (see `docs/features/` for the full support matrix):
+//! Scope (see `docs/features/` for the full per-area support matrix):
 //!
-//! - Parse PDF basic objects (null, booleans, numbers, names, literal/hex
-//!   strings, arrays, dictionaries, `stream` markers).
-//! - Read classic cross-reference tables, `/Prev` chains, xref streams,
-//!   hybrid-reference files, and object streams.
-//! - Decode `/FlateDecode` streams with PNG/TIFF predictors (8-bit).
-//! - Resolve indirect references.
-//! - Load the document catalog and page tree, with inherited page
-//!   attributes (`MediaBox`, `CropBox`, `Rotate`, `Resources`).
-//! - Parse page `/Contents` into typed [`Operation`]s and look up
-//!   named entries in page `/Resources`.
-//! - Render pages that use only basic drawing (paths, clipping,
-//!   Device colours) to a pixel buffer via [`render_page`] and encode
-//!   as PNG via [`pixmap_to_png`].
+//! - Parse PDF basic objects, classic `xref` tables, `/Prev` chains,
+//!   xref streams, hybrid `/XRefStm`, and object streams.
+//! - Decode `/FlateDecode` (+ PNG/TIFF predictors) and `/DCTDecode`
+//!   (image XObjects / region editing).
+//! - Load the document catalog and page tree with inherited page
+//!   attributes; `page_contents`/`page_operations`/`page_resource`.
+//! - Render pages to a pixmap via [`render_page`] / [`pixmap_to_png`]:
+//!   paths, clipping, Device colours, Form & Image XObjects, embedded
+//!   TrueType and Type0/Identity-H/CIDFontType2 text.
+//! - Extract positioned Unicode text via [`extract_text`]
+//!   (`/ToUnicode` CMap + WinAnsi/AGL fallback).
+//! - Full single-revision rewrite via [`rewrite`].
+//! - `Document::edit()` sessions: `/Square` annotations plus the
+//!   experimental scoped `remove_*` editing family and
+//!   `diagnose_redaction`/`audit_residuals`.
 //!
-//! Explicitly **not** supported yet (reported as [`Error::Unsupported`]
-//! or [`Error::Encrypted`]): stream filters other than `/FlateDecode`,
-//! inline images, encrypted files, text drawing (`Tf`/`Tj`/`TJ`/`'`/`"`),
-//! XObjects (`Do`), shading (`sh`), extended graphics state (`gs`),
-//! pattern colours (`SCN`/`scn` name operands), non-device colour
-//! spaces, page annotations, `/UserUnit` ≠ 1, Unicode text mapping,
-//! editing.
+//! Explicitly **not** supported (typed `Error::Unsupported` or
+//! `Error::Encrypted`, never a partial result): stream filters other
+//! than `/FlateDecode`/`/DCTDecode`, inline images, encrypted files,
+//! non-device colour spaces, shading/`gs`/patterns, transparency,
+//! `/ImageMask`/`/SMask`, non-embedded/Type1/Type3/CFF fonts,
+//! non-Identity-H Type0 encodings, page annotations rendering,
+//! `/UserUnit` ≠ 1, singular CTMs.
 //!
 //! # Safety-oriented design
 //!
