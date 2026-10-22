@@ -2190,9 +2190,27 @@ impl<'a> Renderer<'a> {
         //   text → render:  Trm = [Tfs·Th 0 0 Tfs 0 Trise] × Tm
         //   render → page:  CTM
         //   page → pixmap:  user_to_pix
+        // Glyph outlines serve two purposes: painting, and the
+        // per-glyph `bounds` reported by text extraction. Extraction
+        // still wants real bounds, so attempt the outline there too —
+        // but a font that *cannot* produce one (non-embedded Type1,
+        // metrics-only) must not fail extraction: it just reports
+        // `bounds: None`. In render mode the same refusal propagates.
         let units = font.units_per_em()?;
         let mut gp = crate::font::GlyphPath::new(units);
-        let has_outline = font.outline(gid, &mut gp)?;
+        let has_outline = match font.outline(gid, &mut gp) {
+            Ok(h) => h,
+            Err(e) if self.extraction_only => {
+                // Tolerated only when not painting — a metrics-only
+                // font yields no ink shape, so bounds degrade to None.
+                if matches!(e, Error::Unsupported { .. }) {
+                    false
+                } else {
+                    return Err(e);
+                }
+            }
+            Err(e) => return Err(e),
+        };
         // The finished path is consumed by painting or by the bounds
         // computation below — exactly one of the two per call.
         let glyph_path = if has_outline { gp.finish() } else { None };
@@ -2518,18 +2536,14 @@ fn blend_mode_channel(mode: tiny_skia::BlendMode, cs: u8, cb: u8) -> u8 {
         tiny_skia::BlendMode::Darken => b.min(s),
         tiny_skia::BlendMode::Lighten => b.max(s),
         tiny_skia::BlendMode::ColorDodge => {
-            if b >= 1.0 {
-                1.0
-            } else if s >= 1.0 {
+            if b >= 1.0 || s >= 1.0 {
                 1.0
             } else {
                 (b / (1.0 - s)).min(1.0)
             }
         }
         tiny_skia::BlendMode::ColorBurn => {
-            if b <= 0.0 {
-                0.0
-            } else if s <= 0.0 {
+            if b <= 0.0 || s <= 0.0 {
                 0.0
             } else {
                 1.0 - ((1.0 - b) / s).min(1.0)

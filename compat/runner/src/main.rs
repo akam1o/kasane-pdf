@@ -15,6 +15,7 @@
 
 mod analysis;
 mod cause;
+mod fontaudit;
 mod gsaudit;
 mod probe;
 
@@ -618,6 +619,8 @@ struct Args {
     compare: Option<PathBuf>,
     /// Run the ExtGState usage audit instead of a compat run.
     gs_audit: bool,
+    /// Run the font usage audit instead of a compat run.
+    font_audit: bool,
 }
 
 fn parse_args() -> Args {
@@ -633,6 +636,7 @@ fn parse_args() -> Args {
         report_format: "md".into(),
         compare: None,
         gs_audit: false,
+        font_audit: false,
     };
     let mut it = std::env::args().skip(1).peekable();
     while let Some(arg) = it.next() {
@@ -659,6 +663,7 @@ fn parse_args() -> Args {
             "--format" => a.report_format = it.next().unwrap_or_else(|| "md".into()),
             "--compare" => a.compare = it.next().map(PathBuf::from),
             "--gs-audit" => a.gs_audit = true,
+            "--font-audit" => a.font_audit = true,
             _ => {}
         }
     }
@@ -691,6 +696,10 @@ fn main() {
     // ---- ExtGState usage audit (diagnostic, not a compat run) ------
     if args.gs_audit {
         run_gs_audit(&files, &args);
+        return;
+    }
+    if args.font_audit {
+        run_font_audit(&files, &args);
         return;
     }
 
@@ -1326,5 +1335,79 @@ fn run_gs_audit(files: &[PathBuf], args: &Args) {
             .map(|(v, n)| format!("{v}×{n}"))
             .collect();
         println!("| `{k}` | {c} | {} |", sample.join(", "));
+    }
+}
+
+// ------------------------------------------------------------------
+// Font usage audit
+// ------------------------------------------------------------------
+
+fn run_font_audit(files: &[PathBuf], args: &Args) {
+    // subtype → files; also bucket by embedded/encoding/tounicode
+    let mut sub_files: BTreeMap<String, usize> = BTreeMap::new();
+    let mut detail: BTreeMap<String, usize> = BTreeMap::new();
+    let mut files_with_fonts = 0usize;
+
+    for path in files {
+        let id = path.file_stem().unwrap().to_string_lossy().into_owned();
+        if let Some(only) = &args.only {
+            if &id != only {
+                continue;
+            }
+        }
+        let data = fs::read(path).unwrap_or_default();
+        let doc = match Document::from_bytes(&data) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let a = fontaudit::audit(&doc);
+        if a.fonts.is_empty() {
+            continue;
+        }
+        files_with_fonts += 1;
+        let mut subs_in_file: std::collections::BTreeSet<String> = Default::default();
+        for (n, f) in &a.fonts {
+            subs_in_file.insert(f.subtype.clone());
+            let key = format!(
+                "{}|emb={}|enc={}|tu={}|w={}",
+                f.subtype, f.embedded, f.encoding, f.to_unicode, f.widths
+            );
+            if f.used {
+                *detail.entry(key).or_default() += 1;
+            }
+            let _ = n;
+        }
+        for s in subs_in_file {
+            *sub_files.entry(s).or_default() += 1;
+        }
+        if args.only.is_some() {
+            // detail dump for single file
+            println!("== {id} ==");
+            for (n, f) in &a.fonts {
+                println!(
+                    "  {n}: sub={} base={} emb={} desc={} enc={} tu={} w={} used={} cp={}",
+                    f.subtype, f.base_font, f.embedded, f.descriptor, f.encoding, f.to_unicode,
+                    f.widths, f.used, f.charprocs
+                );
+            }
+        }
+    }
+
+    println!("# Font audit — {} files with fonts", files_with_fonts);
+    println!("| subtype | files |");
+    println!("|---|---:|");
+    let mut rows: Vec<_> = sub_files.iter().collect();
+    rows.sort_by_key(|(_, c)| std::cmp::Reverse(**c));
+    for (s, c) in rows {
+        println!("| `{s}` | {c} |");
+    }
+    println!();
+    println!("## Used-font shapes (only fonts actually Tf-invoked)");
+    println!("| shape | files |");
+    println!("|---|---:|");
+    let mut rows: Vec<_> = detail.iter().collect();
+    rows.sort_by_key(|(_, c)| std::cmp::Reverse(**c));
+    for (s, c) in rows {
+        println!("| `{s}` | {c} |");
     }
 }

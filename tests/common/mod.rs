@@ -89,10 +89,25 @@ pub fn blocker_page_pdf() -> Vec<u8> {
           >> \
           /Contents 7 0 R >>",
     );
-    // Type1 — unsupported: any Tj under it stops the walk.
+    // Type1 backed by an eexec `/FontFile` — a program format we do
+    // not parse, so `Tf` fails to load and the walk goes incomplete.
+    // (A bare non-embedded Type1 now loads metrics-only for text
+    // extraction — that would *not* stop the walk, only mark glyphs
+    // uncertain.)
     push(
         4,
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding \
+          /FontDescriptor 10 0 R >>",
+    );
+    push(
+        10,
+        b"<< /Type /FontDescriptor /FontName /Helvetica /Flags 32 \
+          /FontBBox [0 0 500 700] /Ascent 700 /Descent -200 /CapHeight 660 \
+          /StemV 80 /FontFile 11 0 R >>",
+    );
+    push(
+        11,
+        b"<< /Length 8 >>\nstream\neexec!!!\nendstream",
     );
     push(
         5,
@@ -129,15 +144,15 @@ pub fn blocker_page_pdf() -> Vec<u8> {
         b"<< /Type /Annot /Subtype /Link /Rect [40 140 70 160] /A << /S /URI /URI (https://x) >> >>",
     );
     let xref: usize = parts.iter().map(|p| p.len()).sum();
-    parts.push(b"xref\n0 10\n0000000000 65535 f \n".to_vec());
-    for n in 1..10u32 {
+    parts.push(b"xref\n0 12\n0000000000 65535 f \n".to_vec());
+    for n in 1..12u32 {
         if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
             parts.push(format!("{o:010} 00000 n \n").into_bytes());
         } else {
             parts.push(b"0000000000 00000 f \n".to_vec());
         }
     }
-    parts.push(b"trailer\n<< /Size 10 /Root 1 0 R >>\n".to_vec());
+    parts.push(b"trailer\n<< /Size 12 /Root 1 0 R >>\n".to_vec());
     parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
     parts.concat()
 }
