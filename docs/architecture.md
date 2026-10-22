@@ -160,9 +160,13 @@ pipeline rather than duplicating them. `object`, `error`, `limits`,
   numbers plus, for the `N` forms, an optional trailing pattern name.
   A later stage can validate against the resolved colour space.
 
-- **`Matrix::concat` is PDF `cm` order.** The `cm` operand
-  concatenates to the *left* of the CTM, so `existing.concat(cm)`
-  computes `cm × existing`. `transform` applies
+- **`Matrix::concat` applies the receiver first.** `a.concat(b)` is
+  the row-vector product `a × b` (apply `a`, then `b`). The `cm`
+  operand, a form `/Matrix` and a Type3 `/FontMatrix` all concatenate
+  to the *left* of the CTM (`CTM' = M × CTM`), so the renderer writes
+  `m.concat(ctm)` for them — writing `ctm.concat(m)` puts `M` after
+  the CTM and misplaces anything drawn under a nested transform (a
+  bug that shipped until the corpus oracle test caught it). `transform` applies
   `x' = a·x + c·y + e`, `y' = b·x + d·y + f`. Concatenation is
   non-commutative and tested for it. `Matrix` is a value type; the
   page-level `CropBox`/`Rotate` → device mapping is a separate,

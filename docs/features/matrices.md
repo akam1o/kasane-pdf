@@ -3,7 +3,10 @@
 ## Matrices (ISO 32000-1 §8.3)
 
 `Matrix` is a `[a b c d e f]` affine transform with `transform`,
-`concat` (PDF `cm` order: `existing.concat(cm)` = `cm × existing`),
+`concat` (`a.concat(b)` applies `a` then `b` = `a × b`; the PDF `cm`
+operator, a form `/Matrix` and a Type3 `/FontMatrix` all map the new
+space into the old one, so the renderer composes them as
+`m.concat(ctm)` = `M × CTM`),
 `translate`/`scale`/`rotate` helpers, and `is_finite` checking. The
 page-level `CropBox`/`Rotate` → pixmap mapping is built inside
 `render_page` (see `src/render.rs`), not to be confused with the
