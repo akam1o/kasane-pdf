@@ -3478,3 +3478,183 @@ fn cli_remove_region_progressive_jpeg_unsupported() {
     assert!(!stdout.contains("ff d8") && !stderr.contains("ff d8"));
     assert!(!stdout.contains("\\xff") && !stderr.contains("\\xff"));
 }
+
+// ------------------------------------------------------------------
+// M28 — grid-aligned CTM (rotation / reflection) image editing
+// ------------------------------------------------------------------
+
+/// A raw 3×2 gray image painted under `cm` — non-square so each
+/// pixel's position is identifiable. Rows top-down:
+/// `0x10 0x20 0x30 / 0x40 0x50 0x60`.
+fn m28_gray_pdf(cm: &str) -> Vec<u8> {
+    let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+    let mut offs: Vec<(u32, usize)> = Vec::new();
+    let mut push = |n: u32, body: &[u8]| {
+        offs.push((n, parts.iter().map(|p| p.len()).sum()));
+        parts.push(format!("{n} 0 obj\n").into_bytes());
+        parts.push(body.to_vec());
+        parts.push(b"\nendobj\n".to_vec());
+    };
+    push(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+    push(
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+          /Resources << /XObject << /Im1 10 0 R >> >> /Contents 9 0 R >>",
+    );
+    let img = [0x10u8, 0x20, 0x30, 0x40, 0x50, 0x60];
+    let mut f = b"<< /Type /XObject /Subtype /Image /Width 3 /Height 2 \
+      /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+        .to_vec();
+    f.extend_from_slice(img.len().to_string().as_bytes());
+    f.extend_from_slice(b" >>\nstream\n");
+    f.extend_from_slice(&img);
+    f.extend_from_slice(b"\nendstream");
+    push(10, &f);
+    let body = format!("q\n{cm}\n/Im1 Do\nQ\n").into_bytes();
+    let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+    sb.extend_from_slice(&body);
+    sb.extend_from_slice(b"\nendstream");
+    push(9, &sb);
+    let xref: usize = parts.iter().map(|p| p.len()).sum();
+    parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+    for n in 1..11u32 {
+        if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+            parts.push(format!("{o:010} 00000 n \n").into_bytes());
+        } else {
+            parts.push(b"0000000000 00000 f \n".to_vec());
+        }
+    }
+    parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+    parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+    parts.concat()
+}
+
+/// `experimental-remove-image-region` on a 90°-rotated image —
+/// succeeds, output re-parses, and only the selected pixel is black.
+#[test]
+fn cli_m28_rot90_image_edit() {
+    let dir = tmpdir("m28-rot90");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    // 90° rotation: [0 10 -6 0 38 60] → pixel (0,0) at x∈[32,35],
+    // y∈[60,63.33].
+    fs::write(&src, m28_gray_pdf("0 10 -6 0 38 60 cm")).unwrap();
+    let out = bin()
+        .args(["experimental-remove-image-region"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "32", "60", "35", "63.3", "--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("pixels changed: 1"), "{stdout}");
+    assert!(stdout.contains("invocations edited: 1"), "{stdout}");
+    // Re-parse: KasIm0 clone exists; verify the pixel sample.
+    let out_doc = kasane_pdf::Document::from_bytes(&fs::read(&dst).unwrap()).unwrap();
+    let page = out_doc.pages().first().unwrap();
+    let ops = out_doc.page_operations(page).unwrap();
+    let names: Vec<_> = ops
+        .iter()
+        .filter_map(|o| match o {
+            kasane_pdf::Operation::Do(n) => Some(n.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(names.iter().any(|n| n == b"KasIm0"), "{names:?}");
+}
+
+/// A reflected image (horizontal flip) — the clone's leftmost
+/// painted pixel is the image's pixel (0,0) but at the *right* of
+/// the painted bbox after the flip.
+#[test]
+fn cli_m28_hflip_image_edit() {
+    let dir = tmpdir("m28-hflip");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    // Horizontal reflection: [-6 0 0 10 38 60] → pixel (0,0) lands
+    // at x∈[36,38], y∈[65,70].
+    fs::write(&src, m28_gray_pdf("-6 0 0 10 38 60 cm")).unwrap();
+    let out = bin()
+        .args(["experimental-remove-image-region"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "36", "65", "38", "70", "--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(stdout.contains("pixels changed: 1"), "{stdout}");
+}
+
+/// An arbitrary-angle (30°) rotation is refused — input and the
+/// sentinel output stay untouched, no temp files leak, and no
+/// document bytes reach stdout/stderr.
+#[test]
+fn cli_m28_arbitrary_rotation_refused() {
+    let dir = tmpdir("m28-arb-ref");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    // ~30° rotation [34.64 20 -20 34.64 ...] — neither axis-aligned
+    // nor axis-swapped.
+    fs::write(&src, m28_gray_pdf("34.64 20 -20 34.64 20 60 cm")).unwrap();
+    let original = fs::read(&src).unwrap();
+    fs::write(&dst, b"SENTINEL").unwrap();
+    let out = bin()
+        .args(["experimental-remove-image-region"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "0", "0", "200", "200", "--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(
+        stderr.to_ascii_lowercase().contains("unsupported"),
+        "stderr should say unsupported: {stderr}"
+    );
+    assert_eq!(fs::read(&src).unwrap(), original);
+    assert_eq!(fs::read(&dst).unwrap(), b"SENTINEL");
+    let stray: Vec<_> = fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| {
+            let n = e.unwrap().file_name().to_string_lossy().into_owned();
+            n.contains("kasane-tmp").then_some(n)
+        })
+        .collect();
+    assert!(stray.is_empty(), "temp files left: {stray:?}");
+}
+
+/// A shear CTM is refused the same way — protects the
+/// not-grid-aligned boundary.
+#[test]
+fn cli_m28_shear_refused() {
+    let dir = tmpdir("m28-shear-ref");
+    let src = dir.join("in.pdf");
+    let dst = dir.join("out.pdf");
+    // Shear [1 0 0.5 1 ...] — c != 0 breaks both classes.
+    fs::write(&src, m28_gray_pdf("1 0 0.5 1 20 60 cm")).unwrap();
+    fs::write(&dst, b"SENTINEL").unwrap();
+    let out = bin()
+        .args(["experimental-remove-image-region"])
+        .arg(&src)
+        .arg("1")
+        .args(["--rect", "0", "0", "200", "200", "--output"])
+        .arg(&dst)
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert_eq!(fs::read(&dst).unwrap(), b"SENTINEL");
+}
