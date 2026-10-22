@@ -26,10 +26,14 @@
 //! Explicitly **not** supported (typed `Error::Unsupported` or
 //! `Error::Encrypted`, never a partial result): stream filters other
 //! than `/FlateDecode`/`/DCTDecode`, inline images, encrypted files,
-//! non-device colour spaces, shading/`gs`/patterns, transparency,
-//! `/ImageMask`/`/SMask`, non-embedded/Type1/Type3/CFF fonts,
-//! non-Identity-H Type0 encodings, page annotations rendering,
-//! `/UserUnit` ≠ 1, singular CTMs.
+//! `/Pattern` colour and shadings, knockout transparency groups and
+//! ExtGState soft masks, `/Matte` soft-mask images, optional content,
+//! non-Identity-H Type0 encodings, `/UserUnit` ≠ 1, singular CTMs.
+//! Colour spaces (`CalGray`/`CalRGB`/`Lab`/`ICCBased`/`Indexed`/
+//! `Separation`/`DeviceN`), image `/SMask`/`/Mask`/`/ImageMask` and
+//! non-knockout transparency groups render; an `ICCBased` profile
+//! the engine cannot evaluate exactly falls back to `/Alternate` and
+//! is reported on [`RenderedPage::color_approximations`].
 //!
 //! # Safety-oriented design
 //!
@@ -53,6 +57,7 @@
 //! ```
 
 pub mod audit;
+mod colorspace;
 mod content;
 pub mod dests;
 mod document;
@@ -61,6 +66,8 @@ mod error;
 mod filter;
 mod font;
 mod fontsubst;
+mod function;
+mod icc;
 mod lexer;
 mod limits;
 mod matrix;

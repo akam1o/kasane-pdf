@@ -232,12 +232,26 @@ fn default_color_space_maps_to_device() {
 }
 
 #[test]
-fn non_device_color_space_is_unsupported() {
+fn bare_family_name_color_space_is_malformed() {
+    // `/ICCBased` without its parameter array is not a colour space;
+    // it is refused as a structure error, not drawn as DeviceGray.
     let err = render(b"/ICCBased cs 0.5 sc 10 10 20 20 re f").unwrap_err();
+    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
+}
+
+#[test]
+fn pattern_color_space_is_unsupported() {
+    let err = render(b"/Pattern cs 10 10 20 20 re f").unwrap_err();
     assert!(
         matches!(err, Error::Unsupported { feature, .. } if feature.contains("colour space")),
         "got: {err:?}"
     );
+}
+
+#[test]
+fn undefined_named_color_space_is_structure_error() {
+    let err = render(b"/CS9 cs 0.5 sc 10 10 20 20 re f").unwrap_err();
+    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
 }
 
 #[test]
