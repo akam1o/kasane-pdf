@@ -54,9 +54,7 @@ pub fn audit(doc: &Document) -> FontAudit {
                         if seen.insert(name.clone()) {
                             if let Ok(o) = doc.deref(&entry) {
                                 if let Some(d) = o.as_dict() {
-                                    a.fonts
-                                        .entry(lossy(&name))
-                                        .or_insert(font_info(doc, d));
+                                    a.fonts.entry(lossy(&name)).or_insert(font_info(doc, d));
                                 }
                             }
                         }

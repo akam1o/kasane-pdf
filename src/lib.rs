@@ -76,6 +76,7 @@ mod rewrite;
 mod serialize;
 pub mod text_extract;
 mod tounicode;
+mod type1;
 mod xref;
 
 pub use content::{Operation, TJItem};

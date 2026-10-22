@@ -48,7 +48,8 @@ pub fn feature_bucket(cause: &str) -> &'static str {
     // Buckets chosen to match natural implementation units.
     if cause.contains("smask") || cause.contains("image.smask") || cause.contains("image.mask") {
         "Image masks / SMask"
-    } else if cause.contains("blendmode") || cause.contains("transfer")
+    } else if cause.contains("blendmode")
+        || cause.contains("transfer")
         || cause.contains("extgstate")
     {
         "ExtGState (gs)"
@@ -464,7 +465,13 @@ mod tests {
                 max_rss_bytes: 0,
                 poppler_pages: -1,
                 render_mae: None,
+                render_ssim: None,
+                render_diff_px_ratio: None,
+                render_pages_ok: 0,
+                render_pages_total: 0,
                 render_diff_png: None,
+                render_ours_png: None,
+                render_ref_png: None,
                 text_match_ratio: None,
                 rewrite_qpdf_ok: None,
                 rewrite_reparsed: None,

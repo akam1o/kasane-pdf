@@ -78,6 +78,11 @@ pub(crate) struct Type1Font {
     /// fonts carry no program, so [`Type1Font::outline`] refuses — the
     /// renderer fails, but text extraction still gets widths + Unicode.
     program: Option<Vec<u8>>,
+    /// A parsed eexec (`/FontFile`) Type 1 program — `Some` when the
+    /// descriptor carries a real Adobe Type 1 program rather than a
+    /// CFF `/FontFile3`. Holds decrypted CharStrings + Subrs; glyph
+    /// outlines are produced by the Type-1 charstring interpreter.
+    t1_program: Option<crate::type1::Type1Program>,
     /// Encoding table: char code (0..=255) → glyph-name bytes. For
     /// CFF, names resolve via the font's charset, so we keep raw
     /// bytes (e.g. `/G36`) rather than an AGL `&'static str`.
@@ -357,70 +362,71 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
     // ---- Encoding → byte-name table ------------------------------
     let (encoding, builtin) = resolve_type1_encoding(doc, dict)?;
 
-    // ---- FontDescriptor + FontFile3 (CFF) -------------------------
     // ---- Font program (optional) --------------------------------
-    // Resolve the program bytes:
-    //   * `/FontFile3` (CFF) → decode + validate.
-    //   * `/FontFile` (Adobe Type 1 / eexec) → present but unparseable
-    //     → Unsupported (don't degrade to metrics-only: the file *has*
-    //     outlines, we just can't read them — calling it "supported for
-    //     text" while the program is present is misleading).
-    //   * no font-file / no descriptor → `None` → metrics-only font.
-    //     Text extraction still gets widths/encoding/Unicode; outline
-    //     calls refuse so render honestly reports Unsupported.
-    let program: Option<Vec<u8>> = match dict.get(b"FontDescriptor".as_slice()) {
-        None => None,
-        Some(fd_obj) => {
-            let fd = doc.deref(fd_obj)?;
-            let fd_dict = fd
-                .as_dict()
-                .ok_or_else(|| Error::Structure("/FontDescriptor is not a dictionary".into()))?;
-            if fd_dict.get(b"FontFile".as_slice()).is_some() {
-                return Err(Error::Unsupported {
-                    feature: "Type1 /FontFile (Adobe Type 1 program)",
-                    detail: "only CFF /FontFile3 Type1 programs are supported".into(),
+    // Resolve the program:
+    //   * `/FontFile3` (CFF) → decode + validate → `program`.
+    //   * `/FontFile` (Adobe Type 1 / eexec) → decode, eexec-decrypt +
+    //     charstring parse → `t1_program`.
+    //   * no font-file / no descriptor → both `None` → metrics-only
+    //     font (extraction works; `outline` refuses so render is
+    //     honestly Unsupported).
+    let mut program: Option<Vec<u8>> = None;
+    let mut t1_program: Option<crate::type1::Type1Program> = None;
+    if let Some(fd_obj) = dict.get(b"FontDescriptor".as_slice()) {
+        let fd = doc.deref(fd_obj)?;
+        let fd_dict = fd
+            .as_dict()
+            .ok_or_else(|| Error::Structure("/FontDescriptor is not a dictionary".into()))?;
+        if let Some(ff_obj) = fd_dict.get(b"FontFile".as_slice()) {
+            // eexec Type 1 — the real PFB/PFA program.
+            let ff = doc.deref(ff_obj)?;
+            let (ff_dict, ff_raw) = ff
+                .as_stream()
+                .ok_or_else(|| Error::Structure("/FontFile is not a stream".into()))?;
+            let bytes = doc.decode_stream(ff_dict, ff_raw)?;
+            if bytes.len() as u64 > limits.max_stream_bytes {
+                return Err(Error::LimitExceeded {
+                    limit: "max_stream_bytes (embedded font)",
+                    max: limits.max_stream_bytes,
                 });
             }
-            match fd_dict.get(b"FontFile3".as_slice()) {
-                None => None,
-                Some(ff3_obj) => {
-                    let ff3 = doc.deref(ff3_obj)?;
-                    let (ff3_dict, ff3_raw) = ff3
-                        .as_stream()
-                        .ok_or_else(|| Error::Structure("/FontFile3 is not a stream".into()))?;
-                    // `/Subtype /CIDFontType0C` inside /FontFile3.
-                    if let Some(st) = ff3_dict
-                        .get(b"Subtype".as_slice())
-                        .and_then(|o| o.as_name())
-                    {
-                        if st == b"CIDFontType0C" {
-                            return Err(Error::Unsupported {
-                                feature: "CIDFontType0 CFF",
-                                detail: "/FontFile3 CIDFontType0C is a CID font, not simple Type1"
-                                    .into(),
-                            });
-                        }
-                    }
-                    let program = doc.decode_stream(ff3_dict, ff3_raw)?;
-                    if program.len() as u64 > limits.max_stream_bytes {
-                        return Err(Error::LimitExceeded {
-                            limit: "max_stream_bytes (embedded font)",
-                            max: limits.max_stream_bytes,
-                        });
-                    }
-                    CffTable::parse(&program).ok_or_else(|| {
-                        Error::Structure("/FontFile3 is not a valid CFF program".into())
-                    })?;
-                    Some(program)
+            t1_program = Some(crate::type1::parse_type1_program(&bytes)?);
+        } else if let Some(ff3_obj) = fd_dict.get(b"FontFile3".as_slice()) {
+            let ff3 = doc.deref(ff3_obj)?;
+            let (ff3_dict, ff3_raw) = ff3
+                .as_stream()
+                .ok_or_else(|| Error::Structure("/FontFile3 is not a stream".into()))?;
+            // `/Subtype /CIDFontType0C` inside /FontFile3 → not simple.
+            if let Some(st) = ff3_dict
+                .get(b"Subtype".as_slice())
+                .and_then(|o| o.as_name())
+            {
+                if st == b"CIDFontType0C" {
+                    return Err(Error::Unsupported {
+                        feature: "CIDFontType0 CFF",
+                        detail: "/FontFile3 CIDFontType0C is a CID font, not simple Type1".into(),
+                    });
                 }
             }
+            let prog = doc.decode_stream(ff3_dict, ff3_raw)?;
+            if prog.len() as u64 > limits.max_stream_bytes {
+                return Err(Error::LimitExceeded {
+                    limit: "max_stream_bytes (embedded font)",
+                    max: limits.max_stream_bytes,
+                });
+            }
+            CffTable::parse(&prog)
+                .ok_or_else(|| Error::Structure("/FontFile3 is not a valid CFF program".into()))?;
+            program = Some(prog);
         }
-    };
+        // no font-file key → metrics-only (both stay None).
+    }
 
     let tounicode = crate::tounicode::load_tounicode(doc, dict, limits)?;
 
     Ok(Rc::new(Type1Font {
         program,
+        t1_program,
         encoding,
         widths,
         tounicode,
@@ -1012,11 +1018,26 @@ impl Type1Font {
     }
 
     /// Char code → glyph id. Order (§9.6.5.1):
-    /// 1. `/Encoding` name → CFF `glyph_index_by_name` (charset lookup).
-    /// 2. Fall back to the CFF program's own encoding via `glyph_index`.
-    /// 3. `.notdef` (0). A non-embedded font has no program → `.notdef`;
-    ///    `outline` is what actually refuses, keeping render honest.
+    ///
+    /// **eexec `/FontFile`:** the encoding name maps to a CharString —
+    /// if one exists we return `GlyphId(code)` so `outline` can recover
+    /// the code; `.notdef` otherwise.
+    /// **CFF `/FontFile3`:** `/Encoding` name → `glyph_index_by_name`,
+    /// else the program's built-in `glyph_index`, else `.notdef`.
+    /// **No program** → `.notdef`; `outline` refuses, keeping render
+    /// honest for metrics-only fonts.
     pub(crate) fn glyph_id(&self, code: u8) -> Result<Option<GlyphId>, Error> {
+        // eexec program — name→CharString.
+        if let Some(t1) = &self.t1_program {
+            if let Some(name) = self.glyph_name_bytes(code) {
+                if t1.has_glyph(name) {
+                    return Ok(Some(GlyphId(code as u16)));
+                }
+            }
+            // no /Encoding name or glyph missing — .notdef
+            return Ok(Some(GlyphId(0)));
+        }
+        // CFF program.
         let cff = match self.cff() {
             Ok(c) => c,
             Err(_) => return Ok(Some(GlyphId(0))), // no program → .notdef
@@ -1040,11 +1061,21 @@ impl Type1Font {
     /// Extract `glyph`'s outline into `builder` in font units.
     /// `false` = empty. Non-embedded fonts have no program → propagate
     /// the `cff()` Unsupported error so rendering refuses honestly.
+    /// eexec `glyph` carries the char *code* (see `glyph_id`).
     pub(crate) fn outline(
         &self,
         glyph: GlyphId,
         builder: &mut dyn OutlineBuilder,
     ) -> Result<bool, Error> {
+        if let Some(t1) = &self.t1_program {
+            let code = glyph.0 as u8;
+            let name = match self.glyph_name_bytes(code) {
+                Some(n) => n.to_vec(),
+                None => return Ok(false), // .notdef
+            };
+            // Interpret the CharString → outline moves in glyph space.
+            return t1.charstring(&name, builder).map(|(had, _)| had);
+        }
         let cff = self.cff()?; // Unsupported for non-embedded fonts
         Ok(cff.outline(glyph, builder).is_ok())
     }
@@ -1071,11 +1102,18 @@ impl Type1Font {
         code == 0x20
     }
 
-    /// CFF fonts are nominally 1000 units/em (FontMatrix 0.001). The
-    /// `/FontMatrix` scale is already baked into the charstring
-    /// coordinates for CFF, so we report 1000 — matching the PDF glyph
-    /// space that `Tm`'s `Tfs` then scales.
+    /// CFF fonts are nominally 1000 units/em (FontMatrix 0.001). For
+    /// an eexec program the `/FontMatrix` scale maps design space →
+    /// text space, so the effective upem is `1/fm.a` (1/0.001 = 1000
+    /// for the standard matrix) — `GlyphPath` then produces
+    /// text-space coordinates directly.
     pub(crate) fn units_per_em(&self) -> Result<f64, Error> {
+        if let Some(t1) = &self.t1_program {
+            let a = t1.font_matrix().a;
+            if a != 0.0 && a.is_finite() {
+                return Ok(1.0 / a);
+            }
+        }
         Ok(1000.0)
     }
 }
