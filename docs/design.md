@@ -691,10 +691,14 @@ same-file-refusal rules as `experimental-remove-text`.
 
 ### M27 — JPEG (`/DCTDecode`) image editing
 
-M27 extends the M19/M20 image-edit path to single-filter baseline
-JPEGs. Nothing about the page-level eligibility rules, the rect-union
-algorithm, or the clone-and-repoint mechanics changes; the only new
-logic is *how the sample buffer is obtained*.
+M27 extends the M19/M20 image-edit path to single-filter
+sequential-DCT JPEGs — `DctSequential` covers baseline (SOF0) and
+extended-sequential (SOF1) Huffman frames; differential and
+arithmetic-coded sequential frames are refused by the decoder
+itself as `Unsupported` inside `decode()`. Nothing about the
+page-level eligibility rules, the rect-union algorithm, or the
+clone-and-repoint mechanics changes; the only new logic is *how
+the sample buffer is obtained*.
 
 - **Where**: `decode_image` in `src/remove_image.rs` handles
   `/DCTDecode` by calling `dct_decode_for_edit`, which wraps
@@ -720,20 +724,34 @@ logic is *how the sample buffer is obtained*.
   `decode()` and are refused there by the decoder itself
   (`Unsupported(Hierarchical)`/`Unsupported(ArithmeticEntropyCoding)`),
   so they are still `Unsupported`, never `Parse`.
-- **`/DecodeParms /ColorTransform` precedence (M27.1)**: ISO 32000-1
-  §7.4.8 + Adobe Technical Note #5116 — when the JPEG carries an
-  Adobe APP14 marker, *its* `transform` byte decides the conversion
-  and the PDF value is ignored. When APP14 is absent the PDF value
-  applies: `0` requests raw component values, `1` requests YCbCr→RGB
-  on a 3-component image (ignored on 1–2 components). When both are
-  absent the default is `1` for three components and `0` otherwise —
-  the decoder's component-ID/JFIF heuristics produce the same answer.
-  A minimal `scan_jpeg_markers` walk reads the APP14 flag and the
-  frame's sampling factors; **`/ColorTransform 0` on a chroma-
-  subsampled JPEG is refused** (`Unsupported`) because the decoder's
-  raw-component path cannot represent the per-plane layout as
-  interleaved pixels. Any other `DecodeParms` key is refused rather
-  than ignored.
+- **Effective colour transform — decided explicitly (M27.2)**:
+  ISO 32000-1 §7.4.8 (Table 13 `/ColorTransform`) + Adobe TN #5116.
+  The precedence is resolved *by kasane*, not delegated to
+  jpeg-decoder's `determine_color_transform` — the decoder ranks
+  component IDs and JFIF *above* APP14, which contradicts the spec
+  order. A minimal `scan_jpeg_markers` walk reads the APP14
+  `transform` byte and each frame component's sampling factors;
+  the effective transform is then:
+
+  | APP14 | PDF `/ColorTransform` | effective transform (3-comp) |
+  |---|---|---|
+  | `0` | any | none — raw component values |
+  | `1` | any | YCbCr→RGB |
+  | `2` | any | `Unsupported` (YCCK = 4-comp) |
+  | `>2` | any | `Unsupported` |
+  | absent | `0` | none |
+  | absent | `1` | YCbCr→RGB |
+  | absent | absent | YCbCr→RGB (spec default for 3 comp) |
+
+  The decoder setting is then chosen to *produce* that result:
+  `YCbCr` forces the transform, `RGB` is used for "no transform"
+  on a 3-component frame because it produces the same interleaved
+  output as `None` without the panic that `color_no_convert`
+  causes on subsampled data. "No transform" on a *subsampled*
+  frame is still `Unsupported` — the per-plane layout cannot be
+  represented as interleaved pixels. A 1-component frame always
+  takes the decoder's grayscale path (`CT=1` is ignored per spec).
+  Any other `DecodeParms` key is refused rather than ignored.
 - **Budgets unchanged**: `max_image_dimension`/`total_samples` gate
   the dict geometry before decode; `max_image_bytes` is also set as
   the decoder's `max_decoding_buffer_size` so the JPEG cannot

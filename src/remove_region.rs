@@ -29,7 +29,7 @@
 //!   colour-space resolution and `Default*` substitution) with no
 //!   `/Mask`/`SMask`/`SMaskInData`/`OC`/`ImageMask`/`Interpolate`,
 //!   a non-default `/Decode`, a `/Filter` other than none, a single
-//!   `/FlateDecode`, or a single `/DCTDecode` (baseline JPEG decoding
+//!   `/FlateDecode`, or a single `/DCTDecode` (sequential-DCT JPEG decoding
 //!   to 8-bit Gray/RGB; CMYK/16-bit/progressive refused), or a
 //!   non-axis-aligned/negative-scale/non-finite CTM.
 //! - Any `Image` target at `form_path` depth ≥ 1 — images inside a
@@ -5476,6 +5476,77 @@ mod tests {
          c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c03010002110311003f00e53e0bfec87fea3fd0bd3f\
          868a28aac2626afb25a9d5c07c6b9d7f62d3fdeff5f79fffd9";
 
+    /// c8_444.jpg — 8×8 DeviceRGB baseline JPEG, 4:4:4 sampling (no chroma subsampling), component IDs 1,2,3, JFIF APP0, 648 bytes; `cjpeg -sample 1x1 -quality 90` from c8.ppm.
+    const JPEG_C8_444_HEX: &str =
+        "ffd8ffe000104a46494600010100000100010000ffdb0043000302020302020303030304030304050805050404050a070706080c0a0c0c0b\
+         0a0b0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ffdb00430103040405040509050509140d0b0d14141414\
+         14141414141414141414141414141414141414141414141414141414141414141414141414141414141414141414ffc00011080008000803\
+         011100021101031101ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b510000201030302040305\
+         0504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a2526272829\
+         2a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a9293949596979899\
+         9aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9\
+         faffc4001f0100030101010101010101010000000000000102030405060708090a0bffc400b5110002010204040304070504040001027700\
+         0102031104052131061241510761711322328108144291a1b1c109233352f0156272d10a162434e125f11718191a262728292a3536373839\
+         3a434445464748494a535455565758595a636465666768696a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6\
+         a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c030100\
+         02110311003f00e53e0bfec87fea3fd0bd3f868c1e336d43c3cf10fe0f7cffd9";
+
+    /// c8_444_app14_0.jpg — c8_444 with an Adobe APP14 transform=0 injected after SOI, 664 bytes; the APP14 must win over the component IDs (1,2,3) so raw component values are returned.
+    const JPEG_C8_444_APP14_0_HEX: &str =
+        "ffd8ffee000e41646f626500640000000000ffe000104a46494600010100000100010000ffdb004300030202030202030303030403030405\
+         0805050404050a070706080c0a0c0c0b0a0b0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ffdb0043010304\
+         0405040509050509140d0b0d1414141414141414141414141414141414141414141414141414141414141414141414141414141414141414\
+         141414141414ffc00011080008000803011100021101031101ffc4001f000001050101010101010000000000000000010203040506070809\
+         0a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f024\
+         33627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a\
+         838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3\
+         e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffc4001f0100030101010101010101010000000000000102030405060708090a0bffc400b51100\
+         020102040403040705040400010277000102031104052131061241510761711322328108144291a1b1c109233352f0156272d10a162434e1\
+         25f11718191a262728292a35363738393a434445464748494a535455565758595a636465666768696a737475767778797a82838485868788\
+         898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9ea\
+         f2f3f4f5f6f7f8f9faffda000c03010002110311003f00e53e0bfec87fea3fd0bd3f868c1e336d43c3cf10fe0f7cffd9";
+
+    /// c8_rgb_app14_1.jpg — c8_rgb (component IDs R,G,B) with its APP14 rewritten to transform=1, 374 bytes; APP14 wins over the IDs so YCbCr→RGB is applied to RGB-encoded data.
+    const JPEG_C8_RGB_APP14_1_HEX: &str =
+        "ffd8ffee000e41646f626500640000000001ffdb0043000302020302020303030304030304050805050404050a070706080c0a0c0c0b0a0b\
+         0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ffc00011080008000803521100471100421100ffc4001f0000\
+         010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d0102030004110512\
+         2131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a43444546474849\
+         4a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6\
+         b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda000c03520047004200003f00\
+         e53fe09b7ff30bff0080d729ff000edbff00a85ffe43ae53f66dfd9b7fe3d7fd17d3f86bffd9";
+
+    /// c8_app14_bad.jpg — c8_444 with an Adobe APP14 transform=3 injected after SOI, 664 bytes; transform values outside 0–2 are undefined in Adobe TN #5116 → refused.
+    const JPEG_C8_APP14_BAD_HEX: &str =
+        "ffd8ffee000e41646f626500640000000003ffe000104a46494600010100000100010000ffdb004300030202030202030303030403030405\
+         0805050404050a070706080c0a0c0c0b0a0b0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ffdb0043010304\
+         0405040509050509140d0b0d1414141414141414141414141414141414141414141414141414141414141414141414141414141414141414\
+         141414141414ffc00011080008000803011100021101031101ffc4001f000001050101010101010000000000000000010203040506070809\
+         0a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f024\
+         33627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a\
+         838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3\
+         e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffc4001f0100030101010101010101010000000000000102030405060708090a0bffc400b51100\
+         020102040403040705040400010277000102031104052131061241510761711322328108144291a1b1c109233352f0156272d10a162434e1\
+         25f11718191a262728292a35363738393a434445464748494a535455565758595a636465666768696a737475767778797a82838485868788\
+         898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae2e3e4e5e6e7e8e9ea\
+         f2f3f4f5f6f7f8f9faffda000c03010002110311003f00e53e0bfec87fea3fd0bd3f868c1e336d43c3cf10fe0f7cffd9";
+
+    /// c8_app14_dup.jpg — c8_444 with two contradictory APP14 markers (transform=0 then transform=1), 680 bytes; ambiguous input → refused.
+    const JPEG_C8_APP14_DUP_HEX: &str =
+        "ffd8ffee000e41646f626500640000000000ffee000e41646f626500640000000001ffe000104a46494600010100000100010000ffdb0043\
+         000302020302020303030304030304050805050404050a070706080c0a0c0c0b0a0b0b0d0e12100d0e110e0b0b1016101113141515150c0f\
+         171816141812141514ffdb00430103040405040509050509140d0b0d14141414141414141414141414141414141414141414141414141414\
+         14141414141414141414141414141414141414141414ffc00011080008000803011100021101031101ffc4001f0000010501010101010100\
+         000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d0102030004110512213141061351610722\
+         7114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a\
+         636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6\
+         c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffc4001f01000301010101010101010100000000000001\
+         02030405060708090a0bffc400b51100020102040403040705040400010277000102031104052131061241510761711322328108144291a1\
+         b1c109233352f0156272d10a162434e125f11718191a262728292a35363738393a434445464748494a535455565758595a63646566676869\
+         6a737475767778797a82838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3\
+         d4d5d6d7d8d9dae2e3e4e5e6e7e8e9eaf2f3f4f5f6f7f8f9faffda000c03010002110311003f00e53e0bfec87fea3fd0bd3f868c1e336d43\
+         c3cf10fe0f7cffd9";
+
     /// c16.jpg — 16×16 DeviceRGB JPEG, 702 bytes, same provenance.
     const JPEG_C16_HEX: &str =
         "ffd8ffe000104a46494600010100000100010000ffdb0043000302020302020303030304030304050805050404050a07\
@@ -6864,6 +6935,349 @@ mod tests {
             }
             other => panic!("expected Unsupported(ColorTransform), got {other:?}"),
         }
+    }
+
+    // -- M27.2 — explicit effective-transform decision ---------------
+    //
+    // Each case lists the *spec-mandated* effective transform (ISO
+    // 32000-1 §7.4.8 + Adobe TN #5116), whether the edit accepts or
+    // refuses the image, the decoder setting we force, and the
+    // expected sample evidence. Expected samples come from `djpeg`
+    // (libjpeg-turbo) on the same files — the ±1 tolerance covers
+    // jpeg-decoder's fixed-point rounding, not a colour-space swap.
+
+    /// Helper: decode the image stream on a one-page JPEG PDF and
+    /// return the raw samples.
+    fn jpeg_samples(bytes: &[u8]) -> Vec<u8> {
+        let d = doc(bytes);
+        let orig = d
+            .deref(&Object::Ref(IndirectRef {
+                number: 10,
+                generation: 0,
+            }))
+            .unwrap();
+        match orig {
+            Object::Stream { ref dict, ref data } => {
+                let ncomps = if dict.get(b"ColorSpace".as_slice()).and_then(|o| o.as_name())
+                    == Some(b"DeviceGray".as_slice())
+                {
+                    1
+                } else {
+                    3
+                };
+                let w = dict.get(b"Width".as_slice()).unwrap().as_i64().unwrap() as u32;
+                let h = dict.get(b"Height".as_slice()).unwrap().as_i64().unwrap() as u32;
+                decode_image(dict, data, &Limits::default(), (w, h, ncomps)).unwrap()
+            }
+            _ => panic!("not a stream"),
+        }
+    }
+
+    /// Case 1 — APP14 transform=0 with YCbCr component IDs (1,2,3).
+    ///
+    /// Effective transform per spec: APP14 wins → *no transform*
+    /// (the `0` code means the components are the device colour
+    /// space values). jpeg-decoder alone would pick YCbCr from the
+    /// IDs (it ranks IDs above APP14), so this case only passes if
+    /// our explicit decision forces the raw path.
+    ///
+    /// Decoder setting: `ColorTransform::RGB` — its interleave
+    /// produces the same interleaved output as `None` but is safe
+    /// on this non-subsampled 4:4:4 frame.
+    ///
+    /// Evidence: `djpeg -pnm c8_444_app14_0.jpg` gives the YCbCr
+    /// component values `00 80 80 0b 83 8c`; any YCbCr→RGB applied
+    /// would shift them towards `00 00 00 1c 01 10`.
+    #[test]
+    fn m27_2_app14_0_beats_ycbcr_ids() {
+        let samples = jpeg_samples(&jpeg_page_pdf(
+            &unhex(JPEG_C8_444_APP14_0_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        let expected = [0x00u8, 0x80, 0x80, 0x0b, 0x83, 0x8c];
+        for (i, (&a, &b)) in samples.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                a.abs_diff(b) <= 1,
+                "sample {i}: got {a:#04x}, expected ~{b:#04x} (raw YCbCr values)"
+            );
+        }
+    }
+
+    /// Case 2 — APP14 transform=1 with RGB component IDs (R,G,B).
+    ///
+    /// Effective transform per spec: APP14 wins → YCbCr→RGB is
+    /// *applied* even though the data was encoded as RGB and the
+    /// component IDs say so. The output is the (incorrect-looking)
+    /// transformed colour — that is exactly what the spec mandates:
+    /// the in-data flag is authoritative.
+    ///
+    /// Decoder setting: `ColorTransform::YCbCr`. jpeg-decoder alone
+    /// would pick `RGB` from the IDs — the exact case where its
+    /// heuristics contradict the spec order.
+    ///
+    /// Evidence: YCbCr→RGB of the stored RGB values `00 00 00` /
+    /// `1f 00 0f` gives `00 87 00` / `00 9c 00` — the shifted
+    /// (wrong-looking) colours the spec requires.
+    #[test]
+    fn m27_2_app14_1_beats_rgb_ids() {
+        let samples = jpeg_samples(&jpeg_page_pdf(
+            &unhex(JPEG_C8_RGB_APP14_1_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        let expected = [0x00u8, 0x87, 0x00, 0x00, 0x9c, 0x00];
+        for (i, (&a, &b)) in samples.iter().zip(expected.iter()).enumerate() {
+            assert!(
+                a.abs_diff(b) <= 2,
+                "sample {i}: got {a:#04x}, expected ~{b:#04x} (forced YCbCr→RGB)"
+            );
+        }
+    }
+
+    /// Case 3 — APP14 conflicts with PDF `/ColorTransform`.
+    ///
+    /// Effective transform per spec: APP14 wins, PDF entry ignored.
+    /// APP14=1 + PDF `ColorTransform 0` → YCbCr→RGB is applied.
+    ///
+    /// Decoder setting: `ColorTransform::YCbCr` (driven by the
+    /// APP14 byte, not the PDF value).
+    #[test]
+    fn m27_2_app14_wins_over_pdf() {
+        let d2 = doc(&jpeg_page_pdf_parms(
+            &unhex(JPEG_C8_RGB_APP14_1_HEX), // APP14 tf=1
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+            "/DecodeParms << /ColorTransform 0 >>", // PDF says raw
+        ));
+        let orig = d2
+            .deref(&Object::Ref(IndirectRef {
+                number: 10,
+                generation: 0,
+            }))
+            .unwrap();
+        let samples = match orig {
+            Object::Stream { ref dict, ref data } => {
+                decode_image(dict, data, &Limits::default(), (8, 8, 3)).unwrap()
+            }
+            _ => panic!("not a stream"),
+        };
+        // APP14=1 wins → YCbCr→RGB applied to RGB data → shifted
+        // colours `00 87 00 …`, not the raw RGB `00 00 00 …`.
+        let expected = [0x00u8, 0x87, 0x00, 0x00, 0x9c, 0x00];
+        for (i, (&a, &b)) in samples.iter().zip(expected.iter()).enumerate() {
+            assert!(a.abs_diff(b) <= 2, "sample {i}: {a:#04x} vs ~{b:#04x}");
+        }
+    }
+
+    /// Case 4 — no APP14, no PDF ColorTransform, component IDs R,G,B.
+    ///
+    /// Effective transform per spec: default for 3 components is
+    /// `1` → YCbCr→RGB. jpeg-decoder alone would pick `RGB` from
+    /// the IDs — the case where its default contradicts the spec
+    /// default.
+    ///
+    /// Decoder setting: `ColorTransform::YCbCr` (spec default).
+    ///
+    /// Note: this is a *spec-invalid* file in the wild (RGB data
+    /// marked by IDs but unmarked for transform) — the spec's
+    /// default applies regardless.
+    #[test]
+    fn m27_2_default_ct_applies_even_with_rgb_ids() {
+        // c8_rgb has APP14 transform=0 — strip that case by using a
+        // file with RGB IDs and *no* APP14: rebuild c8_rgb minus APP14.
+        // JPEG_C8_RGB_HEX keeps APP14=0; we need an RGB-ID file with
+        // no APP14 → construct via jpeg_page_pdf on the raw bytes.
+        let raw = unhex(JPEG_C8_RGB_HEX);
+        // Strip the APP14 segment (SOI + APP14 + rest).
+        let ln = ((raw[4] as usize) << 8) | raw[5] as usize;
+        let mut stripped = raw[..2].to_vec();
+        stripped.extend_from_slice(&raw[4 + ln..]);
+        let samples = jpeg_samples(&jpeg_page_pdf(
+            &stripped,
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        // Spec default for 3 components → YCbCr→RGB applied to the
+        // stored RGB values `00 00 00` / `1f 00 0f` → `00 87 00` /
+        // `00 9c 00` (same shifted colours as case 2).
+        let expected = [0x00u8, 0x87, 0x00, 0x00, 0x9c, 0x00];
+        for (i, (&a, &b)) in samples.iter().zip(expected.iter()).enumerate() {
+            assert!(a.abs_diff(b) <= 2, "sample {i}: {a:#04x} vs ~{b:#04x}");
+        }
+    }
+
+    /// Case 5 — no APP14, PDF `/ColorTransform 0`, non-subsampled.
+    ///
+    /// Effective transform: none. Decoder setting `RGB` (the safe
+    /// interleave; `None` would panic on subsampled data — checked
+    /// separately in case 9).
+    #[test]
+    fn m27_2_no_app14_pdf_ct0_nonsubsampled() {
+        let samples = jpeg_samples(&jpeg_page_pdf_parms(
+            &unhex(JPEG_C8_444_HEX), // 4:4:4 YCbCr, no APP14
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+            "/DecodeParms << /ColorTransform 0 >>",
+        ));
+        // Raw YCbCr values interleaved — `djpeg` gives `00 80 80`
+        // `0b 83 8c` for the first two pixels.
+        let expected = [0x00u8, 0x80, 0x80, 0x0b, 0x83, 0x8c];
+        for (i, (&a, &b)) in samples.iter().zip(expected.iter()).enumerate() {
+            assert!(a.abs_diff(b) <= 1, "sample {i}: {a:#04x} vs ~{b:#04x}");
+        }
+    }
+
+    /// Case 6 — no APP14, PDF `/ColorTransform 1`, YCbCr data.
+    ///
+    /// Effective transform: YCbCr→RGB. Decoder setting `YCbCr`.
+    #[test]
+    fn m27_2_no_app14_pdf_ct1() {
+        let samples = jpeg_samples(&jpeg_page_pdf_parms(
+            &unhex(JPEG_C8_444_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+            "/DecodeParms << /ColorTransform 1 >>",
+        ));
+        // YCbCr→RGB applied — `djpeg` gives `00 00 00 1c 01 10`.
+        let expected = [0x00u8, 0x00, 0x00, 0x1c, 0x01, 0x10];
+        for (i, (&a, &b)) in samples.iter().zip(expected.iter()).enumerate() {
+            assert!(a.abs_diff(b) <= 1, "sample {i}: {a:#04x} vs ~{b:#04x}");
+        }
+    }
+
+    /// Case 7 — gray JPEG, `/ColorTransform 1` is ignored per spec
+    /// (transform only applies to 3/4-component data).
+    #[test]
+    fn m27_2_gray_ignores_ct() {
+        let samples = jpeg_samples(&jpeg_page_pdf_parms(
+            &unhex(JPEG_G8_HEX),
+            8,
+            8,
+            "DeviceGray",
+            "200 0 0 200 0 0 cm",
+            "/DecodeParms << /ColorTransform 1 >>",
+        ));
+        // Plain gray row 0: 0 35 61 90 125 156 184 215.
+        let row0 = [0u8, 35, 61, 90, 125, 156, 184, 215];
+        for (i, (&a, &b)) in samples.iter().zip(row0.iter()).enumerate() {
+            assert!(a.abs_diff(b) <= 1, "gray sample {i}: {a} vs {b}");
+        }
+    }
+
+    /// Case 8 — APP14 transform value outside 0–2 (Adobe TN #5116
+    /// defines only those three) is refused as `Unsupported`.
+    #[test]
+    fn m27_2_app14_bad_transform_refused() {
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_C8_APP14_BAD_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        let e = remove_image_region(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default())
+            .unwrap_err();
+        match e {
+            Error::Unsupported { feature, detail } => {
+                assert!(
+                    feature.contains("APP14") || detail.contains("transform"),
+                    "{feature}: {detail}"
+                );
+            }
+            // jpeg-decoder's own read_info may also reject tf=3 with
+            // a Format error — either typed refusal is correct.
+            Error::Parse(_) => {}
+            other => panic!("expected refusal for APP14 tf=3, got {other:?}"),
+        }
+    }
+
+    /// Case 9 — "no transform" requested on a chroma-subsampled
+    /// JPEG is refused regardless of *why* it was requested.
+    /// Here via APP14=0 on a 4:2:0 frame.
+    #[test]
+    fn m27_2_no_transform_subsampled_refused() {
+        // c8 is 4:2:0-subsampled YCbCr (IDs 1,2,3) with no APP14 —
+        // inject one with transform=0 by borrowing the 16-byte APP14
+        // segment from the generated fixture.
+        let app14_seg = &unhex(JPEG_C8_444_APP14_0_HEX)[2..18];
+        let raw = unhex(JPEG_C8_HEX);
+        let mut d = raw[..2].to_vec();
+        d.extend_from_slice(app14_seg);
+        d.extend_from_slice(&raw[2..]);
+        let doc_ = doc(&jpeg_page_pdf(&d, 8, 8, "DeviceRGB", "200 0 0 200 0 0 cm"));
+        let e = remove_image_region(&doc_, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default())
+            .unwrap_err();
+        match e {
+            Error::Unsupported { feature, detail } => {
+                assert!(
+                    feature.contains("raw") || detail.contains("subsampled"),
+                    "{feature}: {detail}"
+                );
+            }
+            other => panic!("expected Unsupported(no-transform subsampled), got {other:?}"),
+        }
+    }
+
+    /// Case 10 — two contradictory APP14 markers are ambiguous;
+    /// refused rather than guessing.
+    #[test]
+    fn m27_2_conflicting_app14_refused() {
+        let d = doc(&jpeg_page_pdf(
+            &unhex(JPEG_C8_APP14_DUP_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        let e = remove_image_region(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default())
+            .unwrap_err();
+        // Typed refusal — Parse (ambiguous structure) or
+        // Unsupported; either is correct, never a silent pick.
+        assert!(
+            matches!(e, Error::Parse(_) | Error::Unsupported { .. }),
+            "{e:?}"
+        );
+    }
+
+    /// A truncated marker walk — SOI + a length that overruns the
+    /// buffer — is `Parse`, not a silent "no APP14" default.
+    #[test]
+    fn m27_2_truncated_markers_refused() {
+        // SOI + APP14 marker + length 0x00 0x0E but only 3 payload
+        // bytes — the segment overruns the buffer.
+        let bad = [0xFF, 0xD8, 0xFF, 0xEE, 0x00, 0x0E, b'A', b'd', b'o'];
+        let d = doc(&jpeg_page_pdf(
+            &bad,
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        let e = remove_image_region(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default())
+            .unwrap_err();
+        // jpeg-decoder's read_info may fail first with its own
+        // Parse/Format error — either way it's a typed refusal,
+        // never silently treated as "no APP14".
+        assert!(
+            matches!(
+                e,
+                Error::Parse(_) | Error::Unsupported { .. } | Error::Structure(_)
+            ),
+            "{e:?}"
+        );
     }
 
     /// New `/Contents` + `/Resources` both exist and are consistent.

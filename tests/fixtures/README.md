@@ -54,7 +54,8 @@ Three more constants exercise the coding-process check and the
 
 - `JPEG_C8_PROG_HEX` — 8×8 DeviceRGB *progressive* JPEG, 553 bytes,
   `cjpeg -progressive -quality 90 -outfile c8_prog.jpg c8.ppm`.
-  Must be refused as `Unsupported` (SOF2), not parsed as baseline.
+  Must be refused as `Unsupported` (SOF2), not accepted as a
+  sequential-DCT frame.
 - `JPEG_C8_RGB_HEX` — 8×8 DeviceRGB baseline JPEG *encoded as RGB*
   (Adobe APP14 `transform`=0, component IDs `R`,`G`,`B`, no chroma
   subsampling), 374 bytes, `cjpeg -rgb -quality 90 -outfile
@@ -71,3 +72,27 @@ All are derived from the same deterministic `c8.ppm` as
 `01 00 00 16 07 0c` and `djpeg -pnm c8_rgb.jpg` (raw RGB) starts
 with `00 00 00 1f 00 0f`. jpeg-decoder's fixed-point YCbCr→RGB
 rounds ±1 from libjpeg; that tolerance is asserted in the tests.
+
+### M27.2 additions
+
+Five more constants exercise the *effective* colour-transform
+decision — APP14-vs-component-ID precedence, the spec default, and
+the ambiguous/malformed-marker refusals:
+
+- `JPEG_C8_444_HEX` — 8×8 DeviceRGB baseline JPEG, 4:4:4 sampling
+  (no chroma subsampling), component IDs `1,2,3`, JFIF APP0, 648
+  bytes; `cjpeg -sample 1x1 -quality 90 -outfile c8_444.jpg c8.ppm`.
+- `JPEG_C8_444_APP14_0_HEX` — `c8_444` plus an Adobe APP14
+  `transform=0` injected after SOI, 664 bytes. APP14 wins over the
+  `(1,2,3)` component IDs → raw component values.
+- `JPEG_C8_RGB_APP14_1_HEX` — `c8_rgb` with its APP14 rewritten to
+  `transform=1`, 374 bytes. APP14 wins over the `(R,G,B)` IDs →
+  YCbCr→RGB applied to RGB-encoded data.
+- `JPEG_C8_APP14_BAD_HEX` — `c8_444` plus APP14 `transform=3`,
+  664 bytes; values outside 0–2 are undefined in TN #5116 → refused.
+- `JPEG_C8_APP14_DUP_HEX` — `c8_444` with two contradictory APP14
+  markers (`transform=0` then `1`), 680 bytes → refused.
+
+APP14 segments were injected by hand: `FF EE 00 0E "Adobe" 00 64
+00 00 00 00 <tf>` — a 12-byte payload whose last byte is the
+transform flag (the layout the decoder's `parse_app` reads).
