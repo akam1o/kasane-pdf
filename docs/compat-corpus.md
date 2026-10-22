@@ -224,6 +224,108 @@ after the fix). What still blocks the watch-list files: image
 colour spaces (`arxiv-2303.18223`), inline images (`tamreview`),
 the `UniJIS-UTF16-H` predefined CMap (`mixedfonts`).
 
+Measured after image soft masks, non-device colour spaces and
+offscreen transparency-group layers (run-1792710240, same
+conditions): render **30/67**, text **38/67**, rewrite **60/67**,
+full PASS **30** (+`attention-is-all-you-need`, `arxiv-2305.14334`,
+`arxiv-2310.06825`, `colorspace_atan`, `indexedcs_negative_and_high`,
+`verapdf_test_suite_6-2-3-2-t01-pass-a`), 0 newly failing, 0 lost
+renders, 0 crash/timeout, robustness 13/13, the same 5 render
+`error` files as before. The 24 files measured in both runs have
+identical fidelity (mean SSIM 0.9734 → 0.9734; `standard_fonts`
+0.8859 → 0.8857 is sub-pixel anti-aliasing noise from the new image
+compositor, not a content change). Newly measured: `colorspace_atan`
+(DeviceN + PostScript tint transform) SSIM 0.995,
+`indexedcs_negative_and_high` 0.982, `verapdf …6-2-3-2-t01` 0.9998;
+the three arXiv papers now render all 3 probed pages (the previously
+blocked soft-masked figure pages score 0.958 on
+`attention-is-all-you-need` p3, bounded by Computer Modern
+substitution exactly like their text pages). No file in the corpus
+needed an ICC approximation (every embedded profile is matrix/TRC
+sRGB). The cause-set lost `render.colorspace.unsupported` on 5 files;
+what still blocks the watch list: `blendmode` (a `/Luminosity`
+blend on an image — non-separable), `arxiv-2307.06435` (simple font
+without `/Encoding`), `arxiv-2303.18223` (`MacRomanEncoding`),
+`tamreview` (inline images), `mixedfonts` (`UniJIS-UTF16-H`), and
+`images`/`smaskdim`/`stamps`/`highlights`/`inks` which still fail
+at parse time ("unexpected end of input while reading xref stream
+data"), so their soft masks were never reached. The soft-masked
+figures themselves (e.g. the Transformer diagram on
+`attention-is-all-you-need` p3) show no alpha-edge halo in the diff
+image; the residual diff on those pages is the missing Computer
+Modern math glyphs, a pre-existing font gap.
+
+## Corpus composition and the road to 500–1,000 files
+
+The current 106 files by manifest category (`compat/manifest.yaml`):
+graphics 25, annotations 21, misc 15, malformed 12, images 11,
+japanese 8, latex 7, encrypted 3, incremental 2, office 2. By origin:
+82 from the pdf.js test suite (Apache-2.0), 13 from the veraPDF
+corpus (GPLv3+MPL, internal use), 7 arXiv papers (author-submitted,
+not redistributable), 2 IRS forms (US public domain), 1 Adobe sample,
+1 W3C test document. 79 are `expect: pass`, 13 `reject`, 14 `any`.
+
+That is a *feature-test* corpus: 77% of it is engine test suites
+built to exercise one PDF construct each, and the categories a user
+actually meets are thin — 2 office exports, 0 browser-printed pages,
+0 scanned documents, 0 interactive forms with field values, 8
+Japanese files that are all pdf.js CMap tests. The expansion target
+and the sampling bias to correct, per category (target counts for a
+600-file corpus, weighted toward producer diversity rather than
+spec coverage):
+
+| category | now | target | what to sample | candidate sources (licence) |
+|---|---:|---:|---|---|
+| office exports | 2 | 100 | Word/Excel/PowerPoint, LibreOffice, Google Docs, Pages; several versions of each producer | self-generated from CC0/own documents (no licence issue); GovDocs1 subset (US public records, free use); LibreOffice `sw/qa` test docs (MPL-2.0) |
+| browser print | 0 | 80 | Chrome/Skia, Firefox/Cairo, Safari/Quartz “print to PDF” of real pages, incl. CSS transforms, web fonts, SVG, emoji | self-printed Wikipedia/CC-BY pages (CC BY-SA 4.0, attribution in manifest); W3C/WHATWG spec pages (W3C licence) |
+| Japanese | 8 | 80 | vertical text, predefined CMaps (90ms-RKSJ, UniJIS-UCS2/UTF16), non-embedded CJK (MS Mincho/Gothic, Hiragino), Word-ja, 一太郎, e-Gov/city-hall forms, LaTeX pLaTeX/LuaTeX-ja | e-Gov 法令・各省庁 PDF (公共データ利用規約 PDL 1.0 = CC BY 4.0 compatible); 国立国会図書館 digital collections (public domain); J-STAGE open-access papers (CC BY); self-generated |
+| academic papers | 7 | 80 | LaTeX via pdfTeX/XeTeX/LuaTeX/dvipdfmx, Word→PDF, with figures (SMask, shadings, patterns, Type3/Type1C fonts) | arXiv **only** papers under CC BY/CC0 (filter by licence field in the OAI metadata — the current 7 are author-submitted and must not be redistributed); PLOS/PMC OA subset (CC BY); DOAJ |
+| scanned | 0 | 60 | CCITT G4, JBIG2, DCT, JPX, mixed-raster, OCR text layers, skewed pages, A3/A4 | Internet Archive public-domain books (PD); GovDocs1; NDL; self-scanned |
+| forms (AcroForm/XFA) | 2 | 40 | field appearance streams, `/NeedAppearances`, filled values, checkboxes/radios, XFA foreground | IRS (PD), US federal forms (PD), e-Gov forms (PDL), pdf.js/pdfium form tests (Apache/BSD) |
+| annotations | 21 | 40 | real-world markup from Acrobat/Preview/Edge/Drawboard: highlights, ink, stamps, popups, redactions, rich-text free text | self-annotated CC0 docs with several viewers; pdf.js tests already cover the synthetic cases |
+| images & transparency | 11 | 60 | SMask/Matte, ICC-CMYK images, Indexed+SMask, 16-bit, JPX, soft masks in ExtGState, knockout groups, blend modes from InDesign/Illustrator/Inkscape | Inkscape/Scribus exports (self-generated, GPL test files are fine as data), pdfium test corpus (BSD-3), Ghostscript bug attachments (case-by-case — many have no licence), PDF Association sample files |
+| malformed / fuzzed | 12 | 60 | truncated, bad xref, missing `endobj`, object streams with wrong offsets, recursion bombs, decompression bombs, giant `/Width` | Ghostscript/poppler/pdfium/pdf.js bug-tracker fuzz cases (already used; licence-free as they are not creative works but keep them *out of the public repo* when the tracker says so); self-mutated copies of the CC0 files (radamsa/zzuf) |
+
+Three constraints that shape the manifest schema rather than the
+runner: (1) **licence is per file**, so `license` and `source` stay
+mandatory and a `redistribute: yes|no` flag should be added so a
+public bucket can be built from the `yes` subset only — today the
+7 arXiv papers and the Adobe sample are `no`; (2) **producer** is
+the axis users care about, so add `producer:` (from `/Producer`,
+normalised) and report per-producer pass rates next to per-category;
+(3) the bucket stays private and nothing under `compat/corpus/` is
+committed — the manifest (hashes, sources, licences) is the public
+artefact, and `fetch-corpus.py` re-materialises the corpus from the
+listed sources where `redistribute: no`.
+
+## Pre-publication audit (repository and history)
+
+Scanned the tracked tree and all 91 commits for credentials and
+environment-specific identifiers (patterns: AWS/R2 key IDs,
+`SECRET`/`token`/`password`, private-key headers, the R2 endpoint
+host, the Cloudflare account ID, the bucket name, local user paths,
+the maintainer's employer and e-mail). Findings, classified:
+
+| item | kind | where | action before going public |
+|---|---|---|---|
+| R2 account ID (32-hex) inside the endpoint URL | **identifier**, not a secret — it does not grant access by itself, but it pins the repo to one Cloudflare account and is unwanted in a public history | 11 historical commits of `compat/fetch-corpus.py` and `docs/compat-corpus.md`; **absent from HEAD** (the example config uses `<ACCOUNT_ID>`) | either accept it (identifier only) or rewrite history once, right before the first public push, with `git filter-repo --replace-text`; **not done in this change** — rewriting now would invalidate every open branch and the commit IDs quoted in the run reports |
+| bucket name `<CORPUS_BUCKET>` | identifier | same 11 commits; HEAD uses the `CORPUS_BUCKET` variable | same decision as above; a bucket name is not sensitive, but the bucket must stay private (it holds non-redistributable files) |
+| `*.r2.cloudflarestorage.com` host | identifier (vendor) | 19 commits + HEAD example/docs | fine to publish |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | **variable names only**; no value has ever been committed (0 hits for key-ID or secret patterns in any commit) | docs + example env file | nothing to rotate; keep `.env`/`compat/corpus.env` ignored |
+| local paths (`/Users/…`), employer domain, personal e-mail | — | 0 hits in tree or history (commit author is the noreply address) | nothing |
+| `compat/corpus.env` (the real local config) | gap in `.gitignore` — `.env.*` does not match `corpus.env` | not present in tree or history | add `compat/corpus.env` to `.gitignore` (done in this change) |
+
+So: **no secret has ever been committed and no rotation is needed.**
+The only pre-publication decision is whether to scrub the account
+ID and bucket name from 11 historical commits; if yes, do it as a
+single `filter-repo` pass on a fresh clone, re-tag, and force-push
+*once* before the repository is public, never afterwards.
+Configuration layout is already in the recommended shape — code
+reads `KASANE_CORPUS_ENDPOINT`/`KASANE_CORPUS_BUCKET`/
+`KASANE_CORPUS_PREFIX` and the `AWS_*` credentials from the
+environment or an ignored env file, and `compat/corpus.env.example`
+documents the variables with placeholders.
+
 ## Failure-cause analysis
 
 Every stage failure is also classified into a **stable cause id** of

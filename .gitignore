@@ -3,6 +3,7 @@ target/
 # local secrets / environment config — never committed
 .env
 .env.*
+compat/corpus.env
 !.env.example
 !*.env.example
 *.pem
