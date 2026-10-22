@@ -29,6 +29,15 @@ src/
   objstm.rs    /ObjStm parsing (header, bounds, member objects)
   matrix.rs    Matrix [a b c d e f] affine transform (§8.3)
   content.rs   content-stream parser → Vec<Operation> (§7.8, §8–§9)
+  colorspace.rs ColorSpace: every §8.6 family → sRGB (Device*, Cal*,
+               Lab, ICCBased, Indexed, Separation/DeviceN), /Default*
+               remapping, bounded nesting; records ICC approximations
+  function.rs  PDF functions §7.10 (types 0/2/3/4) with size, depth,
+               stack and step bounds — tint transforms today, shadings
+               later
+  icc.rs       ICC v2/v4 reader for matrix/TRC RGB and gray profiles
+               (exact); LUT/CMYK/Lab-PCS → Unsupported with a reason;
+               XYZ/Bradford/sRGB helpers shared with the Cal* spaces
   render.rs    page → Pixmap rasterizer + PNG encoder (§8 drawing);
                also runs headless for extract_text (extraction_only:
                no path rasterising, clip masks, or image decode;
@@ -181,15 +190,22 @@ pipeline rather than duplicating them. `object`, `error`, `limits`,
   resources are not fetched or interpreted.
 
 - **Rendering is a separate, opt-in layer.** `render.rs` executes the
-  parsed `Operation`s against `tiny_skia::Pixmap`. It supports only
-  the basic-drawing subset (paths, clipping, Device colours);
-  everything else is `Error::Unsupported` and produces no output —
-  never a half-rendered page passed off as success. Text, XObjects,
-  shadings, ExtGState, patterns, non-device colour spaces,
-  annotations, `/UserUnit` ≠ 1 and Optional Content (`/OC` or `/OCMD`
-  marked content whose `/Properties` entry resolves to an OCG/OCMD
-  dictionary) are all refused — the latter because visibility is
-  document-level state we cannot evaluate honestly.
+  parsed `Operation`s against `tiny_skia::Pixmap`. Whatever it cannot
+  draw *exactly* is `Error::Unsupported` and produces no output —
+  never a half-rendered page passed off as success. Shadings,
+  patterns, knockout transparency groups, ExtGState soft masks,
+  `/Matte` soft-mask images, `/UserUnit` ≠ 1 and Optional Content
+  (`/OC` or `/OCMD` marked content whose `/Properties` entry resolves
+  to an OCG/OCMD dictionary) are refused — the latter because
+  visibility is document-level state we cannot evaluate honestly.
+  Two approximations the spec itself permits are allowed but
+  *reported* on `RenderedPage` rather than hidden: bundled substitute
+  fonts (`font_substitutions`) and `/Alternate` colour for ICC
+  profiles the engine does not evaluate (`color_approximations`).
+  Images are decoded once into a straight-RGBA buffer (`/SMask`,
+  `/Mask`, `/ImageMask` folded into alpha) and composited per pixel
+  with the §11.3.8 formula, which also handles the transparent
+  backdrop of an offscreen transparency-group layer.
 
 - **Paths are kept in user space and transformed at paint time.** The
   internal representation is an implementation choice (the spec does
