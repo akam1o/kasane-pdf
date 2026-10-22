@@ -132,7 +132,11 @@ to dump one file's fonts. This drove the Type1 implementation split:
 | non-embedded Type1 (Standard-14-style) | **metrics-only** — `/Widths`+encoding feed text extraction (`bounds`→`None`); render refuses | ~21 files |
 | `/FontFile` Adobe Type 1 (eexec) | **refused** — needs a Type 1 charstring VM | ~7 files (the arXiv family) |
 | `/FontFile3` CIDFontType0C | **refused** — CID font, not simple Type1 | — |
-| `/Type3` | **refused** — needs `/CharProcs` stream execution + `FontMatrix` + `d0`/`d1` | 4 files |
+| `/Type3` (`/CharProcs` streams) | **implemented** — each glyph runs like a mini Form XObject under `ctm×trm×/FontMatrix`; `d0`/`d1` parsed; `in_text` reset allows nested `BT…ET` (Type3-in-Type3) bounded by `max_xobject_depth` | 4 files (2 now pass; 2 blocked on `/Pattern`) |
+
+Measured after Type1 + Type3 (vs the 13/67 render, 17/67 text,
+13 full-PASS ExtGState baseline): render **15/67**, text **25/67**,
+full PASS **15** — zero regressions.
 
 ## Failure-cause analysis
 
