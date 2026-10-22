@@ -69,8 +69,10 @@ fn probe_page(
     let pd = page_dict(doc, page)?;
     if let Some(a) = pd.get(b"Annots".as_slice()) {
         let a = doc.deref(a)?;
-        if !matches!(a, Object::Array(ref v) if v.is_empty()) {
-            record(res, "render.annotation.unsupported", pi);
+        if let Object::Array(entries) = a {
+            for e in &entries {
+                probe_annotation(doc, e, pi, res, record);
+            }
         }
     }
     if let Some(u) = pd.get(b"UserUnit".as_slice()) {
@@ -85,6 +87,55 @@ fn probe_page(
     let resources = page.resources().cloned().unwrap_or(Object::Null);
     scan_ops(doc, &ops, &resources, pi, res, record, 0);
     Ok(())
+}
+
+/// Mirror `Renderer::draw_annotations`: Hidden / NoView / Popup and a
+/// `/Link` without `/AP` are skipped by the renderer; an annotation
+/// with no `/AP` (appearance would have to be synthesised) or an
+/// `/AP /N` state dictionary with several states and no `/AS` is a
+/// blocker. The appearance stream's own content is *not* walked — it
+/// is an unprobed region, counted in `forms` like any other form.
+fn probe_annotation(
+    doc: &Document,
+    entry: &Object,
+    pi: usize,
+    res: &mut ProbeResult,
+    record: &mut impl FnMut(&mut ProbeResult, &str, usize),
+) {
+    let Ok(annot) = doc.deref(entry) else { return };
+    let Some(ad) = annot.as_dict() else { return };
+    let subtype = ad
+        .get(b"Subtype".as_slice())
+        .and_then(|o| o.as_name())
+        .unwrap_or(b"");
+    let flags = ad
+        .get(b"F".as_slice())
+        .and_then(|o| o.as_i64())
+        .unwrap_or(0);
+    if flags & 0x02 != 0 || flags & 0x20 != 0 || subtype == b"Popup" {
+        return;
+    }
+    let Some(ap) = ad.get(b"AP".as_slice()) else {
+        if subtype != b"Link" {
+            record(res, "render.annotation.unsupported", pi);
+        }
+        return;
+    };
+    let Ok(ap) = doc.deref(ap) else { return };
+    let Some(n) = ap.as_dict().and_then(|d| d.get(b"N".as_slice())) else {
+        return;
+    };
+    match doc.deref(n) {
+        Ok(Object::Dict(states)) => {
+            if ad.get(b"AS".as_slice()).is_none() && states.len() != 1 {
+                record(res, "render.annotation.unsupported", pi);
+            } else {
+                res.forms += 1;
+            }
+        }
+        Ok(Object::Stream { .. }) => res.forms += 1,
+        _ => {}
+    }
 }
 
 fn page_dict(doc: &Document, page: &Page) -> Result<Dict, kasane_pdf::Error> {
@@ -257,9 +308,32 @@ fn probe_font(
     let subtype = dict.get(b"Subtype".as_slice()).and_then(|o| o.as_name());
     match subtype {
         Some(b"TrueType") => {
-            // embedded? Symbolic? Encoding?
-            if dict.get(b"FontDescriptor".as_slice()).is_none() {
-                record(res, "render.font.nonembedded.unsupported", pi);
+            // Mirror load_simple_font: a descriptor is required; the
+            // Symbolic flag is refused; without /FontFile2 the bundled
+            // substitute must be able to stand in.
+            let fd = dict
+                .get(b"FontDescriptor".as_slice())
+                .and_then(|o| doc.deref(o).ok())
+                .and_then(|o| o.as_dict().cloned());
+            match fd {
+                None => record(res, "render.font.nonembedded.unsupported", pi),
+                Some(fd) => {
+                    let flags = fd
+                        .get(b"Flags".as_slice())
+                        .and_then(|o| o.as_i64())
+                        .unwrap_or(0);
+                    if flags & 4 != 0 {
+                        record(res, "render.font.symbolic.unsupported", pi);
+                    } else if !fd.contains_key(b"FontFile2".as_slice()) {
+                        let base = dict
+                            .get(b"BaseFont".as_slice())
+                            .and_then(|o| o.as_name())
+                            .unwrap_or(b"");
+                        if !matches!(kasane_pdf::substitution_for(base, Some(&fd)), Ok(Some(_))) {
+                            record(res, "render.font.nonembedded.unsupported", pi);
+                        }
+                    }
+                }
             }
         }
         Some(b"Type0") => {
@@ -331,14 +405,27 @@ fn probe_font(
                     }
                     // else /Type1C CFF — supported, no flag.
                 }
-                // descriptor but no font-file → metrics-only: render
-                // refuses → still an Unsupported blocker for render.
+                // descriptor but no font-file → a bundled substitute
+                // stands in when one is sound; otherwise render refuses.
                 else {
-                    record(res, "render.font.nonembedded.unsupported", pi);
+                    let base = dict
+                        .get(b"BaseFont".as_slice())
+                        .and_then(|o| o.as_name())
+                        .unwrap_or(b"");
+                    if !matches!(kasane_pdf::substitution_for(base, Some(&fd)), Ok(Some(_))) {
+                        record(res, "render.font.nonembedded.unsupported", pi);
+                    }
                 }
             } else {
-                // no descriptor at all → metrics-only → render refuses.
-                record(res, "render.font.nonembedded.unsupported", pi);
+                // no descriptor at all → Standard 14 style; substitute
+                // unless it is Symbol/ZapfDingbats or unreadable.
+                let base = dict
+                    .get(b"BaseFont".as_slice())
+                    .and_then(|o| o.as_name())
+                    .unwrap_or(b"");
+                if !matches!(kasane_pdf::substitution_for(base, None), Ok(Some(_))) {
+                    record(res, "render.font.nonembedded.unsupported", pi);
+                }
             }
         }
         Some(b"Type3") => {
@@ -381,8 +468,22 @@ fn probe_xobject(
     match dict.get(b"Subtype".as_slice()).and_then(|o| o.as_name()) {
         Some(b"Form") => {
             res.forms += 1;
-            if dict.contains_key(b"Group".as_slice()) {
-                record(res, "render.xobject.group.unsupported", pi);
+            // /Group: an opaque-Normal transparency group now runs
+            // inline; only alpha/blend/knockout contexts refuse, which
+            // a static walk cannot see — so it is no longer recorded
+            // (the estimate caveat covers it). A knockout group is
+            // always refused, though.
+            if let Some(g) = dict.get(b"Group".as_slice()) {
+                if let Ok(gd) = doc.deref(g) {
+                    if gd
+                        .as_dict()
+                        .and_then(|d| d.get(b"K".as_slice()))
+                        .and_then(|o| o.as_bool())
+                        == Some(true)
+                    {
+                        record(res, "render.xobject.group.unsupported", pi);
+                    }
+                }
             }
             if dict.contains_key(b"OC".as_slice()) {
                 record(res, "render.xobject.oc.unsupported", pi);
