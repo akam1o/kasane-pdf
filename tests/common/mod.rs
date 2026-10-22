@@ -105,10 +105,7 @@ pub fn blocker_page_pdf() -> Vec<u8> {
           /FontBBox [0 0 500 700] /Ascent 700 /Descent -200 /CapHeight 660 \
           /StemV 80 /FontFile 11 0 R >>",
     );
-    push(
-        11,
-        b"<< /Length 8 >>\nstream\neexec!!!\nendstream",
-    );
+    push(11, b"<< /Length 8 >>\nstream\neexec!!!\nendstream");
     push(
         5,
         b"<< /Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 16 >>\nstream\nxxxxxxxxxxxxxxxx\nendstream",
