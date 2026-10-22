@@ -79,6 +79,43 @@ Re-render a saved result without re-running:
 $ kasane-compat report compat/reports/latest.json --format md|html
 ```
 
+Diff the current run against a previous one (regression analysis —
+newly PASS/FAIL files, verdict changes, cause-set and MAE deltas):
+
+```console
+$ kasane-compat report compat/reports/latest.json \
+      --compare compat/reports/run-<prev-ts>.json
+```
+
+## Failure-cause analysis
+
+Every stage failure is also classified into a **stable cause id** of
+the form `<stage>.<category>[.<specific>].<class>` — e.g.
+`render.extgstate.unsupported`, `parse.eof.error`,
+`rewrite.named-dest.unsupported`. The id is derived from
+`Error::kind()` plus the engine's `feature:` tag, **never** from
+free-text messages, so rewording an error string can't re-bucket the
+count. Unknown errors still produce an id (`*.unknown.*`) rather than
+being dropped.
+
+A read-only **probe** (`runner/src/probe.rs`) walks each page's
+content ops and `/XObject` / `/Font` / `/ColorSpace` / `/ExtGState`
+resources and records *every* blocker it would hit — not just the
+first one the engine returns. This powers three distinct per-feature
+counts in the report:
+
+| count | meaning |
+|---|---|
+| **affected** | PDFs the feature appears on at all |
+| **sole-blocker** | PDFs where it is the *only* known blocker |
+| **potentially unblocked** | PDFs that could newly pass if it's implemented — an **estimate**, since the probe only sees `--max-pages` pages and doesn't recurse into Form XObject streams |
+
+The **Development priorities** table ranks features by
+`potentially_unblocked / effort`, where `effort` is a person-day
+*guess* in `analysis.rs` (`PrioritiesConfig`) — shown as an estimate,
+never a measured value. The probe deliberately does **not** change
+engine failure behaviour; it only enumerates what *would* block.
+
 ## Result classification
 
 Each file gets one verdict — the **worst** class across its stages
@@ -120,7 +157,11 @@ Add more via `add`/`add-url`; keep `license` accurate per entry.
 compat/
   manifest.yaml     # id, sha256, category, source, license
   fetch-corpus.py   # R2 sync (boto3) — boto3/pyyaml in .venv-corpus
-  runner/           # Rust compat runner (path-dep on the crate)
+  runner/
+    src/main.rs     # CLI, stage orchestration, report rendering
+    src/cause.rs    # error → stable cause-id taxonomy (+ tests)
+    src/probe.rs    # read-only multi-blocker page walker
+    src/analysis.rs # aggregation, priorities, effort config (+ tests)
   corpus/           # downloaded PDFs (gitignored)
   reports/          # run-*.json/.md + diff images (gitignored)
 ```
