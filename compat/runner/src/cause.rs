@@ -106,6 +106,9 @@ pub fn cause_category(feature: &str) -> &'static str {
         // graphics state / colour
         "extended graphics state (gs)" => "extgstate",
         "non-device colour space" => "colorspace",
+        "colour space family" => "colorspace",
+        "function type" => "colorspace",
+        "pattern colour space" => "pattern",
         "pattern colour (SCN/scn name operand)" => "pattern",
         "shading (sh)" => "shading",
         // xobjects / images
@@ -118,6 +121,9 @@ pub fn cause_category(feature: &str) -> &'static str {
         "image attribute" => "image",
         "image BitsPerComponent" => "image.bpc",
         "image mask (/ImageMask true)" => "image.mask",
+        "pre-blended soft-mask image (/Matte)" => "image.smask",
+        "optional content on an image XObject (/OC)" => "xobject.oc",
+        "non-separable blend mode on image" => "blendmode",
         "image transform" => "image.transform",
         "image with non-default /Decode" => "image.decode",
         "inline image (BI/ID/EI)" => "image.inline",

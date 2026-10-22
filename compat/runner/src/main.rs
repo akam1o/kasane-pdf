@@ -193,6 +193,12 @@ struct Metrics {
     /// means the render executed but glyph shapes are approximations.
     #[serde(default)]
     render_font_substitutions: Vec<String>,
+    /// Colour spaces converted through an approximation on any
+    /// rendered page (an `/ICCBased` profile the engine cannot
+    /// evaluate, so its `/Alternate` was used), deduplicated.
+    /// Non-empty means hues may differ from a CMS-backed viewer.
+    #[serde(default)]
+    render_color_approximations: Vec<String>,
     text_match_ratio: Option<f64>,
     rewrite_qpdf_ok: Option<bool>,
     rewrite_reparsed: Option<bool>,
@@ -726,6 +732,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         render_quality: None,
         render_pages: Vec::new(),
         render_font_substitutions: Vec::new(),
+        render_color_approximations: Vec::new(),
         text_match_ratio: None,
         rewrite_qpdf_ok: None,
         rewrite_reparsed: None,
@@ -802,6 +809,11 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                     let tag = format!("{} → {}", s.base_font, s.substitute);
                     if !metrics.render_font_substitutions.contains(&tag) {
                         metrics.render_font_substitutions.push(tag);
+                    }
+                }
+                for a in &r.color_approximations {
+                    if !metrics.render_color_approximations.contains(a) {
+                        metrics.render_color_approximations.push(a.clone());
                     }
                 }
                 // Visual fidelity vs poppler on every rendered page.
@@ -1544,6 +1556,31 @@ fn render_markdown(r: &RunReport) -> String {
                         "- `{}` — {}\n",
                         f.id,
                         f.metrics.render_font_substitutions.join("; ")
+                    ));
+                }
+                s.push('\n');
+            }
+            // Approximated colour spaces: the render executed, but an
+            // ICC profile was replaced by its /Alternate — hue/
+            // gradation differences against a CMS-backed viewer are
+            // expected and are not a compositing defect.
+            let approx_files: Vec<&&FileResult> = measured
+                .iter()
+                .filter(|f| !f.metrics.render_color_approximations.is_empty())
+                .collect();
+            if !approx_files.is_empty() {
+                s.push_str(&format!(
+                    "*{} of the measured file(s) converted colours through an \
+                     **approximated colour space** (an ICC profile the engine does not \
+                     evaluate — LUT/CMYK/Lab-PCS — so its `/Alternate` was used; hues may \
+                     differ from poppler's lcms output):*\n\n",
+                    approx_files.len()
+                ));
+                for f in &approx_files {
+                    s.push_str(&format!(
+                        "- `{}` — {}\n",
+                        f.id,
+                        f.metrics.render_color_approximations.join("; ")
                     ));
                 }
                 s.push('\n');

@@ -905,6 +905,7 @@ mod tests {
                 render_quality: None,
                 render_pages: Vec::new(),
                 render_font_substitutions: Vec::new(),
+                render_color_approximations: Vec::new(),
                 text_match_ratio: None,
                 rewrite_qpdf_ok: None,
                 rewrite_reparsed: None,
