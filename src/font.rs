@@ -100,11 +100,36 @@ pub(crate) struct Type1Font {
 /// font (M7). They share outline extraction and the §9.4 text-state
 /// machinery; they differ in how string bytes become codes, how codes
 /// become glyph ids, and where widths come from.
+/// A `/Type3` font — each glyph is a `/CharProcs` content stream the
+/// renderer executes (like a miniature Form XObject) instead of an
+/// outline program. The font dict supplies `/Encoding` (code→char
+/// name), `/FontMatrix` (glyph→text space), `/Widths`, and the
+/// `/Resources` the char programs resolve their operands against.
+pub(crate) struct Type3Font {
+    /// `code → char name` per `/Encoding` (WinAnsi name or a
+    /// `/Differences` dict). `None` = code is not encodable.
+    encoding: EncodingTable,
+    /// `char name → (stream dict, raw bytes)` per `/CharProcs`.
+    /// Resolved lazily — the map keys are name bytes; lookups deref
+    /// the stream object on demand.
+    charprocs: Dict,
+    /// `/FontMatrix` — glyph space → text space (default 0.001 scale).
+    font_matrix: crate::matrix::Matrix,
+    /// Glyph advances in PDF 1/1000-em units, indexed by char code.
+    widths: [f64; 256],
+    /// `/ToUnicode` CMap — `None` if the font lacks one.
+    tounicode: Option<crate::tounicode::ToUnicode>,
+    /// `/Resources` the CharProcs resolve against (`None` → inherit
+    /// the page's). Stored unresolved; the renderer derefs per use.
+    resources: Option<Object>,
+}
+
 #[derive(Clone)]
 pub(crate) enum Font {
     Simple(Rc<SimpleFont>),
     Composite(Rc<CompositeFont>),
     Type1(Rc<Type1Font>),
+    Type3(Rc<Type3Font>),
 }
 
 /// Resolve `name` in `/Resources /Font` — dispatch on `/Subtype`:
@@ -136,11 +161,12 @@ pub(crate) fn load_font(
             doc, resources, name, limits,
         )?)),
         Some(b"Type1") | Some(b"MMType1") => Ok(Font::Type1(load_type1_font(doc, dict, limits)?)),
+        Some(b"Type3") => Ok(Font::Type3(load_type3_font(doc, dict, limits)?)),
         Some(b"Type0") => Ok(Font::Composite(load_composite_font(doc, dict, limits)?)),
         Some(other) => Err(Error::Unsupported {
             feature: "font subtype",
             detail: format!(
-                "/{} — only /TrueType, /Type1 (CFF /FontFile3), /MMType1, and /Type0 are supported",
+                "/{} — only /TrueType, /Type1 (CFF /FontFile3), /MMType1, /Type3, and /Type0 are supported",
                 String::from_utf8_lossy(other)
             ),
         }),
@@ -789,6 +815,158 @@ fn mac_roman_code(name: &str) -> Option<u8> {
 }
 
 // --------------------------------------------------------------------
+// Type 3 font (Subtype /Type3 — CharProcs content streams)
+// --------------------------------------------------------------------
+
+/// Load a `/Type3` font dictionary. A Type3 glyph is *not* an outline
+/// program — it is a `/CharProcs` content stream the renderer runs
+/// like a small Form XObject. We therefore only gather the dict data
+/// the renderer needs; glyph *execution* lives in `render.rs`.
+///
+/// Required by spec: `/CharProcs`, `/Encoding` (or a usable built-in),
+/// `/FirstChar`/`/LastChar`/`/Widths`. `/FontMatrix` defaults to
+/// `[0.001 0 0 0.001 0 0]`.
+fn load_type3_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Type3Font>, Error> {
+    // ---- CharProcs — the glyph program table --------------------
+    let cp_obj = dict
+        .get(b"CharProcs".as_slice())
+        .ok_or_else(|| Error::Structure("Type3 font has no /CharProcs".into()))?;
+    let cp = doc.deref(cp_obj)?;
+    let charprocs = cp
+        .as_dict()
+        .ok_or_else(|| Error::Structure("/CharProcs is not a dictionary".into()))?
+        .clone();
+
+    // ---- Encoding — code → char name ----------------------------
+    // Reuse the Type1 name-table builder: it already yields
+    // code→name-bytes for WinAnsi / /Differences — exactly the Type3
+    // code→char-name mapping. The builtin flag is CFF-specific and
+    // unused for Type3.
+    let (encoding, _builtin) = resolve_type1_encoding(doc, dict)?;
+
+    // ---- FontMatrix (default 0.001 scale, §9.6.4) ---------------
+    let font_matrix = match dict.get(b"FontMatrix".as_slice()) {
+        None | Some(Object::Null) => crate::matrix::Matrix::new(0.001, 0.0, 0.0, 0.001, 0.0, 0.0),
+        Some(o) => {
+            let arr = o
+                .as_array()
+                .ok_or_else(|| Error::Structure("/FontMatrix is not an array".into()))?;
+            if arr.len() != 6 {
+                return Err(Error::Structure("/FontMatrix must have 6 numbers".into()));
+            }
+            let mut n = [0.0f64; 6];
+            for (i, e) in arr.iter().enumerate() {
+                n[i] = e.as_number().ok_or_else(|| {
+                    Error::Structure("/FontMatrix entries must be numbers".into())
+                })?;
+            }
+            crate::matrix::Matrix::new(n[0], n[1], n[2], n[3], n[4], n[5])
+        }
+    };
+    if !font_matrix.is_finite() {
+        return Err(Error::Structure("/FontMatrix has non-finite values".into()));
+    }
+
+    // ---- FirstChar / LastChar / Widths --------------------------
+    let first_char = dict
+        .get(b"FirstChar".as_slice())
+        .and_then(|o| o.as_i64())
+        .unwrap_or(0);
+    let last_char = dict
+        .get(b"LastChar".as_slice())
+        .and_then(|o| o.as_i64())
+        .unwrap_or(255);
+    let mut widths = [0.0f64; 256];
+    if let Some(w_obj) = dict.get(b"Widths".as_slice()) {
+        let w = doc.deref(w_obj)?;
+        let arr = w
+            .as_array()
+            .ok_or_else(|| Error::Structure("/Widths is not an array".into()))?;
+        let expect = (last_char - first_char + 1).max(0) as usize;
+        for (i, e) in arr.iter().enumerate().take(expect.min(arr.len())) {
+            let e = doc.deref(e).unwrap_or_else(|_| e.clone());
+            if let Some(v) = e.as_number() {
+                if v.is_finite() && v >= 0.0 {
+                    widths[first_char as usize + i] = v;
+                }
+            }
+        }
+    }
+
+    // ---- /Resources the CharProcs resolve against ---------------
+    let resources = dict.get(b"Resources".as_slice()).cloned();
+
+    let tounicode = crate::tounicode::load_tounicode(doc, dict, limits)?;
+
+    Ok(Rc::new(Type3Font {
+        encoding,
+        charprocs,
+        font_matrix,
+        widths,
+        tounicode,
+        resources,
+    }))
+}
+
+impl Type3Font {
+    /// `/FontMatrix` — glyph space → text space.
+    pub(crate) fn font_matrix(&self) -> crate::matrix::Matrix {
+        self.font_matrix
+    }
+
+    /// The font's `/Resources` for CharProc operand resolution —
+    /// `None` means inherit the caller's.
+    pub(crate) fn resources(&self) -> Option<&Object> {
+        self.resources.as_ref()
+    }
+
+    /// Char code → the CharProc stream `(dict, raw)` for its glyph.
+    /// `None` = code not encodable or no matching CharProc.
+    pub(crate) fn charproc<'a>(
+        &'a self,
+        doc: &'a Document,
+        code: u8,
+    ) -> Result<Option<(Dict, Vec<u8>)>, Error> {
+        let name = match &self.encoding[code as usize] {
+            Some(n) => n.clone(),
+            None => return Ok(None),
+        };
+        let entry = match self.charprocs.get(name.as_slice()) {
+            Some(e) => e.clone(),
+            None => return Ok(None),
+        };
+        let obj = doc.deref(&entry)?;
+        let (d, raw) = obj
+            .as_stream()
+            .ok_or_else(|| Error::Structure("CharProc is not a stream".into()))?;
+        Ok(Some((d.clone(), raw.to_vec())))
+    }
+
+    /// Char code → glyph advance in 1/1000-em units (PDF `/Widths`).
+    /// `/Widths` is authoritative — the CharProc's `d0`/`d1` `wx`
+    /// should agree but the font dict wins on conflict (§9.6.4.1).
+    pub(crate) fn width(&self, code: u8) -> f64 {
+        self.widths[code as usize]
+    }
+
+    /// Code → Unicode via `/ToUnicode` (else `.notdef` — no AGL for
+    /// Type3 char names, which are arbitrary).
+    pub(crate) fn unicode(&self, code: u8) -> Option<String> {
+        self.tounicode.as_ref()?.decode(code as u32)
+    }
+
+    /// `true` when the font carries a `/ToUnicode` CMap.
+    pub(crate) fn has_tounicode(&self) -> bool {
+        self.tounicode.is_some()
+    }
+
+    /// `true` when `code` is the space char (§9.3.3, single-byte 32).
+    pub(crate) fn is_space_code(&self, code: u32) -> bool {
+        code == 0x20
+    }
+}
+
+// --------------------------------------------------------------------
 // Type 1 / CFF font (Subtype /Type1 or /MMType1 + /FontFile3)
 // --------------------------------------------------------------------
 
@@ -1314,7 +1492,7 @@ impl Font {
     /// byte on a 2-byte font). Codes never span string boundaries.
     pub(crate) fn read_code(&self, bytes: &[u8], pos: usize) -> Result<(u32, usize), Error> {
         match self {
-            Font::Simple(_) | Font::Type1(_) => Ok((bytes[pos] as u32, 1)),
+            Font::Simple(_) | Font::Type1(_) | Font::Type3(_) => Ok((bytes[pos] as u32, 1)),
             Font::Composite(_) => {
                 if pos + 1 >= bytes.len() {
                     return Err(Error::Structure(
@@ -1333,6 +1511,7 @@ impl Font {
             Font::Simple(f) => f.is_space_code(code),
             Font::Composite(f) => f.is_space_code(code),
             Font::Type1(f) => f.is_space_code(code),
+            Font::Type3(f) => f.is_space_code(code),
         }
     }
 
@@ -1343,6 +1522,7 @@ impl Font {
             Font::Simple(f) => f.width(code as u8),
             Font::Composite(f) => f.width(code),
             Font::Type1(f) => f.width(code as u8),
+            Font::Type3(f) => f.width(code as u8),
         }
     }
 
@@ -1353,6 +1533,9 @@ impl Font {
             Font::Simple(f) => Ok(f.glyph_id(code as u8)?.unwrap_or(GlyphId(0))),
             Font::Composite(f) => f.glyph_id(code),
             Font::Type1(f) => Ok(f.glyph_id(code as u8)?.unwrap_or(GlyphId(0))),
+            // Type3 glyphs are content streams, not outline glyphs —
+            // the char code itself is the identity for bookkeeping.
+            Font::Type3(_) => Ok(GlyphId(code as u16)),
         }
     }
 
@@ -1366,6 +1549,10 @@ impl Font {
             Font::Simple(f) => f.outline(glyph, builder),
             Font::Composite(f) => f.outline(glyph, builder),
             Font::Type1(f) => f.outline(glyph, builder),
+            // Type3 has no outline program — its glyph is a CharProc
+            // stream executed by the renderer. `show_glyph` handles it
+            // before ever calling outline; this is a defensive default.
+            Font::Type3(_) => Ok(false),
         }
     }
 
@@ -1377,6 +1564,7 @@ impl Font {
             Font::Simple(f) => f.unicode(code as u8),
             Font::Composite(f) => f.unicode(code),
             Font::Type1(f) => f.unicode(code as u8),
+            Font::Type3(f) => f.unicode(code as u8),
         }
     }
 
@@ -1386,6 +1574,7 @@ impl Font {
             Font::Simple(f) => f.has_tounicode(),
             Font::Composite(f) => f.has_tounicode(),
             Font::Type1(f) => f.has_tounicode(),
+            Font::Type3(f) => f.has_tounicode(),
         }
     }
 
@@ -1395,6 +1584,20 @@ impl Font {
             Font::Simple(f) => f.units_per_em(),
             Font::Composite(f) => f.units_per_em(),
             Font::Type1(f) => f.units_per_em(),
+            // Type3 glyph space is scaled by /FontMatrix (default
+            // 0.001) into text space; the nominal em is 1000 units,
+            // matching the 1/1000-em /Widths convention.
+            Font::Type3(_) => Ok(1000.0),
+        }
+    }
+
+    /// The inner [`Type3Font`] when this is a `/Type3` font — used by
+    /// the renderer's CharProc executor, which is the only consumer
+    /// that needs the raw struct rather than the uniform interface.
+    pub(crate) fn as_type3(&self) -> Option<&Rc<Type3Font>> {
+        match self {
+            Font::Type3(f) => Some(f),
+            _ => None,
         }
     }
 }

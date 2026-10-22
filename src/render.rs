@@ -993,6 +993,11 @@ impl<'a> Renderer<'a> {
                 // Tag-only BMC/EMC have no rendering effect.
             }
             Operation::BeginCompatibility | Operation::EndCompatibility => {}
+            Operation::Type3SetWidth { .. } | Operation::Type3SetWidthAndBox { .. } => {
+                // d0/d1 only have meaning inside a Type3 /CharProcs
+                // stream (handled by the glyph executor). At page level
+                // they are a malformed-file quirk — ignore.
+            }
             Operation::Unknown { .. } => {
                 // §7.8.2: inside BX/EX unknown ops may be ignored.
             }
@@ -2178,6 +2183,13 @@ impl<'a> Renderer<'a> {
             });
         }
 
+        // Type3 glyphs are CharProc *content streams*, not outline
+        // programs — a completely different paint path. Hand them to a
+        // dedicated executor and skip the outline machinery entirely.
+        if font.as_type3().is_some() {
+            return self.show_type3_glyph(font, code, tj_adjust);
+        }
+
         let gs = &mut self.gs;
         let t = &mut gs.text;
 
@@ -2352,6 +2364,159 @@ impl<'a> Renderer<'a> {
         };
         let tx =
             ((w0 / 1000.0 - tj_adjust / 1000.0) * t.font_size + t.char_spacing + tw) * t.h_scale;
+        let adv = Matrix::new(1.0, 0.0, 0.0, 1.0, tx, 0.0);
+        self.text_tm = adv.concat(self.text_tm);
+        Ok(())
+    }
+
+    /// Show a `/Type3` glyph — execute its `/CharProcs` content stream
+    /// like a miniature Form XObject (§9.6.4).
+    ///
+    /// The CharProc paints in *glyph space*, transformed into text
+    /// space by `/FontMatrix` and then by the same text-rendering
+    /// matrix the outline path uses:
+    ///   glyph → text:    /FontMatrix
+    ///   text → render:   Trm = [Tfs·Th 0 0 Tfs 0 Trise] × Tm
+    ///   render → page:   CTM
+    /// So the CharProc runs under `ctm × trm × font_matrix`.
+    ///
+    /// `d0`/`d1` inside the stream set the glyph's width/bbox — we take
+    /// the authoritative advance from `/Widths` regardless (§9.6.4.1
+    /// says they must agree; the font dict wins on conflict) and use
+    /// `d1`'s bbox (or the font's `/FontBBox`) for extraction bounds.
+    fn show_type3_glyph(
+        &mut self,
+        font: &crate::font::Font,
+        code: u32,
+        tj_adjust: f64,
+    ) -> Result<(), Error> {
+        let t3 = font.as_type3().expect("checked by caller");
+        let font_matrix = t3.font_matrix();
+
+        // Copy the text-state scalars we need up front — `self.gs` is
+        // mutated below (pushed/run/restored), so a live &mut borrow of
+        // `gs.text` can't be held across the CharProc execution.
+        let font_size = self.gs.text.font_size;
+        let h_scale = self.gs.text.h_scale;
+        let rise = self.gs.text.rise;
+        let render_mode = self.gs.text.render_mode;
+        let char_spacing = self.gs.text.char_spacing;
+        let word_spacing = self.gs.text.word_spacing;
+
+        // Resolve the CharProc for this code (encoding → name → stream).
+        let charproc = t3.charproc(self.doc, code as u8)?;
+
+        // Text→render matrix, identical to the outline path's Trm.
+        let trm = Matrix::new(font_size * h_scale, 0.0, 0.0, font_size, 0.0, rise)
+            .concat(self.text_tm)
+            .concat(self.gs.ctm);
+
+        // The transform under which the CharProc's glyph-space
+        // coordinates land on the page. `font_matrix` maps glyph →
+        // text space; `trm` maps text → page.
+        let glyph_ctm = trm.concat(font_matrix);
+
+        // ---- paint the CharProc -----------------------------------
+        if let Some((cdict, craw)) = charproc {
+            if !self.extraction_only {
+                // Bound nesting — a Type3 CharProc may itself contain a
+                // `Tf` + `Tj` invoking another (or the same) Type3
+                // font. Count it against the XObject depth budget so a
+                // self-referential CharProc can't recurse forever.
+                if self.xobject_depth >= self.limits.max_xobject_depth {
+                    return Err(Error::LimitExceeded {
+                        limit: "max_xobject_depth",
+                        max: self.limits.max_xobject_depth as u64,
+                    });
+                }
+                if self.gs_stack.len() >= self.limits.max_gsave_depth {
+                    return Err(Error::LimitExceeded {
+                        limit: "max_gsave_depth",
+                        max: self.limits.max_gsave_depth as u64,
+                    });
+                }
+                self.gs_stack.push(self.gs.clone());
+                let saved_resources = match t3.resources() {
+                    Some(r) => std::mem::replace(&mut self.resources, r.clone()),
+                    None => self.resources.clone(), // inherit caller's
+                };
+                self.gs.ctm = glyph_ctm;
+                // A CharProc is its own scope: it may legitimately
+                // contain `BT … ET` (nested Type3, Type3-in-Type3), so
+                // the parent's text state must not leak in. Save and
+                // clear `in_text` for the nested run, restore after.
+                let saved_in_text = self.in_text;
+                self.in_text = false;
+                let run_result = (|| {
+                    let decoded = self.doc.decode_stream(&cdict, &craw)?;
+                    let ops = crate::content::parse_content_stream(&[decoded], self.limits)?;
+                    self.xobject_depth += 1;
+                    let r = self.run(&ops);
+                    self.xobject_depth -= 1;
+                    r
+                })();
+                self.in_text = saved_in_text;
+                self.resources = saved_resources;
+                self.gs = self.gs_stack.pop().expect("pushed above");
+                run_result?;
+            }
+        }
+
+        // ---- extraction record -------------------------------------
+        if let Some(buf) = &mut self.extract {
+            let w0 = font.width(code);
+            let tw = if font.is_space_code(code) {
+                word_spacing
+            } else {
+                0.0
+            };
+            let tx_text = w0 / 1000.0 - tj_adjust / 1000.0 + (char_spacing + tw) / font_size;
+            let origin = trm.transform(0.0, 0.0);
+            let (ax, ay) = trm.transform(tx_text, 0.0);
+            let advance = (ax - origin.0, ay - origin.1);
+            // Bounds: a CharProc's ink extent isn't cheaply known
+            // without running it — the extraction record leaves it
+            // None (callers treat it like a space/.notdef bound).
+            let bounds = None;
+            let (unicode, resolved_via) = crate::text_extract::resolve_unicode(font, code);
+            if let Some(s) = &unicode {
+                self.extract_unicode_bytes = self
+                    .extract_unicode_bytes
+                    .checked_add(s.len() as u64)
+                    .ok_or(Error::LimitExceeded {
+                        limit: "max_extracted_unicode_bytes",
+                        max: self.limits.max_extracted_unicode_bytes,
+                    })?;
+                if self.extract_unicode_bytes > self.limits.max_extracted_unicode_bytes {
+                    return Err(Error::LimitExceeded {
+                        limit: "max_extracted_unicode_bytes",
+                        max: self.limits.max_extracted_unicode_bytes,
+                    });
+                }
+            }
+            buf.push(crate::text_extract::CharInfo {
+                code,
+                unicode,
+                resolved_via,
+                origin,
+                advance,
+                bounds,
+                render_mode: render_mode as u8,
+                font_size,
+                rise,
+                tj_adjust,
+                in_text: true,
+            });
+        }
+
+        // ---- advance -----------------------------------------------
+        let w0 = font.width(code);
+        let tw = if font.is_space_code(code) {
+            word_spacing
+        } else {
+            0.0
+        };
+        let tx = ((w0 / 1000.0 - tj_adjust / 1000.0) * font_size + char_spacing + tw) * h_scale;
         let adv = Matrix::new(1.0, 0.0, 0.0, 1.0, tx, 0.0);
         self.text_tm = adv.concat(self.text_tm);
         Ok(())

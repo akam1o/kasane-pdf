@@ -192,6 +192,35 @@ pub enum Operation {
         text: Vec<u8>,
     },
 
+    // -- Type 3 glyph programs (§9.6.4) ------------------------------
+    // `d0`/`d1` only appear inside a Type3 `/CharProcs` stream — they
+    // declare the glyph's metrics before the drawing ops. Outside a
+    // CharProc they are meaningless; the parser keeps them as data and
+    // the Type3 executor interprets them.
+    /// `d0` — set glyph width only (coloured glyph): `wx wy d0`.
+    Type3SetWidth {
+        /// Horizontal advance in glyph space.
+        wx: f64,
+        /// Vertical advance in glyph space.
+        wy: f64,
+    },
+    /// `d1` — set width + glyph bounding box (uncoloured glyph):
+    /// `wx wy llx lly urx ury d1`.
+    Type3SetWidthAndBox {
+        /// Horizontal advance in glyph space.
+        wx: f64,
+        /// Vertical advance in glyph space.
+        wy: f64,
+        /// Glyph bbox lower-left x.
+        llx: f64,
+        /// Glyph bbox lower-left y.
+        lly: f64,
+        /// Glyph bbox upper-right x.
+        urx: f64,
+        /// Glyph bbox upper-right y.
+        ury: f64,
+    },
+
     // -- External objects & marked content (§8.8, §8.10, §10.5) ------
     /// `Do` — invoke a named XObject.
     Do(Name),
@@ -325,6 +354,8 @@ impl Operation {
             Operation::ShowTextAdjusted(_) => "TJ",
             Operation::NextLineShowText(_) => "'",
             Operation::SetSpacingNextLineShowText { .. } => "\"",
+            Operation::Type3SetWidth { .. } => "d0",
+            Operation::Type3SetWidthAndBox { .. } => "d1",
             Operation::Do(_) => "Do",
             Operation::Shading(_) => "sh",
             Operation::MarkedContentPoint(_) => "MP",
@@ -939,6 +970,32 @@ impl<'a> ContentParser<'a> {
                 }
             }
 
+            // Type 3 glyph-program ops (§9.6.4) — only meaningful
+            // inside a /CharProcs stream; kept as data here.
+            b"d0" => {
+                self.expect_operands(2, n_operands, op, offset)?;
+                let wy = self.take_number()?;
+                let wx = self.take_number()?;
+                Operation::Type3SetWidth { wx, wy }
+            }
+            b"d1" => {
+                self.expect_operands(6, n_operands, op, offset)?;
+                let ury = self.take_number()?;
+                let urx = self.take_number()?;
+                let lly = self.take_number()?;
+                let llx = self.take_number()?;
+                let wy = self.take_number()?;
+                let wx = self.take_number()?;
+                Operation::Type3SetWidthAndBox {
+                    wx,
+                    wy,
+                    llx,
+                    lly,
+                    urx,
+                    ury,
+                }
+            }
+
             // External objects & marked content
             b"Do" => {
                 self.expect_operands(1, n_operands, op, offset)?;
@@ -1457,6 +1514,26 @@ impl fmt::Display for Operation {
                 fmt_num(*word_spacing),
                 fmt_num(*char_spacing),
                 escape_string(text)
+            ),
+            Operation::Type3SetWidth { wx, wy } => {
+                write!(f, "{} {} d0", fmt_num(*wx), fmt_num(*wy))
+            }
+            Operation::Type3SetWidthAndBox {
+                wx,
+                wy,
+                llx,
+                lly,
+                urx,
+                ury,
+            } => write!(
+                f,
+                "{} {} {} {} {} {} d1",
+                fmt_num(*wx),
+                fmt_num(*wy),
+                fmt_num(*llx),
+                fmt_num(*lly),
+                fmt_num(*urx),
+                fmt_num(*ury)
             ),
             Operation::Do(n) => write!(f, "{} Do", fmt_name(n)),
             Operation::Shading(n) => write!(f, "{} sh", fmt_name(n)),

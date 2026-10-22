@@ -117,6 +117,23 @@ prints which `/ExtGState` keys appear, on how many files, and which gs
 names are actually `gs`-invoked — the data behind the phased
 implementation decision in `docs/decisions/`.
 
+## Font usage audit
+
+`kasane-compat run --corpus … --font-audit` (`runner/src/fontaudit.rs`)
+enumerates every `/Font` resource per PDF — split by `/Subtype`,
+embedding (`/FontFile`/`/FontFile2`/`/FontFile3` in the descriptor),
+`/Encoding`, `/ToUnicode`, `/Widths` — and marks which fonts are
+actually `Tf`-invoked (vs merely present in resources). Add `--only ID`
+to dump one file's fonts. This drove the Type1 implementation split:
+
+| program | status | corpus hit |
+|---|---|---|
+| `/FontFile3` raw CFF (`/Type1` + `/MMType1`) | **implemented** — outlines via `ttf_parser::cff`, glyph ids via CFF charset + `/Encoding` | few (`pattern_text_embedded_font`, parts of `tamreview`) |
+| non-embedded Type1 (Standard-14-style) | **metrics-only** — `/Widths`+encoding feed text extraction (`bounds`→`None`); render refuses | ~21 files |
+| `/FontFile` Adobe Type 1 (eexec) | **refused** — needs a Type 1 charstring VM | ~7 files (the arXiv family) |
+| `/FontFile3` CIDFontType0C | **refused** — CID font, not simple Type1 | — |
+| `/Type3` | **refused** — needs `/CharProcs` stream execution + `FontMatrix` + `d0`/`d1` | 4 files |
+
 ## Failure-cause analysis
 
 Every stage failure is also classified into a **stable cause id** of

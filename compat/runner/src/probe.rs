@@ -279,9 +279,66 @@ fn probe_font(
                 }
             }
         }
-        Some(b"Type1") => record(res, "render.font.type1.unsupported", pi),
-        Some(b"MMType1") => record(res, "render.font.type1.unsupported", pi),
-        Some(b"Type3") => record(res, "render.font.type3.unsupported", pi),
+        Some(b"Type1") | Some(b"MMType1") => {
+            // Mirror load_type1_font's acceptance:
+            //   /FontFile   → eexec Type1 program → unsupported
+            //   /FontFile3 CIDFontType0C → CID, not simple → unsupported
+            //   /FontFile3 Type1C / absent program → supported (render
+            //                 refuses only when there is no program)
+            let fd = dict
+                .get(b"FontDescriptor".as_slice())
+                .and_then(|o| doc.deref(o).ok())
+                .and_then(|o| o.as_dict().cloned());
+            if let Some(fd) = fd {
+                if fd.get(b"FontFile".as_slice()).is_some() {
+                    record(res, "render.font.type1-eexec.unsupported", pi);
+                } else if let Some(ff3) = fd.get(b"FontFile3".as_slice()) {
+                    // Resolve the stream then read its /Subtype —
+                    // CIDFontType0C is a CID font, not simple Type1.
+                    let is_cid0 = doc
+                        .deref(ff3)
+                        .ok()
+                        .and_then(|o| {
+                            o.as_stream()
+                                .and_then(|(d, _)| {
+                                    d.get(b"Subtype".as_slice()).and_then(|o| o.as_name())
+                                })
+                                .map(|n| n.to_vec())
+                        })
+                        .map(|n| n == b"CIDFontType0C")
+                        .unwrap_or(false);
+                    if is_cid0 {
+                        record(res, "render.font.cff.unsupported", pi);
+                    }
+                    // else /Type1C CFF — supported, no flag.
+                }
+                // descriptor but no font-file → metrics-only: render
+                // refuses → still an Unsupported blocker for render.
+                else {
+                    record(res, "render.font.nonembedded.unsupported", pi);
+                }
+            } else {
+                // no descriptor at all → metrics-only → render refuses.
+                record(res, "render.font.nonembedded.unsupported", pi);
+            }
+        }
+        Some(b"Type3") => {
+            // Type3 CharProcs run like miniature Form XObjects — but a
+            // CharProc that uses /Pattern colours or nested shading is
+            // still blocked. Only flag the ones we genuinely can't run:
+            // a CharProc using an unimplemented feature is caught by the
+            // nested probe, so here we just confirm the font *shape* is
+            // loadable (has /CharProcs + /Encoding).
+            let has_cp = dict
+                .get(b"CharProcs".as_slice())
+                .map(|o| matches!(doc.deref(o), Ok(Object::Dict(_))))
+                .unwrap_or(false);
+            if !has_cp {
+                record(res, "render.font.type3.nocharprocs.unsupported", pi);
+            }
+            // With /CharProcs the font loads — any residual blocker is a
+            // nested feature (pattern, colours), probed elsewhere.
+        }
         Some(b"CIDFontType0") => record(res, "render.font.cff.unsupported", pi),
         Some(_) => record(res, "render.font.unsupported", pi),
         None => {}
