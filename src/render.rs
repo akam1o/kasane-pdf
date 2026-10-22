@@ -69,6 +69,14 @@ struct GraphicsState {
     fill_space: DeviceSpace,
     stroke_color: Color,
     fill_color: Color,
+    /// Non-stroking alpha `ca` (§11.3.7.2) — multiplies the fill
+    /// colour's alpha at paint time. 1.0 = opaque.
+    fill_alpha: f64,
+    /// Stroking alpha `CA` — multiplies the stroke colour's alpha.
+    stroke_alpha: f64,
+    /// Current blend mode `BM` (§11.3.5) — mapped to tiny-skia's
+    /// `BlendMode` at paint time. `SourceOver` = PDF `/Normal`.
+    blend_mode: tiny_skia::BlendMode,
     /// Current clip as a pixmap-space alpha mask; `None` = page bounds
     /// only. Stacked clips intersect via `Mask::intersect_path`.
     clip: Option<Mask>,
@@ -158,6 +166,16 @@ impl Color {
         b: 255,
         a: 255,
     };
+    /// This colour with its alpha multiplied by `a` (0..=1) — applies
+    /// the `ca`/`CA` ExtGState parameters at paint time (§11.3.7.2:
+    /// the constant alpha is *multiplied* with any intrinsic alpha).
+    pub fn with_alpha(self, a: f64) -> Color {
+        let na = (self.a as f64 / 255.0) * clamp01(a);
+        Color {
+            a: to_u8(na),
+            ..self
+        }
+    }
 }
 
 impl GraphicsState {
@@ -174,6 +192,9 @@ impl GraphicsState {
             fill_space: DeviceSpace::Gray,
             stroke_color: Color::BLACK,
             fill_color: Color::BLACK,
+            fill_alpha: 1.0,
+            stroke_alpha: 1.0,
+            blend_mode: tiny_skia::BlendMode::SourceOver,
             clip: None,
             text: TextState::default(),
         }
@@ -957,12 +978,7 @@ impl<'a> Renderer<'a> {
                     ),
                 })
             }
-            Operation::SetExtGState(n) => {
-                return Err(Error::Unsupported {
-                    feature: "extended graphics state (gs)",
-                    detail: format!("/{} — ExtGState is not implemented in M3", show_name(n)),
-                })
-            }
+            Operation::SetExtGState(n) => self.apply_extgstate(n)?,
 
             // ---- marked content / compatibility -----------------
             Operation::MarkedContentPoint(_) => {
@@ -1171,6 +1187,199 @@ impl<'a> Renderer<'a> {
             self.gs.stroke_color = color;
         } else {
             self.gs.fill_color = color;
+        }
+        Ok(())
+    }
+
+    /// Apply an `/ExtGState` resource to the current graphics state
+    /// (`gs` operator, §8.4.5 / Table 58).
+    ///
+    /// Every key in the dictionary is dispatched: parameters we model
+    /// are written into [`GraphicsState`]; parameters that have no
+    /// effect on our raster output (overprint flags, stroke-adjust
+    /// hint, `/None` soft masks, `/Default` transfer functions, text
+    /// knockout) are accepted and dropped; parameters that *would*
+    /// visibly change output but are out of scope return
+    /// `Error::Unsupported` rather than being silently mis-rendered.
+    ///
+    /// The `/Type` entry (`/ExtGState`) is metadata, not a parameter.
+    fn apply_extgstate(&mut self, name: &Name) -> Result<(), Error> {
+        let obj = self
+            .doc
+            .resolve_resource(&self.resources, "ExtGState", name)?
+            .ok_or_else(|| {
+                Error::Structure(format!(
+                    "/ExtGState /{} not in the resource dictionary",
+                    show_name(name)
+                ))
+            })?;
+        let dict = obj.as_dict().ok_or_else(|| {
+            Error::Structure(format!(
+                "/ExtGState /{} is not a dictionary",
+                show_name(name)
+            ))
+        })?;
+
+        for (k, v) in dict {
+            let key: &[u8] = k;
+            match key {
+                b"Type" => {
+                    // `/Type /ExtGState` — declarative, no effect.
+                }
+
+                // ---- line parameters (already-modelled gs) ---------
+                b"LW" => {
+                    self.gs.line_width = num_param(v, "LW")?;
+                }
+                b"LC" => {
+                    let c = int_param(v, "LC")?;
+                    if !(0..=2).contains(&c) {
+                        return Err(Error::Structure(format!("LC {c} out of range 0..=2")));
+                    }
+                    self.gs.line_cap = c as u8;
+                }
+                b"LJ" => {
+                    let j = int_param(v, "LJ")?;
+                    if !(0..=2).contains(&j) {
+                        return Err(Error::Structure(format!("LJ {j} out of range 0..=2")));
+                    }
+                    self.gs.line_join = j as u8;
+                }
+                b"ML" => {
+                    let m = num_param(v, "ML")?;
+                    if m < 1.0 {
+                        return Err(Error::Structure(format!("ML {m} must be >= 1")));
+                    }
+                    self.gs.miter_limit = m;
+                }
+                b"D" => {
+                    // `/D [dash array] phase` — same shape as the `d`
+                    // operator's operands.
+                    let arr = v
+                        .as_array()
+                        .ok_or_else(|| Error::Structure("/D must be an array".into()))?;
+                    let dash = arr
+                        .first()
+                        .and_then(|o| o.as_array())
+                        .ok_or_else(|| Error::Structure("/D[0] must be the dash array".into()))?;
+                    let phase = arr
+                        .get(1)
+                        .and_then(|o| o.as_number())
+                        .ok_or_else(|| Error::Structure("/D[1] must be the phase".into()))?;
+                    let dashes: Vec<f64> = dash
+                        .iter()
+                        .map(|x| x.as_number())
+                        .collect::<Option<_>>()
+                        .ok_or_else(|| Error::Structure("/D dash array must be numeric".into()))?;
+                    if dashes.iter().all(|d| *d == 0.0) {
+                        // §8.4.3.6: an all-zero dash array is a solid line.
+                        self.gs.dash = None;
+                    } else {
+                        self.gs.dash = Some((dashes, phase));
+                    }
+                }
+                b"RI" => {
+                    // Rendering intent selects the ICC conversion
+                    // intent; with no ICC support it has no visible
+                    // effect on device-space output — accepted.
+                    match v.as_name() {
+                        Some(
+                            b"AbsoluteColorimetric"
+                            | b"RelativeColorimetric"
+                            | b"Saturation"
+                            | b"Perceptual",
+                        ) => {}
+                        _ => {
+                            return Err(Error::Structure(
+                                "/RI must be a rendering-intent name".into(),
+                            ))
+                        }
+                    }
+                }
+
+                // ---- transparency (implemented) --------------------
+                b"ca" => {
+                    self.gs.fill_alpha = alpha_param(v, "ca")?;
+                }
+                b"CA" => {
+                    self.gs.stroke_alpha = alpha_param(v, "CA")?;
+                }
+                b"BM" => {
+                    self.gs.blend_mode = parse_blend_mode(v)?;
+                }
+
+                // ---- accepted no-ops (spec-tolerable) ---------------
+                // Overprint (OP/op/OPM) only affects CMYK-separation
+                // output; in device-RGB compositing it has no effect.
+                // All corpus values are OP/op=false, OPM=1.
+                b"OP" | b"op" | b"OPM" => {}
+                // SA = stroke adjustment hint; a quality-of-rendering
+                // hint, not a correctness parameter. Ignoring it is a
+                // spec-permitted approximation (§11.7).
+                b"SA" => {}
+                // AIS = alpha-is-shape flag; only meaningful inside a
+                // transparency group / soft mask, which we refuse when
+                // actually required. `false` is the default.
+                b"AIS" => {}
+                // TK = text knockout; only relevant with multiple
+                // glyphs in one showing op under advanced blending.
+                // `true` is the default and the common corpus value.
+                b"TK" => {}
+                // SMask `/None` is an explicit "no soft mask" — a no-op.
+                // A real mask (dict / `/Luminosity`/`/Alpha` name) is a
+                // genuine soft mask → Unsupported.
+                b"SMask" => {
+                    if !matches!(v.as_name(), Some(b"None")) {
+                        return Err(Error::Unsupported {
+                            feature: "soft mask (/SMask)",
+                            detail:
+                                "luminosity/alpha soft masks need transparency-group compositing"
+                                    .into(),
+                        });
+                    }
+                }
+                // Transfer functions TR/TR2 — accepted only as the
+                // name `/Default` (no adjustment). A real function
+                // (dict / array of functions) changes tone → refuse.
+                b"TR" | b"TR2" | b"BG" | b"BG2" | b"UCR" | b"UCR2" => {
+                    if !matches!(v.as_name(), Some(b"Default")) {
+                        return Err(Error::Unsupported {
+                            feature: "transfer/black-generation function",
+                            detail: format!(
+                                "/{} requires a tint transform not implemented",
+                                show_name(key)
+                            ),
+                        });
+                    }
+                }
+                // HT halftone & FL flatness & SM smoothness are
+                // device-rendering knobs with no PDF-semantics change
+                // on our rasteriser → accepted.
+                b"HT" | b"HTP" | b"FL" | b"SM" => {}
+                // `/Font [ref size]` sets the text font via gs. It is
+                // an *object reference*, not a resource name, so it
+                // can't go through load_font's name lookup; rather than
+                // hand-roll a parallel loader we refuse — it does not
+                // appear in the corpus.
+                b"Font" => {
+                    return Err(Error::Unsupported {
+                        feature: "ExtGState /Font",
+                        detail: "font selection via gs is not implemented".into(),
+                    });
+                }
+
+                // Anything else is an unknown parameter — be strict so
+                // a silent mis-render can't masquerade as support.
+                other => {
+                    return Err(Error::Unsupported {
+                        feature: "ExtGState parameter",
+                        detail: format!(
+                            "/{} — unhandled ExtGState key",
+                            String::from_utf8_lossy(other)
+                        ),
+                    })
+                }
+            }
         }
         Ok(())
     }
@@ -1799,12 +2008,27 @@ impl<'a> Renderer<'a> {
                         continue;
                     }
                 }
+                // §11.3.7.2: non-stroking alpha `ca` applies to image
+                // painting — composite source-over the destination
+                // when ca < 1. (Blend modes beyond Normal on images are
+                // a transparency-group concern; Normal/`ca` covers the
+                // corpus.)
                 let i = (py as u64 * pw as u64 + px as u64) as usize * 4;
                 let buf = self.pixmap.data_mut();
-                buf[i] = r;
-                buf[i + 1] = g;
-                buf[i + 2] = b;
-                buf[i + 3] = 255;
+                let sa = self.gs.fill_alpha;
+                if sa >= 1.0 {
+                    buf[i] = r;
+                    buf[i + 1] = g;
+                    buf[i + 2] = b;
+                    buf[i + 3] = 255;
+                } else {
+                    let a = clamp01(sa);
+                    buf[i] = blend_chan(r, buf[i], a);
+                    buf[i + 1] = blend_chan(g, buf[i + 1], a);
+                    buf[i + 2] = blend_chan(b, buf[i + 2], a);
+                    buf[i + 3] =
+                        (buf[i + 3] as u16 + ((255 - buf[i + 3] as u16) as f64 * a) as u16) as u8;
+                }
             }
         }
         Ok(())
@@ -1953,10 +2177,13 @@ impl<'a> Renderer<'a> {
                 match t.render_mode {
                     0 | 2 => {
                         // fill (mode 2 also strokes below)
-                        let mut p = Paint::default();
-                        let c = gs.fill_color;
+                        let mut p = Paint {
+                            anti_alias: true,
+                            blend_mode: gs.blend_mode,
+                            ..Default::default()
+                        };
+                        let c = gs.fill_color.with_alpha(gs.fill_alpha);
                         p.set_color(tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a));
-                        p.anti_alias = true;
                         self.pixmap
                             .fill_path(path, &p, FillRule::Winding, full, gs.clip.as_ref());
                     }
@@ -1964,10 +2191,13 @@ impl<'a> Renderer<'a> {
                 }
                 if t.render_mode == 1 || t.render_mode == 2 {
                     // stroke
-                    let mut p = Paint::default();
-                    let c = gs.stroke_color;
+                    let mut p = Paint {
+                        anti_alias: true,
+                        blend_mode: gs.blend_mode,
+                        ..Default::default()
+                    };
+                    let c = gs.stroke_color.with_alpha(gs.stroke_alpha);
                     p.set_color(tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a));
-                    p.anti_alias = true;
                     let stroke = tiny_skia::Stroke {
                         width: (gs.line_width * t.font_size / 1000.0) as f32,
                         ..Default::default()
@@ -2098,6 +2328,7 @@ impl<'a> Renderer<'a> {
 
         let mut paint = Paint {
             anti_alias: true,
+            blend_mode: self.gs.blend_mode,
             ..Default::default()
         };
 
@@ -2125,20 +2356,24 @@ impl<'a> Renderer<'a> {
 
         match kind {
             PaintKind::Stroke => {
-                paint.set_color(ts_color(self.gs.stroke_color));
+                paint.set_color(ts_color(
+                    self.gs.stroke_color.with_alpha(self.gs.stroke_alpha),
+                ));
                 self.pixmap
                     .stroke_path(&path, &paint, &stroke, ts, self.gs.clip.as_ref());
             }
             PaintKind::Fill(rule) => {
-                paint.set_color(ts_color(self.gs.fill_color));
+                paint.set_color(ts_color(self.gs.fill_color.with_alpha(self.gs.fill_alpha)));
                 self.pixmap
                     .fill_path(&path, &paint, rule, ts, self.gs.clip.as_ref());
             }
             PaintKind::FillStroke(rule) => {
-                paint.set_color(ts_color(self.gs.fill_color));
+                paint.set_color(ts_color(self.gs.fill_color.with_alpha(self.gs.fill_alpha)));
                 self.pixmap
                     .fill_path(&path, &paint, rule, ts, self.gs.clip.as_ref());
-                paint.set_color(ts_color(self.gs.stroke_color));
+                paint.set_color(ts_color(
+                    self.gs.stroke_color.with_alpha(self.gs.stroke_alpha),
+                ));
                 self.pixmap
                     .stroke_path(&path, &paint, &stroke, ts, self.gs.clip.as_ref());
             }
@@ -2210,6 +2445,83 @@ fn cmyk_to_rgba(c: f64, m: f64, y: f64, k: f64) -> Color {
 
 fn ts_color(c: Color) -> tiny_skia::Color {
     tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a)
+}
+
+/// Source-over blend of a single channel: `src` over `dst` at
+/// coverage `a` (0..=1). Used by image painting where the `ca`
+/// constant alpha modulates an opaque source pixel.
+fn blend_chan(src: u8, dst: u8, a: f64) -> u8 {
+    (src as f64 * a + dst as f64 * (1.0 - a)).round() as u8
+}
+
+// --------------------------------------------------------------------
+// ExtGState parameter helpers
+// --------------------------------------------------------------------
+
+/// A numeric ExtGState value; `Err` on the wrong type (§8.4.5 — gs
+/// operands are typed, malformed types are structure errors).
+fn num_param(v: &Object, key: &str) -> Result<f64, Error> {
+    v.as_number()
+        .ok_or_else(|| Error::Structure(format!("/{key} must be a number")))
+}
+
+/// An integer ExtGState value (line cap/join are enumerated ints).
+fn int_param(v: &Object, key: &str) -> Result<i64, Error> {
+    v.as_i64()
+        .ok_or_else(|| Error::Structure(format!("/{key} must be an integer")))
+}
+
+/// An alpha value `ca`/`CA` clamped to [0,1] (§11.3.7.2 — out-of-range
+/// alphas clamp, non-numeric is a structure error).
+fn alpha_param(v: &Object, key: &str) -> Result<f64, Error> {
+    Ok(clamp01(num_param(v, key)?))
+}
+
+/// Map a `/BM` value (a name, or an array whose first supported member
+/// is used per §11.3.5) to a tiny-skia `BlendMode`. `/Normal` maps to
+/// `SourceOver`; every PDF separable/non-separable mode has a direct
+/// tiny-skia equivalent, so coverage is complete. `Compatible` is an
+/// alias for `Normal` (§11.3.5 note).
+fn parse_blend_mode(v: &Object) -> Result<tiny_skia::BlendMode, Error> {
+    use tiny_skia::BlendMode as B;
+    // An array of names: §11.3.5 says a conforming reader uses the
+    // first name it recognises; we recognise all standard modes, so
+    // the first element decides.
+    let name = match v {
+        Object::Name(n) => n.clone(),
+        Object::Array(a) => match a.first() {
+            Some(Object::Name(n)) => n.clone(),
+            _ => return Err(Error::Structure("/BM array must start with a name".into())),
+        },
+        _ => return Err(Error::Structure("/BM must be a name or name array".into())),
+    };
+    Ok(match name.as_slice() {
+        b"Normal" | b"Compatible" => B::SourceOver,
+        b"Multiply" => B::Multiply,
+        b"Screen" => B::Screen,
+        b"Overlay" => B::Overlay,
+        b"Darken" => B::Darken,
+        b"Lighten" => B::Lighten,
+        b"ColorDodge" => B::ColorDodge,
+        b"ColorBurn" => B::ColorBurn,
+        b"HardLight" => B::HardLight,
+        b"SoftLight" => B::SoftLight,
+        b"Difference" => B::Difference,
+        b"Exclusion" => B::Exclusion,
+        b"Hue" => B::Hue,
+        b"Saturation" => B::Saturation,
+        b"Color" => B::Color,
+        b"Luminosity" => B::Luminosity,
+        other => {
+            return Err(Error::Unsupported {
+                feature: "blend mode",
+                detail: format!(
+                    "/{} — not a standard PDF blend mode",
+                    String::from_utf8_lossy(other)
+                ),
+            })
+        }
+    })
 }
 
 fn show_name(n: &[u8]) -> String {
