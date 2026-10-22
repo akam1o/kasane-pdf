@@ -294,8 +294,11 @@ fn do_xobject_missing_is_structure_error() {
 
 #[test]
 fn gs_extgstate_is_refused() {
+    // gs IS implemented now — but `/GS1` isn't defined in this page's
+    // (absent) `/Resources`, so it must fail cleanly as a structure
+    // error, not panic and not silently pass.
     let err = render(b"/GS1 gs 10 10 10 10 re f").unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "got: {err:?}");
+    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
 }
 
 #[test]
