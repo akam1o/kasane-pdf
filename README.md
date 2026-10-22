@@ -163,7 +163,11 @@ See [`docs/testing.md`](docs/testing.md).
 
 Not yet decided. Until it is, all rights reserved. The dependency
 policy (permissive only, no AGPL/GPL engine cores) is in
-[`docs/architecture.md`](docs/architecture.md).
+[`docs/architecture.md`](docs/architecture.md). The bundled
+substitute fonts in [`fonts/liberation/`](fonts/liberation/) are the
+Liberation Fonts under the SIL Open Font License 1.1 (see the README
+and LICENSE there); they are used for non-embedded Standard 14-style
+fonts only and never looked up on the host system.
 
 ## References
 

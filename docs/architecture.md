@@ -278,6 +278,14 @@ decoded-bytes cost. `unsafe` is not used anywhere.
   encoding; `jpeg-decoder` 0.3 (MIT or Apache-2.0, `rayon` disabled)
   for `DCTDecode` image data; `ttf-parser` 0.25 (MIT or Apache-2.0,
   `std` + `glyph-names` only) for embedded TrueType outlines.
+- Bundled font data: `fonts/liberation/` — Liberation Sans/Serif/
+  Mono 2.1.5 (SIL Open Font License 1.1, unmodified, provenance and
+  SHA-256 in its README) as the substitutes for non-embedded
+  Standard 14-style fonts. The OFL permits bundling in sold software
+  as long as the fonts are not sold alone and the licence text ships
+  with them; it does not touch the crate's own licence. No font is
+  ever loaded from the host OS. Symbol and ZapfDingbats have no
+  licence-clean metric clone and are refused rather than approximated.
 - Acceptable building blocks per the project brief: compression,
   image decoding, font handling, generic 2D rasterization — e.g.
   `flate2`/`miniz_oxide` (MIT), `freetype`/`fontdue`, `tiny-skia`
