@@ -83,6 +83,14 @@ pub fn feature_bucket(cause: &str) -> &'static str {
         "Other stream filters"
     } else if cause.contains("named-dest") {
         "Named destinations"
+    } else if cause.contains("rewrite.profile") {
+        "Rewrite profile (catalog entries)"
+    } else if cause.contains("structure") {
+        // Engine refusals on malformed-or-unexpected structure: each is
+        // a bug or a strictness decision to review, not a feature.
+        "Engine errors (Structure)"
+    } else if cause.contains(".limit.") {
+        "Resource limits"
     } else if cause.contains("userunit") {
         "/UserUnit ≠ 1"
     } else if cause.contains("actualtext") {
@@ -105,6 +113,11 @@ pub fn feature_bucket(cause: &str) -> &'static str {
 pub struct PrioritiesConfig {
     /// feature bucket → person-day estimate.
     pub effort: BTreeMap<String, u32>,
+    /// feature bucket → prerequisite buckets. A feature only pays off
+    /// once its prerequisites exist, so the combination analysis
+    /// closes every candidate set over this table and charges the
+    /// prerequisites' effort too.
+    pub deps: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for PrioritiesConfig {
@@ -141,8 +154,421 @@ impl Default for PrioritiesConfig {
         e.insert("ToUnicode CMaps".into(), 8);
         e.insert("XObject subtypes".into(), 8);
         e.insert("Other".into(), 8);
-        PrioritiesConfig { effort: e }
+        let mut d: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        // Shading patterns (PatternType 2) are drawn by the `sh`
+        // machinery; tiling patterns alone don't cover the corpus hits.
+        d.insert("Pattern colours".into(), vec!["Shading (sh)".into()]);
+        // The ExtGState residue is soft masks, which composite through a
+        // transparency *group* XObject (`render.xobject.group`).
+        d.insert("ExtGState (gs)".into(), vec!["XObject subtypes".into()]);
+        PrioritiesConfig { effort: e, deps: d }
     }
+}
+
+// ------------------------------------------------------------------
+// Feature-set (combination) analysis
+// ------------------------------------------------------------------
+
+/// Combinations the task asked about explicitly. They are evaluated
+/// even when the data would never generate them, and marked as
+/// hypotheses in the output.
+pub const HYPOTHESES: &[&[&str]] = &[
+    &["Fonts (other)", "Annotations (/Annots)"],
+    &["Optional Content (OC/OCMD)", "Annotations (/Annots)"],
+    &["Pattern colours", "Type3 fonts"],
+    &["Vertical/CJK encodings", "CFF/CIDFontType0 fonts"],
+    &["Non-device colour spaces", "ExtGState (gs)"],
+    &["ToUnicode CMaps", "Fonts (other)"],
+];
+
+/// One candidate set of features to implement together.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComboStat {
+    /// The features asked about (sorted).
+    pub features: Vec<String>,
+    /// `features` plus prerequisites from `PrioritiesConfig::deps` —
+    /// the work that actually has to happen.
+    pub closure: Vec<String>,
+    /// Files carrying at least one feature of the closure.
+    pub affected: usize,
+    /// Currently-failing, well-formed files whose *entire known*
+    /// blocker set lies inside the closure. "Known" = parse succeeded
+    /// and the probe ran; unprobed regions may hide more — an
+    /// estimate, never a guarantee.
+    pub potentially_unblocked: usize,
+    /// Subset of `potentially_unblocked` with full probe coverage
+    /// (every page walked, no walk errors, no Form XObjects whose
+    /// interior the probe cannot see). Still not a promise — the probe
+    /// mirrors the renderer's rules rather than running them — but
+    /// there is no known unscanned region.
+    pub fully_unblocked: usize,
+    /// Gain over the best single feature inside the set.
+    pub synergy: usize,
+    /// Σ effort over the closure (person-days, estimate); `None` when
+    /// any member is unestimated.
+    pub effort: Option<u32>,
+    /// `potentially_unblocked / effort` — expected newly-PASS files per
+    /// person-day.
+    pub score: Option<f64>,
+    /// "high" / "medium" / "low" — see [`combo_confidence`].
+    pub confidence: String,
+    pub reason: String,
+    /// From [`HYPOTHESES`] rather than generated from the data.
+    pub hypothesis: bool,
+    /// `(file id, full blocker set)` for every potentially-unblocked
+    /// file, so the claim can be checked by hand.
+    pub files: Vec<(String, Vec<String>)>,
+    /// Of those, the ids with full probe coverage.
+    pub fully_probed_files: Vec<String>,
+}
+
+/// A file's blocker set as the combination analysis sees it.
+#[derive(Debug, Clone)]
+pub struct FileBlockers {
+    pub id: String,
+    /// Feature buckets from the probe *and* from every failing stage's
+    /// cause id (a rewrite-only blocker such as named destinations
+    /// still stops a full PASS).
+    pub features: BTreeSet<String>,
+    /// Parse succeeded, so the probe could run. A parse failure means
+    /// the blocker set is simply unknown — never "empty".
+    pub known: bool,
+    /// Every page probed, no walk errors, no Form XObjects.
+    pub fully_probed: bool,
+    pub currently_pass: bool,
+}
+
+pub fn file_blockers(f: &FileResult) -> FileBlockers {
+    let mut features: BTreeSet<String> = f
+        .causes
+        .iter()
+        .map(|c| feature_bucket(c).to_string())
+        .collect();
+    for st in [&f.render, &f.text, &f.rewrite] {
+        match st.class {
+            Class::Pass | Class::Skip => {}
+            _ => {
+                let b = if st.cause.is_empty() {
+                    "Other"
+                } else {
+                    feature_bucket(&st.cause)
+                };
+                features.insert(b.to_string());
+            }
+        }
+    }
+    let known = f.parse.class == Class::Pass;
+    let fully_probed = known
+        && f.probe_walk_errors == 0
+        && f.probe_forms == 0
+        && f.total_pages > 0
+        && f.probe_pages >= f.total_pages;
+    FileBlockers {
+        id: f.id.clone(),
+        features,
+        known,
+        fully_probed,
+        currently_pass: f.verdict == Class::Pass,
+    }
+}
+
+/// Close `set` over the dependency table.
+fn dep_closure(set: &BTreeSet<String>, cfg: &PrioritiesConfig) -> BTreeSet<String> {
+    let mut out = set.clone();
+    let mut stack: Vec<String> = set.iter().cloned().collect();
+    while let Some(f) = stack.pop() {
+        if let Some(ds) = cfg.deps.get(&f) {
+            for d in ds {
+                if out.insert(d.clone()) {
+                    stack.push(d.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Confidence that implementing the set really yields the counted
+/// files: driven by how many candidates have *no* unprobed region.
+pub fn combo_confidence(potentially: usize, fully: usize, effort: Option<u32>) -> &'static str {
+    if potentially == 0 || effort.is_none() {
+        return "low";
+    }
+    let ratio = fully as f64 / potentially as f64;
+    if ratio >= 0.5 && potentially >= 2 {
+        "high"
+    } else if fully >= 1 || potentially >= 3 {
+        "medium"
+    } else {
+        "low"
+    }
+}
+
+fn evaluate_combo(
+    features: BTreeSet<String>,
+    hypothesis: bool,
+    blockers: &[FileBlockers],
+    single: &BTreeMap<String, usize>,
+    cfg: &PrioritiesConfig,
+) -> ComboStat {
+    let closure = dep_closure(&features, cfg);
+    let affected = blockers
+        .iter()
+        .filter(|b| b.known && !b.features.is_disjoint(&closure))
+        .count();
+    let unblocked: Vec<&FileBlockers> = blockers
+        .iter()
+        .filter(|b| {
+            b.known && !b.currently_pass && !b.features.is_empty() && b.features.is_subset(&closure)
+        })
+        .collect();
+    let fully: Vec<&FileBlockers> = unblocked
+        .iter()
+        .copied()
+        .filter(|b| b.fully_probed)
+        .collect();
+    let effort = closure
+        .iter()
+        .map(|f| cfg.effort.get(f).copied())
+        .try_fold(0u32, |acc, e| e.map(|e| acc + e));
+    let score = effort
+        .filter(|e| *e > 0)
+        .map(|e| unblocked.len() as f64 / e as f64);
+    let (best_single_name, best_single) = features
+        .iter()
+        .map(|f| (f.as_str(), single.get(f).copied().unwrap_or(0)))
+        .max_by_key(|(_, n)| *n)
+        .unwrap_or(("", 0));
+    let synergy = unblocked.len().saturating_sub(best_single);
+    let confidence = combo_confidence(unblocked.len(), fully.len(), effort);
+    let mut reason = if unblocked.is_empty() {
+        "no currently-failing file has only these blockers".to_string()
+    } else {
+        format!(
+            "{} file(s) have no other known blocker, {} with full probe coverage",
+            unblocked.len(),
+            fully.len()
+        )
+    };
+    if features.len() > 1 && synergy > 0 {
+        reason.push_str(&format!(
+            "; +{synergy} over the best single feature ({best_single_name})"
+        ));
+    } else if features.len() > 1 {
+        reason.push_str("; no gain over the best single feature");
+    }
+    let extra: Vec<&str> = closure
+        .iter()
+        .filter(|f| !features.contains(*f))
+        .map(|s| s.as_str())
+        .collect();
+    if !extra.is_empty() {
+        reason.push_str(&format!(
+            "; effort includes prerequisite(s) {}",
+            extra.join(", ")
+        ));
+    }
+    if hypothesis {
+        reason.push_str("; hypothesis from the task list");
+    }
+    ComboStat {
+        features: features.into_iter().collect(),
+        closure: closure.into_iter().collect(),
+        affected,
+        potentially_unblocked: unblocked.len(),
+        fully_unblocked: fully.len(),
+        synergy,
+        effort,
+        score,
+        confidence: confidence.into(),
+        reason,
+        hypothesis,
+        files: unblocked
+            .iter()
+            .map(|b| (b.id.clone(), b.features.iter().cloned().collect()))
+            .collect(),
+        fully_probed_files: fully.iter().map(|b| b.id.clone()).collect(),
+    }
+}
+
+/// Evaluate feature *sets* of size 1..=`max_k`. Candidates are drawn
+/// from the data — every failing file's own blocker set and the
+/// pairwise unions of those sets (a set that is not a superset of some
+/// file's blockers cannot unblock anything a smaller set wouldn't) —
+/// plus the fixed [`HYPOTHESES`]. Files with `expect: reject` are
+/// excluded (refusing them is the goal), and files whose parse failed
+/// contribute nothing: their blockers are unknown, not absent.
+///
+/// Data-derived sets that unblock no more than one of their strict
+/// subsets are dropped as dominated; hypotheses are always kept.
+pub fn combo_analysis(
+    files: &[FileResult],
+    cfg: &PrioritiesConfig,
+    max_k: usize,
+) -> Vec<ComboStat> {
+    let blockers: Vec<FileBlockers> = files
+        .iter()
+        .filter(|f| f.expect != "reject")
+        .map(file_blockers)
+        .collect();
+    let failing_sets: Vec<&BTreeSet<String>> = blockers
+        .iter()
+        .filter(|b| b.known && !b.currently_pass && !b.features.is_empty())
+        .map(|b| &b.features)
+        .collect();
+
+    let mut cands: BTreeSet<BTreeSet<String>> = BTreeSet::new();
+    for s in &failing_sets {
+        for f in s.iter() {
+            cands.insert(BTreeSet::from([f.clone()]));
+        }
+        if s.len() <= max_k {
+            cands.insert((*s).clone());
+        }
+    }
+    for (i, a) in failing_sets.iter().enumerate() {
+        for b in failing_sets.iter().skip(i + 1) {
+            let u: BTreeSet<String> = a.union(b).cloned().collect();
+            if u.len() <= max_k {
+                cands.insert(u);
+            }
+        }
+    }
+    let hyps: Vec<BTreeSet<String>> = HYPOTHESES
+        .iter()
+        .map(|h| h.iter().map(|s| s.to_string()).collect())
+        .collect();
+
+    // Single-feature baseline for the synergy figure.
+    let single: BTreeMap<String, usize> = cands
+        .iter()
+        .filter(|c| c.len() == 1)
+        .chain(hyps.iter().flat_map(|_| std::iter::empty()))
+        .map(|c| {
+            let st = evaluate_combo(c.clone(), false, &blockers, &BTreeMap::new(), cfg);
+            (c.iter().next().unwrap().clone(), st.potentially_unblocked)
+        })
+        .collect();
+    // Hypothesis members that never appear in the data still need a
+    // baseline entry (0) for the synergy arithmetic.
+    let single: BTreeMap<String, usize> = {
+        let mut s = single;
+        for h in &hyps {
+            for f in h {
+                s.entry(f.clone()).or_insert_with(|| {
+                    evaluate_combo(
+                        BTreeSet::from([f.clone()]),
+                        false,
+                        &blockers,
+                        &BTreeMap::new(),
+                        cfg,
+                    )
+                    .potentially_unblocked
+                });
+            }
+        }
+        s
+    };
+
+    let mut out: Vec<ComboStat> = Vec::new();
+    for c in &cands {
+        let is_hyp = hyps.contains(c);
+        out.push(evaluate_combo(c.clone(), is_hyp, &blockers, &single, cfg));
+    }
+    for h in &hyps {
+        if !cands.contains(h) {
+            out.push(evaluate_combo(h.clone(), true, &blockers, &single, cfg));
+        }
+    }
+
+    // Drop dominated data-derived sets.
+    let keep: Vec<bool> = out
+        .iter()
+        .map(|c| {
+            if c.hypothesis || c.features.len() == 1 {
+                return true;
+            }
+            let fs: BTreeSet<&String> = c.features.iter().collect();
+            !out.iter().any(|o| {
+                let os: BTreeSet<&String> = o.features.iter().collect();
+                os.len() < fs.len()
+                    && os.is_subset(&fs)
+                    && o.potentially_unblocked >= c.potentially_unblocked
+            })
+        })
+        .collect();
+    let mut out: Vec<ComboStat> = out
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(c, k)| k.then_some(c))
+        .collect();
+
+    out.sort_by(|a, b| {
+        b.score
+            .unwrap_or(0.0)
+            .partial_cmp(&a.score.unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.potentially_unblocked.cmp(&a.potentially_unblocked))
+            .then(b.fully_unblocked.cmp(&a.fully_unblocked))
+            .then(a.features.len().cmp(&b.features.len()))
+            .then(a.features.cmp(&b.features))
+    });
+    out
+}
+
+/// Markdown: the ranked feature-set table plus a drill-down of which
+/// files each set would unblock and their full blocker sets.
+pub fn combos_table(stats: &[ComboStat], top: usize) -> String {
+    let mut s = String::from(
+        "## Feature-set priorities (1–4 features together)\n\n\
+         | Rank | Feature set | Expected newly PASS (fully probed) | Effort (pd) | Confidence | Reason |\n\
+         |---:|---|---:|---:|---|---|\n",
+    );
+    for (i, c) in stats.iter().take(top).enumerate() {
+        let effort = c
+            .effort
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "?".into());
+        s.push_str(&format!(
+            "| {} | {}{} | {} ({}) | {} | {} | {} |\n",
+            i + 1,
+            c.features.join(" + "),
+            if c.hypothesis { " *(hypothesis)*" } else { "" },
+            c.potentially_unblocked,
+            c.fully_unblocked,
+            effort,
+            c.confidence,
+            c.reason
+        ));
+    }
+    s.push_str(
+        "\n*Expected newly PASS counts currently-failing well-formed files whose every \
+         **known** blocker is in the set (prerequisites included). Files whose parse \
+         failed are excluded — their blockers are unknown, not absent. The bracketed \
+         figure has full probe coverage (all pages walked, no Form XObjects); even that is \
+         an estimate, since the probe mirrors the renderer's rules rather than running \
+         them. Effort is a person-day guess from `PrioritiesConfig`.*\n\n",
+    );
+    s.push_str("### Candidate files per feature set\n\n");
+    for c in stats.iter().take(top) {
+        if c.files.is_empty() {
+            continue;
+        }
+        s.push_str(&format!("- **{}**\n", c.features.join(" + ")));
+        for (id, feats) in c.files.iter().take(12) {
+            let cov = if c.fully_probed_files.contains(id) {
+                "fully probed"
+            } else {
+                "has unprobed regions"
+            };
+            s.push_str(&format!("  - `{id}` — {{{}}} — {cov}\n", feats.join(", ")));
+        }
+        if c.files.len() > 12 {
+            s.push_str(&format!("  - … {} more\n", c.files.len() - 12));
+        }
+    }
+    s.push('\n');
+    s
 }
 
 /// Aggregate per-file causes into per-feature stats.
@@ -460,6 +886,10 @@ mod tests {
             causes: causes.iter().map(|s| s.to_string()).collect(),
             cause_pages: causes.iter().map(|s| (s.to_string(), 1)).collect(),
             expect: "pass".into(),
+            total_pages: 1,
+            probe_pages: 1,
+            probe_walk_errors: 0,
+            probe_forms: 0,
             metrics: Metrics {
                 total_ms: 0,
                 max_rss_bytes: 0,
@@ -472,6 +902,8 @@ mod tests {
                 render_diff_png: None,
                 render_ours_png: None,
                 render_ref_png: None,
+                render_quality: None,
+                render_pages: Vec::new(),
                 text_match_ratio: None,
                 rewrite_qpdf_ok: None,
                 rewrite_reparsed: None,
@@ -565,6 +997,139 @@ mod tests {
         assert_eq!(s.robust_safe, 1);
         assert_eq!(s.robust_failures, vec!["boom"]);
         assert_eq!(s.other_total, 1);
+    }
+
+    // ---- combination analysis ------------------------------------
+
+    fn find<'a>(stats: &'a [ComboStat], feats: &[&str]) -> &'a ComboStat {
+        let want: Vec<String> = feats.iter().map(|s| s.to_string()).collect();
+        stats
+            .iter()
+            .find(|c| c.features == want)
+            .unwrap_or_else(|| panic!("no combo {want:?}"))
+    }
+
+    #[test]
+    fn combo_counts_files_whose_whole_set_is_covered() {
+        let files = vec![
+            file("a", &["render.annotation.unsupported"]),
+            file(
+                "b",
+                &[
+                    "render.annotation.unsupported",
+                    "render.font.nonembedded.unsupported",
+                ],
+            ),
+            file("c", &["render.font.nonembedded.unsupported"]),
+        ];
+        let stats = combo_analysis(&files, &PrioritiesConfig::default(), 4);
+        let ann = find(&stats, &["Annotations (/Annots)"]);
+        assert_eq!(ann.affected, 2);
+        assert_eq!(ann.potentially_unblocked, 1, "only a is annotation-only");
+        let both = find(&stats, &["Annotations (/Annots)", "Fonts (other)"]);
+        assert_eq!(both.potentially_unblocked, 3);
+        assert_eq!(both.fully_unblocked, 3, "test files are fully probed");
+        assert_eq!(both.synergy, 2, "3 vs best single (1)");
+        assert_eq!(both.effort, Some(20));
+        assert!(both.hypothesis, "listed in HYPOTHESES");
+        assert_eq!(both.confidence, "high");
+    }
+
+    #[test]
+    fn combo_ignores_parse_failures_and_rejects() {
+        let mut bad = file("bad", &[]);
+        bad.parse = StageResult::new(Class::Error, "eof".into(), String::new(), 0);
+        bad.verdict = Class::Error;
+        let mut hostile = file("hostile", &["render.annotation.unsupported"]);
+        hostile.expect = "reject".into();
+        let files = vec![file("a", &["render.annotation.unsupported"]), bad, hostile];
+        let stats = combo_analysis(&files, &PrioritiesConfig::default(), 4);
+        let ann = find(&stats, &["Annotations (/Annots)"]);
+        assert_eq!(
+            ann.potentially_unblocked, 1,
+            "parse-failed + reject excluded"
+        );
+        assert!(!stats
+            .iter()
+            .any(|c| c.files.iter().any(|(id, _)| id == "bad")));
+    }
+
+    #[test]
+    fn combo_stage_causes_count_as_blockers() {
+        // Probe saw only annotations, but rewrite failed on named
+        // destinations → the file is NOT annotation-only.
+        let mut f = file("a", &["render.annotation.unsupported"]);
+        f.rewrite = StageResult::caused(
+            Class::Unsupported,
+            "named dest".into(),
+            "named-dest".into(),
+            "rewrite.named-dest.unsupported".into(),
+            0,
+        );
+        let stats = combo_analysis(&[f], &PrioritiesConfig::default(), 4);
+        let ann = find(&stats, &["Annotations (/Annots)"]);
+        assert_eq!(ann.potentially_unblocked, 0);
+        let both = find(&stats, &["Annotations (/Annots)", "Named destinations"]);
+        assert_eq!(both.potentially_unblocked, 1);
+    }
+
+    #[test]
+    fn combo_full_coverage_needs_all_pages_and_no_forms() {
+        let mut partial = file("p", &["render.annotation.unsupported"]);
+        partial.total_pages = 10; // only 1 probed
+        let mut formy = file("f", &["render.annotation.unsupported"]);
+        formy.probe_forms = 2;
+        let files = vec![
+            file("a", &["render.annotation.unsupported"]),
+            partial,
+            formy,
+        ];
+        let stats = combo_analysis(&files, &PrioritiesConfig::default(), 4);
+        let ann = find(&stats, &["Annotations (/Annots)"]);
+        assert_eq!(ann.potentially_unblocked, 3);
+        assert_eq!(ann.fully_unblocked, 1);
+        assert_eq!(ann.fully_probed_files, vec!["a"]);
+    }
+
+    #[test]
+    fn combo_deps_add_effort_and_members() {
+        let files = vec![file("a", &["render.pattern.unsupported"])];
+        let cfg = PrioritiesConfig::default();
+        let stats = combo_analysis(&files, &cfg, 4);
+        let pat = find(&stats, &["Pattern colours"]);
+        assert!(pat.closure.contains(&"Shading (sh)".to_string()));
+        assert_eq!(pat.effort, Some(12 + 15));
+        assert!(pat.reason.contains("prerequisite"));
+    }
+
+    #[test]
+    fn combo_dominated_sets_are_dropped() {
+        // b adds nothing beyond a's single feature → the pair is dropped.
+        let files = vec![
+            file("a", &["render.userunit.unsupported"]),
+            file(
+                "b",
+                &["render.userunit.unsupported", "render.shading.unsupported"],
+            ),
+            file("c", &["render.shading.unsupported"]),
+        ];
+        let stats = combo_analysis(&files, &PrioritiesConfig::default(), 4);
+        // the pair unblocks 3 > any single (1) → kept
+        assert!(stats
+            .iter()
+            .any(|c| c.features == ["/UserUnit ≠ 1", "Shading (sh)"]));
+        // a hypothesis with zero unblocked is still listed, as low confidence
+        let hyp = find(
+            &stats,
+            &["CFF/CIDFontType0 fonts", "Vertical/CJK encodings"],
+        );
+        assert_eq!(hyp.potentially_unblocked, 0);
+        assert_eq!(hyp.confidence, "low");
+        // Pattern's closure pulls in Shading, so the Pattern+Type3
+        // hypothesis legitimately covers the shading-only file `c`.
+        let pat = find(&stats, &["Pattern colours", "Type3 fonts"]);
+        assert_eq!(pat.potentially_unblocked, 1);
+        assert!(pat.closure.contains(&"Shading (sh)".to_string()));
     }
 
     #[test]

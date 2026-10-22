@@ -79,29 +79,28 @@ fn collect_tf(
     seen: &mut BTreeSet<Vec<u8>>,
 ) {
     for op in ops {
-        match op {
-            Operation::SetTextFont { font, .. } => {
-                a.used_names.insert(lossy(font));
-                if seen.insert(font.clone()) {
-                    if let Ok(Some(o)) = doc.resolve_resource(resources, "Font", font) {
-                        if let Some(d) = o.as_dict() {
-                            a.fonts.entry(lossy(font)).or_insert(font_info(doc, d));
-                        }
+        if let Operation::SetTextFont { font, .. } = op {
+            a.used_names.insert(lossy(font));
+            if seen.insert(font.clone()) {
+                if let Ok(Some(o)) = doc.resolve_resource(resources, "Font", font) {
+                    if let Some(d) = o.as_dict() {
+                        a.fonts.entry(lossy(font)).or_insert(font_info(doc, d));
                     }
                 }
             }
-            _ => {}
         }
     }
 }
 
 fn font_info(doc: &Document, d: &kasane_pdf::Dict) -> FontInfo {
-    let mut f = FontInfo::default();
-    f.subtype = d
-        .get(b"Subtype".as_slice())
-        .and_then(|o| o.as_name())
-        .map(lossy)
-        .unwrap_or_else(|| "?".into());
+    let mut f = FontInfo {
+        subtype: d
+            .get(b"Subtype".as_slice())
+            .and_then(|o| o.as_name())
+            .map(lossy)
+            .unwrap_or_else(|| "?".into()),
+        ..Default::default()
+    };
     f.base_font = d
         .get(b"BaseFont".as_slice())
         .and_then(|o| o.as_name())

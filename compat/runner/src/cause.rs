@@ -86,8 +86,9 @@ pub fn cause_category(feature: &str) -> &'static str {
         // fonts
         "font subtype" => "font",
         "symbolic font" => "font",
-        "non-embedded TrueType font" => "font",
-        "non-embedded CIDFont" => "font",
+        "non-embedded TrueType font" => "font.nonembedded",
+        "non-embedded Type1 font" => "font.nonembedded",
+        "non-embedded CIDFont" => "font.nonembedded",
         "font without /Encoding" => "font.encoding",
         "font encoding" => "font.encoding",
         "font encoding dictionary without /BaseEncoding" => "font.encoding",
