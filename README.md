@@ -172,3 +172,17 @@ policy (permissive only, no AGPL/GPL engine cores) is in
 
 Section numbers cited in source comments refer to ISO 32000-1 unless
 noted otherwise.
+
+## Compatibility corpus
+
+The engine is continuously measured against a real-world PDF corpus
+(~100+ files: arXiv/LaTeX, IRS forms, veraPDF, pdf.js test files)
+stored in **Cloudflare R2** and downloaded on demand. See
+[`docs/compat-corpus.md`](docs/compat-corpus.md).
+
+```console
+$ scripts/compat-run.sh --with-poppler   # sync, build, run, report
+```
+
+Results land in `compat/reports/` — JSON + Markdown with per-stage
+PASS/MISMATCH/UNSUPPORTED/ERROR/CRASH/TIMEOUT classification.
