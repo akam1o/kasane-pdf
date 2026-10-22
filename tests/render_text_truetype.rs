@@ -63,12 +63,17 @@ fn ink_bbox(page: &kasane_pdf::RenderedPage) -> Option<(u32, u32, u32, u32)> {
 #[test]
 fn text_basic_paints() {
     // "ABC" at 24pt, baseline at user y=60 — glyphs occupy roughly
-    // (20..63, 61..76) in page coords → pixmap y 24..39.
+    // (21..56, 61..76) in page coords → pixmap y 24..39. Every
+    // KasaneTest glyph carries an hmtx lsb of 50 units, so its outline
+    // is placed with xMin at the bearing (FreeType/Acrobat behaviour):
+    // 'A'/'B' (xMin 0) move +1.2pt right of the Td origin, and the
+    // right-bar 'C' (xMin 350) moves 7.2pt *left* — hence maxx 55,
+    // not the 63 the raw glyf coordinates would give.
     let r = render("text_basic.pdf").unwrap();
     let (minx, miny, maxx, maxy) = ink_bbox(&r).unwrap();
-    assert_eq!(minx, 20);
+    assert_eq!(minx, 21);
     assert_eq!(miny, 23);
-    assert_eq!(maxx, 63);
+    assert_eq!(maxx, 55);
     assert_eq!(maxy, 39);
 }
 
@@ -188,8 +193,9 @@ fn mode3_still_advances_position() {
     let doc = Document::from_bytes(&pdf).unwrap();
     let r = render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap();
     let (minx, _miny, _maxx, _maxy) = ink_bbox(&r).unwrap();
-    // A is invisible; B paints at x = 10 + 600/1000*20 = 22.
-    assert_eq!(minx, 22);
+    // A is invisible; B paints at x = 10 + 600/1000*20 = 22, plus the
+    // 50-unit hmtx lsb offset (1 px at 20pt) → 23.
+    assert_eq!(minx, 23);
 }
 
 fn flate(data: &[u8]) -> Vec<u8> {
@@ -328,10 +334,10 @@ fn text_matrix_and_ctm_compose() {
     // Glyph A starts at x=10, advances 600/1000×20 = 12 px.
     let r = render("text_basic.pdf").unwrap();
     // "ABC": A at x=20 (Td 20), then +12 each → B x≈32, C x≈44.
-    // Ink extent 20..63 confirms placement; Poppler comparison
-    // confirms the shape.
+    // Ink starts at 21 (origin 20 + the 50-unit hmtx lsb); Poppler
+    // comparison confirms the shape.
     let (minx, _miny, maxx, _maxy) = ink_bbox(&r).unwrap();
-    assert_eq!(minx, 20, "first glyph x");
+    assert_eq!(minx, 21, "first glyph x");
     assert!(maxx > 44, "third glyph present");
 }
 
@@ -621,7 +627,8 @@ fn glyph_selection_distinct_shapes() {
     }
     // B's ink should end well before x=48 (it's only ~40% of the slot).
     assert!(b_right < 48, "B glyph ink extends too far right: {b_right}");
-    assert!(minx == 20 && maxx > 40, "overall bbox {minx}..{maxx}");
+    // minx is 21, not 20: KasaneTest's hmtx lsb (50 units) offsets ink.
+    assert!(minx == 21 && maxx > 40, "overall bbox {minx}..{maxx}");
 }
 
 #[test]
@@ -1129,9 +1136,9 @@ fn tj_split_equals_tj() {
 #[test]
 fn empty_string_draws_nothing() {
     let r = render("text_empty_string.pdf").unwrap();
-    // "() Tj (A) Tj" — only A draws, at x=10.
+    // "() Tj (A) Tj" — only A draws, at x=10 (+1 px hmtx lsb offset).
     let (minx, _miny, maxx, _maxy) = ink_bbox(&r).unwrap();
-    assert_eq!(minx, 10);
+    assert_eq!(minx, 11);
     assert!(maxx < 30, "empty string added advance?");
 }
 

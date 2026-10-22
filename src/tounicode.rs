@@ -555,14 +555,26 @@ impl<'a> Parser<'a> {
                     let mut cur = base.clone();
                     for i in 0..range_len {
                         // Push the current value, then increment the
-                        // last byte for the next iteration.
+                        // last byte for the next iteration — but not
+                        // after the final entry: a range ending exactly
+                        // at 0xFF is legal and must not trip the check.
                         out.entries.push(Mapping {
                             code: lo.wrapping_add(i as u32),
                             utf16be: cur.clone(),
                         });
+                        if i + 1 == range_len {
+                            break;
+                        }
                         if let Some(last) = cur.last_mut() {
+                            // §9.10.3: only the *last byte* of the
+                            // destination increments. `cur` holds UTF-16
+                            // code units, so test the low byte — testing
+                            // the whole unit rejected every range whose
+                            // destination sits above U+00FF (e.g. a
+                            // `<2212>` math-symbol range), which is the
+                            // common case for non-Latin ToUnicode maps.
                             let v = *last as u32;
-                            if v >= 0xFF {
+                            if (v & 0xFF) >= 0xFF {
                                 return Err(Error::Structure(
                                     "bfrange increment overflows last byte".into(),
                                 ));

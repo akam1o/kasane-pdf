@@ -123,6 +123,14 @@ pub(crate) fn parse_type1_program(program: &[u8]) -> Result<Type1Program, Error>
 
     // ---- /CharStrings ---------------------------------------------
     let (charstrings, _n_glyphs) = parse_charstrings(private, len_iv)?;
+    // A program without a single CharString cannot draw anything — it
+    // is a broken (or fake) font, not an "all glyphs empty" one. Refuse
+    // rather than silently render blanks for every code.
+    if charstrings.is_empty() {
+        return Err(Error::Structure(
+            "Type 1 program has no /CharStrings entries".into(),
+        ));
+    }
 
     Ok(Type1Program {
         charstrings,
@@ -178,6 +186,26 @@ fn find_private_start(eexec: &[u8]) -> Result<usize, Error> {
 
 fn find_sub(hay: &[u8], needle: &[u8]) -> Option<usize> {
     hay.windows(needle.len()).position(|w| w == needle)
+}
+
+/// Index just past the `n`-th whitespace-delimited token of `seg`
+/// (tokens are maximal runs of non-whitespace bytes). `None` when the
+/// slice runs out first. Used to step over `dup idx len RD` / `len RD`
+/// without assuming the RD procedure is literally spelled `RD`.
+fn skip_tokens(seg: &[u8], n: usize) -> Option<usize> {
+    let mut i = 0usize;
+    for _ in 0..n {
+        while i < seg.len() && seg[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= seg.len() {
+            return None;
+        }
+        while i < seg.len() && !seg[i].is_ascii_whitespace() {
+            i += 1;
+        }
+    }
+    Some(i)
 }
 
 // --------------------------------------------------------------------
@@ -281,23 +309,13 @@ fn parse_subrs(private: &[u8], len_iv: isize) -> Result<Vec<Vec<u8>>, Error> {
             Some(v) => v,
             None => break,
         };
-        // find "RD" then the binary bytes right after it + one space
-        let rd = match find_sub(seg, b"RD") {
-            Some(r) => r,
-            None => break,
+        // The 4th token (`dup idx len RD`) is the RD procedure — `RD`,
+        // `-|` (cm-super and other t1utils output) or whatever the font
+        // named it — followed by exactly one space, then `len` bytes.
+        let Some(after_rd) = skip_tokens(seg, 4) else {
+            break;
         };
-        let mut data_start = d + rd + 2;
-        // skip the single whitespace that separates `RD` from the bytes
-        match private.get(data_start) {
-            Some(b' ') | Some(b'\n') => data_start += 1,
-            Some(b'\r') => {
-                data_start += 1;
-                if private.get(data_start) == Some(&b'\n') {
-                    data_start += 1;
-                }
-            }
-            _ => {}
-        }
+        let data_start = d + after_rd + 1;
         if data_start + len > end {
             break;
         }
@@ -358,19 +376,12 @@ fn parse_charstrings(private: &[u8], len_iv: isize) -> Result<(CharStringMap, us
                 continue;
             }
         };
-        let rd = match find_sub(seg, b"RD") {
-            Some(r) => r,
-            None => break,
+        // `len RD` — the 2nd token is the RD procedure under whatever
+        // name the font gave it (`RD`, `-|`, …); one space, then bytes.
+        let Some(after_rd) = skip_tokens(seg, 2) else {
+            break;
         };
-        let mut ds = ne + rd + 2;
-        if region[ds] == b' ' {
-            ds += 1;
-        } else if region[ds] == b'\r' || region[ds] == b'\n' {
-            ds += 1;
-            if region[ds] == b'\n' && region[ds - 1] == b'\r' {
-                ds += 1;
-            }
-        }
+        let ds = ne + after_rd + 1;
         if ds + len > region.len() {
             break;
         }
@@ -493,6 +504,9 @@ struct Interp {
     known_results: usize,
     /// Results an *unhandled* `callothersubr` left for `pop`.
     unknown_results: usize,
+    /// The arguments of that unhandled call, re-exposed one per `pop`
+    /// in their original order (FreeType semantics).
+    pending_args: Vec<f64>,
 }
 
 // type-1 charstring limits (bounded; tied to Limits at the call site
@@ -571,6 +585,7 @@ impl Interp {
             flex_pts: [(0.0, 0.0); MAX_FLEX_VECTORS],
             known_results: 0,
             unknown_results: 0,
+            pending_args: Vec::new(),
         }
     }
 
@@ -619,16 +634,20 @@ impl Interp {
                     }
                     let v = i32::from_be_bytes([code[i], code[i + 1], code[i + 2], code[i + 3]]);
                     i += 4;
-                    // 16.16 fixed point
-                    self.push(v as f64 / 65536.0)?;
+                    // Type 1: a plain 32-bit *integer* (Type 1 spec
+                    // §6.2). Only Type 2 charstrings read this form as
+                    // 16.16 fixed — treating it that way here turned
+                    // every operand above 1131 (e.g. hint-replacement
+                    // Subr indices in cm-super fonts) into ~0.
+                    self.push(v as f64)?;
                 }
                 28 => {
-                    if i + 2 > code.len() {
-                        return Err(Error::Structure("type1 number truncated".into()));
-                    }
-                    let v = i16::from_be_bytes([code[i], code[i + 1]]);
-                    i += 2;
-                    self.push(v as f64)?;
+                    // `shortint` exists only in Type 2 charstrings; in a
+                    // Type 1 program byte 28 is an undefined operator.
+                    return Err(Error::Unsupported {
+                        feature: "Type1 charstring op",
+                        detail: "opcode 28 (Type 2 shortint) is not a Type 1 operator".into(),
+                    });
                 }
                 12 => {
                     // escaped op
@@ -911,20 +930,27 @@ impl Interp {
                 self.push(a / b_)?;
             }
             16 => {
-                // callothersubr: operands are `arg1..argN subr# argCnt`
-                // — argCnt is the *top* of stack, subr# below it, then
-                // the N args below that. Pop order: argCnt, subr#.
-                let arg_cnt = self.pop()? as i64;
+                // callothersubr: operands are `arg1..argN N othersubr#`
+                // (Type 1 spec §8.3) — othersubr# is the *top* of the
+                // stack, N just below it, then the N args. The standard
+                // Subrs make this concrete: Subrs[0] = `3 0 callothersubr`
+                // (flex end, 3 args), Subrs[1] = `0 1 callothersubr`.
                 let subr_no = self.pop()? as i64;
+                let arg_cnt = self.pop()? as i64;
                 if arg_cnt < 0 || self.stack.len() < arg_cnt as usize {
-                    return Err(Error::Structure("type1 callothersubr underflow".into()));
+                    return Err(Error::Structure(format!(
+                        "type1 callothersubr underflow: othersubr {subr_no} wants {arg_cnt} \
+                         args, stack has {}",
+                        self.stack.len()
+                    )));
                 }
-                // pop the arg_cnt operands (top-down)
+                // pop the arg_cnt operands (bottom-up order preserved)
                 let base = self.stack.len() - arg_cnt as usize;
                 let args: Vec<f64> = self.stack[base..].to_vec();
                 self.stack.truncate(base);
                 self.known_results = 0;
                 self.unknown_results = 0;
+                self.pending_args.clear();
                 match subr_no {
                     0 => {
                         // flex end — push current point for setcurrentpoint
@@ -963,10 +989,14 @@ impl Interp {
                         }
                     }
                     3 => {
-                        // hint replacement — 1 result pushed back
+                        // hint replacement: `subr# 1 3 callothersubr pop
+                        // callsubr` — OtherSubrs[3] leaves subr# on the
+                        // PostScript stack for the following `pop`, so
+                        // hand the argument straight back.
                         if arg_cnt != 1 {
                             return Err(Error::Structure("type1 unexpected othersubr 3".into()));
                         }
+                        self.push(args[0])?;
                         self.known_results = 1;
                     }
                     12 | 13 => {
@@ -1011,23 +1041,30 @@ impl Interp {
                         self.known_results = 1;
                     }
                     _ => {
-                        // Unhandled othersubr — leave `arg_cnt` slots
-                        // for `pop` to fill (font pushes them itself).
+                        // Unhandled othersubr (unknown PostScript code):
+                        // FreeType's rule is that the arguments stay
+                        // available and each following `pop` re-exposes
+                        // the next one in order — the net effect of a
+                        // PS procedure that leaves its inputs untouched.
                         self.unknown_results = arg_cnt as usize;
+                        self.pending_args = args.clone();
                     }
                 }
             }
             17 => {
                 // pop — pull one result left by a handled othersubr, or
-                // reserve a slot an unhandled othersubr will fill.
+                // re-expose the next argument of an unhandled one.
                 if self.known_results > 0 {
                     self.known_results -= 1;
                     // value already pushed by the handler — nothing to do
                 } else if self.unknown_results > 0 {
                     self.unknown_results -= 1;
-                    // the font's own code pushes the real value; reserve
-                    // a slot (push 0) so later ops see balanced stack
-                    self.push(0.0)?;
+                    let v = if self.pending_args.is_empty() {
+                        0.0
+                    } else {
+                        self.pending_args.remove(0)
+                    };
+                    self.push(v)?;
                 } else {
                     return Err(Error::Structure(
                         "type1 pop without pending othersubr result".into(),
@@ -1450,28 +1487,11 @@ mod tests {
             v
         };
         let cs = enc(charstring);
-        let mut priv_txt = format!("dup /Private 8 dict dup begin /lenIV 4 def /BlueValues [] def");
-        if !subrs.is_empty() {
-            priv_txt += &format!("/Subrs {} array", subrs.len());
-            for (i, s) in subrs.iter().enumerate() {
-                let e = enc(s);
-                priv_txt += &format!("dup {} {} RD ", i, e.len());
-                priv_txt.push_str(&String::from_utf8_lossy(&vec![0x20u8; 0])); // placeholder
-                                                                               // stash the encrypted bytes inline as a marker we replace below
-                priv_txt += &format!("<<{}>>", e.len());
-            }
-        }
-        priv_txt += &format!("/CharStrings 2 dict dup begin /.notdef {} RD ", cs.len());
-        // We build the byte array manually to splice in binary charstring
-        // data — the text has `<<len>>` markers that get replaced.
+        // The Private section is ASCII text with binary charstring
+        // blobs spliced in after each `RD `; `chunks` records where
+        // each blob goes (offset into `hdr`) so the text and the
+        // binary can be assembled in one pass.
         let mut private_bytes: Vec<u8> = Vec::new();
-        // Re-emit the private text, substituting charstring bytes at each
-        // `<<N>>` marker in order.
-        // Simpler: build text with a unique placeholder byte 0x01 then
-        // splice. But binary can contain 0x01. Use offset tracking.
-        // For the tests we only ever use ONE subr or none, and one
-        // charstring — build them linearly.
-        let _ = priv_txt;
         let mut hdr = String::from("dup /Private 8 dict dup begin /lenIV 4 def /BlueValues [] def");
         let mut chunks: Vec<(usize, Vec<u8>)> = Vec::new(); // (pos after hdr, bytes)
         if !subrs.is_empty() {
@@ -1539,6 +1559,121 @@ mod tests {
         assert_eq!(ops[0], (b'm', 10.0, 10.0));
         assert!(ops.iter().any(|(o, ..)| *o == b'l'), "no lineto: {ops:?}");
         assert!(ops.iter().any(|(o, ..)| *o == b'z'), "no close: {ops:?}");
+    }
+
+    /// The four standard Subrs every real Type 1 font starts with
+    /// (flex end / flex begin / flex vector / no-op) plus the usual
+    /// hint-replacement helper `1 3 callothersubr pop callsubr`.
+    fn standard_subrs() -> Vec<Vec<u8>> {
+        let mut s0 = enc_num(3);
+        s0.extend(enc_num(0));
+        s0.extend([12, 16, 12, 17, 12, 17, 12, 33, 11]); // callothersubr pop pop setcurrentpoint return
+        let mut s1 = enc_num(0);
+        s1.extend(enc_num(1));
+        s1.extend([12, 16, 11]);
+        let mut s2 = enc_num(0);
+        s2.extend(enc_num(2));
+        s2.extend([12, 16, 11]);
+        let s3 = vec![11];
+        let mut s4 = enc_num(1);
+        s4.extend(enc_num(3));
+        s4.extend([12, 16, 12, 17, 10, 11]); // callothersubr pop callsubr return
+        vec![s0, s1, s2, s3, s4]
+    }
+
+    #[test]
+    fn five_byte_numbers_are_integers_not_fixed() {
+        // `0 2000 hsbw` — 2000 needs the `255 + int32` form, which Type 1
+        // reads as an integer (Type 2 would read 16.16 fixed = 0.03).
+        let mut cs = enc_num(0);
+        cs.extend(enc_num(2000));
+        assert_eq!(cs[1], 255, "test must exercise the 5-byte form");
+        cs.push(13);
+        cs.extend(enc_num(10));
+        cs.extend(enc_num(10));
+        cs.push(21);
+        cs.extend(enc_num(50));
+        cs.extend(enc_num(0));
+        cs.push(5);
+        cs.push(9);
+        cs.push(14);
+        let (_, w) = outline(b"w", &cs, &[]);
+        assert_eq!(w, 2000.0);
+    }
+
+    #[test]
+    fn hint_replacement_via_othersubr_3() {
+        // Subr 5 = `1 61 hstem return`; glyph does `5 4 callsubr` —
+        // OtherSubrs[3] must hand the subr# (5) back to the `pop` so
+        // the following `callsubr` runs Subr 5, not Subr 0.
+        let mut subrs = standard_subrs();
+        let mut s5 = enc_num(1);
+        s5.extend(enc_num(61));
+        s5.extend([1, 11]);
+        subrs.push(s5);
+        let mut cs = enc_num(0);
+        cs.extend(enc_num(500));
+        cs.push(13); // hsbw
+        cs.extend(enc_num(5));
+        cs.extend(enc_num(4));
+        cs.push(10); // callsubr 4 → hint replacement → callsubr 5
+        cs.extend(enc_num(10));
+        cs.extend(enc_num(10));
+        cs.push(21);
+        cs.extend(enc_num(50));
+        cs.extend(enc_num(0));
+        cs.push(5);
+        cs.push(9);
+        cs.push(14);
+        let (ops, w) = outline(b"h", &cs, &subrs);
+        assert_eq!(w, 500.0);
+        assert_eq!(ops[0], (b'm', 10.0, 10.0), "{ops:?}");
+        assert!(ops.iter().any(|(o, ..)| *o == b'l'), "{ops:?}");
+    }
+
+    #[test]
+    fn flex_via_standard_subrs_emits_two_curves() {
+        // `1 callsubr`, 7 × `dx dy rmoveto 2 callsubr`, `fd x y 0 callsubr`.
+        let subrs = standard_subrs();
+        let mut cs = enc_num(0);
+        cs.extend(enc_num(500));
+        cs.push(13);
+        cs.extend(enc_num(0));
+        cs.extend(enc_num(0));
+        cs.push(21); // rmoveto 0 0
+        cs.extend(enc_num(1));
+        cs.push(10); // 1 callsubr → flex begin
+                     // reference point then 6 control/end points, all via rmoveto
+        for (dx, dy) in [
+            (50, 0),
+            (10, 5),
+            (10, 5),
+            (10, 0),
+            (10, 0),
+            (10, -5),
+            (10, -5),
+        ] {
+            cs.extend(enc_num(dx));
+            cs.extend(enc_num(dy));
+            cs.push(21);
+            cs.extend(enc_num(2));
+            cs.push(10); // 2 callsubr
+        }
+        cs.extend(enc_num(50)); // flex height
+        cs.extend(enc_num(110)); // end x
+        cs.extend(enc_num(0)); // end y
+        cs.extend(enc_num(0));
+        cs.push(10); // 0 callsubr → flex end
+        cs.push(9);
+        cs.push(14);
+        let (ops, _) = outline(b"f", &cs, &subrs);
+        let curves = ops.iter().filter(|(o, ..)| *o == b'c').count();
+        assert_eq!(curves, 2, "flex must emit two cubics: {ops:?}");
+        let last_c = ops.iter().rev().find(|(o, ..)| *o == b'c').unwrap();
+        assert!(
+            (last_c.1 - 110.0).abs() < 1e-6 && last_c.2.abs() < 1e-6,
+            "{ops:?}"
+        );
     }
 
     #[test]

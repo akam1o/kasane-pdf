@@ -1665,7 +1665,7 @@ mod tests {
     #[test]
     fn removes_middle_char_of_tj() {
         let d = doc(&one_glyph(b"BT /F1 24 Tf 20 60 Td (ABC) Tj ET\n"));
-        let r = remove_text(&d, 0, &[(35.0, 60.0, 38.0, 80.0)], &Limits::default()).unwrap();
+        let r = remove_text(&d, 0, &[(36.2, 60.0, 39.2, 80.0)], &Limits::default()).unwrap();
         assert_eq!(r.codes_removed, 1);
     }
 
@@ -2009,7 +2009,7 @@ mod tests {
         // Form paints (ABC) at 24pt under /F1 — 'B' sits at
         // origin 34.4..40.4, ink ~34.4..40.4, y 60..76.8.
         let d = doc(&form_pdf(b"BT /F1 24 Tf 20 60 Td (ABC) Tj ET\n"));
-        let r = remove_text(&d, 0, &[(35.0, 60.0, 38.0, 80.0)], &Limits::default()).unwrap();
+        let r = remove_text(&d, 0, &[(36.2, 60.0, 39.2, 80.0)], &Limits::default()).unwrap();
         assert_eq!(r.codes_removed, 1);
         let out = String::from_utf8_lossy(&r.output).into_owned();
         // The clone's stream must carry the same rewrite a page-level
@@ -2133,7 +2133,7 @@ mod tests {
         // strictly inside so A's `20..34.4` and C's `57.2..63.2`
         // (edge-touching counts as a hit) are both missed.
         // Invocation 2's 'B' is at 120+34.4=154.4 — outside.
-        let r = remove_text(&d, 0, &[(34.5, 55.0, 40.0, 80.0)], &Limits::default()).unwrap();
+        let r = remove_text(&d, 0, &[(35.7, 55.0, 41.2, 80.0)], &Limits::default()).unwrap();
         assert_eq!(r.codes_removed, 1);
         let out = String::from_utf8_lossy(&r.output).into_owned();
         // The clone carries the rewrite; the original form keeps
@@ -2350,7 +2350,7 @@ mod tests {
         let r = remove_text(
             &d,
             0,
-            &[(34.5, 115.0, 40.0, 140.0), (34.5, 55.0, 40.0, 80.0)],
+            &[(35.7, 115.0, 41.2, 140.0), (35.7, 55.0, 41.2, 80.0)],
             &Limits::default(),
         )
         .unwrap();
@@ -2468,7 +2468,7 @@ mod tests {
         let d = doc(&parts.concat());
         // 'B' ink 14.4..20.4 — edges strictly inside so A (0..14.4)
         // and C (37.2..43.2) are missed.
-        let r = remove_text(&d, 0, &[(14.5, 0.0, 20.0, 20.0)], &Limits::default()).unwrap();
+        let r = remove_text(&d, 0, &[(15.7, 0.0, 21.2, 20.0)], &Limits::default()).unwrap();
         assert_eq!(r.codes_removed, 1);
         let out = String::from_utf8_lossy(&r.output).into_owned();
         // The clone carries the rewrite uncompressed — no `/Filter`
@@ -2694,7 +2694,7 @@ mod tests {
         let d = doc(&parts.concat());
         // Remove 'B' on page 1 only — page 2's invocation shares the
         // same form object and must keep all three glyphs.
-        let r = remove_text(&d, 0, &[(14.5, 0.0, 20.0, 20.0)], &Limits::default()).unwrap();
+        let r = remove_text(&d, 0, &[(15.7, 0.0, 21.2, 20.0)], &Limits::default()).unwrap();
         assert_eq!(r.codes_removed, 1);
         let out = String::from_utf8_lossy(&r.output).into_owned();
         // The original form keeps `(ABC)` — page 2 still shows it.
@@ -3039,7 +3039,7 @@ mod tests {
     #[test]
     fn output_reparse_removes_char() {
         let d = doc(&one_glyph(b"BT /F1 24 Tf 20 60 Td (ABC) Tj ET\n"));
-        let r = remove_text(&d, 0, &[(35.0, 60.0, 38.0, 80.0)], &Limits::default()).unwrap();
+        let r = remove_text(&d, 0, &[(36.2, 60.0, 39.2, 80.0)], &Limits::default()).unwrap();
         let d2 = doc(&r.output);
         let text = crate::extract_text(&d2, &d2.pages()[0], &Limits::default()).unwrap();
         let s: String = text
@@ -3056,7 +3056,7 @@ mod tests {
     #[test]
     fn tj_output_order_kern_between_strings() {
         let d = doc(&one_glyph(b"BT /F1 24 Tf 20 60 Td (ABC) Tj ET\n"));
-        let r = remove_text(&d, 0, &[(35.0, 60.0, 38.0, 80.0)], &Limits::default()).unwrap();
+        let r = remove_text(&d, 0, &[(36.2, 60.0, 39.2, 80.0)], &Limits::default()).unwrap();
         let out = String::from_utf8_lossy(&r.output).into_owned();
         // Extract the new Contents stream — it must be [(A) -600 (C)]
         // TJ so 'C' lands at x=48.8, not x=34.4.
@@ -3099,7 +3099,7 @@ mod tests {
     fn tj_items_preserve_numeric_elements() {
         let d = doc(&one_glyph(b"BT /F1 24 Tf 20 60 Td [(A) 100 (BC)] TJ ET\n"));
         // Remove B only (rect covers its bounds).
-        let r = remove_text(&d, 0, &[(35.0, 60.0, 38.0, 80.0)], &Limits::default()).unwrap();
+        let r = remove_text(&d, 0, &[(36.2, 60.0, 39.2, 80.0)], &Limits::default()).unwrap();
         let out = String::from_utf8_lossy(&r.output).into_owned();
         // Original [(A) 100 (BC)] → 'B' removed →
         // [(A) 100 -600 (C)] — B's advance replaces its string.
@@ -3115,7 +3115,7 @@ mod tests {
     #[test]
     fn tj_removal_advance_crosses_numeric_element() {
         let d = doc(&one_glyph(b"BT /F1 24 Tf 20 60 Td [(AB) 50 (C)] TJ ET\n"));
-        let r = remove_text(&d, 0, &[(35.0, 60.0, 38.0, 80.0)], &Limits::default()).unwrap();
+        let r = remove_text(&d, 0, &[(36.2, 60.0, 39.2, 80.0)], &Limits::default()).unwrap();
         let out = String::from_utf8_lossy(&r.output).into_owned();
         // (A) then B's advance -600, then the original 50 kern, then (C).
         assert!(
@@ -3208,7 +3208,7 @@ mod tests {
     #[test]
     fn unused_render_mode_is_allowed() {
         let d = doc(&one_glyph(b"BT /F1 24 Tf 3 Tr 0 Tr 20 60 Td (AB) Tj ET\n"));
-        let r = remove_text(&d, 0, &[(35.0, 60.0, 38.0, 80.0)], &Limits::default()).unwrap();
+        let r = remove_text(&d, 0, &[(36.2, 60.0, 39.2, 80.0)], &Limits::default()).unwrap();
         assert_eq!(r.codes_removed, 1);
     }
 
@@ -3326,7 +3326,7 @@ mod tests {
         let r = remove_text(
             &d,
             0,
-            &[(34.5, 55.0, 42.0, 80.0), (47.0, 55.0, 60.0, 80.0)],
+            &[(35.7, 55.0, 43.2, 80.0), (47.0, 55.0, 60.0, 80.0)],
             &Limits::default(),
         )
         .unwrap();
@@ -3376,8 +3376,9 @@ mod tests {
         let d = doc(&one_glyph(
             b"BT /F1 24 Tf 2 Tc 20 60 Td (AB) Tj /F1 10 Tf 9 Tc 50 Tz ET\n",
         ));
-        // 'B' advance at Tc=2: 16.4 → origin 36.4, ink ~36.4..42.4.
-        let r = remove_text(&d, 0, &[(35.0, 55.0, 45.0, 80.0)], &Limits::default()).unwrap();
+        // 'B' advance at Tc=2: 16.4 → origin 36.4, ink ~37.6..43.6
+        // (KasaneTest's hmtx lsb of 50 units shifts ink +1.2 at 24pt).
+        let r = remove_text(&d, 0, &[(36.5, 55.0, 45.0, 80.0)], &Limits::default()).unwrap();
         assert_eq!(r.codes_removed, 1);
         let out = String::from_utf8_lossy(&r.output).into_owned();
         // Kern at Tc=2: -(600 + 2·1000/24) = -683.3333 — the trailing
@@ -3563,7 +3564,7 @@ mod tests {
         let r = remove_text(
             &d,
             0,
-            &[(34.5, 55.0, 42.0, 80.0), (66.0, 55.0, 82.0, 80.0)],
+            &[(35.7, 55.0, 43.2, 80.0), (66.0, 55.0, 82.0, 80.0)],
             &Limits::default(),
         )
         .unwrap();
@@ -3792,7 +3793,7 @@ mod tests {
         parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
         let d = doc(&parts.concat());
         // Remove 'B' on page 1 — page 2 keeps the original stream.
-        let r = remove_text(&d, 0, &[(35.0, 60.0, 38.0, 80.0)], &Limits::default()).unwrap();
+        let r = remove_text(&d, 0, &[(36.2, 60.0, 39.2, 80.0)], &Limits::default()).unwrap();
         let d2 = doc(&r.output);
         // Page 1 extracts "AC"; page 2 still extracts "ABC".
         let p1 = crate::extract_text(&d2, &d2.pages()[0], &Limits::default()).unwrap();

@@ -650,8 +650,14 @@ fn bounds_is_glyph_ink_not_advance_box() {
     let (minx, miny, maxx, maxy) = c.bounds.unwrap();
     let advance_rect = (c.origin.0, c.origin.1, c.origin.0 + c.advance.0, c.origin.1);
     assert!((minx, miny, maxx, maxy) != advance_rect);
-    // bounds anchored at the glyph origin, extends upward (+y).
-    assert!((minx - c.origin.0).abs() < 0.5);
+    // bounds start at origin + the hmtx left side bearing (KasaneTest:
+    // 50 units → 1.2 at 24pt — the outline is placed at the bearing,
+    // as FreeType/Acrobat do) and extend upward (+y).
+    assert!(
+        ((minx - c.origin.0) - 1.2).abs() < 0.5,
+        "minx {minx} origin {}",
+        c.origin.0
+    );
     assert!(maxy > c.origin.1);
 }
 
@@ -673,4 +679,50 @@ fn actual_text_after_partial_text_returns_err_only() {
 #[allow(dead_code)]
 fn _use_resolve_kind(k: ResolveKind) -> ResolveKind {
     k
+}
+
+// --------------------------------------------------------------------
+// Scope: annotations and indirect /Widths
+// --------------------------------------------------------------------
+
+/// `/Annots` is not part of the page's content text — extraction
+/// proceeds (pdftotext makes the same cut); only *rendering* refuses
+/// an annotated page because appearance streams would change the
+/// picture.
+#[test]
+fn annotated_page_still_extracts() {
+    let t = extract("render_annot.pdf").expect("annotations must not block extraction");
+    assert!(t.chars.is_empty(), "fixture has no text: {:?}", t.chars);
+    let doc = Document::from_bytes(&fixture("render_annot.pdf")).unwrap();
+    let err = render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap_err();
+    assert!(matches!(err, Error::Unsupported { feature, .. } if feature.contains("annotation")));
+}
+
+/// `/Widths 21 0 R` — the array itself indirect (pdfTeX and friends
+/// write it that way). It must be dereferenced, not rejected.
+#[test]
+fn indirect_widths_array_is_dereferenced() {
+    let font = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest-Regular \
+        /Encoding /WinAnsiEncoding /FirstChar 65 /LastChar 66 /Widths 21 0 R \
+        /FontDescriptor 6 0 R >>"
+        .to_vec();
+    let widths = b"[ 700 300 ]".to_vec();
+    let bytes = pdf(
+        b"BT /F2 10 Tf 10 50 Td (AB) Tj ET",
+        "",
+        "/Font << /F2 20 0 R >>",
+        &[(20, font), (21, widths)],
+    );
+    let t = extract_pdf(&bytes, &Limits::default()).expect("indirect /Widths loads");
+    assert_eq!(t.chars.len(), 2);
+    assert!(
+        (t.chars[0].advance.0 - 7.0).abs() < 0.01,
+        "A advance {}",
+        t.chars[0].advance.0
+    );
+    assert!(
+        (t.chars[1].advance.0 - 3.0).abs() < 0.01,
+        "B advance {}",
+        t.chars[1].advance.0
+    );
 }

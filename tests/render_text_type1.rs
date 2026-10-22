@@ -186,12 +186,16 @@ fn type1_cff_corrupt_program_is_structure_error() {
 }
 
 // --------------------------------------------------------------------
-// Refused: /FontFile (Adobe Type 1 / eexec) — no Type-1 VM.
+// /FontFile (Adobe Type 1 / eexec) — parsed by the Type-1 charstring
+// interpreter (src/type1.rs).
 // --------------------------------------------------------------------
 
-#[test]
-fn type1_eexec_fontfile_is_unsupported() {
-    let objs = vec![
+/// The real CMBSY10 eexec program from the corpus (subset: `.notdef`
+/// + `periodcentered`) — see tests/fixtures/README.md.
+const EEXEC: &[u8] = include_bytes!("fixtures/eexec_cmsy10.bin");
+
+fn eexec_font_objs(program: &[u8]) -> Vec<(u32, Vec<u8>)> {
+    vec![
         (
             6,
             b"<< /Type /FontDescriptor /FontName /Test /Flags 32 \
@@ -201,19 +205,53 @@ fn type1_eexec_fontfile_is_unsupported() {
         ),
         (
             7,
-            b"<< /Length 8 >>\nstream\n\x80\x01\x00\x00eexec!\nendstream".to_vec(),
+            [
+                format!("<< /Length {} >>\nstream\n", program.len()).into_bytes(),
+                program.to_vec(),
+                b"\nendstream".to_vec(),
+            ]
+            .concat(),
         ),
-    ];
+    ]
+}
+
+#[test]
+fn type1_eexec_fontfile_renders_charstring() {
+    // WinAnsi 0xB7 = /periodcentered — the one real glyph in the
+    // subset. It must paint ink; a glyph the subset lacks (`A`)
+    // resolves to .notdef and paints nothing but still renders.
+    let pdf = pdf_with_font(
+        b"BT /F0 40 Tf 20 100 Td (\\267) Tj ET",
+        "/FontDescriptor 6 0 R",
+        &eexec_font_objs(EEXEC),
+    );
+    let r = render(&pdf).expect("eexec /FontFile renders");
+    assert!(inked(&r) > 0, "periodcentered painted no ink");
+
     let pdf = pdf_with_font(
         b"BT /F0 40 Tf 20 100 Td (A) Tj ET",
         "/FontDescriptor 6 0 R",
-        &objs,
+        &eexec_font_objs(EEXEC),
+    );
+    let r = render(&pdf).expect("missing glyph → .notdef, not an error");
+    assert_eq!(inked(&r), 0, ".notdef must not paint");
+}
+
+#[test]
+fn type1_eexec_garbage_fontfile_is_structure_error() {
+    // A /FontFile that is not a Type 1 program (no CharStrings at all)
+    // is a broken font: refuse with a Structure error rather than
+    // silently rendering every glyph blank.
+    let pdf = pdf_with_font(
+        b"BT /F0 40 Tf 20 100 Td (A) Tj ET",
+        "/FontDescriptor 6 0 R",
+        &eexec_font_objs(b"\x80\x01\x00\x00eexec!"),
     );
     match render(&pdf) {
-        Err(Error::Unsupported { feature, .. }) => {
-            assert!(feature.contains("FontFile"), "got {feature}");
+        Err(Error::Structure(msg)) => {
+            assert!(msg.contains("Type 1") || msg.contains("eexec"), "got {msg}");
         }
-        other => panic!("eexec /FontFile must be Unsupported, got {other:?}"),
+        other => panic!("garbage /FontFile must be a Structure error, got {other:?}"),
     }
 }
 
