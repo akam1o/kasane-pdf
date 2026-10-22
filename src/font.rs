@@ -241,6 +241,9 @@ pub(crate) fn load_simple_font(
     let widths_obj = dict.get(b"Widths".as_slice());
     let mut widths = [0.0f64; 256];
     if let Some(w) = widths_obj {
+        // `/Widths 12 0 R` is common (pdfTeX, many generators) — the
+        // array itself may be indirect, not just its entries.
+        let w = doc.deref(w)?;
         let arr = w
             .as_array()
             .ok_or_else(|| Error::Structure("/Widths is not an array".into()))?;
@@ -740,7 +743,7 @@ impl SimpleFont {
         builder: &mut dyn OutlineBuilder,
     ) -> Result<bool, Error> {
         let face = self.face()?;
-        Ok(face.outline_glyph(glyph, builder).is_some())
+        Ok(outline_glyph_lsb_adjusted(&face, glyph, builder))
     }
 
     /// Resolve `code` to a Unicode string, in the priority order of
@@ -1496,7 +1499,7 @@ impl CompositeFont {
         builder: &mut dyn OutlineBuilder,
     ) -> Result<bool, Error> {
         let face = self.face()?;
-        Ok(face.outline_glyph(glyph, builder).is_some())
+        Ok(outline_glyph_lsb_adjusted(&face, glyph, builder))
     }
 
     /// Resolve `code` via `/ToUnicode` only — composite fonts have no
@@ -1659,6 +1662,132 @@ impl GlyphPath {
     }
     pub(crate) fn finish(self) -> Option<tiny_skia::Path> {
         self.builder.finish()
+    }
+}
+
+/// Outline a TrueType (`glyf`) glyph with its origin placed the way
+/// FreeType — and therefore Poppler, Acrobat and most viewers — place
+/// it: when the `hmtx` left side bearing differs from the `glyf`
+/// header `xMin`, the outline is translated by `lsb − xMin` so the ink
+/// starts at the advertised bearing. Well-formed fonts have
+/// `lsb == xMin` and pass through untouched; faces without a `glyf`
+/// table (CFF-flavoured OpenType) are never shifted. The corpus file
+/// `cidfont_cmap_overflow` (lsb 0, xMin 80) rendered 80 units to the
+/// right of the reference before this adjustment.
+fn outline_glyph_lsb_adjusted(
+    face: &Face<'_>,
+    glyph: GlyphId,
+    builder: &mut dyn OutlineBuilder,
+) -> bool {
+    let dx = tt_lsb_shift(face, glyph);
+    if dx == 0.0 {
+        return face.outline_glyph(glyph, builder).is_some();
+    }
+    let mut shifted = ShiftX { inner: builder, dx };
+    face.outline_glyph(glyph, &mut shifted).is_some()
+}
+
+/// `lsb − xMin` for a `glyf` glyph, computed the way FreeType's
+/// TrueType loader derives its first phantom point
+/// (`tt_loader_set_pp`): from the glyph *header* xMin (not the
+/// outlined extent) and the `hmtx` bearing. For a composite glyph the
+/// component flagged `USE_MY_METRICS` supplies the phantom point
+/// instead (FreeType "restores" the composite's own points only when
+/// no component claims them), so an accented letter built on a
+/// well-formed base is never shifted even if the composite's own
+/// header box disagrees with its bearing. Returns 0 for CFF faces,
+/// empty glyphs, or anything unparseable.
+fn tt_lsb_shift(face: &Face<'_>, glyph: GlyphId) -> f32 {
+    // `FaceTables` does not expose `loca`; rebuild it from the raw
+    // table with the `head`/`maxp` parameters the face already parsed.
+    let raw = face.raw_face();
+    let (Some(loca_raw), Some(glyf)) = (
+        raw.table(ttf_parser::Tag::from_bytes(b"loca")),
+        raw.table(ttf_parser::Tag::from_bytes(b"glyf")),
+    ) else {
+        return 0.0;
+    };
+    let Some(n_glyphs) = std::num::NonZeroU16::new(face.number_of_glyphs()) else {
+        return 0.0;
+    };
+    let Some(loca) = ttf_parser::loca::Table::parse(
+        n_glyphs,
+        face.tables().head.index_to_location_format,
+        loca_raw,
+    ) else {
+        return 0.0;
+    };
+    fn shift(
+        face: &Face<'_>,
+        loca: &ttf_parser::loca::Table<'_>,
+        glyf: &[u8],
+        gid: GlyphId,
+        depth: usize,
+    ) -> Option<f32> {
+        if depth > 4 {
+            return None;
+        }
+        let data = glyf.get(loca.glyph_range(gid)?)?;
+        if data.len() < 10 {
+            return None;
+        }
+        let be16 = |i: usize| i16::from_be_bytes([data[i], data[i + 1]]);
+        let n_contours = be16(0);
+        let x_min = be16(2);
+        if n_contours < 0 {
+            // Composite: walk the component records looking for
+            // USE_MY_METRICS (0x0200). Record layout: flags, glyphIndex,
+            // 2 args (bytes or words), optional scale/xy-scale/2×2.
+            let mut p = 10usize;
+            while p + 4 <= data.len() {
+                let flags = u16::from_be_bytes([data[p], data[p + 1]]);
+                let gi = u16::from_be_bytes([data[p + 2], data[p + 3]]);
+                p += 4;
+                p += if flags & 0x0001 != 0 { 4 } else { 2 };
+                if flags & 0x0008 != 0 {
+                    p += 2;
+                } else if flags & 0x0040 != 0 {
+                    p += 4;
+                } else if flags & 0x0080 != 0 {
+                    p += 8;
+                }
+                if flags & 0x0200 != 0 {
+                    return shift(face, loca, glyf, GlyphId(gi), depth + 1);
+                }
+                if flags & 0x0020 == 0 {
+                    break;
+                }
+            }
+        }
+        let lsb = face.glyph_hor_side_bearing(gid)?;
+        Some(f32::from(lsb) - f32::from(x_min))
+    }
+    shift(face, &loca, glyf, glyph, 0).unwrap_or(0.0)
+}
+
+/// `OutlineBuilder` adaptor that offsets every x coordinate by `dx`
+/// (font units) before forwarding — see `outline_glyph_lsb_adjusted`.
+struct ShiftX<'a> {
+    inner: &'a mut dyn OutlineBuilder,
+    dx: f32,
+}
+
+impl OutlineBuilder for ShiftX<'_> {
+    fn move_to(&mut self, x: f32, y: f32) {
+        self.inner.move_to(x + self.dx, y);
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        self.inner.line_to(x + self.dx, y);
+    }
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        self.inner.quad_to(x1 + self.dx, y1, x + self.dx, y);
+    }
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        self.inner
+            .curve_to(x1 + self.dx, y1, x2 + self.dx, y2, x + self.dx, y);
+    }
+    fn close(&mut self) {
+        self.inner.close();
     }
 }
 

@@ -175,6 +175,44 @@ fn tounicode_bfrange_sequential() {
     assert_eq!(t.chars[2].unicode.as_deref(), Some("C"));
 }
 
+/// A sequential bfrange whose destination sits above U+00FF — the
+/// common case for symbol/math ToUnicode maps (`<2212>` …). Only the
+/// *low byte* of the last code unit increments (§9.10.3); the high
+/// byte must never trip the overflow check.
+#[test]
+fn tounicode_bfrange_sequential_above_latin1() {
+    // <41> <43> <2212> → −, ∓(2213), ∔(2214)
+    let cmap = b"begincmap
+        1 begincodespacerange
+        <00> <FF>
+        endcodespacerange
+        1 beginbfrange
+        <41> <43> <2212>
+        endbfrange
+        endcmap";
+    let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (ABC) Tj ET", Some(cmap));
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &Limits::default())
+        .expect("bfrange above U+00FF must parse");
+    assert_eq!(t.chars.len(), 3);
+    assert_eq!(t.chars[0].unicode.as_deref(), Some("\u{2212}"));
+    assert_eq!(t.chars[1].unicode.as_deref(), Some("\u{2213}"));
+    assert_eq!(t.chars[2].unicode.as_deref(), Some("\u{2214}"));
+    // The real overflow (low byte would pass 0xFF) is still refused.
+    let bad = b"begincmap
+        1 begincodespacerange
+        <00> <FF>
+        endcodespacerange
+        1 beginbfrange
+        <41> <43> <22FE>
+        endbfrange
+        endcmap";
+    let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (ABC) Tj ET", Some(bad));
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let err = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap_err();
+    assert!(matches!(err, Error::Structure(_)), "got {err:?}");
+}
+
 #[test]
 fn tounicode_bfrange_array() {
     // <41> <43> [<0041><03B1><03B2>] → A→A, B→α, C→β

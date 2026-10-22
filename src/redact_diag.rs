@@ -2411,7 +2411,10 @@ mod tests {
     #[test]
     fn glyph_outline_bounds_are_exact() {
         // The same 'A' glyph text_basic.pdf extracts: origin (20,60),
-        // advance 14.4, bounds [20,60,34.4,76.8] at size 24.
+        // advance 14.4, bounds [21.2,60,35.6,76.8] at size 24 — the
+        // ink sits 1.2 right of the origin because KasaneTest's hmtx
+        // lsb (50 units) exceeds the glyf xMin (0) and the outline is
+        // placed at the bearing, as FreeType/Acrobat do.
         let doc = crate::document::Document::from_bytes(&one_glyph_pdf()).unwrap();
         let d =
             diagnose_redaction(&doc, 0, &[(15.0, 55.0, 40.0, 80.0)], &Limits::default()).unwrap();
@@ -2434,7 +2437,7 @@ mod tests {
             _ => panic!("expected text detail"),
         }
         // Ink extent matches the extract path's bounds.
-        assert!((t.bounds.2 - 34.4).abs() < 0.5, "{:?}", t.bounds);
+        assert!((t.bounds.2 - 35.6).abs() < 0.5, "{:?}", t.bounds);
         // A rect *outside* the glyph reports no hits — and the target
         // still lists so callers see the whole picture.
         let miss = diagnose_redaction(&doc, 0, &[(100.0, 100.0, 150.0, 150.0)], &Limits::default())

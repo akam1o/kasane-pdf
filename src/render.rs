@@ -586,14 +586,13 @@ impl<'a> Renderer<'a> {
         opts: &'a RenderOptions,
     ) -> Result<Renderer<'a>, Error> {
         let limits = &opts.limits;
-        if let Some(annots) = page_dict_entry(doc, page, b"Annots")? {
-            if !is_empty_array(&annots) {
-                return Err(Error::Unsupported {
-                    feature: "page annotations (/Annots)",
-                    detail: "page has annotations; annotation rendering is not implemented".into(),
-                });
-            }
-        }
+        // `/Annots` is deliberately *not* a blocker here. Extraction
+        // reports the page's content-stream text (plus Form XObjects);
+        // annotation appearance streams are a separate layer that is
+        // never part of that text — `pdftotext` makes the same cut.
+        // Rendering still refuses annotated pages (see `render_page`)
+        // because there the appearance streams *would* change the
+        // picture.
         // Extraction reports PDF user-space (CropBox) coordinates, so
         // no page→pixmap transform and no page-sized pixel buffer are
         // needed. The struct still requires a live pixmap; 1×1 is a
@@ -673,8 +672,10 @@ impl<'a> Renderer<'a> {
                         "cm operands must be finite numbers".into(),
                     ));
                 }
-                // PDF: CTM' = cm × CTM ⇒ existing.concat(cm).
-                self.gs.ctm = self.gs.ctm.concat(*m);
+                // PDF: CTM' = cm × CTM — the operand maps the *new*
+                // user space into the old one, so it applies first.
+                // `concat` runs `self` before its argument ⇒ `cm.concat(ctm)`.
+                self.gs.ctm = m.concat(self.gs.ctm);
             }
             Operation::SetLineWidth(w) => self.gs.line_width = *w,
             Operation::SetLineCap(c) => self.gs.line_cap = (*c).clamp(0, 2) as u8,
@@ -1590,7 +1591,10 @@ impl<'a> Renderer<'a> {
             });
         }
         self.gs_stack.push(self.gs.clone());
-        self.gs.ctm = self.gs.ctm.concat(form_matrix);
+        // CTM' = Matrix × CTM: form-space points go through /Matrix
+        // *first*, then the existing CTM. `concat` applies `self` before
+        // its argument, so `form_matrix` is the receiver here.
+        self.gs.ctm = form_matrix.concat(self.gs.ctm);
 
         // Clip to BBox in *form space* — build the BBox path in user
         // space and intersect via the same mechanism as W.
@@ -2413,8 +2417,13 @@ impl<'a> Renderer<'a> {
 
         // The transform under which the CharProc's glyph-space
         // coordinates land on the page. `font_matrix` maps glyph →
-        // text space; `trm` maps text → page.
-        let glyph_ctm = trm.concat(font_matrix);
+        // text space and is applied *first*; `trm` then maps text →
+        // page (§9.6.5: glyph → text → device). `concat` applies
+        // `self` before its argument, so the order here is
+        // `font_matrix` then `trm` — composing them the other way
+        // round scales the Tm/CTM translation by the FontMatrix and
+        // draws every glyph at the page origin.
+        let glyph_ctm = font_matrix.concat(trm);
 
         // ---- paint the CharProc -----------------------------------
         if let Some((cdict, craw)) = charproc {

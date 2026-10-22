@@ -95,7 +95,7 @@ fn cli_remove_text_happy_path() {
         .args(["experimental-remove-text"])
         .arg(&src)
         .arg("1")
-        .args(["--rect", "35", "60", "38", "80", "--output"])
+        .args(["--rect", "36.2", "60", "39.2", "80", "--output"])
         .arg(&dst)
         .output()
         .unwrap();

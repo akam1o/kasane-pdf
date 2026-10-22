@@ -50,12 +50,16 @@ impl Matrix {
     }
 
     /// Concatenate `other` *after* `self` (i.e. apply `self` first, then
-    /// `other`): `result = other × self`.
+    /// `other`). In PDF's row-vector convention (`[x y 1] × M`) this is
+    /// the product `self × other`.
     ///
-    /// For a PDF `cm` operand, the caller uses
-    /// `ctm = ctm.concat(cm_matrix)` — the `cm` operand is applied to
-    /// points in the *new* user space, which is equivalent to
-    /// multiplying on the left of the existing CTM.
+    /// For a PDF `cm` operand (and a form `/Matrix`, Type3
+    /// `/FontMatrix`, …) the spec says `CTM' = M × CTM` — the new
+    /// matrix maps the *new* user space into the old one, so it is
+    /// applied first. The caller therefore writes
+    /// `ctm = m.concat(ctm)`, **not** `ctm.concat(m)`; the latter puts
+    /// `m` after the CTM and misplaces everything drawn under a nested
+    /// transform (see `tests/render_basic.rs::nested_cm_order`).
     pub fn concat(self, other: Matrix) -> Matrix {
         Matrix {
             a: other.a * self.a + other.c * self.b,

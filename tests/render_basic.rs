@@ -839,3 +839,89 @@ fn error_does_not_produce_output() {
     // On error there is no RenderedPage; the CLI must not write a file.
     assert!(render(b"BT /F1 12 Tf ET").is_err());
 }
+
+// -------------------------------------------------------------------
+// Matrix concatenation order
+// -------------------------------------------------------------------
+
+/// `CTM' = M × CTM` (§8.3.4): a `cm` applies to the *new* user space,
+/// so translate-then-scale puts a unit square at the translation, not
+/// at twice it. The renderer once composed this the other way round
+/// (`ctm.concat(m)`), which the Poppler oracle run on the corpus
+/// caught — keep this pinned.
+#[test]
+fn nested_cm_order() {
+    // T(50,50) then S(2): rect (0,0)-(10,10) → page (50,50)-(70,70).
+    let r = render(b"q 1 0 0 1 50 50 cm 2 0 0 2 0 0 cm 0 0 1 rg 0 0 10 10 re f Q").unwrap();
+    // pixmap y = 100 - page y
+    assert_eq!(px(&r, 60, 40), [0, 0, 255, 255], "inside the square");
+    assert_eq!(px(&r, 45, 40), [255, 255, 255, 255], "left of the square");
+    assert_eq!(px(&r, 75, 40), [255, 255, 255, 255], "right of the square");
+    assert_eq!(px(&r, 60, 25), [255, 255, 255, 255], "above the square");
+    assert_eq!(px(&r, 60, 55), [255, 255, 255, 255], "below the square");
+}
+
+/// A form `/Matrix` concatenates the same way: `CTM' = Matrix × CTM`.
+/// Under `0.5 0 0 0.5 0 50 cm`, a form with `/Matrix [1 0 0 1 60 0]`
+/// drawing (0,0)-(20,20) lands at page (30,50)-(40,60) — not at
+/// (60,50) as the reversed order would give.
+#[test]
+fn form_matrix_under_cm_order() {
+    let content = b"q 0.5 0 0 0.5 0 50 cm /Fm Do Q";
+    let form = b"1 0 0 rg 0 0 20 20 re f";
+    let objs: Vec<Vec<u8>> = vec![
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+           /Resources << /XObject << /Fm 5 0 R >> >> /Contents 4 0 R >>"
+            .to_vec(),
+        [
+            format!("<< /Length {} >>\nstream\n", content.len()).into_bytes(),
+            content.to_vec(),
+            b"\nendstream".to_vec(),
+        ]
+        .concat(),
+        [
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 1000 1000] \
+                 /Matrix [1 0 0 1 60 0] /Length {} >>\nstream\n",
+                form.len()
+            )
+            .into_bytes(),
+            form.to_vec(),
+            b"\nendstream".to_vec(),
+        ]
+        .concat(),
+    ];
+    let mut out = b"%PDF-1.4\n".to_vec();
+    let mut offs = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offs.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+        out.extend_from_slice(o);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for o in offs {
+        out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            objs.len() + 1
+        )
+        .as_bytes(),
+    );
+    let doc = Document::from_bytes(&out).unwrap();
+    let r = render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap();
+    // page (30..40, 50..60) → pixmap x 30..40, y 40..50
+    assert_eq!(px(&r, 35, 45), [255, 0, 0, 255], "form square at (30,50)");
+    assert_eq!(
+        px(&r, 65, 45),
+        [255, 255, 255, 255],
+        "nothing at the reversed-order spot"
+    );
+    assert_eq!(px(&r, 25, 45), [255, 255, 255, 255]);
+    assert_eq!(px(&r, 35, 35), [255, 255, 255, 255]);
+}

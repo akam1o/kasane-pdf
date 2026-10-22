@@ -256,3 +256,37 @@ fn type3_no_charproc_errors() {
         other => panic!("missing /CharProcs should be Structure, got {other:?}"),
     }
 }
+
+/// The CharProc must land at the text position: glyph → text space
+/// via `/FontMatrix` *first*, then `Trm`. Composing the other way
+/// scaled the Tm translation by 0.001 and drew every Type3 glyph at
+/// the page origin (the corpus file `simpletype3font` scored SSIM
+/// 0.997 while being completely misplaced — blank pages hide it).
+#[test]
+fn type3_glyph_lands_at_text_position() {
+    // 'a' = filled 750-unit square at Tfs 40 → 30×30 user units with
+    // its origin at Td (50,100): page x 50..80, y 100..130.
+    let pdf = pdf_type3(
+        b"BT /F0 40 Tf 50 100 Td (a) Tj ET",
+        &[("a", "600 0 0 0 750 750 d1 0 0 750 750 re f")],
+        &[],
+    );
+    let r = render(&pdf).unwrap();
+    let (mut minx, mut miny, mut maxx, mut maxy) = (u32::MAX, u32::MAX, 0, 0);
+    for y in 0..r.pixmap.height() {
+        for x in 0..r.pixmap.width() {
+            let p = r.pixmap.pixel(x, y).unwrap();
+            if (p.red(), p.green(), p.blue()) != (255, 255, 255) {
+                minx = minx.min(x);
+                maxx = maxx.max(x);
+                miny = miny.min(y);
+                maxy = maxy.max(y);
+            }
+        }
+    }
+    // pixmap y = 200 - page y → rows 70..100
+    assert!((49..=51).contains(&minx), "minx {minx}");
+    assert!((79..=81).contains(&maxx), "maxx {maxx}");
+    assert!((69..=71).contains(&miny), "miny {miny}");
+    assert!((99..=101).contains(&maxy), "maxy {maxy}");
+}
