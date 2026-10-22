@@ -130,13 +130,23 @@ to dump one file's fonts. This drove the Type1 implementation split:
 |---|---|---|
 | `/FontFile3` raw CFF (`/Type1` + `/MMType1`) | **implemented** — outlines via `ttf_parser::cff`, glyph ids via CFF charset + `/Encoding` | few (`pattern_text_embedded_font`, parts of `tamreview`) |
 | non-embedded Type1 (Standard-14-style) | **metrics-only** — `/Widths`+encoding feed text extraction (`bounds`→`None`); render refuses | ~21 files |
-| `/FontFile` Adobe Type 1 (eexec) | **refused** — needs a Type 1 charstring VM | ~7 files (the arXiv family) |
+| `/FontFile` Adobe Type 1 (eexec) | **implemented** — `src/type1.rs` eexec-decrypts + interprets the charstring VM (paths, hints, subrs, flex, `seac`) | ~7 files (the arXiv family) — all *also* blocked by `/Annots` + non-embedded + a `bfrange` bug, so eexec alone unblocks 0 renders today |
 | `/FontFile3` CIDFontType0C | **refused** — CID font, not simple Type1 | — |
 | `/Type3` (`/CharProcs` streams) | **implemented** — each glyph runs like a mini Form XObject under `ctm×trm×/FontMatrix`; `d0`/`d1` parsed; `in_text` reset allows nested `BT…ET` (Type3-in-Type3) bounded by `max_xobject_depth` | 4 files (2 now pass; 2 blocked on `/Pattern`) |
 
 Measured after Type1 + Type3 (vs the 13/67 render, 17/67 text,
 13 full-PASS ExtGState baseline): render **15/67**, text **25/67**,
 full PASS **15** — zero regressions.
+
+Measured after eexec (`/FontFile`) Type 1 (run-1792678862): the
+`render.font.type1-eexec`/`text.font.type1-eexec` cause is gone from
+all 7 affected files and `attention-is-all-you-need` progressed past
+font load to a separate `bfrange` ToUnicode `Structure` bug — but
+**0 new PASSes**, because every eexec file is *also* blocked by
+`/Annots` (render+text) and non-embedded fonts. eexec was never the
+sole blocker; the other 6 remain `/Annots`-blocked before fonts are
+reached. Correctness is carried by the `src/type1.rs` unit tests and
+the real `eexec_cmsy10.bin` fixture.
 
 ## Failure-cause analysis
 
@@ -185,6 +195,42 @@ Each file gets one verdict — the **worst** class across its stages
 Unsupported features are **never counted as success** — the report
 keeps `UNSUPPORTED` separate so "we can't do it" is visible, not
 hidden inside a pass rate.
+
+## Render execution vs visual fidelity
+
+A page can *execute* (no error) yet draw the wrong thing, so the runner
+keeps two independent measures:
+
+- **Render Execution Success** — the `render` stage class: did
+  `render_page` return without `Unsupported`/`Error`/`Crash`?
+- **Render Visual Fidelity** — when `--with-poppler` is on, every
+  rendered page is compared to `pdftoppm`'s reference at the same DPI
+  (grayscale, nearest-resampled to match size):
+
+  | metric | meaning |
+  |---|---|
+  | `render_ssim` | Structural Similarity (Wang et al.), 8×8 windows, stride 4 — 1.0 = identical |
+  | `render_mae` | mean absolute luminance error, 0.0–1.0 |
+  | `render_diff_px_ratio` | fraction of pixels differing by >8/255 |
+  | `render_pages_ok/total` | per-page render success |
+
+  A file **meets the fidelity bar** when its worst page has SSIM ≥ 0.98
+  *and* diff-pixels ≤ 2% *and* MAE ≤ 0.05 — loose enough to absorb
+  legitimate anti-aliasing/rasteriser differences between us and
+  Poppler, tight enough to catch a genuinely broken glyph/stream.
+  Files below the bar are listed with a saved diff image. For each
+  measured file the runner writes `{id}-p{n}-ours.pgm`,
+  `-ref.pgm`, `-diff.pgm` under `reports/diff/` so a divergent page can
+  be eyeballed without re-running.
+
+  Current run (run-1792678862): 15 rendered files measured, **12 meet
+  the bar**; mean SSIM 0.976, worst 0.733 (`type3wordspacing`), plus
+  `cidfont_cmap_overflow`/`complex_ttf_font` at SSIM 0.962 — all three
+  flagged with diff images for follow-up.
+
+  The reference engine is Poppler as an *external* oracle only — its
+  code is never linked or embedded; the comparison is process-level
+  (`pdftoppm` subprocess) so the renderer stays self-contained.
 
 ## Sources & licences
 
