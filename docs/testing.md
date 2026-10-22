@@ -33,9 +33,9 @@ Two fixture regimes are kept distinct:
   every `cargo test`.
 - **Real-world corpus** (`compat/corpus/`): ~100+ PDFs produced by
   real applications (arXiv/LaTeX, IRS forms, veraPDF, pdf.js test
-  files), stored in Cloudflare R2 behind `compat/manifest.yaml` and
-  downloaded on demand — never committed. See
-  [`compat-corpus.md`](compat-corpus.md).
+  files), fetched from a user-configured S3-compatible store (or a
+  local directory) behind `compat/manifest.yaml` — never committed.
+  See [`compat-corpus.md`](compat-corpus.md).
 
 ## External verification
 

@@ -855,10 +855,23 @@ fn main() {
     let categories = analysis::category_summary(&results);
     let split = analysis::split_summary(&results);
 
+    // Record the corpus location relative to the cwd when possible so a
+    // report written under an absolute --corpus doesn't leak a local
+    // home-dir / machine path into a shareable artifact.
+    let corpus_dir = args
+        .corpus
+        .strip_prefix(std::env::current_dir().unwrap_or_default())
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|_| args.corpus.clone());
+    let corpus_dir = if corpus_dir.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        corpus_dir
+    };
     let run = RunReport {
         generated: now_iso(),
         tool: env!("CARGO_PKG_VERSION").into(),
-        corpus_dir: args.corpus.to_string_lossy().into_owned(),
+        corpus_dir: corpus_dir.to_string_lossy().into_owned(),
         files: results,
         analysis: Some(Analysis {
             stage_summary,

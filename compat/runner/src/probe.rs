@@ -305,7 +305,7 @@ fn probe_font(
                 .and_then(|o| doc.deref(o).ok())
                 .and_then(|o| o.as_dict().cloned());
             if let Some(fd) = fd {
-                if fd.get(b"FontFile".as_slice()).is_some() {
+                if fd.contains_key(b"FontFile".as_slice()) {
                     // eexec Type1 — supported by the charstring interpreter.
                 } else if let Some(ff3) = fd.get(b"FontFile3".as_slice()) {
                     // Resolve the stream then read its /Subtype —
