@@ -13,7 +13,14 @@
 //! Result classes (kept mutually exclusive, worst-first):
 //!   crash > timeout > error > unsupported > mismatch > pass > skip
 
+mod analysis;
+mod cause;
+mod probe;
+
+use analysis::{priorities_table, PrioritiesConfig};
+use cause::classify;
 use kasane_pdf::{extract_text, render_page, rewrite, Document, Limits, RenderOptions};
+use probe::probe_document;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -62,6 +69,10 @@ struct StageResult {
     detail: String,
     /// Feature tag for UNSUPPORTED (e.g. "image mask"), else "".
     feature: String,
+    /// Structured cause id (e.g. "render.extgstate.unsupported") or "".
+    /// `default` so reports saved before this field still deserialize.
+    #[serde(default)]
+    cause: String,
     /// Wall time for this stage.
     ms: u128,
 }
@@ -72,6 +83,17 @@ impl StageResult {
             class,
             detail,
             feature,
+            cause: String::new(),
+            ms,
+        }
+    }
+    /// Like `new` but records the structured cause id too.
+    fn caused(class: Class, detail: String, feature: String, cause: String, ms: u128) -> Self {
+        StageResult {
+            class,
+            detail,
+            feature,
+            cause,
             ms,
         }
     }
@@ -97,6 +119,14 @@ struct FileResult {
     render: StageResult,
     text: StageResult,
     rewrite: StageResult,
+    /// Every cause id the probe found on this file (union over pages);
+    /// empty when parse failed before any page could be probed.
+    /// `default` for reports saved before the probe existed.
+    #[serde(default)]
+    causes: Vec<String>,
+    /// cause id → # pages it was seen on (probe).
+    #[serde(default)]
+    cause_pages: BTreeMap<String, usize>,
     /// Extra metrics collected regardless of verdict.
     metrics: Metrics,
 }
@@ -139,23 +169,22 @@ fn max_rss_bytes() -> u64 {
     }
 }
 
-/// Classify a kasane_pdf::Error into a result class + feature tag.
-fn classify_err(e: &kasane_pdf::Error) -> (Class, String, String) {
+/// Classify a kasane_pdf::Error into (class, detail, feature, cause-id).
+fn classify_err(stage: &str, e: &kasane_pdf::Error) -> (Class, String, String, String) {
+    let c = classify(stage, e);
     use kasane_pdf::Error::*;
-    match e {
-        Unsupported { feature, detail } => (
-            Class::Unsupported,
-            format!("{feature}: {detail}"),
-            feature.to_string(),
-        ),
-        Encrypted => (Class::Unsupported, "encrypted".into(), "encrypted".into()),
-        NotPdf | Parse(_) | Structure(_) | MissingReference(_) | CycleDetected { .. } => {
-            (Class::Error, e.to_string(), String::new())
-        }
-        LimitExceeded { .. } => (Class::Error, e.to_string(), "limit".into()),
-        Io(_) => (Class::Error, e.to_string(), "io".into()),
-        _ => (Class::Error, e.to_string(), String::new()),
-    }
+    let feature = match e {
+        Unsupported { feature, .. } => feature.to_string(),
+        Encrypted => "encrypted".into(),
+        LimitExceeded { .. } => "limit".into(),
+        Io(_) => "io".into(),
+        _ => String::new(),
+    };
+    let class = match e {
+        Unsupported { .. } | Encrypted => Class::Unsupported,
+        _ => Class::Error,
+    };
+    (class, c.feature, feature, c.id)
 }
 
 // ------------------------------------------------------------------
@@ -366,7 +395,9 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     let doc = match Document::from_bytes(&data) {
         Ok(d) => d,
         Err(e) => {
-            let (c, d, f) = classify_err(&e);
+            let (c, d, f, cid) = classify_err("parse", &e);
+            let mut parse = StageResult::new(c, d, f, t.elapsed().as_millis());
+            parse.cause = cid;
             return finish(FileResult {
                 id: id.into(),
                 sha256: sha,
@@ -374,10 +405,12 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                 category: category.into(),
                 verdict: c,
                 pages_seen: 0,
-                parse: StageResult::new(c, d, f, t.elapsed().as_millis()),
+                parse,
                 render: StageResult::skip("parse failed"),
                 text: StageResult::skip("parse failed"),
                 rewrite: StageResult::skip("parse failed"),
+                causes: Vec::new(),
+                cause_pages: BTreeMap::new(),
                 metrics: {
                     metrics.total_ms = start.elapsed().as_millis();
                     metrics.max_rss_bytes = max_rss_bytes();
@@ -388,6 +421,12 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     };
     let parse = StageResult::pass(t.elapsed().as_millis());
     let pages: Vec<kasane_pdf::Page> = doc.pages().to_vec();
+
+    // ---- Probe: enumerate *all* blockers (read-only) ----------------
+    let probe = probe_document(&doc, args.max_pages);
+    let mut causes: Vec<String> = probe.causes.iter().cloned().collect();
+    causes.sort();
+    let cause_pages: BTreeMap<String, usize> = probe.pages_per_cause.clone();
 
     // ---- Render (first N pages) ------------------------------------
     let t = Instant::now();
@@ -408,11 +447,12 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                 rendered += 1;
             }
             Err(e) => {
-                let (c, d, f) = classify_err(&e);
-                render = StageResult::new(
+                let (c, d, f, cid) = classify_err("render", &e);
+                render = StageResult::caused(
                     c,
                     format!("page {}: {d}", i + 1),
                     f,
+                    cid,
                     t.elapsed().as_millis(),
                 );
                 break;
@@ -450,11 +490,12 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                 extracted += 1;
             }
             Err(e) => {
-                let (c, d, f) = classify_err(&e);
-                text = StageResult::new(
+                let (c, d, f, cid) = classify_err("text", &e);
+                text = StageResult::caused(
                     c,
                     format!("page {}: {d}", i + 1),
                     f,
+                    cid,
                     t.elapsed().as_millis(),
                 );
                 break;
@@ -479,16 +520,21 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                     metrics.rewrite_reparsed = Some(d2.pages().len() == pages.len());
                 }
                 Err(e) => {
-                    let (c, d, f) = classify_err(&e);
-                    rewrite_res =
-                        StageResult::new(c, format!("reparse: {d}"), f, t.elapsed().as_millis());
+                    let (c, d, f, cid) = classify_err("rewrite", &e);
+                    rewrite_res = StageResult::caused(
+                        c,
+                        format!("reparse: {d}"),
+                        f,
+                        cid,
+                        t.elapsed().as_millis(),
+                    );
                 }
             }
             let _ = out;
         }
         Err(e) => {
-            let (c, d, f) = classify_err(&e);
-            rewrite_res = StageResult::new(c, d, f, t.elapsed().as_millis());
+            let (c, d, f, cid) = classify_err("rewrite", &e);
+            rewrite_res = StageResult::caused(c, d, f, cid, t.elapsed().as_millis());
         }
     }
     if rewrite_res.class == Class::Pass {
@@ -514,6 +560,8 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         render,
         text,
         rewrite: rewrite_res,
+        causes,
+        cause_pages,
         metrics,
     }
 }
@@ -559,6 +607,8 @@ struct Args {
     only: Option<String>,
     report: Option<PathBuf>,
     report_format: String,
+    /// Previous run JSON to diff against (`report --compare old.json`).
+    compare: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
@@ -572,6 +622,7 @@ fn parse_args() -> Args {
         only: None,
         report: None,
         report_format: "md".into(),
+        compare: None,
     };
     let mut it = std::env::args().skip(1).peekable();
     while let Some(arg) = it.next() {
@@ -596,6 +647,7 @@ fn parse_args() -> Args {
             }
             "--only" => a.only = it.next(),
             "--format" => a.report_format = it.next().unwrap_or_else(|| "md".into()),
+            "--compare" => a.compare = it.next().map(PathBuf::from),
             _ => {}
         }
     }
@@ -605,7 +657,7 @@ fn parse_args() -> Args {
 fn main() {
     let args = parse_args();
     if let Some(res) = &args.report {
-        report(res, &args.report_format);
+        report(res, &args.report_format, args.compare.as_deref());
         return;
     }
 
@@ -643,11 +695,23 @@ fn main() {
         results.push(r);
     }
 
+    // ---- analysis ----------------------------------------------------
+    let cfg = PrioritiesConfig::default();
+    let feature_stats = analysis::analyze(&results, &cfg);
+    let stage_summary = analysis::stage_summary(&results);
+    let categories = analysis::category_summary(&results);
+
     let run = RunReport {
         generated: now_iso(),
         tool: env!("CARGO_PKG_VERSION").into(),
         corpus_dir: args.corpus.to_string_lossy().into_owned(),
         files: results,
+        analysis: Some(Analysis {
+            stage_summary,
+            categories,
+            features: feature_stats,
+            effort_is_estimate: true,
+        }),
     };
     let ts = chrono_stamp();
     let json_path = args.out.join(format!("run-{ts}.json"));
@@ -689,12 +753,27 @@ fn load_categories(path: &Path) -> BTreeMap<String, String> {
 // reporting
 // ------------------------------------------------------------------
 
+/// Aggregated analysis attached to a run report.
+#[derive(Debug, Serialize, Deserialize)]
+struct Analysis {
+    stage_summary: analysis::StageSummary,
+    categories: Vec<analysis::CategorySummary>,
+    features: Vec<analysis::FeatureStat>,
+    /// effort values are person-day *estimates*, flagged so readers
+    /// don't treat them as measured.
+    effort_is_estimate: bool,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct RunReport {
     generated: String,
     tool: String,
     corpus_dir: String,
     files: Vec<FileResult>,
+    /// Present on reports generated by this version; older saved
+    /// reports may not have it — `report` tolerates its absence.
+    #[serde(default)]
+    analysis: Option<Analysis>,
 }
 
 fn now_iso() -> String {
@@ -713,13 +792,101 @@ fn chrono_stamp() -> String {
     }
 }
 
-fn report(results_json: &Path, format: &str) {
+fn report(results_json: &Path, format: &str, compare: Option<&Path>) {
     let data = fs::read_to_string(results_json).expect("read results");
     let run: RunReport = serde_json::from_str(&data).expect("parse results");
-    match format {
-        "html" => print!("{}", render_html(&run)),
-        _ => print!("{}", render_markdown(&run)),
+    let mut out = match format {
+        "html" => render_html(&run),
+        _ => render_markdown(&run),
+    };
+    if let Some(old_path) = compare {
+        let old: RunReport =
+            serde_json::from_str(&fs::read_to_string(old_path).expect("read compare report"))
+                .expect("parse compare report");
+        out.push_str("\n\n---\n\n");
+        out.push_str(&regression_markdown(&run, &old));
     }
+    print!("{out}");
+}
+
+/// Diff `new` against `old`: newly-passing / newly-failing files,
+/// changed verdicts, and cause-set changes. Same corpus assumed —
+/// flagged when file sets differ.
+fn regression_markdown(new: &RunReport, old: &RunReport) -> String {
+    use std::collections::BTreeMap;
+    let oldmap: BTreeMap<&str, &FileResult> =
+        old.files.iter().map(|f| (f.id.as_str(), f)).collect();
+    let newmap: BTreeMap<&str, &FileResult> =
+        new.files.iter().map(|f| (f.id.as_str(), f)).collect();
+
+    let mut s = String::from("# Regression analysis\n\n");
+    if oldmap.len() != newmap.len() {
+        s.push_str(&format!(
+            "*file sets differ: old {} files, new {} files — the diff below only\n\
+             covers ids present in both reports.*\n\n",
+            oldmap.len(),
+            newmap.len()
+        ));
+    }
+
+    let mut gained = Vec::new();
+    let mut lost = Vec::new();
+    let mut verdict_changed = Vec::new();
+    let mut cause_changed = Vec::new();
+    let mut mae_improved = Vec::new();
+    let mut mae_regressed = Vec::new();
+    for (id, nf) in &newmap {
+        let Some(of) = oldmap.get(id) else { continue };
+        if nf.verdict != of.verdict {
+            verdict_changed.push((*id, of.verdict, nf.verdict));
+            if nf.verdict == Class::Pass {
+                gained.push(*id);
+            } else if of.verdict == Class::Pass {
+                lost.push(*id);
+            }
+        }
+        let oc: std::collections::BTreeSet<_> = of.causes.iter().collect();
+        let nc: std::collections::BTreeSet<_> = nf.causes.iter().collect();
+        if oc != nc {
+            cause_changed.push(*id);
+        }
+        if let (Some(o), Some(n)) = (of.metrics.render_mae, nf.metrics.render_mae) {
+            let d = n - o;
+            if d < -0.005 {
+                mae_improved.push((*id, o, n));
+            } else if d > 0.005 {
+                mae_regressed.push((*id, o, n));
+            }
+        }
+    }
+
+    s.push_str(&format!(
+        "| metric | count |\n|---|---|\n| newly PASS | {} |\n| newly FAIL | {} |\n| verdict changed | {} |\n| cause set changed | {} |\n| render MAE improved | {} |\n| render MAE regressed | {} |\n\n",
+        gained.len(),
+        lost.len(),
+        verdict_changed.len(),
+        cause_changed.len(),
+        mae_improved.len(),
+        mae_regressed.len()
+    ));
+    if !verdict_changed.is_empty() {
+        s.push_str("## Verdict changes\n\n| file | old | new |\n|---|---|---|\n");
+        for (id, o, n) in &verdict_changed {
+            s.push_str(&format!("| `{id}` | {} | {} |\n", o.label(), n.label()));
+        }
+        s.push('\n');
+    }
+    if !cause_changed.is_empty() {
+        s.push_str(&format!(
+            "## Cause-set changes ({})\n\n",
+            cause_changed.len()
+        ));
+        for id in cause_changed.iter().take(30) {
+            s.push_str(&format!("- `{id}`\n"));
+        }
+        s.push('\n');
+    }
+    s
 }
 
 fn render_markdown(r: &RunReport) -> String {
@@ -772,6 +939,97 @@ fn render_markdown(r: &RunReport) -> String {
     }
     s.push('\n');
 
+    // ---- Analysis: stage denominators + categories + priorities ----
+    if let Some(a) = &r.analysis {
+        let s2 = &a.stage_summary;
+        s.push_str("## Stage denominators\n\n");
+        s.push_str(
+            "| stage | attempted | skipped | pass | unsupported | error | pass-rate (attempted) | pass-rate (all) |\n\
+             |---|---:|---:|---:|---:|---:|---:|---:|\n",
+        );
+        for (name, c) in [
+            ("parse", &s2.parse),
+            ("render", &s2.render),
+            ("text", &s2.text),
+            ("rewrite", &s2.rewrite),
+        ] {
+            s.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {:.0}% | {:.0}% |\n",
+                name,
+                c.attempted,
+                c.skipped,
+                c.pass,
+                c.unsupported,
+                c.error,
+                c.pass_rate_attempted * 100.0,
+                c.pass_rate_all * 100.0
+            ));
+        }
+        s.push('\n');
+
+        // categories
+        s.push_str("## By category\n\n");
+        s.push_str(
+            "| category | files | parse | render | text | rewrite | verdict-pass |\n\
+             |---|---:|---:|---:|---:|---:|---:|\n",
+        );
+        for c in &a.categories {
+            s.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} |\n",
+                c.category,
+                c.files,
+                c.parse_pass,
+                c.render_pass,
+                c.text_pass,
+                c.rewrite_pass,
+                c.verdict_pass
+            ));
+        }
+        s.push('\n');
+
+        // development priorities
+        s.push_str("## Development priorities\n\n");
+        s.push_str(&priorities_table(&a.features));
+        s.push('\n');
+        if a.effort_is_estimate {
+            s.push_str(
+                "*effort values are person-day **estimates** set in\n\
+                 `analysis.rs` (`PrioritiesConfig`), not measured — adjust\n\
+                 them as real implementation cost becomes known.*\n\n",
+            );
+        }
+
+        // multi-blocker files
+        let multi: Vec<_> = r
+            .files
+            .iter()
+            .filter(|f| {
+                let mut b = std::collections::BTreeSet::new();
+                for c in &f.causes {
+                    b.insert(analysis::feature_bucket(c));
+                }
+                b.len() > 1
+            })
+            .collect();
+        if !multi.is_empty() {
+            s.push_str(&format!(
+                "## Multi-blocker files\n\n{} file(s) carry **more than one** unsupported feature — a single\nimplementation will not unblock them:\n\n",
+                multi.len()
+            ));
+            for f in multi.iter().take(20) {
+                let mut feats: Vec<&str> = f
+                    .causes
+                    .iter()
+                    .map(|c| analysis::feature_bucket(c))
+                    .collect();
+                feats.sort();
+                feats.dedup();
+                s.push_str(&format!("- `{}` — {}\n", f.id, feats.join(", ")));
+            }
+            s.push('\n');
+        }
+    }
+
     // unsupported feature frequency
     let mut feats: BTreeMap<&str, usize> = BTreeMap::new();
     for f in &r.files {
@@ -782,7 +1040,9 @@ fn render_markdown(r: &RunReport) -> String {
         }
     }
     if !feats.is_empty() {
-        s.push_str("## Top unsupported features\n\n| feature | count |\n|---|---|\n");
+        s.push_str(
+            "## Top unsupported features (first-error hits)\n\n| feature | count |\n|---|---|\n",
+        );
         let mut v: Vec<_> = feats.iter().collect();
         v.sort_by_key(|(_, c)| std::cmp::Reverse(**c));
         for (k, c) in v.iter().take(15) {
@@ -824,8 +1084,65 @@ fn render_html(r: &RunReport) -> String {
         r.corpus_dir,
         r.files.len()
     ));
+
+    // ---- analysis block (mirrors the markdown sections) -----------
+    if let Some(a) = &r.analysis {
+        let s2 = &a.stage_summary;
+        s.push_str("<h2>Stage denominators</h2><table><tr><th>stage<th>attempted<th>skipped<th>pass<th>unsupported<th>error<th>pass-rate (attempted)<th>pass-rate (all)");
+        for (name, c) in [
+            ("parse", &s2.parse),
+            ("render", &s2.render),
+            ("text", &s2.text),
+            ("rewrite", &s2.rewrite),
+        ] {
+            s.push_str(&format!(
+                "<tr><td>{name}<td>{}<td>{}<td>{}<td>{}<td>{}<td>{:.0}%<td>{:.0}%",
+                c.attempted,
+                c.skipped,
+                c.pass,
+                c.unsupported,
+                c.error,
+                c.pass_rate_attempted * 100.0,
+                c.pass_rate_all * 100.0
+            ));
+        }
+        s.push_str("</table>");
+
+        s.push_str("<h2>By category</h2><table><tr><th>category<th>files<th>parse<th>render<th>text<th>rewrite<th>verdict-pass");
+        for c in &a.categories {
+            s.push_str(&format!(
+                "<tr><td>{}<td>{}<td>{}<td>{}<td>{}<td>{}<td>{}",
+                c.category,
+                c.files,
+                c.parse_pass,
+                c.render_pass,
+                c.text_pass,
+                c.rewrite_pass,
+                c.verdict_pass
+            ));
+        }
+        s.push_str("</table>");
+
+        s.push_str("<h2>Development priorities</h2><table><tr><th>feature<th>affected<th>sole-blocker<th>potentially unblocked<th>effort (pd)<th>score");
+        for f in &a.features {
+            let effort = f
+                .effort
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "?".into());
+            let score = f
+                .score
+                .map(|s| format!("{s:.2}"))
+                .unwrap_or_else(|| "?".into());
+            s.push_str(&format!(
+                "<tr><td>{}<td>{}<td>{}<td>{}<td>{}<td>{}",
+                f.feature, f.affected, f.sole_blocker, f.potentially_unblocked, effort, score
+            ));
+        }
+        s.push_str("</table><p><i>potentially-unblocked is an estimate; effort values are person-day guesses in <code>PrioritiesConfig</code>, not measured.</i></p>");
+    }
+
     s.push_str(
-        "<table><tr><th>file<th>verdict<th>parse<th>render<th>text<th>rewrite<th>pages<th>ms",
+        "<h2>Per-file</h2><table><tr><th>file<th>verdict<th>parse<th>render<th>text<th>rewrite<th>pages<th>ms",
     );
     for f in &r.files {
         s.push_str(&format!(
