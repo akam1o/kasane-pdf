@@ -1,4 +1,4 @@
-//! Milestone M8 — full rewrite / round-trip tests.
+//! Full-rewrite / round-trip integration tests (milestone M8).
 
 use kasane_pdf::{rewrite, Document, Error, Object};
 

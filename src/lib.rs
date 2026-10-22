@@ -2,7 +2,7 @@
 //!
 //! A PDF engine written in Rust (early development, milestone M3).
 //!
-//! Scope so far (see `docs/coverage.md` for the full support matrix):
+//! Scope so far (see `docs/features/` for the full support matrix):
 //!
 //! - Parse PDF basic objects (null, booleans, numbers, names, literal/hex
 //!   strings, arrays, dictionaries, `stream` markers).

@@ -1,6 +1,6 @@
 #!/bin/sh
-# M22.4 — external verification of inherited-/Resources
-# materialisation on a multi-branch, multi-page document.
+# External verification of inherited-/Resources materialisation
+# (milestone M22.4) on a multi-branch, multi-page document.
 #
 # Generates tests/fixtures/m224_branches.pdf (deterministic), runs
 # experimental-remove-region on page 1, then checks, per page:
@@ -17,7 +17,7 @@
 #
 # Requires: qpdf, pdftotext, pdftoppm, pdfimages (poppler), python3,
 #           the kasane-pdf CLI (cargo build).
-# Usage:  scripts/verify_m224.sh
+# Usage:  scripts/verify-resources-materialize.sh
 # Exit 0 iff every check passes.
 
 set -u

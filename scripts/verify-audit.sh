@@ -1,5 +1,5 @@
 #!/bin/sh
-# M23 — independent external check of audit-residuals findings.
+# Independent external check of audit-residuals findings (milestone M23).
 #
 # Compares the audit output against qpdf's view of the same files.
 # qpdf reports the *current logical* structure — it does NOT prove
@@ -8,7 +8,7 @@
 # (incremental-update /Prev, free entries).
 #
 # Requires: qpdf, pdftotext, python3, the kasane-pdf CLI (cargo build).
-# Usage:  scripts/verify_m23.sh
+# Usage:  scripts/verify-audit.sh
 # Exit 0 iff every check passes.
 
 set -u

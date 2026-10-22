@@ -10,7 +10,7 @@
 //! remove other copies of the same data (metadata, annotations,
 //! structure tree, other pages, font internals, the original image
 //! streams), and does not guarantee irreversibility. See the crate
-//! docs and `docs/coverage.md` for the full scope list.
+//! docs and `docs/features/editing-region.md` for the full scope list.
 //!
 //! Scope — a page is *refused* (typed error) rather than half-edited
 //! when any of these appear in its content or page dict:

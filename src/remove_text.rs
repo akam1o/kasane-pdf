@@ -12,7 +12,7 @@
 //! does not remove other occurrences of the same data (metadata,
 //! annotations, structure tree, other pages, font internals), and does
 //! not guarantee irreversibility. See the crate docs and
-//! `docs/coverage.md` for the full scope list.
+//! `docs/features/editing-text.md` for the full scope list.
 //!
 //! **M18 — one level of `/Form`.** A page-level `Do` whose target is
 //! a `/Form` XObject is in scope: the invocation's inner text is

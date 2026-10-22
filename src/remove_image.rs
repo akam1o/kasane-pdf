@@ -11,7 +11,7 @@
 //! the same image data (metadata, annotations, structure tree, other
 //! pages, thumbnails), does not guarantee irreversibility, and does
 //! not reason about what the image depicts. See the crate docs and
-//! `docs/coverage.md` for the full scope list.
+//! `docs/features/editing-image.md` for the full scope list.
 //!
 //! Scope — a page is *refused* (typed error) rather than half-edited
 //! when any of these appear in its content or page dict:
@@ -958,7 +958,7 @@ fn scan_jpeg_markers(data: &[u8]) -> JpegMarkers {
 /// extended-sequential, differential, and arithmetic-coded frames;
 /// the last two classes are `Unsupported` inside `decode()` itself,
 /// so reaching this point means a baseline or extended-sequential
-/// Huffman image. See docs/design.md for the precise limit.
+/// Huffman image. See docs/decisions/editing.md for the precise limit.
 ///
 /// **`/ColorTransform` precedence** (ISO 32000-1 §7.4.8 + Adobe
 /// Technical Note #5116): the effective transform is decided by
