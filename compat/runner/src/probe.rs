@@ -170,8 +170,11 @@ fn scan_ops(
             Operation::SetExtGState(n) => probe_extgstate(doc, resources, n, pi, res, record),
             Operation::Shading(_) => record(res, "render.shading.unsupported", pi),
             Operation::SetColorSpaceFill(n) | Operation::SetColorSpaceStroke(n) => {
-                if !is_device_space_name(n) {
-                    record(res, "render.colorspace.unsupported", pi)
+                // Every colour-space family resolves now except
+                // /Pattern (pattern painting); malformed definitions
+                // are structure errors found at run time.
+                if is_pattern_space(doc, resources, n) {
+                    record(res, "render.pattern.unsupported", pi)
                 }
             }
             Operation::SetColorFill(o) | Operation::SetColorStroke(o) => {
@@ -198,17 +201,26 @@ fn scan_ops(
     }
 }
 
-fn is_device_space_name(n: &[u8]) -> bool {
-    matches!(
-        n,
-        b"DeviceGray"
-            | b"DeviceRGB"
-            | b"DeviceCMYK"
-            | b"DefaultGray"
-            | b"DefaultRGB"
-            | b"DefaultCMYK"
-            | b"Pattern"
-    )
+/// `true` when `n` names the `/Pattern` colour space — directly, or
+/// through a `/Resources /ColorSpace` entry that is `/Pattern` or a
+/// `[/Pattern base]` array. Mirrors `ColorSpace::parse`: this is the
+/// only family the renderer still refuses.
+fn is_pattern_space(doc: &Document, resources: &Object, n: &[u8]) -> bool {
+    if n == b"Pattern" {
+        return true;
+    }
+    let Ok(Some(o)) = doc.resolve_resource(resources, "ColorSpace", n) else {
+        return false;
+    };
+    match o {
+        Object::Name(ref m) => m == b"Pattern",
+        Object::Array(ref a) => a
+            .first()
+            .and_then(|f| doc.deref(f).ok())
+            .map(|f| f.as_name() == Some(b"Pattern"))
+            .unwrap_or(false),
+        _ => false,
+    }
 }
 
 /// Mirror `apply_extgstate`: resolve the `/ExtGState` dict and record a
@@ -500,23 +512,36 @@ fn probe_xobject(
             // don't see, which is reported as an estimate caveat.
         }
         Some(b"Image") => {
-            // image colour space + filters
-            if let Some(cs) = dict.get(b"ColorSpace".as_slice()) {
-                match doc.deref(cs) {
-                    Ok(Object::Name(n)) => {
-                        if !is_device_space_name(&n) {
-                            record(res, "render.image.colorspace.unsupported", pi);
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(_) => {}
+            // Image colour spaces, /ImageMask, /Mask and /SMask all
+            // render now. What still refuses: a /Pattern colour space,
+            // a pre-blended soft mask (/Matte), JPX-embedded alpha
+            // (/SMaskInData ≠ 0) and optional content on the image.
+            if let Some(Ok(Object::Name(n))) =
+                dict.get(b"ColorSpace".as_slice()).map(|cs| doc.deref(cs))
+            {
+                if is_pattern_space(doc, resources, &n) {
+                    record(res, "render.image.colorspace.unsupported", pi);
                 }
             }
-            if dict.get(b"ImageMask".as_slice()).and_then(|o| o.as_bool()) == Some(true) {
-                record(res, "render.image.mask.unsupported", pi);
+            if let Some(Ok(sm)) = dict.get(b"SMask".as_slice()).map(|o| doc.deref(o)) {
+                if sm
+                    .as_dict_like()
+                    .map(|d| d.contains_key(b"Matte".as_slice()))
+                    .unwrap_or(false)
+                {
+                    record(res, "render.image.smask.unsupported", pi);
+                }
             }
-            if dict.contains_key(b"SMask".as_slice()) || dict.contains_key(b"Mask".as_slice()) {
+            if dict
+                .get(b"SMaskInData".as_slice())
+                .and_then(|o| o.as_i64())
+                .unwrap_or(0)
+                != 0
+            {
                 record(res, "render.image.smask.unsupported", pi);
+            }
+            if dict.contains_key(b"OC".as_slice()) {
+                record(res, "render.xobject.oc.unsupported", pi);
             }
             // filters
             if let Some(f) = dict.get(b"Filter".as_slice()) {
