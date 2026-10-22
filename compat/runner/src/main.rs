@@ -146,7 +146,26 @@ struct Metrics {
     /// Poppler cross-check when enabled.
     poppler_pages: i64,
     render_mae: Option<f64>,
+    /// SSIM vs the Poppler reference (1.0 = identical). `default` for
+    /// reports that predate SSIM.
+    #[serde(default)]
+    render_ssim: Option<f64>,
+    /// Fraction of pixels differing from the reference (0.0–1.0).
+    #[serde(default)]
+    render_diff_px_ratio: Option<f64>,
+    /// Per-page render success: pages that rendered without error.
+    #[serde(default)]
+    render_pages_ok: u32,
+    /// Pages attempted for render (before the first hard failure).
+    #[serde(default)]
+    render_pages_total: u32,
     render_diff_png: Option<String>,
+    /// Path to our own page-1 render (PGM) saved for inspection.
+    #[serde(default)]
+    render_ours_png: Option<String>,
+    /// Path to the reference (Poppler) page-1 render (PGM).
+    #[serde(default)]
+    render_ref_png: Option<String>,
     text_match_ratio: Option<f64>,
     rewrite_qpdf_ok: Option<bool>,
     rewrite_reparsed: Option<bool>,
@@ -197,10 +216,22 @@ fn classify_err(stage: &str, e: &kasane_pdf::Error) -> (Class, String, String, S
 // comparison helpers
 // ------------------------------------------------------------------
 
-/// Render the same page with `pdftoppm` and compute a mean-absolute-
-/// error (0.0–1.0) against our pixmap's luminance. pdftoppm is asked
-/// for grayscale PGM so no decoder is needed on the reference side.
-/// Returns (mae, Option<diff_pgm_path>) or None when poppler can't run.
+/// Per-page visual-fidelity result against the Poppler reference.
+struct Fidelity {
+    mae: f64,
+    ssim: f64,
+    /// fraction of pixels whose luminance differs by >8 (≈3%) — the
+    /// "different pixel" ratio the task asks for.
+    diff_px_ratio: f64,
+    diff_path: Option<String>,
+    ours_path: Option<String>,
+    ref_path: Option<String>,
+}
+
+/// Render the same page with `pdftoppm` and compare against our pixmap's
+/// luminance: MAE, SSIM, and the different-pixel ratio. We also save all
+/// three images (ours / reference / diff) so a flagged page can be
+/// eyeballed without re-running. Returns `None` when poppler can't run.
 fn compare_render(
     kasane: &kasane_pdf::RenderedPage,
     pdf: &Path,
@@ -208,7 +239,7 @@ fn compare_render(
     dpi: u32,
     diff_dir: &Path,
     tag: &str,
-) -> Option<(f64, Option<String>)> {
+) -> Option<Fidelity> {
     let prefix = diff_dir.join(format!("{tag}-ref"));
     let out = Command::new("pdftoppm")
         .args(["-f", &page.to_string(), "-l", &page.to_string()])
@@ -237,18 +268,81 @@ fn compare_render(
         resample_gray(&ref_pix, rw, rh, kw, kh)
     };
 
-    // Mean absolute error + write a visual diff PGM.
+    // MAE + different-pixel ratio + visual diff image.
     let mut sum = 0f64;
+    let mut diffs = 0usize;
     let mut diffimg = vec![0u8; kw * kh];
     for i in 0..kw * kh {
         let d = (kpix[i] as i32 - ref_sized[i] as i32).unsigned_abs() as u8;
         diffimg[i] = 255u8.saturating_sub(d); // white = identical
         sum += d as f64;
+        if d > 8 {
+            diffs += 1;
+        }
     }
     let mae = sum / (kw * kh * 255) as f64;
+    let diff_px_ratio = diffs as f64 / (kw * kh) as f64;
+    let ssim = ssim_gray(&kpix, &ref_sized, kw, kh);
+
+    // Save ours, reference (resized), and diff images for inspection.
+    let ours_path = diff_dir.join(format!("{tag}-ours.pgm"));
+    let refr_path = diff_dir.join(format!("{tag}-ref.pgm"));
     let diff_path = diff_dir.join(format!("{tag}-diff.pgm"));
+    write_pgm(&ours_path, kw, kh, &kpix).ok();
+    write_pgm(&refr_path, kw, kh, &ref_sized).ok();
     write_pgm(&diff_path, kw, kh, &diffimg).ok();
-    Some((mae, Some(diff_path.to_string_lossy().into_owned())))
+    Some(Fidelity {
+        mae,
+        ssim,
+        diff_px_ratio,
+        diff_path: Some(diff_path.to_string_lossy().into_owned()),
+        ours_path: Some(ours_path.to_string_lossy().into_owned()),
+        ref_path: Some(refr_path.to_string_lossy().into_owned()),
+    })
+}
+
+/// Structural Similarity Index (Wang et al.) over two equal-size
+/// grayscale buffers — the standard luminance/contrast/structure
+/// metric. Uses 8×8 windows, stride 4, C1/C2 for the 0–255 range.
+fn ssim_gray(a: &[u8], b: &[u8], w: usize, h: usize) -> f64 {
+    const C1: f64 = (0.01 * 255.0) * (0.01 * 255.0);
+    const C2: f64 = (0.03 * 255.0) * (0.03 * 255.0);
+    let mut sum = 0.0;
+    let mut n = 0usize;
+    let mut y = 0usize;
+    while y + 8 <= h {
+        let mut x = 0usize;
+        while x + 8 <= w {
+            let (mut sa, mut sb, mut saa, mut sbb, mut sab) = (0.0, 0.0, 0.0, 0.0, 0.0);
+            for yy in y..y + 8 {
+                for xx in x..x + 8 {
+                    let pa = a[yy * w + xx] as f64;
+                    let pb = b[yy * w + xx] as f64;
+                    sa += pa;
+                    sb += pb;
+                    saa += pa * pa;
+                    sbb += pb * pb;
+                    sab += pa * pb;
+                }
+            }
+            let cnt = 64.0;
+            let ua = sa / cnt;
+            let ub = sb / cnt;
+            let va = saa / cnt - ua * ua;
+            let vb = sbb / cnt - ub * ub;
+            let cov = sab / cnt - ua * ub;
+            let num = (2.0 * ua * ub + C1) * (2.0 * cov + C2);
+            let den = (ua * ua + ub * ub + C1) * (va + vb + C2);
+            sum += num / den;
+            n += 1;
+            x += 4;
+        }
+        y += 4;
+    }
+    if n == 0 {
+        return 1.0;
+    }
+    sum / n as f64
 }
 
 /// luminance of a premultiplied RGBA8 pixmap on white (PDF background
@@ -384,7 +478,13 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         max_rss_bytes: 0,
         poppler_pages: -1,
         render_mae: None,
+        render_ssim: None,
+        render_diff_px_ratio: None,
+        render_pages_ok: 0,
+        render_pages_total: 0,
         render_diff_png: None,
+        render_ours_png: None,
+        render_ref_png: None,
         text_match_ratio: None,
         rewrite_qpdf_ok: None,
         rewrite_reparsed: None,
@@ -438,20 +538,40 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     // ---- Render (first N pages) ------------------------------------
     let t = Instant::now();
     let mut render = StageResult::pass(0);
-    let mut first_render: Option<kasane_pdf::RenderedPage> = None;
     let render_pages = pages.iter().take(args.max_pages);
     let mut rendered = 0usize;
+    let mut attempted = 0usize;
+    let mut worst: Option<(f64, f64)> = None; // (min ssim, max mae)
+    let mut best_fid: Option<Fidelity> = None;
+    let mut best_pgno = 0usize;
     for (i, page) in render_pages.enumerate() {
+        attempted += 1;
         let opts = RenderOptions {
             dpi: args.dpi,
             limits: Limits::default(),
         };
         match render_page(&doc, page, &opts) {
             Ok(r) => {
-                if i == 0 {
-                    first_render = Some(r);
-                }
                 rendered += 1;
+                // Visual fidelity vs poppler on every rendered page.
+                if args.with_poppler {
+                    let diff_dir = args.out.join("diff");
+                    fs::create_dir_all(&diff_dir).ok();
+                    let tag = format!("{id}-p{}", i + 1);
+                    if let Some(f) =
+                        compare_render(&r, path, i + 1, args.dpi as u32, &diff_dir, &tag)
+                    {
+                        let worse = match worst {
+                            Some((s, _)) => f.ssim < s,
+                            None => true,
+                        };
+                        if worse {
+                            worst = Some((f.ssim, f.mae));
+                            best_fid = Some(f);
+                            best_pgno = i + 1;
+                        }
+                    }
+                }
             }
             Err(e) => {
                 let (c, d, f, cid) = classify_err("render", &e);
@@ -466,19 +586,21 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
             }
         }
     }
+    metrics.render_pages_ok = rendered as u32;
+    metrics.render_pages_total = attempted as u32;
     if rendered > 0 && render.class == Class::Pass {
         render.ms = t.elapsed().as_millis();
     }
-    // poppler render comparison on page 1
-    if args.with_poppler && render.class == Class::Pass {
-        if let Some(rp) = &first_render {
-            let diff_dir = args.out.join("diff");
-            fs::create_dir_all(&diff_dir).ok();
-            if let Some((mae, diff)) = compare_render(rp, path, 1, args.dpi as u32, &diff_dir, id) {
-                metrics.render_mae = Some(mae);
-                metrics.render_diff_png = diff;
-            }
-        }
+    // Record the worst-fidelity page's metrics + images. The detailed
+    // ours/ref/diff paths let us eyeball exactly the page that diverged.
+    if let Some(f) = best_fid {
+        metrics.render_mae = Some(f.mae);
+        metrics.render_ssim = Some(f.ssim);
+        metrics.render_diff_px_ratio = Some(f.diff_px_ratio);
+        metrics.render_diff_png = f.diff_path;
+        metrics.render_ours_png = f.ours_path;
+        metrics.render_ref_png = f.ref_path;
+        let _ = best_pgno;
     }
 
     // ---- Text extract (first N pages) ------------------------------
@@ -1022,6 +1144,110 @@ fn render_markdown(r: &RunReport) -> String {
         }
         s.push('\n');
 
+        // ---- Render Visual Fidelity (separate from execution) -------
+        // Execution success = the stage pass count above; fidelity =
+        // how close the image is to the Poppler reference. A page that
+        // renders but diverges badly is flagged here, not as a failure.
+        let measured: Vec<&FileResult> = r
+            .files
+            .iter()
+            .filter(|f| f.metrics.render_ssim.is_some())
+            .collect();
+        if !measured.is_empty() {
+            let n = measured.len();
+            let mean = |g: &dyn Fn(&FileResult) -> Option<f64>| -> f64 {
+                let (s, c) = measured
+                    .iter()
+                    .filter_map(|f| g(f))
+                    .fold((0.0, 0usize), |(s, c), v| (s + v, c + 1));
+                if c == 0 {
+                    0.0
+                } else {
+                    s / c as f64
+                }
+            };
+            let mean_ssim = mean(&|f| f.metrics.render_ssim);
+            let mean_mae = mean(&|f| f.metrics.render_mae);
+            let mean_dpx = mean(&|f| f.metrics.render_diff_px_ratio);
+            let min_ssim = measured
+                .iter()
+                .filter_map(|f| f.metrics.render_ssim)
+                .fold(f64::INFINITY, f64::min);
+            let max_mae = measured
+                .iter()
+                .filter_map(|f| f.metrics.render_mae)
+                .fold(0.0f64, f64::max);
+            // fidelity PASS = SSIM≥0.98 AND diff-pixel ratio≤2% AND
+            // MAE≤0.05 — generous to AA differences between engines.
+            let fid_pass = measured
+                .iter()
+                .filter(|f| {
+                    f.metrics.render_ssim.unwrap_or(0.0) >= 0.98
+                        && f.metrics.render_diff_px_ratio.unwrap_or(1.0) <= 0.02
+                        && f.metrics.render_mae.unwrap_or(1.0) <= 0.05
+                })
+                .count();
+            let pages_ok: u64 = measured
+                .iter()
+                .map(|f| f.metrics.render_pages_ok as u64)
+                .sum();
+            let pages_total: u64 = measured
+                .iter()
+                .map(|f| f.metrics.render_pages_total as u64)
+                .sum();
+            s.push_str("## Render Visual Fidelity\n\n");
+            s.push_str(&format!(
+                "*measured on {} file(s) with a Poppler reference — \
+                 {fid_pass} meet the fidelity bar \
+                 (SSIM ≥ 0.98, diff-pixels ≤ 2%, MAE ≤ 0.05). \
+                 Per-page render success: {pages_ok}/{pages_total}.*\n\n",
+                n
+            ));
+            s.push_str("| metric | mean | worst |\n|---|---:|---:|\n");
+            s.push_str(&format!(
+                "| SSIM (higher = closer) | {:.4} | {:.4} (min) |\n",
+                mean_ssim, min_ssim
+            ));
+            s.push_str(&format!(
+                "| MAE (lower = closer) | {:.4} | {:.4} (max) |\n",
+                mean_mae, max_mae
+            ));
+            s.push_str(&format!("| diff-pixel ratio | {:.4} | — |\n\n", mean_dpx));
+            // list the files that diverged beyond the bar
+            let divergent: Vec<_> = measured
+                .iter()
+                .filter(|f| {
+                    !(f.metrics.render_ssim.unwrap_or(0.0) >= 0.98
+                        && f.metrics.render_diff_px_ratio.unwrap_or(1.0) <= 0.02
+                        && f.metrics.render_mae.unwrap_or(1.0) <= 0.05)
+                })
+                .collect();
+            if !divergent.is_empty() {
+                s.push_str(&format!(
+                    "**{} file(s) diverge from the reference** (image saved):\n\n",
+                    divergent.len()
+                ));
+                s.push_str(
+                    "| file | SSIM | MAE | diff-px | diff image |\n|---|---:|---:|---:|---|\n",
+                );
+                for f in divergent.iter().take(25) {
+                    s.push_str(&format!(
+                        "| `{}` | {:.3} | {:.3} | {:.3} | {} |\n",
+                        f.id,
+                        f.metrics.render_ssim.unwrap_or(0.0),
+                        f.metrics.render_mae.unwrap_or(0.0),
+                        f.metrics.render_diff_px_ratio.unwrap_or(0.0),
+                        f.metrics
+                            .render_diff_png
+                            .as_deref()
+                            .map(|p| format!("`{}`", p))
+                            .unwrap_or_default()
+                    ));
+                }
+                s.push('\n');
+            }
+        }
+
         // Compatibility vs Robustness — the two independent rates.
         if let Some(sp) = &a.split {
             s.push_str("## Compatibility vs Robustness\n\n");
@@ -1029,9 +1255,7 @@ fn render_markdown(r: &RunReport) -> String {
                 "**Compatibility** — {} well-formed files (`expect: pass`):\n\n",
                 sp.compat_total
             ));
-            s.push_str(
-                "| stage | pass | rate |\n|---|---:|---:|\n",
-            );
+            s.push_str("| stage | pass | rate |\n|---|---:|---:|\n");
             for (name, n) in [
                 ("parse", sp.compat_parse_pass),
                 ("render", sp.compat_render_pass),
@@ -1308,7 +1532,11 @@ fn run_gs_audit(files: &[PathBuf], args: &Args) {
         for e in &a.entries {
             for (k, v) in &e.keys {
                 file_keys.insert(k.clone());
-                *key_values.entry(k.clone()).or_default().entry(v.clone()).or_default() += 1;
+                *key_values
+                    .entry(k.clone())
+                    .or_default()
+                    .entry(v.clone())
+                    .or_default() += 1;
             }
         }
         for k in file_keys {
@@ -1386,8 +1614,15 @@ fn run_font_audit(files: &[PathBuf], args: &Args) {
             for (n, f) in &a.fonts {
                 println!(
                     "  {n}: sub={} base={} emb={} desc={} enc={} tu={} w={} used={} cp={}",
-                    f.subtype, f.base_font, f.embedded, f.descriptor, f.encoding, f.to_unicode,
-                    f.widths, f.used, f.charprocs
+                    f.subtype,
+                    f.base_font,
+                    f.embedded,
+                    f.descriptor,
+                    f.encoding,
+                    f.to_unicode,
+                    f.widths,
+                    f.used,
+                    f.charprocs
                 );
             }
         }

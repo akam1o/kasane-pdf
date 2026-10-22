@@ -112,9 +112,7 @@ fn scan_ops(
     }
     for op in ops {
         match op {
-            Operation::SetExtGState(n) => {
-                probe_extgstate(doc, resources, n, pi, res, record)
-            }
+            Operation::SetExtGState(n) => probe_extgstate(doc, resources, n, pi, res, record),
             Operation::Shading(_) => record(res, "render.shading.unsupported", pi),
             Operation::SetColorSpaceFill(n) | Operation::SetColorSpaceStroke(n) => {
                 if !is_device_space_name(n) {
@@ -219,9 +217,23 @@ fn first_bm_name(doc: &Document, v: &Object) -> Option<Vec<u8>> {
 fn is_supported_bm(n: &[u8]) -> bool {
     matches!(
         n,
-        b"Normal" | b"Compatible" | b"Multiply" | b"Screen" | b"Overlay" | b"Darken" | b"Lighten"
-            | b"ColorDodge" | b"ColorBurn" | b"HardLight" | b"SoftLight" | b"Difference"
-            | b"Exclusion" | b"Hue" | b"Saturation" | b"Color" | b"Luminosity"
+        b"Normal"
+            | b"Compatible"
+            | b"Multiply"
+            | b"Screen"
+            | b"Overlay"
+            | b"Darken"
+            | b"Lighten"
+            | b"ColorDodge"
+            | b"ColorBurn"
+            | b"HardLight"
+            | b"SoftLight"
+            | b"Difference"
+            | b"Exclusion"
+            | b"Hue"
+            | b"Saturation"
+            | b"Color"
+            | b"Luminosity"
     )
 }
 
@@ -281,7 +293,10 @@ fn probe_font(
         }
         Some(b"Type1") | Some(b"MMType1") => {
             // Mirror load_type1_font's acceptance:
-            //   /FontFile   → eexec Type1 program → unsupported
+            //   /FontFile   → eexec Type1 program → SUPPORTED (parsed by
+            //                 src/type1.rs into outlines). A malformed
+            //                 program yields a Structure error at render,
+            //                 not an Unsupported flag.
             //   /FontFile3 CIDFontType0C → CID, not simple → unsupported
             //   /FontFile3 Type1C / absent program → supported (render
             //                 refuses only when there is no program)
@@ -291,7 +306,7 @@ fn probe_font(
                 .and_then(|o| o.as_dict().cloned());
             if let Some(fd) = fd {
                 if fd.get(b"FontFile".as_slice()).is_some() {
-                    record(res, "render.font.type1-eexec.unsupported", pi);
+                    // eexec Type1 — supported by the charstring interpreter.
                 } else if let Some(ff3) = fd.get(b"FontFile3".as_slice()) {
                     // Resolve the stream then read its /Subtype —
                     // CIDFontType0C is a CID font, not simple Type1.

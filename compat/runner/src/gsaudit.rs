@@ -54,7 +54,8 @@ pub fn audit(doc: &Document) -> GsAudit {
             a.pages_using.insert(pi);
         }
         for name in &invoked {
-            a.referenced.insert(String::from_utf8_lossy(name).into_owned());
+            a.referenced
+                .insert(String::from_utf8_lossy(name).into_owned());
             if seen_names.insert(name.clone()) {
                 if let Ok(Some(obj)) = doc.resolve_resource(&resources, "ExtGState", name) {
                     if let Some(d) = obj.as_dict() {
