@@ -951,8 +951,11 @@ shared original survives on the unedited page.
 `remove_region` / `remove_regions` / `remove_regions_and_document_metadata`)
 
 **Experimental content editing — not redaction.** A `/DCTDecode`
-Image XObject is now *editable* when it is a single-filter baseline
-JPEG that decodes to 8-bit DeviceGray or DeviceRGB samples:
+Image XObject is now *editable* when it is a single-filter
+**sequential-DCT** JPEG that decodes to 8-bit DeviceGray or
+DeviceRGB samples (baseline SOF0 and extended-sequential SOF1 both
+satisfy `DctSequential`; differential and arithmetic-coded frames
+are refused by the decoder itself):
 
 - **Accepted**: `/Filter /DCTDecode` or `[/DCTDecode]`; the JPEG
   must be **sequential DCT** (`DctSequential` — baseline or

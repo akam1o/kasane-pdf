@@ -36,7 +36,7 @@
 //! - Any image with a `/Filter` other than none, a single
 //!   `/FlateDecode`, or a single `/DCTDecode` — filter chains,
 //!   `/JPXDecode`, and every other codec are out of scope. For
-//!   DCTDecode only baseline JPEGs decoding to 8-bit Gray or RGB
+//!   DCTDecode only sequential-DCT JPEGs decoding to 8-bit Gray or RGB
 //!   samples are accepted (the decoder's `L8`/`RGB24` formats);
 //!   CMYK/YCCK, 16-bit, and progressive files are refused. The
 //!   JPEG's own width/height/component count must match the PDF
@@ -718,7 +718,7 @@ pub(crate) fn validate_image(
 
 /// Decode image sample data — reuses the stream decoder with the
 /// image's own limits. Supports no filter, a single `/FlateDecode`,
-/// or a single `/DCTDecode` (baseline JPEG). Anything else is
+/// or a single `/DCTDecode` (sequential-DCT JPEG). Anything else is
 /// `Error::Unsupported`.
 ///
 /// `expected` is the dict-declared `(width, height, ncomps)` — for
@@ -807,20 +807,33 @@ pub(crate) fn decode_image(
 
 /// What [`scan_jpeg_markers`] found in a JPEG byte stream.
 ///
-/// Only two fields matter to the edit path: whether the stream
-/// carries the Adobe APP14 colour-transform flag, and whether the
-/// frame uses chroma subsampling. The decoder reports everything
-/// else (dimensions, component count, coding process) through its
-/// own `info()`.
+/// Three fields drive the *effective* colour-transform decision the
+/// edit path must make itself (rather than leaving it to the
+/// decoder's component-ID/JFIF heuristics, which rank below the
+/// Adobe APP14 flag in the PDF spec's precedence order):
+///
+/// * `adobe_transform` — the APP14 `Adobe\0` transform byte, or
+///   `None` when no APP14 segment carries the Adobe signature.
+///   `Some(v)` records the *first* valid transform value seen;
+///   `conflicting_app14` flags a second segment disagreeing with it.
+/// * `subsampled` — any frame component has a sampling factor
+///   other than 1×1.
+/// * `truncated` — the marker walk hit a short buffer, an out-of-
+///   range segment length, or bytes that stopped looking like a
+///   marker sequence before `SOS`. In that case `adobe_transform`
+///   may be a false negative and the caller must not silently fall
+///   back to defaults — the data is corrupt.
 struct JpegMarkers {
-    /// The Adobe APP14 `transform` byte (0 = unknown, 1 = YCbCr,
-    /// 2 = YCCK), or `None` when the APP14 marker is absent.
     adobe_transform: Option<u8>,
-    /// `true` when any frame component has a sampling factor other
-    /// than 1×1 — the decoder's `ColorTransform::None` path produces
-    /// garbage on subsampled data, so we refuse that combination
-    /// rather than panic.
+    /// A second APP14 `Adobe\0` segment whose transform byte
+    /// disagrees with the first. The spec defines one transform
+    /// per stream — two contradictory values are ambiguous, so the
+    /// caller refuses rather than guess.
+    conflicting_app14: bool,
     subsampled: bool,
+    /// The marker walk could not be completed (truncated or
+    /// structurally invalid before `SOS`).
+    truncated: bool,
 }
 
 /// Minimal JPEG marker walk — reads only what the edit path needs:
@@ -828,24 +841,47 @@ struct JpegMarkers {
 /// sampling factors. Anything else is skipped via the marker's
 /// own length field.
 ///
-/// This is *not* a general JPEG parser — it stops at the first
-/// `SOS` (start of scan) since the entropy-coded data follows and
-/// its bytes may legitimately contain `0xFFxx` sequences.
+/// Marker handling mirrors the decoder (`read_marker`): `0xFF`
+/// fill bytes before a marker are skipped, and the walk stops at
+/// the first `SOS` (start of scan) since the entropy-coded data
+/// follows and may legitimately contain `0xFFxx` sequences. Any
+/// deviation — non-`0xFF` byte where a marker is expected, a
+/// segment whose declared length runs past the buffer, a truncated
+/// segment — sets `truncated` so the caller does not mistake a
+/// partial walk for "no APP14".
+///
+/// The APP14 signature check uses the same 6-byte `"Adobe\0"`
+/// prefix the decoder requires (`parse_app`) — a bare `"Adobe"`
+/// with a different sixth byte is *not* recognised as the colour-
+/// transform marker by either implementation.
 fn scan_jpeg_markers(data: &[u8]) -> JpegMarkers {
     let mut m = JpegMarkers {
         adobe_transform: None,
+        conflicting_app14: false,
         subsampled: false,
+        truncated: false,
     };
     // Must start with SOI.
     if data.len() < 2 || data[0] != 0xFF || data[1] != 0xD8 {
-        return m; // not a JPEG — decoder will report the error
+        m.truncated = true; // not a JPEG — decoder will report the error
+        return m;
     }
     let mut i = 2;
-    while i + 1 < data.len() {
-        // Skip any padding bytes (not strictly legal but tolerated).
-        if data[i] != 0xFF {
+    'outer: while i < data.len() {
+        // Skip `0xFF` fill bytes before the marker — same rule as
+        // the decoder's `read_marker` (B.1.1.2: any marker may be
+        // preceded by any number of `0xFF` fill bytes).
+        while i < data.len() && data[i] == 0xFF && i + 1 < data.len() && data[i + 1] == 0xFF {
             i += 1;
-            continue;
+        }
+        if i + 1 >= data.len() {
+            m.truncated = true;
+            break;
+        }
+        if data[i] != 0xFF {
+            // Lost marker sync before SOS — the bytes are corrupt.
+            m.truncated = true;
+            break;
         }
         let marker = data[i + 1];
         // Standalone markers — no length field.
@@ -854,22 +890,33 @@ fn scan_jpeg_markers(data: &[u8]) -> JpegMarkers {
             continue;
         }
         if marker == 0xDA {
-            break; // SOS — image data follows; stop.
+            break; // SOS — image data follows; clean stop.
         }
         // Every other marker carries a 2-byte big-endian length.
         if i + 4 > data.len() {
+            m.truncated = true;
             break;
         }
         let len = ((data[i + 2] as usize) << 8) | data[i + 3] as usize;
         if len < 2 || i + 2 + len > data.len() {
+            m.truncated = true;
             break;
         }
         let seg = &data[i + 4..i + 2 + len];
         match marker {
-            // APP14 — "Adobe" + flags1(2) + flags2(2) + transform(1).
+            // APP14 — decoder requires the 6-byte "Adobe\0" prefix,
+            // then reads transform at byte offset 11 of the segment
+            // (5 "Adobe" + 1 flags0 + 2 flags1 + 2 flags2 + 1 tf).
             0xEE => {
-                if seg.len() >= 12 && &seg[..5] == b"Adobe" {
-                    m.adobe_transform = Some(seg[11]);
+                if seg.len() >= 12 && seg[..6] == *b"Adobe\0" {
+                    match m.adobe_transform {
+                        None => m.adobe_transform = Some(seg[11]),
+                        Some(v) if v != seg[11] => {
+                            m.conflicting_app14 = true;
+                            break 'outer;
+                        }
+                        Some(_) => {}
+                    }
                 }
             }
             // SOF0/1/2 — read each component's sampling nibble.
@@ -880,7 +927,8 @@ fn scan_jpeg_markers(data: &[u8]) -> JpegMarkers {
                 let mut p = 6;
                 for _ in 0..ncomp {
                     if p + 2 >= seg.len() {
-                        break;
+                        m.truncated = true; // declared ncomp overruns the segment
+                        break 'outer;
                     }
                     let sampling = seg[p + 1];
                     if (sampling >> 4) != 1 || (sampling & 0x0F) != 1 {
@@ -910,15 +958,16 @@ fn scan_jpeg_markers(data: &[u8]) -> JpegMarkers {
 /// Huffman image. See docs/design.md for the precise limit.
 ///
 /// **`/ColorTransform` precedence** (ISO 32000-1 §7.4.8 + Adobe
-/// Technical Note #5116): when the JPEG carries the Adobe-defined
-/// APP14 marker, *its* transform byte decides the conversion and
-/// the PDF `/ColorTransform` entry is ignored. When APP14 is
+/// Technical Note #5116): the effective transform is decided by
+/// kasane, *not* delegated to the decoder's `determine_color_transform`
+/// — that routine ranks component IDs and JFIF above APP14, which
+/// contradicts the spec order. When the JPEG carries the Adobe-
+/// defined APP14 marker, *its* transform byte decides the conversion
+/// and the PDF `/ColorTransform` entry is ignored. When APP14 is
 /// absent the PDF value applies: `0` requests the raw component
 /// values, `1` requests YCbCr→RGB on a 3-component image and is
 /// ignored on 1- or 2-component data. When both are absent the
-/// default is `1` for three components and `0` otherwise — the
-/// decoder's own component-ID/JFIF heuristics produce the same
-/// answer, so we simply let it decide.
+/// default is `1` for three components and `0` otherwise.
 ///
 /// CMYK/YCCK and 16-bit JPEGs are refused — they are out of scope
 /// for the edit path even though the renderer also refuses them.
@@ -965,9 +1014,16 @@ fn dct_decode_for_edit(
 
     // ---- JPEG markers ------------------------------------------------
     // Read the Adobe APP14 transform flag and the frame's sampling
-    // factors *before* decoding — they decide whether the PDF
-    // /ColorTransform value may be applied at all.
+    // factors *before* decoding — they decide the effective colour
+    // transform. A truncated or structurally ambiguous marker walk
+    // means the APP14 status is unknown, so we do not fall back to
+    // defaults; the decoder will report the corruption itself.
     let markers = scan_jpeg_markers(data);
+    if markers.truncated || markers.conflicting_app14 {
+        return Err(Error::Parse(
+            "JPEG marker structure is ambiguous or truncated before SOS".into(),
+        ));
+    }
 
     let mut dec = jpeg_decoder::Decoder::new(data);
     dec.set_max_decoding_buffer_size(limits.max_image_bytes as usize);
@@ -993,46 +1049,95 @@ fn dct_decode_for_edit(
         });
     }
 
-    // ---- colour transform decision -----------------------------------
-    // Adobe APP14 wins over the PDF /ColorTransform entry — the
-    // value embedded in the data is authoritative. When APP14 is
-    // absent we apply the PDF value to the decoder; when neither is
-    // present we let the decoder's own component-ID/JFIF heuristics
-    // choose, which matches the PDF default (3 comp → transform).
+    // ---- effective colour transform ----------------------------------
+    // ISO 32000-1 §7.4.8 + Adobe TN #5116: the in-data APP14
+    // transform byte wins over the PDF /ColorTransform entry.
+    // When APP14 is absent the PDF value applies; when both are
+    // absent the default is `1` for three components and `0`
+    // otherwise. The decoder's own component-ID/JFIF heuristics
+    // are deliberately *not* consulted — they rank APP14 below
+    // JFIF/IDs, which contradicts the spec order.
+    //
+    // The decoder's `None` and `RGB` transforms produce the same
+    // interleaved output on a 3-component frame (`color_no_convert`
+    // vs `color_convert_line_rgb`), but `None` reads past the
+    // buffer on subsampled data — so "no transform" is requested
+    // via `RGB` for 3-component frames and `None` for gray, and
+    // subsampled no-transform 3-component data is refused outright.
     let (exp_w, exp_h, exp_n) = expected;
-    if markers.adobe_transform.is_none() {
-        match pdf_ct {
-            Some(0) => {
-                // Raw component values requested. The decoder's
-                // `None` transform only produces a correct buffer
-                // when no chroma subsampling is present — a
-                // subsampled YCbCr JPEG decoded "raw" would expose
-                // the per-component planes, not interleaved pixels,
-                // which we cannot represent. Refuse rather than
-                // produce a wrong shape.
+    let effective_ct: Option<jpeg_decoder::ColorTransform> = match markers.adobe_transform {
+        Some(0) => {
+            // APP14 transform=0 — "unknown" in Adobe TN #5116 means
+            // the data is stored as the device colour space: RGB on
+            // a 3-component frame, CMYK on 4. Both are no-conversion
+            // outputs; we refuse the 4-component case below via the
+            // pixel-format check anyway.
+            if exp_n == 3 {
                 if markers.subsampled {
                     return Err(Error::Unsupported {
-                        feature: "DCTDecode /ColorTransform 0 on subsampled JPEG",
-                        detail: "raw component output is not representable for \
-                                 subsampled data"
+                        feature: "DCTDecode raw RGB on subsampled JPEG",
+                        detail: "subsampled raw-component output is not \
+                                 representable as interleaved pixels"
                             .into(),
                     });
                 }
-                dec.set_color_transform(jpeg_decoder::ColorTransform::None);
+                Some(jpeg_decoder::ColorTransform::RGB)
+            } else {
+                None // gray or 4-comp — pixel-format check decides
             }
-            // YCbCr→RGB requested — the decoder's own check only
-            // applies the transform on a 3-component frame; a 1- or
-            // 2-component image must be left alone (the spec ignores
-            // ColorTransform=1 there).
-            Some(1) if exp_n == 3 => {
-                dec.set_color_transform(jpeg_decoder::ColorTransform::YCbCr);
-            }
-            _ => {}
         }
+        Some(1) => {
+            // APP14 transform=1 — YCbCr on 3-comp, YCCK on 4-comp.
+            if exp_n == 3 {
+                Some(jpeg_decoder::ColorTransform::YCbCr)
+            } else {
+                None // 4-comp refused by pixel-format check
+            }
+        }
+        Some(2) => {
+            // YCCK — always out of scope (4-component output).
+            return Err(Error::Unsupported {
+                feature: "DCTDecode Adobe APP14 transform=2 (YCCK)",
+                detail: "4-component YCCK output is not supported".into(),
+            });
+        }
+        Some(v) => {
+            return Err(Error::Unsupported {
+                feature: "DCTDecode Adobe APP14 transform",
+                detail: format!("{v} — only 0, 1, or 2 are defined"),
+            });
+        }
+        None => match pdf_ct {
+            Some(0) => {
+                // No transform — the decoder's `RGB` interleave is
+                // the safe equivalent of `None` on 3-component data.
+                if exp_n == 3 {
+                    if markers.subsampled {
+                        return Err(Error::Unsupported {
+                            feature: "DCTDecode /ColorTransform 0 on subsampled JPEG",
+                            detail: "raw component output is not representable for \
+                                     subsampled data"
+                                .into(),
+                        });
+                    }
+                    Some(jpeg_decoder::ColorTransform::RGB)
+                } else {
+                    Some(jpeg_decoder::ColorTransform::None)
+                }
+            }
+            Some(1) if exp_n == 3 => Some(jpeg_decoder::ColorTransform::YCbCr),
+            Some(1) => None, // spec: CT=1 ignored on 1–2 components
+            None if exp_n == 3 => {
+                // PDF default for 3 components: transform (YCbCr→RGB).
+                Some(jpeg_decoder::ColorTransform::YCbCr)
+            }
+            None => None, // gray: decoder picks Grayscale itself
+            Some(_) => unreachable!("pdf_ct validated to 0|1"),
+        },
+    };
+    if let Some(ct) = effective_ct {
+        dec.set_color_transform(ct);
     }
-    // markers.adobe_transform.is_some(): PDF value ignored —
-    // decoder's determine_color_transform already reads the Adobe
-    // flag via parse_app.
 
     if info.width as u32 != exp_w || info.height as u32 != exp_h {
         return Err(Error::Structure(format!(
