@@ -772,6 +772,46 @@ the sample buffer is obtained*.
   viewer, because decode/colour-transform/interpolation differences
   are inherent to re-encoding JPEG content.
 
+### M28 — grid-aligned CTM image editing
+
+`image_pixel_ranges` (`src/remove_image.rs`) no longer requires
+axis-aligned *positive-scale* CTM. It first classifies the recorded
+`Do` CTM into one of two *grid-aligned* classes — the components
+are compared to `0.0` exactly, never epsilon-rounded, so a 1°
+rotation or a hairline shear is refused, not folded into a class:
+
+- **`CtmClass::AxisAligned`** — `b == 0, c == 0`, non-zero `a`,`d`
+  of *either* sign. Negative `a`/`d` produce a horizontal/vertical
+  reflection; `a<0, d<0` is a 180° rotation. Inverse:
+  `(x,y) → ((x−e)/a, (y−f)/d)`.
+- **`CtmClass::AxisSwapped`** — `a == 0, d == 0`, non-zero `b`,`c`.
+  Corresponds to a 90°/270° rotation (and their reflections)
+  composed with any non-uniform scale and finite translation.
+  Inverse: `(x,y) → ((y−f)/b, (x−e)/c)` — the swap is written out
+  explicitly, not hidden inside a generic matrix inversion.
+
+The inverse map is computed *per class* by a `map_to_unit` closure.
+Each rect's two opposite corners are mapped into the image's unit
+square, the resulting `ux`/`uy` min/max are normalised (a reflection
+or 90° swap reverses the order), intersected with `[0,1]²`, and
+`floor`/`ceil`-mapped to pixel ranges — the outward-rounding, the
+y-flip (unit `v=0` is the *bottom* pixel row), and the exact
+band-union are all unchanged. Non-finite CTM input, or an inverse
+that produces non-finite unit coordinates, returns
+`Error::Structure`; every other non-grid-aligned shape is
+`Error::Unsupported`. Because the two classes map axis-aligned user
+rects to axis-aligned image rects, no polygon clipping or
+arbitrary-transform rasteriser is needed.
+
+The change is shared — `remove_image_region`, `remove_region`,
+`remove_regions`, `remove_regions_and_document_metadata`, and the
+CLI all call the same `image_pixel_ranges`; the DiagWalker's
+recorded CTM (`TargetDetail::Image.ctm`) is still the single source,
+no content-stream rescan. The input rect stays in un-rotated page
+user space — a page `/Rotate` is display metadata and is *not*
+applied to the selection. Positive-scale inputs are numerically
+identical to before (the axis-aligned branch is the old code path).
+
 ### M20 — scoped region removal (text + image)
 
 `src/remove_region.rs` implements `remove_region` +

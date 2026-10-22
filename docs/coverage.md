@@ -633,6 +633,19 @@ pixels_changed, sites, scope }`:
   is visited twice. Outward rounding (`floor`/`ceil`) and the y-flip
   (image rows top-down) are unchanged. The intermediate `Vec` is
   bounded by `rects.len()` (`max_diag_rects`), never by image height.
+- **Grid-aligned image CTMs (M28)**: the `Do` CTM is classified
+  before inversion — exact components only, no epsilon. Accepted:
+  (A) *axis-aligned* `b==0, c==0` with non-zero `a`,`d` of either
+  sign — covers horizontal/vertical reflection and 180° rotation;
+  (B) *axis-swapped* `a==0, d==0` with non-zero `b`,`c` — covers
+  90°/270° rotations and reflected rotations, with any non-uniform
+  scale and finite translation. Each rect's two opposite corners are
+  inverse-mapped into the image's unit square, min/max normalised
+  (reflections swap the order), intersected with `[0,1]²`, then
+  floor/ceil-mapped to pixel ranges as before. Arbitrary-angle
+  rotation, shear, singular, or non-finite CTM → `Error::Unsupported`
+  / `Error::Structure`; the input rect stays in un-rotated user
+  space and the page's `/Rotate` is *not* applied to it.
 - **Pixel count, not component count (M19.1)**: `pixels_changed`
   counts *pixels* — a pixel is one unit when at least one of its
   components changed **from non-0 to 0**. RGB `[r,g,b]` → `[0,0,0]`
@@ -673,7 +686,9 @@ inline image, any `gs`/`sh`/Pattern/`ActualText`/OC, any
 DeviceGray/DeviceRGB (post-resolution), a `/Mask`/`SMask`/
 `SMaskInData`/`OC`/`ImageMask`/`Interpolate`, a non-default
 `/Decode`, a `/Filter` other than none or `/FlateDecode`, or a
-non-axis-aligned/negative-scale/non-finite CTM.
+non-grid-aligned/singular/non-finite CTM (arbitrary-angle rotation
+and shear are refused; grid-aligned forms are edited — see M28
+above).
 
 Limitations — by design and explicitly *not* done:
 
@@ -796,7 +811,8 @@ invocations_edited, pixels_changed, sites, scope }`:
 - Image eligibility: 8-bit DeviceGray/DeviceRGB (post-resolution
   and `Default*` substitution), no `/Mask`/`SMask`/`SMaskInData`/
   `OC`/`ImageMask`/`Interpolate`, default `/Decode`, no filter or
-  `/FlateDecode`, axis-aligned positive-scale CTM.
+  `/FlateDecode`, grid-aligned CTM (M28 — axis-aligned either sign,
+  or axis-swapped; arbitrary rotation/shear/singular refused).
 - **No Form `Do` in M20** — a `Do` to a `/Form` is refused even
   when it contains no text or images (M18's form handling is not
   inherited).
@@ -819,7 +835,7 @@ carries: `/Annots`, `/UserUnit` ≠ 1, any `Do` to a `/Form`, any
 inline image, any `gs`/`sh`/Pattern/`ActualText`/OC, any
 `blocker`/`uncertain` from the walk, non-`Tr 0` text, an image that
 is not 8-bit DeviceGray/DeviceRGB (post-resolution), a mask/non-default
-`/Decode`/non-Flate filter/non-axis-aligned CTM, or an `Image`
+`/Decode`/non-Flate filter/non-grid-aligned CTM, or an `Image`
 target at `form_path` depth ≥ 1.
 
 A name removed from `/XObject` does **not** mean the object was
@@ -974,7 +990,7 @@ are refused by the decoder itself):
   truncated JPEG data (`Parse`, distinct from `Unsupported`);
   `/ColorTransform 0` on a subsampled JPEG; dict↔JPEG geometry or
   component-count mismatch; and every prior refusal (masks,
-  `/Interpolate`, non-default `/Decode`, non-axis-aligned CTM,
+  `/Interpolate`, non-default `/Decode`, non-grid-aligned CTM,
   forms, annotations).
 - **Decode + edit**: the JPEG is decoded to raw samples, the
   rect-union blackening runs on the decoded buffer exactly as for

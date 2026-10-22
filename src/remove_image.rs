@@ -44,16 +44,19 @@
 //!   the raw component values, `1` or absent lets the decoder
 //!   apply the JPEG's internal transform — and any other key in
 //!   `DecodeParms` is refused rather than ignored.
-//! - Any image whose CTM is not axis-aligned, positive-scale, and
-//!   non-singular — rotation, shear, reflection, and degenerate
+//! - Any image whose CTM is not one of the *grid-aligned* forms —
+//!   axis-aligned (including negative scales = reflections) or
+//!   axis-swapping (90°/270° rotations and reflected rotations).
+//!   Arbitrary-angle rotations, shears, and singular/non-finite
 //!   transforms are refused.
 //! - Any `Image` target at `form_path` depth ≥ 1 — images inside a
 //!   form are out of scope.
 //!
 //! Pixel selection: each rect's intersection with the image's painted
 //! axis-aligned bounding box is mapped back to image space via the
-//! inverse of the `Do`'s CTM (which must be axis-aligned with
-//! positive scale). The resulting real-valued pixel bounds are
+//! inverse of the `Do`'s CTM (a grid-aligned affine — axis-aligned
+//! with either sign, or axis-swapping). The resulting real-valued
+//! pixel bounds are
 //! expanded *outward* — `floor` on the low edge, `ceil` on the high
 //! edge — so no covered pixel is lost to rounding. Multiple rects
 //! produce an *exact* union of ranges, not a bounding box — the
@@ -1288,55 +1291,87 @@ pub(crate) fn is_default_decode(obj: &Object, ncomps: usize) -> bool {
         .all(|p| p[0].as_number() == Some(0.0) && p[1].as_number() == Some(1.0))
 }
 
-/// Map user-space rects to image pixel ranges — the image's CTM must
-/// be axis-aligned with positive scale (no rotation, shear, or
-/// reflection). Returns a `Vec` of `(x0, y0, x1, y1)` pixel ranges,
-/// one per rect, expanded *outward* so no covered pixel is lost.
-/// The union is exact — bands + x-interval merge, not a bounding box.
+/// Which of the two *grid-aligned* CTM classes a `Do` carries.
 ///
-/// Shared with `remove_region.rs` (M20).
+/// Only these are accepted for image region editing — they map an
+/// axis-aligned user-space rect to an axis-aligned image-space
+/// rect, so the inverse produces exact pixel ranges with no
+/// polygon clipping. Everything else (arbitrary rotation, shear,
+/// near-zero "almost" angles) is refused outright — no epsilon is
+/// applied to round an arbitrary angle into one of these classes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CtmClass {
+    /// `b == 0, c == 0, a ≠ 0, d ≠ 0` — axis-aligned; negative a or
+    /// d produce horizontal / vertical reflection, `a<0,d<0` is a
+    /// 180° rotation.
+    AxisAligned,
+    /// `a == 0, d == 0, b ≠ 0, c ≠ 0` — axis-swapping; corresponds
+    /// to a 90° or 270° rotation (and their reflections) composed
+    /// with any non-zero scale.
+    AxisSwapped,
+}
+
+/// Map user-space rects to image pixel ranges. Accepted CTMs are
+/// the two grid-aligned classes in [`CtmClass`]; any other transform
+/// — arbitrary-angle rotation, shear, singular or non-finite — is
+/// refused. Returns an *exact* union of `(x0, y0, x1, y1)` pixel
+/// ranges, one per covered band-interval, expanded *outward*
+/// (`floor`/`ceil`) so no covered pixel is lost. Shared with
+/// `remove_region.rs` (M20).
 pub(crate) fn image_pixel_ranges(
     ctm: &Matrix,
     width: u32,
     height: u32,
     rects: &[crate::page::Rect],
 ) -> Result<Vec<(u32, u32, u32, u32)>, Error> {
-    // The CTM must be axis-aligned: b == 0 and c == 0.
-    if ctm.b != 0.0 || ctm.c != 0.0 {
-        return Err(Error::Unsupported {
-            feature: "image transform",
-            detail: "rotation or shear is not supported".into(),
-        });
-    }
-    // Positive scale only — no reflection.
-    if ctm.a <= 0.0 || ctm.d <= 0.0 {
-        return Err(Error::Unsupported {
-            feature: "image transform",
-            detail: "negative or zero scale is not supported".into(),
-        });
-    }
-    if !ctm.is_finite() {
+    // Classify the CTM — no epsilon: the components must be *exactly*
+    // zero or non-zero, so a 1° rotation or a hairline shear is
+    // refused, not rounded into a supported class.
+    let class = if !ctm.is_finite() {
         return Err(Error::Structure("image CTM has non-finite values".into()));
-    }
+    } else if ctm.b == 0.0 && ctm.c == 0.0 && ctm.a != 0.0 && ctm.d != 0.0 {
+        CtmClass::AxisAligned
+    } else if ctm.a == 0.0 && ctm.d == 0.0 && ctm.b != 0.0 && ctm.c != 0.0 {
+        CtmClass::AxisSwapped
+    } else {
+        return Err(Error::Unsupported {
+            feature: "image transform",
+            detail: "arbitrary rotation, shear, or singular CTM is not supported".into(),
+        });
+    };
 
     // The image paints the unit square [0,0]–[1,1] in *user space*
     // (the space after the `cm`). The CTM maps that to the page.
     // To find the pixel range, invert the CTM and map each rect's
     // corners back to unit-square space.
-    let inv_a = 1.0 / ctm.a;
-    let inv_d = 1.0 / ctm.d;
-    // For axis-aligned CTM [a 0 0 d e f], inverse is
-    // [1/a 0 0 1/d −e/a −f/d].
-    let inv_e = -ctm.e / ctm.a;
-    let inv_f = -ctm.f / ctm.d;
+    //
+    // For [a 0 0 d e f] the inverse maps (x,y) → ((x−e)/a, (y−f)/d);
+    // for [0 b c 0 e f] it maps (x,y) → ((y−f)/b, (x−e)/c). Both are
+    // computed explicitly here so the axis-swap is visible, not
+    // hidden inside a generic matrix inversion.
+    let map_to_unit = |x: f64, y: f64| -> (f64, f64) {
+        match class {
+            CtmClass::AxisAligned => ((x - ctm.e) / ctm.a, (y - ctm.f) / ctm.d),
+            CtmClass::AxisSwapped => ((y - ctm.f) / ctm.b, (x - ctm.e) / ctm.c),
+        }
+    };
 
     let mut ranges = Vec::with_capacity(rects.len());
     for r in rects {
-        // Map the rect's corners to unit-square space.
-        let ux0 = (r.llx * inv_a) + inv_e;
-        let uy0 = (r.lly * inv_d) + inv_f;
-        let ux1 = (r.urx * inv_a) + inv_e;
-        let uy1 = (r.ury * inv_d) + inv_f;
+        // Map the rect's opposite corners to unit-square space.
+        // Reflections and rotations can swap the min/max order —
+        // normalise after mapping.
+        let (uxa, uya) = map_to_unit(r.llx, r.lly);
+        let (uxb, uyb) = map_to_unit(r.urx, r.ury);
+        if !uxa.is_finite() || !uya.is_finite() || !uxb.is_finite() || !uyb.is_finite() {
+            return Err(Error::Structure(
+                "inverse CTM produced non-finite coordinates".into(),
+            ));
+        }
+        let ux0 = uxa.min(uxb);
+        let ux1 = uxa.max(uxb);
+        let uy0 = uya.min(uyb);
+        let uy1 = uya.max(uyb);
         // Intersect with the unit square [0,1]².
         let (ux0, ux1) = (ux0.max(0.0), ux1.min(1.0));
         let (uy0, uy1) = (uy0.max(0.0), uy1.min(1.0));
@@ -2532,8 +2567,8 @@ mod tests {
         );
     }
 
-    /// A rotated CTM is refused — the image's transform must be
-    /// axis-aligned with positive scale.
+    /// An arbitrary-angle (non-90°-multiple) rotation is refused —
+    /// only grid-aligned transforms are accepted.
     #[test]
     fn rotated_image_is_refused() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
@@ -2563,8 +2598,9 @@ mod tests {
         f.extend_from_slice(&img_data);
         f.extend_from_slice(b"\nendstream");
         push!(10, &f);
-        // Rotated CTM: [0 40 -40 0 20 60] cm — 90° rotation.
-        let body = b"0 40 -40 0 20 60 cm\n/Im1 Do\n";
+        // ~30° rotation: [34.6 20 −20 34.6 20 60] — neither
+        // axis-aligned nor axis-swapped; refused.
+        let body = b"34.64 20 -20 34.64 20 60 cm\n/Im1 Do\n";
         let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
         sb.extend_from_slice(body);
         sb.extend_from_slice(b"\nendstream");
@@ -2585,7 +2621,7 @@ mod tests {
             .unwrap_err();
         assert!(
             matches!(err, Error::Unsupported { .. }),
-            "rotated image must be refused: {err:?}"
+            "arbitrary-angle rotation must be refused: {err:?}"
         );
     }
 
@@ -3903,5 +3939,902 @@ mod tests {
         let r = remove_image_region(&d, 0, &[(0.0, 0.0, 40.0, 40.0)], &Limits::default()).unwrap();
         assert_eq!(r.invocations_edited, 1);
         // Im2 was never decoded — the corrupt data is not an error.
+    }
+
+    // ---- M28 — rotated / reflected image region editing --------------
+    //
+    // The shared `image_pixel_ranges` accepts the two grid-aligned
+    // CTM classes; these tests verify the *pixel* each user-space
+    // rect maps to. A 3×2 gray image makes the per-pixel mapping
+    // observable (pixels are position-identifiable):
+    //
+    //   pixel row 0 (top):    0x10  0x20  0x30   → pixels (0,0)(1,0)(2,0)
+    //   pixel row 1 (bottom): 0x40  0x50  0x60   → pixels (0,1)(1,1)(2,1)
+    //
+    // Pixel (px,py) covers unit-square [px/3, (px+1)/3] ×
+    // [1−(py+1)/2, 1−py/2] — the y-flip means py=0 is the top row.
+    //
+    // Each case hand-computes which user-space rect selects which
+    // pixel; the assertion then verifies `pixels_changed` and that
+    // the clone's blackened samples are exactly those pixels.
+
+    /// Build a 1-page PDF painting the 3×2 gray image under `cm`.
+    fn m28_gray_pdf(cm: &str) -> Vec<u8> {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let img_data = [0x10u8, 0x20, 0x30, 0x40, 0x50, 0x60];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 3 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = format!("{cm}\n/Im1 Do\n").into_bytes();
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(&body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        parts.concat()
+    }
+
+    /// Decode the edited clone's samples (KasIm0) as a flat
+    /// width*height gray vector.
+    fn m28_edited_samples(d: &Document) -> Vec<u8> {
+        let page = d.pages().first().unwrap();
+        let res = page.resources().unwrap();
+        // Find the KasIm0 XObject ref.
+        let entry = d
+            .resolve_resource_raw(res, "XObject", b"KasIm0")
+            .unwrap()
+            .expect("no KasIm0");
+        let obj = d.deref(&entry).unwrap();
+        match obj {
+            Object::Stream { ref data, .. } => data.clone(),
+            _ => panic!("KasIm0 not a stream"),
+        }
+    }
+
+    /// Baseline axis-aligned — a rect selects the top-left pixel.
+    /// `[6 0 0 10 20 60] cm`: pixel (0,0) covers user space
+    /// x∈[20,22], y∈[65,70].
+    #[test]
+    fn m28_axis_aligned_baseline() {
+        let d = doc(&m28_gray_pdf("6 0 0 10 20 60 cm"));
+        let r =
+            remove_image_region(&d, 0, &[(20.0, 65.0, 22.0, 70.0)], &Limits::default()).unwrap();
+        assert_eq!(r.pixels_changed, 1);
+        let s = m28_edited_samples(&doc(&r.output));
+        assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
+    }
+
+    /// Horizontal reflection — `[−6 0 0 10 38 60]`: pixel (0,0)
+    /// lands at x∈[36,38], y∈[65,70] (the image's left edge is on
+    /// the right of the painted rect).
+    #[test]
+    fn m28_horizontal_flip() {
+        let d = doc(&m28_gray_pdf("-6 0 0 10 38 60 cm"));
+        let r =
+            remove_image_region(&d, 0, &[(36.0, 65.0, 38.0, 70.0)], &Limits::default()).unwrap();
+        assert_eq!(r.pixels_changed, 1);
+        let s = m28_edited_samples(&doc(&r.output));
+        assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
+    }
+
+    /// Vertical reflection — `[6 0 0 −10 20 80]`: pixel (0,0)
+    /// lands at x∈[20,22], y∈[70,75] (the image's top row is on
+    /// the bottom of the painted rect).
+    #[test]
+    fn m28_vertical_flip() {
+        let d = doc(&m28_gray_pdf("6 0 0 -10 20 80 cm"));
+        let r =
+            remove_image_region(&d, 0, &[(20.0, 70.0, 22.0, 75.0)], &Limits::default()).unwrap();
+        assert_eq!(r.pixels_changed, 1);
+        let s = m28_edited_samples(&doc(&r.output));
+        assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
+    }
+
+    /// 180° rotation (both flips) — `[−6 0 0 −10 38 80]`: pixel
+    /// (0,0) lands at x∈[36,38], y∈[70,75].
+    #[test]
+    fn m28_rot180() {
+        let d = doc(&m28_gray_pdf("-6 0 0 -10 38 80 cm"));
+        let r =
+            remove_image_region(&d, 0, &[(36.0, 70.0, 38.0, 75.0)], &Limits::default()).unwrap();
+        assert_eq!(r.pixels_changed, 1);
+        let s = m28_edited_samples(&doc(&r.output));
+        assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
+    }
+
+    /// 90° rotation — `[0 10 −6 0 38 60] cm`: x' = −6v+38,
+    /// y' = 10u+60. Pixel (0,0) covers u∈[0,1/3], v∈[1/2,1] →
+    /// user x∈[32,35], y∈[60,63.33].
+    #[test]
+    fn m28_rot90() {
+        let d = doc(&m28_gray_pdf("0 10 -6 0 38 60 cm"));
+        // Strictly inside pixel (0,0)'s painted rect so the
+        // floor/ceil expansion covers only that pixel.
+        let r =
+            remove_image_region(&d, 0, &[(32.0, 60.0, 35.0, 63.3)], &Limits::default()).unwrap();
+        assert_eq!(r.pixels_changed, 1);
+        let s = m28_edited_samples(&doc(&r.output));
+        assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
+    }
+
+    /// 270° rotation — `[0 −10 6 0 2 70] cm`: x' = 6v+2,
+    /// y' = −10u+70. Pixel (0,0) covers u∈[0,1/3], v∈[1/2,1] →
+    /// user x∈[5,8], y∈[66.67,70].
+    #[test]
+    fn m28_rot270() {
+        let d = doc(&m28_gray_pdf("0 -10 6 0 2 70 cm"));
+        let r = remove_image_region(&d, 0, &[(5.0, 66.7, 8.0, 70.0)], &Limits::default()).unwrap();
+        assert_eq!(r.pixels_changed, 1);
+        let s = m28_edited_samples(&doc(&r.output));
+        assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
+    }
+
+    /// Axis-swap with a reflection — `[0 10 6 0 20 60] cm`:
+    /// x' = 6v+20, y' = 10u+60 (a 90°-CCW about the origin, then
+    /// scaled). Pixel (0,0) covers u∈[0,1/3], v∈[1/2,1] →
+    /// user x∈[23,26], y∈[60,63.33].
+    #[test]
+    fn m28_axis_swap_reflect() {
+        let d = doc(&m28_gray_pdf("0 10 6 0 20 60 cm"));
+        let r =
+            remove_image_region(&d, 0, &[(23.0, 60.0, 26.0, 63.3)], &Limits::default()).unwrap();
+        assert_eq!(r.pixels_changed, 1);
+        let s = m28_edited_samples(&doc(&r.output));
+        assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
+    }
+
+    /// Non-uniform scale + non-zero translation on an axis-swapped
+    /// CTM — `[0 20 −4 0 38 60]`: x' = −4v+38, y' = 20u+60.
+    /// Pixel (0,0) covers u∈[0,1/3], v∈[1/2,1] →
+    /// user x∈[34,36], y∈[60,66.67].
+    #[test]
+    fn m28_nonuniform_swapped() {
+        let d = doc(&m28_gray_pdf("0 20 -4 0 38 60 cm"));
+        let r =
+            remove_image_region(&d, 0, &[(34.0, 60.0, 36.0, 66.6)], &Limits::default()).unwrap();
+        assert_eq!(r.pixels_changed, 1);
+        let s = m28_edited_samples(&doc(&r.output));
+        assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
+    }
+
+    /// Negative page coordinates — `[-6 0 0 10 -2 60]` places the
+    /// painted rect at x∈[-38,-20]; a rect into negative space
+    /// still selects pixel (0,0).
+    #[test]
+    fn m28_negative_coords() {
+        let d = doc(&m28_gray_pdf("-6 0 0 10 -20 60 cm"));
+        // Pixel (0,0): unit(0,1/2)-(1/3,1) → x∈[-20,-22] wait —
+        // x' = -6u - 20: u=0→-20, u=1/3→-22 → x∈[-22,-20].
+        let r =
+            remove_image_region(&d, 0, &[(-22.0, 65.0, -20.0, 70.0)], &Limits::default()).unwrap();
+        assert_eq!(r.pixels_changed, 1);
+        let s = m28_edited_samples(&doc(&r.output));
+        assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
+    }
+
+    /// A rect partially covering the image selects the covered
+    /// pixels only — with a reflection so the covered half is the
+    /// image's *right* half (pixels x≥1).
+    #[test]
+    fn m28_partial_cover_reflected() {
+        // `[6 0 0 10 20 60]` paints the image at x∈[20,26]. A rect
+        // covering the right portion x∈[23,26] selects pixel
+        // columns px≥1 on both rows → 4 pixels.
+        let d = doc(&m28_gray_pdf("6 0 0 10 20 60 cm"));
+        let r =
+            remove_image_region(&d, 0, &[(23.0, 60.0, 26.0, 80.0)], &Limits::default()).unwrap();
+        assert_eq!(r.pixels_changed, 4);
+        let s = m28_edited_samples(&doc(&r.output));
+        assert_eq!(s, vec![0x10, 0x00, 0x00, 0x40, 0x00, 0x00]);
+    }
+
+    /// Pixel-boundary rounding — a rect that clips part of a pixel
+    /// still selects it (floor/ceil outward rule, unchanged).
+    #[test]
+    fn m28_partial_pixel_cover() {
+        let d = doc(&m28_gray_pdf("6 0 0 10 20 60 cm"));
+        // Rect covers only the right half of pixel (0,0)'s painted
+        // area (x∈[21,22] of its [20,22] span) — still selects it.
+        let r =
+            remove_image_region(&d, 0, &[(21.0, 65.0, 22.0, 70.0)], &Limits::default()).unwrap();
+        assert_eq!(r.pixels_changed, 1);
+        let s = m28_edited_samples(&doc(&r.output));
+        assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
+    }
+
+    /// Disjoint rects on a reflected image — two rects select
+    /// two non-adjacent pixels; the L-shape between them is not
+    /// filled.
+    #[test]
+    fn m28_disjoint_rects_reflected() {
+        let d = doc(&m28_gray_pdf("-6 0 0 10 38 60 cm"));
+        // Image is painted at x∈[32,38]; pixel (0,0) covers
+        // x∈[36,38], pixel (2,0) covers x∈[32,34] (the image's
+        // right column lands on the left after reflection).
+        let r = remove_image_region(
+            &d,
+            0,
+            &[(36.0, 65.0, 38.0, 70.0), (32.0, 65.0, 34.0, 70.0)],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.pixels_changed, 2);
+        let s = m28_edited_samples(&doc(&r.output));
+        assert_eq!(s, vec![0x00, 0x20, 0x00, 0x40, 0x50, 0x60]);
+    }
+
+    /// RGB image — pixel (0,0) under a 90° rotation; each pixel is
+    /// three components but counts once.
+    #[test]
+    fn m28_rgb_rotated() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        // 3×2 RGB — each pixel's channels differ from its neighbours.
+        let img_data: &[u8] = &[
+            0x11, 0x12, 0x13, 0x21, 0x22, 0x23, 0x31, 0x32, 0x33, // row 0
+            0x41, 0x42, 0x43, 0x51, 0x52, 0x53, 0x61, 0x62, 0x63, // row 1
+        ];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 3 /Height 2 \
+              /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"0 10 -6 0 38 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r =
+            remove_image_region(&d, 0, &[(32.0, 60.0, 35.0, 63.3)], &Limits::default()).unwrap();
+        assert_eq!(r.pixels_changed, 1);
+        let out = doc(&r.output);
+        let s = m28_edited_samples(&out);
+        assert_eq!(
+            s,
+            vec![
+                0x00, 0x00, 0x00, 0x21, 0x22, 0x23, 0x31, 0x32, 0x33, 0x41, 0x42, 0x43, 0x51, 0x52,
+                0x53, 0x61, 0x62, 0x63,
+            ]
+        );
+    }
+
+    /// A shear CTM is refused (not grid-aligned).
+    #[test]
+    fn m28_shear_refused() {
+        // Shear: [1 0 0.5 1 20 60] — a=c≠0? no: a=1,b=0,c=0.5,d=1
+        // → b==0 but c≠0 → neither class → refused.
+        let d = doc(&m28_gray_pdf("1 0 0.5 1 20 60 cm"));
+        let e = remove_image_region(&d, 0, &[(20.0, 60.0, 40.0, 80.0)], &Limits::default())
+            .unwrap_err();
+        assert!(matches!(e, Error::Unsupported { .. }), "{e:?}");
+    }
+
+    /// A singular CTM (a=0,b=0,c=0,d=0 or degenerate) is refused.
+    #[test]
+    fn m28_singular_refused() {
+        let d = doc(&m28_gray_pdf("0 0 0 0 20 60 cm"));
+        let e = remove_image_region(&d, 0, &[(20.0, 60.0, 40.0, 80.0)], &Limits::default())
+            .unwrap_err();
+        assert!(matches!(e, Error::Unsupported { .. }), "{e:?}");
+    }
+
+    /// A non-finite CTM is `Structure` — tested directly on
+    /// `image_pixel_ranges` since a real `cm` operand can't carry
+    /// NaN/∞ through the parser.
+    #[test]
+    fn m28_nonfinite_refused() {
+        let m = Matrix::new(f64::INFINITY, 0.0, 0.0, 10.0, 20.0, 60.0);
+        let e = image_pixel_ranges(&m, 3, 2, &[]).unwrap_err();
+        assert!(matches!(e, Error::Structure(_)), "{e:?}");
+        let m2 = Matrix::new(f64::NAN, 0.0, 0.0, 10.0, 20.0, 60.0);
+        let e2 = image_pixel_ranges(&m2, 3, 2, &[]).unwrap_err();
+        assert!(matches!(e2, Error::Structure(_)), "{e2:?}");
+    }
+
+    /// A 90° rotation through `remove_region` (the integrated
+    /// text+image path) — same shared transform logic.
+    #[test]
+    fn m28_rot90_via_remove_region() {
+        let d = doc(&m28_gray_pdf("0 10 -6 0 38 60 cm"));
+        let r = crate::remove_region::remove_region(
+            &d,
+            0,
+            &[(32.0, 60.0, 35.0, 63.3)],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.pixels_changed, 1);
+    }
+
+    /// The same image painted at *different* transforms in two `Do`
+    /// calls — only the rotated one is edited; the axis-aligned one
+    /// keeps the original object.
+    #[test]
+    fn m28_two_invocations_different_transforms() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let img_data = [0x10u8, 0x20, 0x30, 0x40, 0x50, 0x60];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 3 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        // Im1 painted twice with independent CTMs (q/Q isolate
+        // the graphics state): axis-aligned at (20,60), then
+        // 90°-rotated with origin (100,120). The rect hits only
+        // the rotated copy's pixel (1,0) area — not (0,0), which
+        // is already black in this image and would not count.
+        let body = b"q\n6 0 0 10 20 60 cm\n/Im1 Do\nQ\nq\n0 10 -6 0 100 120 cm\n/Im1 Do\nQ\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // Rotated copy: x' = -6v+100, y' = 10u+120; pixel (1,0)
+        // covers u∈[1/3,2/3], v∈[1/2,1] → x∈[94,97], y∈[123.33,126.67].
+        let r =
+            remove_image_region(&d, 0, &[(94.0, 123.4, 97.0, 126.6)], &Limits::default()).unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        assert_eq!(r.pixels_changed, 1);
+        // Only the rotated Do was repointed — the axis-aligned one
+        // still uses /Im1 and the original data is intact.
+        let out = String::from_utf8_lossy(&r.output).into_owned();
+        assert!(
+            out.contains("/Im1 Do"),
+            "axis-aligned Do must remain: {out}"
+        );
+        assert!(out.contains("\x10\x20\x30\x40\x50\x60"), "original kept");
+    }
+
+    /// A JPEG image under a 90° rotation — the shared transform
+    /// applies before decode, same as raw/Flate.
+    #[test]
+    fn m28_jpeg_rotated() {
+        // 8×8 gray JPEG + 90° CTM.
+        let jpeg = {
+            use crate::remove_image::decode_image;
+            let _ = decode_image;
+            unhex_jpeg()
+        };
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let mut f = format!(
+            "<< /Type /XObject /Subtype /Image /Width 8 /Height 8 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 \
+              /Filter /DCTDecode /Length {} >>\nstream\n",
+            jpeg.len()
+        )
+        .into_bytes();
+        f.extend_from_slice(&jpeg);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        // 90° rotation, non-uniform 16×8 scale, origin (120,100).
+        // x' = -8v+120, y' = 16u+100. Pixel (0,1) — second row,
+        // first column, not already black — covers u∈[0,1/8],
+        // v∈[6/8,7/8] → x∈[113,114], y∈[100,102].
+        let body = b"0 16 -8 0 120 100 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // Select inside pixel (0,1)'s painted rect x∈[113,114],
+        // y∈[100,102] — pull the edges inward so neighbouring
+        // pixels aren't caught by the outward floor/ceil.
+        let r = remove_image_region(&d, 0, &[(113.1, 100.1, 113.9, 101.9)], &Limits::default())
+            .unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        assert_eq!(r.pixels_changed, 1);
+    }
+
+    /// The g8 fixture JPEG (same bytes as remove_region.rs tests).
+    fn unhex_jpeg() -> Vec<u8> {
+        const H: &str =
+            "ffd8ffe000104a46494600010100000100010000ffdb0043000302020302020303030304030304050805050404050a07\
+             0706080c0a0c0c0b0a0b0b0d0e12100d0e110e0b0b1016101113141515150c0f171816141812141514ffc0000b080008\
+             000801011100ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b51000020103\
+             03020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f024336272\
+             82090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475\
+             767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9\
+             cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f003e12c1a5fecabf03\
+             a5f19ded9f9daac98d3f42b46b569a3b9d49e37681240acb888796cee4bafc88c14972aadfffd9";
+        (0..H.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&H[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// A `/Rotate 90` page — the input rect still uses un-rotated
+    /// user-space coordinates; the page rotation is *not* applied
+    /// to the selection rect.
+    #[test]
+    fn m28_page_rotate_unaffected() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        // /Rotate 90 on the *page* — the image's own CTM is what
+        // matters; the rect is in the same user space as before.
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Rotate 90 \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let img_data = [0x10u8, 0x20, 0x30, 0x40, 0x50, 0x60];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 3 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"6 0 0 10 20 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // Same un-rotated rect as m28_axis_aligned_baseline — the
+        // page /Rotate is display metadata, not a transform of the
+        // content stream's coordinate space.
+        let r =
+            remove_image_region(&d, 0, &[(20.0, 65.0, 22.0, 70.0)], &Limits::default()).unwrap();
+        assert_eq!(r.pixels_changed, 1);
+    }
+
+    /// Two pages share one image object under different transforms;
+    /// editing one page's rect leaves the other page's pixels and
+    /// the original stream untouched.
+    #[test]
+    fn m28_two_pages_shared_image() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>");
+        for (n, cm) in [(3u32, "6 0 0 10 20 60 cm"), (4u32, "0 10 -6 0 100 120 cm")] {
+            let contents = 9 + (n - 3); // 9 and 10
+            let page = format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /XObject << /Im1 11 0 R >> >> \
+                  /Contents {contents} 0 R >>"
+            );
+            push!(n, page.as_bytes());
+            let body = format!("{cm}\n/Im1 Do\n").into_bytes();
+            let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+            sb.extend_from_slice(&body);
+            sb.extend_from_slice(b"\nendstream");
+            push!(contents, &sb);
+        }
+        let img_data = [0x10u8, 0x20, 0x30, 0x40, 0x50, 0x60];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 3 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(11, &f);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 12\n0000000000 65535 f \n".to_vec());
+        for n in 1..12u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 12 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // Edit page 1's rotated copy: pixel (0,0) at x∈[94,97],
+        // y∈[120,123.3] under [0 10 −6 0 100 120].
+        let r = crate::remove_region::remove_regions(
+            &d,
+            &[
+                (0, vec![(20.0, 65.0, 22.0, 70.0)]),
+                (1, vec![(94.0, 120.0, 97.0, 123.3)]),
+            ],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.invocations_edited, 2);
+        // The *original* image object still carries its bytes.
+        let orig = d
+            .deref(&Object::Ref(IndirectRef {
+                number: 11,
+                generation: 0,
+            }))
+            .unwrap();
+        match orig {
+            Object::Stream { ref data, .. } => {
+                assert_eq!(data, &[0x10, 0x20, 0x30, 0x40, 0x50, 0x60]);
+            }
+            _ => panic!("not a stream"),
+        }
+    }
+
+    /// A FlateDecode image under a 90° rotation — the shared
+    /// transform applies before decode, same as raw/JPEG.
+    #[test]
+    fn m28_flate_rotated() {
+        use flate2::{write::ZlibEncoder, Compression};
+        use std::io::Write;
+        let img_data = [0x10u8, 0x20, 0x30, 0x40, 0x50, 0x60];
+        let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(&img_data).unwrap();
+        let compressed = enc.finish().unwrap();
+
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let mut f = format!(
+            "<< /Type /XObject /Subtype /Image /Width 3 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 \
+              /Filter /FlateDecode /Length {} >>\nstream\n",
+            compressed.len()
+        )
+        .into_bytes();
+        f.extend_from_slice(&compressed);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"0 10 -6 0 38 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // Same geometry as m28_rot90 — pixel (0,0) at x∈[32,35],
+        // y∈[60,63.33].
+        let r =
+            remove_image_region(&d, 0, &[(32.0, 60.0, 35.0, 63.3)], &Limits::default()).unwrap();
+        assert_eq!(r.pixels_changed, 1);
+        let s = m28_edited_samples(&doc(&r.output));
+        assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
+    }
+
+    /// Text + rotated image mixed on one page — the text op and the
+    /// rotated `Do` are edited in the same integrated pass.
+    #[test]
+    fn m28_text_and_rotated_image() {
+        let font_bytes = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/KasaneTest.ttf"
+        ))
+        .unwrap();
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 4 0 R >> \
+              /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        let widths = {
+            let mut w = [600u32; 224];
+            w[0] = 250;
+            format!(
+                "[{}]",
+                w.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes()
+        };
+        let mut font_dict = b"<< /Type /Font /Subtype /TrueType /BaseFont /KasaneTest \
+              /FirstChar 32 /LastChar 255 /Widths "
+            .to_vec();
+        font_dict.extend_from_slice(&widths);
+        font_dict.extend_from_slice(b" /FontDescriptor 5 0 R /Encoding /WinAnsiEncoding >>");
+        push!(4, &font_dict);
+        push!(
+            5,
+            b"<< /Type /FontDescriptor /FontName /KasaneTest /Flags 32 \
+              /FontBBox [-100 -300 1200 1000] /ItalicAngle 0 /Ascent 800 \
+              /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 6 0 R >>"
+        );
+        let enc = {
+            use std::io::Write;
+            let mut e = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+            e.write_all(&font_bytes).unwrap();
+            e.finish().unwrap()
+        };
+        let mut fs = format!(
+            "<< /Length {} /Filter /FlateDecode /Length1 {} >>\nstream\n",
+            enc.len(),
+            font_bytes.len()
+        )
+        .into_bytes();
+        fs.extend_from_slice(&enc);
+        fs.extend_from_slice(b"\nendstream");
+        push!(6, &fs);
+        let img_data = [0x10u8, 0x20, 0x30, 0x40, 0x50, 0x60];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 3 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        // Rotated image in the lower region, text in the upper
+        // region — two independent rects, like removes_text_and_image.
+        let body = b"q\n0 10 -6 0 38 60 cm\n/Im1 Do\nQ\n\
+            BT /F1 24 Tf 20 140 Td (ABC) Tj ET\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 11\n0000000000 65535 f \n".to_vec());
+        for n in 1..11u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        // Rects: the rotated image's pixel (0,0) at x∈[32,35],
+        // y∈[60,63.3]; and the text glyph painted near (30,140).
+        let r = crate::remove_region::remove_region(
+            &d,
+            0,
+            &[(32.0, 60.0, 35.0, 63.3), (10.0, 130.0, 60.0, 170.0)],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.pixels_changed, 1);
+        assert_eq!(r.invocations_edited, 1);
+        assert!(r.codes_removed > 0, "text inside the rect was not removed");
+    }
+
+    /// Rotated image through the metadata-integrated entry — the
+    /// document's `/Info` is stripped in the same edit.
+    #[test]
+    fn m28_metadata_integrated_rotated() {
+        let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
+        let mut offs: Vec<(u32, usize)> = Vec::new();
+        macro_rules! push {
+            ($n:expr, $body:expr) => {{
+                offs.push(($n, parts.iter().map(|p| p.len()).sum()));
+                parts.push(format!("{} 0 obj\n", $n).into_bytes());
+                parts.push(($body as &[u8]).to_vec());
+                parts.push(b"\nendobj\n".to_vec());
+            }};
+        }
+        push!(1, b"<< /Type /Catalog /Pages 2 0 R >>");
+        push!(2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        push!(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 10 0 R >> >> \
+              /Contents 9 0 R >>"
+        );
+        push!(13, b"<< /Producer (kasane-test) /Creator (m28) >>");
+        let img_data = [0x10u8, 0x20, 0x30, 0x40, 0x50, 0x60];
+        let mut f = b"<< /Type /XObject /Subtype /Image /Width 3 /Height 2 \
+              /ColorSpace /DeviceGray /BitsPerComponent 8 /Length "
+            .to_vec();
+        f.extend_from_slice(img_data.len().to_string().as_bytes());
+        f.extend_from_slice(b" >>\nstream\n");
+        f.extend_from_slice(&img_data);
+        f.extend_from_slice(b"\nendstream");
+        push!(10, &f);
+        let body = b"0 10 -6 0 38 60 cm\n/Im1 Do\n";
+        let mut sb = format!("<< /Length {} >>\nstream\n", body.len()).into_bytes();
+        sb.extend_from_slice(body);
+        sb.extend_from_slice(b"\nendstream");
+        push!(9, &sb);
+        let xref: usize = parts.iter().map(|p| p.len()).sum();
+        parts.push(b"xref\n0 14\n0000000000 65535 f \n".to_vec());
+        for n in 1..14u32 {
+            if let Some((_, o)) = offs.iter().find(|(on, _)| *on == n) {
+                parts.push(format!("{o:010} 00000 n \n").into_bytes());
+            } else {
+                parts.push(b"0000000000 00000 f \n".to_vec());
+            }
+        }
+        parts.push(b"trailer\n<< /Size 14 /Root 1 0 R /Info 13 0 R >>\n".to_vec());
+        parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
+        let d = doc(&parts.concat());
+        let r = crate::remove_region::remove_regions_and_document_metadata(
+            &d,
+            &[(0, vec![(32.0, 60.0, 35.0, 63.3)])],
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(r.invocations_edited, 1);
+        // /Info is stripped — the trailer's Info reference is gone.
+        let out_txt = String::from_utf8_lossy(&r.output).into_owned();
+        assert!(!out_txt.contains("/Producer"), "Info still present");
     }
 }
