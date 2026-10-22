@@ -188,6 +188,11 @@ struct Metrics {
     /// Every compared page, in page order.
     #[serde(default)]
     render_pages: Vec<PageQuality>,
+    /// Non-embedded fonts drawn with a bundled substitute on any
+    /// rendered page (`base → substitute`), deduplicated. Non-empty
+    /// means the render executed but glyph shapes are approximations.
+    #[serde(default)]
+    render_font_substitutions: Vec<String>,
     text_match_ratio: Option<f64>,
     rewrite_qpdf_ok: Option<bool>,
     rewrite_reparsed: Option<bool>,
@@ -720,6 +725,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         render_ref_png: None,
         render_quality: None,
         render_pages: Vec::new(),
+        render_font_substitutions: Vec::new(),
         text_match_ratio: None,
         rewrite_qpdf_ok: None,
         rewrite_reparsed: None,
@@ -792,6 +798,12 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         match render_page(&doc, page, &opts) {
             Ok(r) => {
                 rendered += 1;
+                for s in &r.font_substitutions {
+                    let tag = format!("{} → {}", s.base_font, s.substitute);
+                    if !metrics.render_font_substitutions.contains(&tag) {
+                        metrics.render_font_substitutions.push(tag);
+                    }
+                }
                 // Visual fidelity vs poppler on every rendered page.
                 if args.with_poppler {
                     let diff_dir = args.out.join("diff");
@@ -1512,6 +1524,30 @@ fn render_markdown(r: &RunReport) -> String {
                 n,
                 with_q.len()
             ));
+            // Substituted fonts: execution PASS, but the glyph shapes
+            // are the bundled Liberation faces, not the named fonts —
+            // say so next to the fidelity numbers, never hide it.
+            let subst_files: Vec<&&FileResult> = measured
+                .iter()
+                .filter(|f| !f.metrics.render_font_substitutions.is_empty())
+                .collect();
+            if !subst_files.is_empty() {
+                s.push_str(&format!(
+                    "*{} of the measured file(s) drew text with a **bundled substitute** \
+                     for a non-embedded font (metric-compatible Liberation faces; shapes \
+                     are approximations of the named fonts, so their SSIM is bounded by \
+                     the substitute, not by the engine):*\n\n",
+                    subst_files.len()
+                ));
+                for f in &subst_files {
+                    s.push_str(&format!(
+                        "- `{}` — {}\n",
+                        f.id,
+                        f.metrics.render_font_substitutions.join("; ")
+                    ));
+                }
+                s.push('\n');
+            }
             s.push_str("| metric | mean | worst |\n|---|---:|---:|\n");
             s.push_str(&format!(
                 "| SSIM (higher = closer) | {:.4} | {:.4} (min) |\n",
