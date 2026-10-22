@@ -24,7 +24,12 @@
 //! * catalog `/OCProperties`, `/RichMedia`, `/AA` — outside profile.
 //!
 //! Everything else reachable is copied verbatim — unknown dictionary
-//! keys are preserved, never silently dropped.
+//! keys are preserved, never silently dropped. That includes named
+//! destinations: the `/Names` → `/Dests` name tree, the legacy
+//! catalog `/Dests` dictionary and every `/Dest`, `/GoTo` `/D` or
+//! `/OpenAction` operand that names into them travel as ordinary
+//! objects with renumbered references, so the name → page binding
+//! is identical before and after (see [`crate::dests`]).
 
 use crate::document::Document;
 use crate::error::Error;
@@ -425,96 +430,6 @@ fn effective_version(doc: &Document) -> Result<String, Error> {
     Ok(format!("{}.{}", effective.0, effective.1))
 }
 
-/// Scan every reachable `/Annots` entry and `/OpenAction`/`/GoTo`
-/// destination operands for a *named* destination — a name or
-/// string instead of the required destination array. Refuses the
-/// document before any output when one is found.
-fn check_named_dests(doc: &Document) -> Result<(), Error> {
-    // /OpenAction /D as a name/string is a named dest.
-    if let Some(oa) = doc.catalog().get(b"OpenAction".as_slice()) {
-        let oa = doc.deref(oa)?;
-        if let Some(d) = oa.as_dict() {
-            if let Some(dest) = d.get(b"D".as_slice()) {
-                check_dest_operand(doc, dest, "/OpenAction /D")?;
-            }
-        } else {
-            check_dest_operand(doc, &oa, "/OpenAction")?;
-        }
-    }
-    for page in doc.pages() {
-        if let Some(annots_obj) = page
-            .object_ref()
-            .and_then(|r| doc.resolve(r).ok())
-            .and_then(|o| o.as_dict().cloned())
-            .and_then(|d| d.get(b"Annots".as_slice()).cloned())
-        {
-            let annots = doc.deref(&annots_obj)?;
-            if let Some(arr) = annots.as_array() {
-                for a in arr {
-                    let a = doc.deref(a)?;
-                    if let Some(ad) = a.as_dict() {
-                        if let Some(dest) = ad.get(b"Dest".as_slice()) {
-                            check_dest_operand(doc, dest, "/Annots /Dest")?;
-                        }
-                        if let Some(action) = ad.get(b"A".as_slice()) {
-                            let action = doc.deref(action)?;
-                            if let Some(act_d) = action.as_dict() {
-                                let s = act_d.get(b"S".as_slice()).and_then(|o| o.as_name());
-                                if s == Some(b"GoTo") {
-                                    if let Some(dest) = act_d.get(b"D".as_slice()) {
-                                        check_dest_operand(doc, dest, "/Annots /A /GoTo /D")?;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-/// A destination operand must be an array (`[page /XYZ …]` or
-/// `[page /Fit]`) — a `Name` or `String` means "look me up in the
-/// name tree", which M8 does not implement.
-fn check_dest_operand(doc: &Document, obj: &Object, context: &str) -> Result<(), Error> {
-    match obj {
-        Object::Name(n) | Object::String(n) => {
-            return Err(Error::Unsupported {
-                feature: "named destination",
-                detail: format!(
-                    "{context} contains named destination /{} — name trees are not resolved",
-                    String::from_utf8_lossy(n)
-                ),
-            });
-        }
-        Object::Ref(_) => {
-            // Resolve the ref once and re-check — an indirect /Dest
-            // could still hold a name/string inside an array's slot.
-            let resolved = doc.deref(obj)?;
-            return check_dest_operand(doc, &resolved, context);
-        }
-        Object::Array(arr) => {
-            // First element is the page ref — not a destination by
-            // itself; subsequent elements are positional params.
-            // A bare /Name or /String as the *first* element of the
-            // array is still wrong (dest arrays start with a page).
-            if let Some(Object::Name(n) | Object::String(n)) = arr.first() {
-                return Err(Error::Unsupported {
-                    feature: "named destination",
-                    detail: format!(
-                        "{context} destination array starts with /{} — not a page ref",
-                        String::from_utf8_lossy(n)
-                    ),
-                });
-            }
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
 /// Refusals — checked before any collection or output begins.
 fn check_refusals(doc: &Document) -> Result<(), Error> {
     let catalog = doc.catalog();
@@ -576,45 +491,24 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
         }
     }
 
-    // ---- Named destinations: explicit refusal (M8.1 decision B) ----
+    // ---- Named destinations: preserved (M8.1 decision B revisited) --
     //
-    // A named destination is a *name or string* that resolves through
-    // a name tree (/Dests in /Names, or the legacy /Dests dict) — we
-    // do not resolve or preserve that indirection. Direct destination
-    // *arrays* (e.g. `/D [5 0 R /XYZ 0 200 null]`) are preserved.
+    // The catalog `/Names` → `/Dests` name tree, the legacy catalog
+    // `/Dests` dictionary, and every name/string operand that refers
+    // into them (link `/Dest`, `/GoTo` `/D`, `/OpenAction` `/D`) are
+    // ordinary reachable objects: the collector copies the whole tree
+    // (`/Kids`, `/Names`, `/Limits`, destination arrays and dicts)
+    // verbatim with renumbered references, so the name → page binding
+    // survives unchanged. `crate::dests::named_destinations` reads the
+    // structure before and after a rewrite and the round-trip tests
+    // assert the two agree — that is the integrity check, not a
+    // refusal. A dangling name (no entry in the tree) is the input's
+    // own defect and is copied as-is, never repaired or dropped.
     //
-    // Structures checked (any reachable):
-    //   * catalog /Dests dict          → refuse
-    //   * catalog /Names /Dests tree   → refuse
-    //   * link annot /Dest name/string → refuse
-    //   * GoTo action /D name/string   → refuse
-    //   * OpenAction /D name/string    → refuse
-    // The name-tree Kids chain is also walked so a /Dests hidden
-    // behind intermediate /Kids nodes is still caught.
-
-    if catalog.contains_key(b"Dests".as_slice()) {
-        return Err(Error::Unsupported {
-            feature: "named destination",
-            detail: "/Dests name tree is outside the M8 rewrite profile".into(),
-        });
-    }
-    if let Some(names_obj) = catalog.get(b"Names".as_slice()) {
-        let names = doc.deref(names_obj)?;
-        if let Some(d) = names.as_dict() {
-            if d.contains_key(b"Dests".as_slice()) {
-                return Err(Error::Unsupported {
-                    feature: "named destination",
-                    detail: "/Names /Dests is outside the M8 rewrite profile".into(),
-                });
-            }
-        }
-    }
-
-    // Walk /Annots arrays on every page for link-annotation named
-    // destinations, and check GoTo/OpenAction /D operands — a name
-    // or string where a destination array is required is a named
-    // destination we cannot honour.
-    check_named_dests(doc)?;
+    // Only the tree's *shape* is validated here, bounded by the page
+    // tree limits, so a cyclic or oversized name tree is refused
+    // before any output rather than looping in the collector.
+    crate::dests::named_destinations(doc, &Limits::default())?;
 
     // Active/executable structures outside the M8 profile.
     for key in [&b"OCProperties"[..], &b"RichMedia"[..], &b"AA"[..]] {

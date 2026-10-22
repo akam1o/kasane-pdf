@@ -54,11 +54,13 @@
 
 pub mod audit;
 mod content;
+pub mod dests;
 mod document;
 pub mod edit;
 mod error;
 mod filter;
 mod font;
+mod fontsubst;
 mod lexer;
 mod limits;
 mod matrix;
@@ -80,6 +82,8 @@ mod type1;
 mod xref;
 
 pub use content::{Operation, TJItem};
+pub use dests::{named_destinations, resolve_named_destination, DestSource, NamedDest};
+pub use fontsubst::{substitution_for, FontSubstitution, SubstKind};
 pub use matrix::Matrix;
 pub use render::{pixmap_to_png, render_page, Color, RenderOptions, RenderedPage};
 pub use text_extract::{extract_text, CharInfo, ExtractedText, ResolveKind};

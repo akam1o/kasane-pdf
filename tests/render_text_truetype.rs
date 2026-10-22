@@ -257,9 +257,16 @@ fn symbolic_font_refused() {
 }
 
 #[test]
-fn type1_font_refused() {
-    let err = render("text_unsupported_type1.pdf").unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+fn nonembedded_type1_renders_with_substitute_and_says_so() {
+    // text_unsupported_type1.pdf: a Standard 14 font with no program.
+    // It now draws with the bundled substitute — and the page reports
+    // the substitution so nobody mistakes it for the real font.
+    let r = render("text_unsupported_type1.pdf").unwrap();
+    assert!(ink_bbox(&r).is_some(), "substitute drew no ink");
+    assert!(
+        !r.font_substitutions.is_empty(),
+        "substitution must be reported"
+    );
 }
 
 // --------------------------------------------------------------------

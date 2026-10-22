@@ -298,6 +298,12 @@ pub struct RenderedPage {
     pub dpi: f64,
     /// Rendered rectangle size in PDF points (CropBox, Rotate applied).
     pub page_size_pts: (f64, f64),
+    /// Non-embedded fonts that were drawn with a bundled substitute
+    /// (see [`crate::fontsubst`]). Empty means every glyph on the page
+    /// came from an embedded program; non-empty means shapes are
+    /// approximations of the named fonts and the image must not be
+    /// treated as a faithful render of them.
+    pub font_substitutions: Vec<crate::fontsubst::FontSubstitution>,
 }
 
 /// Render `page` of `doc` to a pixel buffer. On failure no
@@ -310,14 +316,7 @@ pub fn render_page(
     let limits = &opts.limits;
 
     // ---- Reject pages we cannot faithfully draw ---------------------
-    if let Some(annots) = page_dict_entry(doc, page, b"Annots")? {
-        if !is_empty_array(&annots) {
-            return Err(Error::Unsupported {
-                feature: "page annotations (/Annots)",
-                detail: "page has annotations; annotation rendering is not implemented".into(),
-            });
-        }
-    }
+    // (`/Annots` are drawn after the content — see `draw_annotations`.)
     if let Some(uu) = page_dict_entry(doc, page, b"UserUnit")? {
         let v = uu
             .as_number()
@@ -400,8 +399,15 @@ pub fn render_page(
         extract: None,
         extract_unicode_bytes: 0,
         extraction_only: false,
+        substitutions: Vec::new(),
+        isolated_groups: 0,
     };
     renderer.run(&ops)?;
+    // Annotation appearance streams paint *over* the page content, in
+    // /Annots order (§12.5.5), each under a fresh graphics state.
+    let page_resources = renderer.resources.clone();
+    renderer.draw_annotations(page, &page_resources)?;
+    let font_substitutions = std::mem::take(&mut renderer.substitutions);
 
     Ok(RenderedPage {
         pixmap,
@@ -409,6 +415,7 @@ pub fn render_page(
         height,
         dpi: opts.dpi,
         page_size_pts: (w_pts, h_pts),
+        font_substitutions,
     })
 }
 
@@ -449,10 +456,6 @@ fn page_dict_entry(doc: &Document, page: &Page, key: &[u8]) -> Result<Option<Obj
         None => Ok(None),
         Some(v) => Ok(Some(doc.deref(v)?)),
     }
-}
-
-fn is_empty_array(o: &Object) -> bool {
-    matches!(o, Object::Array(a) if a.is_empty())
 }
 
 fn rect_is_finite(r: &crate::page::Rect) -> bool {
@@ -574,6 +577,15 @@ pub(crate) struct Renderer<'a> {
     /// interpreter still walks every operator so text state, resources
     /// and limits behave exactly as during a render.
     extraction_only: bool,
+    /// Non-embedded fonts drawn with a bundled substitute this page
+    /// (deduplicated) — surfaced on [`RenderedPage`].
+    substitutions: Vec<crate::fontsubst::FontSubstitution>,
+    /// Nesting depth of *isolated* transparency groups being painted
+    /// inline. Inside one, a non-Normal blend mode would composite
+    /// against the group's transparent backdrop rather than the page —
+    /// a difference inline painting cannot reproduce, so `gs` refuses
+    /// it while this is non-zero.
+    isolated_groups: u32,
 }
 
 impl<'a> Renderer<'a> {
@@ -622,6 +634,8 @@ impl<'a> Renderer<'a> {
             extract: Some(Vec::new()),
             extract_unicode_bytes: 0,
             extraction_only: true,
+            substitutions: Vec::new(),
+            isolated_groups: 0,
         })
     }
 
@@ -916,6 +930,13 @@ impl<'a> Renderer<'a> {
                     )));
                 }
                 let f = crate::font::load_font(self.doc, &self.resources, font, self.limits)?;
+                // Record a substituted (non-embedded) font once per page
+                // so the caller can tell this render from a faithful one.
+                if let Some(s) = f.substitution() {
+                    if !self.substitutions.contains(&s) {
+                        self.substitutions.push(s);
+                    }
+                }
                 self.gs.text.font = Some(f);
                 self.gs.text.font_name = font.clone();
                 self.gs.text.font_size = *size;
@@ -1311,7 +1332,17 @@ impl<'a> Renderer<'a> {
                     self.gs.stroke_alpha = alpha_param(v, "CA")?;
                 }
                 b"BM" => {
-                    self.gs.blend_mode = parse_blend_mode(v)?;
+                    let bm = parse_blend_mode(v)?;
+                    if bm != tiny_skia::BlendMode::SourceOver && self.isolated_groups > 0 {
+                        return Err(Error::Unsupported {
+                            feature: "group XObject (/Group in a form dictionary)",
+                            detail: "a non-Normal blend mode inside an isolated transparency \
+                                     group composites against the group's own backdrop, \
+                                     which inline painting cannot reproduce"
+                                .into(),
+                        });
+                    }
+                    self.gs.blend_mode = bm;
                 }
 
                 // ---- accepted no-ops (spec-tolerable) ---------------
@@ -1533,14 +1564,44 @@ impl<'a> Renderer<'a> {
             return Err(Error::Structure("/Matrix has non-finite values".into()));
         }
 
-        // Group XObjects (§8.10.3) carry a /Group dictionary; the only
-        // defined subtype is /Transparency, which needs the
-        // transparency model — refuse rather than render wrong.
-        if dict.contains_key(b"Group".as_slice()) {
-            return Err(Error::Unsupported {
-                feature: "group XObject (/Group in a form dictionary)",
-                detail: "group attributes (e.g. /Transparency) are not implemented".into(),
-            });
+        // Group XObjects (§8.10.3, §11.4.7): a transparency group is
+        // composited as a whole. When the current state is opaque
+        // (CA = ca = 1), the blend mode is Normal and the group is not
+        // a knockout group, compositing the group result equals
+        // painting its content directly, so it can run inline with no
+        // approximation. Anything else needs real group compositing →
+        // refuse. Isolated groups additionally forbid non-Normal blend
+        // modes *inside* (tracked via `isolated_groups`).
+        let mut isolated = false;
+        if let Some(g) = dict.get(b"Group".as_slice()) {
+            let g = self.doc.deref(g)?;
+            let gd = g
+                .as_dict()
+                .ok_or_else(|| Error::Structure("/Group is not a dictionary".into()))?;
+            let s = gd.get(b"S".as_slice()).and_then(|o| o.as_name());
+            if s != Some(b"Transparency") {
+                return Err(Error::Unsupported {
+                    feature: "group XObject (/Group in a form dictionary)",
+                    detail: format!(
+                        "/Group /S /{} is not a transparency group",
+                        String::from_utf8_lossy(s.unwrap_or(b"?"))
+                    ),
+                });
+            }
+            let knockout = gd.get(b"K".as_slice()).and_then(|o| o.as_bool()) == Some(true);
+            let opaque_normal = self.gs.fill_alpha >= 1.0
+                && self.gs.stroke_alpha >= 1.0
+                && self.gs.blend_mode == tiny_skia::BlendMode::SourceOver;
+            if knockout || !opaque_normal {
+                return Err(Error::Unsupported {
+                    feature: "group XObject (/Group in a form dictionary)",
+                    detail: "transparency group under non-opaque alpha, a non-Normal blend \
+                             mode, or with /K true needs group compositing, which is not \
+                             implemented"
+                        .into(),
+                });
+            }
+            isolated = gd.get(b"I".as_slice()).and_then(|o| o.as_bool()) == Some(true);
         }
         // A form may carry /OC (optional content membership) or /Ref
         // (reference XObject); both change what's painted — refuse
@@ -1611,7 +1672,13 @@ impl<'a> Renderer<'a> {
             let decoded = self.doc.decode_stream(dict, raw)?;
             let ops = crate::content::parse_content_stream(&[decoded], self.limits)?;
             self.xobject_depth += 1;
+            if isolated {
+                self.isolated_groups += 1;
+            }
             let r = self.run(&ops);
+            if isolated {
+                self.isolated_groups -= 1;
+            }
             self.xobject_depth -= 1;
             r
         })();
@@ -1622,6 +1689,216 @@ impl<'a> Renderer<'a> {
         }
         self.gs = self.gs_stack.pop().expect("pushed above");
         run_result
+    }
+
+    /// Draw the page's annotation appearance streams (§12.5.5).
+    ///
+    /// For each entry of `/Annots`, in array order (the painting
+    /// order): skip annotations flagged *Hidden* or *NoView*, skip
+    /// `/Popup` (a viewer-side pop-up window, never part of the page
+    /// image), skip a `/Link` without `/AP` (links have no appearance
+    /// unless one is supplied). Every other annotation must carry an
+    /// `/AP` with a normal appearance `/N` — a stream, or a
+    /// sub-dictionary of states selected by `/AS`. An annotation whose
+    /// appearance we would have to *synthesise* (no `/AP`) is refused
+    /// with `Unsupported`, never silently dropped.
+    ///
+    /// Placement: the form's `/BBox` transformed by its `/Matrix` is
+    /// fitted to `/Rect` (scale + translate — Algorithm 8.1), then the
+    /// stream is painted exactly like a Form XObject (`do_form`: gs
+    /// saved, `/Matrix` applied, clipped to `/BBox`, own `/Resources`,
+    /// gs restored) under a *fresh* graphics state — annotation
+    /// appearances never inherit the page content's state.
+    fn draw_annotations(&mut self, page: &Page, page_resources: &Object) -> Result<(), Error> {
+        let Some(annots) = page_dict_entry(self.doc, page, b"Annots")? else {
+            return Ok(());
+        };
+        let entries = match annots {
+            Object::Array(a) => a,
+            Object::Null => return Ok(()),
+            _ => return Err(Error::Structure("/Annots is not an array".into())),
+        };
+        for entry in &entries {
+            let entry_ref = entry.as_ref();
+            let annot = self.doc.deref(entry)?;
+            let Some(ad) = annot.as_dict() else {
+                return Err(Error::Structure(
+                    "/Annots entry is not an annotation dictionary".into(),
+                ));
+            };
+            let subtype: Vec<u8> = ad
+                .get(b"Subtype".as_slice())
+                .and_then(|o| o.as_name())
+                .map(|n| n.to_vec())
+                .unwrap_or_default();
+            // /F flags (Table 165): bit 2 Hidden, bit 6 NoView.
+            let flags = ad
+                .get(b"F".as_slice())
+                .and_then(|o| o.as_i64())
+                .unwrap_or(0);
+            if flags & 0x02 != 0 || flags & 0x20 != 0 {
+                continue;
+            }
+            if subtype == b"Popup" {
+                continue;
+            }
+            let ap = match ad.get(b"AP".as_slice()) {
+                Some(o) => self.doc.deref(o)?,
+                None => {
+                    if subtype == b"Link" {
+                        continue;
+                    }
+                    return Err(Error::Unsupported {
+                        feature: "annotation without appearance stream",
+                        detail: format!(
+                            "/Subtype /{} has no /AP — synthesising an appearance is not \
+                             implemented",
+                            String::from_utf8_lossy(&subtype)
+                        ),
+                    });
+                }
+            };
+            let ap = ap
+                .as_dict()
+                .ok_or_else(|| Error::Structure("/AP is not a dictionary".into()))?;
+            let Some(n_obj) = ap.get(b"N".as_slice()) else {
+                return Err(Error::Structure("/AP has no normal appearance (/N)".into()));
+            };
+            let mut stream_ref = n_obj.as_ref();
+            let n = self.doc.deref(n_obj)?;
+            let stream = match n {
+                Object::Stream { .. } => n,
+                Object::Dict(states) => {
+                    // Appearance sub-dictionary: one stream per state,
+                    // selected by /AS. A missing /AS is only acceptable
+                    // when there is exactly one state to choose from.
+                    let key: Vec<u8> = match ad.get(b"AS".as_slice()).and_then(|o| o.as_name()) {
+                        Some(k) => k.to_vec(),
+                        None if states.len() == 1 => states.keys().next().unwrap().clone(),
+                        None => {
+                            return Err(Error::Unsupported {
+                                feature: "annotation appearance states without /AS",
+                                detail: format!(
+                                    "/AP /N has {} states and the annotation names none",
+                                    states.len()
+                                ),
+                            })
+                        }
+                    };
+                    match states.get(key.as_slice()) {
+                        // A state with no stream (e.g. /Off absent)
+                        // draws nothing — that is the file's choice.
+                        None => continue,
+                        Some(o) => {
+                            stream_ref = o.as_ref();
+                            self.doc.deref(o)?
+                        }
+                    }
+                }
+                _ => {
+                    return Err(Error::Structure(
+                        "/AP /N is neither a stream nor a dictionary".into(),
+                    ))
+                }
+            };
+            let (sdict, sraw) = stream
+                .as_stream()
+                .ok_or_else(|| Error::Structure("appearance state is not a stream".into()))?;
+            let sdict = sdict.clone();
+            let sraw = sraw.to_vec();
+
+            // /Rect, normalised (§12.5.2: corners may be in any order).
+            let rect_obj = ad
+                .get(b"Rect".as_slice())
+                .ok_or_else(|| Error::Structure("annotation has no /Rect".into()))?;
+            let rect_obj = self.doc.deref(rect_obj)?;
+            let r = crate::page::Rect::from_object(&rect_obj)
+                .ok_or_else(|| Error::Structure("/Rect is not a 4-number rectangle".into()))?;
+            if !rect_is_finite(&r) {
+                return Err(Error::Structure("/Rect has non-finite values".into()));
+            }
+            let (rx0, rx1) = (r.llx.min(r.urx), r.llx.max(r.urx));
+            let (ry0, ry1) = (r.lly.min(r.ury), r.lly.max(r.ury));
+
+            // Algorithm 8.1: transform /BBox by /Matrix, fit the result's
+            // bounds to /Rect. A degenerate transformed box (zero width
+            // or height) gets scale 1 on that axis.
+            let bbox = sdict
+                .get(b"BBox".as_slice())
+                .ok_or_else(|| Error::Structure("appearance stream has no /BBox".into()))
+                .and_then(|o| {
+                    crate::page::Rect::from_object(o)
+                        .ok_or_else(|| Error::Structure("/BBox is not a 4-number rectangle".into()))
+                })?;
+            if !rect_is_finite(&bbox) {
+                return Err(Error::Structure("/BBox has non-finite values".into()));
+            }
+            let matrix = match sdict.get(b"Matrix".as_slice()) {
+                None | Some(Object::Null) => Matrix::IDENTITY,
+                Some(o) => matrix_from_array(o)
+                    .ok_or_else(|| Error::Structure("/Matrix is not a 6-number array".into()))?,
+            };
+            if !matrix.is_finite() {
+                return Err(Error::Structure("/Matrix has non-finite values".into()));
+            }
+            let corners = [
+                matrix.transform(bbox.llx, bbox.lly),
+                matrix.transform(bbox.urx, bbox.lly),
+                matrix.transform(bbox.urx, bbox.ury),
+                matrix.transform(bbox.llx, bbox.ury),
+            ];
+            let tx0 = corners.iter().map(|c| c.0).fold(f64::INFINITY, f64::min);
+            let tx1 = corners
+                .iter()
+                .map(|c| c.0)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let ty0 = corners.iter().map(|c| c.1).fold(f64::INFINITY, f64::min);
+            let ty1 = corners
+                .iter()
+                .map(|c| c.1)
+                .fold(f64::NEG_INFINITY, f64::max);
+            let sx = if tx1 - tx0 > 1e-9 {
+                (rx1 - rx0) / (tx1 - tx0)
+            } else {
+                1.0
+            };
+            let sy = if ty1 - ty0 > 1e-9 {
+                (ry1 - ry0) / (ty1 - ty0)
+            } else {
+                1.0
+            };
+            let a = Matrix::new(sx, 0.0, 0.0, sy, rx0 - tx0 * sx, ry0 - ty0 * sy);
+            if !a.is_finite() {
+                return Err(Error::Structure(
+                    "annotation placement matrix is not finite".into(),
+                ));
+            }
+
+            // Fresh state per annotation: page content state, text
+            // matrices and any leftover gsave stack do not leak in.
+            self.gs = GraphicsState::new();
+            self.gs.ctm = a;
+            self.gs_stack.clear();
+            self.in_text = false;
+            self.text_tm = Matrix::IDENTITY;
+            self.text_tlm = Matrix::IDENTITY;
+            self.path.reset();
+            self.resources = page_resources.clone();
+            if self.xobject_invocations >= self.limits.max_xobject_invocations {
+                return Err(Error::LimitExceeded {
+                    limit: "max_xobject_invocations",
+                    max: self.limits.max_xobject_invocations,
+                });
+            }
+            self.xobject_invocations += 1;
+            self.do_form(
+                &sdict,
+                &sraw,
+                b"annotation appearance",
+                stream_ref.or(entry_ref),
+            )?;
+        }
+        Ok(())
     }
 
     /// Intersect the current clip with `rect` (in user space under the

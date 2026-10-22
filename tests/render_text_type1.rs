@@ -260,19 +260,134 @@ fn type1_eexec_garbage_fontfile_is_structure_error() {
 // --------------------------------------------------------------------
 
 #[test]
-fn type1_nonembedded_text_passes_render_refuses() {
-    // No /FontDescriptor at all → metrics-only font.
+fn type1_nonembedded_unknown_name_uses_generic_substitute() {
+    // No /FontDescriptor, /BaseFont /Test (unknown): extraction uses
+    // the PDF widths; render draws with a *generic* bundled face and
+    // reports exactly that.
     let pdf = pdf_with_font(b"BT /F0 40 Tf 20 100 Td (AB) Tj ET", "", &[]);
-    // Extraction: widths + WinAnsi → "AB".
     let s = text(&pdf).unwrap();
     assert_eq!(s.trim_end_matches('\n'), "AB", "got {s:?}");
-    // Render: no outlines → Unsupported, never a silent blank.
-    match render(&pdf) {
-        Err(Error::Unsupported { feature, .. }) => {
-            assert!(feature.contains("non-embedded"), "got {feature}");
-        }
-        other => panic!("non-embedded render must refuse, got {other:?}"),
+    let r = render(&pdf).unwrap();
+    assert!(inked(&r) > 20, "substitute drew no ink");
+    assert_eq!(r.font_substitutions.len(), 1);
+    let sub = &r.font_substitutions[0];
+    assert_eq!(sub.base_font, "Test");
+    assert_eq!(sub.kind, kasane_pdf::SubstKind::Generic);
+    assert!(
+        sub.substitute.starts_with("LiberationSans"),
+        "{}",
+        sub.substitute
+    );
+}
+
+/// Standard 14 without `/Widths` or `/FontDescriptor` — the common
+/// `<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>` shape.
+fn pdf_std14(stream: &[u8], base: &str) -> Vec<u8> {
+    let font =
+        format!("<< /Type /Font /Subtype /Type1 /BaseFont /{base} /Encoding /WinAnsiEncoding >>");
+    let page = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+        /Resources << /Font << /F0 5 0 R >> >> /Contents 4 0 R >>";
+    let bodies: Vec<(u32, Vec<u8>)> = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, page.bytes().collect()),
+        (
+            4,
+            [
+                format!("<< /Length {} >>\nstream\n", stream.len()).into_bytes(),
+                stream.to_vec(),
+                b"\nendstream".to_vec(),
+            ]
+            .concat(),
+        ),
+        (5, font.into_bytes()),
+    ];
+    let mut out = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (n, b) in &bodies {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{n} 0 obj\n").as_bytes());
+        out.extend_from_slice(b);
+        out.extend_from_slice(b"\nendobj\n");
     }
+    let xref = out.len();
+    out.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+    for off in offsets {
+        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+    );
+    out
+}
+
+#[test]
+fn type1_standard14_substitute_metrics_and_report() {
+    for (base, expect_face, expect_adv_a) in [
+        ("Helvetica", "LiberationSans-Regular", 667.0),
+        ("Helvetica-BoldOblique", "LiberationSans-BoldItalic", 722.0),
+        ("Times-Roman", "LiberationSerif-Regular", 722.0),
+        ("Courier-Bold", "LiberationMono-Bold", 600.0),
+    ] {
+        let pdf = pdf_std14(b"BT /F0 20 Tf 10 100 Td (A) Tj ET", base);
+        let r = render(&pdf).unwrap_or_else(|e| panic!("{base}: {e:?}"));
+        assert!(inked(&r) > 10, "{base}: no ink");
+        assert_eq!(r.font_substitutions.len(), 1, "{base}");
+        assert_eq!(r.font_substitutions[0].substitute, expect_face, "{base}");
+        assert_eq!(
+            r.font_substitutions[0].kind,
+            kasane_pdf::SubstKind::Standard14
+        );
+        // No /Widths → advance comes from the metric-compatible face.
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+        let adv = t.chars[0].advance.0;
+        assert!(
+            (adv - expect_adv_a * 20.0 / 1000.0).abs() < 0.05,
+            "{base}: 'A' advance {adv}"
+        );
+    }
+}
+
+#[test]
+fn type1_symbol_fonts_are_refused_not_approximated() {
+    for base in ["Symbol", "ZapfDingbats"] {
+        let pdf = pdf_std14(b"BT /F0 20 Tf 10 100 Td (a) Tj ET", base);
+        match render(&pdf) {
+            Err(Error::Unsupported { feature, .. }) => {
+                assert!(feature.contains("non-embedded"), "{base}: {feature}")
+            }
+            other => panic!("{base}: expected Unsupported, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn type1_substitute_honours_pdf_widths_and_tounicode() {
+    // /Widths present → PDF advances win over the substitute's hmtx;
+    // /ToUnicode still drives extraction.
+    let objs = vec![(
+        9,
+        b"<< /Length 118 >>\nstream\n/CIDInit /ProcSet findresource begin begincmap \
+          1 begincodespacerange <00> <FF> endcodespacerange \
+          1 beginbfchar <41> <0042> endbfchar endcmap\nendstream"
+            .to_vec(),
+    )];
+    let pdf = pdf_with_font(
+        b"BT /F0 40 Tf 20 100 Td (A) Tj ET",
+        "/ToUnicode 9 0 R",
+        &objs,
+    );
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    assert_eq!(t.chars[0].unicode.as_deref(), Some("B"));
+    // pdf_with_font declares /Widths[0] = 573 for 'A' → 573/1000 × 40.
+    assert!(
+        (t.chars[0].advance.0 - 22.92).abs() < 0.01,
+        "{}",
+        t.chars[0].advance.0
+    );
+    assert!(render(&pdf).is_ok());
 }
 
 #[test]
