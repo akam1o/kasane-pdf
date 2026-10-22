@@ -1220,6 +1220,28 @@ fn write_op(op: &Operation, out: &mut BoundedWriter<'_>) -> Result<(), Error> {
             out.extend_from_slice(n)?;
             out.extend_from_slice(b" CS")?;
         }
+        Operation::Type3SetWidth { wx, wy } => {
+            out.extend_from_slice(fmt_num(*wx).as_bytes())?;
+            out.push(b' ')?;
+            out.extend_from_slice(fmt_num(*wy).as_bytes())?;
+            out.extend_from_slice(b" d0")?;
+        }
+        Operation::Type3SetWidthAndBox {
+            wx,
+            wy,
+            llx,
+            lly,
+            urx,
+            ury,
+        } => {
+            for (i, v) in [wx, wy, llx, lly, urx, ury].iter().enumerate() {
+                if i > 0 {
+                    out.push(b' ')?;
+                }
+                out.extend_from_slice(fmt_num(**v).as_bytes())?;
+            }
+            out.extend_from_slice(b" d1")?;
+        }
         Operation::SetColorSpaceFill(n) => {
             out.push(b'/')?;
             out.extend_from_slice(n)?;

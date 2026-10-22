@@ -1069,6 +1069,10 @@ impl<'a> DiagWalker<'a> {
             O::SetLineJoin(j) => self.gs.stroke.join = *j,
             O::SetMiterLimit(m) => self.gs.stroke.miter_limit = *m,
             O::SetDash { .. } | O::SetFlatness(_) | O::SetRenderingIntent(_) => {}
+            O::Type3SetWidth { .. } | O::Type3SetWidthAndBox { .. } => {
+                // d0/d1 only appear inside a Type3 CharProc; at page
+                // level they carry no geometry → ignore.
+            }
             O::SetColorSpaceStroke(n) | O::SetColorSpaceFill(n) => {
                 // A Pattern colour space means subsequent SC/sc paints
                 // a *pattern* — its extent is whatever the pattern
