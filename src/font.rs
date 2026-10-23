@@ -1081,11 +1081,19 @@ impl Type3Font {
         Ok(Some((d.clone(), raw.to_vec())))
     }
 
-    /// Char code → glyph advance in 1/1000-em units (PDF `/Widths`).
-    /// `/Widths` is authoritative — the CharProc's `d0`/`d1` `wx`
-    /// should agree but the font dict wins on conflict (§9.6.4.1).
+    /// Char code → glyph advance in 1/1000 text-space units, so the
+    /// common `w / 1000 × Tfs` formula applies as for every other font.
+    /// Type 3 `/Widths` are in *glyph space* (§9.6.4, Table 112) and
+    /// pass through `/FontMatrix` first: with the default
+    /// `[0.001 0 0 0.001 0 0]` that is the familiar ÷1000, but a
+    /// `[1 0 0 -1 0 0]` font (common from `dvipdf` bitmap output)
+    /// advances by the raw width. `/Widths` is authoritative — the
+    /// CharProc's `d0`/`d1` `wx` should agree but the font dict wins on
+    /// conflict (§9.6.4.1).
     pub(crate) fn width(&self, code: u8) -> f64 {
-        self.widths[code as usize]
+        let w = self.widths[code as usize];
+        // Horizontal component of (w, 0) under FontMatrix.
+        self.font_matrix.a * w * 1000.0
     }
 
     /// Code → Unicode via `/ToUnicode` (else `.notdef` — no AGL for
@@ -1623,7 +1631,7 @@ fn load_composite_font(
                     if ws.len() % 3 != 0 {
                         return Err(Error::Structure("/W2 sub-array must hold triples".into()));
                     }
-                    for (k, tri) in ws.chunks_exact(3).enumerate() {
+                    for (k, tri) in ws.as_chunks::<3>().0.iter().enumerate() {
                         let cid = c0
                             .checked_add(k as u32)
                             .filter(|c| *c <= 0xFFFF)

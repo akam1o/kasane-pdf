@@ -620,7 +620,9 @@ fn wstar_clip_then_fill_is_clipped() {
     let black = r
         .pixmap
         .data()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|p| p[0] < 128)
         .count();
     assert_eq!(black, 6400);

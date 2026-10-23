@@ -1372,6 +1372,17 @@ fn is_ei_at(input: &[u8], i: usize, start: usize) -> bool {
     before_ok && after_ok
 }
 
+/// The first `EI` at or after `from` that is delimited on its right
+/// side only (the byte before it may be image data).
+fn next_ei_after_delimited(input: &[u8], from: usize) -> Option<usize> {
+    (from..input.len().saturating_sub(1)).find(|&i| {
+        &input[i..i + 2] == b"EI"
+            && (i + 2 == input.len()
+                || crate::lexer::is_white(input[i + 2])
+                || matches!(input[i + 2], b'/' | b'[' | b'<' | b'(' | b'%'))
+    })
+}
+
 /// The first delimited `EI` at or after `from`.
 fn next_ei(input: &[u8], from: usize, start: usize) -> Option<usize> {
     (from..input.len().saturating_sub(1)).find(|&i| is_ei_at(input, i, start))
@@ -1466,7 +1477,7 @@ fn inline_image_end(
                     "inline image has invalid /W {w} /H {h} /BPC {bpc}"
                 )));
             }
-            let row = (w as u64 * nc * bpc as u64 + 7) / 8;
+            let row = (w as u64 * nc * bpc as u64).div_ceil(8);
             let len = row.checked_mul(h as u64).ok_or(Error::LimitExceeded {
                 limit: "max_stream_bytes (inline image)",
                 max: limits.max_stream_bytes,
@@ -1510,6 +1521,54 @@ fn inline_image_end(
                 .position(|w| w == b"~>")
                 .ok_or_else(eof)?;
             finish(start + p + 2)
+        }
+        Some(b"CCITTFaxDecode") if filters.len() == 1 => {
+            // CCITT data has no length and no terminator we can trust
+            // (EOFB is optional), and producers write `EI` straight after
+            // the last data byte. Try each `EI` that is delimited *after*
+            // and accept the first whose preceding bytes decode as a
+            // complete /W × /H image with the inline parameters.
+            let w = inline_dict_get(dict, b"Width", b"W").and_then(|o| o.as_i64());
+            let h = inline_dict_get(dict, b"Height", b"H").and_then(|o| o.as_i64());
+            let (Some(w), Some(h)) = (w, h) else {
+                return Err(Error::Structure(
+                    "inline image with /CCF has no /W or /H".into(),
+                ));
+            };
+            let (Ok(w), Ok(h)) = (u32::try_from(w), u32::try_from(h)) else {
+                return Err(Error::Structure(format!(
+                    "inline image has invalid /W {w} /H {h}"
+                )));
+            };
+            let parms = match inline_dict_get(dict, b"DecodeParms", b"DP") {
+                None | Some(Object::Null) => None,
+                Some(Object::Dict(d)) => Some(d),
+                Some(_) => {
+                    return Err(Error::Structure(
+                        "inline image /DP must be a dictionary".into(),
+                    ))
+                }
+            };
+            let mut from = start;
+            let mut tries = 0usize;
+            while let Some(i) = next_ei_after_delimited(input, from) {
+                tries += 1;
+                if tries > 256 {
+                    break;
+                }
+                let end = if i > start && crate::lexer::is_white(input[i - 1]) {
+                    i - 1
+                } else {
+                    i
+                };
+                if crate::bilevel::ccitt_decode(&input[start..end], parms, w, h, limits).is_ok() {
+                    return Ok((end, i + 2));
+                }
+                from = i + 2;
+            }
+            Err(Error::Parse(
+                "inline image: no EI closes a complete CCITTFaxDecode image".into(),
+            ))
         }
         Some(b"FlateDecode") => {
             // Try each delimited `EI`; accept the first whose preceding

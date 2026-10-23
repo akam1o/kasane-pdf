@@ -341,13 +341,13 @@ def flate_predictor_bad():
 
 
 def unsupported_filter():
-    """Stream with a filter we don't implement (/LZWDecode)."""
+    """Stream with a filter we don't implement (/JPXDecode)."""
     objects = [
         (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
         (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
         (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
             b"/Contents 4 0 R >>"),
-        (4, b"<< /Length 10 /Filter /LZWDecode >>\nstream\n" + b"\x00" * 10 + b"\nendstream"),
+        (4, b"<< /Length 10 /Filter /JPXDecode >>\nstream\n" + b"\x00" * 10 + b"\nendstream"),
     ]
     write("unsupported_filter.pdf", build_pdf(objects))
 

@@ -1033,7 +1033,7 @@ fn type0_renders_distinct_glyphs() {
     );
     let page = render_bytes(&bytes).unwrap();
     let data = page.pixmap.data();
-    assert!(data.chunks_exact(4).any(|p| p[0] < 128));
+    assert!(data.as_chunks::<4>().0.iter().any(|p| p[0] < 128));
 }
 
 #[test]
@@ -1370,7 +1370,13 @@ fn invisible_mode3_chars_still_extract_and_position() {
     let page = render_bytes(&bytes).unwrap();
     // char2 (mode 0) is painted; char1 (mode 3) is not — ink exists
     // only for char2.
-    assert!(page.pixmap.data().chunks_exact(4).any(|p| p[0] < 128));
+    assert!(page
+        .pixmap
+        .data()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .any(|p| p[0] < 128));
 }
 
 #[test]
@@ -1396,7 +1402,7 @@ fn render_and_extract_share_spacing() {
     let page = render_bytes(&bytes).unwrap();
     let data = page.pixmap.data();
     // char1 at (20,50), 20pt → ink near x≈20. char2 at (40,50).
-    assert!(data.chunks_exact(4).any(|p| p[3] > 0));
+    assert!(data.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
 }
 
 #[test]
@@ -1514,7 +1520,7 @@ fn jp_glyph_shapes_differ_by_gid() {
     let mut maxx = 0u32;
     let mut miny = u32::MAX;
     let mut maxy = 0u32;
-    for (i, px) in data.chunks_exact(4).enumerate() {
+    for (i, px) in data.as_chunks::<4>().0.iter().enumerate() {
         if px[0] < 128 {
             let (x, y) = (i as u32 % page.width, i as u32 / page.width);
             minx = minx.min(x);

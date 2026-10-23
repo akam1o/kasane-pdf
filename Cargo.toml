@@ -2,7 +2,7 @@
 name = "kasane-pdf"
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.70"
+rust-version = "1.92"
 authors = ["akam1o <5158577+akam1o@users.noreply.github.com>"]
 description = "A PDF parsing/processing engine written in Rust (early development)"
 publish = false
@@ -30,3 +30,9 @@ jpeg-decoder = { version = "0.3", default-features = false }
 # MIT OR Apache-2.0, zero dependencies; only glyph outlines and the
 # cmap/post tables are used — no shaping (HarfBuzz is not required).
 ttf-parser = { version = "0.25", default-features = false, features = ["std", "glyph-names"] }
+# Apache-2.0 OR MIT, pure Rust (`#![forbid(unsafe_code)]`), no_std +
+# alloc; the `simd`/`image` features stay off. JBIG2 (T.88) generic,
+# refinement, symbol/text, halftone and pattern regions; MMR through
+# hayro-ccitt, which also serves /CCITTFaxDecode (G3 1D/2D, G4).
+hayro-jbig2 = { version = "0.3", default-features = false }
+hayro-ccitt = { version = "0.4", default-features = false }

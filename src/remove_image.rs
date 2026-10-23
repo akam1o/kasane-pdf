@@ -1287,7 +1287,9 @@ pub(crate) fn is_default_decode(obj: &Object, ncomps: usize) -> bool {
     if arr.len() != ncomps * 2 {
         return false;
     }
-    arr.chunks_exact(2)
+    arr.as_chunks::<2>()
+        .0
+        .iter()
         .all(|p| p[0].as_number() == Some(0.0) && p[1].as_number() == Some(1.0))
 }
 

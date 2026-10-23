@@ -2323,7 +2323,96 @@ impl<'a> Renderer<'a> {
             }
         }
         let src = self.decode_image_source(dict, raw, name, false)?;
+        let is_mask = dict.get(b"ImageMask".as_slice()).and_then(|o| o.as_bool()) == Some(true);
+        if is_mask && self.gs.fill_space.is_pattern() {
+            // §8.9.6.2: a stencil mask paints the *current fill colour*,
+            // and in /Pattern space that colour is the pattern — the
+            // stencil becomes a coverage mask for the pattern paint.
+            return self.composite_stencil_with_pattern(&src);
+        }
         self.composite_image(&src)
+    }
+
+    /// Paint the fill pattern through a stencil image: the stencil is
+    /// resampled into a device-space coverage mask exactly as
+    /// `composite_image` resamples colours, then the pattern is
+    /// painted under that mask (× the clip). No pattern selected in
+    /// /Pattern space paints nothing (§8.7.3.3).
+    fn composite_stencil_with_pattern(&mut self, src: &ImageSource) -> Result<(), Error> {
+        let Some(pat) = self.gs.fill_pattern.clone() else {
+            return Ok(());
+        };
+        let ts = self.paint_ts()?;
+        let Some(inv) = ts.invert() else {
+            return Err(Error::Unsupported {
+                feature: "image transform",
+                detail: "CTM is not invertible".into(),
+            });
+        };
+        let (w, h) = (src.w as usize, src.h as usize);
+        let corners = [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)];
+        let (mut minx, mut miny, mut maxx, mut maxy) = (
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        );
+        for (x, y) in corners {
+            let mut p = tiny_skia::Point { x, y };
+            ts.map_point(&mut p);
+            minx = minx.min(p.x);
+            miny = miny.min(p.y);
+            maxx = maxx.max(p.x);
+            maxy = maxy.max(p.y);
+        }
+        let (pw, ph) = (self.pixmap.width() as i32, self.pixmap.height() as i32);
+        let x0 = minx.floor().max(0.0) as i32;
+        let y0 = miny.floor().max(0.0) as i32;
+        let x1 = maxx.ceil().min(pw as f32) as i32;
+        let y1 = maxy.ceil().min(ph as f32) as i32;
+        if x0 >= x1 || y0 >= y1 {
+            return Ok(());
+        }
+        let ex = (ts.sx * ts.sx + ts.ky * ts.ky).sqrt().max(1e-6);
+        let ey = (ts.kx * ts.kx + ts.sy * ts.sy).sqrt().max(1e-6);
+        let density = (w as f32 / ex).max(h as f32 / ey);
+        let k = if density.is_finite() {
+            (density.ceil() as usize).clamp(1, 4)
+        } else {
+            1
+        };
+        let mut mask = Mask::new(self.pixmap.width(), self.pixmap.height())
+            .ok_or_else(|| Error::Structure("stencil mask allocation failed".into()))?;
+        let data = mask.data_mut();
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let mut covered = 0u32;
+                for j in 0..k {
+                    for i in 0..k {
+                        let mut up = tiny_skia::Point {
+                            x: px as f32 + (i as f32 + 0.5) / k as f32,
+                            y: py as f32 + (j as f32 + 0.5) / k as f32,
+                        };
+                        inv.map_point(&mut up);
+                        let sx = (up.x * w as f32).floor();
+                        let sy = ((1.0 - up.y) * h as f32).floor();
+                        if sx < 0.0 || sy < 0.0 || sx >= w as f32 || sy >= h as f32 {
+                            continue;
+                        }
+                        if src.rgba[(sy as usize * w + sx as usize) * 4 + 3] != 0 {
+                            covered += 1;
+                        }
+                    }
+                }
+                if covered > 0 {
+                    data[(py as u64 * pw as u64 + px as u64) as usize] =
+                        (covered * 255 / (k * k) as u32) as u8;
+                }
+            }
+        }
+        let to_page = pat.matrix.concat(self.pattern_base);
+        let shading = pat.shading.clone();
+        self.paint_shading(&shading, &to_page, Some(&mask), true)
     }
 
     /// Paint an inline image (§8.9.7) through the image XObject path:
@@ -2486,6 +2575,19 @@ impl<'a> Renderer<'a> {
             .last()
             .map(|f| f == b"DCTDecode" || f == b"DCT")
             .unwrap_or(false);
+        let is_bilevel = filters
+            .last()
+            .map(|f| f == b"JBIG2Decode" || f == b"CCITTFaxDecode" || f == b"CCF")
+            .unwrap_or(false);
+        if is_bilevel && (bpc != 1 || ncomps != 1) {
+            // §7.4.6/§7.4.7: these filters deliver 1-bit monochrome
+            // samples; the dictionary has to describe exactly that.
+            return Err(Error::Structure(format!(
+                "/{} image /{} must be 1 bit per component with one colour component (has {bpc} bpc, {ncomps} components)",
+                String::from_utf8_lossy(filters.last().unwrap()),
+                show_name(name)
+            )));
+        }
         let data = self.decode_image_data(dict, raw)?;
         if is_dct {
             // JPEG always yields 8-bit interleaved samples; the dict's
@@ -2504,7 +2606,7 @@ impl<'a> Renderer<'a> {
                 )));
             }
         }
-        let row_bytes = (w as u64 * ncomps as u64 * bpc as u64 + 7) / 8;
+        let row_bytes = (w as u64 * ncomps as u64 * bpc as u64).div_ceil(8);
         let need = row_bytes * h as u64;
         if (data.len() as u64) < need {
             return Err(Error::Structure(format!(
@@ -2578,7 +2680,7 @@ impl<'a> Renderer<'a> {
                     )));
                 }
                 let mut ranges = Vec::with_capacity(ncomps);
-                for p in a.chunks_exact(2) {
+                for p in a.as_chunks::<2>().0 {
                     let lo = p[0].as_i64().ok_or_else(|| {
                         Error::Structure("/Mask colour-key entries must be integers".into())
                     })?;
@@ -2707,7 +2809,7 @@ impl<'a> Renderer<'a> {
         }
         let decode = self.image_decode_array(sd, 1, &[(0.0, 1.0)])?;
         let data = self.decode_image_data(sd, sraw)?;
-        let row_bytes = (sw as u64 * bpc as u64 + 7) / 8;
+        let row_bytes = (sw as u64 * bpc as u64).div_ceil(8);
         if (data.len() as u64) < row_bytes * sh as u64 {
             return Err(Error::Structure(format!(
                 "image /SMask data length {} is shorter than {sw}x{sh}@{bpc}bpc",
@@ -2759,32 +2861,55 @@ impl<'a> Renderer<'a> {
             filters.len(),
         )?;
         let mut buf = raw.to_vec();
+        let last = filters.len() - 1;
         for (i, fname) in filters.iter().enumerate() {
             let parm = parms.get(i).and_then(|o| o.as_ref());
-            buf = match fname.as_slice() {
-                b"FlateDecode" | b"Fl" => {
-                    let mut dec = flate2::read::ZlibDecoder::new(buf.as_slice());
-                    let mut out = Vec::new();
-                    std::io::Read::read_to_end(&mut dec, &mut out)
-                        .map_err(|e| Error::Parse(format!("FlateDecode failed: {e}")))?;
-                    if out.len() as u64 > self.limits.max_image_bytes {
-                        return Err(Error::LimitExceeded {
-                            limit: "max_image_bytes",
-                            max: self.limits.max_image_bytes,
-                        });
-                    }
-                    // Predictor post-processing (PNG/TIFF) rides on
-                    // /DecodeParms — same rules as the stream decoder.
-                    crate::filter::apply_predictor(out, parm, self.limits)?
-                }
+            let name = fname.as_slice();
+            // An image filter yields samples, so nothing can follow it
+            // (§7.4: the byte filters come first in the chain).
+            if crate::filter::is_image_filter(name) && i != last {
+                return Err(Error::Structure(format!(
+                    "/{} must be the last filter of an image (followed by /{})",
+                    String::from_utf8_lossy(name),
+                    String::from_utf8_lossy(&filters[i + 1])
+                )));
+            }
+            buf = match name {
                 b"DCTDecode" | b"DCT" => self.dct_decode(&buf, parm)?,
-                other => {
+                b"JBIG2Decode" => {
+                    let (w, h) = image_dims_u32(dict)?;
+                    let globals = match parm.and_then(|p| p.get(b"JBIG2Globals".as_slice())) {
+                        None | Some(Object::Null) => None,
+                        Some(g) => {
+                            let g = self.doc.deref(g)?;
+                            let (gd, graw) = g.as_stream().ok_or_else(|| {
+                                Error::Structure("/JBIG2Globals is not a stream".into())
+                            })?;
+                            Some(self.doc.decode_stream(gd, graw)?)
+                        }
+                    };
+                    crate::bilevel::jbig2_decode(&buf, globals.as_deref(), w, h, self.limits)?
+                }
+                b"CCITTFaxDecode" | b"CCF" => {
+                    let (w, h) = image_dims_u32(dict)?;
+                    crate::bilevel::ccitt_decode(&buf, parm, w, h, self.limits)?
+                }
+                b"JPXDecode" => {
                     return Err(Error::Unsupported {
                         feature: "image stream filter",
-                        detail: format!("/{}", String::from_utf8_lossy(other)),
+                        detail: "/JPXDecode".into(),
                     })
                 }
+                // Byte filters (Flate, LZW, ASCII85, ASCIIHex, RunLength)
+                // and their predictors share the stream decoder.
+                _ => crate::filter::apply_one_filter(name, parm, &buf, self.limits)?,
             };
+            if buf.len() as u64 > self.limits.max_image_bytes {
+                return Err(Error::LimitExceeded {
+                    limit: "max_image_bytes",
+                    max: self.limits.max_image_bytes,
+                });
+            }
         }
         Ok(buf)
     }
@@ -2859,7 +2984,7 @@ impl<'a> Renderer<'a> {
                     )));
                 }
                 let mut out = Vec::with_capacity(ncomps);
-                for pair in arr.chunks_exact(2) {
+                for pair in arr.as_chunks::<2>().0 {
                     let lo = pair[0].as_number().ok_or_else(|| {
                         Error::Structure("/Decode entries must be numbers".into())
                     })?;
@@ -3261,7 +3386,12 @@ impl<'a> Renderer<'a> {
         let alpha = clamp01(alpha);
         let src = layer.data();
         let dst = self.pixmap.data_mut();
-        for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+        for (d, s) in dst
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(src.as_chunks::<4>().0)
+        {
             let la = s[3] as f64 / 255.0;
             if la == 0.0 {
                 continue;
@@ -4265,7 +4395,9 @@ fn parse_blend_mode(v: &Object) -> Result<tiny_skia::BlendMode, Error> {
 pub(crate) fn pdf_text_string(b: &[u8]) -> String {
     if b.len() >= 2 && b[0] == 0xFE && b[1] == 0xFF {
         let units: Vec<u16> = b[2..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|c| u16::from_be_bytes([c[0], c[1]]))
             .collect();
         return String::from_utf16_lossy(&units);
@@ -4274,6 +4406,24 @@ pub(crate) fn pdf_text_string(b: &[u8]) -> String {
         return String::from_utf8_lossy(&b[3..]).into_owned();
     }
     b.iter().map(|&c| c as char).collect()
+}
+
+/// `/Width` × `/Height` as `u32` for the bilevel filters; the
+/// dictionary has already passed `image_dims`, so this only re-reads.
+fn image_dims_u32(dict: &Dict) -> Result<(u32, u32), Error> {
+    let get = |key: &[u8]| -> Result<u32, Error> {
+        dict.get(key)
+            .and_then(|o| o.as_i64())
+            .filter(|v| *v > 0)
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| {
+                Error::Structure(format!(
+                    "image /{} is missing or not a positive integer",
+                    String::from_utf8_lossy(key)
+                ))
+            })
+    };
+    Ok((get(b"Width")?, get(b"Height")?))
 }
 
 fn show_name(n: &[u8]) -> String {

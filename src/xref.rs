@@ -312,7 +312,7 @@ fn read_xref_stream_section(
                 ));
             }
             let mut v = Vec::with_capacity(a.len() / 2);
-            for pair in a.chunks_exact(2) {
+            for pair in a.as_chunks::<2>().0 {
                 let first = pair[0]
                     .as_i64()
                     .filter(|i| *i >= 0 && *i <= u32::MAX as i64)
