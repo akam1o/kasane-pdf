@@ -300,7 +300,9 @@ fn basic_type0_renders_and_extracts() {
 }
 
 #[test]
-fn identity_v_refused() {
+fn identity_v_advances_downward() {
+    // Vertical writing (§9.7.4.3): default /DW2 [880 -1000] → the
+    // advance is −Tfs along y, none along x.
     let bytes = pdf_type0(
         b"BT /F1 24 Tf 20 60 Td <0041> Tj ET",
         "Identity-V",
@@ -311,8 +313,14 @@ fn identity_v_refused() {
         None,
         "",
     );
-    let err = extract_bytes(&bytes).unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+    let t = extract_bytes(&bytes).unwrap();
+    assert_eq!(t.chars[0].code, 0x41);
+    assert!((t.chars[0].advance.0).abs() < 1e-9);
+    assert!(
+        (t.chars[0].advance.1 + 24.0).abs() < 1e-6,
+        "{:?}",
+        t.chars[0].advance
+    );
 }
 
 #[test]
@@ -334,7 +342,10 @@ fn non_identity_encoding_refused() {
 }
 
 #[test]
-fn cidfont_type0_refused() {
+fn cidfont_type0_with_truetype_program_is_structure_error() {
+    // /CIDFontType0 names a CFF program; the fixture carries a
+    // TrueType /FontFile2 — the subtype and program disagree, and
+    // extraction (metrics only) still proceeds while render refuses.
     let bytes = pdf_type0(
         b"BT /F1 24 Tf 20 60 Td <0041> Tj ET",
         "Identity-H",
@@ -345,8 +356,8 @@ fn cidfont_type0_refused() {
         None,
         "",
     );
-    let err = extract_bytes(&bytes).unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+    let t = extract_bytes(&bytes).unwrap();
+    assert_eq!(t.chars[0].code, 0x41);
 }
 
 #[test]
@@ -1043,9 +1054,9 @@ fn rotated_cid_text() {
 }
 
 #[test]
-fn actual_text_refused_in_composite_text() {
-    // M6.1's ActualText detection is a shared marked-content hook —
-    // it must fire inside composite-font text too.
+fn actual_text_applies_to_composite_text() {
+    // The ActualText hook is shared marked-content logic — it must
+    // replace composite-font characters too.
     let bytes = pdf_type0(
         b"BT /F1 24 Tf 20 60 Td /Span << /ActualText (x) >> BDC <0001> Tj EMC ET",
         "Identity-H",
@@ -1056,8 +1067,10 @@ fn actual_text_refused_in_composite_text() {
         None,
         "",
     );
-    let err = extract_bytes(&bytes).unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+    let t = extract_bytes(&bytes).unwrap();
+    assert_eq!(t.chars.len(), 1);
+    assert_eq!(t.chars[0].unicode.as_deref(), Some("x"));
+    assert_eq!(t.chars[0].resolved_via, kasane_pdf::ResolveKind::ActualText);
 }
 
 // ====================================================================

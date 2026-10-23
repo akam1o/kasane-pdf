@@ -134,15 +134,21 @@ const FONT_RES: &str = "/Font << /F1 5 0 R >>";
 // --------------------------------------------------------------------
 
 #[test]
-fn actual_text_direct_dict_refused() {
+fn actual_text_direct_dict_replaces_the_span() {
     let stream = b"BT /F1 20 Tf 10 80 Td /Span << /ActualText (Zzz) >> BDC (A) Tj EMC ET";
     let bytes = pdf(stream, "", FONT_RES, &[]);
-    let err = extract_pdf(&bytes, &Limits::default()).unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+    let t = extract_pdf(&bytes, &Limits::default()).unwrap();
+    assert_eq!(t.chars.len(), 1);
+    assert_eq!(t.chars[0].unicode.as_deref(), Some("Zzz"));
+    assert_eq!(t.chars[0].resolved_via, ResolveKind::ActualText);
+    assert_eq!(
+        t.chars[0].code, b'A' as u32,
+        "the glyph shown is still reported"
+    );
 }
 
 #[test]
-fn actual_text_via_properties_name_refused() {
+fn actual_text_via_properties_name_replaces_the_span() {
     let stream = b"BT /F1 20 Tf 10 80 Td /Span /P1 BDC (A) Tj EMC ET";
     let bytes = pdf(
         stream,
@@ -150,12 +156,12 @@ fn actual_text_via_properties_name_refused() {
         "/Font << /F1 5 0 R >> /Properties << /P1 << /ActualText (Zzz) >> >>",
         &[],
     );
-    let err = extract_pdf(&bytes, &Limits::default()).unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+    let t = extract_pdf(&bytes, &Limits::default()).unwrap();
+    assert_eq!(t.chars[0].unicode.as_deref(), Some("Zzz"));
 }
 
 #[test]
-fn actual_text_inside_form_refused() {
+fn actual_text_inside_form_replaces_the_span() {
     let form = b"BT /F1 20 Tf 0 0 Td /Span << /ActualText (Zzz) >> BDC (X) Tj EMC ET";
     let form_obj: Vec<u8> = [
         format!(
@@ -175,8 +181,8 @@ fn actual_text_inside_form_refused() {
         "/Font << /F1 5 0 R >> /XObject << /Fm 8 0 R >>",
         &[(8, form_obj)],
     );
-    let err = extract_pdf(&bytes, &Limits::default()).unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+    let t = extract_pdf(&bytes, &Limits::default()).unwrap();
+    assert_eq!(t.chars[0].unicode.as_deref(), Some("Zzz"));
 }
 
 #[test]
@@ -222,15 +228,17 @@ fn ocg_pdf(ocg_type: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn optional_content_ocg_refused() {
-    let err = extract_pdf(&ocg_pdf(b"OCG"), &Limits::default()).unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+fn optional_content_undeclared_ocg_is_visible() {
+    // No /OCProperties in the catalog: the group is undeclared, hence
+    // visible (§8.11.4.3) — its text is extracted.
+    let t = extract_pdf(&ocg_pdf(b"OCG"), &Limits::default()).unwrap();
+    assert_eq!(t.chars[0].unicode.as_deref(), Some("A"));
 }
 
 #[test]
-fn optional_content_ocmd_refused() {
-    let err = extract_pdf(&ocg_pdf(b"OCMD"), &Limits::default()).unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+fn optional_content_empty_ocmd_is_visible() {
+    let t = extract_pdf(&ocg_pdf(b"OCMD"), &Limits::default()).unwrap();
+    assert_eq!(t.chars[0].unicode.as_deref(), Some("A"));
 }
 
 #[test]
@@ -666,13 +674,12 @@ fn bounds_is_glyph_ink_not_advance_box() {
 // --------------------------------------------------------------------
 
 #[test]
-fn actual_text_after_partial_text_returns_err_only() {
-    // Text before the ActualText must not leak as a partial result:
-    // the API returns Err, not ExtractedText.
+fn actual_text_after_plain_text_keeps_both() {
     let stream = b"BT /F1 20 Tf 10 80 Td (A) Tj /Span << /ActualText (Z) >> BDC (B) Tj EMC ET";
     let bytes = pdf(stream, "", FONT_RES, &[]);
-    let err = extract_pdf(&bytes, &Limits::default()).unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }));
+    let t = extract_pdf(&bytes, &Limits::default()).unwrap();
+    let s: String = t.chars.iter().filter_map(|c| c.unicode.clone()).collect();
+    assert_eq!(s, "AZ");
 }
 
 // keep the import used
