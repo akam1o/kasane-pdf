@@ -225,6 +225,47 @@ fn type3_advances_by_widths() {
 }
 
 #[test]
+fn type3_widths_pass_through_a_non_default_font_matrix() {
+    // /FontMatrix [1 0 0 -1 0 0] (dvipdf bitmap fonts): /Widths are in
+    // glyph space, so a width of 6 at Tfs 1 advances 6 user units —
+    // not 6/1000.
+    let pdf = pdf_type3(
+        b"BT /F0 1 Tf 50 100 Td (ab) Tj ET",
+        &[
+            ("a", "6 0 0 0 5 5 d1 0 0 5 -5 re f"),
+            ("b", "6 0 0 0 5 5 d1 0 0 5 -5 re f"),
+        ],
+        &[],
+    )
+    .replace(
+        b"/FontMatrix [0.001 0 0 0.001 0 0]",
+        b"/FontMatrix [1 0 0 -1 0 0]",
+    )
+    .replace(b"/Widths [600 600]", b"/Widths [6 6]");
+    let doc = Document::from_bytes_recovering(&pdf).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    assert_eq!(t.chars.len(), 2);
+    let dx = t.chars[1].origin.0 - t.chars[0].origin.0;
+    assert!((dx - 6.0).abs() < 0.01, "advance {dx} ≠ 6.0");
+}
+
+trait ReplaceBytes {
+    fn replace(self, from: &[u8], to: &[u8]) -> Vec<u8>;
+}
+impl ReplaceBytes for Vec<u8> {
+    fn replace(self, from: &[u8], to: &[u8]) -> Vec<u8> {
+        let pos = self
+            .windows(from.len())
+            .position(|w| w == from)
+            .expect("pattern present");
+        let mut out = self[..pos].to_vec();
+        out.extend_from_slice(to);
+        out.extend_from_slice(&self[pos + from.len()..]);
+        out
+    }
+}
+
+#[test]
 fn type3_no_charproc_errors() {
     // /CharProcs missing → Structure error at font load.
     let mut out = Vec::new();

@@ -105,6 +105,7 @@ impl ToUnicode {
         while p.skip_trivia()? && !p.eof() {
             let tok = p.next_token()?;
             match tok {
+                Tok::Real => {}
                 Tok::Num(n) => {
                     // A number may be a count for a following
                     // begin* operator, or part of the CMap preamble
@@ -215,6 +216,9 @@ impl ToUnicode {
 #[derive(Debug)]
 enum Tok<'a> {
     Num(i64),
+    /// A real number — legal PostScript (`/XUID`, `1.000 def`) but
+    /// never a count or a code, so the parser skips it.
+    Real,
     /// `/name` — the leading slash is consumed.
     Name,
     /// A bare word — not `/name` — e.g. `begincmap`, `endcmap`.
@@ -345,10 +349,13 @@ impl<'a> Parser<'a> {
                 let s = std::str::from_utf8(&self.data[start..end])
                     .map_err(|_| Error::Structure("invalid number".into()))?;
                 self.pos = end;
-                let n: i64 = s
-                    .parse()
-                    .map_err(|_| Error::Structure(format!("invalid number '{s}'")))?;
-                Ok(Tok::Num(n))
+                if let Ok(n) = s.parse::<i64>() {
+                    return Ok(Tok::Num(n));
+                }
+                if s.parse::<f64>().is_ok() {
+                    return Ok(Tok::Real);
+                }
+                Err(Error::Structure(format!("invalid number '{s}'")))
             }
             c if c.is_ascii_alphabetic() || c == b'_' => {
                 // A bare word — `begincmap`, `endbfchar`, etc.
@@ -664,7 +671,9 @@ fn decode_utf16be(hex: &[u8]) -> Result<Vec<u16>, Error> {
         ));
     }
     Ok(bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| u16::from_be_bytes([c[0], c[1]]))
         .collect())
 }

@@ -134,7 +134,7 @@ fn pairs(
         )));
     }
     let mut out = Vec::with_capacity(arr.len() / 2);
-    for p in arr.chunks_exact(2) {
+    for p in arr.as_chunks::<2>().0 {
         let a = p[0]
             .as_number()
             .ok_or_else(|| Error::Structure(format!("function /{what} entries must be numbers")))?;

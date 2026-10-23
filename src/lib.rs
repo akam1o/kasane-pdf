@@ -68,6 +68,7 @@
 
 mod acroform;
 pub mod audit;
+mod bilevel;
 mod cmap;
 mod colorspace;
 mod content;

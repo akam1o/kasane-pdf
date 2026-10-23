@@ -741,7 +741,7 @@ impl Interp {
                     let pending = self.stack.len();
                     self.n_stems += pending / 2;
                     self.clear();
-                    let mask = (self.n_stems + 7) / 8;
+                    let mask = self.n_stems.div_ceil(8);
                     if i + mask > code.len() {
                         return Err(Error::Structure("type1 hintmask truncated".into()));
                     }
@@ -777,10 +777,10 @@ impl Interp {
                 5 => {
                     // rlineto: dx dy (pairs)
                     let a = self.popall();
-                    if a.len() % 2 != 0 {
+                    if !a.len().is_multiple_of(2) {
                         return Err(Error::Structure("type1 rlineto odd operands".into()));
                     }
-                    for p in a.chunks_exact(2) {
+                    for p in a.as_chunks::<2>().0 {
                         self.need_moveto()?;
                         self.x += p[0];
                         self.y += p[1];
@@ -827,10 +827,10 @@ impl Interp {
                 8 => {
                     // rrcurveto: {dxa dya dxb dyb dxc dyc}+
                     let a = self.popall();
-                    if a.len() % 6 != 0 {
+                    if !a.len().is_multiple_of(6) {
                         return Err(Error::Structure("type1 rrcurveto bad operand count".into()));
                     }
-                    for p in a.chunks_exact(6) {
+                    for p in a.as_chunks::<6>().0 {
                         self.need_moveto()?;
                         let x1 = self.x + p[0];
                         let y1 = self.y + p[1];

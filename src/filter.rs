@@ -1,19 +1,30 @@
 //! Stream filter decoding (ISO 32000-1:2008, §7.4).
 //!
-//! Supported: `/FlateDecode` (zlib/DEFLATE via `flate2`/`miniz_oxide`).
-//! PNG predictors (`/Predictor` 10–15) and the TIFF predictor (2) are
-//! implemented for `/FlateDecode` output.
+//! Supported here: `/FlateDecode` (zlib/DEFLATE via `flate2`/`miniz_oxide`),
+//! `/LZWDecode` (§7.4.4, `/EarlyChange`), `/ASCII85Decode` (§7.4.3),
+//! `/ASCIIHexDecode` (§7.4.2) and `/RunLengthDecode` (§7.4.5). PNG
+//! predictors (`/Predictor` 10–15) and the TIFF predictor (2) apply to
+//! `/FlateDecode` and `/LZWDecode` output.
 //!
-//! Not supported (reported as [`Error::Unsupported`]):
-//! `/ASCIIHexDecode`, `/ASCII85Decode`, `/LZWDecode`, `/RunLengthDecode`,
-//! `/CCITTFaxDecode`, `/JBIG2Decode`, `/DCTDecode`, `/JPXDecode`,
-//! `/Crypt`, and any unknown name. `/DecodeParms` entries for filters
-//! we do not implement are never inspected — we refuse before that.
+//! Image-only filters — `/DCTDecode`, `/JBIG2Decode`, `/CCITTFaxDecode`
+//! (and `/JPXDecode`, which is not implemented) — produce samples, not
+//! bytes, so they are decoded by the image pipeline (`render.rs`,
+//! `bilevel.rs`) and refused here with [`Error::Unsupported`], as are
+//! `/Crypt` and unknown names. `/DecodeParms` entries for filters we do
+//! not implement are never inspected — we refuse before that.
 //!
 //! Multiple filters are applied in order (`/Filter [/A /B]` means data
 //! was encoded first by `/B` then by `/A`, so decoding applies `/A`
 //! first). `/DecodeParms` is matched positionally; a `null` entry means
-//! "no parameters" for that filter.
+//! "no parameters" for that filter. Every filter's output is capped at
+//! `max_stream_bytes` while it is produced, so a hostile stream cannot
+//! force an allocation beyond the limit.
+//!
+//! Termination: a missing EOD marker (`~>`, `>`, LZW code 257,
+//! RunLength byte 128) at the very end of the data is accepted when the
+//! bytes decoded so far are unambiguous — common producer sloppiness —
+//! but a code or run cut off mid-way, or any byte outside the filter's
+//! alphabet, fails the whole decode.
 
 use crate::error::Error;
 use crate::limits::Limits;
@@ -128,7 +139,7 @@ pub(crate) fn normalize_decode_parms(
 }
 
 /// Apply one named filter to `buf` with its decode parameters.
-fn apply_one_filter(
+pub(crate) fn apply_one_filter(
     name: &[u8],
     parms: Option<&Dict>,
     buf: &[u8],
@@ -136,11 +147,331 @@ fn apply_one_filter(
 ) -> Result<Vec<u8>, Error> {
     match name {
         b"FlateDecode" | b"Fl" => flate_decode(buf, parms, limits),
+        b"LZWDecode" | b"LZW" => lzw_decode(buf, parms, limits),
+        b"ASCII85Decode" | b"A85" => ascii85_decode(buf, limits),
+        b"ASCIIHexDecode" | b"AHx" => asciihex_decode(buf, limits),
+        b"RunLengthDecode" | b"RL" => runlength_decode(buf, limits),
+        b"DCTDecode" | b"DCT" | b"JBIG2Decode" | b"CCITTFaxDecode" | b"CCF" | b"JPXDecode" => {
+            Err(Error::Unsupported {
+                feature: "stream filter",
+                detail: format!(
+                    "/{} outside an image XObject (image-only filter)",
+                    String::from_utf8_lossy(name)
+                ),
+            })
+        }
         other => Err(Error::Unsupported {
             feature: "stream filter",
             detail: format!("/{}", String::from_utf8_lossy(other)),
         }),
     }
+}
+
+/// `true` for the filters that yield image samples rather than bytes
+/// and are therefore decoded by the image pipeline, not here.
+pub(crate) fn is_image_filter(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"DCTDecode" | b"DCT" | b"JBIG2Decode" | b"CCITTFaxDecode" | b"CCF" | b"JPXDecode"
+    )
+}
+
+fn over_cap(len: usize, limits: &Limits) -> Result<(), Error> {
+    if len as u64 > limits.max_stream_bytes {
+        return Err(Error::LimitExceeded {
+            limit: "max_stream_bytes (decoded)",
+            max: limits.max_stream_bytes,
+        });
+    }
+    Ok(())
+}
+
+fn is_pdf_whitespace(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\r' | b'\n' | b'\x0c' | b'\0')
+}
+
+/// §7.4.2: pairs of hex digits, white space ignored, `>` is EOD; an odd
+/// final digit is padded with 0.
+fn asciihex_decode(buf: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
+    let mut out = Vec::with_capacity(buf.len() / 2);
+    let mut hi: Option<u8> = None;
+    for (i, &b) in buf.iter().enumerate() {
+        let v = match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            b'>' => break,
+            _ if is_pdf_whitespace(b) => continue,
+            _ => {
+                return Err(Error::Parse(format!(
+                    "ASCIIHexDecode: byte 0x{b:02x} at offset {i} is not a hex digit"
+                )))
+            }
+        };
+        match hi.take() {
+            None => hi = Some(v),
+            Some(h) => {
+                over_cap(out.len() + 1, limits)?;
+                out.push((h << 4) | v);
+            }
+        }
+    }
+    if let Some(h) = hi {
+        over_cap(out.len() + 1, limits)?;
+        out.push(h << 4);
+    }
+    Ok(out)
+}
+
+/// §7.4.3: groups of five characters `!`..`u` encode four bytes
+/// (base 85, big-endian); `z` is four zero bytes; `~>` is EOD; a final
+/// partial group of n characters yields n − 1 bytes. A leading `<~`
+/// (not part of the PDF filter, but written by some producers) is
+/// skipped.
+fn ascii85_decode(buf: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
+    let mut out = Vec::with_capacity(buf.len() * 4 / 5 + 4);
+    let mut group = [0u8; 5];
+    let mut n = 0usize;
+    let mut i = 0usize;
+    // Skip leading white space and an optional `<~`.
+    while i < buf.len() && is_pdf_whitespace(buf[i]) {
+        i += 1;
+    }
+    if buf[i..].starts_with(b"<~") {
+        i += 2;
+    }
+    let flush = |group: &[u8; 5], n: usize, out: &mut Vec<u8>| -> Result<(), Error> {
+        // Pad the partial group with `u` (84) per the spec.
+        let mut v: u32 = 0;
+        for (k, &g) in group.iter().enumerate() {
+            let d = if k < n { g } else { 84 } as u32;
+            v = v
+                .checked_mul(85)
+                .and_then(|v| v.checked_add(d))
+                .ok_or_else(|| Error::Parse("ASCII85Decode: group value exceeds 2^32".into()))?;
+        }
+        over_cap(out.len() + n - 1, limits)?;
+        out.extend_from_slice(&v.to_be_bytes()[..n - 1]);
+        Ok(())
+    };
+    while i < buf.len() {
+        let b = buf[i];
+        i += 1;
+        match b {
+            b'~' => {
+                if buf.get(i) != Some(&b'>') {
+                    return Err(Error::Parse(format!(
+                        "ASCII85Decode: `~` at offset {} is not followed by `>`",
+                        i - 1
+                    )));
+                }
+                break;
+            }
+            b'z' if n == 0 => {
+                over_cap(out.len() + 4, limits)?;
+                out.extend_from_slice(&[0, 0, 0, 0]);
+            }
+            b'z' => {
+                return Err(Error::Parse(format!(
+                    "ASCII85Decode: `z` inside a group at offset {}",
+                    i - 1
+                )))
+            }
+            b'!'..=b'u' => {
+                group[n] = b - b'!';
+                n += 1;
+                if n == 5 {
+                    flush(&group, 5, &mut out)?;
+                    n = 0;
+                }
+            }
+            _ if is_pdf_whitespace(b) => {}
+            _ => {
+                return Err(Error::Parse(format!(
+                    "ASCII85Decode: byte 0x{b:02x} at offset {} is outside `!`..`u`",
+                    i - 1
+                )))
+            }
+        }
+    }
+    match n {
+        0 => {}
+        1 => {
+            return Err(Error::Parse(
+                "ASCII85Decode: final group has a single character (encodes no byte)".into(),
+            ))
+        }
+        _ => flush(&group, n, &mut out)?,
+    }
+    Ok(out)
+}
+
+/// §7.4.5: a length byte L, then either L + 1 literal bytes (L ≤ 127)
+/// or one byte repeated 257 − L times (L ≥ 129); 128 is EOD.
+fn runlength_decode(buf: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
+    let mut out = Vec::with_capacity(buf.len());
+    let mut i = 0usize;
+    while i < buf.len() {
+        let l = buf[i] as usize;
+        i += 1;
+        if l == 128 {
+            return Ok(out);
+        }
+        if l < 128 {
+            let end = i + l + 1;
+            if end > buf.len() {
+                return Err(Error::Parse(format!(
+                    "RunLengthDecode: literal run of {} bytes at offset {} overruns the data",
+                    l + 1,
+                    i - 1
+                )));
+            }
+            over_cap(out.len() + l + 1, limits)?;
+            out.extend_from_slice(&buf[i..end]);
+            i = end;
+        } else {
+            let Some(&b) = buf.get(i) else {
+                return Err(Error::Parse(format!(
+                    "RunLengthDecode: repeat run at offset {} has no byte to repeat",
+                    i - 1
+                )));
+            };
+            i += 1;
+            let count = 257 - l;
+            over_cap(out.len() + count, limits)?;
+            out.extend(std::iter::repeat_n(b, count));
+        }
+    }
+    // No EOD byte: the data ended on a run boundary, which is unambiguous.
+    Ok(out)
+}
+
+/// §7.4.4: variable-length LZW (9–12 bit codes, MSB first), clear = 256,
+/// EOD = 257. `/EarlyChange` (default 1) makes the code width grow one
+/// code early. Predictors apply afterwards exactly as for Flate.
+fn lzw_decode(buf: &[u8], parms: Option<&Dict>, limits: &Limits) -> Result<Vec<u8>, Error> {
+    let early = match parms.and_then(|p| p.get(b"EarlyChange".as_slice())) {
+        None | Some(Object::Null) => 1,
+        Some(o) => match o.as_i64() {
+            Some(v @ (0 | 1)) => v,
+            Some(v) => {
+                return Err(Error::Structure(format!(
+                    "LZWDecode /EarlyChange {v} (must be 0 or 1)"
+                )))
+            }
+            None => {
+                return Err(Error::Structure(
+                    "LZWDecode /EarlyChange is not an integer".into(),
+                ))
+            }
+        },
+    } as usize;
+
+    // Dictionary entries are (prefix code, final byte); entry lengths
+    // let a code be emitted by walking the chain backwards into `out`
+    // without materialising every string.
+    let mut prefix: Vec<u16> = Vec::with_capacity(4096);
+    let mut suffix: Vec<u8> = Vec::with_capacity(4096);
+    let mut length: Vec<u32> = Vec::with_capacity(4096);
+    let reset = |prefix: &mut Vec<u16>, suffix: &mut Vec<u8>, length: &mut Vec<u32>| {
+        prefix.clear();
+        suffix.clear();
+        length.clear();
+        for i in 0..258u16 {
+            prefix.push(u16::MAX);
+            suffix.push(i as u8);
+            length.push(1);
+        }
+    };
+    reset(&mut prefix, &mut suffix, &mut length);
+
+    let mut out: Vec<u8> = Vec::with_capacity(buf.len() * 3);
+    let mut width = 9u32;
+    let mut prev: Option<u16> = None;
+    let mut bitpos: usize = 0;
+    let total_bits = buf.len() * 8;
+    loop {
+        if bitpos + width as usize > total_bits {
+            // Fewer than `width` bits remain: accept pure zero padding
+            // (the producer forgot EOD), reject anything else.
+            let rest = &buf[bitpos / 8..];
+            let pad_ok = rest.iter().enumerate().all(|(k, &b)| {
+                if k == 0 {
+                    b & (0xFF >> (bitpos % 8)) == 0
+                } else {
+                    b == 0
+                }
+            });
+            if pad_ok {
+                break;
+            }
+            return Err(Error::Parse(format!(
+                "LZWDecode: data ends inside a {width}-bit code at bit {bitpos} (no EOD)"
+            )));
+        }
+        let mut code: u32 = 0;
+        for _ in 0..width {
+            let byte = buf[bitpos / 8];
+            let bit = (byte >> (7 - (bitpos % 8))) & 1;
+            code = (code << 1) | bit as u32;
+            bitpos += 1;
+        }
+        let code = code as u16;
+        if code == 256 {
+            reset(&mut prefix, &mut suffix, &mut length);
+            width = 9;
+            prev = None;
+            continue;
+        }
+        if code == 257 {
+            break;
+        }
+        let next = prefix.len() as u16; // the code this step defines
+        let (emit_from, emit_len) = if (code as usize) < prefix.len() {
+            (code, length[code as usize])
+        } else if code == next && prev.is_some() {
+            // KwKwK case: prev string + its own first byte.
+            let p = prev.unwrap();
+            (p, length[p as usize] + 1)
+        } else {
+            return Err(Error::Parse(format!(
+                "LZWDecode: code {code} at bit {} is not in the table (next free is {next})",
+                bitpos - width as usize
+            )));
+        };
+        over_cap(out.len() + emit_len as usize, limits)?;
+        let start = out.len();
+        out.resize(start + emit_len as usize, 0);
+        // Fill backwards along the prefix chain.
+        let mut c = emit_from;
+        let mut k = start + length[emit_from as usize] as usize;
+        let kwkwk = emit_len > length[emit_from as usize];
+        while c != u16::MAX {
+            k -= 1;
+            out[k] = suffix[c as usize];
+            c = prefix[c as usize];
+        }
+        if kwkwk {
+            out[start + emit_len as usize - 1] = out[start];
+        }
+        if let Some(p) = prev {
+            if prefix.len() < 4096 {
+                prefix.push(p);
+                suffix.push(out[start]);
+                length.push(length[p as usize] + 1);
+            }
+        }
+        prev = Some(code);
+        // Width switches when the *next* code to be defined reaches
+        // 512/1024/2048 (minus one with EarlyChange).
+        width = match prefix.len() + early {
+            d if d >= 2048 => 12,
+            d if d >= 1024 => 11,
+            d if d >= 512 => 10,
+            _ => 9,
+        };
+    }
+    apply_predictor(out, parms, limits)
 }
 
 /// zlib/DEFLATE with optional predictor post-processing.
@@ -297,7 +628,7 @@ fn png_predictor(data: &[u8], p: &PredictorParms, limits: &Limits) -> Result<Vec
     if row_len == 0 {
         return Err(Error::Structure("PNG predictor row length is zero".into()));
     }
-    if data.len() % stride != 0 {
+    if !data.len().is_multiple_of(stride) {
         return Err(Error::Parse(format!(
             "PNG predictor data length {} is not a multiple of row size {}",
             data.len(),

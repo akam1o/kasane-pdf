@@ -457,7 +457,7 @@ fn failed_decode_consumes_budget_consistently() {
         ),
         (
             7,
-            b"<< /Length 4 /Filter /LZWDecode >>\nstream\nbad!\nendstream".to_vec(),
+            b"<< /Length 4 /Filter /JPXDecode >>\nstream\nbad!\nendstream".to_vec(),
         ),
     ];
     for (n, b) in &bodies {

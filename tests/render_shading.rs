@@ -273,6 +273,52 @@ fn pattern_inside_a_form_uses_the_form_space() {
 }
 
 #[test]
+fn stencil_mask_paints_the_fill_pattern() {
+    // §8.9.6.2: an image mask paints the current fill colour; in
+    // /Pattern space that is the shading. A 2×1 stencil (left sample
+    // paints, right sample does not) over a red→blue axial pattern.
+    let pat = "/P << /PatternType 2 /Shading << /ShadingType 2 /ColorSpace /DeviceRGB \
+               /Coords [0 0 100 0] /Function << /FunctionType 2 /Domain [0 1] \
+               /C0 [1 0 0] /C1 [0 0 1] /N 1 >> /Extend [true true] >> >>";
+    let im = stream_obj(
+        "/Type /XObject /Subtype /Image /Width 2 /Height 1 /ImageMask true",
+        b"\x40",
+    );
+    let make = |content: &[u8]| {
+        build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+                     /Resources << /Pattern << {pat} >> /XObject << /Im 10 0 R >> >> \
+                     /Contents 4 0 R >>"
+                )
+                .into_bytes(),
+            ),
+            (4, stream_obj("", content)),
+            (10, im.clone()),
+        ])
+    };
+    let r = render(&make(b"/Pattern cs /P scn q 100 0 0 100 0 0 cm /Im Do Q")).unwrap();
+    let l = px(&r, 25, 50);
+    assert!(l.0 > 150 && l.2 < 110, "left half shows the pattern: {l:?}");
+    assert_eq!(px(&r, 75, 50), WHITE, "unpainted sample stays white");
+    // The pattern is sampled in pattern space, not image space: x = 45
+    // is further along the axis than x = 5.
+    let a = px(&r, 5, 50);
+    let b = px(&r, 45, 50);
+    assert!(
+        b.2 > a.2 && b.0 < a.0,
+        "gradient runs across the stencil: {a:?} {b:?}"
+    );
+    // /Pattern space with no pattern selected paints nothing.
+    let r = render(&make(b"/Pattern cs q 100 0 0 100 0 0 cm /Im Do Q")).unwrap();
+    assert_eq!(px(&r, 25, 50), WHITE);
+}
+
+#[test]
 fn unsupported_shading_types_and_patterns_are_classified() {
     for t in [1, 4, 5, 6, 7] {
         let sh = format!(

@@ -584,14 +584,12 @@ fn probe_xobject(
             if let Some(f) = dict.get(b"Filter".as_slice()) {
                 for name in filter_names(doc, f) {
                     match name.as_slice() {
-                        b"FlateDecode" | b"DCTDecode" => {}
+                        // Byte filters, JPEG, JBIG2 (hayro-jbig2) and
+                        // CCITT (hayro-ccitt) are all decoded.
+                        b"FlateDecode" | b"DCTDecode" | b"JBIG2Decode" | b"CCITTFaxDecode"
+                        | b"LZWDecode" | b"ASCIIHexDecode" | b"ASCII85Decode"
+                        | b"RunLengthDecode" => {}
                         b"JPXDecode" => record(res, "parse.filter.jpx.unsupported", pi),
-                        b"JBIG2Decode" => record(res, "parse.filter.jbig2.unsupported", pi),
-                        b"CCITTFaxDecode" => record(res, "parse.filter.ccitt.unsupported", pi),
-                        b"LZWDecode" => record(res, "parse.filter.lzw.unsupported", pi),
-                        b"ASCIIHexDecode" | b"ASCII85Decode" | b"RunLengthDecode" => {
-                            record(res, "parse.filter.unsupported", pi)
-                        }
                         _ => record(res, "parse.filter.unsupported", pi),
                     }
                 }
