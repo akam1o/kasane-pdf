@@ -435,7 +435,7 @@ pub(crate) fn synthesize(
             let caption = mk
                 .as_ref()
                 .and_then(|m| m.get(b"CA".as_slice()))
-                .and_then(|o| o.as_string().map(|s| crate::render::pdf_text_string(s)))
+                .and_then(|o| o.as_string().map(crate::render::pdf_text_string))
                 .unwrap_or_default();
             if !caption.is_empty() {
                 let bytes = encode_latin(&caption)?;
