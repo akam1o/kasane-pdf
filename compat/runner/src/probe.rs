@@ -375,11 +375,13 @@ fn probe_font(
         }
         Some(b"Type0") => {
             // descendant kind + encoding + ToUnicode
-            let enc = dict.get(b"Encoding".as_slice()).and_then(|o| o.as_name());
-            if matches!(enc, Some(b"Identity-V")) {
-                record(res, "render.font.vertical.unsupported", pi);
-            } else if !matches!(enc, Some(b"Identity-H")) && enc.is_some() {
-                record(res, "render.font.type0-enc.unsupported", pi);
+            // Identity-H/V and embedded CMap streams load; a predefined
+            // non-Identity CMap name is the only encoding still refused.
+            match dict.get(b"Encoding".as_slice()) {
+                Some(Object::Name(n)) if n != b"Identity-H" && n != b"Identity-V" => {
+                    record(res, "render.font.type0-enc.unsupported", pi)
+                }
+                _ => {}
             }
             if let Some(df) = dict.get(b"DescendantFonts".as_slice()) {
                 if let Some(arr) = doc
@@ -393,10 +395,23 @@ fn probe_font(
                     if let Some(d0) = arr.first() {
                         if let Ok(d) = doc.deref(d0) {
                             if let Some(dd) = d.as_dict() {
+                                // Both CIDFont subtypes load (TrueType,
+                                // OpenType and bare CFF programs); a
+                                // descendant without any program refuses.
                                 match dd.get(b"Subtype".as_slice()).and_then(|o| o.as_name()) {
-                                    Some(b"CIDFontType2") => {}
-                                    Some(b"CIDFontType0") => {
-                                        record(res, "render.font.cff.unsupported", pi)
+                                    Some(b"CIDFontType2") | Some(b"CIDFontType0") => {
+                                        let has_program = dd
+                                            .get(b"FontDescriptor".as_slice())
+                                            .and_then(|o| doc.deref(o).ok())
+                                            .and_then(|o| o.as_dict().cloned())
+                                            .map(|fd| {
+                                                fd.contains_key(b"FontFile2".as_slice())
+                                                    || fd.contains_key(b"FontFile3".as_slice())
+                                            })
+                                            .unwrap_or(false);
+                                        if !has_program {
+                                            record(res, "render.font.nonembedded.unsupported", pi);
+                                        }
                                     }
                                     _ => record(res, "render.font.cid-subtype.unsupported", pi),
                                 }
@@ -522,9 +537,8 @@ fn probe_xobject(
                     }
                 }
             }
-            if dict.contains_key(b"OC".as_slice()) {
-                record(res, "render.xobject.oc.unsupported", pi);
-            }
+            // /OC is evaluated now (hidden forms are skipped, visible
+            // ones painted) — no longer a blocker.
             if dict.contains_key(b"Ref".as_slice()) {
                 record(res, "render.xobject.ref.unsupported", pi);
             }
@@ -559,9 +573,6 @@ fn probe_xobject(
             {
                 record(res, "render.image.smask.unsupported", pi);
             }
-            if dict.contains_key(b"OC".as_slice()) {
-                record(res, "render.xobject.oc.unsupported", pi);
-            }
             // filters
             if let Some(f) = dict.get(b"Filter".as_slice()) {
                 for name in filter_names(doc, f) {
@@ -585,36 +596,18 @@ fn probe_xobject(
 }
 
 fn probe_marked(
-    doc: &Document,
-    resources: &Object,
-    tag: &[u8],
-    properties: &Object,
-    pi: usize,
-    res: &mut ProbeResult,
-    record: &mut impl FnMut(&mut ProbeResult, &str, usize),
+    _doc: &Document,
+    _resources: &Object,
+    _tag: &[u8],
+    _properties: &Object,
+    _pi: usize,
+    _res: &mut ProbeResult,
+    _record: &mut impl FnMut(&mut ProbeResult, &str, usize),
 ) {
-    match tag {
-        b"OC" | b"OCMD" => record(res, "render.oc.unsupported", pi),
-        b"Span" => {
-            // /Span <</ActualText …>> changes extraction output.
-            if let Object::Name(n) = properties {
-                if let Ok(Some(o)) = doc.resolve_resource(resources, "Properties", n) {
-                    if has_actual_text(&o) {
-                        record(res, "text.actualtext.unsupported", pi);
-                    }
-                }
-            } else if has_actual_text(properties) {
-                record(res, "text.actualtext.unsupported", pi);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn has_actual_text(o: &Object) -> bool {
-    o.as_dict()
-        .map(|d| d.contains_key(b"ActualText".as_slice()))
-        .unwrap_or(false)
+    // Optional content (/OC) is evaluated against the document's
+    // default configuration and /ActualText is honoured by extraction
+    // — neither is a blocker any more. Malformed property lists are
+    // structure errors found at run time.
 }
 
 fn filter_names(doc: &Document, o: &Object) -> Vec<Vec<u8>> {
