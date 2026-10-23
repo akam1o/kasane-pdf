@@ -460,6 +460,99 @@ upper bound; the limits that bound it (`max_image_bytes`,
 any well-formed file — the two `max_image_dimension` hits are
 deliberate refusals of > 16384-pixel images.
 
+### Results after CID CFF fonts, ActualText, optional content and AcroForm synthesis (run-1792769430)
+
+Same 511 files, same conditions, measured against the
+run-1792715480 baseline above. The headline now comes from one
+table whose rows are separate populations (`analysis::Tally`): the
+earlier report's "render 177" was the `expect: pass` population and
+its "full PASS 198" the whole corpus, which is why the second
+number could exceed the first; each row below carries its own
+denominator.
+
+| files | n | parse | render | text | rewrite | full PASS | recovered | crash/timeout |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| all | 511 | 448 | 296 | 389 | 390 | **254** | 30 | 0 |
+| expect: pass | 431 | 408 | 267 | 357 | 352 | **226** | 10 | 0 |
+| expect: reject | 43 | 4 | 3 | 3 | 3 | 3 | 20 | 0 |
+| expect: any | 37 | 36 | 26 | 29 | 35 | 25 | 0 | 0 |
+
+Against the baseline (all 511): render **203 → 296**, text **320 →
+389**, rewrite 390 → 390, full PASS **198 → 254** (+56), 0 newly
+failing, 0 lost in any stage, 0 crash / 0 timeout; robustness 43/43
+safely handled (40 cleanly refused). The 219 files with a fidelity
+measurement in both runs average SSIM 0.9476 → 0.9465; the only
+changes above 0.005 are `irs-f1096` (0.958 → 0.852) and `irs-fw2`
+(0.941 → 0.818), whose `/NeedAppearances true` fields are now
+regenerated from their values while Poppler keeps the stale
+author-supplied streams — the page content is identical on
+inspection, the field text differs in size. Newly measured: 80
+files, median SSIM 0.952; the lowest (`chrome-wiki-ja-tategaki`
+0.65, the IRS 1040 family 0.72–0.74) are heavier CFF glyph
+rendering of CJK text and synthesised form fields that Poppler does
+not draw, not missing or misplaced content.
+
+What each feature unblocked (expect: pass, first-error counts):
+
+| feature | before | after | newly full PASS (examples) |
+|---|---:|---:|---|
+| CIDFontType0 / CFF CID fonts (+ OpenType `/FontFile3`, embedded CMaps, vertical) | render 34, text 38 | 0 | all 8 CC BY arXiv papers, 13 Chrome prints incl. 6 Japanese, `embedded_font`, `extract_link`, `vertical` |
+| `/ActualText` | text 17 | 0 | `chrome-form-controls-*`, `chrome-wiki-*` (Chrome emits it for every ligature) |
+| optional content | render 11 + 3, text 11 | 0 | `cid_cff`, `cmykjpeg`, `s2`, `transparency_group`, `inks` now reach their next blocker |
+| AcroForm appearance synthesis | annotations without `/AP` 42 | 14 (all non-widget: `/Ink`, `/Square`, `/Line` … test files) | `irs-*` forms, `pdfium-text_form`, `pdfium-multiple_form_types`, `checkbox_no_appearance`, `annotation-tx`, `acroform_calculation_order` |
+
+Per category (expect: pass; strict counts):
+
+| category | n | parse | render | text | rewrite | full PASS | what still blocks |
+|---|---:|---:|---:|---:|---:|---:|---|
+| japanese | 9 | 9 | 8 | 9 | 8 | 7 | 1 JBIG2 image, 1 `/OCProperties` outside the rewrite profile |
+| office | 16 | 16 | 11 | 14 | 13 | 8 | dangling references, a signed document (rewrite refused by design), a content stream ending inside `BT`, one `/AS`-less two-state widget without a value |
+| browser | 19 | 19 | 16 | 16 | 19 | 16 | non-Normal blend inside a group, an ExtGState luminosity soft mask, a `bfrange` overflow |
+| scan | 13 | 13 | 12 | 13 | 13 | 12 | 1 JBIG2 |
+| forms | 38 | 38 | 30 | 31 | 13 | 11 | rewrite refuses 19 **signed** documents (`/Perms`) and 3 XFA — deliberate profile limits, not failures; render: `/UserUnit 3`, a `bfrange` overflow, a malformed number |
+| papers | 10 | 10 | 10 | 10 | 9 | 9 | 1 dangling reference in rewrite |
+| graphics | 61 | 61 | 21 | 54 | 59 | 19 | JBIG2 (the `bitmap-*` suite), tiling patterns, function-based shading |
+| annotations | 52 | 50 | 33 | 49 | 42 | 28 | non-widget annotations without `/AP`, `/OCProperties` in rewrite |
+
+Remaining render blockers (expect: pass, strict parse): image
+filters **53** (JBIG2 45, CCITT 4, JPX 2, …), non-widget annotations
+without `/AP` **14**, tiling patterns **9**, ASCII85/ASCIIHex/LZW
+content filters **7**, ExtGState soft masks **3**, non-embedded CID
+fonts **3**, `/UserUnit` **2**, function-based shading **2**, image
+dimension limit **2**. Text is blocked by the same filters, tiling
+patterns and soft masks plus 5 files with a truncated dictionary;
+rewrite by the deliberate profile (27 signed, 14 `/OCProperties`,
+3 XFA, 3 `/AA`) and 6 dangling references. Performance: median 41
+ms per file, p90 236 ms, p99 879 ms, max 1.34 s (`chrome-wiki-zh-hanzi`,
+CFF CID text on 30+ pages); no file approached the 20 s timeout and
+no limit was hit except the two deliberate `max_image_dimension`
+refusals.
+
+## JBIG2: implementation options (decision for the next phase)
+
+JBIG2 (ITU-T T.88) is the single largest render blocker on the 511
+files (45 first-error hits, all `expect: pass`, 48 files carry the
+filter in total — the pdf.js `bitmap-*` suite plus real scans). It is
+also the filter with the worst security history in PDF readers
+(generic-region arithmetic decoding, symbol dictionaries and
+refinement all index into caller-sized buffers). The options:
+
+| option | licence | unsafe / FFI | WASM & mobile | coverage | effort | verdict |
+|---|---|---|---|---|---|---|
+| **`hayro-jbig2` 0.3** (pure Rust, `#![forbid(unsafe_code)]`, `no_std` + alloc, Apache-2.0 OR MIT, MSRV 1.92, 4.5 M downloads, actively maintained by the `hayro` PDF renderer) | compatible with ours | none (optional `simd` feature uses `fearless_simd`; disable it) | yes — no system deps | generic, refinement, symbol/text, halftone, pattern regions; MMR via `hayro-ccitt` (which we also need for CCITTFax — 4 blockers) | **1 day** to integrate: `/JBIG2Globals` concatenation, PDF-embedded stream organisation, 1-bit output → our `DeviceGray` 1 bpc image path, `max_image_*` limits; 1 day of corpus/fuzz testing | **adopt** |
+| `jbig2dec` / `nipdf-jbig2dec` (C library via FFI) | GPL-3.0 / AGPL-3.0 — incompatible with a permissive publication | C code, FFI, memory-safety record of the C decoder is poor | needs a C toolchain per target; no clean WASM | complete | 2 days | reject (licence, safety) |
+| own implementation | ours | none | yes | would start with generic regions only (covers scans, not the symbol-coded text pages that dominate real scanners) | 5–7 days for generic + symbol + refinement + halftone, plus the MQ arithmetic decoder; the security surface is exactly where readers have had CVEs | reject for now — no advantage over a maintained safe crate |
+| no JBIG2 (status quo) | — | — | — | 0 | 0 | 45 files stay blocked; every bilevel scan from a modern scanner fails |
+
+Decision: integrate `hayro-jbig2` (and `hayro-ccitt` for CCITT G3/G4
+through the same crate family) with the `simd` and `image` features
+off, behind the existing image pipeline. The MSRV jump (1.70 → 1.92)
+is the only cost worth flagging; the crate's dependency tree is two
+crates deep and contains no `unsafe`. Expected effect: JBIG2 45 +
+CCITT 4 render blockers removed, text/rewrite unaffected (they do not
+decode images). Estimated 2 person-days including corpus
+verification against Poppler's `jbig2dec` output.
+
 ## Pre-publication audit (repository and history)
 
 Scanned the tracked tree and all 91 commits for credentials and
