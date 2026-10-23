@@ -17,6 +17,13 @@ Usage:
     fetch-corpus.py add-url <url>  ...        # download then add
     fetch-corpus.py verify                    # re-hash local files vs manifest
     fetch-corpus.py seed --dir DIR            # build a corpus dir from local PDFs (no store)
+    fetch-corpus.py sync [--dir DIR]          # upload manifest entries the store lacks
+
+`add`/`add-url --local` register a file in the manifest and keep it in
+the corpus directory without touching the store (no credentials
+needed); `sync` uploads those later. Every entry records `producer`
+(normalised /Producer), `version` (%PDF header), `redistribute`
+(whether the file itself may be published) and `expect`.
 
 Configuration comes from the environment — no endpoint, bucket, or
 credential is hard-coded. Copy `corpus.env.example` to `.env` (or set
@@ -37,6 +44,8 @@ import argparse
 import hashlib
 import os
 import sys
+import re
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -53,6 +62,13 @@ DEFAULT_DIR = ROOT / "corpus"
 # Object-key prefix inside the bucket. Overridable via env for anyone
 # mirroring the corpus under a different layout.
 KEY_PREFIX = os.environ.get("KASANE_CORPUS_PREFIX", "pdfs")
+
+
+CATEGORIES = [
+    "office", "browser", "latex", "papers", "japanese", "scan", "forms",
+    "images", "graphics", "transparency", "annotations", "pdfa",
+    "encrypted", "incremental", "malformed", "misc",
+]
 
 
 def _endpoint():
@@ -205,36 +221,173 @@ def cmd_seed(args):
     return 0
 
 
-def _register(path, category, source, license_, notes, pages):
+PDF_INFO_RE = {
+    "producer": re.compile(rb"/Producer\s*(\((?:[^()\\]|\\.)*\)|<[0-9A-Fa-f\s]*>)"),
+    "creator": re.compile(rb"/Creator\s*(\((?:[^()\\]|\\.)*\)|<[0-9A-Fa-f\s]*>)"),
+}
+
+
+def _pdf_string(raw):
+    """Decode a literal or hex PDF string to text (best effort)."""
+    if raw.startswith(b"<"):
+        hx = re.sub(rb"\s", b"", raw[1:-1])
+        try:
+            b = bytes.fromhex(hx.decode("ascii"))
+        except ValueError:
+            return ""
+    else:
+        b = raw[1:-1].replace(b"\\(", b"(").replace(b"\\)", b")").replace(b"\\\\", b"\\")
+    if b.startswith(b"\xfe\xff"):
+        return b[2:].decode("utf-16-be", "replace")
+    return b.decode("latin-1", "replace")
+
+
+def normalise_producer(text):
+    """Collapse a /Producer string to a product family — the axis the
+    report groups by (version numbers and build ids dropped)."""
+    t = text.strip().lower()
+    if not t:
+        return "unknown"
+    rules = [
+        ("pdftex", "pdfTeX"), ("xetex", "XeTeX"), ("luatex", "LuaTeX"),
+        ("dvipdfm", "dvipdfmx"), ("dvips", "dvips"), ("ghostscript", "Ghostscript"),
+        ("gpl ghostscript", "Ghostscript"), ("acrobat distiller", "Acrobat Distiller"),
+        ("acrobat pdfmaker", "Acrobat PDFMaker"), ("adobe pdf library", "Adobe PDF Library"),
+        ("acrobat", "Acrobat"), ("adobe indesign", "InDesign"), ("indesign", "InDesign"),
+        ("illustrator", "Illustrator"), ("photoshop", "Photoshop"),
+        ("microsoft", "Microsoft Office"), ("word", "Microsoft Office"),
+        ("excel", "Microsoft Office"), ("powerpoint", "Microsoft Office"),
+        ("libreoffice", "LibreOffice"), ("openoffice", "OpenOffice"),
+        ("skia/pdf", "Skia (Chrome)"), ("chrome", "Skia (Chrome)"),
+        ("cairo", "cairo (Firefox)"), ("quartz", "Quartz (macOS)"),
+        ("mac os x", "Quartz (macOS)"), ("macos", "Quartz (macOS)"),
+        ("ios", "Quartz (iOS)"), ("prince", "Prince"), ("wkhtmltopdf", "wkhtmltopdf"),
+        ("qt ", "Qt"), ("itext", "iText"), ("pdfbox", "PDFBox"), ("reportlab", "ReportLab"),
+        ("pdfkit", "PDFKit"), ("fpdf", "FPDF"), ("tcpdf", "TCPDF"), ("dompdf", "dompdf"),
+        ("mpdf", "mPDF"), ("pdf.js", "pdf.js"), ("pdfium", "PDFium"), ("qpdf", "qpdf"),
+        ("pdftk", "pdftk"), ("mupdf", "MuPDF"), ("poppler", "poppler"),
+        ("scribus", "Scribus"), ("inkscape", "Inkscape"), ("ilovepdf", "iLovePDF"),
+        ("google", "Google Docs"), ("pages", "Apple Pages"), ("keynote", "Apple Keynote"),
+        ("ichitaro", "Ichitaro"), ("一太郎", "Ichitaro"), ("justsystem", "Ichitaro"),
+        ("antenna", "Antenna House"), ("fop", "Apache FOP"), ("pdflib", "PDFlib"),
+        ("abbyy", "ABBYY FineReader"), ("finereader", "ABBYY FineReader"),
+        ("canon", "Canon scanner"), ("ricoh", "Ricoh scanner"), ("xerox", "Xerox scanner"),
+        ("kyocera", "Kyocera scanner"), ("epson", "Epson scanner"), ("hp ", "HP scanner"),
+        ("brother", "Brother scanner"), ("fuji", "Fujifilm scanner"), ("konica", "Konica scanner"),
+        ("scansnap", "ScanSnap"), ("naps2", "NAPS2"), ("tesseract", "Tesseract"),
+        ("ocrmypdf", "OCRmyPDF"), ("image magick", "ImageMagick"), ("imagemagick", "ImageMagick"),
+        ("latex", "LaTeX"), ("verapdf", "veraPDF"), ("pdf-xchange", "PDF-XChange"),
+        ("foxit", "Foxit"), ("nitro", "Nitro"), ("pdfsharp", "PDFsharp"), ("docraptor", "DocRaptor"),
+        ("weasyprint", "WeasyPrint"), ("typst", "Typst"), ("groff", "groff"),
+        ("cups", "CUPS"), ("pstoedit", "pstoedit"),
+    ]
+    for needle, family in rules:
+        if needle in t:
+            return family
+    # First word, title-cased, as a last resort.
+    return re.split(r"[\s/;,(]", text.strip())[0][:40] or "unknown"
+
+
+def pdf_facts(path):
+    """`(producer family, raw producer, pdf version, encrypted)` read
+    straight from the bytes — no parser dependency, works on broken
+    files too."""
+    data = Path(path).read_bytes()
+    m = re.search(rb"%PDF-(\d\.\d)", data[:1024])
+    version = m.group(1).decode() if m else ""
+    raw = ""
+    m = PDF_INFO_RE["producer"].search(data)
+    if m:
+        raw = _pdf_string(m.group(1))
+    if not raw:
+        m = PDF_INFO_RE["creator"].search(data)
+        if m:
+            raw = _pdf_string(m.group(1))
+    encrypted = b"/Encrypt" in data
+    return normalise_producer(raw), raw.strip()[:80], version, encrypted
+
+
+def _register(path, category, source, license_, notes, pages, local=False,
+              redistribute="yes", expect="pass", id_hint=None):
     m = load_manifest()
     digest = sha256(path)
-    eid = Path(path).stem.lower().replace(" ", "-")
-    # avoid id collisions
+    # Duplicate detection by content hash.
+    for e in m.get("files", []):
+        if e["sha256"] == digest:
+            print(f"duplicate of {e['id']} ({digest[:12]}) — not added")
+            return None
+    eid = (id_hint or Path(path).stem).lower().replace(" ", "-")
+    eid = re.sub(r"[^a-z0-9._-]+", "-", eid).strip("-") or digest[:12]
     ids = {e["id"] for e in m["files"]}
     base, i = eid, 2
     while eid in ids:
         eid = f"{base}-{i}"
         i += 1
+    producer, raw_producer, version, encrypted = pdf_facts(path)
     entry = {
         "id": eid,
         "sha256": digest,
         "category": category,
         "source": source,
         "license": license_,
+        "expect": expect,
         "pages": pages,
         "notes": notes or "",
+        "redistribute": redistribute,
+        "producer": producer,
+        "producer_raw": raw_producer,
+        "version": version,
+        "encrypted": encrypted,
     }
-    s3 = client()
-    s3.upload_file(str(path), bucket(), key_for(entry),
-                   ExtraArgs={"ContentType": "application/pdf"})
+    if local:
+        dest = DEFAULT_DIR / f"{eid}.pdf"
+        DEFAULT_DIR.mkdir(parents=True, exist_ok=True)
+        if not dest.exists() or sha256(dest) != digest:
+            dest.write_bytes(Path(path).read_bytes())
+        where = f"{dest} (local only — run `sync` to upload)"
+    else:
+        s3 = client()
+        s3.upload_file(str(path), bucket(), key_for(entry),
+                       ExtraArgs={"ContentType": "application/pdf"})
+        where = f"s3://{bucket()}/{key_for(entry)}"
     m.setdefault("files", []).append(entry)
     save_manifest(m)
-    print(f"added {eid} ({digest[:12]}) → s3://{bucket()}/{key_for(entry)}")
+    print(f"added {eid} ({digest[:12]}, {producer}, PDF {version}) → {where}")
+    return entry
+
+
+def cmd_sync(args):
+    """Upload every manifest entry whose object is missing from the
+    store, taking the bytes from the corpus directory."""
+    m = load_manifest()
+    s3 = client()
+    out = Path(args.dir)
+    up = skip = miss = 0
+    for e in m.get("files", []):
+        src = out / f"{e['id']}.pdf"
+        if not src.exists() or sha256(src) != e["sha256"]:
+            print(f"  MISSING-LOCAL {e['id']}", file=sys.stderr)
+            miss += 1
+            continue
+        key = key_for(e)
+        try:
+            s3.head_object(Bucket=bucket(), Key=key)
+            skip += 1
+            continue
+        except Exception:  # noqa: BLE001 - absent → upload
+            pass
+        s3.upload_file(str(src), bucket(), key,
+                       ExtraArgs={"ContentType": "application/pdf"})
+        up += 1
+    print(f"uploaded {up}, already present {skip}, missing locally {miss}")
+    return 0 if miss == 0 else 1
 
 
 def cmd_add(args):
     _register(args.file, args.category, args.source, args.license,
-              args.notes, args.pages)
+              args.notes, args.pages, local=args.local,
+              redistribute=args.redistribute, expect=args.expect,
+              id_hint=args.id)
 
 
 def cmd_add_url(args):
@@ -245,7 +398,10 @@ def cmd_add_url(args):
     with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
         f.write(r.read())
     src = args.source or url
-    _register(tmp, args.category, src, args.license, args.notes, args.pages)
+    hint = args.id or Path(urllib.parse.urlparse(url).path).stem
+    _register(tmp, args.category, src, args.license, args.notes, args.pages,
+              local=args.local, redistribute=args.redistribute,
+              expect=args.expect, id_hint=hint)
 
 
 def cmd_verify(args):
@@ -279,17 +435,23 @@ def main():
             p.add_argument("file")
         else:
             p.add_argument("url")
-        p.add_argument("--category", required=True,
-                       choices=["office", "browser", "latex", "japanese", "scan",
-                                "images", "graphics", "annotations", "encrypted",
-                                "incremental", "malformed", "misc"])
+        p.add_argument("--category", required=True, choices=CATEGORIES)
         p.add_argument("--source", required=(name == "add"))
         p.add_argument("--license", required=True)
         p.add_argument("--pages", type=int, default=0)
         p.add_argument("--notes", default="")
+        p.add_argument("--local", action="store_true",
+                       help="register + keep in the corpus dir; no upload")
+        p.add_argument("--redistribute", choices=["yes", "no"], default="yes",
+                       help="may the file itself be published with the corpus?")
+        p.add_argument("--expect", choices=["pass", "reject", "any"], default="pass")
+        p.add_argument("--id", default=None, help="manifest id (default: file stem)")
 
     vf = sub.add_parser("verify")
     vf.add_argument("--dir", default=str(DEFAULT_DIR))
+
+    sy = sub.add_parser("sync", help="upload manifest entries missing from the store")
+    sy.add_argument("--dir", default=str(DEFAULT_DIR))
 
     sd = sub.add_parser("seed",
                         help="build a corpus dir from local PDFs (no store)")
@@ -301,6 +463,7 @@ def main():
     fn = {
         "list": cmd_list, "download": cmd_download, "add": cmd_add,
         "add-url": cmd_add_url, "verify": cmd_verify, "seed": cmd_seed,
+        "sync": cmd_sync,
     }[args.cmd]
     sys.exit(fn(args) or 0)
 

@@ -147,6 +147,12 @@ struct FileResult {
     /// used to split the Compatibility vs Robustness rates.
     #[serde(default)]
     expect: String,
+    /// Producer family and `%PDF` version from the manifest ("" when
+    /// unknown) — the grouping axes of the report.
+    #[serde(default)]
+    producer: String,
+    #[serde(default)]
+    pdf_version: String,
     /// Probe coverage — how much of the file the blocker set actually
     /// describes. All `default` for older reports.
     /// Total page count of the document (0 when parse failed).
@@ -814,6 +820,8 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                         causes: Vec::new(),
                         cause_pages: BTreeMap::new(),
                         expect: String::new(),
+                        producer: String::new(),
+                        pdf_version: String::new(),
                         total_pages: 0,
                         probe_pages: 0,
                         probe_walk_errors: 0,
@@ -1014,6 +1022,8 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         causes,
         cause_pages,
         expect: String::new(),
+        producer: String::new(),
+        pdf_version: String::new(),
         total_pages: pages.len(),
         probe_pages: probe.pages,
         probe_walk_errors: probe.walk_errors,
@@ -1168,6 +1178,12 @@ fn main() {
         eprint!("  {id} ... ");
         let mut r = process_file(path, &id, &cat, &args);
         r.expect = entry.expect.clone();
+        r.producer = if entry.producer.is_empty() {
+            "unknown".into()
+        } else {
+            entry.producer.clone()
+        };
+        r.pdf_version = entry.version.clone();
         eprintln!("{}", r.verdict.label());
         results.push(r);
     }
@@ -1223,6 +1239,133 @@ fn main() {
     eprintln!("\nWrote {json_path:?} and {md_path:?}");
 }
 
+/// One grouped table: `key` names the group; counts are strict (see
+/// `analysis::rated_class`); `full` = every stage passed strictly.
+fn group_table(
+    s: &mut String,
+    title: &str,
+    files: &[FileResult],
+    key: impl Fn(&FileResult) -> String,
+    max_rows: usize,
+) {
+    let mut groups: BTreeMap<String, Vec<&FileResult>> = BTreeMap::new();
+    for f in files {
+        groups.entry(key(f)).or_default().push(f);
+    }
+    let mut rows: Vec<(String, Vec<&FileResult>)> = groups.into_iter().collect();
+    rows.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then(a.0.cmp(&b.0)));
+    s.push_str(&format!(
+        "## {title}\n\n| {} | files | parse | render | text | rewrite | full PASS | render rate |\n|---|---:|---:|---:|---:|---:|---:|---:|\n",
+        title.trim_start_matches("By ")
+    ));
+    let mut other: Vec<&FileResult> = Vec::new();
+    for (i, (name, fs)) in rows.iter().enumerate() {
+        if i >= max_rows {
+            other.extend(fs.iter().copied());
+            continue;
+        }
+        push_group_row(s, name, fs);
+    }
+    if !other.is_empty() {
+        push_group_row(s, "(other)", &other);
+    }
+    s.push('\n');
+}
+
+fn push_group_row(s: &mut String, name: &str, fs: &[&FileResult]) {
+    let strict = |f: &FileResult, st: &StageResult| analysis::rated_class(f, st) == Class::Pass;
+    let parse = fs.iter().filter(|f| f.parse.class == Class::Pass).count();
+    let render = fs.iter().filter(|f| strict(f, &f.render)).count();
+    let text = fs.iter().filter(|f| strict(f, &f.text)).count();
+    let rewrite = fs.iter().filter(|f| strict(f, &f.rewrite)).count();
+    let full = fs
+        .iter()
+        .filter(|f| {
+            f.parse.class == Class::Pass
+                && strict(f, &f.render)
+                && strict(f, &f.text)
+                && strict(f, &f.rewrite)
+        })
+        .count();
+    s.push_str(&format!(
+        "| {} | {} | {} | {} | {} | {} | {} | {:.0}% |\n",
+        name,
+        fs.len(),
+        parse,
+        render,
+        text,
+        rewrite,
+        full,
+        render as f64 / fs.len().max(1) as f64 * 100.0
+    ));
+}
+
+/// Wall time and memory: distribution, the slowest files normalised
+/// by page and by size, and the largest peak RSS — the inputs for
+/// deciding which limits to tighten.
+fn performance_section(s: &mut String, files: &[FileResult]) {
+    if files.is_empty() {
+        return;
+    }
+    let mut totals: Vec<u128> = files.iter().map(|f| f.metrics.total_ms).collect();
+    totals.sort_unstable();
+    let pct = |p: f64| totals[((totals.len() - 1) as f64 * p).round() as usize];
+    let stage_sum =
+        |get: fn(&FileResult) -> &StageResult| -> u128 { files.iter().map(|f| get(f).ms).sum() };
+    s.push_str("## Performance\n\n");
+    s.push_str(&format!(
+        "Per-file wall time: median {} ms, p90 {} ms, p99 {} ms, max {} ms. \
+         Stage totals across the corpus: parse {} ms, render {} ms, text {} ms, rewrite {} ms \
+         (render includes the Poppler reference and image comparison when enabled).\n\n",
+        pct(0.5),
+        pct(0.9),
+        pct(0.99),
+        totals.last().copied().unwrap_or(0),
+        stage_sum(|f| &f.parse),
+        stage_sum(|f| &f.render),
+        stage_sum(|f| &f.text),
+        stage_sum(|f| &f.rewrite)
+    ));
+    let mut by_total: Vec<&FileResult> = files.iter().collect();
+    by_total.sort_by_key(|f| std::cmp::Reverse(f.metrics.total_ms));
+    s.push_str("Slowest files:\n\n| file | pages | KB | parse | render | text | rewrite | total ms | ms/page | ms/MB | peak RSS MB |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n");
+    for f in by_total.iter().take(12) {
+        let pages = f.total_pages.max(1) as f64;
+        let mb = (f.bytes as f64 / 1_048_576.0).max(0.001);
+        s.push_str(&format!(
+            "| `{}` | {} | {} | {} | {} | {} | {} | {} | {:.0} | {:.0} | {:.0} |\n",
+            f.id,
+            f.total_pages,
+            f.bytes / 1024,
+            f.parse.ms,
+            f.render.ms,
+            f.text.ms,
+            f.rewrite.ms,
+            f.metrics.total_ms,
+            f.metrics.total_ms as f64 / pages,
+            f.metrics.total_ms as f64 / mb,
+            f.metrics.max_rss_bytes as f64 / 1_048_576.0
+        ));
+    }
+    s.push('\n');
+    let mut by_rss: Vec<&FileResult> = files.iter().collect();
+    by_rss.sort_by_key(|f| std::cmp::Reverse(f.metrics.max_rss_bytes));
+    s.push_str(
+        "Largest peak RSS (process-wide high-water mark sampled after the file — \
+         cumulative over the run, so an upper bound per file):\n\n",
+    );
+    for f in by_rss.iter().take(5) {
+        s.push_str(&format!(
+            "- `{}` — {:.0} MB ({} KB input, {} pages)\n",
+            f.id,
+            f.metrics.max_rss_bytes as f64 / 1_048_576.0,
+            f.bytes / 1024,
+            f.total_pages
+        ));
+    }
+    s.push('\n');
+}
+
 /// Manifest metadata for one corpus file.
 #[derive(Debug, Default, Clone)]
 struct ManifestEntry {
@@ -1232,6 +1375,10 @@ struct ManifestEntry {
     /// safely), or `any` (valid but uses out-of-scope features —
     /// counted in neither the compatibility nor robustness rate).
     expect: String,
+    /// Producer family (normalised `/Producer`, from `fetch-corpus.py`).
+    producer: String,
+    /// `%PDF-M.m` header version.
+    version: String,
 }
 
 /// id → (category, expect) from `manifest.yaml`'s flat `files:` list.
@@ -1256,6 +1403,10 @@ fn load_manifest(path: &Path) -> BTreeMap<String, ManifestEntry> {
             cur.category = v.trim().trim_matches('"').into();
         } else if let Some(v) = l.strip_prefix("expect:") {
             cur.expect = v.trim().trim_matches('"').into();
+        } else if let Some(v) = l.strip_prefix("producer:") {
+            cur.producer = v.trim().trim_matches(|c| c == '"' || c == '\'').into();
+        } else if let Some(v) = l.strip_prefix("version:") {
+            cur.version = v.trim().trim_matches(|c| c == '"' || c == '\'').into();
         }
     }
     if let Some(id) = cur_id.take() {
@@ -1859,6 +2010,71 @@ fn render_markdown(r: &RunReport) -> String {
             ));
         }
         s.push('\n');
+
+        // Grouping axes beyond category: producer, PDF version, page
+        // count, file size, encryption — each with the same strict
+        // counts (a recovered file's downstream stages count as skip).
+        group_table(&mut s, "By producer", &r.files, |f| f.producer.clone(), 30);
+        group_table(
+            &mut s,
+            "By PDF version",
+            &r.files,
+            |f| {
+                if f.pdf_version.is_empty() {
+                    "unknown".into()
+                } else {
+                    f.pdf_version.clone()
+                }
+            },
+            12,
+        );
+        group_table(
+            &mut s,
+            "By page count",
+            &r.files,
+            |f| {
+                match f.total_pages {
+                    0 => "unknown (parse failed)",
+                    1 => "1",
+                    2..=5 => "2–5",
+                    6..=20 => "6–20",
+                    21..=100 => "21–100",
+                    _ => "> 100",
+                }
+                .into()
+            },
+            8,
+        );
+        group_table(
+            &mut s,
+            "By file size",
+            &r.files,
+            |f| {
+                match f.bytes {
+                    0..=10_239 => "< 10 KB",
+                    10_240..=102_399 => "10–100 KB",
+                    102_400..=1_048_575 => "100 KB – 1 MB",
+                    1_048_576..=8_388_607 => "1–8 MB",
+                    _ => "> 8 MB",
+                }
+                .into()
+            },
+            6,
+        );
+        group_table(
+            &mut s,
+            "By encryption",
+            &r.files,
+            |f| {
+                if f.parse.detail == "encrypted" || f.parse.feature == "encrypted" {
+                    "encrypted".into()
+                } else {
+                    "not encrypted".into()
+                }
+            },
+            3,
+        );
+        performance_section(&mut s, &r.files);
 
         // development priorities
         s.push_str("## Development priorities\n\n");
