@@ -93,6 +93,7 @@ pub fn cause_category(feature: &str) -> &'static str {
         "non-embedded ZapfDingbats font" => "font.nonembedded",
         "non-embedded font (substitute outlines)" => "font.nonembedded",
         "annotation without appearance stream" => "annotation",
+        "form field value outside the Latin range" => "form.font",
         "annotation appearance states without /AS" => "annotation",
         "font without /Encoding" => "font.encoding",
         "font encoding" => "font.encoding",

@@ -2014,6 +2014,7 @@ impl<'a> Renderer<'a> {
         let Some(annots) = page_dict_entry(self.doc, page, b"Annots")? else {
             return Ok(());
         };
+        let form = crate::acroform::FormDefaults::from_catalog(self.doc)?;
         let entries = match annots {
             Object::Array(a) => a,
             Object::Null => return Ok(()),
@@ -2049,71 +2050,6 @@ impl<'a> Renderer<'a> {
                     continue;
                 }
             }
-            let ap = match ad.get(b"AP".as_slice()) {
-                Some(o) => self.doc.deref(o)?,
-                None => {
-                    if subtype == b"Link" {
-                        continue;
-                    }
-                    return Err(Error::Unsupported {
-                        feature: "annotation without appearance stream",
-                        detail: format!(
-                            "/Subtype /{} has no /AP — synthesising an appearance is not \
-                             implemented",
-                            String::from_utf8_lossy(&subtype)
-                        ),
-                    });
-                }
-            };
-            let ap = ap
-                .as_dict()
-                .ok_or_else(|| Error::Structure("/AP is not a dictionary".into()))?;
-            let Some(n_obj) = ap.get(b"N".as_slice()) else {
-                return Err(Error::Structure("/AP has no normal appearance (/N)".into()));
-            };
-            let mut stream_ref = n_obj.as_ref();
-            let n = self.doc.deref(n_obj)?;
-            let stream = match n {
-                Object::Stream { .. } => n,
-                Object::Dict(states) => {
-                    // Appearance sub-dictionary: one stream per state,
-                    // selected by /AS. A missing /AS is only acceptable
-                    // when there is exactly one state to choose from.
-                    let key: Vec<u8> = match ad.get(b"AS".as_slice()).and_then(|o| o.as_name()) {
-                        Some(k) => k.to_vec(),
-                        None if states.len() == 1 => states.keys().next().unwrap().clone(),
-                        None => {
-                            return Err(Error::Unsupported {
-                                feature: "annotation appearance states without /AS",
-                                detail: format!(
-                                    "/AP /N has {} states and the annotation names none",
-                                    states.len()
-                                ),
-                            })
-                        }
-                    };
-                    match states.get(key.as_slice()) {
-                        // A state with no stream (e.g. /Off absent)
-                        // draws nothing — that is the file's choice.
-                        None => continue,
-                        Some(o) => {
-                            stream_ref = o.as_ref();
-                            self.doc.deref(o)?
-                        }
-                    }
-                }
-                _ => {
-                    return Err(Error::Structure(
-                        "/AP /N is neither a stream nor a dictionary".into(),
-                    ))
-                }
-            };
-            let (sdict, sraw) = stream
-                .as_stream()
-                .ok_or_else(|| Error::Structure("appearance state is not a stream".into()))?;
-            let sdict = sdict.clone();
-            let sraw = sraw.to_vec();
-
             // /Rect, normalised (§12.5.2: corners may be in any order).
             let rect_obj = ad
                 .get(b"Rect".as_slice())
@@ -2126,6 +2062,115 @@ impl<'a> Renderer<'a> {
             }
             let (rx0, rx1) = (r.llx.min(r.urx), r.llx.max(r.urx));
             let (ry0, ry1) = (r.lly.min(r.ury), r.lly.max(r.ury));
+
+            // The normal appearance: the file's /AP /N stream, or —
+            // for a form widget without one (or under
+            // /NeedAppearances) — one synthesised from the field
+            // (§12.7.3.3, `crate::acroform`).
+            let has_ap = ad.contains_key(b"AP".as_slice());
+            let synth = if subtype == b"Widget"
+                && crate::acroform::needs_synthesis(self.doc, ad, &form, has_ap)?
+            {
+                match crate::acroform::synthesize(
+                    self.doc,
+                    ad,
+                    [rx0, ry0, rx1, ry1],
+                    &form,
+                    self.limits,
+                )? {
+                    Some(a) => Some(a),
+                    // Nothing to draw for this field (signature, no
+                    // value, no /MK): the widget is simply blank.
+                    None => continue,
+                }
+            } else {
+                None
+            };
+            let (sdict, sraw, stream_ref): (Dict, Vec<u8>, Option<IndirectRef>) = match synth {
+                Some(a) => (a.dict, a.content, None),
+                None => {
+                    let ap = match ad.get(b"AP".as_slice()) {
+                        Some(o) => self.doc.deref(o)?,
+                        None => {
+                            if subtype == b"Link" {
+                                continue;
+                            }
+                            return Err(Error::Unsupported {
+                                feature: "annotation without appearance stream",
+                                detail: format!(
+                                    "/Subtype /{} has no /AP — synthesising an appearance is \
+                                     implemented for form widgets only",
+                                    String::from_utf8_lossy(&subtype)
+                                ),
+                            });
+                        }
+                    };
+                    let ap = ap
+                        .as_dict()
+                        .ok_or_else(|| Error::Structure("/AP is not a dictionary".into()))?;
+                    let Some(n_obj) = ap.get(b"N".as_slice()) else {
+                        return Err(Error::Structure("/AP has no normal appearance (/N)".into()));
+                    };
+                    let mut stream_ref = n_obj.as_ref();
+                    let n = self.doc.deref(n_obj)?;
+                    let stream = match n {
+                        Object::Stream { .. } => n,
+                        Object::Dict(states) => {
+                            // Appearance sub-dictionary: one stream per
+                            // state, selected by /AS. Without /AS: a
+                            // single state is unambiguous; a widget's
+                            // field value (/V) names its state; else
+                            // refuse.
+                            let key: Vec<u8> = match ad
+                                .get(b"AS".as_slice())
+                                .and_then(|o| o.as_name())
+                            {
+                                Some(k) => k.to_vec(),
+                                None if states.len() == 1 => states.keys().next().unwrap().clone(),
+                                None => {
+                                    let v = if subtype == b"Widget" {
+                                        crate::acroform::field_value_name(self.doc, ad)?
+                                    } else {
+                                        None
+                                    };
+                                    match v {
+                                            Some(v) if states.contains_key(v.as_slice()) => v,
+                                            Some(_) => b"Off".to_vec(),
+                                            None => {
+                                                return Err(Error::Unsupported {
+                                                    feature:
+                                                        "annotation appearance states without /AS",
+                                                    detail: format!(
+                                                        "/AP /N has {} states and the annotation names none",
+                                                        states.len()
+                                                    ),
+                                                })
+                                            }
+                                        }
+                                }
+                            };
+                            match states.get(key.as_slice()) {
+                                // A state with no stream (e.g. /Off absent)
+                                // draws nothing — that is the file's choice.
+                                None => continue,
+                                Some(o) => {
+                                    stream_ref = o.as_ref();
+                                    self.doc.deref(o)?
+                                }
+                            }
+                        }
+                        _ => {
+                            return Err(Error::Structure(
+                                "/AP /N is neither a stream nor a dictionary".into(),
+                            ))
+                        }
+                    };
+                    let (sdict, sraw) = stream.as_stream().ok_or_else(|| {
+                        Error::Structure("appearance state is not a stream".into())
+                    })?;
+                    (sdict.clone(), sraw.to_vec(), stream_ref)
+                }
+            };
 
             // Algorithm 8.1: transform /BBox by /Matrix, fit the result's
             // bounds to /Rect. A degenerate transformed box (zero width
