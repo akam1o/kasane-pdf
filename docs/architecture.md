@@ -24,11 +24,19 @@ src/
   parser.rs    recursive-descent objects, indirect objects, stream
                capture, header/startxref location
   xref.rs      classic + stream xref sections, trailer, /Prev and
+               /XRefStm merging; `reconstruct` = recovery scan for
+               `n g obj` + trailer/XRef-dict/Catalog /Root + ObjStm
+               members → RecoveryReport (opt-in, never silent)
                /XRefStm (hybrid) merging
   filter.rs    stream /Filter decoding: FlateDecode + predictors
   objstm.rs    /ObjStm parsing (header, bounds, member objects)
   matrix.rs    Matrix [a b c d e f] affine transform (§8.3)
-  content.rs   content-stream parser → Vec<Operation> (§7.8, §8–§9)
+  content.rs   content-stream parser → Vec<Operation> (§7.8, §8–§9);
+               inline images (BI/ID/EI) with a computed data end
+  encodings.rs StandardEncoding / MacRomanEncoding tables, uniXXXX
+               and gNN glyph-name forms (§9.6.6, Annex D)
+  shading.rs   axial/radial shadings sampled through function.rs +
+               colorspace.rs into a colour table; param_at() per pixel
   colorspace.rs ColorSpace: every §8.6 family → sRGB (Device*, Cal*,
                Lab, ICCBased, Indexed, Separation/DeviceN), /Default*
                remapping, bounded nesting; records ICC approximations

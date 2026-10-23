@@ -11,10 +11,11 @@ parsing. Everything not listed as supported is a typed error.
 |---|---|---|
 | `%PDF-` header within first 1024 bytes | ✅ | `Error::NotPdf` otherwise |
 | `startxref` near end of file | ✅ | `Error::Parse` if missing/invalid |
+| **Recovery mode** (`Document::from_bytes_recovering`) | ✅ | opt-in, separate from the strict parse: when the strict parse fails for a *structural* reason (never `NotPdf`, `Encrypted`, `LimitExceeded`) the xref table is rebuilt by scanning the whole file for `n g obj` headers (a header needs a non-regular byte before the number and whitespace around the generation), the **last** definition of a number winning as in an incremental update; `/Root` comes from the merged `trailer` dictionaries, else the newest `/Type /XRef` dictionary, else the single (or last-defined) object declaring `/Type /Catalog`; `/Type /ObjStm` members fill gaps no direct definition covers; `/Encrypt` still refuses. Everything deviating from a clean read is listed on `RecoveryReport` (`Document::recovery()`, `None` for a strict parse): strict error, objects found, members from streams, `/Root` source, warnings. Bounded by `max_recovery_objects` (default 2²⁰) and the usual stream/objstm limits; page-tree cycle detection and reference budgets are unchanged, so a recovered document is as safe to walk as a strict one |
 | Classic `xref` tables, incl. subsections | ✅ | `Error::Parse` on malformed lines |
 | `trailer` dictionary | ✅ | merged across `/Prev` chain |
 | `/Prev` chains (incremental updates in classic format) | ✅ | newest section wins; cycles → `Error::CycleDetected` |
-| xref streams (`/Type /XRef`) | ✅ | `/W` (0–8 bytes/field), `/Index` (default `[0 /Size]`), types 0/1/2; bad type → `Error::Parse`, bad width → `Error::Unsupported` |
+| xref streams (`/Type /XRef`) | ✅ | entries read from the **decoded** stream (`/Filter` + predictors), `/W` (0–8 bytes/field), `/Index` (default `[0 /Size]`), types 0/1/2; bad type → `Error::Parse`, bad width → `Error::Unsupported` |
 | Hybrid-reference files (`/XRefStm`) | ✅ | within one update section the stream *replaces* classic entries (§7.5.8.4); across `/Prev` sections the newer section wins |
 | Object streams (`/Type /ObjStm`) | ✅ | `/N`/`/First` validated; index↔number consistency checked; decoded bodies cached per Document |
 | Encrypted files (`/Encrypt`) | ❌ | `Error::Encrypted` |
@@ -90,7 +91,7 @@ all parsed operations — no partial results.
 | `sh` | ✅ | resource name kept; shading **not** executed |
 | `MP` `DP` `BMC` `BDC` `EMC` | ✅ | `DP`/`BDC` property operand must be a dict or name; balance checked |
 | `BX` `EX` | ✅ | inside, unknown operators are recorded as `Operation::Unknown` instead of failing (§7.8.2) |
-| `BI` `ID` `EI` (inline images) | ❌ | `Error::Unsupported` — the binary data between `ID` and `EI` cannot be tokenized without guessing |
+| `BI` `ID` `EI` (inline images) | ✅ | `Operation::InlineImage { dict, data }` — the dictionary is read up to `ID`, the data end is *computed* (see `docs/features/rendering.md`, `Do`), never guessed from the first `EI`; a stray `ID`/`EI` or data that never closes → `Error::Parse`/`UnexpectedEof` |
 | Unknown operator outside `BX`/`EX` | ❌ | `Error::Parse` |
 | Wrong operand count / type, leftover operands at EOF | ❌ | `Error::Parse` |
 | Rendering / executing operations | ❌ | out of M2 scope — operations are data, not executed |
