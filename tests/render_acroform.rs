@@ -152,11 +152,9 @@ fn checkbox_and_radio_states() {
     let via_v = render(&pdf("", &[10], vec![(10, cb("", "/V /Yes", ""))])).unwrap();
     assert!(ink(&via_v, 60, 110, 90, 140) > 10);
     // Radio: filled dot in the middle.
-    let radio = format!(
-        "<< /Type /Annot /Subtype /Widget /FT /Btn /Ff 32768 /T (r) /AS /A \
-         /Rect [50 50 100 100] /MK << /BC [0] >> >>"
-    )
-    .into_bytes();
+    let radio = b"<< /Type /Annot /Subtype /Widget /FT /Btn /Ff 32768 /T (r) /AS /A \
+                  /Rect [50 50 100 100] /MK << /BC [0] >> >>"
+        .to_vec();
     let r = render(&pdf("", &[10], vec![(10, radio)])).unwrap();
     assert_eq!(px(&r, 75, 125), (0, 0, 0), "dot centre");
     assert_eq!(px(&r, 56, 106), WHITE, "corner stays clear of the dot");
