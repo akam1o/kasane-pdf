@@ -178,10 +178,36 @@ pub(crate) fn load_font(
             String::from_utf8_lossy(name)
         ))
     })?;
+    // A simple font whose program is an OpenType wrapper (`/FontFile3
+    // /Subtype /OpenType`, §9.9 Table 126) is loaded through the
+    // TrueType path whatever its declared subtype: `ttf-parser` reads
+    // both `glyf` and `CFF ` outlines from the sfnt container, and the
+    // glyph lookup (cmap, post, CFF charset names) is the same.
+    let opentype_ff3 = dict
+        .get(b"FontDescriptor".as_slice())
+        .and_then(|o| doc.deref(o).ok())
+        .and_then(|o| o.as_dict().cloned())
+        .and_then(|fd| {
+            fd.get(b"FontFile3".as_slice())
+                .and_then(|o| doc.deref(o).ok())
+        })
+        .and_then(|ff| {
+            ff.as_stream().map(|(d, raw)| {
+                d.get(b"Subtype".as_slice()).and_then(|o| o.as_name()) == Some(b"OpenType")
+                    || doc
+                        .decode_stream(d, raw)
+                        .map(|b| is_sfnt(&b))
+                        .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
     match dict.get(b"Subtype".as_slice()).and_then(|o| o.as_name()) {
         Some(b"TrueType") => Ok(Font::Simple(load_simple_font(
             doc, resources, name, limits,
         )?)),
+        Some(b"Type1") | Some(b"MMType1") if opentype_ff3 => Ok(Font::Simple(
+            load_simple_font(doc, resources, name, limits)?,
+        )),
         Some(b"Type1") | Some(b"MMType1") => Ok(Font::Type1(load_type1_font(doc, dict, limits)?)),
         Some(b"Type3") => Ok(Font::Type3(load_type3_font(doc, dict, limits)?)),
         Some(b"Type0") => Ok(Font::Composite(load_composite_font(doc, dict, limits)?)),
@@ -228,7 +254,9 @@ pub(crate) fn load_simple_font(
         ))
     })?;
     match dict.get(b"Subtype".as_slice()).and_then(|o| o.as_name()) {
-        Some(b"TrueType") => {}
+        // /Type1 lands here only with an OpenType /FontFile3 (see
+        // `load_font`).
+        Some(b"TrueType") | Some(b"Type1") | Some(b"MMType1") => {}
         Some(other) => {
             return Err(Error::Unsupported {
                 feature: "font subtype",
@@ -312,13 +340,21 @@ pub(crate) fn load_simple_font(
     let (program, subst): (
         std::borrow::Cow<'static, [u8]>,
         Option<crate::fontsubst::FontSubstitution>,
-    ) = match fd_dict.get(b"FontFile2".as_slice()) {
+    ) = match fd_dict
+        .get(b"FontFile2".as_slice())
+        .or_else(|| fd_dict.get(b"FontFile3".as_slice()))
+    {
         Some(ff2_obj) => {
             let ff2 = doc.deref(ff2_obj)?;
             let (ff2_dict, ff2_raw) = ff2
                 .as_stream()
                 .ok_or_else(|| Error::Structure("/FontFile2 is not a stream".into()))?;
             let program = doc.decode_stream(ff2_dict, ff2_raw)?;
+            if fd_dict.get(b"FontFile2".as_slice()).is_none() && !is_sfnt(&program) {
+                return Err(Error::Structure(
+                    "TrueType font with a non-OpenType /FontFile3 — the subtype and program disagree".into(),
+                ));
+            }
             if program.len() as u64 > limits.max_stream_bytes {
                 return Err(Error::LimitExceeded {
                     limit: "max_stream_bytes (embedded font)",
@@ -1442,10 +1478,14 @@ fn load_composite_font(
         let (ff3_dict, ff3_raw) = ff3
             .as_stream()
             .ok_or_else(|| Error::Structure("/FontFile3 is not a stream".into()))?;
+        let program = doc.decode_stream(ff3_dict, ff3_raw)?;
         let kind = match ff3_dict
             .get(b"Subtype".as_slice())
             .and_then(|o| o.as_name())
         {
+            // The bytes decide: an sfnt wrapper labelled /CIDFontType0C
+            // is still OpenType (common in arXiv/LaTeX output).
+            _ if is_sfnt(&program) => CidProgram::OpenType,
             Some(b"OpenType") => CidProgram::OpenType,
             Some(b"CIDFontType0C") | Some(b"Type1C") | None => CidProgram::Cff,
             Some(other) => {
@@ -1455,7 +1495,7 @@ fn load_composite_font(
                 })
             }
         };
-        (kind, doc.decode_stream(ff3_dict, ff3_raw)?)
+        (kind, program)
     } else if let Some(ff2) = fd_dict.get(b"FontFile2".as_slice()) {
         let ff2 = doc.deref(ff2)?;
         let (ff2_dict, ff2_raw) = ff2
@@ -2110,6 +2150,12 @@ impl Font {
 /// are scaled by `1 / units_per_em` so the path ends up in the
 /// PDF glyph coordinate system (em square), where `Tm`'s `Tfs`
 /// scaling then applies the font size.
+/// `true` when `b` starts with an sfnt signature (`OTTO`, TrueType
+/// `0x00010000`, Apple `true`, or a `ttcf` collection).
+fn is_sfnt(b: &[u8]) -> bool {
+    b.len() >= 4 && matches!(&b[..4], b"OTTO" | b"\x00\x01\x00\x00" | b"true" | b"ttcf")
+}
+
 /// Composite character codes carry their byte length so CMap lookups
 /// can tell `<41>` from `<0041>`: 2-byte codes (the Identity case and
 /// by far the most common) are stored untagged; 1- and 3-byte codes
