@@ -716,17 +716,20 @@ pub fn split_summary(files: &[FileResult]) -> SplitSummary {
         match f.expect.as_str() {
             "pass" => {
                 s.compat_total += 1;
+                // Downstream passes count only on a strictly parsed
+                // document — a recovered file's stages are reported
+                // separately.
                 if f.parse.class == Class::Pass {
                     s.compat_parse_pass += 1;
-                }
-                if f.render.class == Class::Pass {
-                    s.compat_render_pass += 1;
-                }
-                if f.text.class == Class::Pass {
-                    s.compat_text_pass += 1;
-                }
-                if f.rewrite.class == Class::Pass {
-                    s.compat_rewrite_pass += 1;
+                    if f.render.class == Class::Pass {
+                        s.compat_render_pass += 1;
+                    }
+                    if f.text.class == Class::Pass {
+                        s.compat_text_pass += 1;
+                    }
+                    if f.rewrite.class == Class::Pass {
+                        s.compat_rewrite_pass += 1;
+                    }
                 }
             }
             "reject" => {
@@ -761,6 +764,17 @@ pub struct CategorySummary {
     pub verdict_pass: usize,
 }
 
+/// The class a stage contributes to the rates: a recovered file's
+/// downstream stages ran on a rebuilt document and are reported in the
+/// recovery section only, so here they count as skipped.
+pub fn rated_class(f: &FileResult, stage: &crate::StageResult) -> Class {
+    if f.recovered && !std::ptr::eq(stage, &f.parse) {
+        Class::Skip
+    } else {
+        stage.class
+    }
+}
+
 fn counts(files: &[FileResult], get: fn(&FileResult) -> &crate::StageResult) -> StageCounts {
     let mut c = StageCounts {
         attempted: 0,
@@ -776,11 +790,12 @@ fn counts(files: &[FileResult], get: fn(&FileResult) -> &crate::StageResult) -> 
     };
     let total = files.len();
     for f in files {
-        match get(f).class {
+        let class = rated_class(f, get(f));
+        match class {
             Class::Skip => c.skipped += 1,
             _ => {
                 c.attempted += 1;
-                match get(f).class {
+                match class {
                     Class::Pass => c.pass += 1,
                     Class::Mismatch => c.mismatch += 1,
                     Class::Unsupported => c.unsupported += 1,
@@ -826,9 +841,18 @@ pub fn category_summary(files: &[FileResult]) -> Vec<CategorySummary> {
             category: cat.to_string(),
             files: fs.len(),
             parse_pass: fs.iter().filter(|f| f.parse.class == Class::Pass).count(),
-            render_pass: fs.iter().filter(|f| f.render.class == Class::Pass).count(),
-            text_pass: fs.iter().filter(|f| f.text.class == Class::Pass).count(),
-            rewrite_pass: fs.iter().filter(|f| f.rewrite.class == Class::Pass).count(),
+            render_pass: fs
+                .iter()
+                .filter(|f| rated_class(f, &f.render) == Class::Pass)
+                .count(),
+            text_pass: fs
+                .iter()
+                .filter(|f| rated_class(f, &f.text) == Class::Pass)
+                .count(),
+            rewrite_pass: fs
+                .iter()
+                .filter(|f| rated_class(f, &f.rewrite) == Class::Pass)
+                .count(),
             verdict_pass: fs.iter().filter(|f| f.verdict == Class::Pass).count(),
         });
     }
@@ -880,6 +904,8 @@ mod tests {
             verdict: Class::Unsupported,
             pages_seen: 1,
             parse: pass,
+            recover: Default::default(),
+            recovered: false,
             render: StageResult::pass(0),
             text: StageResult::pass(0),
             rewrite: StageResult::pass(0),

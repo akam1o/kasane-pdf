@@ -168,19 +168,25 @@ fn scan_ops(
     for op in ops {
         match op {
             Operation::SetExtGState(n) => probe_extgstate(doc, resources, n, pi, res, record),
-            Operation::Shading(_) => record(res, "render.shading.unsupported", pi),
-            Operation::SetColorSpaceFill(n) | Operation::SetColorSpaceStroke(n) => {
-                // Every colour-space family resolves now except
-                // /Pattern (pattern painting); malformed definitions
-                // are structure errors found at run time.
-                if is_pattern_space(doc, resources, n) {
-                    record(res, "render.pattern.unsupported", pi)
+            Operation::Shading(n) => {
+                // Axial/radial shadings render; types 1 and 4–7 do not.
+                if !shading_supported(doc, resources, "Shading", n) {
+                    record(res, "render.shading.unsupported", pi)
                 }
             }
+            Operation::SetColorSpaceFill(_) | Operation::SetColorSpaceStroke(_) => {
+                // Every colour-space family resolves now, /Pattern
+                // included; malformed definitions are structure errors
+                // found at run time.
+            }
             Operation::SetColorFill(o) | Operation::SetColorStroke(o) => {
-                // `scn`/`SCN` with a trailing pattern name → pattern.
-                if o.iter().any(|x| matches!(x, Object::Name(_))) {
-                    record(res, "render.pattern.unsupported", pi)
+                // `scn`/`SCN` with a trailing pattern name: shading
+                // patterns (type 2 over an axial/radial shading) render
+                // as fills; tiling patterns and mesh shadings do not.
+                if let Some(Object::Name(p)) = o.last() {
+                    if !pattern_supported(doc, resources, p) {
+                        record(res, "render.pattern.unsupported", pi)
+                    }
                 }
             }
             Operation::SetTextRenderingMode(m) => {
@@ -201,25 +207,49 @@ fn scan_ops(
     }
 }
 
-/// `true` when `n` names the `/Pattern` colour space — directly, or
-/// through a `/Resources /ColorSpace` entry that is `/Pattern` or a
-/// `[/Pattern base]` array. Mirrors `ColorSpace::parse`: this is the
-/// only family the renderer still refuses.
-fn is_pattern_space(doc: &Document, resources: &Object, n: &[u8]) -> bool {
-    if n == b"Pattern" {
+/// `true` when the shading `n` in `category` (`/Shading` or, for a
+/// pattern, the pattern's own `/Shading` entry) is a type the renderer
+/// draws (2 axial, 3 radial). Unresolvable names are left to the run
+/// (they are structure errors, not feature gaps).
+fn shading_supported(doc: &Document, resources: &Object, category: &str, n: &[u8]) -> bool {
+    let Ok(Some(o)) = doc.resolve_resource(resources, category, n) else {
         return true;
-    }
-    let Ok(Some(o)) = doc.resolve_resource(resources, "ColorSpace", n) else {
-        return false;
     };
-    match o {
-        Object::Name(ref m) => m == b"Pattern",
-        Object::Array(ref a) => a
-            .first()
-            .and_then(|f| doc.deref(f).ok())
-            .map(|f| f.as_name() == Some(b"Pattern"))
-            .unwrap_or(false),
-        _ => false,
+    shading_obj_supported(doc, &o)
+}
+
+fn shading_obj_supported(doc: &Document, o: &Object) -> bool {
+    let Ok(o) = doc.deref(o) else { return true };
+    let Some(d) = o.as_dict_like() else {
+        return true;
+    };
+    match d.get(b"ShadingType".as_slice()).and_then(|o| o.as_i64()) {
+        Some(2) | Some(3) | None => true,
+        Some(_) => false,
+    }
+}
+
+/// `true` when `/Pattern p` is a `/PatternType 2` shading pattern over
+/// a supported shading without an `/ExtGState` override. Tiling
+/// patterns (type 1) are refused by the renderer.
+fn pattern_supported(doc: &Document, resources: &Object, p: &[u8]) -> bool {
+    let Ok(Some(o)) = doc.resolve_resource(resources, "Pattern", p) else {
+        return true;
+    };
+    let Some(d) = o.as_dict_like() else {
+        return true;
+    };
+    match d.get(b"PatternType".as_slice()).and_then(|o| o.as_i64()) {
+        Some(2) => {
+            if d.contains_key(b"ExtGState".as_slice()) {
+                return false;
+            }
+            d.get(b"Shading".as_slice())
+                .map(|s| shading_obj_supported(doc, s))
+                .unwrap_or(true)
+        }
+        Some(1) => false,
+        _ => true,
     }
 }
 
@@ -320,9 +350,10 @@ fn probe_font(
     let subtype = dict.get(b"Subtype".as_slice()).and_then(|o| o.as_name());
     match subtype {
         Some(b"TrueType") => {
-            // Mirror load_simple_font: a descriptor is required; the
-            // Symbolic flag is refused; without /FontFile2 the bundled
-            // substitute must be able to stand in.
+            // Mirror load_simple_font: a descriptor is required;
+            // symbolic fonts map codes through the cmap; without
+            // /FontFile2 the bundled substitute must be able to stand
+            // in (it refuses symbolic names it cannot read).
             let fd = dict
                 .get(b"FontDescriptor".as_slice())
                 .and_then(|o| doc.deref(o).ok())
@@ -330,13 +361,7 @@ fn probe_font(
             match fd {
                 None => record(res, "render.font.nonembedded.unsupported", pi),
                 Some(fd) => {
-                    let flags = fd
-                        .get(b"Flags".as_slice())
-                        .and_then(|o| o.as_i64())
-                        .unwrap_or(0);
-                    if flags & 4 != 0 {
-                        record(res, "render.font.symbolic.unsupported", pi);
-                    } else if !fd.contains_key(b"FontFile2".as_slice()) {
+                    if !fd.contains_key(b"FontFile2".as_slice()) {
                         let base = dict
                             .get(b"BaseFont".as_slice())
                             .and_then(|o| o.as_name())
@@ -513,16 +538,10 @@ fn probe_xobject(
         }
         Some(b"Image") => {
             // Image colour spaces, /ImageMask, /Mask and /SMask all
-            // render now. What still refuses: a /Pattern colour space,
+            // render now (a /Pattern colour space on an image is a
+            // structure error, not a feature gap). What still refuses:
             // a pre-blended soft mask (/Matte), JPX-embedded alpha
             // (/SMaskInData ≠ 0) and optional content on the image.
-            if let Some(Ok(Object::Name(n))) =
-                dict.get(b"ColorSpace".as_slice()).map(|cs| doc.deref(cs))
-            {
-                if is_pattern_space(doc, resources, &n) {
-                    record(res, "render.image.colorspace.unsupported", pi);
-                }
-            }
             if let Some(Ok(sm)) = dict.get(b"SMask".as_slice()).map(|o| doc.deref(o)) {
                 if sm
                     .as_dict_like()

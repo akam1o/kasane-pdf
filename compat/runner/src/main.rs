@@ -107,6 +107,12 @@ impl StageResult {
     }
 }
 
+impl Default for StageResult {
+    fn default() -> Self {
+        StageResult::skip("not attempted")
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct FileResult {
     id: String,
@@ -116,8 +122,16 @@ struct FileResult {
     /// Worst class across all stages (the headline verdict).
     verdict: Class,
     pages_seen: usize,
-    /// Per-stage results.
+    /// Per-stage results. `parse` is the *strict* parse; `recover` is
+    /// the xref-rebuild attempt made only when `parse` failed (`skip`
+    /// otherwise). Render/text/rewrite run on whichever document was
+    /// obtained — `recovered` says which — but the verdict and the
+    /// compatibility rates keep the strict result.
     parse: StageResult,
+    #[serde(default)]
+    recover: StageResult,
+    #[serde(default)]
+    recovered: bool,
     render: StageResult,
     text: StageResult,
     rewrite: StageResult,
@@ -746,39 +760,74 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     // ---- Parse ------------------------------------------------------
     let t = Instant::now();
     let data = fs::read(path).unwrap_or_default();
-    let doc = match Document::from_bytes(&data) {
-        Ok(d) => d,
+    let (doc, parse, recover, recovered) = match Document::from_bytes(&data) {
+        Ok(d) => (
+            d,
+            StageResult::pass(t.elapsed().as_millis()),
+            StageResult::skip("strict parse passed"),
+            false,
+        ),
         Err(e) => {
             let (c, d, f, cid) = classify_err("parse", &e);
             let mut parse = StageResult::new(c, d, f, t.elapsed().as_millis());
             parse.cause = cid;
-            return finish(FileResult {
-                id: id.into(),
-                sha256: sha,
-                bytes,
-                category: category.into(),
-                verdict: c,
-                pages_seen: 0,
-                parse,
-                render: StageResult::skip("parse failed"),
-                text: StageResult::skip("parse failed"),
-                rewrite: StageResult::skip("parse failed"),
-                causes: Vec::new(),
-                cause_pages: BTreeMap::new(),
-                expect: String::new(),
-                total_pages: 0,
-                probe_pages: 0,
-                probe_walk_errors: 0,
-                probe_forms: 0,
-                metrics: {
-                    metrics.total_ms = start.elapsed().as_millis();
-                    metrics.max_rss_bytes = max_rss_bytes();
-                    metrics
-                },
-            });
+            // Strict failed: try the xref rebuild. Its outcome is a
+            // separate stage so a recovered file never counts as a
+            // strict parse pass.
+            let t2 = Instant::now();
+            match Document::from_bytes_recovering(&data) {
+                Ok(d) => {
+                    let mut rec = StageResult::pass(t2.elapsed().as_millis());
+                    if let Some(rep) = d.recovery() {
+                        rec.detail = format!(
+                            "{} object(s) scanned, {} from object streams, /Root via {}; {} warning(s){}",
+                            rep.objects_found,
+                            rep.objects_from_streams,
+                            rep.trailer_source,
+                            rep.warnings.len(),
+                            if rep.warnings.is_empty() {
+                                String::new()
+                            } else {
+                                format!(": {}", rep.warnings.join(" | "))
+                            }
+                        );
+                    }
+                    (d, parse, rec, true)
+                }
+                Err(e2) => {
+                    let (c2, d2, f2, cid2) = classify_err("recover", &e2);
+                    let mut rec = StageResult::new(c2, d2, f2, t2.elapsed().as_millis());
+                    rec.cause = cid2;
+                    return finish(FileResult {
+                        id: id.into(),
+                        sha256: sha,
+                        bytes,
+                        category: category.into(),
+                        verdict: c,
+                        pages_seen: 0,
+                        parse,
+                        recover: rec,
+                        recovered: false,
+                        render: StageResult::skip("parse failed"),
+                        text: StageResult::skip("parse failed"),
+                        rewrite: StageResult::skip("parse failed"),
+                        causes: Vec::new(),
+                        cause_pages: BTreeMap::new(),
+                        expect: String::new(),
+                        total_pages: 0,
+                        probe_pages: 0,
+                        probe_walk_errors: 0,
+                        probe_forms: 0,
+                        metrics: {
+                            metrics.total_ms = start.elapsed().as_millis();
+                            metrics.max_rss_bytes = max_rss_bytes();
+                            metrics
+                        },
+                    });
+                }
+            }
         }
     };
-    let parse = StageResult::pass(t.elapsed().as_millis());
     let pages: Vec<kasane_pdf::Page> = doc.pages().to_vec();
 
     // ---- Probe: enumerate *all* blockers (read-only) ----------------
@@ -957,6 +1006,8 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         verdict,
         pages_seen: pages.len(),
         parse,
+        recover,
+        recovered,
         render,
         text,
         rewrite: rewrite_res,
@@ -1392,7 +1443,7 @@ fn render_markdown(r: &RunReport) -> String {
     for (name, get) in stages {
         let mut c = [0usize; 7];
         for f in &r.files {
-            let idx = match get(f).class {
+            let idx = match analysis::rated_class(f, get(f)) {
                 Class::Pass => 0,
                 Class::Mismatch => 1,
                 Class::Unsupported => 2,
@@ -1409,6 +1460,59 @@ fn render_markdown(r: &RunReport) -> String {
         ));
     }
     s.push('\n');
+
+    // Recovery parse: files whose strict parse failed but whose xref
+    // table could be rebuilt by scanning. Their downstream stages ran
+    // on the rebuilt document; they stay out of every pass count above.
+    let recovered: Vec<&FileResult> = r.files.iter().filter(|f| f.recovered).collect();
+    let attempted = r
+        .files
+        .iter()
+        .filter(|f| f.parse.class != Class::Pass)
+        .count();
+    if attempted > 0 {
+        s.push_str(&format!(
+            "## Recovery parse\n\n{} file(s) failed the strict parse; the xref rebuild \
+             (`Document::from_bytes_recovering`) succeeded on **{}**. Their render/text/rewrite \
+             results below are *not* counted in the stage or compatibility rates — a recovered \
+             document is a best-effort reading of a damaged file.\n\n",
+            attempted,
+            recovered.len()
+        ));
+        if !recovered.is_empty() {
+            s.push_str("| file | expect | strict error | recovery | render | text | rewrite |\n|---|---|---|---|---|---|---|\n");
+            for f in &recovered {
+                s.push_str(&format!(
+                    "| `{}` | {} | {} | {} | {} | {} | {} |\n",
+                    f.id,
+                    f.expect,
+                    f.parse.detail.replace('|', "\\|"),
+                    f.recover.detail.replace('|', "\\|"),
+                    f.render.class.label(),
+                    f.text.class.label(),
+                    f.rewrite.class.label()
+                ));
+            }
+            s.push('\n');
+        }
+        let failed: Vec<&FileResult> = r
+            .files
+            .iter()
+            .filter(|f| f.parse.class != Class::Pass && !f.recovered)
+            .collect();
+        if !failed.is_empty() {
+            s.push_str("Not recoverable:\n\n");
+            for f in &failed {
+                s.push_str(&format!(
+                    "- `{}` ({}) — {}\n",
+                    f.id,
+                    f.expect,
+                    f.recover.detail.replace('|', "\\|")
+                ));
+            }
+            s.push('\n');
+        }
+    }
 
     // ---- Analysis: stage denominators + categories + priorities ----
     if let Some(a) = &r.analysis {
