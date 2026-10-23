@@ -111,6 +111,11 @@ pub fn cause_category(feature: &str) -> &'static str {
         "pattern colour space" => "pattern",
         "pattern colour (SCN/scn name operand)" => "pattern",
         "shading (sh)" => "shading",
+        "shading type" => "shading",
+        "tiling pattern" => "pattern",
+        "pattern stroke" => "pattern",
+        "pattern-filled text" => "pattern",
+        "shading pattern /ExtGState" => "pattern",
         // xobjects / images
         "XObject subtype" => "xobject",
         "group XObject (/Group in a form dictionary)" => "xobject.group",
