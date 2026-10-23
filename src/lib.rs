@@ -63,6 +63,7 @@
 //! # Ok::<(), kasane_pdf::Error>(())
 //! ```
 
+mod acroform;
 pub mod audit;
 mod cmap;
 mod colorspace;

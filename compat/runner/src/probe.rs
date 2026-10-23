@@ -116,7 +116,9 @@ fn probe_annotation(
         return;
     }
     let Some(ap) = ad.get(b"AP".as_slice()) else {
-        if subtype != b"Link" {
+        // Form widgets get a synthesised appearance (§12.7.3.3); every
+        // other subtype without /AP is still refused.
+        if subtype != b"Link" && subtype != b"Widget" {
             record(res, "render.annotation.unsupported", pi);
         }
         return;
@@ -127,7 +129,12 @@ fn probe_annotation(
     };
     match doc.deref(n) {
         Ok(Object::Dict(states)) => {
-            if ad.get(b"AS".as_slice()).is_none() && states.len() != 1 {
+            // Several states without /AS: a widget falls back to its
+            // field value (/V, possibly inherited); anything else is
+            // ambiguous and refused.
+            let has_value = subtype == b"Widget"
+                && (ad.contains_key(b"V".as_slice()) || ad.contains_key(b"Parent".as_slice()));
+            if ad.get(b"AS".as_slice()).is_none() && states.len() != 1 && !has_value {
                 record(res, "render.annotation.unsupported", pi);
             } else {
                 res.forms += 1;
