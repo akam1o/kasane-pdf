@@ -25,15 +25,22 @@
 //!
 //! Explicitly **not** supported (typed `Error::Unsupported` or
 //! `Error::Encrypted`, never a partial result): stream filters other
-//! than `/FlateDecode`/`/DCTDecode`, inline images, encrypted files,
-//! `/Pattern` colour and shadings, knockout transparency groups and
-//! ExtGState soft masks, `/Matte` soft-mask images, optional content,
-//! non-Identity-H Type0 encodings, `/UserUnit` ≠ 1, singular CTMs.
-//! Colour spaces (`CalGray`/`CalRGB`/`Lab`/`ICCBased`/`Indexed`/
-//! `Separation`/`DeviceN`), image `/SMask`/`/Mask`/`/ImageMask` and
-//! non-knockout transparency groups render; an `ICCBased` profile
+//! than `/FlateDecode`/`/DCTDecode`, encrypted files, tiling patterns,
+//! function-based and mesh shadings (types 1, 4–7), knockout
+//! transparency groups and ExtGState soft masks, `/Matte` soft-mask
+//! images, optional content, non-Identity-H Type0 encodings,
+//! `/UserUnit` ≠ 1, singular CTMs. Colour spaces, image
+//! `/SMask`/`/Mask`/`/ImageMask`, inline images, axial/radial shadings
+//! (`sh` and shading patterns), every simple-font encoding of §9.6.6
+//! and non-knockout transparency groups render; an `ICCBased` profile
 //! the engine cannot evaluate exactly falls back to `/Alternate` and
 //! is reported on [`RenderedPage::color_approximations`].
+//!
+//! Damaged files: [`Document::from_bytes`] is strict. A caller that
+//! wants a best-effort reading uses [`Document::from_bytes_recovering`],
+//! which rebuilds the cross-reference table from the object headers in
+//! the file and reports every assumption on [`RecoveryReport`]
+//! (`Document::recovery()`); a strictly parsed document reports `None`.
 //!
 //! # Safety-oriented design
 //!

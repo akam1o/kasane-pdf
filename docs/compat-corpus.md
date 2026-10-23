@@ -81,7 +81,27 @@ $ .venv-corpus/bin/python compat/fetch-corpus.py add-url <url> \
 
 # re-hash local files against the manifest
 $ .venv-corpus/bin/python compat/fetch-corpus.py verify
+
+# register without a store: keep the file in compat/corpus/ and append
+# to the manifest; upload later with `sync` once credentials exist
+$ .venv-corpus/bin/python compat/fetch-corpus.py add-url <url> --local \
+      --category papers --license "CC BY 4.0" --redistribute yes --expect pass
+$ .venv-corpus/bin/python compat/fetch-corpus.py sync
+
+# grow the corpus from the public sources in one go (pdf.js, pdfium,
+# veraPDF, IRS, arXiv CC BY, Chrome/CUPS/sips-generated, mutations)
+$ .venv-corpus/bin/python compat/collect-corpus.py [--only pdfjs irs …] [--max-pdfjs N …]
 ```
+
+Every manifest entry carries `id`, `sha256`, `category`, `source`,
+`license`, `expect` (`pass`/`reject`/`any`), `pages`, `notes`, and —
+since the 500-file expansion — `redistribute` (`yes`/`no`: may the
+file itself be published with the corpus), `producer` (the
+`/Producer` string normalised to a product family by
+`fetch-corpus.py::normalise_producer`), `producer_raw`, `version`
+(`%PDF` header) and `encrypted`. `add`/`add-url` refuse a file whose
+SHA-256 is already listed. The manifest is the source of truth; the
+store and `compat/corpus/` are caches of it.
 
 ## Running the compatibility suite
 
@@ -140,6 +160,21 @@ per-file `expect:` tag in `manifest.yaml`:
 Tag files by *document intent*, never by the engine's current result —
 a well-formed PDF our parser can't read yet is `expect: pass` (a
 compatibility gap), not `reject`.
+
+### Strict parse vs recovery parse
+
+`parse` is always the strict `Document::from_bytes`. When it fails,
+the runner tries `Document::from_bytes_recovering` as a separate
+`recover` stage: on success the render/text/rewrite stages run on the
+rebuilt document and the file is listed in the report's *Recovery
+parse* section with the strict error, the recovery summary (objects
+scanned, members from object streams, where `/Root` came from,
+warnings) and those stage outcomes — but its verdict stays the strict
+parse's, and none of the stage tables, category/producer tables or
+the compatibility rate count a recovered file's downstream stages
+(`analysis::rated_class` turns them into *skip*). A recovered
+document is a best-effort reading of a damaged file and is reported
+as exactly that.
 
 ## ExtGState usage audit
 
@@ -255,48 +290,176 @@ figures themselves (e.g. the Transformer diagram on
 image; the residual diff on those pages is the missing Computer
 Modern math glyphs, a pre-existing font gap.
 
-## Corpus composition and the road to 500–1,000 files
+Measured after simple-font encodings, axial/radial shadings, inline
+images, the xref-stream decoding fix and the recovery parse
+(run-1792713726, same conditions, 106 files): strict parse **92/106**
+(was 67 — the xref-stream fix alone: xref-stream entries were being
+read from the *encoded* bytes, so every file whose newest section was
+a Flate-compressed xref stream failed), render **54/67 → 54/92
+attempted**, text **70**, rewrite **79**, full PASS **53** (was 30),
+0 newly failing, 0 lost renders, 0 crash/timeout, robustness 13/13.
+Newly passing: the 13 pdf.js `annotation-*` files, `alphatrans`,
+`radial_gradients`, `shading_extend` (shadings), `tamreview` (inline
+images), `arxiv-2303.18223` and `arxiv-2307.06435` (encodings:
+MacRoman TrueType, Type 1 built-in encodings), `w3c-dummy` (symbolic
+TrueType), `font_ascent_descent`, `image-rotated-black-white-ratio`,
+`smaskdim`, `stamps` (xref streams). The 27 files measured in both
+runs are unchanged (mean SSIM 0.9755 → 0.9756). The recovery parse
+rebuilt 5 of the 14 strict-parse failures (`helloworld-bad`,
+`xref_command_missing`, `scan-bad`, `ghostscript-698804-1-fuzzed` —
+all `expect: reject`, all then render/extract/rewrite cleanly — and
+`highlights`, whose truncated content stream still stops the render);
+the other 9 are 5 encrypted files, 2 whose referenced objects do not
+exist anywhere in the file, a page-tree cycle and a page without a
+MediaBox — none of which a scan can repair, and none of which should
+be invented.
 
-The current 106 files by manifest category (`compat/manifest.yaml`):
-graphics 25, annotations 21, misc 15, malformed 12, images 11,
-japanese 8, latex 7, encrypted 3, incremental 2, office 2. By origin:
-82 from the pdf.js test suite (Apache-2.0), 13 from the veraPDF
-corpus (GPLv3+MPL, internal use), 7 arXiv papers (author-submitted,
-not redistributable), 2 IRS forms (US public domain), 1 Adobe sample,
-1 W3C test document. 79 are `expect: pass`, 13 `reject`, 14 `any`.
+## Corpus composition (511 files, run-1792715480)
 
-That is a *feature-test* corpus: 77% of it is engine test suites
-built to exercise one PDF construct each, and the categories a user
-actually meets are thin — 2 office exports, 0 browser-printed pages,
-0 scanned documents, 0 interactive forms with field values, 8
-Japanese files that are all pdf.js CMap tests. The expansion target
-and the sampling bias to correct, per category (target counts for a
-600-file corpus, weighted toward producer diversity rather than
-spec coverage):
+The corpus grew from 106 to **511** files with `compat/collect-corpus.py`
+(sources and licences below; every file registered through
+`fetch-corpus.py --local`, de-duplicated by SHA-256, described by
+producer family / `%PDF` version / encryption, and kept out of git).
+The object-store upload is **pending** — no store credentials were
+available in this environment — so the 405 new files exist in the
+manifest and in `compat/corpus/` only; `fetch-corpus.py sync` uploads
+exactly those once `KASANE_CORPUS_*` and the AWS credentials are set
+(see *Credentials*). Redistribution flags: 0 `yes`,
+0 `no` (the veraPDF suite) — a public bucket can be
+built from the `yes` subset.
 
-| category | now | target | what to sample | candidate sources (licence) |
-|---|---:|---:|---|---|
-| office exports | 2 | 100 | Word/Excel/PowerPoint, LibreOffice, Google Docs, Pages; several versions of each producer | self-generated from CC0/own documents (no licence issue); GovDocs1 subset (US public records, free use); LibreOffice `sw/qa` test docs (MPL-2.0) |
-| browser print | 0 | 80 | Chrome/Skia, Firefox/Cairo, Safari/Quartz “print to PDF” of real pages, incl. CSS transforms, web fonts, SVG, emoji | self-printed Wikipedia/CC-BY pages (CC BY-SA 4.0, attribution in manifest); W3C/WHATWG spec pages (W3C licence) |
-| Japanese | 8 | 80 | vertical text, predefined CMaps (90ms-RKSJ, UniJIS-UCS2/UTF16), non-embedded CJK (MS Mincho/Gothic, Hiragino), Word-ja, 一太郎, e-Gov/city-hall forms, LaTeX pLaTeX/LuaTeX-ja | e-Gov 法令・各省庁 PDF (公共データ利用規約 PDL 1.0 = CC BY 4.0 compatible); 国立国会図書館 digital collections (public domain); J-STAGE open-access papers (CC BY); self-generated |
-| academic papers | 7 | 80 | LaTeX via pdfTeX/XeTeX/LuaTeX/dvipdfmx, Word→PDF, with figures (SMask, shadings, patterns, Type3/Type1C fonts) | arXiv **only** papers under CC BY/CC0 (filter by licence field in the OAI metadata — the current 7 are author-submitted and must not be redistributed); PLOS/PMC OA subset (CC BY); DOAJ |
-| scanned | 0 | 60 | CCITT G4, JBIG2, DCT, JPX, mixed-raster, OCR text layers, skewed pages, A3/A4 | Internet Archive public-domain books (PD); GovDocs1; NDL; self-scanned |
-| forms (AcroForm/XFA) | 2 | 40 | field appearance streams, `/NeedAppearances`, filled values, checkboxes/radios, XFA foreground | IRS (PD), US federal forms (PD), e-Gov forms (PDL), pdf.js/pdfium form tests (Apache/BSD) |
-| annotations | 21 | 40 | real-world markup from Acrobat/Preview/Edge/Drawboard: highlights, ink, stamps, popups, redactions, rich-text free text | self-annotated CC0 docs with several viewers; pdf.js tests already cover the synthetic cases |
-| images & transparency | 11 | 60 | SMask/Matte, ICC-CMYK images, Indexed+SMask, 16-bit, JPX, soft masks in ExtGState, knockout groups, blend modes from InDesign/Illustrator/Inkscape | Inkscape/Scribus exports (self-generated, GPL test files are fine as data), pdfium test corpus (BSD-3), Ghostscript bug attachments (case-by-case — many have no licence), PDF Association sample files |
-| malformed / fuzzed | 12 | 60 | truncated, bad xref, missing `endobj`, object streams with wrong offsets, recursion bombs, decompression bombs, giant `/Width` | Ghostscript/poppler/pdfium/pdf.js bug-tracker fuzz cases (already used; licence-free as they are not creative works but keep them *out of the public repo* when the tracker says so); self-mutated copies of the CC0 files (radamsa/zzuf) |
+By category (strict counts; a recovered file's downstream stages are
+not counted — see *Strict parse vs recovery parse*):
 
-Three constraints that shape the manifest schema rather than the
-runner: (1) **licence is per file**, so `license` and `source` stay
-mandatory and a `redistribute: yes|no` flag should be added so a
-public bucket can be built from the `yes` subset only — today the
-7 arXiv papers and the Adobe sample are `no`; (2) **producer** is
-the axis users care about, so add `producer:` (from `/Producer`,
-normalised) and report per-producer pass rates next to per-category;
-(3) the bucket stays private and nothing under `compat/corpus/` is
-committed — the manifest (hashes, sources, licences) is the public
-artefact, and `fetch-corpus.py` re-materialises the corpus from the
-listed sources where `redistribute: no`.
+| category | files | parse | render | text | rewrite | full PASS |
+|---|---:|---:|---:|---:|---:|---:|
+| misc | 159 | 141 | 67 | 95 | 127 | 65 |
+| graphics | 61 | 61 | 17 | 50 | 59 | 17 |
+| annotations | 52 | 50 | 23 | 44 | 42 | 22 |
+| forms | 38 | 38 | 3 | 21 | 13 | 3 |
+| images | 17 | 16 | 8 | 14 | 15 | 8 |
+| malformed | 45 | 10 | 6 | 8 | 9 | 6 |
+| japanese | 16 | 16 | 3 | 4 | 15 | 3 |
+| latex | 13 | 13 | 9 | 9 | 12 | 9 |
+| office | 17 | 16 | 8 | 12 | 13 | 7 |
+| browser | 19 | 19 | 10 | 10 | 19 | 10 |
+| papers | 10 | 10 | 1 | 1 | 9 | 1 |
+| transparency | 5 | 5 | 1 | 3 | 5 | 1 |
+| encrypted | 4 | 0 | 0 | 0 | 0 | 0 |
+| incremental | 2 | 0 | 0 | 0 | 0 | 0 |
+| scan | 13 | 13 | 12 | 13 | 13 | 12 |
+
+`category` is the collector's name-based guess refined by producer
+evidence (`fetch-corpus.py refresh --recategorise` moves `misc` files
+whose `/Producer` names an office suite, browser, TeX engine or
+scanner); `misc` is still the largest bucket because most pdf.js /
+pdfium reproducers carry no `/Producer` at all (239 of 511 files are
+`producer: unknown`). The report's *By producer* table is therefore
+the better origin axis for the files that have one: Microsoft Office
+18/22 render, pdfTeX 7/9, TCPDF 7/10, Quartz 21/40, Acrobat 17/36,
+Skia/Chrome 14/42 (the Chrome prints embed CFF-based CID fonts),
+LiveCycle Designer 1/29 (XFA/AcroForm widgets without appearance
+streams), LibreOffice 0/8 (CIDFontType0).
+
+By source and licence:
+
+| source | files |
+|---|---:|
+| github.com/mozilla | 282 |
+| pdfium.googlesource.com | 60 |
+| www.irs.gov | 27 |
+| arxiv.org | 17 |
+| github.com/veraPDF | 13 |
+| en.wikipedia.org | 4 |
+| ja.wikipedia.org | 3 |
+| www.adobe.com | 1 |
+| www.w3.org | 1 |
+| de.wikipedia.org | 1 |
+| fr.wikipedia.org | 1 |
+| ko.wikipedia.org | 1 |
+
+| licence | files |
+|---|---:|
+| Apache-2.0 | 282 |
+| BSD-3-Clause | 60 |
+| US Gov public domain | 27 |
+| GPLv3+MPL (internal) | 13 |
+| CC BY-SA 4.0 (Wikipedia text; printed with Chrome) | 12 |
+| CC BY (http://creativecommons.org/licenses/by/4.0/) | 10 |
+| arXiv (author-submitted) | 7 |
+| Adobe sample (internal use) | 1 |
+| W3C test doc | 1 |
+
+Self-generated files are CC0: Chrome headless `--print-to-pdf` of
+local HTML (columns/tables/SVG/transforms/emoji, Japanese vertical
+text with Hiragino, form controls, code listings) and of Wikipedia
+articles in six scripts (CC BY-SA 4.0 text, attribution in `notes`),
+CUPS/Quartz text-to-PDF, `sips` image-only pages rasterised from
+corpus files (scan-like, no text layer), and deterministic mutations
+(truncation, byte flips, zeroed xref, bad `startxref`, bad `/Length`,
+dropped `endobj`, renumbered objects, giant `/Count`, stray bytes;
+`expect: reject`) of those files and of the test fixtures.
+
+What the expansion did **not** reach, and why: arXiv added 10 papers
+(licence verified on each abstract page; the OAI-PMH endpoint
+rate-limited the bulk listing), no Japanese government/office
+originals (no vetted URL list — the Japanese set is Chrome prints of
+Japanese Wikipedia pages plus the pdf.js CJK tests), no real scanner
+output beyond one Canon file (the scan bucket is `sips`-generated),
+no real office exports beyond the pdf.js/pdfium ones (no office suite
+on this machine). Those four categories remain the next collection
+targets; the mechanism (manifest fields, `--local`, `sync`, the
+collector's per-source caps) is in place.
+
+### Results on 511 files
+
+Compatibility (431 `expect: pass` files): strict parse **408 (95%)**,
+render **177 (41%)**, text **290 (67%)**, rewrite **352 (82%)**;
+full PASS **198/511**. Robustness (43 `expect: reject`): 43 safely
+handled, 40 cleanly refused, **0 crash / 0 timeout** — across all 511
+files no stage crashed or timed out. The 106 files of the previous
+corpus are unchanged (full PASS 53 → 53, mean SSIM over the 53
+measured files 0.9795 → 0.9795), so the new baseline is additive.
+Recovery parse rebuilt 30 of the 63 strict failures (26 of them
+`expect: reject` mutations; the 4 `expect: pass` ones are damaged
+real files); 33 stay refused: 6 encrypted, 4 pages without a
+MediaBox, 5 with references to objects that exist nowhere in the
+file, the rest truncated beyond any object header.
+
+Visual fidelity on the 166 newly measured files: median SSIM 0.996,
+mean 0.937; 32 files below 0.9. The three worst are **reference
+disagreements, not engine errors**: `copy_paste_ligatures` (SSIM
+0.005 — Poppler draws almost nothing for a cairo ligature font that
+we draw), `bug1552113` (0.22 — the pdf.js reproducer whose caption is
+"this text should be visible"; Poppler paints the page black, we
+show the text) and `issue21068` (0.50 — widget annotations with
+appearance streams that Poppler suppresses). The content-aware
+quality bar (`render_quality`) exists for exactly this: per-page
+`ink_ours`/`ink_ref` make the disagreement visible instead of
+averaging it away.
+
+Remaining render blockers by first-error count (`expect: pass`,
+strict parse ok): JBIG2 images **45**, annotations without an
+appearance stream **42** (AcroForm widgets needing synthesis —
+LiveCycle/IRS forms), CIDFontType0 (CFF-based CID fonts) **34**
+(every Chrome/LibreOffice/Google Docs print with a CJK or ligature
+font), `/ActualText` spans **17**, optional content **11 + 3**,
+tiling patterns **9**, ASCII85/ASCIIHex/LZW content filters **7**,
+CCITT **4**, JPX **2**, `/UserUnit` **2**, function-based shading
+**2**. Text extraction is blocked by the same CFF CID fonts (38) and
+`/ActualText` (17); rewrite by the deliberate profile (27 signed
+documents, 14 `/OCProperties`, 3 XFA, 3 `/AA`, 1 JavaScript tree)
+and 6 dangling references.
+
+Performance: median 31 ms per file (parse + probe + render of up to
+3 pages + text + rewrite), p90 124 ms, p99 536 ms, max 1.05 s
+(`arxiv-2610.24216`, 26 pages); nothing approached the 20 s timeout.
+Peak RSS is a process-wide high-water mark (381 MB at the end of the
+run, reached on the 41 MB arXiv files), so per-file memory is an
+upper bound; the limits that bound it (`max_image_bytes`,
+`max_render_buffer_bytes`, `max_total_decoded_bytes`) were not hit by
+any well-formed file — the two `max_image_dimension` hits are
+deliberate refusals of > 16384-pixel images.
 
 ## Pre-publication audit (repository and history)
 
