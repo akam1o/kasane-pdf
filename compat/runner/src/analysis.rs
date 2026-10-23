@@ -764,6 +764,88 @@ pub struct CategorySummary {
     pub verdict_pass: usize,
 }
 
+/// One group of files with every count over the *same* denominator.
+///
+/// This is the single source of truth for every headline number: a
+/// file counts for a stage only when that stage passed *strictly*
+/// (`rated_class`), and `full_pass` requires all four, so within one
+/// group `full_pass ≤ min(parse, render, text, rewrite)` by
+/// construction (`tally_invariants` checks it).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Tally {
+    /// Which files: `"all"`, `"expect:pass"`, `"expect:reject"`,
+    /// `"expect:any"`, or a category / producer name.
+    pub group: String,
+    /// The denominator of every count below.
+    pub files: usize,
+    pub parse: usize,
+    pub render: usize,
+    pub text: usize,
+    pub rewrite: usize,
+    /// All four stages passed strictly.
+    pub full_pass: usize,
+    /// Strict parse failed but the xref rebuild succeeded (their
+    /// downstream stages are *not* in the counts above).
+    pub recovered: usize,
+    /// Crash or timeout in any stage.
+    pub crash_or_timeout: usize,
+}
+
+impl Tally {
+    pub fn of(group: &str, files: &[&FileResult]) -> Tally {
+        let strict = |f: &FileResult, st: &crate::StageResult| rated_class(f, st) == Class::Pass;
+        let mut t = Tally {
+            group: group.into(),
+            files: files.len(),
+            parse: 0,
+            render: 0,
+            text: 0,
+            rewrite: 0,
+            full_pass: 0,
+            recovered: 0,
+            crash_or_timeout: 0,
+        };
+        for f in files {
+            let p = f.parse.class == Class::Pass;
+            let r = strict(f, &f.render);
+            let x = strict(f, &f.text);
+            let w = strict(f, &f.rewrite);
+            t.parse += p as usize;
+            t.render += r as usize;
+            t.text += x as usize;
+            t.rewrite += w as usize;
+            t.full_pass += (p && r && x && w) as usize;
+            t.recovered += f.recovered as usize;
+            let bad = [&f.parse, &f.recover, &f.render, &f.text, &f.rewrite]
+                .iter()
+                .any(|s| matches!(s.class, Class::Crash | Class::Timeout));
+            t.crash_or_timeout += bad as usize;
+        }
+        t
+    }
+
+    /// `true` when the counts are mutually consistent.
+    pub fn consistent(&self) -> bool {
+        self.full_pass <= self.parse.min(self.render).min(self.text).min(self.rewrite)
+            && self.parse <= self.files
+            && self.render <= self.parse
+            && self.text <= self.parse
+            && self.rewrite <= self.parse
+            && self.recovered + self.parse <= self.files
+    }
+}
+
+/// The headline tallies: all files, then by `expect` tag.
+pub fn tallies(files: &[FileResult]) -> Vec<Tally> {
+    let all: Vec<&FileResult> = files.iter().collect();
+    let mut out = vec![Tally::of("all", &all)];
+    for tag in ["pass", "reject", "any"] {
+        let g: Vec<&FileResult> = files.iter().filter(|f| f.expect == tag).collect();
+        out.push(Tally::of(&format!("expect:{tag}"), &g));
+    }
+    out
+}
+
 /// The class a stage contributes to the rates: a recovered file's
 /// downstream stages ran on a rebuilt document and are reported in the
 /// recovery section only, so here they count as skipped.
@@ -1005,6 +1087,49 @@ mod tests {
         // effort = 2 pd, unblocked = 1 → score 0.5
         assert_eq!(uu.effort, Some(2));
         assert_eq!(uu.score, Some(0.5));
+    }
+
+    #[test]
+    fn tally_invariants() {
+        // full_pass never exceeds any stage; a recovered file's
+        // downstream stages are excluded; skips are not passes.
+        let mut ok = file("ok", &[]);
+        ok.expect = "pass".into();
+        let mut recovered = file("rec", &[]);
+        recovered.expect = "pass".into();
+        recovered.parse = StageResult::new(Class::Error, "x".into(), String::new(), 0);
+        recovered.recover = StageResult::pass(0);
+        recovered.recovered = true;
+        let mut render_fail = file("rf", &[]);
+        render_fail.expect = "pass".into();
+        render_fail.render = StageResult::new(Class::Unsupported, "y".into(), String::new(), 0);
+        let mut hostile = file("h", &[]);
+        hostile.expect = "reject".into();
+        hostile.verdict = Class::Crash;
+        hostile.render = StageResult::new(Class::Crash, "boom".into(), String::new(), 0);
+        let files = vec![ok, recovered, render_fail, hostile];
+        let t = tallies(&files);
+        let all = &t[0];
+        assert_eq!(all.group, "all");
+        assert_eq!(all.files, 4);
+        assert_eq!(all.parse, 3);
+        assert_eq!(
+            all.render, 1,
+            "recovered and render_fail and hostile do not render strictly"
+        );
+        assert_eq!(all.full_pass, 1);
+        assert_eq!(all.recovered, 1);
+        assert_eq!(all.crash_or_timeout, 1);
+        for g in &t {
+            assert!(g.consistent(), "{g:?}");
+        }
+        let pass = t.iter().find(|g| g.group == "expect:pass").unwrap();
+        assert_eq!(
+            (pass.files, pass.parse, pass.render, pass.full_pass),
+            (3, 2, 1, 1)
+        );
+        let reject = t.iter().find(|g| g.group == "expect:reject").unwrap();
+        assert_eq!((reject.files, reject.crash_or_timeout), (1, 1));
     }
 
     #[test]

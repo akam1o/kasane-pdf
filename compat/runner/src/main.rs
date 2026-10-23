@@ -1197,6 +1197,7 @@ fn main() {
     let stage_summary = analysis::stage_summary(&results);
     let categories = analysis::category_summary(&results);
     let split = analysis::split_summary(&results);
+    let tallies = analysis::tallies(&results);
 
     // Record the corpus location relative to the cwd when possible so a
     // report written under an absolute --corpus doesn't leak a local
@@ -1221,6 +1222,7 @@ fn main() {
             categories,
             features: feature_stats,
             split: Some(split),
+            tallies,
             combos,
             effort_is_estimate: true,
         }),
@@ -1428,6 +1430,10 @@ struct Analysis {
     /// Compatibility-vs-Robustness split (expect-tag driven).
     #[serde(default)]
     split: Option<analysis::SplitSummary>,
+    /// Headline tallies with explicit denominators (see
+    /// `analysis::Tally`); `default` for reports saved before it.
+    #[serde(default)]
+    tallies: Vec<analysis::Tally>,
     /// Feature-*set* priorities: what implementing 1–4 features
     /// together would unblock (see `analysis::combo_analysis`).
     #[serde(default)]
@@ -1571,7 +1577,33 @@ fn render_markdown(r: &RunReport) -> String {
         r.files.len()
     ));
 
-    // headline counts
+    // headline counts — every number in one row shares that row's
+    // denominator (`files`); see `analysis::Tally`.
+    s.push_str("## Headline\n\n");
+    s.push_str(
+        "Strict counts: a stage counts only when it passed on a strictly parsed document; \
+         *full PASS* = all four stages. Each row is its own population — never compare \
+         numbers across rows.\n\n\
+         | files | n | parse | render | text | rewrite | full PASS | recovered | crash/timeout |\n\
+         |---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+    );
+    for t in analysis::tallies(&r.files) {
+        s.push_str(&format!(
+            "| {} | {} | {} | {} | {} | {} | **{}** | {} | {} |\n",
+            t.group,
+            t.files,
+            t.parse,
+            t.render,
+            t.text,
+            t.rewrite,
+            t.full_pass,
+            t.recovered,
+            t.crash_or_timeout
+        ));
+        debug_assert!(t.consistent(), "{t:?}");
+    }
+    s.push('\n');
+
     let mut tally: BTreeMap<&str, usize> = BTreeMap::new();
     for f in &r.files {
         *tally.entry(f.verdict.label()).or_default() += 1;
@@ -1954,12 +1986,24 @@ fn render_markdown(r: &RunReport) -> String {
                 "**Compatibility** — {} well-formed files (`expect: pass`):\n\n",
                 sp.compat_total
             ));
+            let full = r
+                .files
+                .iter()
+                .filter(|f| f.expect == "pass")
+                .filter(|f| {
+                    f.parse.class == Class::Pass
+                        && analysis::rated_class(f, &f.render) == Class::Pass
+                        && analysis::rated_class(f, &f.text) == Class::Pass
+                        && analysis::rated_class(f, &f.rewrite) == Class::Pass
+                })
+                .count();
             s.push_str("| stage | pass | rate |\n|---|---:|---:|\n");
             for (name, n) in [
                 ("parse", sp.compat_parse_pass),
                 ("render", sp.compat_render_pass),
                 ("text", sp.compat_text_pass),
                 ("rewrite", sp.compat_rewrite_pass),
+                ("full PASS (all four)", full),
             ] {
                 s.push_str(&format!(
                     "| {} | {} | {:.0}% |\n",
