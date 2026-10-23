@@ -240,12 +240,11 @@ fn bare_family_name_color_space_is_malformed() {
 }
 
 #[test]
-fn pattern_color_space_is_unsupported() {
-    let err = render(b"/Pattern cs 10 10 20 20 re f").unwrap_err();
-    assert!(
-        matches!(err, Error::Unsupported { feature, .. } if feature.contains("colour space")),
-        "got: {err:?}"
-    );
+fn pattern_space_without_a_pattern_paints_nothing() {
+    // The initial colour in /Pattern space is "no pattern" (§8.7.3.3):
+    // a fill marks nothing, and nothing is refused.
+    let r = render(b"/Pattern cs 10 10 20 20 re f").unwrap();
+    assert_eq!(px(&r, 20, 80), [255, 255, 255, 255]);
 }
 
 #[test]
@@ -255,9 +254,15 @@ fn undefined_named_color_space_is_structure_error() {
 }
 
 #[test]
-fn scn_pattern_name_is_unsupported() {
+fn scn_with_undefined_pattern_is_structure_error() {
     let err = render(b"/Pattern cs /P1 scn 10 10 20 20 re f").unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "got: {err:?}");
+    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
+}
+
+#[test]
+fn scn_pattern_name_outside_pattern_space_is_malformed() {
+    let err = render(b"/DeviceRGB cs /P1 scn 10 10 20 20 re f").unwrap_err();
+    assert!(matches!(err, Error::Parse(_)), "got: {err:?}");
 }
 
 // -------------------------------------------------------------------
@@ -316,9 +321,9 @@ fn gs_extgstate_is_refused() {
 }
 
 #[test]
-fn shading_is_refused() {
+fn sh_with_undefined_shading_is_structure_error() {
     let err = render(b"/Sh1 sh").unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "got: {err:?}");
+    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
 }
 
 #[test]

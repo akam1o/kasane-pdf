@@ -62,6 +62,7 @@ mod content;
 pub mod dests;
 mod document;
 pub mod edit;
+mod encodings;
 mod error;
 mod filter;
 mod font;
@@ -83,6 +84,7 @@ pub mod remove_text;
 mod render;
 mod rewrite;
 mod serialize;
+mod shading;
 pub mod text_extract;
 mod tounicode;
 mod type1;
@@ -94,6 +96,7 @@ pub use fontsubst::{substitution_for, FontSubstitution, SubstKind};
 pub use matrix::Matrix;
 pub use render::{pixmap_to_png, render_page, Color, RenderOptions, RenderedPage};
 pub use text_extract::{extract_text, CharInfo, ExtractedText, ResolveKind};
+pub use xref::RecoveryReport;
 
 pub use audit::{
     audit_residuals, AuditFinding, AuditIncomplete, FindingKind, HistoryReport, PathStep,

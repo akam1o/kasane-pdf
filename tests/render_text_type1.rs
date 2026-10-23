@@ -39,11 +39,18 @@ fn pdf_with_font_typed(
     out.extend_from_slice(b"%PDF-1.4\n");
     let page = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
         /Resources << /Font << /F0 5 0 R >> >> /Contents 4 0 R >>";
+    // WinAnsi by default; a `font_extra` that names its own /Encoding
+    // (or `/Encoding null` for "none") replaces it.
+    let enc = if font_extra.contains("/Encoding") {
+        ""
+    } else {
+        "/Encoding /WinAnsiEncoding"
+    };
     let font = format!(
         "<< /Type /Font /Subtype {subtype} /BaseFont /Test \
            /FirstChar 65 /LastChar 102 \
            /Widths [573 0 582 0 548 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 573 0 573 0 341] \
-           /Encoding /WinAnsiEncoding {font_extra} >>"
+           {enc} {font_extra} >>"
     );
     let mut bodies: Vec<(u32, Vec<u8>)> = vec![
         (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
@@ -401,4 +408,87 @@ fn type1_mmtype1_subtype_accepted() {
     );
     let r = render(&pdf).unwrap();
     assert!(inked(&r) > 20, "MMType1 CFF drew no ink");
+}
+
+// --------------------------------------------------------------------
+// Encoding: the program's built-in encoding, MacRoman, Differences
+// --------------------------------------------------------------------
+
+#[test]
+fn type1_without_encoding_uses_the_programs_builtin_table() {
+    // The cmsy10 subset's cleartext /Encoding maps code 1 →
+    // /periodcentered (Table 114: no /Encoding → built-in). Code 0xB7
+    // is unassigned in that table → .notdef, no ink.
+    let pdf = pdf_with_font(
+        b"BT /F0 40 Tf 20 100 Td (\\001) Tj ET",
+        "/FontDescriptor 6 0 R /Encoding null",
+        &eexec_font_objs(EEXEC),
+    );
+    let r = render(&pdf).expect("built-in encoding renders");
+    assert!(inked(&r) > 0, "code 1 must paint periodcentered");
+    let pdf = pdf_with_font(
+        b"BT /F0 40 Tf 20 100 Td (\\267) Tj ET",
+        "/FontDescriptor 6 0 R /Encoding null",
+        &eexec_font_objs(EEXEC),
+    );
+    let r = render(&pdf).unwrap();
+    assert_eq!(inked(&r), 0, "0xB7 is not in the built-in table");
+}
+
+#[test]
+fn type1_differences_without_base_overlay_the_builtin_table() {
+    // /Differences names code 65 → periodcentered; code 1 still comes
+    // from the built-in table.
+    let pdf = pdf_with_font(
+        b"BT /F0 40 Tf 20 100 Td (A) Tj ET",
+        "/FontDescriptor 6 0 R /Encoding << /Differences [65 /periodcentered] >>",
+        &eexec_font_objs(EEXEC),
+    );
+    assert!(inked(&render(&pdf).unwrap()) > 0);
+    let pdf = pdf_with_font(
+        b"BT /F0 40 Tf 20 100 Td (\\001) Tj ET",
+        "/FontDescriptor 6 0 R /Encoding << /Differences [65 /periodcentered] >>",
+        &eexec_font_objs(EEXEC),
+    );
+    assert!(inked(&render(&pdf).unwrap()) > 0);
+}
+
+#[test]
+fn type1_mac_roman_encoding_maps_its_own_codes() {
+    // MacRoman 0xE1 = periodcentered (WinAnsi puts it at 0xB7).
+    let pdf = pdf_with_font(
+        b"BT /F0 40 Tf 20 100 Td (\\341) Tj ET",
+        "/FontDescriptor 6 0 R /Encoding /MacRomanEncoding",
+        &eexec_font_objs(EEXEC),
+    );
+    assert!(
+        inked(&render(&pdf).unwrap()) > 0,
+        "MacRoman 0xE1 → periodcentered"
+    );
+    let pdf = pdf_with_font(
+        b"BT /F0 40 Tf 20 100 Td (\\267) Tj ET",
+        "/FontDescriptor 6 0 R /Encoding /MacRomanEncoding",
+        &eexec_font_objs(EEXEC),
+    );
+    assert_eq!(
+        inked(&render(&pdf).unwrap()),
+        0,
+        "0xB7 is /paragraph in MacRoman"
+    );
+    let pdf = pdf_with_font(
+        b"BT /F0 40 Tf 20 100 Td (\\341) Tj ET",
+        "/FontDescriptor 6 0 R /Encoding /MacExpertEncoding",
+        &eexec_font_objs(EEXEC),
+    );
+    assert!(matches!(render(&pdf), Err(Error::Unsupported { .. })));
+}
+
+#[test]
+fn type1_text_extraction_follows_the_builtin_encoding() {
+    let pdf = pdf_with_font(
+        b"BT /F0 40 Tf 20 100 Td (\\001) Tj ET",
+        "/FontDescriptor 6 0 R /Encoding null",
+        &eexec_font_objs(EEXEC),
+    );
+    assert_eq!(text(&pdf).unwrap(), "\u{00B7}");
 }

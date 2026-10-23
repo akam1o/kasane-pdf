@@ -56,6 +56,7 @@ use crate::limits::Limits;
 use crate::matrix::Matrix;
 use crate::object::{Dict, IndirectRef, Name, Object};
 use crate::page::Page;
+use crate::shading::{parse_shading, Shading};
 use tiny_skia::{FillRule, Mask, Paint, PathBuilder, Pixmap, Stroke, StrokeDash, Transform};
 
 /// Graphics-state parameters saved/restored by `q`/`Q` (§8.4.1).
@@ -76,6 +77,11 @@ struct GraphicsState {
     fill_space: Rc<ColorSpace>,
     stroke_color: Color,
     fill_color: Color,
+    /// The shading pattern selected by `scn`/`SCN` while the colour
+    /// space is `/Pattern` (§8.7.3.3); `None` = no pattern selected
+    /// (paints nothing) or a non-pattern space.
+    fill_pattern: Option<Rc<ShadingPattern>>,
+    stroke_pattern: Option<Rc<ShadingPattern>>,
     /// Non-stroking alpha `ca` (§11.3.7.2) — multiplies the fill
     /// colour's alpha at paint time. 1.0 = opaque.
     fill_alpha: f64,
@@ -191,6 +197,8 @@ impl GraphicsState {
             fill_space: Rc::new(ColorSpace::DeviceGray),
             stroke_color: Color::BLACK,
             fill_color: Color::BLACK,
+            fill_pattern: None,
+            stroke_pattern: None,
             fill_alpha: 1.0,
             stroke_alpha: 1.0,
             blend_mode: tiny_skia::BlendMode::SourceOver,
@@ -410,6 +418,7 @@ pub fn render_page(
         default_spaces: None,
         blend_restricted: 0,
         layer_bytes: 0,
+        pattern_base: Matrix::IDENTITY,
     };
     renderer.run(&ops)?;
     // Annotation appearance streams paint *over* the page content, in
@@ -608,6 +617,16 @@ pub(crate) struct Renderer<'a> {
     /// Bytes of offscreen group layers currently alive — bounded by
     /// `max_render_buffer_bytes` together with the page pixmap.
     layer_bytes: u64,
+    /// Pattern space → page space for the content stream being run
+    /// (§8.7.3.1): identity for the page, the form's CTM (after its
+    /// `/Matrix`) inside a Form XObject or Type 3 glyph.
+    pattern_base: Matrix,
+}
+
+/// A `/PatternType 2` pattern: a shading plus its `/Matrix`.
+struct ShadingPattern {
+    shading: Rc<Shading>,
+    matrix: Matrix,
 }
 
 impl<'a> Renderer<'a> {
@@ -661,6 +680,7 @@ impl<'a> Renderer<'a> {
             default_spaces: None,
             blend_restricted: 0,
             layer_bytes: 0,
+            pattern_base: Matrix::IDENTITY,
         })
     }
 
@@ -1008,14 +1028,11 @@ impl<'a> Renderer<'a> {
 
             // ---- XObject / shading / ExtGState --------------------
             Operation::Do(n) => self.do_xobject(n)?,
-            Operation::Shading(n) => {
-                return Err(Error::Unsupported {
-                    feature: "shading (sh)",
-                    detail: format!(
-                        "/{} — shading patterns are not implemented in M3",
-                        show_name(n)
-                    ),
-                })
+            Operation::Shading(n) => self.paint_shading_op(n)?,
+            Operation::InlineImage { dict, data } => {
+                if !self.extraction_only {
+                    self.paint_inline_image(dict, data)?;
+                }
             }
             Operation::SetExtGState(n) => self.apply_extgstate(n)?,
 
@@ -1217,9 +1234,11 @@ impl<'a> Renderer<'a> {
         if stroke {
             self.gs.stroke_space = cs;
             self.gs.stroke_color = color;
+            self.gs.stroke_pattern = None;
         } else {
             self.gs.fill_space = cs;
             self.gs.fill_color = color;
+            self.gs.fill_pattern = None;
         }
         Ok(())
     }
@@ -1248,10 +1267,26 @@ impl<'a> Renderer<'a> {
             _ => (ops, None),
         };
         if let Some(Object::Name(n)) = name {
-            return Err(Error::Unsupported {
-                feature: "pattern colour (SCN/scn name operand)",
-                detail: format!("/{} — pattern painting is not implemented", show_name(n)),
-            });
+            if !space.is_pattern() {
+                return Err(Error::Parse(format!(
+                    "/{} — a pattern name operand needs the /Pattern colour space",
+                    show_name(n)
+                )));
+            }
+            let pat = self.load_shading_pattern(n)?;
+            if stroke {
+                self.gs.stroke_pattern = Some(pat);
+            } else {
+                self.gs.fill_pattern = Some(pat);
+            }
+            // Components before the name belong to an uncoloured
+            // tiling pattern, which `load_shading_pattern` refused.
+            return Ok(());
+        }
+        if space.is_pattern() {
+            return Err(Error::Parse(
+                "scn in the /Pattern colour space needs a pattern name".into(),
+            ));
         }
         let nums: Vec<f64> = comps
             .iter()
@@ -1736,6 +1771,9 @@ impl<'a> Renderer<'a> {
         // *first*, then the existing CTM. `concat` applies `self` before
         // its argument, so `form_matrix` is the receiver here.
         self.gs.ctm = form_matrix.concat(self.gs.ctm);
+        // §8.7.3.1: patterns used inside the form map to the form's
+        // coordinate space, not the page's.
+        let saved_pattern_base = std::mem::replace(&mut self.pattern_base, self.gs.ctm);
 
         // Clip to BBox in *form space* — build the BBox path in user
         // space and intersect via the same mechanism as W.
@@ -1762,6 +1800,7 @@ impl<'a> Renderer<'a> {
         })();
 
         self.swap_resources(saved_resources);
+        self.pattern_base = saved_pattern_base;
         if pop_ref {
             self.xobject_stack.pop();
         }
@@ -2111,6 +2150,39 @@ impl<'a> Renderer<'a> {
         self.composite_image(&src)
     }
 
+    /// Paint an inline image (§8.9.7) through the image XObject path:
+    /// abbreviated keys and filter names are expanded (Tables 93/94)
+    /// and the result is treated exactly like an image dictionary.
+    /// `/L` (length) is dropped — the parser already delimited the
+    /// data — and anything an image XObject refuses is refused here.
+    fn paint_inline_image(&mut self, dict: &Dict, data: &[u8]) -> Result<(), Error> {
+        let mut full = Dict::new();
+        for (k, v) in dict {
+            let key = crate::content::inline_key(k);
+            if key == b"Length" {
+                continue;
+            }
+            let value = match (key, v) {
+                (b"Filter", Object::Name(n)) => {
+                    Object::Name(crate::content::inline_filter(n).to_vec())
+                }
+                (b"Filter", Object::Array(a)) => Object::Array(
+                    a.iter()
+                        .map(|o| match o {
+                            Object::Name(n) => {
+                                Object::Name(crate::content::inline_filter(n).to_vec())
+                            }
+                            other => other.clone(),
+                        })
+                        .collect(),
+                ),
+                _ => v.clone(),
+            };
+            full.insert(key.to_vec(), value);
+        }
+        self.paint_image(&full, data, b"inline image")
+    }
+
     /// `/Width` × `/Height` with the image limits applied.
     fn image_dims(&self, dict: &Dict, name: &[u8]) -> Result<(u32, u32), Error> {
         let width = dict
@@ -2209,27 +2281,22 @@ impl<'a> Renderer<'a> {
                 }
             }
         };
-        let cs: Option<Rc<ColorSpace>> =
-            if is_mask {
-                None
-            } else {
-                let cs_obj = dict.get(b"ColorSpace".as_slice()).ok_or_else(|| {
-                    Error::Structure(format!("image /{} has no /ColorSpace", show_name(name)))
-                })?;
-                let cs = ColorSpace::parse(self.doc, cs_obj, &self.resources, self.limits)
-                    .map_err(|e| match e {
-                        Error::Unsupported {
-                            feature: "pattern colour space",
-                            detail,
-                        } => Error::Unsupported {
-                            feature: "image colour space",
-                            detail,
-                        },
-                        other => other,
-                    })?;
-                self.note_approximation(&cs);
-                Some(Rc::new(cs))
-            };
+        let cs: Option<Rc<ColorSpace>> = if is_mask {
+            None
+        } else {
+            let cs_obj = dict.get(b"ColorSpace".as_slice()).ok_or_else(|| {
+                Error::Structure(format!("image /{} has no /ColorSpace", show_name(name)))
+            })?;
+            let cs = ColorSpace::parse(self.doc, cs_obj, &self.resources, self.limits)?;
+            if cs.is_pattern() {
+                return Err(Error::Structure(format!(
+                    "image /{} has a /Pattern colour space (§8.9.5: not allowed)",
+                    show_name(name)
+                )));
+            }
+            self.note_approximation(&cs);
+            Some(Rc::new(cs))
+        };
         let ncomps = cs.as_ref().map(|c| c.ncomps()).unwrap_or(1);
         let default_decode = cs
             .as_ref()
@@ -2742,6 +2809,275 @@ impl<'a> Renderer<'a> {
         Ok(())
     }
 
+    /// `sh name` (§8.7.4.2): paint the shading over the current clip
+    /// region, in current user space. `/Background` is ignored for
+    /// `sh` (it applies to pattern use only); `/BBox` clips.
+    fn paint_shading_op(&mut self, name: &Name) -> Result<(), Error> {
+        if self.extraction_only {
+            return Ok(());
+        }
+        let obj = self
+            .doc
+            .resolve_resource(&self.resources, "Shading", name)?
+            .ok_or_else(|| {
+                Error::Structure(format!(
+                    "/Shading /{} is not defined in the current resources",
+                    show_name(name)
+                ))
+            })?;
+        let sh = parse_shading(self.doc, &obj, &self.resources, self.limits)?;
+        if let Some(a) = &sh.approximation {
+            if !self.color_approximations.contains(a) {
+                self.color_approximations.push(a.clone());
+            }
+        }
+        let ctm = self.gs.ctm;
+        self.paint_shading(&sh, &ctm, None, false)
+    }
+
+    /// Resolve `/Pattern name` in the current resources as a shading
+    /// pattern (`/PatternType 2`). Tiling patterns (`/PatternType 1`)
+    /// need their cell content tiled across the fill — not
+    /// implemented, refused.
+    fn load_shading_pattern(&mut self, name: &[u8]) -> Result<Rc<ShadingPattern>, Error> {
+        let obj = self
+            .doc
+            .resolve_resource(&self.resources, "Pattern", name)?
+            .ok_or_else(|| {
+                Error::Structure(format!(
+                    "/Pattern /{} is not defined in the current resources",
+                    show_name(name)
+                ))
+            })?;
+        let dict = obj
+            .as_dict_like()
+            .ok_or_else(|| Error::Structure("pattern is not a dictionary".into()))?;
+        match dict.get(b"PatternType".as_slice()).and_then(|o| o.as_i64()) {
+            Some(2) => {}
+            Some(1) => {
+                return Err(Error::Unsupported {
+                    feature: "tiling pattern",
+                    detail: format!(
+                        "/{} — /PatternType 1 tiling is not implemented",
+                        show_name(name)
+                    ),
+                })
+            }
+            other => {
+                return Err(Error::Structure(format!(
+                    "/Pattern /{} has /PatternType {other:?}",
+                    show_name(name)
+                )))
+            }
+        }
+        let matrix = match dict.get(b"Matrix".as_slice()) {
+            None | Some(Object::Null) => Matrix::IDENTITY,
+            Some(o) => {
+                let o = self.doc.deref(o)?;
+                matrix_from_array(&o).ok_or_else(|| {
+                    Error::Structure("pattern /Matrix is not a 6-number array".into())
+                })?
+            }
+        };
+        if !matrix.is_finite() {
+            return Err(Error::Structure(
+                "pattern /Matrix has non-finite values".into(),
+            ));
+        }
+        if dict.contains_key(b"ExtGState".as_slice()) {
+            return Err(Error::Unsupported {
+                feature: "shading pattern /ExtGState",
+                detail: "a graphics-state override on a shading pattern is not implemented".into(),
+            });
+        }
+        let sh_obj = dict
+            .get(b"Shading".as_slice())
+            .ok_or_else(|| Error::Structure("shading pattern has no /Shading".into()))?;
+        if self.extraction_only {
+            // Nothing is painted; keep the resource walk cheap.
+            return Ok(Rc::new(ShadingPattern {
+                shading: Rc::new(parse_shading(
+                    self.doc,
+                    sh_obj,
+                    &self.resources,
+                    self.limits,
+                )?),
+                matrix,
+            }));
+        }
+        let shading = parse_shading(self.doc, sh_obj, &self.resources, self.limits)?;
+        if let Some(a) = &shading.approximation {
+            if !self.color_approximations.contains(a) {
+                self.color_approximations.push(a.clone());
+            }
+        }
+        Ok(Rc::new(ShadingPattern {
+            shading: Rc::new(shading),
+            matrix,
+        }))
+    }
+
+    /// Fill `path` with the current fill pattern: the path (under the
+    /// current clip) becomes the shading's clip, the shading is drawn
+    /// in pattern space (`/Matrix` × the parent stream's base CTM —
+    /// §8.7.3.1), and `/Background` covers the parts of the path the
+    /// geometry leaves unpainted (§8.7.4.3).
+    fn fill_path_with_pattern(
+        &mut self,
+        path: &tiny_skia::Path,
+        rule: FillRule,
+        ts: Transform,
+    ) -> Result<(), Error> {
+        let Some(pat) = self.gs.fill_pattern.clone() else {
+            // /Pattern space with no pattern selected paints nothing
+            // (the initial pattern colour is "no pattern").
+            return Ok(());
+        };
+        let mask = match &self.gs.clip {
+            Some(m) => {
+                let mut m = m.clone();
+                m.intersect_path(path, rule, true, ts);
+                m
+            }
+            None => {
+                let mut m = Mask::new(self.pixmap.width(), self.pixmap.height())
+                    .ok_or_else(|| Error::Structure("clip mask allocation failed".into()))?;
+                m.fill_path(path, rule, true, ts);
+                m
+            }
+        };
+        let to_page = pat.matrix.concat(self.pattern_base);
+        let shading = pat.shading.clone();
+        // Paint under the combined mask instead of the gs clip.
+        let saved = self.gs.clip.replace(mask);
+        let r = self.paint_shading(&shading, &to_page, None, true);
+        self.gs.clip = saved;
+        r
+    }
+
+    /// Rasterise `sh` whose space maps to *page* space through
+    /// `to_page`, over the current clip (and `extra`, multiplied in),
+    /// with the fill alpha and blend mode. Each device pixel's centre
+    /// is inverse-mapped to shading space and coloured by the
+    /// parametric position; `with_background` paints `/Background`
+    /// where the geometry does not reach.
+    fn paint_shading(
+        &mut self,
+        sh: &Shading,
+        to_page: &Matrix,
+        extra: Option<&Mask>,
+        with_background: bool,
+    ) -> Result<(), Error> {
+        if !to_page.is_finite() {
+            return Err(Error::Structure("shading matrix is not finite".into()));
+        }
+        let det = to_page.a * to_page.d - to_page.b * to_page.c;
+        if det == 0.0 {
+            return Err(Error::Unsupported {
+                feature: "singular CTM (determinant 0)",
+                detail: "shading under a degenerate transform is not supported".into(),
+            });
+        }
+        let ts = Transform::from_row(
+            to_page.a as f32,
+            to_page.b as f32,
+            to_page.c as f32,
+            to_page.d as f32,
+            to_page.e as f32,
+            to_page.f as f32,
+        )
+        .post_concat(self.user_to_pix);
+        let Some(inv) = ts.invert() else {
+            return Err(Error::Unsupported {
+                feature: "singular CTM (determinant 0)",
+                detail: "shading transform is not invertible".into(),
+            });
+        };
+        let (pw, ph) = (self.pixmap.width() as i32, self.pixmap.height() as i32);
+        // Device bounds: the page, narrowed to /BBox when present.
+        let (mut x0, mut y0, mut x1, mut y1) = (0i32, 0i32, pw, ph);
+        if let Some(bb) = &sh.bbox {
+            let corners = [
+                (bb.llx as f32, bb.lly as f32),
+                (bb.urx as f32, bb.lly as f32),
+                (bb.llx as f32, bb.ury as f32),
+                (bb.urx as f32, bb.ury as f32),
+            ];
+            let (mut minx, mut miny, mut maxx, mut maxy) = (
+                f32::INFINITY,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+                f32::NEG_INFINITY,
+            );
+            for (x, y) in corners {
+                let mut p = tiny_skia::Point { x, y };
+                ts.map_point(&mut p);
+                minx = minx.min(p.x);
+                miny = miny.min(p.y);
+                maxx = maxx.max(p.x);
+                maxy = maxy.max(p.y);
+            }
+            x0 = x0.max(minx.floor() as i32);
+            y0 = y0.max(miny.floor() as i32);
+            x1 = x1.min(maxx.ceil() as i32);
+            y1 = y1.min(maxy.ceil() as i32);
+        }
+        if x0 >= x1 || y0 >= y1 {
+            return Ok(());
+        }
+        let alpha = clamp01(self.gs.fill_alpha);
+        let bm = self.gs.blend_mode;
+        let bg = if with_background { sh.background } else { None };
+        let clip = self.gs.clip.take();
+        for py in y0..y1 {
+            for px in x0..x1 {
+                let idx = (py as u64 * pw as u64 + px as u64) as usize;
+                let mut coverage = match &clip {
+                    Some(m) => m.data().get(idx).copied().unwrap_or(0) as f64 / 255.0,
+                    None => 1.0,
+                };
+                if let Some(e) = extra {
+                    coverage *= e.data().get(idx).copied().unwrap_or(0) as f64 / 255.0;
+                }
+                if coverage <= 0.0 {
+                    continue;
+                }
+                let mut p = tiny_skia::Point {
+                    x: px as f32 + 0.5,
+                    y: py as f32 + 0.5,
+                };
+                inv.map_point(&mut p);
+                let (x, y) = (p.x as f64, p.y as f64);
+                if let Some(bb) = &sh.bbox {
+                    if x < bb.llx.min(bb.urx)
+                        || x > bb.llx.max(bb.urx)
+                        || y < bb.lly.min(bb.ury)
+                        || y > bb.lly.max(bb.ury)
+                    {
+                        continue;
+                    }
+                }
+                let rgb8 = match sh.param_at(x, y) {
+                    Some(s) => sh.color(s),
+                    None => match bg {
+                        Some(b) => b,
+                        None => continue,
+                    },
+                };
+                let rgb = [
+                    rgb8[0] as f64 / 255.0,
+                    rgb8[1] as f64 / 255.0,
+                    rgb8[2] as f64 / 255.0,
+                ];
+                let i = idx * 4;
+                let buf = self.pixmap.data_mut();
+                composite_px(&mut buf[i..i + 4], rgb, alpha * coverage, bm);
+            }
+        }
+        self.gs.clip = clip;
+        Ok(())
+    }
+
     /// Composite a finished transparency-group layer (premultiplied,
     /// same size as the page pixmap) onto the current pixmap with the
     /// group's constant alpha and blend mode (§11.4.7, §11.6.6).
@@ -2781,6 +3117,17 @@ impl<'a> Renderer<'a> {
             .ok_or_else(|| Error::Structure("Tj before Tf — no font selected".into()))?;
         if !(self.gs.text.font_size.is_finite() && self.gs.text.font_size > 0.0) {
             return Err(Error::Structure("Tj before Tf — no font size".into()));
+        }
+        // Glyphs are filled with a solid colour; a /Pattern fill or
+        // stroke space would need the glyph outlines as a shading clip.
+        if !self.extraction_only
+            && self.gs.text.render_mode != 3
+            && (self.gs.fill_space.is_pattern() || self.gs.stroke_space.is_pattern())
+        {
+            return Err(Error::Unsupported {
+                feature: "pattern-filled text",
+                detail: "text drawn in a /Pattern colour space is not implemented".into(),
+            });
         }
         let mut pos = 0;
         while pos < bytes.len() {
@@ -3128,6 +3475,7 @@ impl<'a> Renderer<'a> {
                     None => self.resources.clone(), // inherit caller's
                 };
                 self.gs.ctm = glyph_ctm;
+                let saved_pattern_base = std::mem::replace(&mut self.pattern_base, glyph_ctm);
                 // A CharProc is its own scope: it may legitimately
                 // contain `BT … ET` (nested Type3, Type3-in-Type3), so
                 // the parent's text state must not leak in. Save and
@@ -3143,6 +3491,7 @@ impl<'a> Renderer<'a> {
                     r
                 })();
                 self.in_text = saved_in_text;
+                self.pattern_base = saved_pattern_base;
                 self.swap_resources(saved_resources);
                 self.gs = self.gs_stack.pop().expect("pushed above");
                 run_result?;
@@ -3266,6 +3615,18 @@ impl<'a> Renderer<'a> {
             }),
         };
 
+        // Stroking with a pattern needs the stroke outline as a clip
+        // for the shading — not implemented; refuse rather than stroke
+        // in the pattern space's black placeholder colour.
+        if self.gs.stroke_space.is_pattern()
+            && matches!(kind, PaintKind::Stroke | PaintKind::FillStroke(_))
+        {
+            return Err(Error::Unsupported {
+                feature: "pattern stroke",
+                detail: "stroking with a /Pattern colour space is not implemented".into(),
+            });
+        }
+
         match kind {
             PaintKind::Stroke => {
                 paint.set_color(ts_color(
@@ -3275,14 +3636,22 @@ impl<'a> Renderer<'a> {
                     .stroke_path(&path, &paint, &stroke, ts, self.gs.clip.as_ref());
             }
             PaintKind::Fill(rule) => {
-                paint.set_color(ts_color(self.gs.fill_color.with_alpha(self.gs.fill_alpha)));
-                self.pixmap
-                    .fill_path(&path, &paint, rule, ts, self.gs.clip.as_ref());
+                if self.gs.fill_space.is_pattern() {
+                    self.fill_path_with_pattern(&path, rule, ts)?;
+                } else {
+                    paint.set_color(ts_color(self.gs.fill_color.with_alpha(self.gs.fill_alpha)));
+                    self.pixmap
+                        .fill_path(&path, &paint, rule, ts, self.gs.clip.as_ref());
+                }
             }
             PaintKind::FillStroke(rule) => {
-                paint.set_color(ts_color(self.gs.fill_color.with_alpha(self.gs.fill_alpha)));
-                self.pixmap
-                    .fill_path(&path, &paint, rule, ts, self.gs.clip.as_ref());
+                if self.gs.fill_space.is_pattern() {
+                    self.fill_path_with_pattern(&path, rule, ts)?;
+                } else {
+                    paint.set_color(ts_color(self.gs.fill_color.with_alpha(self.gs.fill_alpha)));
+                    self.pixmap
+                        .fill_path(&path, &paint, rule, ts, self.gs.clip.as_ref());
+                }
                 paint.set_color(ts_color(
                     self.gs.stroke_color.with_alpha(self.gs.stroke_alpha),
                 ));

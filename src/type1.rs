@@ -82,6 +82,10 @@ pub(crate) struct Type1Program {
     subrs: Vec<Vec<u8>>,
     /// `/FontMatrix` — glyph space → text space (default 0.001).
     font_matrix: crate::matrix::Matrix,
+    /// The program's own `/Encoding` (cleartext portion): `None` =
+    /// `StandardEncoding`, `Some` = a custom `dup <code> /<name> put`
+    /// table (unlisted codes are `.notdef`).
+    builtin_encoding: Option<Box<[Option<Vec<u8>>; 256]>>,
 }
 
 /// Parse a `/FontFile` Type 1 program (`Length1`/`Length2`/`Length3`
@@ -94,7 +98,7 @@ pub(crate) fn parse_type1_program(program: &[u8]) -> Result<Type1Program, Error>
     // many producers leave them unreliable; we locate the cleartext
     // "currentfile eexec" sentinel which is the robust delimiter.
     let (dict_end, eexec_start) = find_eexec_boundary(program)?;
-    let _dict = &program[..dict_end];
+    let builtin_encoding = parse_builtin_encoding(&program[..dict_end]);
     let mut eexec = program[eexec_start..].to_vec();
 
     // ---- eexec decrypt -------------------------------------------
@@ -136,7 +140,54 @@ pub(crate) fn parse_type1_program(program: &[u8]) -> Result<Type1Program, Error>
         charstrings,
         subrs,
         font_matrix,
+        builtin_encoding,
     })
+}
+
+/// Read the cleartext `/Encoding` of a Type 1 program (Type 1 spec
+/// §2.2): either `/Encoding StandardEncoding def` or an array filled
+/// by `dup <code> /<name> put` entries. Absent or unreadable →
+/// StandardEncoding (the spec's default).
+fn parse_builtin_encoding(cleartext: &[u8]) -> Option<Box<[Option<Vec<u8>>; 256]>> {
+    let start = find_sub(cleartext, b"/Encoding")?;
+    let rest = &cleartext[start + 9..];
+    let head = &rest[..rest.len().min(64)];
+    if find_sub(head, b"StandardEncoding").is_some() {
+        return None;
+    }
+    // Custom table: scan `dup <code> /<name> put` until `readonly def`
+    // / ` def` closes the array. Tokenise on whitespace — names and
+    // numbers in this section never contain delimiters.
+    let end = find_sub(rest, b" def")
+        .or_else(|| find_sub(rest, b"\ndef"))
+        .unwrap_or(rest.len());
+    let section = &rest[..end];
+    let mut table: Box<[Option<Vec<u8>>; 256]> = Box::new([const { None }; 256]);
+    let mut any = false;
+    let mut toks = section
+        .split(|b| b.is_ascii_whitespace())
+        .filter(|t| !t.is_empty());
+    while let Some(t) = toks.next() {
+        if t != b"dup" {
+            continue;
+        }
+        let Some(code) = toks
+            .next()
+            .and_then(|c| std::str::from_utf8(c).ok()?.parse::<usize>().ok())
+        else {
+            continue;
+        };
+        let Some(name) = toks.next() else { break };
+        if code < 256 && name.first() == Some(&b'/') && name.len() > 1 {
+            table[code] = Some(name[1..].to_vec());
+            any = true;
+        }
+    }
+    if any {
+        Some(table)
+    } else {
+        None
+    }
 }
 
 /// Locate `currentfile eexec` — returns `(dict_end, eexec_start)`.
@@ -420,6 +471,15 @@ impl Type1Program {
         self.charstrings.len()
     }
     /// `true` if a charstring exists for this glyph name.
+    /// The glyph name the program's own `/Encoding` assigns to
+    /// `code` (StandardEncoding when the program uses it).
+    pub(crate) fn builtin_glyph_name(&self, code: u8) -> Option<&[u8]> {
+        match &self.builtin_encoding {
+            Some(t) => t[code as usize].as_deref(),
+            None => std_encoding_name(code as i64),
+        }
+    }
+
     pub(crate) fn has_glyph(&self, name: &[u8]) -> bool {
         self.charstrings.contains_key(name)
     }
