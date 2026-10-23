@@ -404,27 +404,25 @@ fn plain_marked_content_renders() {
 }
 
 #[test]
-fn ocg_marked_content_is_unsupported() {
-    // /OC /OC1 BDC where OC1 resolves to an OCG dict → Unsupported.
-    let err = render_oc(
+fn ocg_without_ocproperties_is_visible() {
+    // /OC /OC1 BDC where OC1 is a group the catalog never declares
+    // (§8.11.4.3: undeclared groups are visible) → painted.
+    let r = render_oc(
         b"/OC /OC1 BDC 0 0 0 rg 10 10 20 20 re f EMC",
         "<< /Type /OCG >>",
     )
-    .unwrap_err();
-    assert!(
-        matches!(err, Error::Unsupported { feature, .. } if feature.contains("optional content")),
-        "got: {err:?}"
-    );
+    .unwrap();
+    assert_eq!(px(&r, 20, 80), [0, 0, 0, 255]);
 }
 
 #[test]
-fn ocmd_marked_content_is_unsupported() {
-    let err = render_oc(
+fn ocmd_without_groups_is_visible() {
+    let r = render_oc(
         b"/OC /OC1 BDC 0 0 0 rg 10 10 20 20 re f EMC",
         "<< /Type /OCMD >>",
     )
-    .unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "got: {err:?}");
+    .unwrap();
+    assert_eq!(px(&r, 20, 80), [0, 0, 0, 255]);
 }
 
 #[test]

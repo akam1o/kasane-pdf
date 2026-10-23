@@ -64,6 +64,7 @@
 //! ```
 
 pub mod audit;
+mod cmap;
 mod colorspace;
 mod content;
 pub mod dests;
@@ -81,6 +82,7 @@ mod limits;
 mod matrix;
 mod object;
 mod objstm;
+mod optcontent;
 mod page;
 mod parser;
 pub mod redact_diag;
@@ -102,7 +104,7 @@ pub use dests::{named_destinations, resolve_named_destination, DestSource, Named
 pub use fontsubst::{substitution_for, FontSubstitution, SubstKind};
 pub use matrix::Matrix;
 pub use render::{pixmap_to_png, render_page, Color, RenderOptions, RenderedPage};
-pub use text_extract::{extract_text, CharInfo, ExtractedText, ResolveKind};
+pub use text_extract::{extract_text, extract_text_all, CharInfo, ExtractedText, ResolveKind};
 pub use xref::RecoveryReport;
 
 pub use audit::{

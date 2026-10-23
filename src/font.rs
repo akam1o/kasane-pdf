@@ -1268,75 +1268,107 @@ impl Type1Font {
 }
 
 // --------------------------------------------------------------------
-// Composite font (Type 0 / CIDFontType2 / Identity-H) — M7
+// Composite font (Type 0 / CIDFontType2 / CIDFontType0) — M7, M9
 // --------------------------------------------------------------------
 
-/// A Type 0 composite font: 2-byte big-endian codes → CID →
-/// CIDToGIDMap → GID. Only `Identity-H` encoding, `CIDFontType2`
-/// descendants, and `/FontFile2` TrueType programs are supported.
-/// Vertical writing (`Identity-V`, `WMode`, `DW2`/`W2`) is refused.
-pub(crate) struct CompositeFont {
-    /// Decoded `/FontFile2` of the descendant CIDFont.
-    program: Vec<u8>,
-    /// CID → GID map: `None` = Identity, `Some(v)` = big-endian
-    /// 2-byte-per-CID lookup (`v[2c]<<8|v[2c+1]`).
-    cid_to_gid: Option<Vec<u8>>,
-    /// Default glyph width (1/1000 em), from `/DW`. Default 1000.
-    dw: f64,
-    /// Width overrides from `/W` — sorted, non-expanded ranges.
-    /// Each entry is `(first_cid, last_cid, width)`.
-    w: Vec<(u32, u32, f64)>,
-    /// `/ToUnicode` CMap — `None` if absent.
-    tounicode: Option<crate::tounicode::ToUnicode>,
-    /// `Face` over `program` — same lazy-borrow pattern as
-    /// `SimpleFont`.
-    face: RefCell<Option<Face<'static>>>,
+/// The glyph program behind a CIDFont.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CidProgram {
+    /// `/FontFile2` — a TrueType (`glyf`) program; CID → GID through
+    /// `/CIDToGIDMap`.
+    TrueType,
+    /// `/FontFile3 /Subtype /OpenType` — an OpenType wrapper; CID → GID
+    /// through the embedded CFF charset when the CFF is CID-keyed,
+    /// `/CIDToGIDMap` for a `glyf`-based one.
+    OpenType,
+    /// `/FontFile3 /Subtype /CIDFontType0C` (or `/Type1C`) — a bare CFF
+    /// program; CID → GID through its charset when CID-keyed, else
+    /// CID = GID (§9.7.4.2).
+    Cff,
 }
 
-/// Load a Type 0 font dictionary: `/Encoding` must be `/Identity-H`,
-/// `/DescendantFonts` must hold exactly one CIDFontType2 with a
-/// `/FontFile2` TrueType program. `Identity-V`, CIDFontType0 (CFF),
-/// non-embedded programs and arbitrary CMap names are refused.
+/// A Type 0 composite font (§9.7): character codes → CID through the
+/// `/Encoding` CMap (Identity, or an embedded CMap stream), CID → GID
+/// through the descendant's program, widths from `/DW`/`/W`
+/// (vertical: `/DW2`/`/W2`), Unicode from `/ToUnicode`. Codes, CIDs
+/// and GIDs are three different numbers and are never conflated.
+pub(crate) struct CompositeFont {
+    /// Decoded font program of the descendant CIDFont.
+    program: Vec<u8>,
+    kind: CidProgram,
+    /// `/CIDToGIDMap` (CIDFontType2 only): `None` = Identity, `Some`
+    /// = big-endian 2-byte-per-CID lookup.
+    cid_to_gid: Option<Vec<u8>>,
+    /// Embedded `/Encoding` CMap; `None` = Identity-H/V.
+    cmap: Option<crate::cmap::CMap>,
+    /// Vertical writing mode (`Identity-V` or CMap `/WMode 1`).
+    vertical: bool,
+    /// Default glyph width (1/1000 em), from `/DW`. Default 1000.
+    dw: f64,
+    /// Width overrides from `/W` — sorted `(first_cid, last_cid, width)`.
+    w: Vec<(u32, u32, f64)>,
+    /// `/DW2` `[vy w1y]`, default `[880 −1000]` (§9.7.4.3).
+    dw2: (f64, f64),
+    /// `/W2` overrides — sorted `(first_cid, last_cid, w1y, vx, vy)`.
+    w2: Vec<(u32, u32, f64, f64, f64)>,
+    /// `/ToUnicode` CMap — `None` if absent.
+    tounicode: Option<crate::tounicode::ToUnicode>,
+    /// `Face` over `program` (TrueType / OpenType) — lazy, same
+    /// borrow pattern as `SimpleFont`.
+    face: RefCell<Option<Face<'static>>>,
+    /// Bare CFF table over `program` (`CidProgram::Cff`) — lazy.
+    cff: RefCell<Option<CffTable<'static>>>,
+    /// CID → GID for a CID-keyed CFF charset, built once from the
+    /// table's GID → CID mapping. `None` until built; an empty map
+    /// means the CFF is not CID-keyed (CID = GID).
+    cid_gid: RefCell<Option<std::collections::HashMap<u16, u16>>>,
+}
+
+/// Load a Type 0 font dictionary (§9.7.6): `/Encoding` is
+/// `/Identity-H`, `/Identity-V` or an embedded CMap stream;
+/// `/DescendantFonts` holds exactly one CIDFontType2 (TrueType,
+/// `/FontFile2` or `/FontFile3 /OpenType`) or CIDFontType0 (CFF,
+/// `/FontFile3`). Other predefined CMaps and non-embedded programs
+/// are refused.
 fn load_composite_font(
     doc: &Document,
     dict: &Dict,
     limits: &Limits,
 ) -> Result<Rc<CompositeFont>, Error> {
-    // ---- /Encoding /Identity-H -----------------------------------
-    match dict.get(b"Encoding".as_slice()) {
-        Some(Object::Name(n)) if n.as_slice() == b"Identity-H" => {}
-        Some(Object::Name(n)) if n.as_slice() == b"Identity-V" => {
-            return Err(Error::Unsupported {
-                feature: "vertical writing (/Encoding /Identity-V)",
-                detail: "only horizontal Identity-H is implemented".into(),
-            })
-        }
+    let (cmap, mut vertical) = match dict.get(b"Encoding".as_slice()) {
+        Some(Object::Name(n)) if n.as_slice() == b"Identity-H" => (None, false),
+        Some(Object::Name(n)) if n.as_slice() == b"Identity-V" => (None, true),
         Some(Object::Name(other)) => {
             return Err(Error::Unsupported {
                 feature: "Type 0 font encoding",
                 detail: format!(
-                    "/{} — only Identity-H is supported",
+                    "/{} — predefined CMaps other than Identity-H/V are not bundled",
                     String::from_utf8_lossy(other)
                 ),
             })
         }
-        Some(Object::Dict(_)) | Some(Object::Stream { .. }) => {
-            // A CMap stream/name — arbitrary encodings are out of
-            // scope.
-            return Err(Error::Unsupported {
-                feature: "Type 0 font /Encoding CMap",
-                detail: "only the predefined Identity-H CMap is supported".into(),
-            });
+        Some(o @ Object::Ref(_)) | Some(o @ Object::Stream { .. }) => {
+            let s = doc.deref(o)?;
+            let Some((sd, raw)) = s.as_stream() else {
+                return Err(Error::Structure(
+                    "/Encoding must be the name Identity-H/V or a CMap stream".into(),
+                ));
+            };
+            let bytes = doc.decode_stream(sd, raw)?;
+            let use_cmap = sd.get(b"UseCMap".as_slice()).and_then(|o| o.as_name());
+            let cm = crate::cmap::CMap::parse(&bytes, use_cmap, limits)?;
+            let wmode = sd.get(b"WMode".as_slice()).and_then(|o| o.as_i64()) == Some(1);
+            let v = cm.vertical || wmode;
+            (Some(cm), v)
         }
         Some(_) => {
             return Err(Error::Structure(
-                "/Encoding must be the name Identity-H (or a CMap — unsupported)".into(),
+                "/Encoding must be the name Identity-H/V or a CMap stream".into(),
             ))
         }
         None => return Err(Error::Structure("/Type0 font has no /Encoding".into())),
-    }
+    };
 
-    // ---- /DescendantFonts — exactly one CIDFont -------------------
     let df_obj = dict
         .get(b"DescendantFonts".as_slice())
         .ok_or_else(|| Error::Structure("/Type0 font has no /DescendantFonts".into()))?;
@@ -1354,21 +1386,19 @@ fn load_composite_font(
     let cid_dict = cid_obj
         .as_dict()
         .ok_or_else(|| Error::Structure("/DescendantFonts[0] is not a dictionary".into()))?;
-    match cid_dict
+    let is_type0 = match cid_dict
         .get(b"Subtype".as_slice())
         .and_then(|o| o.as_name())
     {
-        Some(b"CIDFontType2") => {}
-        Some(b"CIDFontType0") => {
-            return Err(Error::Unsupported {
-                feature: "CIDFontType0 (CFF/Type 1) descendant",
-                detail: "only CIDFontType2 (TrueType) is implemented".into(),
-            })
-        }
+        Some(b"CIDFontType2") => false,
+        Some(b"CIDFontType0") => true,
         Some(other) => {
             return Err(Error::Unsupported {
                 feature: "CIDFont subtype",
-                detail: format!("/{other:?} — only /CIDFontType2 is supported"),
+                detail: format!(
+                    "/{} — only /CIDFontType0 and /CIDFontType2 exist",
+                    String::from_utf8_lossy(other)
+                ),
             })
         }
         None => {
@@ -1376,9 +1406,7 @@ fn load_composite_font(
                 "/DescendantFonts[0] has no /Subtype".into(),
             ))
         }
-    }
-    // CIDSystemInfo is required but its values are free-form for
-    // Identity-H; validate presence and shape only.
+    };
     match cid_dict.get(b"CIDSystemInfo".as_slice()) {
         Some(o) => {
             let info = doc.deref(o)?;
@@ -1386,7 +1414,7 @@ fn load_composite_font(
                 .as_dict()
                 .ok_or_else(|| Error::Structure("/CIDSystemInfo is not a dictionary".into()))?;
             for key in [&b"Registry"[..], &b"Ordering"[..]] {
-                match d.get(key) {
+                match d.get(key).map(|o| doc.deref(o)).transpose()? {
                     Some(Object::String(_)) | None => {}
                     _ => {
                         return Err(Error::Structure(format!(
@@ -1400,7 +1428,6 @@ fn load_composite_font(
         None => return Err(Error::Structure("CIDFont has no /CIDSystemInfo".into())),
     }
 
-    // ---- /FontDescriptor → /FontFile2 -----------------------------
     let fd_obj = cid_dict
         .get(b"FontDescriptor".as_slice())
         .ok_or_else(|| Error::Structure("CIDFont has no /FontDescriptor".into()))?;
@@ -1408,35 +1435,74 @@ fn load_composite_font(
     let fd_dict = fd
         .as_dict()
         .ok_or_else(|| Error::Structure("/FontDescriptor is not a dictionary".into()))?;
-    // CFF/Type1 programs are refused explicitly.
-    if fd_dict.get(b"FontFile3".as_slice()).is_some() {
+
+    // ---- the program ---------------------------------------------
+    let (kind, program) = if let Some(ff3) = fd_dict.get(b"FontFile3".as_slice()) {
+        let ff3 = doc.deref(ff3)?;
+        let (ff3_dict, ff3_raw) = ff3
+            .as_stream()
+            .ok_or_else(|| Error::Structure("/FontFile3 is not a stream".into()))?;
+        let kind = match ff3_dict
+            .get(b"Subtype".as_slice())
+            .and_then(|o| o.as_name())
+        {
+            Some(b"OpenType") => CidProgram::OpenType,
+            Some(b"CIDFontType0C") | Some(b"Type1C") | None => CidProgram::Cff,
+            Some(other) => {
+                return Err(Error::Unsupported {
+                    feature: "CIDFont /FontFile3 subtype",
+                    detail: format!("/{}", String::from_utf8_lossy(other)),
+                })
+            }
+        };
+        (kind, doc.decode_stream(ff3_dict, ff3_raw)?)
+    } else if let Some(ff2) = fd_dict.get(b"FontFile2".as_slice()) {
+        let ff2 = doc.deref(ff2)?;
+        let (ff2_dict, ff2_raw) = ff2
+            .as_stream()
+            .ok_or_else(|| Error::Structure("/FontFile2 is not a stream".into()))?;
+        (CidProgram::TrueType, doc.decode_stream(ff2_dict, ff2_raw)?)
+    } else {
         return Err(Error::Unsupported {
-            feature: "CIDFontType0 /FontFile3 (CFF)",
-            detail: "only /FontFile2 TrueType programs are supported".into(),
-        });
-    }
-    let ff2_obj = fd_dict
-        .get(b"FontFile2".as_slice())
-        .ok_or_else(|| Error::Unsupported {
             feature: "non-embedded CIDFont",
-            detail: "/FontFile2 is required; OS substitution is not performed".into(),
-        })?;
-    let ff2 = doc.deref(ff2_obj)?;
-    let (ff2_dict, ff2_raw) = ff2
-        .as_stream()
-        .ok_or_else(|| Error::Structure("/FontFile2 is not a stream".into()))?;
-    let program = doc.decode_stream(ff2_dict, ff2_raw)?;
+            detail: "/FontFile2 or /FontFile3 is required; OS substitution is not performed".into(),
+        });
+    };
     if program.len() as u64 > limits.max_stream_bytes {
         return Err(Error::LimitExceeded {
             limit: "max_stream_bytes (embedded CID font)",
             max: limits.max_stream_bytes,
         });
     }
+    // Validate the program up front so a broken font is a structure
+    // error at `Tf`, not a surprise mid-string.
+    match kind {
+        CidProgram::Cff => {
+            if is_type0 && CffTable::parse(&program).is_none() {
+                return Err(Error::Structure(
+                    "/FontFile3 is not a valid CFF program".into(),
+                ));
+            }
+            if !is_type0 {
+                return Err(Error::Structure(
+                    "CIDFontType2 with a bare CFF /FontFile3 — the subtype and program disagree"
+                        .into(),
+                ));
+            }
+        }
+        CidProgram::TrueType | CidProgram::OpenType => {
+            if Face::parse(&program, 0).is_err() {
+                return Err(Error::Structure(
+                    "CIDFont program is not a valid TrueType/OpenType font".into(),
+                ));
+            }
+        }
+    }
 
-    // ---- /CIDToGIDMap ---------------------------------------------
     let cid_to_gid = match cid_dict.get(b"CIDToGIDMap".as_slice()) {
         None | Some(Object::Null) => None, // default: Identity
         Some(Object::Name(n)) if n.as_slice() == b"Identity" => None,
+        Some(_) if is_type0 => None, // only meaningful for CIDFontType2
         Some(o) => {
             let s = doc.deref(o)?;
             let (sd, raw) = s
@@ -1458,11 +1524,11 @@ fn load_composite_font(
         }
     };
 
-    // ---- /DW ------------------------------------------------------
     let dw = match cid_dict.get(b"DW".as_slice()) {
         None | Some(Object::Null) => 1000.0,
         Some(o) => {
-            let w = o
+            let w = doc
+                .deref(o)?
                 .as_number()
                 .ok_or_else(|| Error::Structure("/DW is not a number".into()))?;
             if !(w.is_finite() && w >= 0.0) {
@@ -1471,80 +1537,93 @@ fn load_composite_font(
             w
         }
     };
+    let w = parse_w_array(doc, cid_dict.get(b"W".as_slice()))?;
 
-    // ---- /W — two group forms; stored unexpanded ------------------
-    let mut w: Vec<(u32, u32, f64)> = Vec::new();
-    if let Some(w_obj) = cid_dict.get(b"W".as_slice()) {
-        let arr = doc.deref(w_obj)?;
+    // ---- vertical metrics (§9.7.4.3) ------------------------------
+    let dw2 = match cid_dict.get(b"DW2".as_slice()) {
+        None | Some(Object::Null) => (880.0, -1000.0),
+        Some(o) => {
+            let a = doc.deref(o)?;
+            let arr = a
+                .as_array()
+                .ok_or_else(|| Error::Structure("/DW2 is not an array".into()))?;
+            let v: Option<Vec<f64>> = arr.iter().map(|x| x.as_number()).collect();
+            match v.as_deref() {
+                Some([vy, w1]) if vy.is_finite() && w1.is_finite() => (*vy, *w1),
+                _ => return Err(Error::Structure("/DW2 must be [vy w1y]".into())),
+            }
+        }
+    };
+    let mut w2: Vec<(u32, u32, f64, f64, f64)> = Vec::new();
+    if let Some(w2_obj) = cid_dict.get(b"W2".as_slice()) {
+        let arr = doc.deref(w2_obj)?;
         let arr = arr
             .as_array()
-            .ok_or_else(|| Error::Structure("/W is not an array".into()))?;
+            .ok_or_else(|| Error::Structure("/W2 is not an array".into()))?;
+        let num = |o: &Object| -> Result<f64, Error> {
+            let v = doc
+                .deref(o)?
+                .as_number()
+                .ok_or_else(|| Error::Structure("/W2 entries must be numbers".into()))?;
+            if !v.is_finite() {
+                return Err(Error::Structure("/W2 entries must be finite".into()));
+            }
+            Ok(v)
+        };
         let mut i = 0usize;
         while i < arr.len() {
             let c0 = arr[i]
                 .as_i64()
-                .ok_or_else(|| Error::Structure(format!("/W[{i}] must be an integer CID")))?;
-            if !(0..=0xFFFF).contains(&c0) {
-                return Err(Error::Structure(format!("/W[{i}] CID {c0} out of range")));
-            }
+                .filter(|c| (0..=0xFFFF).contains(c))
+                .ok_or_else(|| Error::Structure(format!("/W2[{i}] must be a CID")))?
+                as u32;
             i += 1;
-            if i >= arr.len() {
-                return Err(Error::Structure("/W array ends mid-group".into()));
-            }
-            match &arr[i] {
-                Object::Array(ws) => {
-                    // c [w1 w2 … wn] — consecutive CIDs each with own width.
-                    let base = c0 as u32;
-                    for (k, e) in ws.iter().enumerate() {
-                        let wv = e.as_number().ok_or_else(|| {
-                            Error::Structure("/W sub-array entries must be numbers".into())
-                        })?;
-                        if !(wv.is_finite() && wv >= 0.0) {
-                            return Err(Error::Structure(
-                                "/W width is not a non-negative number".into(),
-                            ));
-                        }
-                        let cid = base
+            match arr.get(i).map(|o| doc.deref(o)).transpose()? {
+                Some(Object::Array(ws)) => {
+                    if ws.len() % 3 != 0 {
+                        return Err(Error::Structure("/W2 sub-array must hold triples".into()));
+                    }
+                    for (k, tri) in ws.chunks_exact(3).enumerate() {
+                        let cid = c0
                             .checked_add(k as u32)
-                            .ok_or_else(|| Error::Structure("/W CID overflow".into()))?;
-                        if cid > 0xFFFF {
-                            return Err(Error::Structure("/W CID exceeds 0xFFFF".into()));
-                        }
-                        w.push((cid, cid, wv));
+                            .filter(|c| *c <= 0xFFFF)
+                            .ok_or_else(|| Error::Structure("/W2 CID overflow".into()))?;
+                        w2.push((cid, cid, num(&tri[0])?, num(&tri[1])?, num(&tri[2])?));
                     }
                     i += 1;
                 }
-                _ => {
-                    // cfirst clast w — one width for a range.
-                    let clast = arr[i].as_i64().ok_or_else(|| {
-                        Error::Structure("/W range bound must be an integer".into())
-                    })?;
-                    let wv = arr
-                        .get(i + 1)
-                        .and_then(|o| o.as_number())
-                        .ok_or_else(|| Error::Structure("/W range needs a width".into()))?;
-                    if !(wv.is_finite() && wv >= 0.0) {
-                        return Err(Error::Structure(
-                            "/W width is not a non-negative number".into(),
-                        ));
+                Some(_) => {
+                    let c1 = arr[i]
+                        .as_i64()
+                        .filter(|c| (c0 as i64..=0xFFFF).contains(c))
+                        .ok_or_else(|| Error::Structure("/W2 range bound is invalid".into()))?
+                        as u32;
+                    if i + 3 >= arr.len() {
+                        return Err(Error::Structure("/W2 range needs w1y vx vy".into()));
                     }
-                    if clast < c0 || clast > 0xFFFF {
-                        return Err(Error::Structure(format!(
-                            "/W range {c0}..{clast} is invalid"
-                        )));
-                    }
-                    w.push((c0 as u32, clast as u32, wv));
-                    i += 2;
+                    w2.push((
+                        c0,
+                        c1,
+                        num(&arr[i + 1])?,
+                        num(&arr[i + 2])?,
+                        num(&arr[i + 3])?,
+                    ));
+                    i += 4;
                 }
+                None => return Err(Error::Structure("/W2 array ends mid-group".into())),
             }
         }
-        w.sort_unstable_by_key(|(a, _, _)| *a);
+        w2.sort_unstable_by_key(|e| e.0);
+    }
+    if !vertical && cid_dict.contains_key(b"W2".as_slice()) {
+        // Vertical metrics present on a horizontal font are inert.
+        vertical = false;
     }
 
-    // ---- /ToUnicode -----------------------------------------------
     let tounicode = crate::tounicode::load_tounicode(doc, dict, limits)?;
     if let Some(t) = &tounicode {
-        if t.code_len() != 2 {
+        let two_byte = cmap.as_ref().map(|c| c.is_two_byte()).unwrap_or(true);
+        if two_byte && t.code_len() != 2 {
             return Err(Error::Unsupported {
                 feature: "ToUnicode codespace",
                 detail: format!(
@@ -1557,23 +1636,103 @@ fn load_composite_font(
 
     Ok(Rc::new(CompositeFont {
         program,
+        kind,
         cid_to_gid,
+        cmap,
+        vertical,
         dw,
         w,
+        dw2,
+        w2,
         tounicode,
         face: RefCell::new(None),
+        cff: RefCell::new(None),
+        cid_gid: RefCell::new(None),
     }))
 }
 
+/// `/W` (§9.7.4.3): `c [w …]` and `cfirst clast w` groups → sorted
+/// `(first, last, width)` ranges.
+fn parse_w_array(doc: &Document, w_obj: Option<&Object>) -> Result<Vec<(u32, u32, f64)>, Error> {
+    let mut w: Vec<(u32, u32, f64)> = Vec::new();
+    let Some(w_obj) = w_obj else { return Ok(w) };
+    let arr = doc.deref(w_obj)?;
+    let arr = arr
+        .as_array()
+        .ok_or_else(|| Error::Structure("/W is not an array".into()))?;
+    let mut i = 0usize;
+    while i < arr.len() {
+        let c0 = doc
+            .deref(&arr[i])?
+            .as_i64()
+            .ok_or_else(|| Error::Structure(format!("/W[{i}] must be an integer CID")))?;
+        if !(0..=0xFFFF).contains(&c0) {
+            return Err(Error::Structure(format!("/W[{i}] CID {c0} out of range")));
+        }
+        i += 1;
+        if i >= arr.len() {
+            return Err(Error::Structure("/W array ends mid-group".into()));
+        }
+        match doc.deref(&arr[i])? {
+            Object::Array(ws) => {
+                let base = c0 as u32;
+                for (k, e) in ws.iter().enumerate() {
+                    let wv = doc.deref(e)?.as_number().ok_or_else(|| {
+                        Error::Structure("/W sub-array entries must be numbers".into())
+                    })?;
+                    if !(wv.is_finite() && wv >= 0.0) {
+                        return Err(Error::Structure(
+                            "/W width is not a non-negative number".into(),
+                        ));
+                    }
+                    let cid = base
+                        .checked_add(k as u32)
+                        .ok_or_else(|| Error::Structure("/W CID overflow".into()))?;
+                    if cid > 0xFFFF {
+                        return Err(Error::Structure("/W CID exceeds 0xFFFF".into()));
+                    }
+                    w.push((cid, cid, wv));
+                }
+                i += 1;
+            }
+            other => {
+                let clast = other
+                    .as_i64()
+                    .ok_or_else(|| Error::Structure("/W range bound must be an integer".into()))?;
+                let wv = arr
+                    .get(i + 1)
+                    .map(|o| doc.deref(o))
+                    .transpose()?
+                    .and_then(|o| o.as_number())
+                    .ok_or_else(|| Error::Structure("/W range needs a width".into()))?;
+                if !(wv.is_finite() && wv >= 0.0) {
+                    return Err(Error::Structure(
+                        "/W width is not a non-negative number".into(),
+                    ));
+                }
+                if clast < c0 || clast > 0xFFFF {
+                    return Err(Error::Structure(format!(
+                        "/W range {c0}..{clast} is invalid"
+                    )));
+                }
+                w.push((c0 as u32, clast as u32, wv));
+                i += 2;
+            }
+        }
+    }
+    w.sort_unstable_by_key(|(a, _, _)| *a);
+    Ok(w)
+}
+
 impl CompositeFont {
-    /// Lazily parsed `Face` over `program` — same pattern as
-    /// `SimpleFont::face`.
     fn face(&self) -> Result<std::cell::Ref<'_, Face<'static>>, Error> {
         {
             let mut slot = self.face.borrow_mut();
             if slot.is_none() {
                 let face = Face::parse(&self.program, 0)
                     .map_err(|e| Error::Structure(format!("TrueType font program: {e:?}")))?;
+                // SAFETY: `face` borrows `self.program`; `self` owns
+                // both fields and `program` never moves or mutates.
                 let face: Face<'static> = unsafe { std::mem::transmute(face) };
                 *slot = Some(face);
             }
@@ -1583,18 +1742,118 @@ impl CompositeFont {
         }))
     }
 
-    /// CID for `code` — Identity-H maps code→CID identically.
-    fn cid(&self, code: u32) -> u32 {
-        code
+    fn cff(&self) -> Result<std::cell::Ref<'_, CffTable<'static>>, Error> {
+        {
+            let mut slot = self.cff.borrow_mut();
+            if slot.is_none() {
+                let t = CffTable::parse(&self.program).ok_or_else(|| {
+                    Error::Structure("/FontFile3 is not a valid CFF program".into())
+                })?;
+                // SAFETY: as for `face` — `program` is owned and immutable.
+                let t: CffTable<'static> = unsafe { std::mem::transmute(t) };
+                *slot = Some(t);
+            }
+        }
+        Ok(std::cell::Ref::map(self.cff.borrow(), |o| {
+            o.as_ref().unwrap()
+        }))
     }
 
-    /// GID for `code`: code → CID → CIDToGIDMap. Identity is the
-    /// default and also explicit `/Identity`. A missing stream entry
-    /// (or a GID past the font's glyph count) yields `.notdef` (gid 0)
-    /// per the .notdef convention, not an error.
-    pub(crate) fn glyph_id(&self, code: u32) -> Result<GlyphId, Error> {
-        let cid = self.cid(code);
-        let gid = match &self.cid_to_gid {
+    /// CID → GID through a CFF charset (§9.7.4.2): for a CID-keyed
+    /// CFF the charset maps GID → CID and is inverted once here; for a
+    /// non-CID CFF the CID is the GID. Built from at most 65 536
+    /// glyphs, so bounded regardless of the charset's claims.
+    fn cff_gid(&self, table: &CffTable<'_>, cid: u32) -> u16 {
+        let n = table.number_of_glyphs();
+        if self.cid_gid.borrow().is_none() {
+            let mut map = std::collections::HashMap::new();
+            if table.glyph_cid(GlyphId(0)).is_some() {
+                for g in 0..n {
+                    if let Some(c) = table.glyph_cid(GlyphId(g)) {
+                        // The first glyph claiming a CID wins — a
+                        // duplicate CID in a charset is a font bug.
+                        map.entry(c).or_insert(g);
+                    }
+                }
+            }
+            *self.cid_gid.borrow_mut() = Some(map);
+        }
+        let map = self.cid_gid.borrow();
+        let map = map.as_ref().expect("built above");
+        if map.is_empty() {
+            // Not CID-keyed: CID = GID.
+            return if cid < n as u32 { cid as u16 } else { 0 };
+        }
+        if cid > 0xFFFF {
+            return 0;
+        }
+        map.get(&(cid as u16)).copied().unwrap_or(0)
+    }
+
+    /// Character code → CID (§9.7.6.3).
+    fn cid(&self, code: u32, code_len: usize) -> u32 {
+        match &self.cmap {
+            None => code,
+            Some(cm) => cm.cid(code, code_len),
+        }
+    }
+
+    /// Read one code at `bytes[pos]`: 2 bytes for Identity, else as
+    /// the CMap's codespace dictates.
+    pub(crate) fn read_code(&self, bytes: &[u8], pos: usize) -> Result<(u32, usize), Error> {
+        match &self.cmap {
+            None => {
+                if pos + 1 >= bytes.len() {
+                    return Err(Error::Structure(
+                        "string ends mid-code — Identity CMaps use 2-byte codes".into(),
+                    ));
+                }
+                Ok((((bytes[pos] as u32) << 8) | bytes[pos + 1] as u32, 2))
+            }
+            Some(cm) => Ok(cm.next_code(bytes, pos)),
+        }
+    }
+
+    /// Code (with its byte length packed by `Font::read_code`) → GID.
+    /// `code` here is the plain code; `len` the byte length it was
+    /// read with (needed to disambiguate CMap ranges).
+    pub(crate) fn glyph_id_len(&self, code: u32, len: usize) -> Result<GlyphId, Error> {
+        let cid = self.cid(code, len);
+        match self.kind {
+            CidProgram::Cff => {
+                let t = self.cff()?;
+                Ok(GlyphId(self.cff_gid(&t, cid)))
+            }
+            CidProgram::OpenType => {
+                let face = self.face()?;
+                if let Some(t) = face.tables().cff.as_ref() {
+                    if t.glyph_cid(GlyphId(0)).is_some() {
+                        return Ok(GlyphId(self.cff_gid(t, cid)));
+                    }
+                }
+                let gid = self.truetype_gid(cid);
+                let n = face.number_of_glyphs();
+                Ok(if gid < n as u32 {
+                    GlyphId(gid as u16)
+                } else {
+                    GlyphId(0)
+                })
+            }
+            CidProgram::TrueType => {
+                let gid = self.truetype_gid(cid);
+                let face = self.face()?;
+                let n = face.number_of_glyphs();
+                Ok(if gid < n as u32 {
+                    GlyphId(gid as u16)
+                } else {
+                    GlyphId(0)
+                })
+            }
+        }
+    }
+
+    fn truetype_gid(&self, cid: u32) -> u32 {
+        match &self.cid_to_gid {
             None => cid,
             Some(map) => {
                 let off = (cid as usize) * 2;
@@ -1604,23 +1863,12 @@ impl CompositeFont {
                     ((map[off] as u32) << 8) | map[off + 1] as u32
                 }
             }
-        };
-        // Validate against the font's glyph count — a map entry naming
-        // a nonexistent glyph is .notdef, not an out-of-bounds read.
-        let face = self.face()?;
-        let n = face.number_of_glyphs();
-        Ok(if gid < n as u32 {
-            GlyphId(gid as u16)
-        } else {
-            GlyphId(0)
-        })
+        }
     }
 
-    /// Width of `code` in 1/1000-em units, per `/W` (first match) or
-    /// `/DW` (default 1000).
-    pub(crate) fn width(&self, code: u32) -> f64 {
-        let cid = self.cid(code);
-        // Linear scan — W groups are sorted; binary search by first.
+    /// Horizontal advance `w0` (1/1000 em) for `code`.
+    pub(crate) fn width_len(&self, code: u32, len: usize) -> f64 {
+        let cid = self.cid(code, len);
         let mut lo = 0usize;
         let mut hi = self.w.len();
         while lo < hi {
@@ -1637,39 +1885,71 @@ impl CompositeFont {
         self.dw
     }
 
-    /// Extract the glyph outline into `builder` (font units).
-    /// `false` = empty outline (space) — caller still advances.
+    /// Vertical writing mode.
+    pub(crate) fn vertical(&self) -> bool {
+        self.vertical
+    }
+
+    /// Vertical metrics `(w1y, vx, vy)` in 1/1000 em (§9.7.4.3): from
+    /// `/W2`, else `vx = w0 / 2`, `(vy, w1y)` from `/DW2`.
+    pub(crate) fn vertical_metrics_len(&self, code: u32, len: usize) -> (f64, f64, f64) {
+        let cid = self.cid(code, len);
+        for (a, b, w1y, vx, vy) in &self.w2 {
+            if cid >= *a && cid <= *b {
+                return (*w1y, *vx, *vy);
+            }
+        }
+        (self.dw2.1, self.width_len(code, len) / 2.0, self.dw2.0)
+    }
+
     pub(crate) fn outline(
         &self,
         glyph: GlyphId,
         builder: &mut dyn OutlineBuilder,
     ) -> Result<bool, Error> {
-        let face = self.face()?;
-        Ok(outline_glyph_lsb_adjusted(&face, glyph, builder))
+        match self.kind {
+            CidProgram::Cff => {
+                let t = self.cff()?;
+                Ok(t.outline(glyph, builder).is_ok())
+            }
+            CidProgram::OpenType | CidProgram::TrueType => {
+                let face = self.face()?;
+                Ok(outline_glyph_lsb_adjusted(&face, glyph, builder))
+            }
+        }
     }
 
-    /// Resolve `code` via `/ToUnicode` only — composite fonts have no
-    /// AGL fallback (their codes are CIDs, not character names).
     pub(crate) fn unicode(&self, code: u32) -> Option<String> {
         self.tounicode.as_ref()?.decode(code)
     }
 
-    /// `true` when the font carries a `/ToUnicode` CMap.
     pub(crate) fn has_tounicode(&self) -> bool {
         self.tounicode.is_some()
     }
 
-    /// Identity-H has no single-byte codes, so `Tw` never applies —
-    /// §9.3.3 limits `Tw` to "occurrences of the single-byte
-    /// character code 32", and a composite font's codes are all
-    /// 2-byte.
-    pub(crate) fn is_space_code(&self, _code: u32) -> bool {
-        false
+    /// Word spacing applies to the single-byte code 32 only (§9.3.3):
+    /// never under Identity, only for a CMap with a 1-byte codespace.
+    pub(crate) fn is_space_code(&self, code: u32) -> bool {
+        match &self.cmap {
+            Some(cm) => code == 32 && !cm.is_two_byte() && cm.next_code(&[32], 0) == (32, 1),
+            None => false,
+        }
     }
 
-    /// Units per em of the font program.
     pub(crate) fn units_per_em(&self) -> Result<f64, Error> {
-        Ok(self.face()?.units_per_em() as f64)
+        match self.kind {
+            CidProgram::Cff => {
+                let t = self.cff()?;
+                let m = t.matrix();
+                let sx = m.sx as f64;
+                Ok(if sx.is_finite() && sx > 0.0 {
+                    1.0 / sx
+                } else {
+                    1000.0
+                })
+            }
+            _ => Ok(self.face()?.units_per_em() as f64),
+        }
     }
 }
 
@@ -1677,17 +1957,37 @@ impl Font {
     /// Decode one code at `bytes` big-endian. Returns `(code,
     /// consumed_bytes)` or `Err` for a truncated tail (odd trailing
     /// byte on a 2-byte font). Codes never span string boundaries.
+    /// Read one character code at `bytes[pos]` → `(code, byte length)`.
+    /// Composite codes may be 1–4 bytes (their CMap decides); the
+    /// length is packed into the code's top bits (`CODE_LEN_SHIFT`) so
+    /// every later lookup can tell `<41>` from `<0041>`.
     pub(crate) fn read_code(&self, bytes: &[u8], pos: usize) -> Result<(u32, usize), Error> {
         match self {
             Font::Simple(_) | Font::Type1(_) | Font::Type3(_) => Ok((bytes[pos] as u32, 1)),
-            Font::Composite(_) => {
-                if pos + 1 >= bytes.len() {
-                    return Err(Error::Structure(
-                        "string ends mid-code — composite fonts require 2-byte codes".into(),
-                    ));
-                }
-                Ok((((bytes[pos] as u32) << 8) | bytes[pos + 1] as u32, 2))
+            Font::Composite(f) => {
+                let (code, len) = f.read_code(bytes, pos)?;
+                Ok((pack_code(code, len), len))
             }
+        }
+    }
+
+    /// Vertical writing mode (composite fonts with Identity-V / WMode 1).
+    pub(crate) fn vertical(&self) -> bool {
+        match self {
+            Font::Composite(f) => f.vertical(),
+            _ => false,
+        }
+    }
+
+    /// Vertical metrics `(w1y, vx, vy)` in 1/1000 em for a composite
+    /// font code; `(−1000, w0/2, 880)` for anything else.
+    pub(crate) fn vertical_metrics(&self, code: u32) -> (f64, f64, f64) {
+        match self {
+            Font::Composite(f) => {
+                let (c, l) = unpack_code(code);
+                f.vertical_metrics_len(c, l)
+            }
+            _ => (-1000.0, self.width(code) / 2.0, 880.0),
         }
     }
 
@@ -1696,7 +1996,7 @@ impl Font {
     pub(crate) fn is_space_code(&self, code: u32) -> bool {
         match self {
             Font::Simple(f) => f.is_space_code(code),
-            Font::Composite(f) => f.is_space_code(code),
+            Font::Composite(f) => f.is_space_code(unpack_code(code).0),
             Font::Type1(f) => f.is_space_code(code),
             Font::Type3(f) => f.is_space_code(code),
         }
@@ -1707,7 +2007,10 @@ impl Font {
     pub(crate) fn width(&self, code: u32) -> f64 {
         match self {
             Font::Simple(f) => f.width(code as u8),
-            Font::Composite(f) => f.width(code),
+            Font::Composite(f) => {
+                let (c, l) = unpack_code(code);
+                f.width_len(c, l)
+            }
             Font::Type1(f) => f.width(code as u8),
             Font::Type3(f) => f.width(code as u8),
         }
@@ -1718,7 +2021,10 @@ impl Font {
     pub(crate) fn glyph_id(&self, code: u32) -> Result<GlyphId, Error> {
         match self {
             Font::Simple(f) => Ok(f.glyph_id(code as u8)?.unwrap_or(GlyphId(0))),
-            Font::Composite(f) => f.glyph_id(code),
+            Font::Composite(f) => {
+                let (c, l) = unpack_code(code);
+                f.glyph_id_len(c, l)
+            }
             Font::Type1(f) => Ok(f.glyph_id(code as u8)?.unwrap_or(GlyphId(0))),
             // Type3 glyphs are content streams, not outline glyphs —
             // the char code itself is the identity for bookkeeping.
@@ -1749,7 +2055,7 @@ impl Font {
     pub(crate) fn unicode(&self, code: u32) -> Option<String> {
         match self {
             Font::Simple(f) => f.unicode(code as u8),
-            Font::Composite(f) => f.unicode(code),
+            Font::Composite(f) => f.unicode(unpack_code(code).0),
             Font::Type1(f) => f.unicode(code as u8),
             Font::Type3(f) => f.unicode(code as u8),
         }
@@ -1804,6 +2110,38 @@ impl Font {
 /// are scaled by `1 / units_per_em` so the path ends up in the
 /// PDF glyph coordinate system (em square), where `Tm`'s `Tfs`
 /// scaling then applies the font size.
+/// Composite character codes carry their byte length so CMap lookups
+/// can tell `<41>` from `<0041>`: 2-byte codes (the Identity case and
+/// by far the most common) are stored untagged; 1- and 3-byte codes
+/// put their length in the top byte; a 4-byte code is stored as-is
+/// (`unpack_code` reads a value above 0xFFFFFF as 4 bytes — a 4-byte
+/// code whose top byte is 0–3 is ambiguous and reported as 2/1/3
+/// bytes; such codespaces do not occur in practice). `CharInfo.code`
+/// always receives the *unpacked* code.
+pub(crate) fn pack_code(code: u32, len: usize) -> u32 {
+    match len {
+        1 | 3 if code < 1 << 24 => code | ((len as u32) << 24),
+        _ => code,
+    }
+}
+
+/// The plain character code for reporting: composite codes are
+/// unpacked, simple-font codes are returned unchanged.
+pub(crate) fn unpack_code_for_font(font: &Font, code: u32) -> u32 {
+    match font {
+        Font::Composite(_) => unpack_code(code).0,
+        _ => code,
+    }
+}
+
+pub(crate) fn unpack_code(packed: u32) -> (u32, usize) {
+    match packed >> 24 {
+        0 => (packed, 2),
+        t @ (1 | 3) => (packed & 0x00FF_FFFF, t as usize),
+        _ => (packed, 4),
+    }
+}
+
 pub(crate) struct GlyphPath {
     pub(crate) builder: tiny_skia::PathBuilder,
     scale: f32,

@@ -117,6 +117,12 @@ pub enum ResolveKind {
     EncodingFallback,
     /// Not resolvable — `unicode` is `None`.
     Unresolved,
+    /// Replaced by the enclosing marked content's `/ActualText`
+    /// (§14.9.4): the first character of the span carries the whole
+    /// replacement string, the rest carry `Some("")`. A span that
+    /// shows no glyph at all yields one synthetic entry (`code` 0,
+    /// zero advance, no bounds) so the text is not lost.
+    ActualText,
 }
 
 /// The extracted text for one page.
@@ -143,12 +149,38 @@ pub struct ExtractedText {
 /// Content in the executed stream), and resource limits. Unresolved
 /// characters are part of a *successful* result, distinct from `Err`.
 pub fn extract_text(doc: &Document, page: &Page, limits: &Limits) -> Result<ExtractedText, Error> {
+    extract_text_impl(doc, page, limits, false)
+}
+
+/// Like [`extract_text`] but also reports text inside optional content
+/// that the document's default configuration hides (§8.11). The
+/// default [`extract_text`] mirrors what a viewer shows — hidden
+/// layers (alternate languages, print-only marks, collapsed answers)
+/// are left out, as `pdftotext` does; this variant is for indexing
+/// every string the page carries.
+pub fn extract_text_all(
+    doc: &Document,
+    page: &Page,
+    limits: &Limits,
+) -> Result<ExtractedText, Error> {
+    extract_text_impl(doc, page, limits, true)
+}
+
+fn extract_text_impl(
+    doc: &Document,
+    page: &Page,
+    limits: &Limits,
+    include_hidden: bool,
+) -> Result<ExtractedText, Error> {
     let opts = crate::render::RenderOptions {
         dpi: 72.0, // unused — extraction reports user space, no pixels
         limits: limits.clone(),
     };
     let ops = doc.page_operations(page)?;
     let mut r = Renderer::for_extraction(doc, page, &opts)?;
+    if include_hidden {
+        r.include_hidden_content();
+    }
     r.run(&ops)?;
     let chars = r.take_extracted().unwrap_or_default();
     Ok(ExtractedText { chars, omitted: 0 })

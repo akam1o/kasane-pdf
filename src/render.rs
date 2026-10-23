@@ -419,6 +419,10 @@ pub fn render_page(
         blend_restricted: 0,
         layer_bytes: 0,
         pattern_base: Matrix::IDENTITY,
+        oc: crate::optcontent::OcConfig::from_catalog(doc)?,
+        oc_include_hidden: false,
+        mc_stack: Vec::new(),
+        hidden: 0,
     };
     renderer.run(&ops)?;
     // Annotation appearance streams paint *over* the page content, in
@@ -621,6 +625,26 @@ pub(crate) struct Renderer<'a> {
     /// (§8.7.3.1): identity for the page, the form's CTM (after its
     /// `/Matrix`) inside a Form XObject or Type 3 glyph.
     pattern_base: Matrix,
+    /// Optional-content configuration of the document (§8.11).
+    oc: crate::optcontent::OcConfig,
+    /// Extraction only: report text inside hidden optional content too
+    /// (`extract_text_all`). Never set while painting.
+    oc_include_hidden: bool,
+    /// One frame per open `BMC`/`BDC` (§14.6): whether it hides its
+    /// content and whether it carries `/ActualText`.
+    mc_stack: Vec<McFrame>,
+    /// Open frames that hide their content. While non-zero nothing is
+    /// painted or extracted; the graphics state keeps evolving.
+    hidden: u32,
+}
+
+/// A marked-content frame (see `Renderer::mc_stack`).
+#[derive(Clone)]
+struct McFrame {
+    hidden: bool,
+    /// `/ActualText` replacement for the span; `emitted` once the
+    /// first shown character carried it.
+    actual: Option<(String, bool)>,
 }
 
 /// A `/PatternType 2` pattern: a shading plus its `/Matrix`.
@@ -681,6 +705,10 @@ impl<'a> Renderer<'a> {
             blend_restricted: 0,
             layer_bytes: 0,
             pattern_base: Matrix::IDENTITY,
+            oc: crate::optcontent::OcConfig::from_catalog(doc)?,
+            oc_include_hidden: false,
+            mc_stack: Vec::new(),
+            hidden: 0,
         })
     }
 
@@ -695,6 +723,12 @@ impl<'a> Renderer<'a> {
     /// Take the extracted character buffer (extraction mode only).
     pub(crate) fn take_extracted(&mut self) -> Option<Vec<crate::text_extract::CharInfo>> {
         self.extract.take()
+    }
+
+    /// Extraction mode: report text in hidden optional content too.
+    pub(crate) fn include_hidden_content(&mut self) {
+        debug_assert!(self.extraction_only);
+        self.oc_include_hidden = true;
     }
 
     pub(crate) fn run(&mut self, ops: &[Operation]) -> Result<(), Error> {
@@ -1030,7 +1064,7 @@ impl<'a> Renderer<'a> {
             Operation::Do(n) => self.do_xobject(n)?,
             Operation::Shading(n) => self.paint_shading_op(n)?,
             Operation::InlineImage { dict, data } => {
-                if !self.extraction_only {
+                if !self.extraction_only && self.hidden == 0 {
                     self.paint_inline_image(dict, data)?;
                 }
             }
@@ -1041,13 +1075,18 @@ impl<'a> Renderer<'a> {
                 // §10.5.2: MP takes a tag only; it is metadata with no
                 // rendering effect.
             }
-            Operation::DesignatedMarkedContentPoint { tag, properties }
-            | Operation::BeginMarkedContentWithProps { tag, properties } => {
-                self.marked_content(tag, properties)?;
+            Operation::DesignatedMarkedContentPoint { .. } => {
+                // §10.5.2: DP is a point — properties (even /OC) have
+                // no span to hide.
             }
-            Operation::BeginMarkedContent(_) | Operation::EndMarkedContent => {
-                // Tag-only BMC/EMC have no rendering effect.
+            Operation::BeginMarkedContentWithProps { tag, properties } => {
+                self.begin_marked(tag, properties)?;
             }
+            Operation::BeginMarkedContent(_) => self.push_marked(McFrame {
+                hidden: false,
+                actual: None,
+            })?,
+            Operation::EndMarkedContent => self.end_marked()?,
             Operation::BeginCompatibility | Operation::EndCompatibility => {}
             Operation::Type3SetWidth { .. } | Operation::Type3SetWidthAndBox { .. } => {
                 // d0/d1 only have meaning inside a Type3 /CharProcs
@@ -1061,29 +1100,29 @@ impl<'a> Renderer<'a> {
         Ok(())
     }
 
-    /// A `DP`/`BDC` tag+properties operand: decide whether this is
-    /// ordinary marked content (ignored), Optional Content we cannot
-    /// evaluate (`/OC` + an OCG/OCMD property list — §8.11), or a
-    /// `/Span` sequence carrying `/ActualText` replacement text
-    /// (§14.9.4), which would change what text extraction reports.
-    /// All other tags and property lists are plain marked content.
+    /// `BDC tag props`: open a marked-content frame. Two property
+    /// kinds matter (§8.11.3.2, §14.9.4):
+    ///
+    /// * `/OC` — the properties name an OCG or OCMD; the frame hides
+    ///   its content when the document's default configuration says
+    ///   so (`OcConfig::visible`). Painting, image/form invocation and
+    ///   text extraction stop until the matching `EMC`; the graphics
+    ///   state (including clipping) keeps evolving, exactly as for
+    ///   visible content.
+    /// * `/ActualText` on any tag — the replacement text for the
+    ///   span; extraction reports it instead of the glyphs' Unicode.
     ///
     /// The `properties` operand may be a name (resolved against the
-    /// current `/Properties` resource subdictionary) or a direct
-    /// dictionary. An unresolvable name is a structure error, never
-    /// silently ignored.
-    fn marked_content(&self, tag: &[u8], properties: &Object) -> Result<(), Error> {
-        // Resolve a `/Properties` name through the current resources.
-        // Names under tags we don't inspect are plain marked content.
-        let resolved = match properties {
+    /// current `/Properties` resource subdictionary — kept as the raw
+    /// reference so an OCG can be identified) or a direct dictionary.
+    /// An unresolvable name is a structure error, never ignored.
+    fn begin_marked(&mut self, tag: &[u8], properties: &Object) -> Result<(), Error> {
+        let raw = match properties {
             Object::Name(n) => {
-                if tag != b"OC" && tag != b"Span" {
-                    return Ok(());
-                }
-                let props = self
+                match self
                     .doc
-                    .resolve_resource(&self.resources, "Properties", n)?;
-                match props {
+                    .resolve_resource_raw(&self.resources, "Properties", n)?
+                {
                     Some(o) => o,
                     None => {
                         return Err(Error::Structure(format!(
@@ -1094,35 +1133,126 @@ impl<'a> Renderer<'a> {
                 }
             }
             obj @ Object::Dict(_) => obj.clone(),
-            _ => return Ok(()), // other operand types: treated as inert
+            _ => {
+                return self.push_marked(McFrame {
+                    hidden: false,
+                    actual: None,
+                })
+            }
         };
-
-        let dict = resolved.as_dict().ok_or_else(|| {
+        let dict_obj = self.doc.deref(&raw)?;
+        let dict = dict_obj.as_dict().ok_or_else(|| {
             Error::Structure("marked-content properties is not a dictionary".into())
         })?;
+        let mut frame = McFrame {
+            hidden: false,
+            actual: None,
+        };
         if tag == b"OC" {
-            // OCG/OCMD membership is indicated by a /Type of /OCG or /OCMD.
-            match dict.get(b"Type".as_slice()).and_then(|t| t.as_name()) {
-                Some(b"OCG") | Some(b"OCMD") => return Err(Error::Unsupported {
-                    feature: "optional content (/OC or /OCMD marked content)",
-                    detail:
-                        "OCG/OCMD membership requires visibility evaluation, not implemented in M3"
-                            .into(),
-                }),
-                _ => return Ok(()),
-            }
+            let visible = self.oc.visible(self.doc, &raw)?;
+            frame.hidden = !visible && !self.oc_include_hidden;
         }
-        // §14.9.4: an /ActualText entry in a marked-content property
-        // list (attached via a /Span tag) substitutes the shown
-        // characters. Extraction cannot honour it, so refuse rather
-        // than return text that may not match the document's meaning.
-        if tag == b"Span" && dict.contains_key(b"ActualText".as_slice()) {
-            return Err(Error::Unsupported {
-                feature: "replacement text (/Span <</ActualText …>>)",
-                detail: "ActualText substitutes extracted text and is not implemented".into(),
+        if let Some(at) = dict.get(b"ActualText".as_slice()) {
+            let at = self.doc.deref(at)?;
+            let text = match at {
+                Object::String(bytes) => pdf_text_string(&bytes),
+                _ => return Err(Error::Structure("/ActualText is not a string".into())),
+            };
+            // An enclosing span is superseded for this range: it must
+            // not emit its own text again when it closes.
+            for f in self.mc_stack.iter_mut().rev() {
+                if let Some((_, emitted)) = &mut f.actual {
+                    *emitted = true;
+                    break;
+                }
+            }
+            frame.actual = Some((text, false));
+        }
+        self.push_marked(frame)
+    }
+
+    fn push_marked(&mut self, frame: McFrame) -> Result<(), Error> {
+        if self.mc_stack.len() >= self.limits.max_nesting_depth as usize {
+            return Err(Error::LimitExceeded {
+                limit: "max_nesting_depth (marked content)",
+                max: self.limits.max_nesting_depth as u64,
             });
         }
+        if frame.hidden {
+            self.hidden += 1;
+        }
+        self.mc_stack.push(frame);
         Ok(())
+    }
+
+    /// `EMC`: close the innermost frame. A span whose `/ActualText`
+    /// never reached a shown character still contributes its text to
+    /// extraction as one synthetic, advance-less entry at the current
+    /// text position.
+    fn end_marked(&mut self) -> Result<(), Error> {
+        // The content parser guarantees balance; a stray EMC here
+        // would be its bug, so tolerate rather than fail.
+        let Some(frame) = self.mc_stack.pop() else {
+            return Ok(());
+        };
+        if frame.hidden {
+            self.hidden -= 1;
+        }
+        if let Some((text, false)) = frame.actual {
+            if self.hidden == 0 && self.extract.is_some() && !text.is_empty() {
+                let t = &self.gs.text;
+                let origin = if self.in_text {
+                    Matrix::new(t.font_size * t.h_scale, 0.0, 0.0, t.font_size, 0.0, t.rise)
+                        .concat(self.text_tm)
+                        .concat(self.gs.ctm)
+                        .transform(0.0, 0.0)
+                } else {
+                    (self.gs.ctm.e, self.gs.ctm.f)
+                };
+                self.extract_unicode_bytes =
+                    self.extract_unicode_bytes.saturating_add(text.len() as u64);
+                if self.extract_unicode_bytes > self.limits.max_extracted_unicode_bytes {
+                    return Err(Error::LimitExceeded {
+                        limit: "max_extracted_unicode_bytes",
+                        max: self.limits.max_extracted_unicode_bytes,
+                    });
+                }
+                let (font_size, rise, render_mode) = (t.font_size, t.rise, t.render_mode as u8);
+                let in_text = self.in_text;
+                if let Some(buf) = self.extract.as_mut() {
+                    buf.push(crate::text_extract::CharInfo {
+                        code: 0,
+                        unicode: Some(text),
+                        resolved_via: crate::text_extract::ResolveKind::ActualText,
+                        origin,
+                        advance: (0.0, 0.0),
+                        bounds: None,
+                        render_mode,
+                        font_size,
+                        rise,
+                        tj_adjust: 0.0,
+                        in_text,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The `/ActualText` that replaces the character about to be
+    /// shown: the whole string for the span's first character, `""`
+    /// for the rest, `None` outside any such span.
+    fn take_actual_text(&mut self) -> Option<String> {
+        for f in self.mc_stack.iter_mut().rev() {
+            if let Some((text, emitted)) = &mut f.actual {
+                if *emitted {
+                    return Some(String::new());
+                }
+                *emitted = true;
+                return Some(text.clone());
+            }
+        }
+        None
     }
 
     /// The combined user→pixmap transform used at paint time:
@@ -1590,6 +1720,17 @@ impl<'a> Renderer<'a> {
         })?;
         let dict = dict.clone();
         let raw = raw.to_vec();
+        // Hidden by an enclosing /OC span, or by the XObject's own /OC
+        // membership (§8.11.3.3): not painted, text not extracted —
+        // unless extraction was asked to include hidden content.
+        if self.hidden > 0 {
+            return Ok(());
+        }
+        if let Some(oc) = dict.get(b"OC".as_slice()) {
+            if !self.oc.visible(self.doc, oc)? && !self.oc_include_hidden {
+                return Ok(());
+            }
+        }
         match dict.get(b"Subtype".as_slice()).and_then(|o| o.as_name()) {
             Some(b"Form") => self.do_form(&dict, &raw, name, entry_ref),
             // Images carry no text — in extraction mode the dict is
@@ -1718,15 +1859,8 @@ impl<'a> Renderer<'a> {
                 }
             };
         }
-        // A form may carry /OC (optional content membership) or /Ref
-        // (reference XObject); both change what's painted — refuse
-        // rather than guess.
-        if dict.contains_key(b"OC".as_slice()) {
-            return Err(Error::Unsupported {
-                feature: "optional content on a form XObject (/OC)",
-                detail: "OC visibility evaluation is not implemented".into(),
-            });
-        }
+        // /OC was evaluated by `do_xobject`. A /Ref (reference
+        // XObject) imports an external page — refuse rather than guess.
         if dict.contains_key(b"Ref".as_slice()) {
             return Err(Error::Unsupported {
                 feature: "reference XObject (/Ref in a form dictionary)",
@@ -1908,6 +2042,12 @@ impl<'a> Renderer<'a> {
             }
             if subtype == b"Popup" {
                 continue;
+            }
+            // §12.5.2 /OC: an annotation in a hidden group is not drawn.
+            if let Some(oc) = ad.get(b"OC".as_slice()) {
+                if !self.oc.visible(self.doc, oc)? {
+                    continue;
+                }
             }
             let ap = match ad.get(b"AP".as_slice()) {
                 Some(o) => self.doc.deref(o)?,
@@ -2122,15 +2262,6 @@ impl<'a> Renderer<'a> {
             return Err(Error::Unsupported {
                 feature: "non-separable blend mode on image",
                 detail: "Hue/Saturation/Color/Luminosity blend on an image needs per-pixel colour conversion".into(),
-            });
-        }
-        if dict.contains_key(b"OC".as_slice()) {
-            return Err(Error::Unsupported {
-                feature: "optional content on an image XObject (/OC)",
-                detail: format!(
-                    "/OC on /{} — OC visibility evaluation is not implemented",
-                    show_name(name)
-                ),
             });
         }
         // `SMaskInData 0` is the defined default; non-zero means the
@@ -2813,7 +2944,7 @@ impl<'a> Renderer<'a> {
     /// region, in current user space. `/Background` is ignored for
     /// `sh` (it applies to pattern use only); `/BBox` clips.
     fn paint_shading_op(&mut self, name: &Name) -> Result<(), Error> {
-        if self.extraction_only {
+        if self.extraction_only || self.hidden > 0 {
             return Ok(());
         }
         let obj = self
@@ -3219,11 +3350,23 @@ impl<'a> Renderer<'a> {
             return self.show_type3_glyph(font, code, tj_adjust);
         }
 
+        let record = self.hidden == 0;
+        let actual = self.take_actual_text();
         let gs = &mut self.gs;
         let t = &mut gs.text;
 
         // Resolve code → glyph.
         let gid = font.glyph_id(code)?;
+        // Vertical writing (§9.7.4.3): the glyph is positioned by its
+        // vertical origin `v` (vx, vy — 1/1000 em) relative to the
+        // horizontal one, and the advance is `w1` along −y.
+        let vertical = font.vertical();
+        let (w1y, vx, vy) = if vertical {
+            font.vertical_metrics(code)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+        let vshift = Matrix::new(1.0, 0.0, 0.0, 1.0, -vx / 1000.0, -vy / 1000.0);
 
         // Build the glyph path in glyph space, then transform to
         // device space via:
@@ -3257,11 +3400,12 @@ impl<'a> Renderer<'a> {
         let glyph_path = if has_outline { gp.finish() } else { None };
 
         if let Some(path) = &glyph_path {
-            if !self.extraction_only {
+            if !self.extraction_only && self.hidden == 0 {
                 // Text→render matrix (§9.4.4 note 2).
                 let trm = Matrix::new(t.font_size * t.h_scale, 0.0, 0.0, t.font_size, 0.0, t.rise)
                     .concat(self.text_tm)
                     .concat(gs.ctm);
+                let trm = if vertical { vshift.concat(trm) } else { trm };
                 let trm_ts = Transform::from_row(
                     trm.a as f32,
                     trm.b as f32,
@@ -3313,7 +3457,7 @@ impl<'a> Renderer<'a> {
         // Record the extraction event before advancing — the char's
         // origin is the *current* Tm translation, and its advance is
         // what we are about to add.
-        if let Some(buf) = &mut self.extract {
+        if let Some(buf) = self.extract.as_mut().filter(|_| record) {
             let w0 = font.width(code);
             let tw = if font.is_space_code(code) {
                 t.word_spacing
@@ -3332,8 +3476,19 @@ impl<'a> Renderer<'a> {
                 .concat(self.text_tm)
                 .concat(gs.ctm);
             let origin = trm.transform(0.0, 0.0);
-            let (ax, ay) = trm.transform(tx_text, 0.0);
+            let (ax, ay) = if vertical {
+                // ty = (w1 − Tj/1000)·Tfs + Tc + Tw, no horizontal scale.
+                let ty_text =
+                    w1y / 1000.0 - tj_adjust / 1000.0 + (t.char_spacing + tw) / t.font_size;
+                let unscaled = Matrix::new(t.font_size, 0.0, 0.0, t.font_size, 0.0, t.rise)
+                    .concat(self.text_tm)
+                    .concat(gs.ctm);
+                unscaled.transform(0.0, ty_text)
+            } else {
+                trm.transform(tx_text, 0.0)
+            };
             let advance = (ax - origin.0, ay - origin.1);
+            let trm = if vertical { vshift.concat(trm) } else { trm };
             // Glyph bounds: the outline's user-space axis-aligned bbox,
             // or None if the glyph has no outline (e.g. space). Reuses
             // the outline already built above — a second parse of the
@@ -3352,6 +3507,15 @@ impl<'a> Renderer<'a> {
                 )
             });
             let (unicode, resolved_via) = crate::text_extract::resolve_unicode(font, code);
+            // §14.9.4: inside an /ActualText span the replacement text
+            // stands for the shown characters.
+            let (unicode, resolved_via) = match &actual {
+                Some(t) => (
+                    Some(t.clone()),
+                    crate::text_extract::ResolveKind::ActualText,
+                ),
+                None => (unicode, resolved_via),
+            };
             if let Some(s) = &unicode {
                 self.extract_unicode_bytes = self
                     .extract_unicode_bytes
@@ -3368,7 +3532,7 @@ impl<'a> Renderer<'a> {
                 }
             }
             buf.push(crate::text_extract::CharInfo {
-                code,
+                code: crate::font::unpack_code_for_font(font, code),
                 unicode,
                 resolved_via,
                 origin,
@@ -3391,9 +3555,14 @@ impl<'a> Renderer<'a> {
         } else {
             0.0
         };
-        let tx =
-            ((w0 / 1000.0 - tj_adjust / 1000.0) * t.font_size + t.char_spacing + tw) * t.h_scale;
-        let adv = Matrix::new(1.0, 0.0, 0.0, 1.0, tx, 0.0);
+        let adv = if vertical {
+            let ty = (w1y / 1000.0 - tj_adjust / 1000.0) * t.font_size + t.char_spacing + tw;
+            Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, ty)
+        } else {
+            let tx = ((w0 / 1000.0 - tj_adjust / 1000.0) * t.font_size + t.char_spacing + tw)
+                * t.h_scale;
+            Matrix::new(1.0, 0.0, 0.0, 1.0, tx, 0.0)
+        };
         self.text_tm = adv.concat(self.text_tm);
         Ok(())
     }
@@ -3452,7 +3621,7 @@ impl<'a> Renderer<'a> {
 
         // ---- paint the CharProc -----------------------------------
         if let Some((cdict, craw)) = charproc {
-            if !self.extraction_only {
+            if !self.extraction_only && self.hidden == 0 {
                 // Bound nesting — a Type3 CharProc may itself contain a
                 // `Tf` + `Tj` invoking another (or the same) Type3
                 // font. Count it against the XObject depth budget so a
@@ -3499,7 +3668,9 @@ impl<'a> Renderer<'a> {
         }
 
         // ---- extraction record -------------------------------------
-        if let Some(buf) = &mut self.extract {
+        let record = self.hidden == 0;
+        let actual = self.take_actual_text();
+        if let Some(buf) = self.extract.as_mut().filter(|_| record) {
             let w0 = font.width(code);
             let tw = if font.is_space_code(code) {
                 word_spacing
@@ -3515,6 +3686,15 @@ impl<'a> Renderer<'a> {
             // None (callers treat it like a space/.notdef bound).
             let bounds = None;
             let (unicode, resolved_via) = crate::text_extract::resolve_unicode(font, code);
+            // §14.9.4: inside an /ActualText span the replacement text
+            // stands for the shown characters.
+            let (unicode, resolved_via) = match &actual {
+                Some(t) => (
+                    Some(t.clone()),
+                    crate::text_extract::ResolveKind::ActualText,
+                ),
+                None => (unicode, resolved_via),
+            };
             if let Some(s) = &unicode {
                 self.extract_unicode_bytes = self
                     .extract_unicode_bytes
@@ -3531,7 +3711,7 @@ impl<'a> Renderer<'a> {
                 }
             }
             buf.push(crate::text_extract::CharInfo {
-                code,
+                code: crate::font::unpack_code_for_font(font, code),
                 unicode,
                 resolved_via,
                 origin,
@@ -3563,6 +3743,16 @@ impl<'a> Renderer<'a> {
             // Nothing is rasterised; only a pending W/W* needs to be
             // consumed so path-object bookkeeping stays consistent.
             self.path.pending_clip = None;
+            self.path.reset();
+            return Ok(());
+        }
+        if self.hidden > 0 {
+            // Hidden optional content paints nothing; its clipping
+            // path still takes effect (§8.11.3.1 — only painting is
+            // suppressed).
+            if self.path.pending_clip.is_some() {
+                self.install_clip()?;
+            }
             self.path.reset();
             return Ok(());
         }
@@ -4021,6 +4211,24 @@ fn parse_blend_mode(v: &Object) -> Result<tiny_skia::BlendMode, Error> {
             })
         }
     })
+}
+
+/// Decode a PDF *text string* (§7.9.2.2): UTF-16BE with BOM, UTF-8
+/// with BOM (PDF 2.0), else PDFDocEncoding — whose printable range
+/// coincides with Latin-1 for everything a form value or
+/// `/ActualText` carries in practice.
+pub(crate) fn pdf_text_string(b: &[u8]) -> String {
+    if b.len() >= 2 && b[0] == 0xFE && b[1] == 0xFF {
+        let units: Vec<u16> = b[2..]
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        return String::from_utf16_lossy(&units);
+    }
+    if b.len() >= 3 && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF {
+        return String::from_utf8_lossy(&b[3..]).into_owned();
+    }
+    b.iter().map(|&c| c as char).collect()
 }
 
 fn show_name(n: &[u8]) -> String {

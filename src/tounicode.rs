@@ -448,8 +448,10 @@ impl<'a> Parser<'a> {
                     ))
                 }
             };
-            // Source width must match the declared codespace length.
-            if s.len() != (out.code_len as usize) * 2 {
+            // Source width must not exceed the declared codespace
+            // length; a *shorter* hex code (`<20>` in a 2-byte CMap —
+            // a common producer slip) is read as its numeric value.
+            if s.len() > (out.code_len as usize) * 2 {
                 return Err(Error::Unsupported {
                     feature: "ToUnicode source code width",
                     detail: format!(
@@ -504,7 +506,7 @@ impl<'a> Parser<'a> {
                     ))
                 }
             };
-            if lo.len() != (out.code_len as usize) * 2 || hi.len() != lo.len() {
+            if lo.len() > (out.code_len as usize) * 2 || hi.len() != lo.len() {
                 return Err(Error::Unsupported {
                     feature: "ToUnicode source code width",
                     detail: format!(
