@@ -37,6 +37,13 @@ src/
                and gNN glyph-name forms (§9.6.6, Annex D)
   shading.rs   axial/radial shadings sampled through function.rs +
                colorspace.rs into a colour table; param_at() per pixel
+  acroform.rs  AcroForm widget appearance synthesis → Form XObject
+               (text/check/radio/push/combo/list, /DA /MK /Q, /Parent
+               inheritance), painted through the annotation path
+  cmap.rs      embedded /Encoding CMaps for Type 0 fonts (codespaces,
+               cidchar/cidrange, usecmap Identity, /WMode)
+  optcontent.rs optional-content default configuration (§8.11): OCG
+               ON/OFF, /AS View usage, OCMD /P and /VE evaluation
   colorspace.rs ColorSpace: every §8.6 family → sRGB (Device*, Cal*,
                Lab, ICCBased, Indexed, Separation/DeviceN), /Default*
                remapping, bounded nesting; records ICC approximations
