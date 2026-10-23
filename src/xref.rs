@@ -264,10 +264,14 @@ fn read_xref_stream_section(
     limits: &Limits,
     on_entry: &mut dyn FnMut((u32, u16), XrefEntry),
 ) -> Result<Dict, Error> {
-    let (dict, data) = ind
+    let (dict, raw) = ind
         .object
         .as_stream()
         .ok_or_else(|| Error::Parse(format!("object {} is not a stream", ind.object_ref)))?;
+    // The entries live in the *decoded* stream (§7.5.8.2 — xref
+    // streams are almost always FlateDecode + PNG predictor).
+    let decoded = crate::filter::decode_stream(dict, raw, limits)?;
+    let data: &[u8] = &decoded;
 
     // /W: three integer widths, each 0..=8 (enough for 8-byte fields).
     let w_obj = dict
@@ -500,4 +504,388 @@ fn parse_u32_word(bytes: &[u8]) -> Option<u32> {
         return None;
     }
     std::str::from_utf8(bytes).ok()?.parse::<u32>().ok()
+}
+
+// --------------------------------------------------------------------
+// Recovery: rebuild the table by scanning for object definitions
+// --------------------------------------------------------------------
+
+/// What [`reconstruct`] did to a damaged file — surfaced through
+/// [`crate::Document::recovery`] so a caller can tell a recovered
+/// document from a well-formed one and see every assumption made.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryReport {
+    /// The error the strict parse stopped at.
+    pub strict_error: String,
+    /// `n g obj` definitions found by the scan (after de-duplication:
+    /// a later definition of the same object replaces an earlier one,
+    /// as in an incremental update).
+    pub objects_found: usize,
+    /// Objects registered from inside `/Type /ObjStm` streams that no
+    /// direct definition shadowed.
+    pub objects_from_streams: usize,
+    /// Where `/Root` came from: `"trailer dictionary"`, `"xref stream
+    /// dictionary"` or `"/Type /Catalog scan"`.
+    pub trailer_source: String,
+    /// Everything that deviated from a clean read, in scan order.
+    pub warnings: Vec<String>,
+}
+
+/// Rebuild an [`XrefTable`] from the object definitions actually
+/// present in `input`, for a file whose `startxref` chain is unusable.
+///
+/// The scan is a single pass over the bytes for the `obj` keyword with
+/// a preceding `<number> <generation>`; it is bounded by
+/// `max_recovery_objects` and never resolves references, so it cannot
+/// loop. Nothing is inferred beyond what the bytes state: an object is
+/// registered at the offset where *it* says `n g obj`; a `/Root` is
+/// taken from a `trailer` dictionary or an xref-stream dictionary, or
+/// — recorded as a warning — from the single object declaring
+/// `/Type /Catalog`; objects inside object streams are registered only
+/// where no direct definition exists. An `/Encrypt` entry still refuses
+/// the file.
+pub(crate) fn reconstruct(
+    input: &[u8],
+    limits: &Limits,
+    strict_error: &Error,
+) -> Result<(XrefTable, RecoveryReport), Error> {
+    let mut warnings: Vec<String> = Vec::new();
+    let mut warn = |w: String| {
+        if warnings.len() < 64 {
+            warnings.push(w);
+        }
+    };
+
+    // ---- 1. every `n g obj` ------------------------------------------
+    let mut found: BTreeMap<u32, (u16, u64)> = BTreeMap::new();
+    let mut order: Vec<(u32, u64)> = Vec::new();
+    let mut i = 0usize;
+    let mut replaced = 0usize;
+    while i + 3 <= input.len() {
+        if &input[i..i + 3] != b"obj" {
+            i += 1;
+            continue;
+        }
+        let after_ok = i + 3 == input.len()
+            || crate::lexer::is_white(input[i + 3])
+            || matches!(input[i + 3], b'<' | b'[' | b'(' | b'/' | b'%');
+        if !after_ok {
+            i += 3;
+            continue;
+        }
+        if let Some((num, gen, start)) = header_before(input, i) {
+            if order.len() >= limits.max_recovery_objects {
+                return Err(Error::LimitExceeded {
+                    limit: "max_recovery_objects",
+                    max: limits.max_recovery_objects as u64,
+                });
+            }
+            if found.insert(num, (gen, start as u64)).is_some() {
+                replaced += 1;
+            }
+            order.push((num, start as u64));
+        }
+        i += 3;
+    }
+    if found.is_empty() {
+        return Err(Error::Parse(
+            "recovery: no `n g obj` definitions found in the file".into(),
+        ));
+    }
+    if replaced > 0 {
+        warn(format!(
+            "{replaced} object number(s) defined more than once; the last definition in the file is used"
+        ));
+    }
+
+    // ---- 2. trailer: `trailer` dicts, then /Type /XRef dicts ---------
+    let mut trailer = Dict::new();
+    let mut trailer_source = String::new();
+    let mut pos = 0usize;
+    let mut trailers = 0usize;
+    while let Some(k) = find_from(input, b"trailer", pos) {
+        pos = k + 7;
+        let mut p = Parser::new(input, limits);
+        p.seek(pos);
+        if let Ok(Some(Object::Dict(d))) = p.parse_object(0) {
+            trailers += 1;
+            // Later trailers win (incremental updates append).
+            for (key, v) in d {
+                trailer.insert(key, v);
+            }
+        }
+        if trailers > 1024 {
+            break;
+        }
+    }
+    if trailer.contains_key(b"Root".as_slice()) {
+        trailer_source = "trailer dictionary".into();
+    }
+
+    // Object bodies are parsed lazily below — only where a keyword
+    // suggests they matter (xref-stream dicts, object streams, and the
+    // catalog when no trailer names it). `region` bounds each body to
+    // the next definition so a damaged object cannot make the scan
+    // quadratic.
+    let mut starts: Vec<u64> = order.iter().map(|(_, s)| *s).collect();
+    starts.sort_unstable();
+    starts.dedup();
+    let region = |start: u64| -> &[u8] {
+        let idx = starts.partition_point(|s| *s <= start);
+        let end = starts.get(idx).copied().unwrap_or(input.len() as u64) as usize;
+        &input[start as usize..end.min(input.len())]
+    };
+    let parse_at = |start: u64| -> Option<crate::parser::IndirectObject> {
+        let mut p = Parser::new(input, limits);
+        p.seek(start as usize);
+        p.parse_indirect_object().ok().flatten()
+    };
+
+    if trailer_source.is_empty() {
+        // Newest xref-stream dictionary in file order.
+        for (_, start) in order.iter().rev() {
+            if !contains(region(*start), b"/XRef") {
+                continue;
+            }
+            if let Some(ind) = parse_at(*start) {
+                if let Some(d) = ind.object.as_dict_like() {
+                    if d.get(b"Type".as_slice()).and_then(|o| o.as_name()) == Some(b"XRef") {
+                        for (key, v) in d {
+                            trailer.entry(key.clone()).or_insert_with(|| v.clone());
+                        }
+                        if trailer.contains_key(b"Root".as_slice()) {
+                            trailer_source = "xref stream dictionary".into();
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if trailer.contains_key(b"Encrypt".as_slice()) {
+        return Err(Error::Encrypted);
+    }
+
+    // ---- 3. object streams: members fill gaps -------------------------
+    let mut entries: BTreeMap<(u32, u16), XrefEntry> = BTreeMap::new();
+    for (num, (gen, start)) in &found {
+        entries.insert((*num, *gen), XrefEntry::InUse { offset: *start });
+    }
+    let mut from_streams = 0usize;
+    let mut objstms = 0usize;
+    // `(objstm offset, ref)` of catalog objects found inside streams.
+    let mut compressed_catalogs: Vec<(u64, IndirectRef)> = Vec::new();
+    for (num, (_gen, start)) in &found {
+        if !contains(region(*start), b"/ObjStm") {
+            continue;
+        }
+        let Some(ind) = parse_at(*start) else {
+            continue;
+        };
+        let Some((dict, raw)) = ind.object.as_stream() else {
+            continue;
+        };
+        if dict.get(b"Type".as_slice()).and_then(|o| o.as_name()) != Some(b"ObjStm") {
+            continue;
+        }
+        objstms += 1;
+        if objstms > limits.max_objstm_entries {
+            warn("object-stream count limit reached; remaining streams not expanded".into());
+            break;
+        }
+        let decoded = match crate::filter::decode_stream(dict, raw, limits) {
+            Ok(d) => d,
+            Err(e) => {
+                warn(format!(
+                    "object stream {num} could not be decoded ({e}); its members are unavailable"
+                ));
+                continue;
+            }
+        };
+        match crate::objstm::members(&decoded, dict, limits) {
+            Ok(members) => {
+                for (idx, (m, obj)) in members.into_iter().enumerate() {
+                    if found.contains_key(&m) {
+                        continue;
+                    }
+                    let key = (m, 0u16);
+                    if let std::collections::btree_map::Entry::Vacant(v) = entries.entry(key) {
+                        v.insert(XrefEntry::Compressed {
+                            objstm: *num,
+                            index: idx as u32,
+                        });
+                        from_streams += 1;
+                        if obj
+                            .as_dict()
+                            .and_then(|d| d.get(b"Type".as_slice()))
+                            .and_then(|o| o.as_name())
+                            == Some(b"Catalog")
+                        {
+                            compressed_catalogs.push((*start, IndirectRef::new(m, 0)));
+                        }
+                    }
+                }
+            }
+            Err(e) => warn(format!(
+                "object stream {num} has an unreadable header ({e})"
+            )),
+        }
+    }
+
+    // ---- 4. /Root fallback: the object that declares /Type /Catalog ---
+    if !trailer.contains_key(b"Root".as_slice()) {
+        // `(file position, ref)` — direct catalogs at their own offset,
+        // compressed ones at their object stream's.
+        let mut positioned: Vec<(u64, IndirectRef)> = compressed_catalogs;
+        for (num, (gen, start)) in &found {
+            if !contains(region(*start), b"/Catalog") {
+                continue;
+            }
+            if let Some(ind) = parse_at(*start) {
+                if ind
+                    .object
+                    .as_dict()
+                    .and_then(|d| d.get(b"Type".as_slice()))
+                    .and_then(|o| o.as_name())
+                    == Some(b"Catalog")
+                {
+                    positioned.push((*start, IndirectRef::new(*num, *gen)));
+                }
+            }
+        }
+        positioned.sort_by_key(|(pos, _)| *pos);
+        let mut catalogs: Vec<IndirectRef> = positioned.iter().map(|(_, r)| *r).collect();
+        match catalogs.len() {
+            0 => {
+                return Err(Error::Structure(
+                    "recovery: no trailer /Root and no object with /Type /Catalog".into(),
+                ))
+            }
+            1 => {
+                warn(format!(
+                    "no trailer /Root; catalog taken from the only /Type /Catalog object ({})",
+                    catalogs[0]
+                ));
+            }
+            n => {
+                // Several catalogs (incremental saves): the one defined
+                // last in the file is the newest, as with duplicate
+                // object numbers — stated, not guessed.
+                let last = catalogs[n - 1];
+                warn(format!(
+                    "no trailer /Root; {n} /Type /Catalog objects, using the last defined ({last})"
+                ));
+                catalogs = vec![last];
+            }
+        }
+        trailer.insert(b"Root".to_vec(), Object::Ref(catalogs[0]));
+        trailer_source = "/Type /Catalog scan".into();
+    }
+    if !trailer.contains_key(b"Size".as_slice()) {
+        let max = found.keys().next_back().copied().unwrap_or(0) as i64 + 1;
+        trailer.insert(b"Size".to_vec(), Object::Integer(max));
+    }
+
+    let report = RecoveryReport {
+        strict_error: strict_error.to_string(),
+        objects_found: found.len(),
+        objects_from_streams: from_streams,
+        trailer_source,
+        warnings,
+    };
+    Ok((
+        XrefTable {
+            entries,
+            latest_trailer: trailer.clone(),
+            trailer,
+            section_offsets: Vec::new(),
+        },
+        report,
+    ))
+}
+
+/// Given `obj` at `kw`, read back `<gen>` and `<num>` tokens; returns
+/// `(num, gen, offset_of_num)` when the bytes form `num gen obj` with
+/// a non-regular byte (or the file start) before `num`.
+fn header_before(input: &[u8], kw: usize) -> Option<(u32, u16, usize)> {
+    let mut j = kw;
+    // whitespace between gen and obj (at least one byte)
+    let mut ws = 0;
+    while j > 0 && crate::lexer::is_white(input[j - 1]) {
+        j -= 1;
+        ws += 1;
+    }
+    if ws == 0 {
+        return None;
+    }
+    let gen_end = j;
+    while j > 0 && input[j - 1].is_ascii_digit() {
+        j -= 1;
+    }
+    if j == gen_end || gen_end - j > 5 {
+        return None;
+    }
+    let gen: u32 = std::str::from_utf8(&input[j..gen_end]).ok()?.parse().ok()?;
+    if gen > u16::MAX as u32 {
+        return None;
+    }
+    let mut ws = 0;
+    while j > 0 && crate::lexer::is_white(input[j - 1]) {
+        j -= 1;
+        ws += 1;
+    }
+    if ws == 0 {
+        return None;
+    }
+    let num_end = j;
+    while j > 0 && input[j - 1].is_ascii_digit() {
+        j -= 1;
+    }
+    if j == num_end || num_end - j > 10 {
+        return None;
+    }
+    if j > 0 && !(crate::lexer::is_white(input[j - 1]) || is_delim(input[j - 1])) {
+        return None;
+    }
+    let num: u64 = std::str::from_utf8(&input[j..num_end]).ok()?.parse().ok()?;
+    if num > u32::MAX as u64 {
+        return None;
+    }
+    Some((num as u32, gen as u16, j))
+}
+
+fn is_delim(b: u8) -> bool {
+    matches!(
+        b,
+        b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%'
+    )
+}
+
+fn find_from(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    if from >= hay.len() || needle.is_empty() {
+        return None;
+    }
+    hay[from..]
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|p| p + from)
+}
+
+fn contains(hay: &[u8], needle: &[u8]) -> bool {
+    find_from(hay, needle, 0).is_some()
+}
+
+#[cfg(test)]
+mod recovery_tests {
+    use super::*;
+
+    #[test]
+    fn header_before_accepts_only_well_formed_headers() {
+        let s = b"xx 12 0 obj<<>>";
+        assert_eq!(header_before(s, 8), Some((12, 0, 3)));
+        assert_eq!(header_before(b"12 0obj", 4), None, "no space before obj");
+        assert_eq!(header_before(b"120 obj", 4), None, "missing generation");
+        assert_eq!(header_before(b"a12 0 obj", 6), None, "glued to a word");
+        assert_eq!(header_before(b"12 99999 obj", 9), None, "generation > u16");
+    }
 }

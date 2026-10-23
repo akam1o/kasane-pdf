@@ -1434,6 +1434,19 @@ fn write_op(op: &Operation, out: &mut BoundedWriter<'_>) -> Result<(), Error> {
             out.extend_from_slice(n)?;
             out.extend_from_slice(b" sh")?;
         }
+        Operation::InlineImage { dict, data } => {
+            out.extend_from_slice(b"BI")?;
+            for (k, v) in dict {
+                out.push(b' ')?;
+                out.push(b'/')?;
+                out.extend_from_slice(k)?;
+                out.push(b' ')?;
+                write_object_shallow(v, out)?;
+            }
+            out.extend_from_slice(b" ID ")?;
+            out.extend_from_slice(data)?;
+            out.extend_from_slice(b" EI")?;
+        }
         Operation::MarkedContentPoint(n) => {
             out.push(b'/')?;
             out.extend_from_slice(n)?;

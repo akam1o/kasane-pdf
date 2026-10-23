@@ -245,15 +245,20 @@ fn notdef_for_unencoded_code() {
 }
 
 #[test]
-fn mac_roman_encoding_refused() {
-    let err = render("text_unsupported_encoding.pdf").unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+fn mac_roman_encoding_renders() {
+    // /MacRomanEncoding is a predefined table (Annex D) — the Latin
+    // letters it shares with WinAnsi draw exactly as before.
+    let r = render("text_unsupported_encoding.pdf").unwrap();
+    assert!(ink_bbox(&r).is_some());
 }
 
 #[test]
-fn symbolic_font_refused() {
-    let err = render("text_symbolic_refused.pdf").unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+fn symbolic_font_maps_codes_through_cmap() {
+    // Symbolic flag set: codes go through the (3,0)/(1,0) cmap, or the
+    // (3,1) cmap via StandardEncoding names when that is all the font
+    // has (§9.6.6.4) — the glyphs draw rather than the page refusing.
+    let r = render("text_symbolic_refused.pdf").unwrap();
+    assert!(ink_bbox(&r).is_some());
 }
 
 #[test]

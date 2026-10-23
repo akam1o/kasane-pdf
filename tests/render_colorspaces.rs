@@ -456,9 +456,11 @@ fn wrong_component_count_is_parse_error() {
 }
 
 #[test]
-fn unknown_family_and_pattern_are_unsupported() {
+fn unknown_family_is_unsupported_and_pattern_needs_a_name() {
+    // `[/Pattern base]` is a valid space; `sc` with numbers but no
+    // pattern name is malformed in it (§8.7.3.3).
     let err = fill_with("/CS [/Pattern /DeviceRGB]", "0 sc", vec![]).unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+    assert!(matches!(err, Error::Parse(_)), "{err:?}");
     let err = fill_with("/CS [/Frobnicate 1 2]", "0 sc", vec![]).unwrap_err();
     assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
 }

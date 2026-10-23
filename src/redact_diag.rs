@@ -1253,6 +1253,16 @@ impl<'a> DiagWalker<'a> {
                 self.show_text(text)?;
             }
             O::Do(n) => self.do_xobject(n)?,
+            O::InlineImage { .. } => {
+                // Paints the unit square under the CTM like an image
+                // XObject, but carries no resource name the removal
+                // family could address — report it as a blocker.
+                self.push_blocker(Blocker {
+                    site: Some(self.site()),
+                    what: "inline image (BI/ID/EI)".into(),
+                    detail: "inline image data cannot be addressed by name for removal".into(),
+                })?;
+            }
             O::Shading(n) => {
                 self.push_blocker(Blocker {
                     site: Some(self.site()),

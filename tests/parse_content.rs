@@ -585,23 +585,60 @@ fn unknown_operator_inside_bx_is_recorded() {
 }
 
 #[test]
-fn inline_image_is_unsupported() {
-    for kw in [b"BI".as_slice(), b"ID".as_slice(), b"EI".as_slice()] {
+fn stray_inline_image_operators_are_malformed() {
+    // `ID`/`EI` outside `BI … EI`, or a `BI` whose data never ends.
+    for kw in [b"ID".as_slice(), b"EI".as_slice()] {
         let err = ops_of(kw).unwrap_err();
         assert!(
-            matches!(err, Error::Unsupported { feature, .. } if feature.contains("inline image")),
+            matches!(err, Error::Parse(_)),
             "{:?}: got {err:?}",
             String::from_utf8_lossy(kw)
         );
     }
+    let err = ops_of(b"BI /W 1 /H 1 /BPC 8 /CS /G ID \x00").unwrap_err();
+    assert!(
+        matches!(err, Error::Parse(_) | Error::UnexpectedEof { .. }),
+        "got: {err:?}"
+    );
 }
 
 #[test]
-fn inline_image_does_not_confuse_rest() {
-    // An inline-image keyword must abort parsing: the trailing garbage
-    // must not be mis-parsed into fake operations.
-    let err = ops_of(b"BI /W 1 /H 1 ID \x00\x01 EI (x) Tj").unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "got: {err:?}");
+fn inline_image_is_delimited_by_its_computed_length() {
+    // 2×1 gray, 8 bpc → exactly 2 data bytes; the bytes happen to
+    // spell "EI" — the length rule, not the first `EI`, decides.
+    let ops = ops_of(b"BI /W 2 /H 1 /BPC 8 /CS /G ID EI EI (x) Tj").unwrap();
+    assert_eq!(ops.len(), 2);
+    match &ops[0] {
+        Operation::InlineImage { dict, data } => {
+            assert_eq!(data, b"EI");
+            assert_eq!(dict.get(b"W".as_slice()), Some(&Object::Integer(2)));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(matches!(&ops[1], Operation::ShowText(_)));
+}
+
+#[test]
+fn inline_image_flate_data_containing_ei_is_not_cut_short() {
+    // Compressed bytes that contain a delimited " EI " must not end
+    // the image: only a complete zlib stream before an EI counts.
+    let raw = b" EI EI EI EI EI EI EI EI EI EI EI EI EI EI EI EI EI EI EI EI".repeat(4);
+    let mut enc = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::none());
+    std::io::Write::write_all(&mut enc, &raw).unwrap();
+    let enc = enc.finish().unwrap();
+    assert!(
+        enc.windows(4).any(|w| w == b" EI "),
+        "fixture must contain a delimited EI"
+    );
+    let mut stream = b"BI /W 80 /H 1 /BPC 8 /CS /G /F /Fl ID ".to_vec();
+    stream.extend_from_slice(&enc);
+    stream.extend_from_slice(b" EI 1 0 0 RG");
+    let ops = ops_of(&stream).unwrap();
+    assert_eq!(ops.len(), 2, "{ops:?}");
+    match &ops[0] {
+        Operation::InlineImage { data, .. } => assert_eq!(data, &enc),
+        other => panic!("{other:?}"),
+    }
 }
 
 // -------------------------------------------------------------------

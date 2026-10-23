@@ -56,9 +56,14 @@ pub(crate) struct SimpleFont {
     program: std::borrow::Cow<'static, [u8]>,
     /// The substitution in effect for a non-embedded font.
     subst: Option<crate::fontsubst::FontSubstitution>,
-    /// Encoding table: char code (0..=255) → glyph name.
-    /// `None` means the code is not encodable (renders as .notdef).
-    encoding: [Option<&'static str>; 256],
+    /// Encoding table: char code (0..=255) → glyph name from the PDF
+    /// `/Encoding` (base table + `/Differences`). `None` means no
+    /// name applies and the code goes straight to the font's cmap
+    /// (§9.6.6.4 — the symbolic-font path).
+    encoding: [Option<Vec<u8>>; 256],
+    /// `/FontDescriptor /Flags` Symbolic bit set (and Nonsymbolic
+    /// clear): codes map through the `(3,0)`/`(1,0)` cmaps directly.
+    symbolic: bool,
     /// Glyph advances in PDF 1/1000-em units, indexed by char code.
     widths: [f64; 256],
     /// `/ToUnicode` CMap — `None` if the font lacks one.
@@ -284,9 +289,6 @@ pub(crate) fn load_simple_font(
         ));
     }
 
-    // ---- Encoding ------------------------------------------------
-    let encoding = resolve_font_encoding(doc, dict, limits)?;
-
     // ---- FontDescriptor + FontFile2 -------------------------------
     let fd_obj = dict
         .get(b"FontDescriptor".as_slice())
@@ -295,16 +297,18 @@ pub(crate) fn load_simple_font(
     let fd_dict = fd
         .as_dict()
         .ok_or_else(|| Error::Structure("/FontDescriptor is not a dictionary".into()))?;
-    // Nonsymbolic check: the Symbolic flag (Table 123 bit 3) must
-    // not be set — M5 only handles non-symbolic fonts.
-    if let Some(f) = fd_dict.get(b"Flags".as_slice()).and_then(|o| o.as_i64()) {
-        if f & 4 != 0 {
-            return Err(Error::Unsupported {
-                feature: "symbolic font",
-                detail: "the Symbolic flag is set; M5 handles non-symbolic fonts only".into(),
-            });
-        }
-    }
+    // Table 123: bit 3 = Symbolic, bit 6 = Nonsymbolic. A font that
+    // sets Symbolic (and not Nonsymbolic) addresses its glyphs by code
+    // through the (3,0)/(1,0) cmaps; everything else goes through
+    // glyph names (§9.6.6.4).
+    let flags = fd_dict
+        .get(b"Flags".as_slice())
+        .and_then(|o| o.as_i64())
+        .unwrap_or(0);
+    let symbolic = flags & 4 != 0 && flags & 32 == 0;
+
+    // ---- Encoding ------------------------------------------------
+    let encoding = resolve_truetype_encoding(doc, dict, symbolic)?;
     let (program, subst): (
         std::borrow::Cow<'static, [u8]>,
         Option<crate::fontsubst::FontSubstitution>,
@@ -353,6 +357,7 @@ pub(crate) fn load_simple_font(
         program,
         subst,
         encoding,
+        symbolic,
         widths,
         tounicode,
         face: RefCell::new(None),
@@ -521,19 +526,36 @@ fn resolve_type1_encoding(
     let enc = doc.deref(&enc_obj)?;
     let mut table: EncodingTable = [const { None }; 256];
 
-    // Seed with WinAnsi base when present (named or /BaseEncoding).
-    let has_winansi = match &enc {
-        Object::Name(n) => n.as_slice() == b"WinAnsiEncoding",
-        Object::Dict(d) => {
-            matches!(
-                d.get(b"BaseEncoding".as_slice()).and_then(|o| o.as_name()),
-                Some(b"WinAnsiEncoding")
-            )
-        }
-        _ => false,
+    // Seed with the named base table (a bare name or /BaseEncoding).
+    // No base → the program's built-in encoding stays in effect for
+    // codes /Differences does not name (Table 114).
+    let base = match &enc {
+        Object::Name(n) => Some(n.as_slice()),
+        Object::Dict(d) => d.get(b"BaseEncoding".as_slice()).and_then(|o| o.as_name()),
+        _ => None,
     };
-    if has_winansi {
-        for (i, n) in WINANSI.iter().enumerate() {
+    if let Some(b) = base {
+        let tbl: &[Option<&str>; 256] = match b {
+            b"WinAnsiEncoding" => &WINANSI,
+            b"MacRomanEncoding" => &crate::encodings::MAC_ROMAN,
+            b"StandardEncoding" => &crate::encodings::STANDARD,
+            b"MacExpertEncoding" => {
+                return Err(Error::Unsupported {
+                    feature: "font encoding",
+                    detail: "MacExpertEncoding is not supported".into(),
+                })
+            }
+            other => {
+                return Err(Error::Unsupported {
+                    feature: "font encoding",
+                    detail: format!(
+                        "/{} is not a predefined encoding",
+                        String::from_utf8_lossy(other)
+                    ),
+                })
+            }
+        };
+        for (i, n) in tbl.iter().enumerate() {
             table[i] = n.map(|s| s.as_bytes().to_vec());
         }
     }
@@ -575,150 +597,98 @@ fn resolve_type1_encoding(
     Ok((table, true))
 }
 
-/// Build the char-code → glyph-name table the font will use.
+/// Build the TrueType char-code → glyph-name table (§9.6.6.4,
+/// Table 114).
 ///
-/// - `/Encoding /WinAnsiEncoding` → Annex D table.
-/// - `/Encoding << /BaseEncoding /WinAnsiEncoding …>>` → that table.
-/// - `/Encoding << /BaseEncoding /MacRomanEncoding …>>` → we do not
-///   ship a MacRoman table; this combination is refused.
-/// - `/Encoding << /Differences […] >>` → applied over the base.
-/// - Missing `/Encoding` → `Error::Unsupported` (we do not guess).
-fn resolve_font_encoding(
+/// * Non-symbolic: the base is the named encoding, the dict's
+///   `/BaseEncoding`, or `StandardEncoding` when neither is given;
+///   `/Differences` overlays it.
+/// * Symbolic: no implicit base — codes go straight to the `(3,0)` /
+///   `(1,0)` cmap unless `/Encoding` names a table or `/Differences`
+///   names a code (those names are honoured first, then the cmap).
+///
+/// `MacExpertEncoding` and unknown encoding names are refused.
+fn resolve_truetype_encoding(
     doc: &Document,
     font_dict: &Dict,
-    _limits: &Limits,
-) -> Result<[Option<&'static str>; 256], Error> {
-    let enc_obj = match font_dict.get(b"Encoding".as_slice()) {
-        None | Some(Object::Null) => {
-            return Err(Error::Unsupported {
-                feature: "font without /Encoding",
-                detail:
-                    "the implicit (built-in) encoding is not used; M5 requires /WinAnsiEncoding"
-                        .into(),
-            })
-        }
-        Some(o) => o.clone(),
+    symbolic: bool,
+) -> Result<[Option<Vec<u8>>; 256], Error> {
+    let mut table: [Option<Vec<u8>>; 256] = [const { None }; 256];
+    let enc = match font_dict.get(b"Encoding".as_slice()) {
+        None | Some(Object::Null) => None,
+        Some(o) => Some(doc.deref(o)?),
     };
-    let enc = doc.deref(&enc_obj)?;
-    let mut table: [Option<&'static str>; 256] = [None; 256];
-
-    // Seed with the base table — WinAnsi or a dict's BaseEncoding.
-    let base_name: &'static str = match &enc {
-        Object::Name(n) => match n.as_slice() {
-            b"WinAnsiEncoding" => "winansi",
-            b"MacRomanEncoding" => {
-                return Err(Error::Unsupported {
-                    feature: "font encoding",
-                    detail: "MacRomanEncoding is not supported in M5".into(),
-                })
-            }
-            b"MacExpertEncoding" => {
-                return Err(Error::Unsupported {
-                    feature: "font encoding",
-                    detail: "MacExpertEncoding is not supported in M5".into(),
-                })
-            }
-            other => {
-                return Err(Error::Unsupported {
-                    feature: "font encoding",
-                    detail: format!(
-                        "/{} — only WinAnsiEncoding is supported",
-                        String::from_utf8_lossy(other)
-                    ),
-                })
-            }
-        },
-        Object::Dict(d) => match d.get(b"BaseEncoding".as_slice()).and_then(|o| o.as_name()) {
-            Some(b"WinAnsiEncoding") => "winansi",
-            Some(b"MacRomanEncoding") => {
-                return Err(Error::Unsupported {
-                    feature: "font encoding",
-                    detail: "MacRomanEncoding is not supported in M5".into(),
-                })
-            }
-            Some(b"MacExpertEncoding") => {
-                return Err(Error::Unsupported {
-                    feature: "font encoding",
-                    detail: "MacExpertEncoding is not supported in M5".into(),
-                })
-            }
-            Some(other) => {
-                return Err(Error::Unsupported {
-                    feature: "font encoding",
-                    detail: format!(
-                        "/BaseEncoding /{} — only WinAnsiEncoding is supported",
-                        String::from_utf8_lossy(other)
-                    ),
-                })
-            }
-            None => "implicit", // no BaseEncoding — font's built-in
-        },
-        _ => {
+    let (base, diffs): (Option<Vec<u8>>, Option<Object>) = match &enc {
+        None => (None, None),
+        Some(Object::Name(n)) => (Some(n.clone()), None),
+        Some(Object::Dict(d)) => (
+            d.get(b"BaseEncoding".as_slice())
+                .and_then(|o| o.as_name())
+                .map(|n| n.to_vec()),
+            d.get(b"Differences".as_slice()).cloned(),
+        ),
+        Some(_) => {
             return Err(Error::Structure(
                 "/Encoding is neither a name nor a dictionary".into(),
             ))
         }
     };
-    if base_name == "winansi" {
-        for (i, n) in WINANSI.iter().enumerate() {
-            table[i] = *n;
+    let base_table: Option<&[Option<&str>; 256]> = match base.as_deref() {
+        Some(b"WinAnsiEncoding") => Some(&WINANSI),
+        Some(b"MacRomanEncoding") => Some(&crate::encodings::MAC_ROMAN),
+        Some(b"StandardEncoding") => Some(&crate::encodings::STANDARD),
+        Some(b"MacExpertEncoding") => {
+            return Err(Error::Unsupported {
+                feature: "font encoding",
+                detail: "MacExpertEncoding is not supported".into(),
+            })
         }
-    } else {
-        // No base table we can use — a bare Differences dict. The
-        // spec says the implicit base is the font's built-in encoding;
-        // we do not have a MacRoman table, so refuse.
-        return Err(Error::Unsupported {
-            feature: "font encoding dictionary without /BaseEncoding",
-            detail: "the font's built-in encoding is not consulted in M5".into(),
-        });
+        Some(other) => {
+            return Err(Error::Unsupported {
+                feature: "font encoding",
+                detail: format!(
+                    "/{} is not a predefined encoding",
+                    String::from_utf8_lossy(other)
+                ),
+            })
+        }
+        None if symbolic => None,
+        None => Some(&crate::encodings::STANDARD),
+    };
+    if let Some(t) = base_table {
+        for (i, n) in t.iter().enumerate() {
+            table[i] = n.map(|s| s.as_bytes().to_vec());
+        }
     }
-
-    // Apply Differences, if any.
-    if let Object::Dict(d) = &enc {
-        if let Some(diff_obj) = d.get(b"Differences".as_slice()) {
-            let arr = doc.deref(diff_obj)?;
-            let arr = arr
-                .as_array()
-                .ok_or_else(|| Error::Structure("/Differences is not an array".into()))?;
-            let mut idx: Option<usize> = None;
-            for e in arr {
-                match e {
-                    Object::Integer(i) => idx = Some((*i).clamp(0, 255) as usize),
-                    Object::Real(r) => idx = Some((*r as i64).clamp(0, 255) as usize),
-                    Object::Name(n) => {
-                        let i = idx.ok_or_else(|| {
-                            Error::Structure("/Differences entry has a name before any code".into())
-                        })?;
-                        if i > 255 {
-                            return Err(Error::Structure("/Differences code exceeds 255".into()));
-                        }
-                        // Leak a 'static name into the table — the
-                        // names are drawn from a fixed static pool.
-                        table[i] = Some(static_name(n));
-                        idx = Some(i + 1);
+    if let Some(diff_obj) = diffs {
+        let arr = doc.deref(&diff_obj)?;
+        let arr = arr
+            .as_array()
+            .ok_or_else(|| Error::Structure("/Differences is not an array".into()))?;
+        let mut idx: Option<usize> = None;
+        for e in arr {
+            match e {
+                Object::Integer(i) => idx = Some((*i).clamp(0, 255) as usize),
+                Object::Real(r) => idx = Some((*r as i64).clamp(0, 255) as usize),
+                Object::Name(n) => {
+                    let i = idx.ok_or_else(|| {
+                        Error::Structure("/Differences entry has a name before any code".into())
+                    })?;
+                    if i > 255 {
+                        return Err(Error::Structure("/Differences code exceeds 255".into()));
                     }
-                    _ => {
-                        return Err(Error::Structure(
-                            "/Differences entries must be integers or names".into(),
-                        ))
-                    }
+                    table[i] = Some(n.clone());
+                    idx = Some(i + 1);
+                }
+                _ => {
+                    return Err(Error::Structure(
+                        "/Differences entries must be integers or names".into(),
+                    ))
                 }
             }
         }
     }
     Ok(table)
-}
-
-/// Look up a glyph name in the static AGL-derived pool. Only names
-/// appearing in WinAnsiEncoding are present; any other name yields
-/// `None` (renders as `.notdef`).
-fn static_name(n: &[u8]) -> &'static str {
-    let s = std::str::from_utf8(n).unwrap_or("");
-    GLYPH_NAME_TO_UNICODE
-        .iter()
-        .find(|(name, _)| name.as_bytes() == s.as_bytes())
-        .map(|(name, _)| *name)
-        .unwrap_or(".notdef")
 }
 
 impl SimpleFont {
@@ -743,9 +713,12 @@ impl SimpleFont {
         }))
     }
 
-    /// Char code (0..=255) → glyph name per the PDF encoding.
-    pub(crate) fn glyph_name(&self, code: u8) -> Option<&'static str> {
+    /// Char code (0..=255) → glyph name per the PDF encoding, if one
+    /// applies (symbolic fonts without `/Differences` have none).
+    pub(crate) fn glyph_name(&self, code: u8) -> Option<&str> {
         self.encoding[code as usize]
+            .as_deref()
+            .and_then(|n| std::str::from_utf8(n).ok())
     }
 
     /// The substitution in effect, if any — for render reporting.
@@ -758,41 +731,99 @@ impl SimpleFont {
         self.widths[code as usize]
     }
 
-    /// Char code → glyph id, or `None` if the font has no glyph for it
-    /// (renders as `.notdef` — glyph 0). Follows §9.6.6.4:
-    /// code → name → Unicode (AGL) → `(3,1)` cmap; falls back to the
-    /// `(1,0)` Mac-Roman subtable when no `(3,1)` exists, then to
-    /// `post` table name lookup.
+    /// Char code → glyph id (`.notdef` = glyph 0 when nothing maps).
+    /// §9.6.6.4 in order:
+    ///
+    /// 1. An encoding name (non-symbolic base table or `/Differences`):
+    ///    name → Unicode → `(3,1)` cmap; name → Mac OS Roman code →
+    ///    `(1,0)` cmap; `post` table name; `gNN`/`glyphNN` index.
+    /// 2. The code itself: `(3,0)` cmap at `code`, `0xF000`, `0xF100`,
+    ///    `0xF200` + code; then `(1,0)` cmap at `code`.
+    /// 3. A font with **no** cmap: the code is the glyph index.
+    /// 4. A symbolic font that only has a `(3,1)` cmap and no names:
+    ///    StandardEncoding name → Unicode → `(3,1)` (the producer
+    ///    mislabelled a non-symbolic font — the only inference made,
+    ///    and it still cannot pick a glyph the font does not name).
+    ///
+    /// Anything else is `.notdef`; no glyph is ever chosen by position
+    /// in a table the font did not define.
     pub(crate) fn glyph_id(&self, code: u8) -> Result<Option<GlyphId>, Error> {
-        let name = match self.glyph_name(code) {
-            Some(n) => n,
-            None => return Ok(Some(GlyphId(0))), // undefined slot → .notdef
-        };
         let face = self.face()?;
         let tables = face.tables();
+        let n_glyphs = face.number_of_glyphs();
+        let cmap31 = find_cmap(tables, 3, 1);
+        let cmap30 = find_cmap(tables, 3, 0);
+        let cmap10 = find_cmap(tables, 1, 0);
+        let has_cmap = tables
+            .cmap
+            .map(|c| !c.subtables.is_empty())
+            .unwrap_or(false);
 
-        // Preferred path: name → Unicode → (3,1) cmap.
-        let unicode = name_to_unicode(name);
-        if let Some(u) = unicode {
-            if let Some(sub) = find_cmap(tables, 3, 1) {
-                if let Some(g) = sub.glyph_index(u) {
+        let by_name = |name: &str| -> Option<GlyphId> {
+            if let Some(u) = name_to_unicode(name) {
+                if let Some(g) = cmap31.as_ref().and_then(|s| s.glyph_index(u)) {
+                    return Some(g);
+                }
+                // Symbol fonts park Unicode-named glyphs in the F0xx range.
+                if let Some(g) = cmap30
+                    .as_ref()
+                    .and_then(|s| s.glyph_index(0xF000 + (u & 0xFF)).filter(|_| u < 0x100))
+                {
+                    return Some(g);
+                }
+            }
+            if let Some(mc) = mac_roman_code(name) {
+                if let Some(g) = cmap10.as_ref().and_then(|s| s.glyph_index(mc as u32)) {
+                    return Some(g);
+                }
+            }
+            if let Some(g) = face.glyph_index_by_name(name) {
+                return Some(g);
+            }
+            if let Some(gi) = crate::encodings::glyph_index_name(name) {
+                if gi < n_glyphs {
+                    return Some(GlyphId(gi));
+                }
+            }
+            None
+        };
+
+        if let Some(name) = self.glyph_name(code) {
+            if let Some(g) = by_name(name) {
+                return Ok(Some(g));
+            }
+        }
+        if let Some(s) = &cmap30 {
+            for c in [
+                code as u32,
+                0xF000 + code as u32,
+                0xF100 + code as u32,
+                0xF200 + code as u32,
+            ] {
+                if let Some(g) = s.glyph_index(c) {
                     return Ok(Some(g));
                 }
             }
         }
-        // Fallback: name → Mac-Roman code → (1,0) cmap.
-        if let Some(sub) = find_cmap(tables, 1, 0) {
-            if let Some(mac_code) = mac_roman_code(name) {
-                if let Some(g) = sub.glyph_index(mac_code as u32) {
+        if let Some(s) = &cmap10 {
+            if let Some(g) = s.glyph_index(code as u32) {
+                return Ok(Some(g));
+            }
+        }
+        if !has_cmap {
+            return Ok(Some(if (code as u16) < n_glyphs {
+                GlyphId(code as u16)
+            } else {
+                GlyphId(0)
+            }));
+        }
+        if self.symbolic && self.encoding[code as usize].is_none() {
+            if let Some(name) = crate::encodings::STANDARD[code as usize] {
+                if let Some(g) = by_name(name) {
                     return Ok(Some(g));
                 }
             }
         }
-        // Last resort: post table name lookup.
-        if let Some(g) = face.glyph_index_by_name(name) {
-            return Ok(Some(g));
-        }
-        // Nothing found — .notdef.
         Ok(Some(GlyphId(0)))
     }
 
@@ -876,6 +907,7 @@ pub(crate) fn name_to_unicode(name: &str) -> Option<u32> {
         .iter()
         .find(|(n, _)| *n == name)
         .map(|(_, u)| *u)
+        .or_else(|| crate::encodings::uni_name_to_unicode(name))
 }
 
 /// glyph name → Mac OS Roman code — the fallback for fonts without a
@@ -1075,8 +1107,16 @@ impl Type1Font {
 
     /// Char code (0..=255) → glyph-name bytes per the PDF encoding.
     /// `None` = rely on the CFF built-in encoding / .notdef.
+    /// The glyph name for `code`: the PDF `/Encoding` entry, else the
+    /// embedded Type 1 program's own encoding (Table 114 — the
+    /// built-in encoding is the base when no `/BaseEncoding` applies).
     fn glyph_name_bytes(&self, code: u8) -> Option<&[u8]> {
-        self.encoding[code as usize].as_deref()
+        if let Some(n) = self.encoding[code as usize].as_deref() {
+            return Some(n);
+        }
+        self.t1_program
+            .as_ref()
+            .and_then(|t1| t1.builtin_glyph_name(code))
     }
 
     /// Char code → glyph advance in 1/1000-em units (PDF `/Widths`).

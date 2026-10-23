@@ -51,6 +51,10 @@ pub struct Document {
     /// Cache of decoded object streams, keyed by object-stream number.
     /// Bounded implicitly by the decoded-bytes budget.
     objstm_cache: std::cell::RefCell<HashMap<u32, ObjectStream>>,
+    /// `Some` when the file was opened through
+    /// [`Document::from_bytes_recovering`] *and* the strict parse
+    /// failed — the cross-reference table was rebuilt by scanning.
+    recovery: Option<crate::xref::RecoveryReport>,
 }
 
 impl Document {
@@ -100,12 +104,70 @@ impl Document {
             ref_budget: std::cell::Cell::new(limits.max_reference_depth),
             decoded_budget: std::cell::Cell::new(limits.max_total_decoded_bytes),
             objstm_cache: std::cell::RefCell::new(HashMap::new()),
+            recovery: None,
             limits,
         };
 
         doc.load_catalog()?;
         doc.load_pages()?;
         Ok(doc)
+    }
+
+    /// Parse `data` strictly; if that fails for a structural reason,
+    /// rebuild the cross-reference table by scanning the file for
+    /// object definitions (see [`crate::xref::RecoveryReport`]) and
+    /// load the document from it.
+    ///
+    /// Recovery is **not** attempted for [`Error::NotPdf`],
+    /// [`Error::Encrypted`] or [`Error::LimitExceeded`] — those are
+    /// not damage. A recovered document reports how it was rebuilt via
+    /// [`Document::recovery`]; a document that parsed strictly reports
+    /// `None`. Everything downstream (rendering, extraction, rewrite)
+    /// runs under the same limits and cycle checks as a strict parse.
+    pub fn from_bytes_recovering(data: &[u8]) -> Result<Document, Error> {
+        Self::from_bytes_recovering_with_limits(data, Limits::default())
+    }
+
+    /// [`Document::from_bytes_recovering`] with explicit [`Limits`].
+    pub fn from_bytes_recovering_with_limits(
+        data: &[u8],
+        limits: Limits,
+    ) -> Result<Document, Error> {
+        let strict_error = match Self::from_bytes_with_limits(data, limits.clone()) {
+            Ok(doc) => return Ok(doc),
+            Err(e @ (Error::NotPdf | Error::Encrypted | Error::LimitExceeded { .. })) => {
+                return Err(e)
+            }
+            Err(e) => e,
+        };
+        let mut parser = Parser::new(data, &limits);
+        let header_version = parser.check_header()?;
+        let (xref, report) = xref::reconstruct(data, &limits, &strict_error)?;
+        if xref.trailer.contains_key(b"Encrypt".as_slice()) {
+            return Err(Error::Encrypted);
+        }
+        let mut doc = Document {
+            data: data.to_vec(),
+            xref,
+            catalog: Dict::new(),
+            pages: Vec::new(),
+            header_version,
+            ref_budget: std::cell::Cell::new(limits.max_reference_depth),
+            decoded_budget: std::cell::Cell::new(limits.max_total_decoded_bytes),
+            objstm_cache: std::cell::RefCell::new(HashMap::new()),
+            recovery: Some(report),
+            limits,
+        };
+        doc.load_catalog()?;
+        doc.load_pages()?;
+        Ok(doc)
+    }
+
+    /// How the cross-reference table was rebuilt, when the document
+    /// came from [`Document::from_bytes_recovering`] and the strict
+    /// parse had failed. `None` for a strictly parsed document.
+    pub fn recovery(&self) -> Option<&crate::xref::RecoveryReport> {
+        self.recovery.as_ref()
     }
 
     // ---------------------------------------------------------------

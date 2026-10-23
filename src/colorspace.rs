@@ -73,6 +73,12 @@ pub(crate) enum ColorSpace {
         /// `/None` colorant: paints nothing (§8.6.6.4).
         is_none: bool,
     },
+    /// `/Pattern` (§8.7.3): the "colour" is a pattern object selected
+    /// by `scn`; `base` is the underlying space of an uncoloured
+    /// tiling pattern's components.
+    Pattern {
+        base: Option<Rc<ColorSpace>>,
+    },
 }
 
 impl ColorSpace {
@@ -84,6 +90,7 @@ impl ColorSpace {
             ColorSpace::DeviceCMYK => 4,
             ColorSpace::IccBased { n, .. } => *n,
             ColorSpace::Separation { n, .. } => *n,
+            ColorSpace::Pattern { base } => base.as_ref().map(|b| b.ncomps()).unwrap_or(0),
         }
     }
 
@@ -122,8 +129,14 @@ impl ColorSpace {
             } => approximation.clone().or_else(|| alternate.approximation()),
             ColorSpace::Indexed { base, .. } => base.approximation(),
             ColorSpace::Separation { alternate, .. } => alternate.approximation(),
+            ColorSpace::Pattern { base } => base.as_ref().and_then(|b| b.approximation()),
             _ => None,
         }
+    }
+
+    /// `true` for the `/Pattern` family.
+    pub(crate) fn is_pattern(&self) -> bool {
+        matches!(self, ColorSpace::Pattern { .. })
     }
 
     /// `true` for a `/None` Separation — painting in it marks nothing.
@@ -248,6 +261,13 @@ impl ColorSpace {
                 let out = tint.eval(&comps)?;
                 alternate.to_rgb(&out)?
             }
+            // A pattern's colour comes from the pattern object; the
+            // components (if any) belong to an uncoloured tiling
+            // pattern, which the renderer refuses before painting.
+            ColorSpace::Pattern { base } => match base {
+                Some(b) => b.to_rgb(c)?,
+                None => [0.0, 0.0, 0.0],
+            },
         })
     }
 
@@ -325,10 +345,7 @@ fn parse_name(
         return Ok(dev);
     }
     match name {
-        b"Pattern" => Err(Error::Unsupported {
-            feature: "pattern colour space",
-            detail: "/Pattern — pattern painting is not implemented".into(),
-        }),
+        b"Pattern" => Ok(ColorSpace::Pattern { base: None }),
         // Bare family names are only valid inside an array; a few
         // producers still emit `/CalRGB cs`-style names. Refuse them
         // precisely rather than guessing parameters.
@@ -396,10 +413,23 @@ fn parse_array(
         {
             parse_name(doc, family, resources, limits, depth)
         }
-        b"Pattern" => Err(Error::Unsupported {
-            feature: "pattern colour space",
-            detail: "/Pattern with a base space — pattern painting is not implemented".into(),
-        }),
+        b"Pattern" => {
+            // `[/Pattern base]` — the base space is for uncoloured
+            // tiling patterns' `scn` components.
+            let base = match arr.get(1) {
+                None => None,
+                Some(b) => {
+                    let bs = parse_depth(doc, b, resources, limits, depth + 1)?;
+                    if matches!(bs, ColorSpace::Pattern { .. }) {
+                        return Err(Error::Structure(
+                            "/Pattern base space may not be Pattern".into(),
+                        ));
+                    }
+                    Some(Rc::new(bs))
+                }
+            };
+            Ok(ColorSpace::Pattern { base })
+        }
         b"CalGray" => {
             let d = dict_param(param(1)?, "CalGray")?;
             let white = white_point(doc, &d)?;

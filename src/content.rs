@@ -226,6 +226,15 @@ pub enum Operation {
     Do(Name),
     /// `sh` — paint a shading pattern.
     Shading(Name),
+    /// `BI … ID … EI` — an inline image (§8.9.7). `dict` holds the
+    /// image dictionary with its abbreviated keys as written; `data`
+    /// is the still-filtered sample data between `ID` and `EI`.
+    InlineImage {
+        /// Image dictionary (keys may be abbreviated: `W`, `H`, `BPC`, …).
+        dict: Dict,
+        /// Raw (encoded) image data.
+        data: Vec<u8>,
+    },
     /// `MP` — marked-content point.
     MarkedContentPoint(Name),
     /// `DP` — marked-content point with properties.
@@ -358,6 +367,7 @@ impl Operation {
             Operation::Type3SetWidthAndBox { .. } => "d1",
             Operation::Do(_) => "Do",
             Operation::Shading(_) => "sh",
+            Operation::InlineImage { .. } => "BI",
             Operation::MarkedContentPoint(_) => "MP",
             Operation::DesignatedMarkedContentPoint { .. } => "DP",
             Operation::BeginMarkedContent(_) => "BMC",
@@ -536,6 +546,10 @@ impl<'a> ContentParser<'a> {
                     self.operands.push(Object::Bool(false));
                 } else if bytes == b"null" {
                     self.operands.push(Object::Null);
+                } else if bytes == b"BI" {
+                    // Inline image: the dictionary and binary data
+                    // need the lexer, not the operand stack.
+                    self.parse_inline_image(lexer, offset)?;
                 } else {
                     // Not a primitive value → an operator token.
                     self.dispatch_operator(&bytes, offset)?;
@@ -675,6 +689,78 @@ impl<'a> ContentParser<'a> {
     // ---------------------------------------------------------------
     // Operator dispatch
     // ---------------------------------------------------------------
+
+    /// `BI … ID <data> EI` (§8.9.7). The dictionary is read as
+    /// `/key value` pairs up to `ID`; one whitespace byte follows,
+    /// then the sample data. Its end is *computed* — never guessed
+    /// from the first `EI` bytes, which can occur inside binary data:
+    ///
+    /// * unfiltered data: the exact length from `/W`, `/H`, `/BPC` and
+    ///   the colour space's component count;
+    /// * `DCTDecode`: the JPEG `EOI` marker (`FF D9`);
+    /// * `FlateDecode`: the first whitespace-delimited `EI` whose
+    ///   preceding bytes are a *complete* zlib stream;
+    /// * `ASCIIHexDecode` / `ASCII85Decode`: their own `>` / `~>` EOD;
+    /// * anything else (LZW, CCITT, RunLength, a colour space we
+    ///   cannot size): the first delimited `EI` that is followed by
+    ///   plausible content-stream text — and if that is wrong the
+    ///   stream fails to parse rather than mis-rendering.
+    fn parse_inline_image(&mut self, lexer: &mut Lexer, offset: usize) -> Result<(), Error> {
+        if !self.operands.is_empty() {
+            return Err(Error::Parse(format!(
+                "BI at byte {offset} with {} un-consumed operand(s)",
+                self.operands.len()
+            )));
+        }
+        let mut dict = Dict::new();
+        loop {
+            if dict.len() >= self.limits.max_dict_entries {
+                return Err(Error::LimitExceeded {
+                    limit: "max_dict_entries (inline image)",
+                    max: self.limits.max_dict_entries as u64,
+                });
+            }
+            match lexer.next_token()? {
+                None => {
+                    return Err(Error::UnexpectedEof {
+                        offset: lexer.pos(),
+                        context: "inline image dictionary",
+                    })
+                }
+                Some(Token::Word { bytes, .. }) if bytes == b"ID" => break,
+                Some(Token::Name { value: key, offset }) => {
+                    let value = self.parse_direct_object(lexer, 1, offset)?;
+                    dict.insert(key, value);
+                }
+                Some(other) => {
+                    return Err(Error::Parse(format!(
+                        "inline image dictionary: expected a key, found token at byte {}",
+                        other.offset()
+                    )))
+                }
+            }
+        }
+        let input = lexer.input;
+        let mut start = lexer.pos();
+        if start < input.len() && crate::lexer::is_white(input[start]) {
+            start += 1;
+        }
+        let (end, resume) = inline_image_end(input, start, &dict, self.limits)?;
+        if (end - start) as u64 > self.limits.max_stream_bytes {
+            return Err(Error::LimitExceeded {
+                limit: "max_stream_bytes (inline image)",
+                max: self.limits.max_stream_bytes,
+            });
+        }
+        lexer.seek(resume);
+        self.tokens_seen += 1;
+        self.op_names.push(b"BI".to_vec());
+        self.ops.push(Operation::InlineImage {
+            dict,
+            data: input[start..end].to_vec(),
+        });
+        Ok(())
+    }
 
     fn dispatch_operator(&mut self, op: &[u8], offset: usize) -> Result<(), Error> {
         let n_operands = self.operands.len();
@@ -1052,18 +1138,13 @@ impl<'a> ContentParser<'a> {
                 Operation::EndCompatibility
             }
 
-            // Inline images (§8.9.7): the data between ID and EI is
-            // binary and cannot be tokenized reliably without the
-            // image dictionary's keys, so the construct is refused
-            // outright rather than guessed.
+            // `BI` is intercepted in `handle_token`; a stray `ID`/`EI`
+            // outside an inline image is malformed.
             b"BI" | b"ID" | b"EI" => {
-                return Err(Error::Unsupported {
-                    feature: "inline image (BI/ID/EI)",
-                    detail: format!(
-                        "operator '{}' at byte {offset}",
-                        String::from_utf8_lossy(op)
-                    ),
-                })
+                return Err(Error::Parse(format!(
+                    "inline-image operator '{}' outside BI … EI at byte {offset}",
+                    String::from_utf8_lossy(op)
+                )))
             }
 
             _ => {
@@ -1243,6 +1324,268 @@ impl<'a> ContentParser<'a> {
 /// Interpret a word token inside a content operand position: number,
 /// boolean, null — or an error (operators cannot appear where an
 /// operand is required).
+/// Expand an inline-image key abbreviation (Table 93) to its full
+/// image-dictionary key.
+pub(crate) fn inline_key(k: &[u8]) -> &[u8] {
+    match k {
+        b"BPC" => b"BitsPerComponent",
+        b"CS" => b"ColorSpace",
+        b"D" => b"Decode",
+        b"DP" => b"DecodeParms",
+        b"F" => b"Filter",
+        b"H" => b"Height",
+        b"W" => b"Width",
+        b"IM" => b"ImageMask",
+        b"I" => b"Interpolate",
+        b"L" => b"Length",
+        other => other,
+    }
+}
+
+/// Expand an inline-image filter abbreviation (Table 94).
+pub(crate) fn inline_filter(f: &[u8]) -> &[u8] {
+    match f {
+        b"AHx" => b"ASCIIHexDecode",
+        b"A85" => b"ASCII85Decode",
+        b"LZW" => b"LZWDecode",
+        b"Fl" => b"FlateDecode",
+        b"RL" => b"RunLengthDecode",
+        b"CCF" => b"CCITTFaxDecode",
+        b"DCT" => b"DCTDecode",
+        other => other,
+    }
+}
+
+fn inline_dict_get<'a>(dict: &'a Dict, full: &[u8], abbr: &[u8]) -> Option<&'a Object> {
+    dict.get(abbr).or_else(|| dict.get(full))
+}
+
+/// `true` when `input[i..]` is `EI` delimited on both sides.
+fn is_ei_at(input: &[u8], i: usize, start: usize) -> bool {
+    if i + 2 > input.len() || &input[i..i + 2] != b"EI" {
+        return false;
+    }
+    let before_ok = i == start || crate::lexer::is_white(input[i - 1]);
+    let after_ok = i + 2 == input.len()
+        || crate::lexer::is_white(input[i + 2])
+        || matches!(input[i + 2], b'/' | b'[' | b'<' | b'(' | b'%');
+    before_ok && after_ok
+}
+
+/// The first delimited `EI` at or after `from`.
+fn next_ei(input: &[u8], from: usize, start: usize) -> Option<usize> {
+    (from..input.len().saturating_sub(1)).find(|&i| is_ei_at(input, i, start))
+}
+
+/// `true` when the bytes after an `EI` look like content-stream text
+/// (ASCII) rather than the middle of a binary blob.
+fn looks_like_content(input: &[u8], from: usize) -> bool {
+    let tail = &input[from..input.len().min(from + 32)];
+    tail.iter()
+        .all(|b| b.is_ascii_graphic() || crate::lexer::is_white(*b))
+}
+
+/// Locate the end of inline-image data starting at `start`. Returns
+/// `(data_end, resume)` where `resume` is the byte after `EI`.
+fn inline_image_end(
+    input: &[u8],
+    start: usize,
+    dict: &Dict,
+    limits: &Limits,
+) -> Result<(usize, usize), Error> {
+    let eof = || Error::UnexpectedEof {
+        offset: input.len(),
+        context: "inline image data",
+    };
+    let finish = |data_end: usize| -> Result<(usize, usize), Error> {
+        // Optional whitespace, then `EI`.
+        let mut p = data_end;
+        while p < input.len() && crate::lexer::is_white(input[p]) {
+            p += 1;
+        }
+        if is_ei_at(input, p, start) {
+            Ok((data_end, p + 2))
+        } else {
+            Err(Error::Parse(format!(
+                "inline image data does not end with EI at byte {p}"
+            )))
+        }
+    };
+    let filters: Vec<Vec<u8>> = match inline_dict_get(dict, b"Filter", b"F") {
+        None | Some(Object::Null) => Vec::new(),
+        Some(Object::Name(n)) => vec![inline_filter(n).to_vec()],
+        Some(Object::Array(a)) => a
+            .iter()
+            .map(|o| {
+                o.as_name()
+                    .map(|n| inline_filter(n).to_vec())
+                    .ok_or_else(|| Error::Structure("inline image /F array must hold names".into()))
+            })
+            .collect::<Result<_, _>>()?,
+        Some(_) => {
+            return Err(Error::Structure(
+                "inline image /F must be a name or array".into(),
+            ))
+        }
+    };
+    if filters.is_empty() {
+        // Unfiltered: the length follows from the dictionary.
+        let w = inline_dict_get(dict, b"Width", b"W").and_then(|o| o.as_i64());
+        let h = inline_dict_get(dict, b"Height", b"H").and_then(|o| o.as_i64());
+        let mask =
+            inline_dict_get(dict, b"ImageMask", b"IM").and_then(|o| o.as_bool()) == Some(true);
+        let bpc = if mask {
+            Some(1)
+        } else {
+            inline_dict_get(dict, b"BitsPerComponent", b"BPC").and_then(|o| o.as_i64())
+        };
+        let ncomps: Option<u64> = if mask {
+            Some(1)
+        } else {
+            match inline_dict_get(dict, b"ColorSpace", b"CS") {
+                Some(Object::Name(n)) => match n.as_slice() {
+                    b"G" | b"DeviceGray" | b"CalGray" | b"I" | b"Indexed" => Some(1),
+                    b"RGB" | b"DeviceRGB" | b"CalRGB" | b"Lab" => Some(3),
+                    b"CMYK" | b"DeviceCMYK" => Some(4),
+                    _ => None, // a named resource — unknown here
+                },
+                Some(Object::Array(a)) => match a.first().and_then(|o| o.as_name()) {
+                    Some(b"I") | Some(b"Indexed") | Some(b"CalGray") | Some(b"DeviceGray")
+                    | Some(b"G") => Some(1),
+                    Some(b"CalRGB") | Some(b"Lab") | Some(b"DeviceRGB") | Some(b"RGB") => Some(3),
+                    Some(b"DeviceCMYK") | Some(b"CMYK") => Some(4),
+                    _ => None,
+                },
+                None => Some(1),
+                _ => None,
+            }
+        };
+        if let (Some(w), Some(h), Some(bpc), Some(nc)) = (w, h, bpc, ncomps) {
+            if w <= 0 || h <= 0 || !matches!(bpc, 1 | 2 | 4 | 8 | 16) {
+                return Err(Error::Structure(format!(
+                    "inline image has invalid /W {w} /H {h} /BPC {bpc}"
+                )));
+            }
+            let row = (w as u64 * nc * bpc as u64 + 7) / 8;
+            let len = row.checked_mul(h as u64).ok_or(Error::LimitExceeded {
+                limit: "max_stream_bytes (inline image)",
+                max: limits.max_stream_bytes,
+            })?;
+            if len > limits.max_stream_bytes {
+                return Err(Error::LimitExceeded {
+                    limit: "max_stream_bytes (inline image)",
+                    max: limits.max_stream_bytes,
+                });
+            }
+            let end = start.checked_add(len as usize).ok_or_else(eof)?;
+            if end > input.len() {
+                return Err(eof());
+            }
+            return finish(end);
+        }
+        // Unknown component count: fall through to the delimiter scan.
+    }
+    match filters.first().map(|f| f.as_slice()) {
+        Some(b"DCTDecode") => {
+            // JPEG: data ends at the EOI marker.
+            let mut i = start;
+            while i + 1 < input.len() {
+                if input[i] == 0xFF && input[i + 1] == 0xD9 {
+                    return finish(i + 2);
+                }
+                i += 1;
+            }
+            Err(eof())
+        }
+        Some(b"ASCIIHexDecode") => {
+            let p = input[start..]
+                .iter()
+                .position(|b| *b == b'>')
+                .ok_or_else(eof)?;
+            finish(start + p + 1)
+        }
+        Some(b"ASCII85Decode") => {
+            let p = input[start..]
+                .windows(2)
+                .position(|w| w == b"~>")
+                .ok_or_else(eof)?;
+            finish(start + p + 2)
+        }
+        Some(b"FlateDecode") => {
+            // Try each delimited `EI`; accept the first whose preceding
+            // bytes decode as a complete zlib stream.
+            let mut from = start;
+            let mut tries = 0usize;
+            while let Some(i) = next_ei(input, from, start) {
+                tries += 1;
+                if tries > 256 {
+                    break;
+                }
+                // One whitespace byte separates data from EI; binary
+                // data may legitimately end in a whitespace-class byte
+                // (NUL, LF, …), so strip at most one.
+                let end = if i > start && crate::lexer::is_white(input[i - 1]) {
+                    i - 1
+                } else {
+                    i
+                };
+                if zlib_stream_complete(&input[start..end], limits) {
+                    return Ok((end, i + 2));
+                }
+                from = i + 2;
+            }
+            Err(Error::Parse(
+                "inline image: no EI closes a complete FlateDecode stream".into(),
+            ))
+        }
+        _ => {
+            let mut from = start;
+            let mut tries = 0usize;
+            while let Some(i) = next_ei(input, from, start) {
+                tries += 1;
+                if tries > 256 {
+                    break;
+                }
+                if looks_like_content(input, i + 2) {
+                    let end = if i > start && crate::lexer::is_white(input[i - 1]) {
+                        i - 1
+                    } else {
+                        i
+                    };
+                    return Ok((end, i + 2));
+                }
+                from = i + 2;
+            }
+            Err(Error::Parse(
+                "inline image: no delimited EI followed by content-stream text".into(),
+            ))
+        }
+    }
+}
+
+/// `true` when `data` is one complete zlib stream (decodes to its end
+/// without error, within `max_stream_bytes`).
+fn zlib_stream_complete(data: &[u8], limits: &Limits) -> bool {
+    use std::io::Read;
+    let mut dec = flate2::read::ZlibDecoder::new(data);
+    let mut chunk = [0u8; 16 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        match dec.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                total += n as u64;
+                if total > limits.max_stream_bytes {
+                    return false;
+                }
+            }
+            Err(_) => return false,
+        }
+    }
+    // Every input byte must have been consumed by the stream itself.
+    dec.total_in() == data.len() as u64
+}
+
 fn word_as_operand(bytes: &[u8], offset: usize) -> Result<Object, Error> {
     if let Some(i) = parse_int(bytes) {
         return Ok(Object::Integer(i));
@@ -1537,6 +1880,13 @@ impl fmt::Display for Operation {
             ),
             Operation::Do(n) => write!(f, "{} Do", fmt_name(n)),
             Operation::Shading(n) => write!(f, "{} sh", fmt_name(n)),
+            Operation::InlineImage { dict, data } => {
+                write!(f, "BI")?;
+                for (k, v) in dict {
+                    write!(f, " {} {}", fmt_name(k), fmt_operand(v))?;
+                }
+                write!(f, " ID <{} bytes> EI", data.len())
+            }
             Operation::MarkedContentPoint(n) => write!(f, "{} MP", fmt_name(n)),
             Operation::DesignatedMarkedContentPoint { tag, properties } => {
                 write!(f, "{} {} DP", fmt_name(tag), fmt_operand(properties))

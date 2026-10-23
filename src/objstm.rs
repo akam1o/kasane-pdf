@@ -40,6 +40,23 @@ impl ObjectStream {
         expected: (u32, u32),
         limits: &Limits,
     ) -> Result<ObjectStream, Error> {
+        let (members, header) = Self::parse_all(decoded, dict, limits)?;
+        // The entry we were asked for must exist and match.
+        let (want_num, want_idx) = expected;
+        if (want_idx as usize) >= header.len() || header[want_idx as usize] != want_num {
+            return Err(Error::Structure(format!(
+                "object stream index {} does not contain object {}",
+                want_idx, want_num
+            )));
+        }
+        Ok(ObjectStream {
+            objects: members.into_iter().collect(),
+        })
+    }
+
+    /// Parse every member; returns `(members in index order, header
+    /// object numbers)`.
+    fn parse_all(decoded: &[u8], dict: &Dict, limits: &Limits) -> Result<Members, Error> {
         let n = dict
             .get(b"N".as_slice())
             .and_then(|o| o.as_i64())
@@ -105,7 +122,7 @@ impl ObjectStream {
         bounds.push(decoded.len());
 
         // Parse each object.
-        let mut objects = HashMap::with_capacity(n);
+        let mut objects = Vec::with_capacity(n);
         for (i, &(num, _off)) in header.iter().enumerate() {
             let start = bounds[i];
             let end = bounds[i + 1];
@@ -119,19 +136,9 @@ impl ObjectStream {
                 offset: start,
                 context: "object stream object",
             })?;
-            objects.insert(num, obj);
+            objects.push((num, obj));
         }
-
-        // The entry we were asked for must exist and match.
-        let (want_num, want_idx) = expected;
-        if (want_idx as usize) >= header.len() || header[want_idx as usize].0 != want_num {
-            return Err(Error::Structure(format!(
-                "object stream index {} does not contain object {}",
-                want_idx, want_num
-            )));
-        }
-
-        Ok(ObjectStream { objects })
+        Ok((objects, header.iter().map(|(n, _)| *n).collect()))
     }
 
     /// Look up an object by number.
@@ -152,4 +159,19 @@ fn read_usize_word(parser: &mut Parser, context: &'static str) -> Result<usize, 
             context,
         }),
     }
+}
+
+/// `(members in index order, header object numbers)`.
+type Members = (Vec<(u32, Object)>, Vec<u32>);
+
+/// Every `(object number, object)` of an object stream in index order
+/// — the same bounds and parsing as [`ObjectStream::parse`] without a
+/// specific member expected. Used by xref recovery.
+pub(crate) fn members(
+    decoded: &[u8],
+    dict: &Dict,
+    limits: &Limits,
+) -> Result<Vec<(u32, Object)>, Error> {
+    let os = ObjectStream::parse_all(decoded, dict, limits)?;
+    Ok(os.0)
 }

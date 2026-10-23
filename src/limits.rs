@@ -53,6 +53,10 @@ pub struct Limits {
     /// Maximum byte range of an object stream's object list (`/First` +
     /// header + body). Default: 64 MiB.
     pub max_objstm_bytes: usize,
+    /// Maximum `n g obj` definitions the recovery scan
+    /// (`Document::from_bytes_recovering`) will register. Default:
+    /// 1,048,576.
+    pub max_recovery_objects: usize,
     /// Maximum number of parsed content-stream operations per page.
     /// Default: 1,000,000.
     pub max_operations: usize,
@@ -218,6 +222,7 @@ impl Default for Limits {
             max_filter_chain: 8,
             max_objstm_entries: 10_000,
             max_objstm_bytes: 64 * 1024 * 1024,
+            max_recovery_objects: 1 << 20,
             max_operations: 1_000_000,
             max_operand_stack: 1_000,
             max_gsave_depth: 1_024,
