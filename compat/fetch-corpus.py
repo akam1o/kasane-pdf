@@ -246,13 +246,18 @@ def normalise_producer(text):
     """Collapse a /Producer string to a product family — the axis the
     report groups by (version numbers and build ids dropped)."""
     t = text.strip().lower()
-    if not t:
+    if not t or not text.isprintable():
         return "unknown"
     rules = [
         ("pdftex", "pdfTeX"), ("xetex", "XeTeX"), ("luatex", "LuaTeX"),
         ("dvipdfm", "dvipdfmx"), ("dvips", "dvips"), ("ghostscript", "Ghostscript"),
         ("gpl ghostscript", "Ghostscript"), ("acrobat distiller", "Acrobat Distiller"),
         ("acrobat pdfmaker", "Acrobat PDFMaker"), ("adobe pdf library", "Adobe PDF Library"),
+        ("livecycle", "LiveCycle Designer"), ("designer", "LiveCycle Designer"),
+        ("pdf-xchange", "PDF-XChange"), ("pypdf", "pypdf"), ("pikepdf", "pikepdf"),
+        ("openpdf", "OpenPDF"), ("jasperreports", "JasperReports"), ("crystal", "Crystal Reports"),
+        ("pdfcreator", "PDFCreator"), ("doro", "Doro"), ("bullzip", "Bullzip"), ("cutepdf", "CutePDF"),
+        ("primopdf", "PrimoPDF"), ("novapdf", "novaPDF"), ("win2pdf", "Win2PDF"),
         ("acrobat", "Acrobat"), ("adobe indesign", "InDesign"), ("indesign", "InDesign"),
         ("illustrator", "Illustrator"), ("photoshop", "Photoshop"),
         ("microsoft", "Microsoft Office"), ("word", "Microsoft Office"),
@@ -288,10 +293,30 @@ def normalise_producer(text):
     return re.split(r"[\s/;,(]", text.strip())[0][:40] or "unknown"
 
 
+def _pdfinfo(path):
+    """`{key: value}` from `pdfinfo` (sees /Info inside object streams,
+    which the byte scan cannot); empty when pdfinfo is absent/fails."""
+    import shutil
+    import subprocess
+    if not shutil.which("pdfinfo"):
+        return {}
+    try:
+        out = subprocess.run(["pdfinfo", str(path)], capture_output=True,
+                             text=True, errors="replace", timeout=30)
+    except Exception:  # noqa: BLE001
+        return {}
+    info = {}
+    for line in out.stdout.splitlines():
+        k, _, v = line.partition(":")
+        if _:
+            info[k.strip()] = v.strip()
+    return info
+
+
 def pdf_facts(path):
-    """`(producer family, raw producer, pdf version, encrypted)` read
-    straight from the bytes — no parser dependency, works on broken
-    files too."""
+    """`(producer family, raw producer, pdf version, encrypted, pages)`:
+    the byte scan first (works on broken files), `pdfinfo` to fill
+    what the scan cannot see (compressed /Info, page count)."""
     data = Path(path).read_bytes()
     m = re.search(rb"%PDF-(\d\.\d)", data[:1024])
     version = m.group(1).decode() if m else ""
@@ -304,7 +329,71 @@ def pdf_facts(path):
         if m:
             raw = _pdf_string(m.group(1))
     encrypted = b"/Encrypt" in data
-    return normalise_producer(raw), raw.strip()[:80], version, encrypted
+    info = _pdfinfo(path)
+    if not raw.strip() or not raw.isprintable():
+        raw = info.get("Producer") or info.get("Creator") or ""
+    if not version and info.get("PDF version"):
+        version = info["PDF version"]
+    pages = 0
+    try:
+        pages = int(info.get("Pages", "0"))
+    except ValueError:
+        pages = 0
+    if not raw.isprintable():
+        raw = ""
+    return normalise_producer(raw), raw.strip()[:80], version, encrypted, pages
+
+
+# Producer families that identify a document's *origin* better than a
+# name-derived category guess — used by `refresh --recategorise`.
+PRODUCER_CATEGORY = {
+    "Microsoft Office": "office", "LibreOffice": "office", "OpenOffice": "office",
+    "Google Docs": "office", "Apple Pages": "office", "Apple Keynote": "office",
+    "Ichitaro": "office", "Acrobat PDFMaker": "office",
+    "Skia (Chrome)": "browser", "cairo (Firefox)": "browser", "wkhtmltopdf": "browser",
+    "Prince": "browser", "WeasyPrint": "browser", "dompdf": "browser",
+    "pdfTeX": "latex", "XeTeX": "latex", "LuaTeX": "latex", "dvipdfmx": "latex",
+    "dvips": "latex", "LaTeX": "latex", "Typst": "latex",
+    "ABBYY FineReader": "scan", "Canon scanner": "scan", "Ricoh scanner": "scan",
+    "Xerox scanner": "scan", "Kyocera scanner": "scan", "Epson scanner": "scan",
+    "HP scanner": "scan", "Brother scanner": "scan", "Fujifilm scanner": "scan",
+    "Konica scanner": "scan", "ScanSnap": "scan", "NAPS2": "scan", "Tesseract": "scan",
+    "OCRmyPDF": "scan",
+}
+
+
+def cmd_refresh(args):
+    """Recompute producer / version / encrypted / pages for every entry
+    whose file is present locally (older entries predate those fields;
+    compressed /Info needs pdfinfo). With `--recategorise`, a `misc`
+    entry whose producer family names an origin (office suite,
+    browser, TeX, scanner) moves to that category — recorded in notes."""
+    m = load_manifest()
+    out = Path(args.dir)
+    changed = moved = 0
+    for e in m.get("files", []):
+        p = out / f"{e['id']}.pdf"
+        if not p.exists():
+            continue
+        producer, raw, version, encrypted, pages = pdf_facts(p)
+        new = {"producer": producer, "producer_raw": raw, "version": version,
+               "encrypted": encrypted}
+        if pages and not e.get("pages"):
+            new["pages"] = pages
+        e.setdefault("redistribute", "yes")
+        e.setdefault("expect", "pass")
+        if any(e.get(k) != v for k, v in new.items()):
+            e.update(new)
+            changed += 1
+        if args.recategorise and e.get("category") == "misc":
+            cat = PRODUCER_CATEGORY.get(producer)
+            if cat:
+                e["category"] = cat
+                e["notes"] = (e.get("notes", "") + f" [category from producer {producer}]").strip()
+                moved += 1
+    save_manifest(m)
+    print(f"refreshed {changed} entr{'y' if changed == 1 else 'ies'}, recategorised {moved}")
+    return 0
 
 
 def _register(path, category, source, license_, notes, pages, local=False,
@@ -323,7 +412,8 @@ def _register(path, category, source, license_, notes, pages, local=False,
     while eid in ids:
         eid = f"{base}-{i}"
         i += 1
-    producer, raw_producer, version, encrypted = pdf_facts(path)
+    producer, raw_producer, version, encrypted, found_pages = pdf_facts(path)
+    pages = pages or found_pages
     entry = {
         "id": eid,
         "sha256": digest,
@@ -453,6 +543,11 @@ def main():
     sy = sub.add_parser("sync", help="upload manifest entries missing from the store")
     sy.add_argument("--dir", default=str(DEFAULT_DIR))
 
+    rf = sub.add_parser("refresh", help="recompute producer/version/pages for local files")
+    rf.add_argument("--dir", default=str(DEFAULT_DIR))
+    rf.add_argument("--recategorise", action="store_true",
+                    help="move `misc` entries to the category their producer implies")
+
     sd = sub.add_parser("seed",
                         help="build a corpus dir from local PDFs (no store)")
     sd.add_argument("--from", dest="source_dir", required=True,
@@ -463,7 +558,7 @@ def main():
     fn = {
         "list": cmd_list, "download": cmd_download, "add": cmd_add,
         "add-url": cmd_add_url, "verify": cmd_verify, "seed": cmd_seed,
-        "sync": cmd_sync,
+        "sync": cmd_sync, "refresh": cmd_refresh,
     }[args.cmd]
     sys.exit(fn(args) or 0)
 

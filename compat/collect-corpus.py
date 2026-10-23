@@ -299,6 +299,58 @@ def collect_irs(limit):
 # arXiv (CC BY only)
 # ---------------------------------------------------------------------
 
+def collect_arxiv_api(limit, seed):
+    """Fallback when OAI-PMH is rate-limited: the Atom search API lists
+    recent ids; each abstract page is checked for a CC BY licence link
+    before the PDF is fetched (two requests per paper, ≥ 3 s apart)."""
+    log("== arXiv via search API + abs-page licence check")
+    rnd = random.Random(seed)
+    cats = ["cs.CL", "cs.LG", "math.CO", "physics.optics", "stat.ML", "q-bio.NC", "eess.SP", "econ.EM"]
+    rnd.shuffle(cats)
+    added = 0
+    for cat in cats:
+        if added >= limit:
+            break
+        url = (f"https://export.arxiv.org/api/query?search_query=cat:{cat}"
+               "&sortBy=submittedDate&sortOrder=descending&max_results=40")
+        try:
+            atom = http_get(url, timeout=60).decode("utf-8", "replace")
+        except Exception as ex:  # noqa: BLE001
+            log(f"  search {cat} failed: {ex}")
+            time.sleep(3)
+            continue
+        ids = re.findall(r"<id>https?://arxiv.org/abs/([^<]+?)(?:v\d+)?</id>", atom)
+        rnd.shuffle(ids)
+        for aid in ids[:12]:
+            if added >= limit:
+                break
+            time.sleep(3)
+            try:
+                page = http_get(f"https://arxiv.org/abs/{aid}", timeout=60).decode("utf-8", "replace")
+            except Exception as ex:  # noqa: BLE001
+                log(f"  abs {aid} failed: {ex}")
+                continue
+            lic = re.search(r'href="(https?://creativecommons.org/licenses/by/[^"]+)"', page)
+            if not lic:
+                continue
+            title = re.search(r'<meta name="citation_title" content="([^"]*)"', page)
+            title = title.group(1) if title else ""
+            time.sleep(3)
+            try:
+                data = http_get(f"https://arxiv.org/pdf/{aid}", timeout=120)
+            except Exception as ex:  # noqa: BLE001
+                log(f"  fail {aid}: {ex}")
+                continue
+            if register_bytes(
+                data, "arxiv-" + aid.replace("/", "-"), "papers",
+                f"https://arxiv.org/abs/{aid}", f"CC BY ({lic.group(1)})",
+                notes=f"{title[:80]}; licence from the abstract page",
+            ):
+                added += 1
+    log(f"arXiv (API): added {added}")
+    return added
+
+
 def collect_arxiv(limit, seed):
     log("== arXiv (CC BY licence only)")
     rnd = random.Random(seed)
@@ -310,10 +362,19 @@ def collect_arxiv(limit, seed):
             break
         url = ("https://export.arxiv.org/oai2?verb=ListRecords&metadataPrefix=arXiv"
                f"&set={aset}&from=2025-01-01&until=2025-01-20")
-        try:
-            xml = http_get(url, timeout=90).decode("utf-8", "replace")
-        except Exception as ex:  # noqa: BLE001
-            log(f"  listing {aset} failed: {ex}")
+        xml = None
+        for attempt in range(4):
+            try:
+                xml = http_get(url, timeout=90).decode("utf-8", "replace")
+                break
+            except urllib.error.HTTPError as ex:
+                wait = int(ex.headers.get("Retry-After", "20") or 20) if ex.code == 429 else 10
+                log(f"  listing {aset}: HTTP {ex.code}, retry in {wait}s")
+                time.sleep(min(wait, 60))
+            except Exception as ex:  # noqa: BLE001
+                log(f"  listing {aset} failed: {ex}")
+                break
+        if xml is None:
             continue
         recs = re.findall(r"<arXiv[^>]*>(.*?)</arXiv>", xml, re.S)
         rnd.shuffle(recs)
@@ -341,6 +402,8 @@ def collect_arxiv(limit, seed):
                 added += 1
             time.sleep(3)  # arXiv asks for ≥ 3 s between requests
     log(f"arXiv: added {added}")
+    if added < limit:
+        collect_arxiv_api(limit - added, seed)
 
 
 # ---------------------------------------------------------------------
@@ -357,30 +420,30 @@ table{border-collapse:collapse;width:100%}td,th{border:1px solid #888;padding:4p
 .rot{display:inline-block;transform:rotate(-12deg) scale(1.2);opacity:.7;background:#fc6}
 blockquote{border-left:4px solid #c33;padding-left:1em;font-style:italic}
 </style></head><body><h1>Rendering stress: columns, tables, transforms</h1>
-%s<table><tr><th>Producer</th><th>Version</th><th>Share</th></tr><tr><td>Skia</td><td>1.7</td><td>42%%</td></tr><tr><td>Quartz</td><td>1.3</td><td>18%%</td></tr></table>
+@@FILL1@@<table><tr><th>Producer</th><th>Version</th><th>Share</th></tr><tr><td>Skia</td><td>1.7</td><td>42%</td></tr><tr><td>Quartz</td><td>1.3</td><td>18%</td></tr></table>
 <p><span class=rot>rotated &amp; translucent</span> emoji: 🎉🚀📄 — ligatures: office, affix.</p>
 <blockquote>Any sufficiently advanced bug is indistinguishable from a feature.</blockquote>
 <svg width=300 height=120><defs><linearGradient id=g><stop offset=0 stop-color=red /><stop offset=1 stop-color=blue /></linearGradient></defs>
 <rect x=10 y=10 width=200 height=80 fill=url(#g) rx=12 /><circle cx=250 cy=50 r=40 fill=green fill-opacity=.5 /><text x=20 y=110>svg text</text></svg>
-%s</body></html>""",
+@@FILL2@@</body></html>""",
     "japanese-vertical": """<html><head><meta charset=utf-8><style>
 body{margin:2cm;font-family:"Hiragino Mincho ProN","Hiragino Sans",serif;font-size:14pt}
 .v{writing-mode:vertical-rl;height:18cm;line-height:2}
 h1{font-family:"Hiragino Sans",sans-serif}
-rt{font-size:60%%}
+rt{font-size:60%}
 </style></head><body><h1>縦書きと横書きの混在テスト</h1>
 <div class=v><p>吾輩は猫である。名前はまだ無い。どこで生れたかとんと見当がつかぬ。何でも薄暗いじめじめした所でニャーニャー泣いていた事だけは記憶している。</p>
 <p>「<ruby>東京<rt>とうきょう</rt></ruby>」「２０２６年１０月２３日」。句読点、約物、半角カナ ｱｲｳｴｵ、全角英数ＡＢＣ１２３。</p></div>
-<p>横書き：日本語の文章には漢字・ひらがな・カタカナが混ざります。約物の位置（「」『』【】）と禁則処理も確認対象です。</p>%s</body></html>""",
+<p>横書き：日本語の文章には漢字・ひらがな・カタカナが混ざります。約物の位置（「」『』【】）と禁則処理も確認対象です。</p>@@FILL@@</body></html>""",
     "form-controls": """<html><head><meta charset=utf-8><style>body{font-family:Helvetica;margin:2cm}label{display:block;margin:.5em 0}</style></head>
 <body><h2>申込フォーム / Application form</h2>
 <label>Name <input value="山田 太郎" size=30></label><label>Email <input type=email value="taro@example.jp"></label>
 <label><input type=checkbox checked> I agree</label><label><input type=radio name=r checked> A <input type=radio name=r> B</label>
 <label>Plan <select><option>Basic<option selected>Pro</select></label><label>Notes<br><textarea rows=4 cols=50>multi
 line</textarea></label>
-<progress value=70 max=100></progress> <meter value=.6></meter> <button>Submit</button>%s</body></html>""",
+<progress value=70 max=100></progress> <meter value=.6></meter> <button>Submit</button>@@FILL@@</body></html>""",
     "code-listing": """<html><head><meta charset=utf-8><style>body{margin:1.5cm}pre{font-family:Menlo,monospace;font-size:9pt;background:#f4f4f4;padding:1em;white-space:pre-wrap}
-.k{color:#a0a}.s{color:#080}.c{color:#888}</style></head><body><h3>src/render.rs (excerpt)</h3><pre>%s</pre>%s</body></html>""",
+.k{color:#a0a}.s{color:#080}.c{color:#888}</style></head><body><h3>src/render.rs (excerpt)</h3><pre>@@CODE@@</pre>@@FILL@@</body></html>""",
 }
 
 LOREM = ("Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor "
@@ -412,12 +475,10 @@ def collect_generated(limit_browser, limit_web, limit_office, limit_scan, limit_
                 if n >= limit_browser:
                     break
                 filler = "".join(f"<p>{LOREM * (variant + 1)}</p>" for _ in range(6 * (variant + 1)))
-                if name == "code-listing":
-                    html = tpl % (code, filler)
-                elif name == "article-columns":
-                    html = tpl % (filler[: len(filler) // 2], filler[len(filler) // 2:])
-                else:
-                    html = tpl % filler
+                html = (tpl.replace("@@CODE@@", code)
+                        .replace("@@FILL1@@", filler[: len(filler) // 2])
+                        .replace("@@FILL2@@", filler[len(filler) // 2:])
+                        .replace("@@FILL@@", filler))
                 src = tmp / f"{name}-{variant}.html"
                 src.write_text(html, encoding="utf-8")
                 out = tmp / f"chrome-{name}-{variant}.pdf"
