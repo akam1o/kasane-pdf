@@ -912,6 +912,8 @@ mod tests {
             causes: causes.iter().map(|s| s.to_string()).collect(),
             cause_pages: causes.iter().map(|s| (s.to_string(), 1)).collect(),
             expect: "pass".into(),
+            producer: String::new(),
+            pdf_version: String::new(),
             total_pages: 1,
             probe_pages: 1,
             probe_walk_errors: 0,
