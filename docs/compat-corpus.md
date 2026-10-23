@@ -320,11 +320,10 @@ The corpus grew from 106 to **511** files with `compat/collect-corpus.py`
 (sources and licences below; every file registered through
 `fetch-corpus.py --local`, de-duplicated by SHA-256, described by
 producer family / `%PDF` version / encryption, and kept out of git).
-The object-store upload is **pending** — no store credentials were
-available in this environment — so the 405 new files exist in the
-manifest and in `compat/corpus/` only; `fetch-corpus.py sync` uploads
-exactly those once `KASANE_CORPUS_*` and the AWS credentials are set
-(see *Credentials*). Redistribution flags: 0 `yes`,
+All 511 files are in the object store (`fetch-corpus.py sync`
+uploaded the 405 new ones plus one re-keyed by its refreshed
+category; a fresh `download` into an empty directory reproduces the
+corpus and `verify` reports every hash intact). Redistribution flags: 0 `yes`,
 0 `no` (the veraPDF suite) — a public bucket can be
 built from the `yes` subset.
 
