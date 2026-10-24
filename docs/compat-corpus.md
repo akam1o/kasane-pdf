@@ -1131,31 +1131,24 @@ newly added files are reported, not failed.
 
 ## Pre-publication audit (repository and history)
 
-Scanned the tracked tree and all 91 commits for credentials and
-environment-specific identifiers (patterns: AWS/R2 key IDs,
-`SECRET`/`token`/`password`, private-key headers, the R2 endpoint
-host, the Cloudflare account ID, the bucket name, local user paths,
-the maintainer's employer and e-mail). Findings, classified:
+Re-run before the Apache-2.0 release preparation over the tracked tree
+and all 118 commits (patterns: AWS/R2 key IDs, `SECRET`/`token`/
+`password`, private-key headers, the R2 endpoint host, 32-hex
+Cloudflare account IDs, bucket-name assignments, local user paths,
+employer domains, personal e-mail). Findings, classified:
 
 | item | kind | where | action before going public |
 |---|---|---|---|
-| R2 account ID (32-hex) inside the endpoint URL | **identifier**, not a secret — it does not grant access by itself, but it pins the repo to one Cloudflare account and is unwanted in a public history | 11 historical commits of `compat/fetch-corpus.py` and `docs/compat-corpus.md`; **absent from HEAD** (the example config uses `<ACCOUNT_ID>`) | either accept it (identifier only) or rewrite history once, right before the first public push, with `git filter-repo --replace-text`; **not done in this change** — rewriting now would invalidate every open branch and the commit IDs quoted in the run reports |
-| bucket name `kasane-pdf-corpus` | identifier | same 11 commits; HEAD uses the `CORPUS_BUCKET` variable | same decision as above; a bucket name is not sensitive, but the bucket must stay private (it holds non-redistributable files) |
-| `*.r2.cloudflarestorage.com` host | identifier (vendor) | 19 commits + HEAD example/docs | fine to publish |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | **variable names only**; no value has ever been committed (0 hits for key-ID or secret patterns in any commit) | docs + example env file | nothing to rotate; keep `.env`/`compat/corpus.env` ignored |
-| local paths (`/Users/…`), employer domain, personal e-mail | — | 0 hits in tree or history (commit author is the noreply address) | nothing |
-| `compat/corpus.env` (the real local config) | gap in `.gitignore` — `.env.*` does not match `corpus.env` | not present in tree or history | add `compat/corpus.env` to `.gitignore` (done in this change) |
+| R2 account ID (32-hex) inside an endpoint URL, and the bucket name | **identifiers**, not secrets — they grant no access by themselves, but pin the repository to one Cloudflare account and name a private bucket | **2 historical commits** of 2026-10-22 (`compat/fetch-corpus.py`, `docs/compat-corpus.md`); **absent from HEAD** — the example config uses `<ACCOUNT_ID>` and `your-corpus-bucket`, code reads `KASANE_CORPUS_ENDPOINT` / `KASANE_CORPUS_BUCKET` | decision for the maintainer: accept (identifier only) or rewrite history once, right before the first public push (`git filter-repo --replace-text` on a fresh clone, then re-tag and force-push *once*, never afterwards). **Not done** in this preparation — the values are not reproduced in any report |
+| `*.r2.cloudflarestorage.com` host | identifier (vendor) | docs, example config, history | fine to publish |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, `KASANE_R2_*` | **variable / secret names only**; no value has ever been committed (0 hits for key-ID, secret or token patterns in any commit) | docs, example env file, `.github/workflows/nightly.yml` | nothing to rotate; keep `.env` / `compat/corpus.env` ignored |
+| local paths (`/Users/…`), employer domain, personal e-mail | — | 0 hits in tree or history (commit author is the GitHub noreply address) | nothing |
+| generated PDFs, rendered images, diff images, logs | — | none tracked; `compat/corpus/`, `compat/reports/`, `assets/cjk/`, `target*/`, `.venv-corpus/` are ignored; the only committed results are the aggregate baselines under `compat/baselines/` | nothing |
+| `tests/fixtures/eexec_cmsy10.bin`, `type1_cff.bin` | font subsets extracted from corpus PDFs | tracked | licence noted in `tests/fixtures/README.md` and `NOTICE`; the cmsy10 program's source distribution is **unverified** — replace with a generated fixture or confirm before release if strictness is wanted |
 
 So: **no secret has ever been committed and no rotation is needed.**
-The only pre-publication decision is whether to scrub the account
-ID and bucket name from 11 historical commits; if yes, do it as a
-single `filter-repo` pass on a fresh clone, re-tag, and force-push
-*once* before the repository is public, never afterwards.
-Configuration layout is already in the recommended shape — code
-reads `KASANE_CORPUS_ENDPOINT`/`KASANE_CORPUS_BUCKET`/
-`KASANE_CORPUS_PREFIX` and the `AWS_*` credentials from the
-environment or an ignored env file, and `compat/corpus.env.example`
-documents the variables with placeholders.
+The one pre-publication decision is whether to scrub the account ID
+and bucket name from two historical commits.
 
 ## Failure-cause analysis
 
