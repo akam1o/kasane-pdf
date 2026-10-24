@@ -1,9 +1,9 @@
 # Combined region removal + document-metadata removal
 
-## Combined region removal + metadata entry removal (M26, `remove_regions_and_document_metadata`, CLI `experimental-remove-regions --remove-document-metadata`)
+## Combined region removal + metadata entry removal (`remove_regions_and_document_metadata`, CLI `experimental-remove-regions --remove-document-metadata`)
 
 **Not redaction or sanitizing.** Runs the full `remove_regions`
-plan *and* the M25 metadata-entry strip in one `Edit` session and
+plan *and* the metadata-entry strip in one `Edit` session and
 one `rewrite` — no intermediate PDF is produced or re-parsed.
 
 - Same input rules, per-page eligibility, and cumulative budgets

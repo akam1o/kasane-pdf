@@ -1,36 +1,36 @@
 # Test layout
 
 Tests are organised by **feature / responsibility**, not by the
-milestone that introduced them. Cargo compiles every `*.rs` file
+order in which they were written. Cargo compiles every `*.rs` file
 directly under `tests/` as a separate integration-test binary.
 
 ## Layout
 
 | File | Area exercised |
 |---|---|
-| `parse_streams.rs` | stream decode, xref streams, object streams, page contents, free-entry invalidation, limits (M1) |
-| `parse_predictors.rs` | hand-computed FlateDecode PNG/TIFF predictor verification (M1.1) |
-| `parse_content.rs` | content-stream → `Operation` parsing, `Matrix`, resource lookup, structural balance (M2) |
+| `parse_streams.rs` | stream decode, xref streams, object streams, page contents, free-entry invalidation, limits |
+| `parse_predictors.rs` | hand-computed FlateDecode PNG/TIFF predictor verification |
+| `parse_content.rs` | content-stream → `Operation` parsing, `Matrix`, resource lookup, structural balance |
 | `parse_fixtures.rs` | hand-crafted fixtures in `fixtures/` — one expected outcome each |
-| `render_basic.rs` | page→pixmap raster, PNG output, unsupported-content errors (M3) |
-| `render_xobjects.rs` | Form/Image XObject `Do` painting, `/Matrix`/`BBox`/resources (M4) |
-| `render_text_truetype.rs` | embedded TrueType text rendering (M5) |
-| `text_tounicode.rs` | ToUnicode CMap + positioned `extract_text` (M6) |
-| `text_extract_hardening.rs` | ActualText/OC refusal, budgets, headless extraction, coordinates (M6.1) |
-| `text_cid.rs` | Type0/CIDFontType2/Identity-H render + extract (M7) |
-| `rewrite_roundtrip.rs` | full-rewrite round-trip, ref remap, refusal conditions (M8) |
-| `edit_annotations.rs` | `/Square` annotation editing via `Edit` session (M9) |
-| `cli_rewrite.rs` | `rewrite` subcommand + atomic-output guards (M8.2) |
-| `cli_annotate.rs` | `annotate-rect` subcommand (M9) |
-| `cli_inspect.rs` | `inspect` subcommand — page/annot/token/resource/info/version dumps (M10–M15) |
-| `cli_preflight.rs` | `preflight-redaction` diagnosis + JSON (M16) |
-| `cli_remove.rs` | `experimental-remove-text` / `experimental-remove-region` (M17–M20) |
-| `cli_audit_remove_multi.rs` | `audit-residuals`, `experimental-remove-regions`, `remove-document-metadata`, combined strip (M23–M26) |
-| `cli_remove_jpeg.rs` | JPEG `DCTDecode` + grid-aligned-CTM image editing (M27–M28) |
+| `render_basic.rs` | page→pixmap raster, PNG output, unsupported-content errors |
+| `render_xobjects.rs` | Form/Image XObject `Do` painting, `/Matrix`/`BBox`/resources |
+| `render_text_truetype.rs` | embedded TrueType text rendering |
+| `text_tounicode.rs` | ToUnicode CMap + positioned `extract_text` |
+| `text_extract_hardening.rs` | ActualText/OC refusal, budgets, headless extraction, coordinates |
+| `text_cid.rs` | Type0/CIDFontType2/Identity-H render + extract |
+| `rewrite_roundtrip.rs` | full-rewrite round-trip, ref remap, refusal conditions |
+| `edit_annotations.rs` | `/Square` annotation editing via `Edit` session |
+| `cli_rewrite.rs` | `rewrite` subcommand + atomic-output guards |
+| `cli_annotate.rs` | `annotate-rect` subcommand |
+| `cli_inspect.rs` | `inspect` subcommand — page/annot/token/resource/info/version dumps |
+| `cli_preflight.rs` | `preflight-redaction` diagnosis + JSON |
+| `cli_remove.rs` | `experimental-remove-text` / `experimental-remove-region` |
+| `cli_audit_remove_multi.rs` | `audit-residuals`, `experimental-remove-regions`, `remove-document-metadata`, combined strip |
+| `cli_remove_jpeg.rs` | JPEG `DCTDecode` + grid-aligned-CTM image editing |
 | `common/mod.rs` | shared CLI helpers — `bin`, `tmpdir`, `fixture`, `minimal_pdf`, `blocker_page_pdf` |
 
-The milestone tag in each file's header is **provenance only**; new
-tests are filed under their feature, not under a new `mNN.rs`.
+New tests are filed under their feature, never under a file named
+after the change that introduced them.
 
 ## Adding a test
 

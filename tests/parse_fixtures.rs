@@ -84,9 +84,9 @@ fn incremental_update_uses_newest_section() {
 
 #[test]
 fn xref_stream_parses_as_supported() {
-    // M1: xref streams are supported; the fixture must now parse.
-    let doc = Document::from_bytes(&fixture("xref_stream.pdf"))
-        .expect("xref_stream.pdf should parse in M1");
+    // Xref streams are supported; the fixture must now parse.
+    let doc =
+        Document::from_bytes(&fixture("xref_stream.pdf")).expect("xref_stream.pdf should parse");
     assert_eq!(doc.page_count(), 1);
     assert_eq!(doc.pages()[0].media_box().urx, 612.0);
 }

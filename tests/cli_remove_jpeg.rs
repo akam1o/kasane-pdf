@@ -1,4 +1,4 @@
-//! CLI JPEG (`DCTDecode`) and grid-aligned-CTM (M28)
+//! CLI JPEG (`DCTDecode`) and grid-aligned-CTM
 //! image-editing tests — rotated/reflected region removal
 //! and refusal protections.
 
@@ -239,7 +239,7 @@ fn cli_remove_region_progressive_jpeg_unsupported() {
 }
 
 // ------------------------------------------------------------------
-// M28 — grid-aligned CTM (rotation / reflection) image editing
+// Grid-aligned CTM (rotation / reflection) image editing
 // ------------------------------------------------------------------
 
 /// A raw 3×2 gray image painted under `cm` — non-square so each

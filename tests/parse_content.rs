@@ -1,6 +1,6 @@
-//! Content-stream parsing integration tests (milestone M2):
+//! Content-stream parsing integration tests:
 //! typed operations, the affine `Matrix` type, resource lookup,
-//! structural balance, and the M2 resource limits.
+//! structural balance, and the content-stream resource limits.
 
 use kasane_pdf::{Document, Error, Limits, Matrix, Object, Operation, TJItem};
 
@@ -862,7 +862,7 @@ fn error_discards_all_operations() {
 }
 
 // -------------------------------------------------------------------
-// Regression: M0–M1.1 still work
+// Regression: the object and stream layers still work
 // -------------------------------------------------------------------
 
 #[test]

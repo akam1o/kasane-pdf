@@ -1,4 +1,4 @@
-//! M23 — read-only **residual-information audit**.
+//! Read-only **residual-information audit**.
 //!
 //! [`audit_residuals`] enumerates places a PDF can still carry extra
 //! information — document metadata, attachments, annotations, form
@@ -2453,7 +2453,7 @@ mod tests {
 
     #[test]
     fn detects_images_fonts_tounicode_forms() {
-        // Reuse the M20-style fixture: font + FontFile2 + ToUnicode +
+        // Reuse the region-removal fixture: font + FontFile2 + ToUnicode +
         // image + form — all should be found.
         let font_bytes = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -2811,7 +2811,7 @@ mod tests {
         assert!(has_kind(&a, FindingKind::Resources));
     }
 
-    // ---- M23.1 — classification & traversal limits ----------------
+    // ---- classification & traversal limits ----------------
 
     /// A tiny `max_audit_edges` cuts the walk before it reaches the
     /// orphaned object — the orphan must be Unevaluated, never
@@ -3221,7 +3221,7 @@ mod tests {
         assert!(!find_kind(&a, FindingKind::FileSpec).is_empty());
     }
 
-    // ---- M23.2 — incremental scanning & entry failures ------------
+    // ---- incremental scanning & entry failures ------------
 
     /// Build an `Audit` for a single-object walk — the same state
     /// `audit_residuals` would construct, exposed to tests so the
@@ -3245,7 +3245,7 @@ mod tests {
     /// A wide container does not expand all its children into frames
     /// before the element budget can stop the walk — the production
     /// walker's stack stays proportional to *depth*, not breadth.
-    /// A pre-M23.2 walker that pushed one frame per child would show
+    /// An earlier walker that pushed one frame per child would show
     /// `max_walk_stack` climbing toward the container width.
     #[test]
     fn wide_input_does_not_preallocate_frames() {

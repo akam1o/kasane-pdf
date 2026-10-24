@@ -1,4 +1,4 @@
-//! Page→pixmap rendering integration tests (milestone M3):
+//! Page→pixmap rendering integration tests:
 //! raster rendering, PNG output, and the error/limits surface
 //! for unsupported content.
 
@@ -291,7 +291,7 @@ fn clip_is_restored_by_q() {
 
 #[test]
 fn text_page_with_missing_font_is_structure_error() {
-    // M5 implements text; an undefined /Font name is a Structure
+    // Text is implemented; an undefined /Font name is a Structure
     // error, not Unsupported.
     let err = render(b"BT /F1 12 Tf 10 10 Td (x) Tj ET").unwrap_err();
     assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
@@ -305,7 +305,7 @@ fn tf_with_missing_font_is_structure_error() {
 
 #[test]
 fn do_xobject_missing_is_structure_error() {
-    // Do is implemented in M4; a name that doesn't resolve is
+    // Do is implemented; a name that doesn't resolve is
     // Structure (not Unsupported) — the operator itself works.
     let err = render(b"/Im1 Do").unwrap_err();
     assert!(matches!(err, Error::Structure(_)), "got: {err:?}");

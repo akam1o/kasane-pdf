@@ -1,4 +1,4 @@
-//! Milestone M9 — add a `/Subtype /Square` annotation and rewrite.
+//! Add a `/Subtype /Square` annotation and rewrite.
 //!
 //! The session ([`Document::edit`]) accumulates synthetic objects in
 //! an overlay; [`Edit::rewrite`] emits a normal single-revision PDF.
@@ -949,7 +949,7 @@ fn synthetic_object_limit() {
 }
 
 // ------------------------------------------------------------------
-// §6  synthetic-number collision handling (M9.1)
+// §6  synthetic-number collision handling
 // ------------------------------------------------------------------
 
 #[test]

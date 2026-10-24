@@ -1,8 +1,8 @@
-# Decision — multi-page region removal (M24)
+# Decision — multi-page region removal
 
-## M24 — multi-page experimental region removal
+## Multi-page experimental region removal
 
-`remove_regions` extends the M20 `remove_region` edit across
+`remove_regions` extends the `remove_region` edit across
 several pages in **one `Edit` session and one `rewrite`**. It is
 still an *experimental content editor* — not redaction — and the
 per-page eligibility list is unchanged.
@@ -22,7 +22,7 @@ Key choices:
   each edited page's dict (Contents + materialised Resources +
   updated XObject names) is staged into `page_dicts` and inserted
   into the same overlay *after* every page's edits are computed.
-  `rewrite` runs exactly once at the end. `M22.1`'s rule — Contents
+  `rewrite` runs exactly once at the end. The rule — Contents
   and materialised Resources live in *one* page dict — is applied
   per page before the dict is staged, so a page's contents edit can
   never be clobbered by another page's Resources materialisation.
@@ -49,7 +49,7 @@ Key choices:
   keeps the original image stream and content; the writer's
   reachability scan drops the orphaned original only when nothing
   references it.
-- **M24.1 — per-page rect cap + panic-free errors.** The merged
+- **Per-page rect cap + panic-free errors.** The merged
   per-page rect count is checked against `max_diag_rects` inside
   the merge loop with `checked_add` — a page repeated across
   several specs accumulates toward the same limit, so splitting a

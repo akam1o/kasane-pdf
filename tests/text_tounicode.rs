@@ -1,6 +1,6 @@
-//! M6 — ToUnicode CMap parsing and positioned text extraction.
+//! ToUnicode CMap parsing and positioned text extraction.
 //!
-//! Covers the M6 scope: `/ToUnicode` CMap (bfchar, bfrange
+//! Covers: `/ToUnicode` CMap (bfchar, bfrange
 //! sequential + array, surrogate pairs, multi-scalar mappings),
 //! `extract_text` API, char-by-char page-space positions, and the
 //! refusal paths for malformed CMaps and unsupported constructs.

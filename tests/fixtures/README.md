@@ -17,7 +17,7 @@ WinAnsiEncoding tables in `src/font.rs` are derived from ISO 32000-1
 Annex D and the Adobe Glyph List (public-domain name→Unicode mapping
 shipped by fontTools).
 
-## JPEG fixtures (M27)
+## JPEG fixtures
 
 The unit tests in `src/remove_region.rs` embed three small baseline
 JPEGs as hex constants:
@@ -52,7 +52,7 @@ cjpeg -quality 90 -outfile c16.jpg c16.ppm
 dependencies — the JPEG decoder used by the library is the pure-Rust
 `jpeg-decoder` crate already declared in `Cargo.toml`.
 
-### M27.1 additions
+### Coding-process and colour-transform constants
 
 Three more constants exercise the coding-process check and the
 `/ColorTransform` precedence rules:
@@ -78,7 +78,7 @@ All are derived from the same deterministic `c8.ppm` as
 with `00 00 00 1f 00 0f`. jpeg-decoder's fixed-point YCbCr→RGB
 rounds ±1 from libjpeg; that tolerance is asserted in the tests.
 
-### M27.2 additions
+### Effective colour-transform constants
 
 Five more constants exercise the *effective* colour-transform
 decision — APP14-vs-component-ID precedence, the spec default, and

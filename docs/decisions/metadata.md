@@ -1,6 +1,6 @@
-# Decision — document-metadata entry removal (M25)
+# Decision — document-metadata entry removal
 
-## M25 — document-metadata entry removal
+## Document-metadata entry removal
 
 `remove_document_metadata` removes exactly two *entries* — the
 trailer `/Info` key and the catalog `/Metadata` key — and runs one

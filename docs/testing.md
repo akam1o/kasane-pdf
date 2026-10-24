@@ -2,7 +2,7 @@
 
 ## Layout
 
-Tests are organised by **feature**, not by milestone — see
+Tests are organised by **feature**, not by when they were written — see
 [`../tests/README.md`](../tests/README.md) for the authoritative map
 of `tests/*.rs` → the area it exercises and where to add a new case.
 
@@ -50,7 +50,7 @@ but external tools are used to *confirm* behaviour on real files:
 - [`../scripts/verify-resources-materialize.sh`](../scripts/verify-resources-materialize.sh)
   — inherited-`/Resources` materialisation checked with
   `qpdf`/`pdftotext`/`pdftoppm`/`pdfimages`.
-- `pdfimages`, `pdftoppm`, `djpeg` — used in M27/M28 verification to
+- `pdfimages`, `pdftoppm`, `djpeg` — used in the JPEG / grid-aligned-CTM verification to
   confirm extracted samples and rendered edit positions; the clone's
   decoded bytes are verified in-process so decoder differences are
   not confused with real edits.

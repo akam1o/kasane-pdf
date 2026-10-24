@@ -1,6 +1,6 @@
 # `/Square` annotation editing
 
-## Annotation edit — `/Square` (M9, ISO 32000-1 §12.5.6.9, §8.4, §12.5.2)
+## Annotation edit — `/Square` (ISO 32000-1 §12.5.6.9, §8.4, §12.5.2)
 
 `Document::edit()` returns an [`Edit`] session that accumulates
 `/Subtype /Square` annotations as **synthetic objects** in a reserved
@@ -12,7 +12,7 @@ overlay plus the live document through the normal rewrite path.
 |---|---|---|
 | `/Subtype /Square` on a page | ✅ | `add_square(page, rect, rgb, width)` |
 | Rect meaning | ✅ | **the annotation's outer bounding box** — the stroke's outer edge, not the path centreline (§12.5.5 + "Border Styles": border drawn *inside* the Rect) |
-| Rect space | ✅ | un-rotated PDF user space (+x right, +y up); CropBox/Rotate not applied — same space M6.1 reports |
+| Rect space | ✅ | un-rotated PDF user space (+x right, +y up); CropBox/Rotate not applied — same space `extract_text` reports |
 | Stroke colour | ✅ | `/C` `[r g b]`, each channel validated finite `0..=1` — out-of-range is an error, never clamped |
 | Line width | ✅ | `/BS << /S /S /W w >>`; finite and `> 0`, and `< min(rect w,h)` so the stroke can't invert |
 | Fill | — | interior is unfilled (`S` stroke only); no `/IC` emitted |
@@ -23,7 +23,7 @@ overlay plus the live document through the normal rewrite path.
 | `/Annots` absent / direct / indirect | ✅ | a fresh array object is always created — a shared `/Annots` is never mutated in place, so annotating one page can't alter another |
 | Existing annots / links | ✅ | preserved verbatim in the new array |
 | `/UserUnit` ≠ 1 | ❌ | `Error::Unsupported` — the rect is in default user units and a scaled page would misplace it |
-| Refusals | ✅ | all M8 rewrite refusals still apply (encryption, signatures, version, named dests, malformed structure, limits) |
+| Refusals | ✅ | all rewrite refusals still apply (encryption, signatures, version, named dests, malformed structure, limits) |
 | Synthetic object numbers | ✅ | allocated downward from `u32::MAX` skipping any number *reserved* by the input xref at **any generation or entry type** (in-use, free, compressed), any already-allocated synthetic, or any overlay key — a synthetic ref can never alias a real, reserved, or prior synthetic number; exhaustion and `max_edit_objects` are typed errors |
 | Input-ref integrity | ✅ | a reference found in an *input* body that lands on a synthetic number is treated as a dangling input ref and resolved via the document only — never silently resolved to a synthetic body; overlay (edit) refs may resolve to synthetics |
 | Out-of-range page / non-finite rect / bad colour / bad width | ❌ | `Error::Structure`, no partial state |
@@ -33,7 +33,7 @@ Not in scope: fill/IC, dashes, transparency, other annotation
 subtypes, editing or deleting existing annotations, page edits,
 flattening, redaction, a general-purpose edit API, or kasane's own
 renderer painting the annotation (it still refuses pages with
-`/Annots` — that is M6 behaviour, unchanged).
+`/Annots` — that is extraction behaviour, unchanged).
 
 External check: `qpdf --check` clean; `pdftoppm -hide-annotations`
 output is byte-identical to the un-annotated input (only the

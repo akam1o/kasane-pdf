@@ -196,7 +196,7 @@ fn cli_inspect_bad_annots_is_error() {
 }
 
 // ------------------------------------------------------------------
-// M11 — `inspect` annotation dump
+// `inspect` annotation dump
 // ------------------------------------------------------------------
 
 /// A 1-page PDF with two annotations exercising every value type:
@@ -349,7 +349,7 @@ fn cli_inspect_annot_dangling_ref_errors() {
 }
 
 // ------------------------------------------------------------------
-// M11.1 — `inspect` annotation element types (ref | dict)
+// `inspect` annotation element types (ref | dict)
 // ------------------------------------------------------------------
 
 /// /Annots mixes a direct dict and an indirect ref — real files do.
@@ -434,7 +434,7 @@ fn cli_inspect_annot_bad_element_errors() {
 }
 
 // ------------------------------------------------------------------
-// M12 — `inspect` content-stream statistics
+// `inspect` content-stream statistics
 // ------------------------------------------------------------------
 
 /// A 1-page PDF whose /Contents exercises SC vs SCN, sc vs scn, and
@@ -561,7 +561,7 @@ fn cli_inspect_tokens_counts_array_streams() {
 }
 
 // ------------------------------------------------------------------
-// M13 — `inspect` resource name enumeration
+// `inspect` resource name enumeration
 // ------------------------------------------------------------------
 
 /// A 1-page PDF with every enumerable resource category populated:
@@ -654,7 +654,7 @@ fn cli_inspect_resource_enumeration() {
 }
 
 // ------------------------------------------------------------------
-// M13.1 — `inspect` resource-line prefix consistency
+// `inspect` resource-line prefix consistency
 // ------------------------------------------------------------------
 
 /// The resource block opens with `resources fonts <n>` — `resources`
@@ -707,7 +707,7 @@ fn cli_inspect_resource_prefix_consistency() {
 }
 
 // ------------------------------------------------------------------
-// M13.2 — `inspect` resource-category order
+// `inspect` resource-category order
 // ------------------------------------------------------------------
 
 /// The resource section lists categories in the canonical order a
@@ -778,7 +778,7 @@ fn cli_inspect_resource_category_order() {
 }
 
 // ------------------------------------------------------------------
-// M14 — `inspect` /Info dump
+// `inspect` /Info dump
 // ------------------------------------------------------------------
 
 /// A 1-page PDF with a populated /Info dict — every value type
@@ -865,7 +865,7 @@ fn cli_inspect_info_absent() {
 }
 
 // ------------------------------------------------------------------
-// M15 — `inspect` PDF version line
+// `inspect` PDF version line
 // ------------------------------------------------------------------
 
 /// A minimal 1-page PDF with a given header version and optional

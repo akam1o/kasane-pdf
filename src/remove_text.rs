@@ -1,4 +1,4 @@
-//! M17 — **experimental** scoped text removal.
+//! **Experimental** scoped text removal.
 //!
 //! [`remove_text`] deletes the character codes whose *filled* ink
 //! bounds land inside caller-supplied rectangles, rewriting the page's
@@ -14,7 +14,7 @@
 //! not guarantee irreversibility. See the crate docs and
 //! `docs/features/editing-text.md` for the full scope list.
 //!
-//! **M18 — one level of `/Form`.** A page-level `Do` whose target is
+//! **One level of `/Form`.** A page-level `Do` whose target is
 //! a `/Form` XObject is in scope: the invocation's inner text is
 //! edited by cloning the form stream into a new object, registering
 //! it under a fresh `/XObject` name (`KasFm{n}`) in the page's
@@ -23,7 +23,7 @@
 //! own copy, so the unedited call (and every other page sharing the
 //! original) keeps the original object. Nested `Do`s (a `Do` inside
 //! a form), images, `/Group`/`/OC`/`/Ref` forms, and every other
-//! M17 refusal stay refused — the eligibility check is the walk's
+//! text-removal refusal stay refused — the eligibility check is the walk's
 //! `form_path` depth plus the existing `blocker`/`uncertain`/mode
 //! rules.
 //!
@@ -48,7 +48,7 @@
 //!   `uncertain`, or `blocker`-carrying — those are refused, never
 //!   silently treated as "nothing to remove".
 //!
-//! **Op-time state (M17.1).** The diagnosis walker records the text
+//! **Op-time state.** The diagnosis walker records the text
 //! state *at each page-level show op* (`Tj`/`TJ`/`'`/`"`) —
 //! resolved font, `Tfs`, `Th`, `Tc`, `Tw` — keyed by `op_index`.
 //! Selection and rewrite read the *same* snapshot, so a `Tf`/`Tc`/
@@ -211,7 +211,7 @@ pub fn remove_text(
 
     // ---- page-level eligibility -----------------------------------
     // A page is eligible only when every occurrence the walk produced
-    // is one M18 can faithfully rewrite:
+    // is one the form-level edit can faithfully rewrite:
     //
     // - `Text` targets must all be `Tr 0` fill — page-level *and*
     //   form-level alike. An out-of-rect `Tr 3`/`Tr 1` glyph still
@@ -223,7 +223,7 @@ pub fn remove_text(
     // - `Image` and `Other` targets are refused regardless of rects —
     //   their *presence* is out of scope.
     // - Any occurrence at `form_path` depth ≥ 2 means a `Do` inside
-    //   a form — nested XObjects are out of scope for M18.
+    //   a form — nested XObjects are out of scope.
     for t in &walker.targets {
         if t.site.form_path.len() > 1 {
             return Err(Error::Unsupported {
@@ -319,7 +319,7 @@ pub fn remove_text(
     // final PDF. Checked arithmetic; the overlay never holds more
     // than this budget at once.
     let mut generated_bytes: u64 = 0;
-    // M18: each *invocation* whose inner text lost codes gets its own
+    // Each *invocation* whose inner text lost codes gets its own
     // cloned Form object — the original stream stays untouched so
     // other invocations (and other pages sharing it) keep painting the
     // removed characters. Cloning is per-invocation (no dedup): two
@@ -547,7 +547,7 @@ pub fn remove_text(
 /// from the ops list — either way it's a structure error, never a
 /// guess.
 ///
-/// Shared with `remove_region.rs` (M20).
+/// Shared with `remove_region.rs`.
 pub(crate) fn show_state<'a>(
     walker: &'a DiagWalker<'a>,
     form_path: &[FormFrame],
@@ -573,7 +573,7 @@ pub(crate) fn show_state<'a>(
 /// A `Do`/`sh` or a non-show op passes straight through — callers
 /// intercept `Do` before calling this.
 ///
-/// Shared with `remove_region.rs` (M20).
+/// Shared with `remove_region.rs`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn rewrite_ops_for(
     walker: &DiagWalker,
@@ -701,7 +701,7 @@ fn fresh_xobject_name(
 /// Returns `(ops, codes_removed, sites)` — `ops` is empty when the
 /// whole string was removed.
 ///
-/// Shared with `remove_region.rs` (M20).
+/// Shared with `remove_region.rs`.
 fn rewrite_show_text(
     st: &ShowTextState,
     site_lookup: &BTreeMap<(Vec<FormFrame>, usize, usize), Site>,
@@ -847,7 +847,7 @@ fn rewrite_show_text(
 /// (the index runs across the whole array); numeric elements pass
 /// through unchanged. `st` is the op-time text state.
 ///
-/// Shared with `remove_region.rs` (M20).
+/// Shared with `remove_region.rs`.
 fn rewrite_tj(
     st: &ShowTextState,
     site_lookup: &BTreeMap<(Vec<FormFrame>, usize, usize), Site>,
@@ -988,7 +988,7 @@ fn rewrite_tj(
 /// cannot bypass the checks. On failure the partial bytes are
 /// dropped with the buffer (no halfway stream escapes to the caller).
 ///
-/// Shared with `remove_image.rs` (M19) and `remove_region.rs` (M20) —
+/// Shared with `remove_image.rs` and `remove_region.rs` —
 /// the writer is agnostic to *what* it writes.
 pub(crate) struct BoundedWriter<'a> {
     buf: Vec<u8>,
@@ -1070,7 +1070,7 @@ impl<'a> BoundedWriter<'a> {
 /// `max_output_bytes`. The check happens *before* every byte lands
 /// in the Vec, not after the whole op is written.
 ///
-/// Shared with `remove_image.rs` (M19) and `remove_region.rs` (M20).
+/// Shared with `remove_image.rs` and `remove_region.rs`.
 pub(crate) fn serialize_ops(
     ops: &[Operation],
     limits: &Limits,
@@ -1099,7 +1099,7 @@ pub(crate) fn serialize_ops(
 /// stays under `serialize_ops`'s `byte_budget` bound, so a single
 /// huge body and many small ones are both bounded.
 ///
-/// Shared with `remove_image.rs` (M19) and `remove_region.rs` (M20).
+/// Shared with `remove_image.rs` and `remove_region.rs`.
 pub(crate) fn charge_generated(acc: u64, stream_len: usize, limits: &Limits) -> Result<u64, Error> {
     let total = acc
         .checked_add(stream_len as u64)
@@ -1813,7 +1813,7 @@ mod tests {
         parts.push(b"trailer\n<< /Size 6 /Root 1 0 R >>\n".to_vec());
         parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
         let d = doc(&parts.concat());
-        // M18: a Form `Do` is in scope — an empty form with no
+        // A Form `Do` is in scope — an empty form with no
         // removals succeeds (no clone is needed since nothing was
         // selected inside it).
         let r = remove_text(&d, 0, &[(0.0, 0.0, 200.0, 200.0)], &Limits::default()).unwrap();
@@ -2013,7 +2013,7 @@ mod tests {
         parts.concat()
     }
 
-    /// M18 — remove a code inside a Form `Do`: the invocation is
+    /// Remove a code inside a Form `Do`: the invocation is
     /// cloned (new `/XObject` name + new stream object), the page's
     /// `Do` points at the clone, and the *original* form object is
     /// untouched in the output.
@@ -2044,7 +2044,7 @@ mod tests {
         );
     }
 
-    /// M18 — two `Do`s of the *same* form are distinct invocations:
+    /// Two `Do`s of the *same* form are distinct invocations:
     /// only the one whose inner text a rect hits is cloned; the other
     /// keeps pointing at the original object.
     #[test]
@@ -2160,7 +2160,7 @@ mod tests {
         assert_eq!(kasm_do, 1, "one /KasFm0 Do appeared: {out}");
     }
 
-    /// M18 — the caller's text state is inherited by the form: `Tc`
+    /// The caller's text state is inherited by the form: `Tc`
     /// set at page level before the `Do` applies to the form's `Tj`,
     /// so the kern carries `Tc` even though the form never sets it.
     #[test]
@@ -2264,7 +2264,7 @@ mod tests {
         assert!(out.contains("-683.3333"), "inherited Tc=2 kern: {out}");
     }
 
-    /// M18 — rect hits at *both* levels: page-level text is rewritten
+    /// Rect hits at *both* levels: page-level text is rewritten
     /// in the page stream while the form invocation is cloned — the
     // two scopes compose.
     #[test]
@@ -2374,7 +2374,7 @@ mod tests {
         assert!(out.contains("[(A) -600 (C)] TJ"), "form clone: {out}");
     }
 
-    /// M18 — a form stream that *is* `/Filter`ed is decoded, rewritten,
+    /// A form stream that *is* `/Filter`ed is decoded, rewritten,
     /// and emitted uncompressed — the clone dict must not keep the
     /// stale `/Filter` (the decoder would otherwise re-apply it).
     #[test]
@@ -2506,7 +2506,7 @@ mod tests {
         );
     }
 
-    /// M18 — a form carrying `/Group` (transparency group) is refused:
+    /// A form carrying `/Group` (transparency group) is refused:
     /// the walker already blocks on it, and the refusal survives to
     /// remove_text even when the rect selects its text.
     #[test]
@@ -2608,7 +2608,7 @@ mod tests {
         );
     }
 
-    /// M18 — the same form object invoked on *two pages*: editing
+    /// The same form object invoked on *two pages*: editing
     /// page 1's invocation leaves page 2's `Do` (and the shared form)
     /// untouched — only page 1's resources gain the clone.
     #[test]
@@ -2727,7 +2727,7 @@ mod tests {
         assert_eq!(out.matches("/KasFm0 Do").count(), 1, "page 1 cloned: {out}");
     }
 
-    /// M18 — a `Do` inside a form refuses even when the nested form
+    /// A `Do` inside a form refuses even when the nested form
     /// is *empty* (no inner text to trip the depth check): the
     /// invocation record itself (`Form` target at depth 1) is the
     /// nested signal.
@@ -2836,7 +2836,7 @@ mod tests {
         );
     }
 
-    /// M18 — a `Do` *inside* a form refuses (nested XObjects).
+    /// A `Do` *inside* a form refuses (nested XObjects).
     #[test]
     fn nested_do_is_refused() {
         // The outer form contains a `Do` of the inner form.
@@ -2951,7 +2951,7 @@ mod tests {
     }
 
     /// An *image* `Do` is still refused — form text is the only
-    /// XObject kind M18 edits.
+    /// XObject kind the text editor edits.
     #[test]
     fn image_xobject_is_refused() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
@@ -3177,7 +3177,7 @@ mod tests {
         assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
     }
 
-    /// M17.1 — an invisible (Tr 3) text occurrence *outside* the
+    /// An invisible (Tr 3) text occurrence *outside* the
     /// removal rect is still out of scope: the page's eligibility is
     /// decided by what it *shows*, not by what was selected. The
     /// current code only checks the render mode of *hit* targets, so
@@ -3321,7 +3321,7 @@ mod tests {
         parts.concat()
     }
 
-    /// M17.1 — a font switch between shows must not leak the second
+    /// A font switch between shows must not leak the second
     /// font's widths into the first op's kern. `/F1` widths are 600,
     /// `/F2` 300: removing 'B' under `/F1` (k=600) and 'C' under
     /// `/F2` (k=300) must each carry their own width.
@@ -3353,7 +3353,7 @@ mod tests {
         assert!(out.contains("[-300] TJ"), "F2 kern 300: {out}");
     }
 
-    /// M17.1 — `q`/`Q` restores text state (Tc/Tw/Tz are graphics
+    /// `q`/`Q` restores text state (Tc/Tw/Tz are graphics
     /// state): a `Tc` set inside `q…Q` must not leak past the `Q`,
     /// and the kern for a glyph shown *after* `Q` uses the restored
     /// value.
@@ -3382,7 +3382,7 @@ mod tests {
         assert!(out.contains("[-600] TJ"), "restored Tc=0 kern: {out}");
     }
 
-    /// M17.1 — trailing state ops (`Tf`/`Tc` with no following show)
+    /// Trailing state ops (`Tf`/`Tc` with no following show)
     /// must not change an earlier op's rewrite.
     #[test]
     fn trailing_state_ops_do_not_change_rewrite() {
@@ -3399,7 +3399,7 @@ mod tests {
         assert!(out.contains("[(A) -683.3333] TJ"), "op-time state: {out}");
     }
 
-    /// M17.1 — multiple `BT`/`ET`: each `Tj` uses the state inside
+    /// Multiple `BT`/`ET`: each `Tj` uses the state inside
     /// its own text object.
     #[test]
     fn multiple_bt_et_each_use_own_state() {
@@ -3422,7 +3422,7 @@ mod tests {
         assert!(out.contains("[-933.3333 (D)] TJ"), "BT2 Tc=8: {out}");
     }
 
-    /// M17.1 — `'` runs under the *current* text state like any
+    /// `'` runs under the *current* text state like any
     /// show: a `Tc` set before it applies to its kern too.
     #[test]
     fn quote_uses_op_state() {
@@ -3439,7 +3439,7 @@ mod tests {
         );
     }
 
-    /// M17.1 — `"` updates Tw/Tc *before* showing: the snapshot
+    /// `"` updates Tw/Tc *before* showing: the snapshot
     /// carries the op's new values so the kern math matches.
     #[test]
     fn double_quote_uses_new_spacing() {
@@ -3561,7 +3561,7 @@ mod tests {
         parts.concat()
     }
 
-    /// M17.1 — a `Tf` switch from a 1-byte simple font to a 2-byte
+    /// A `Tf` switch from a 1-byte simple font to a 2-byte
     /// Identity-H font: each op's string decodes under its own code
     /// unit. `(AB)` under /F1 and `<0043 0044>` under /F2.
     #[test]
@@ -3590,7 +3590,7 @@ mod tests {
         assert!(out.contains("[(\\000C) -600] TJ"), "F2 keeps 2-byte: {out}");
     }
 
-    /// M17.1 — the rewrite must use the *state at the op*, not the
+    /// The rewrite must use the *state at the op*, not the
     /// end-of-stream state. Two `Tj`s with different font sizes: the
     /// second `Tj`'s kern must reflect *its* 10pt size, not the last
     /// `Tf` in the stream.
@@ -3626,7 +3626,7 @@ mod tests {
         );
     }
 
-    /// M17.1 — same problem for a `Tf` *font* switch: a second font
+    /// Same problem for a `Tf` *font* switch: a second font
     /// with different widths must not change the first `Tj`'s rewrite.
     /// Here the second font is the same file (different name only) so
     /// widths match and the kern is the same either way — instead make
@@ -3668,7 +3668,7 @@ mod tests {
         );
     }
 
-    /// M17.1 — a `LimitExceeded` from the walk must stay
+    /// A `LimitExceeded` from the walk must stay
     /// `LimitExceeded`, not be flattened into `Unsupported` — the
     /// caller distinguishes "out of scope" from "resource bound".
     #[test]
@@ -3864,7 +3864,7 @@ mod tests {
         assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
     }
 
-    // ---- M18.1 — cumulative budgets ---------------------------------
+    // ---- cumulative budgets ---------------------------------
 
     /// A single form invocation fits the per-stream `max_operations`
     /// parse cap, but *repeated* invocations accumulate op executions
@@ -4044,7 +4044,7 @@ mod tests {
         );
     }
 
-    // ---- M18.2 — BoundedWriter unit tests ----------------------------
+    // ---- BoundedWriter unit tests ----------------------------
 
     /// A `BoundedWriter` stops *before* the byte that would exceed
     /// the budget — the failed `push` leaves the buffer unchanged,

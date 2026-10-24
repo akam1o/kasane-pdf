@@ -208,7 +208,7 @@ fn cli_remove_text_input_unchanged() {
 
 #[test]
 fn cli_remove_text_op_state_change() {
-    // M17.1 — a Tc change mid-stream must not rewrite an earlier op
+    // A Tc change mid-stream must not rewrite an earlier op
     // under the stream-end state. `Tc=5` before `(AB)`, `Tc=0` before
     // `(C)`: removing 'B' must carry the op-time kern
     // -(600 + 5·1000/24) = -808.3333, not the end-of-stream -600.
@@ -317,7 +317,7 @@ fn cli_remove_text_op_state_change() {
 
 #[test]
 fn cli_remove_text_inside_form() {
-    // M18 — a Form `Do` whose inner text a rect hits is cloned
+    // A Form `Do` whose inner text a rect hits is cloned
     // per-invocation: the page's `Do` repoints at a `/KasFm0` clone
     // carrying the rewritten TJ, while the original form object keeps
     // its `(ABC)` bytes.
@@ -438,7 +438,7 @@ fn cli_remove_text_inside_form() {
     );
 }
 
-// M20.1 — `experimental-remove-region` CLI regression tests
+// `experimental-remove-region` CLI regression tests
 // ------------------------------------------------------------------
 
 /// A 1-page PDF with a JPEG image — the image is inside the rect
@@ -491,7 +491,7 @@ fn region_jpeg_pdf() -> Vec<u8> {
 
 /// The JPEG image is inside the rect but its bytes are truncated
 /// junk — the whole call fails and the pre-existing output file is
-/// left byte-identical. (DCTDecode itself is in scope since M27.)
+/// left byte-identical. (DCTDecode itself is in scope.)
 #[test]
 fn cli_remove_region_unsupported_image_refused() {
     let dir = tmpdir("rr-jpeg");
@@ -544,7 +544,7 @@ fn cli_remove_region_unsupported_image_outside_rect() {
 }
 
 /// A `'` op expands to `T*` + `TJ` — a `Do` after it keeps its
-/// original `op_index` and is correctly repointed (M20.1 §5).
+/// original `op_index` and is correctly repointed.
 #[test]
 fn cli_remove_region_quote_expansion_before_do() {
     let dir = tmpdir("rr-quote");

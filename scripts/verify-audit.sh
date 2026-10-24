@@ -1,5 +1,5 @@
 #!/bin/sh
-# Independent external check of audit-residuals findings (milestone M23).
+# Independent external check of audit-residuals findings.
 #
 # Compares the audit output against qpdf's view of the same files.
 # qpdf reports the *current logical* structure — it does NOT prove

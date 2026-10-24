@@ -1,5 +1,5 @@
 """Generate `KasaneJP.ttf` — a small subset of **Noto Sans JP**
-containing only the glyphs used by the M7.1 Japanese-PDF tests.
+containing only the glyphs used by the Japanese-PDF tests.
 
 ## Source font
 

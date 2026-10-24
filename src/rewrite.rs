@@ -1,5 +1,5 @@
 //! Rebuild a loaded [`Document`] as a fresh, single-revision PDF —
-//! milestone **M8** "full rewrite / round-trip".
+//! the "full rewrite / round-trip" writer.
 //!
 //! The traversal starts from the trailer's `/Root` (plus `/Info` when
 //! present) and follows every indirect reference, assigning dense new
@@ -20,7 +20,7 @@
 //!   signatures cannot survive a rewrite, so writing a file that
 //!   still *claims* one is refused outright (blank unsigned fields
 //!   pass through like any other object).
-//! * `/AcroForm` `/XFA` — outside the M8 preservation profile.
+//! * `/AcroForm` `/XFA` — outside the rewrite preservation profile.
 //! * catalog `/OCProperties`, `/RichMedia`, `/AA` — outside profile.
 //!
 //! Everything else reachable is copied verbatim — unknown dictionary
@@ -39,12 +39,12 @@ use std::collections::{HashMap, HashSet};
 
 use crate::limits::Limits;
 
-/// Header version — M8 writes classic xref + ObjStm-free output, so
+/// Header version — the rewriter writes classic xref + ObjStm-free output, so
 /// 1.7 covers every feature it can emit. A catalog `/Version` of 1.4
 /// through 1.7 is honoured; 1.3 or below means the catalog claims
 /// less than the header — we still output 1.7 so the file's declared
 /// version never falls below the structures it contains.
-/// A document that declares 2.0 (header or catalog) is refused: M8
+/// A document that declares 2.0 (header or catalog) is refused: the rewriter
 /// does not translate 2.0 content down to 1.7.
 const BASE_VERSION: (u8, u8) = (1, 7);
 
@@ -402,7 +402,7 @@ impl<'a> Collector<'a> {
 /// must not fabricate a version for a file whose own declaration it
 /// could not read. A catalog `/Version` that is present but not a
 /// valid `M.m` name is likewise refused rather than ignored.
-/// `2.0` and above are refused: M8 does not translate 2.0-only
+/// `2.0` and above are refused: the rewriter does not translate 2.0-only
 /// features down, so claiming `1.7` would silently break them.
 fn effective_version(doc: &Document) -> Result<String, Error> {
     let hdr = doc.header_version().ok_or_else(|| Error::Unsupported {
@@ -581,7 +581,7 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
         }
     }
 
-    // ---- Named destinations: preserved (M8.1 decision B revisited) --
+    // ---- Named destinations: preserved --
     //
     // The catalog `/Names` → `/Dests` name tree, the legacy catalog
     // `/Dests` dictionary, and every name/string operand that refers
@@ -600,13 +600,13 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
     // before any output rather than looping in the collector.
     crate::dests::named_destinations(doc, &Limits::default())?;
 
-    // Active/executable structures outside the M8 profile.
+    // Active/executable structures outside the rewrite profile.
     for key in [&b"OCProperties"[..], &b"RichMedia"[..], &b"AA"[..]] {
         if catalog.contains_key(key) {
             return Err(Error::Unsupported {
                 feature: "catalog entry outside profile",
                 detail: format!(
-                    "/{} is outside the M8 rewrite profile",
+                    "/{} is outside the rewrite profile",
                     String::from_utf8_lossy(key)
                 ),
             });

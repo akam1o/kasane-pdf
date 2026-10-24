@@ -1,4 +1,4 @@
-//! `kasane-pdf` command-line interface (M0–M2).
+//! `kasane-pdf` command-line interface.
 //!
 //! Loads a PDF file and prints basic document information: page count,
 //! per-page sizes, and the trailer `/Info` dictionary keys. Two
@@ -325,7 +325,7 @@ fn run_rewrite(input: &str, output: &str) -> Result<(), Error> {
 ///
 /// `rect` is lower-left x,y then upper-right x,y in un-rotated PDF
 /// user space (+y up, CropBox/Rotate not applied) — the same space
-/// M6.1 extraction reports. Page is 1-based like `contents`.
+/// `extract_text` reports. Page is 1-based like `contents`.
 fn run_annotate_rect(args: &[String]) -> Result<(), Error> {
     // args[0]=input args[1]=page  then flag/value pairs.
     if args.len() < 2 {
@@ -2345,7 +2345,7 @@ fn print_lines(t: &kasane_pdf::ExtractedText) {
 }
 
 // ---------------------------------------------------------------------
-// M23 — audit-residuals
+// Audit-residuals
 // ---------------------------------------------------------------------
 
 /// Output cap — a single audit prints at most this many findings;

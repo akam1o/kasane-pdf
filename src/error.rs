@@ -39,9 +39,9 @@ pub enum Error {
     /// without `/Pages`, kids count mismatch).
     Structure(String),
     /// The document declares encryption (`/Encrypt` in the trailer).
-    /// Encrypted files are refused entirely in M0.
+    /// Encrypted files are refused entirely.
     Encrypted,
-    /// The document uses a valid PDF feature that M0 does not implement.
+    /// The document uses a valid PDF feature that the engine does not implement.
     ///
     /// Current cases: xref streams / hybrid-reference files, object
     /// streams, and `/XRefStm` entries.

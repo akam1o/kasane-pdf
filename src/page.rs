@@ -76,7 +76,7 @@ fn fmt_num(n: f64) -> String {
 ///
 /// `resources` and `contents` are stored as the (single-level resolved)
 /// raw objects from the file. Their meaning — fonts, images, drawing
-/// commands — is out of M0 scope.
+/// commands — is out of scope here.
 #[derive(Debug, Clone)]
 pub struct Page {
     index: usize,

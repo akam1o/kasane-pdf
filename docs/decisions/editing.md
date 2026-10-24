@@ -1,6 +1,6 @@
-# Decisions — experimental scoped editing (M17–M28)
+# Decisions — experimental scoped editing
 
-## M17 — experimental scoped text removal
+## Experimental scoped text removal
 
 `src/remove_text.rs` implements `remove_text` + the
 `experimental-remove-text` CLI — **not** a redaction tool, and the
@@ -12,7 +12,7 @@ single-revision PDF.
 
 Design choices:
 
-- **Selection = M16's `DiagWalker`** — the same per-code targets the
+- **Selection = the diagnosis `DiagWalker`** — the same per-code targets the
   diagnosis produces (`filled` glyph outline bounds, edge-touching
   counts). One code = one removal unit even when it expands to
   several Unicode scalars. Any `blocker`/`uncertain` entry, or a
@@ -22,7 +22,7 @@ Design choices:
   construct the scope refuses. Walk errors keep their typed kind
   (`LimitExceeded`, `Structure`, `Parse`) — never flattened to
   `Unsupported`.
-- **Op-time state snapshots (M17.1, extended M18)** — the walker
+- **Op-time state snapshots** — the walker
   records the text state each show op ran under (`Font` (Rc-cloned),
   `Tfs`, `Th`, `Tc`, `Tw`) into `show_states[(form_path, op_index)]`
   at the point `show_text` consumes it — after `"`'s `Tw`/`Tc`
@@ -30,21 +30,21 @@ Design choices:
   key (`[]` at page level, `[frame]` inside a called form), so a
   form's inner ops under different invocations get distinct
   snapshots and never collide with page-level op indices. One
-  snapshot per show op, bounded by `max_show_states` (M18.1). The
+  snapshot per show op, bounded by `max_show_states`. The
   map only records when the caller asks for it —
   `diagnose_redaction` walks with `record_show_states = false` and
   never fills it, so a diagnosis pays zero snapshot memory.
   Selection (`Target`) and rewrite read the *same* state, so a
   later `Tf`/`Tc`/`Tz`/`q`/`Q`/`BT` change can never rewrite an
-  earlier show under the stream-end values — the M17.0 bug where
+  earlier show under the stream-end values — the original bug where
   `walker.gs.text` at end-of-stream was used for every op.
-- **Page-level eligibility (M17.1, extended M18)** — a page is
+- **Page-level eligibility** — a page is
   eligible only when *every* text occurrence on it is `Tr 0` fill,
   checked against all `walker.targets`, not just the hit ones —
   page-level and form-level alike. `Tr 4–7` and `w = 0` stroked
   text arrive via `blocker`/`uncertain` and refuse the same way; a
   `Tr` *set* but never used to show text is harmless.
-- **One level of `/Form` (M18)** — a page-level `Do` targeting a
+- **One level of `/Form`** — a page-level `Do` targeting a
   `/Form` is edited *per invocation*: the call-site `form_path`
   (resource name + call-site `op_index`, not just the object ref)
   keys the removal scope, so two `Do`s of the same form or two
@@ -74,7 +74,7 @@ Design choices:
   `Document` and its bytes are never modified; other pages sharing
   the original stream keep it untouched (the removed bytes still
   exist in the shared object — explicitly out of scope).
-- **Cumulative budgets (M18.1)** — three limits the per-stream
+- **Cumulative budgets** — three limits the per-stream
   `max_operations` parse cap cannot express:
   - `max_diag_exec_ops` (200,000): every content-stream *execution*
     inside one `diagnose_redaction`/`remove_text` walk — page ops,
@@ -114,10 +114,10 @@ output must differ (`refuse_same_file`), the write is atomic
 (`write_atomic`), and a refusal leaves any existing output
 untouched.
 
-### M19.2 — image-region removal: exact union, Default* substitution, pre-decode budget
+### Image-region removal: exact union, Default* substitution, pre-decode budget
 
 `src/remove_image.rs` implements `remove_image_region` +
-`experimental-remove-image-region`. M19.2 fixes three issues without
+`experimental-remove-image-region`. This revision fixes three issues without
 widening scope:
 
 - **Exact pixel union** — `image_pixel_ranges` splits rects into
@@ -146,9 +146,9 @@ CLI: `kasane-pdf experimental-remove-image-region in.pdf 1 --rect llx
 lly urx ury [--rect …] --output out.pdf` — same atomic-write and
 same-file-refusal rules as `experimental-remove-text`.
 
-### M27 — JPEG (`/DCTDecode`) image editing
+### JPEG (`/DCTDecode`) image editing
 
-M27 extends the M19/M20 image-edit path to single-filter
+JPEG support extends the image-edit path to single-filter
 sequential-DCT JPEGs — `DctSequential` covers baseline (SOF0) and
 extended-sequential (SOF1) Huffman frames; differential and
 arithmetic-coded sequential frames are refused by the decoder
@@ -171,7 +171,7 @@ the sample buffer is obtained*.
   `width`/`height`/`pixel_format` are compared to the dict. `CMYK32`,
   `L16`, and any other format are `Unsupported`; only `L8` (1 comp)
   and `RGB24` (3 comp) proceed.
-- **Coding process check (M27.1)**: after `read_info` and before any
+- **Coding process check**: after `read_info` and before any
   pixel buffer is allocated, `info().coding_process` must be
   `DctSequential`. `DctProgressive` and `Lossless` are refused with
   `Error::Unsupported`, distinct from the `Parse` error on corrupt
@@ -181,7 +181,7 @@ the sample buffer is obtained*.
   `decode()` and are refused there by the decoder itself
   (`Unsupported(Hierarchical)`/`Unsupported(ArithmeticEntropyCoding)`),
   so they are still `Unsupported`, never `Parse`.
-- **Effective colour transform — decided explicitly (M27.2)**:
+- **Effective colour transform — decided explicitly**:
   ISO 32000-1 §7.4.8 (Table 13 `/ColorTransform`) + Adobe TN #5116.
   The precedence is resolved *by kasane*, not delegated to
   jpeg-decoder's `determine_color_transform` — the decoder ranks
@@ -229,7 +229,7 @@ the sample buffer is obtained*.
   viewer, because decode/colour-transform/interpolation differences
   are inherent to re-encoding JPEG content.
 
-### M28 — grid-aligned CTM image editing
+### Grid-aligned CTM image editing
 
 `image_pixel_ranges` (`src/remove_image.rs`) no longer requires
 axis-aligned *positive-scale* CTM. It first classifies the recorded
@@ -269,7 +269,7 @@ user space — a page `/Rotate` is display metadata and is *not*
 applied to the selection. Positive-scale inputs are numerically
 identical to before (the axis-aligned branch is the old code path).
 
-### M20 — scoped region removal (text + image)
+### Scoped region removal (text + image)
 
 `src/remove_region.rs` implements `remove_region` +
 `experimental-remove-region` — a single integrated edit pass over
@@ -294,7 +294,7 @@ Design choices:
   `is_default_decode`/`resolve_colorspace_name`/
   `apply_default_substitution` are all reused; nothing is
   duplicated.
-- **M20.1 — CTM recorded at walk time** — `DiagWalker::do_image`
+- **CTM recorded at walk time** — `DiagWalker::do_image`
   stores the current `gs.ctm` into `TargetDetail::Image.ctm` at
   each `Image` `Do` call site. Both `remove_region` and
   `remove_image_region` read the recorded CTM instead of calling
@@ -304,9 +304,9 @@ Design choices:
   record their own matrix, and `q`/`Q`/`cm` are reflected
   correctly because the walker's graphics-state stack is the
   source of truth.
-- **M20's own eligibility** — not a union of M17+M19 refusals:
-  `Tr 0` text only (page-level), image eligibility per M19.2, and
-  `Form` `Do` refused (M18's form handling is *not* inherited).
+- **`remove_region`'s own eligibility** — not a union of the text- and image-removal refusals:
+  `Tr 0` text only (page-level), image eligibility per `remove_image_region`, and
+  `Form` `Do` refused (`remove_text`'s form handling is *not* inherited).
 - **Shared cumulative budget** — `max_edit_content_bytes` bounds
   the cloned image bodies plus the new `/Contents` *together*;
   `charge_generated` runs before each image decodes and before
@@ -315,7 +315,7 @@ Design choices:
 - **Atomic failure** — any typed error aborts the whole call;
   no partial rewrite is returned. A rect hitting nothing produces
   `Ok` with zero counters.
-- **M21 — orphaned XObject name removal** — after the edit pass,
+- **Orphaned XObject name removal** — after the edit pass,
   names that were edited (old `Do` names) and are no longer used
   by any remaining `Do` in `new_ops` are removed from the page's
   `/Resources /XObject` dict. The page's effective `/Resources`
@@ -324,13 +324,13 @@ Design choices:
   the writer's reachability scan — if another page or another
   name still references it, it is emitted. `orphaned_names_removed`
   reports names removed from `/XObject`, not objects deleted.
-- **M21.1 — content-based verification** — re-parse the output
+- **Content-based verification** — re-parse the output
   and match image streams by decoded sample bytes, not by
   original object number (the writer renumbers). A removed name
   does not imply the object was deleted; an image can survive
   via an inherited `/Resources` even when the page's `/XObject`
   no longer names it.
-- **M22 — inherited `/Resources` materialisation** — each page's
+- **Inherited `/Resources` materialisation** — each page's
   effective `/Resources` (as resolved by the page-tree walk) is
   written explicitly into the page dict. A parent `/Pages` can
   then drop its `/Resources` — but only when *every* descendant
@@ -341,20 +341,20 @@ Design choices:
   This is a *structural* cleanup, not a redaction guarantee: an
   image that survives via another page, another `Do` name, or an
   unmaterialised `/Pages` is still emitted.
-- **M22.1 — traversal fix** — a `/Pages` node *without*
+- **Traversal fix** — a `/Pages` node *without*
   `/Resources` is still traversed for descendants; the
   `has_resources` check is applied only when deciding whether to
   strip. The target page's dict is built once: `Contents` and the
   materialised `/Resources` coexist in one `page_dict`, not via
   two overlay inserts.
-- **M22.2 — post-order strip decision** — a `/Pages` node's
+- **Post-order strip decision** — a `/Pages` node's
   `all_materialised` is computed only after its children's
   results are known (`node_results: HashMap<IndirectRef, bool>`).
   A child's failure propagates upward — a parent never strips
   `/Resources` when a descendant is unmaterialised. Page refs are
   indexed by `HashMap`/`HashSet` (O(1) lookup) instead of a
   `Vec::contains` linear scan (O(n) per kid).
-- **M22.3 — end-state fix** — a node that finishes processing
+- **End-state fix** — a node that finishes processing
   records its result in `node_results` whether it succeeded or
   failed. The `continue` guard is `next_kid_idx < kids.len() &&
   all_materialised` — a `false` result is *not* deferred, so the
@@ -363,13 +363,13 @@ Design choices:
   to the stack only when a child is pushed (`all_materialised`
   is still `true`); a `false` break records the result
   immediately.
-- **M22.4 — testability split** — the traversal is
+- **Testability split** — the traversal is
   `plan_resource_materialisation(doc, pages_with_resources) ->
   (pages_to_strip, node_results)`. Returning `node_results` lets
   the tests assert each node's `false`/`true` — including that a
   3-level `false` propagates to the root and that a `false` node
   is never re-pushed — instead of only observing the final strip
-  outcome through `remove_region`. (The earlier M22.3 tests went
+  outcome through `remove_region`. (The earlier tests went
   through `remove_region` and tolerated any `Err`, which masked
   the case where the target page itself was uneditable.)
   Termination relies on the parser: `walk_page_tree` rejects

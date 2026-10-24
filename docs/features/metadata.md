@@ -1,6 +1,6 @@
 # Document-metadata entry removal
 
-## Document-metadata entry removal (M25, `remove_document_metadata`, CLI `remove-document-metadata`)
+## Document-metadata entry removal (`remove_document_metadata`, CLI `remove-document-metadata`)
 
 **Not a metadata scrubber or redaction tool.** This removes exactly
 two *entries* — the trailer `/Info` key and the catalog `/Metadata`

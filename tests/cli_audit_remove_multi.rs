@@ -249,7 +249,7 @@ fn cli_audit_no_name_tree_no_incomplete() {
 }
 
 // ------------------------------------------------------------------
-// M24 — experimental-remove-regions
+// Experimental-remove-regions
 // ------------------------------------------------------------------
 
 /// A 2-page fixture: page 1 has text at (20,140), page 2 shares the
@@ -447,7 +447,7 @@ fn cli_remove_regions_failure_preserves_output() {
     assert_eq!(fs::read(&dst).unwrap(), b"SENTINEL");
 }
 
-/// M24.1 — `--page 0` is refused at argument validation; the
+/// `--page 0` is refused at argument validation; the
 /// existing output and the input bytes are preserved and no temp
 /// file remains.
 #[test]
@@ -488,7 +488,7 @@ fn cli_remove_regions_page_zero_refused() {
     assert!(!stderr.contains("(ABC)"), "leaked text: {stderr}");
 }
 
-/// M24.2 — `max_diag_rects` exceeded via the real CLI: the merged
+/// `max_diag_rects` exceeded via the real CLI: the merged
 /// per-page rect count crosses the default limit (256) and the
 /// call fails as a `LimitExceeded`, leaving the sentinel output
 /// and the input untouched.
@@ -550,7 +550,7 @@ fn cli_remove_regions_rect_count_over_limit() {
 }
 
 // ------------------------------------------------------------------
-// M25 — remove-document-metadata
+// Remove-document-metadata
 // ------------------------------------------------------------------
 
 /// A 1-page fixture with trailer /Info and catalog /Metadata.
@@ -708,7 +708,7 @@ fn cli_remove_document_metadata_failure_preserves_output() {
 }
 
 // ------------------------------------------------------------------
-// M26 — experimental-remove-regions --remove-document-metadata
+// Experimental-remove-regions --remove-document-metadata
 // ------------------------------------------------------------------
 
 /// Combined region edit + metadata entry removal via one CLI call.

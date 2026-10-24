@@ -1,6 +1,6 @@
-//! M5 — embedded TrueType text rendering (ISO 32000-1 §9).
+//! Embedded TrueType text rendering (ISO 32000-1 §9).
 //!
-//! Covers the M5 scope: `/Subtype /TrueType` + `/FontFile2`,
+//! Covers: `/Subtype /TrueType` + `/FontFile2`,
 //! `WinAnsiEncoding` (named or via an encoding dictionary with
 //! `BaseEncoding`/`Differences`), `BT`/`ET`, `Tf`, `Tc`/`Tw`/`Tz`/
 //! `Ts`/`TL`/`Tr`, `Tm`/`Td`/`TD`/`T*`, `Tj`/`TJ`/`'`/`"`,

@@ -2,7 +2,7 @@
 //!
 //! A `/ToUnicode` stream is a small PostScript-flavoured file that
 //! maps the font's *character codes* to UTF-16BE Unicode strings.
-//! For the simple fonts M5/M6 support, codes are one byte wide.
+//! For simple fonts, codes are one byte wide.
 //!
 //! Supported syntax (from §9.10.3 and Adobe TN #5014):
 //!
@@ -128,7 +128,7 @@ impl ToUnicode {
                     match op {
                         Tok::BareWord(b"begincodespacerange") => {
                             let len = p.parse_codespace(n, limits)?;
-                            // Mixed-width codespaces are outside M7 —
+                            // Mixed-width codespaces are not supported —
                             // every declared range must share one byte
                             // length.
                             match out.code_len {

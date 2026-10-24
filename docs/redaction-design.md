@@ -13,7 +13,7 @@ These requirements shape document-model choices being made now:
 - Metadata surfaces: annotations, form fields, alternate text
   (`/Alt`, `/ActualText`), document metadata, embedded files.
 - Distribution output is a **full rewrite**: no incremental update, no
-  leftover objects — which M0's parse-into-owned-model approach is
+  leftover objects — which the parse-into-owned-model approach is
   aligned with.
 - Link policy must be explicit: links overlapping the redaction area
   are removed; links fully outside must be preserved where possible.

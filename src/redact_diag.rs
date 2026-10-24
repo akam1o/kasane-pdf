@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 /// names for the same object) at the same nesting level.
 ///
 /// `Ord` is derived so a `form_path` vector can key the per-op state
-/// snapshots M18 uses (`BTreeMap<(Vec<FormFrame>, usize), _>`).
+/// snapshots `remove_text` uses (`BTreeMap<(Vec<FormFrame>, usize), _>`).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct FormFrame {
     /// The `/XObject` resource name used for the `Do`.
@@ -147,7 +147,7 @@ pub enum TargetDetail {
         blockers: Vec<String>,
         /// The CTM at the `Do` call site — recorded by the walker so
         /// callers do not need to re-walk the content stream to
-        /// recover it (M20.1: removes the O(images × ops) rescan).
+        /// recover it (removes the O(images × ops) rescan).
         ctm: crate::matrix::Matrix,
     },
     /// A painted path.
@@ -318,7 +318,7 @@ pub struct Diagnosis {
 /// positive width/height with `urx > llx`, `ury > lly`. Corners are
 /// **not** swapped — a reversed rect is a caller bug, not something
 /// to silently fix.
-/// `pub(crate)` — M17 validates its `--rect` inputs the same way.
+/// `pub(crate)` — `remove_text` validates its `--rect` inputs the same way.
 pub(crate) fn check_rect(i: usize, llx: f64, lly: f64, urx: f64, ury: f64) -> Result<Rect, Error> {
     for (j, v) in [llx, lly, urx, ury].iter().enumerate() {
         if !v.is_finite() {
@@ -341,7 +341,7 @@ pub(crate) fn check_rect(i: usize, llx: f64, lly: f64, urx: f64, ury: f64) -> Re
 /// used for every target. Touching edges count as overlapping: a
 /// zero-area contact still reports the hit because stroke outlines,
 /// clips and estimates mean the real coverage may reach inside.
-/// `pub(crate)` — M17 uses the same conservative overlap test.
+/// `pub(crate)` — `remove_text` uses the same conservative overlap test.
 pub(crate) fn intersects(b: &(f64, f64, f64, f64), r: &Rect) -> bool {
     b.0 <= r.urx && b.2 >= r.llx && b.1 <= r.ury && b.3 >= r.lly
 }
@@ -555,7 +555,7 @@ fn collect_annots(
 /// Collect the indirect refs behind a page's `/Contents` — a single
 /// stream → one ref; an array → every ref element (non-ref elements
 /// are skipped, they carry no identity). Used by `Site::contents`.
-/// `pub(crate)` — M17 needs the same `/Contents` element list.
+/// `pub(crate)` — `remove_text` needs the same `/Contents` element list.
 pub(crate) fn contents_refs(page: &Page) -> Vec<IndirectRef> {
     let mut out = Vec::new();
     match page.contents() {
@@ -574,7 +574,7 @@ pub(crate) fn contents_refs(page: &Page) -> Vec<IndirectRef> {
 
 /// `page_dict_entry` variant kept local to avoid a circular import —
 /// resolve one key through the page dict the way `render.rs` does.
-/// `pub(crate)` — M17 checks the same page-level keys (/Annots).
+/// `pub(crate)` — `remove_text` checks the same page-level keys (/Annots).
 pub(crate) fn page_dict_entry(
     doc: &Document,
     page: &Page,
@@ -721,7 +721,7 @@ struct StrokeState {
 /// and are kept on `DiagWalker` directly.
 #[derive(Clone)]
 pub(crate) struct DiagGs {
-    /// `pub(crate)` — M17 needs the text state for advance math.
+    /// `pub(crate)` — `remove_text` needs the text state for advance math.
     pub(crate) ctm: crate::matrix::Matrix,
     /// Active clip in user space, when known — path/image/text
     /// bounds are intersected with it for the overlap test but the
@@ -732,11 +732,11 @@ pub(crate) struct DiagGs {
     stroke: StrokeState,
     /// Text state — `Tc`/`Tw`/`Tz`/`TL`/`Ts`/`Tr`/`Tf`/`Tmode` are
     /// graphics-state parameters (Table 52); `Tm`/`Tlm` are not.
-    /// `pub(crate)` — M17 reads it for advance math.
+    /// `pub(crate)` — `remove_text` reads it for advance math.
     pub(crate) text: TextState,
 }
 
-/// `pub(crate)` — M17's `remove_text` walks the same content with the
+/// `pub(crate)` — `remove_text` walks the same content with the
 /// same state tracking to find which codes land inside the rect. The
 /// walker is *not* a public API; callers go through
 /// [`diagnose_redaction`] or [`crate::remove_text::remove_text`].
@@ -747,7 +747,7 @@ pub(crate) struct DiagWalker<'a> {
     /// `/Contents` element refs for `Site::contents` — resolved once
     /// at construction (refs only, no stream decode).
     contents_refs: Vec<IndirectRef>,
-    /// `pub(crate)` — M17 reads the text state for advance math.
+    /// `pub(crate)` — `remove_text` reads the text state for advance math.
     pub(crate) gs: DiagGs,
     gs_stack: Vec<DiagGs>,
     resources: Object,
@@ -778,13 +778,13 @@ pub(crate) struct DiagWalker<'a> {
     /// `uncertain` until `Q` or a form's end restores known state.
     /// `gs`/`sh`/`Pattern` colours and `Unknown` ops set this.
     uncertain_state: bool,
-    /// `pub(crate)` — M17 reads the per-code targets.
+    /// `pub(crate)` — `remove_text` reads the per-code targets.
     pub(crate) targets: Vec<Target>,
-    /// `pub(crate)` — M17 refuses on any uncertain entry.
+    /// `pub(crate)` — `remove_text` refuses on any uncertain entry.
     pub(crate) uncertain: Vec<Uncertain>,
-    /// `pub(crate)` — M17 refuses on any blocker.
+    /// `pub(crate)` — `remove_text` refuses on any blocker.
     pub(crate) blockers: Vec<Blocker>,
-    /// `pub(crate)` — M17.1/M18: the text state *at each show op*
+    /// `pub(crate)` — the text state *at each show op*
     /// (`Tj`/`TJ`/`'`/`"`), keyed by `(form_path, op_index)`. The
     /// `form_path` is the `Do` invocation chain — `[]` at page level,
     /// `[frame]` inside a form the page called directly — so a form's
@@ -815,7 +815,7 @@ pub(crate) struct DiagWalker<'a> {
 
 /// The text state one page-level show op ran under — a snapshot of
 /// `gs.text` (plus the resolved `Font`) taken at the point
-/// `show_text` consumed it. `pub(crate)` — M17 uses it for the
+/// `show_text` consumed it. `pub(crate)` — `remove_text` uses it for the
 /// advance math and code decoding so selection and rewrite see the
 /// *same* state.
 #[derive(Clone)]
@@ -851,7 +851,7 @@ impl ShowTextState {
 }
 
 /// Text state we must track to position glyphs (subset of the
-/// renderer's). `pub(crate)` — M17 reads `font`/`font_size`/`h_scale`
+/// renderer's). `pub(crate)` — `remove_text` reads `font`/`font_size`/`h_scale`
 /// for the advance math.
 #[derive(Default, Clone)]
 pub(crate) struct TextState {
@@ -867,7 +867,7 @@ pub(crate) struct TextState {
 }
 
 impl<'a> DiagWalker<'a> {
-    /// `pub(crate)` — M17 reuses the walk to enumerate text positions.
+    /// `pub(crate)` — `remove_text` reuses the walk to enumerate text positions.
     pub(crate) fn new(
         doc: &'a Document,
         page: &'a Page,
@@ -991,7 +991,7 @@ impl<'a> DiagWalker<'a> {
         Ok(())
     }
 
-    /// Cumulative counters the caller may read after `run` — M24's
+    /// Cumulative counters the caller may read after `run` — `remove_regions`'s
     /// `remove_regions` carries each page's spend into the next
     /// page's budget so a multi-page call cannot spend N× the
     /// documented limits.
@@ -2548,8 +2548,8 @@ mod tests {
         assert!(d.shared.is_empty());
     }
 
-    // ---- M16.1: reproduction tests — these pin bugs found in the
-    // M16 implementation and must FAIL on the pre-fix code.
+    // ---- reproduction tests — these pin bugs found in the
+    // first implementation and must FAIL on the pre-fix code.
     // -------------------------------------------------------------
 
     /// Build a single-page PDF whose `/Contents` is `body` (raw op
@@ -2867,7 +2867,7 @@ mod tests {
         );
     }
 
-    // ---- M16.2: reproduction tests — pin hairline and TJ-position
+    // ---- reproduction tests — pin hairline and TJ-position
     // bugs. These FAIL on the pre-fix code.
     // --------------------------------------------------------------
 

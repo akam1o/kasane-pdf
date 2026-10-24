@@ -39,27 +39,27 @@ way).
 | [`diagnosis.md`](features/diagnosis.md) | `diagnose_redaction` / `preflight-redaction` (read-only) |
 | [`editing-text.md`](features/editing-text.md) | experimental scoped text removal |
 | [`editing-image.md`](features/editing-image.md) | experimental image-region removal (raw/Flate) |
-| [`editing-jpeg.md`](features/editing-jpeg.md) | JPEG `DCTDecode` image editing (M27) |
-| [`editing-region.md`](features/editing-region.md) | experimental text+image region removal (M20) |
-| [`editing-multipage.md`](features/editing-multipage.md) | multi-page region removal (M24) |
-| [`editing-metadata.md`](features/editing-metadata.md) | combined region removal + metadata strip (M26) |
-| [`metadata.md`](features/metadata.md) | document-metadata entry removal (M25) |
-| [`audit.md`](features/audit.md) | residual-information audit (`audit-residuals`, M23) |
+| [`editing-jpeg.md`](features/editing-jpeg.md) | JPEG `DCTDecode` image editing |
+| [`editing-region.md`](features/editing-region.md) | experimental text+image region removal |
+| [`editing-multipage.md`](features/editing-multipage.md) | multi-page region removal |
+| [`editing-metadata.md`](features/editing-metadata.md) | combined region removal + metadata strip |
+| [`metadata.md`](features/metadata.md) | document-metadata entry removal |
+| [`audit.md`](features/audit.md) | residual-information audit (`audit-residuals`) |
 
 ## Design decisions (`decisions/`)
 
 Rationale for the experimental editing/diagnosis subsystems — kept as
-one record per milestone so a decision's context and its superseded
+one record per subsystem so a decision's context and its superseded
 form stay traceable.
 
 | File | Decision |
 |---|---|
-| [`diagnosis.md`](decisions/diagnosis.md) | pre-redaction diagnosis walker (M16) |
-| [`editing.md`](decisions/editing.md) | scoped text/image/region removal, JPEG, grid-aligned CTM (M17–M28) |
-| [`audit.md`](decisions/audit.md) | residual-information audit (M23) |
-| [`multi-page.md`](decisions/multi-page.md) | multi-page region removal (M24) |
-| [`metadata.md`](decisions/metadata.md) | document-metadata removal (M25) |
-| [`combined.md`](decisions/combined.md) | combined region + metadata strip (M26) |
+| [`diagnosis.md`](decisions/diagnosis.md) | pre-redaction diagnosis walker |
+| [`editing.md`](decisions/editing.md) | scoped text/image/region removal, JPEG, grid-aligned CTM |
+| [`audit.md`](decisions/audit.md) | residual-information audit |
+| [`multi-page.md`](decisions/multi-page.md) | multi-page region removal |
+| [`metadata.md`](decisions/metadata.md) | document-metadata removal |
+| [`combined.md`](decisions/combined.md) | combined region + metadata strip |
 
 ## Conventions
 

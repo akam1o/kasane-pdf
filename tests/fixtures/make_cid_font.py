@@ -1,5 +1,5 @@
 """Generate `KasaneCIDTest.ttf` — a tiny synthetic TrueType font for
-the M7 Type0/CIDFontType2 tests.
+the Type0/CIDFontType2 tests.
 
 Glyph inventory (drawn programmatically, no font data derived from
 any existing typeface — same provenance as `KasaneTest.ttf`):

@@ -87,7 +87,7 @@ all parsed operations — no partial results.
 | `m` `l` `c` `v` `y` `h` `re` | ✅ | operands taken in postfix order |
 | `S` `s` `f` `F` `f*` `B` `B*` `b` `b*` `n` `W` `W*` | ✅ | |
 | `G` `g` `RG` `rg` `K` `k` `CS` `cs` | ✅ | `CS`/`cs` keep the colour-space *name* |
-| `SC` `sc` | ✅ | any number of numeric components; arity checked at colour-space resolution (M3: DeviceN parsing supported, rendering `Unsupported`) |
+| `SC` `sc` | ✅ | any number of numeric components; arity checked at colour-space resolution |
 | `SCN` `scn` | ✅ | numeric components + optional trailing pattern name; patterns → `Error::Unsupported` at render |
 | `BT` `ET` | ✅ | nesting and balance checked |
 | `Tc` `Tw` `Tz` `TL` `Tf` `Tr` `Ts` `Td` `TD` `Tm` `T*` | ✅ | `Tf` keeps the font resource *name* |
@@ -99,4 +99,4 @@ all parsed operations — no partial results.
 | `BI` `ID` `EI` (inline images) | ✅ | `Operation::InlineImage { dict, data }` — the dictionary is read up to `ID`, the data end is *computed* (see `docs/features/rendering.md`, `Do`), never guessed from the first `EI`; a stray `ID`/`EI` or data that never closes → `Error::Parse`/`UnexpectedEof` |
 | Unknown operator outside `BX`/`EX` | ❌ | `Error::Parse` |
 | Wrong operand count / type, leftover operands at EOF | ❌ | `Error::Parse` |
-| Rendering / executing operations | ❌ | out of M2 scope — operations are data, not executed |
+| Rendering / executing operations | ❌ | out of the parser's scope — operations are data, not executed |

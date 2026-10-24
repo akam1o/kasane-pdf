@@ -1,6 +1,6 @@
 # JPEG (`DCTDecode`) image region editing
 
-## JPEG image region editing (M27, inside `remove_image_region` /
+## JPEG image region editing (inside `remove_image_region` /
 `remove_region` / `remove_regions` / `remove_regions_and_document_metadata`)
 
 **Experimental content editing — not redaction.** A `/DCTDecode`
