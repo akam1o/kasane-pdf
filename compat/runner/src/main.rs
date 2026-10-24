@@ -1350,11 +1350,12 @@ fn roundtrip_section(s: &mut String, r: &RunReport) {
         "Does the rewrite preserve the document? Each strictly parsed file is rewritten, \
          reparsed, and compared with the original: the **object graph** reachable from \
          `/Root` and `/Info` (renumbering-independent — every key, value, stream byte and \
-         reference target), the **render** (kasane on both files, first 8 pages at 48 dpi; \
-         a match proves only that the rewrite changed nothing *this* renderer shows), the \
-         **text** (characters, Unicode, positions, ActualText per page) and the \
-         **annotations / form fields / named destinations**. Poppler renders page 1 of both \
-         files as an independent witness. Each cell is PASS/FAIL over *attempted*; U = the \
+         reference target), the **render** (kasane on both files, every page within the \
+         per-file budget at the round-trip dpi; a match proves only that the rewrite changed \
+         nothing *this* renderer shows), the **text** (characters, Unicode, positions, \
+         ActualText per page) and the **annotations / form fields / named destinations**. \
+         Poppler renders every compared page of both files as an independent witness. Each \
+         cell is PASS/FAIL over *attempted*; U = the \
          engine refused the rewrite (profile limit, not damage), N/A = nothing of that kind \
          in the file. *full* = rewrite passed and every attempted comparison passed; its \
          denominator is *files*.\n\n\
