@@ -3,10 +3,10 @@
   "crash": 0,
   "files": 66,
   "parse_pass": 59,
-  "render_pass": 47,
+  "render_pass": 48,
   "rewrite_pass": 61,
   "roundtrip_full": 60,
-  "text_pass": 48,
+  "text_pass": 49,
   "timeout": 0
  },
  "files": {
@@ -611,27 +611,25 @@
    "verdict": "error"
   },
   "text_mode4_refused": {
-   "causes": [
-    "render.textmode.unsupported"
-   ],
+   "causes": [],
    "expect": "",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
     "external_valid": "Pass",
-    "render": "NotApplicable",
+    "render": "Pass",
     "reparse": "Pass",
     "structure": "Pass",
-    "text": "NotApplicable"
+    "text": "Pass"
    },
    "roundtrip_full": true,
    "stages": {
     "parse": "pass",
-    "render": "unsupported",
+    "render": "pass",
     "rewrite": "pass",
-    "text": "unsupported"
+    "text": "pass"
    },
-   "verdict": "unsupported"
+   "verdict": "pass"
   },
   "text_no_font_tj": {
    "causes": [],
