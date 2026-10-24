@@ -18,7 +18,8 @@ depends on a particular host application.
 ```
 src/
   lib.rs       public API + crate docs
-  error.rs     Error enum with stable kind() categories
+  error.rs     Error enum (#[non_exhaustive]) with ErrorKind categories,
+               SignatureRule; InvalidArgument for caller mistakes
   limits.rs    Limits: all resource bounds in one place
   object.rs    Object, IndirectRef, Dict, Name types (§7.3)
   lexer.rs     byte-level tokens: words, names, strings, delimiters

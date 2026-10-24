@@ -20,7 +20,8 @@ PDFium / MuPDF / Poppler. The documentation is split into
 |---|---|
 | [`architecture.md`](architecture.md) | goals and non-goals, module map, key design decisions, the `Limits` table, licensing policy, roadmap |
 | [`security.md`](security.md) | the safety posture: resource bounds, typed refusals, strict pass vs accepted-with-warnings vs recovery, signatures, what the engine is *not* |
-| [`api-stability.md`](api-stability.md) | the 0.1 public API audited: what is stable, what is additive, what 0.2.0 may break and how to migrate |
+| [`api-stability.md`](api-stability.md) | the public API contract: what is stable, how additions are made without breaking, what the 0.2 line promises |
+| [`migration-0.2.md`](migration-0.2.md) | migrating from 0.1 to 0.2: every breaking change with its one-line replacement |
 | [`third-party.md`](third-party.md) | every dependency and bundled asset with its licence |
 
 ## Rendering

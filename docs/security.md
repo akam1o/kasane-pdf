@@ -24,11 +24,15 @@ in `src/font.rs` (see `architecture.md` § Safety / hostile input).
 
 ## Typed errors, not partial results
 
-`Error::kind()` gives a stable machine-readable category
-(`parse`, `structure`, `unsupported`, `encrypted`, `limit`,
-`not-pdf`, `io`). A malformed file and a valid file using an
-unimplemented feature are *distinguishable* — automation should branch
-on `kind()`, not on message text.
+`Error::kind()` gives a stable machine-readable category, the
+`#[non_exhaustive]` enum `ErrorKind` (`Parse`, `Structure`,
+`Unsupported`, `Encrypted`, `LimitExceeded`, `InvalidArgument`,
+`SignaturePolicy`, …; `as_str()` is the string the CLI prints). A
+malformed file, a valid file using an unimplemented feature, a
+resource bound, a caller's bad argument and a signature's policy are
+*distinguishable* — automation should branch on `kind()`, not on
+message text. `ErrorKind::is_malformed_input()` groups the
+"the file is broken" kinds.
 
 ## Three outcomes: strict pass, accepted with warnings, recovery
 

@@ -51,7 +51,7 @@ message. The full subcommand list is in the README.
 The three entry points most programs need:
 
 ```rust
-use kasane_pdf::{extract_text, pixmap_to_png, render_page, Document, Limits, RenderOptions};
+use kasane_pdf::{extract_text, render_page, Document, RenderOptions, TextOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. Load — strict by default. `Document::from_bytes_recovering`
@@ -61,12 +61,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{} pages", doc.page_count());
 
     // 2. Render a page. `RenderOptions::limits` bounds the work.
-    let opts = RenderOptions { dpi: 96.0, ..RenderOptions::default() };
+    let opts = RenderOptions::default().with_dpi(96.0);
     let page = render_page(&doc, &doc.pages()[0], &opts)?;
-    std::fs::write("page-1.png", pixmap_to_png(&page.pixmap)?)?;
+    std::fs::write("page-1.png", page.to_png()?)?;
 
     // 3. Extract positioned text.
-    let text = extract_text(&doc, &doc.pages()[0], &Limits::default())?;
+    let text = extract_text(&doc, &doc.pages()[0], &TextOptions::default())?;
     let plain: String = text.chars.iter().filter_map(|c| c.unicode.clone()).collect();
     println!("{plain}");
     Ok(())
@@ -83,8 +83,12 @@ and [`examples/incremental_save.rs`](../examples/incremental_save.rs).
 ### Limits
 
 Everything the engine does is bounded by a [`Limits`](../src/limits.rs)
-value: `Document::from_bytes_with_limits`, `RenderOptions::limits`,
-and the `limits` argument of `extract_text` / `rewrite_with_limits`.
+value: `Document::from_bytes_with_limits`, `RenderOptions::with_limits`,
+`TextOptions::with_limits` and `rewrite_with_limits`. Build one with
+`Limits::default().with_<field>(value)`; the struct is
+`#[non_exhaustive]`, so fields are read directly but set through the
+`with_*` methods, and `Limits::validate` (called by every entry point)
+rejects a zero structural bound with `Error::InvalidArgument`.
 The defaults are generous for ordinary documents (1 GiB of decoded
 bytes per operation, 64 Mi rendered pixels, …); tighten them when
 processing untrusted input in a constrained environment. Exceeding a
@@ -92,11 +96,14 @@ limit is `Error::LimitExceeded { limit, max }`.
 
 ### Errors
 
-`Error::kind()` returns one of a small set of stable strings
-(`"parse"`, `"structure"`, `"unsupported"`, `"encrypted"`, `"limit"`,
-…). `Error::Unsupported { feature, detail }` names the PDF feature
-the engine declined to process — a valid file using an unimplemented
-feature is distinguishable from a malformed one.
+`Error::kind()` returns an `ErrorKind` (`Parse`, `Structure`,
+`Unsupported`, `Encrypted`, `LimitExceeded`, `InvalidArgument`,
+`SignaturePolicy`, …; `as_str()` gives the stable string the CLI
+prints). `Error::Unsupported { feature, detail }` names the PDF
+feature the engine declined to process — a valid file using an
+unimplemented feature is distinguishable from a malformed one, from a
+resource bound, from a bad argument and from a signature's policy.
+Both enums are `#[non_exhaustive]`; match with a wildcard arm.
 
 ### Warnings
 

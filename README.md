@@ -9,10 +9,12 @@ only external code is a handful of permissively licensed codec and
 raster crates.
 
 Status: 0.1.x on [crates.io](https://crates.io/crates/kasane-pdf),
-documented on [docs.rs](https://docs.rs/kasane-pdf). The API is 0.x:
-additions arrive in minor releases, breaking changes are recorded in
-[`CHANGELOG.md`](CHANGELOG.md) and classified in
-[`docs/api-stability.md`](docs/api-stability.md).
+documented on [docs.rs](https://docs.rs/kasane-pdf); this branch is
+the unreleased 0.2 line. The API is 0.x: additions arrive in minor
+releases, breaking changes are recorded in
+[`CHANGELOG.md`](CHANGELOG.md), classified in
+[`docs/api-stability.md`](docs/api-stability.md), and 0.1 → 0.2 is a
+mechanical migration ([`docs/migration-0.2.md`](docs/migration-0.2.md)).
 
 ## Design goals
 
@@ -51,7 +53,7 @@ predictors; DCT, JBIG2, CCITT and JPX for images), page tree with
 inherited attributes, lazy indirect resolution with cycle detection,
 named destinations, an explicit recovery mode.
 
-**Rendering** (`render_page` → RGBA pixmap, `pixmap_to_png`) — paths,
+**Rendering** (`render_page` → premultiplied RGBA8 buffer, `to_png`) — paths,
 clipping, every colour-space family of §8.6 (Device, Cal, Lab,
 ICC-based with exact matrix/TRC profiles, Indexed, Separation,
 DeviceN, Pattern), ExtGState parameters including soft masks and all
@@ -120,15 +122,17 @@ cargo install --path .                # installs the `kasane-pdf` binary
 Render a page to PNG ([`examples/render_page.rs`](examples/render_page.rs)):
 
 ```rust,no_run
-use kasane_pdf::{pixmap_to_png, render_page, Document, RenderOptions};
+use kasane_pdf::{render_page, Document, RenderOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = std::fs::read("input.pdf")?;
     let doc = Document::from_bytes(&data)?;
-    let opts = RenderOptions { dpi: 144.0, ..RenderOptions::default() };
+    let opts = RenderOptions::default().with_dpi(144.0);
     let page = render_page(&doc, &doc.pages()[0], &opts)?;
-    std::fs::write("page-1.png", pixmap_to_png(&page.pixmap)?)?;
-    for s in &page.font_substitutions {
+    std::fs::write("page-1.png", page.to_png()?)?;
+    // `page.pixels()` is the premultiplied RGBA8 buffer, `page.stride()`
+    // its row length; `page.into_rgba8()` takes it without a copy.
+    for s in page.font_substitutions() {
         eprintln!("substituted font: {} -> {}", s.base_font, s.substitute);
     }
     // Non-fatal deviations the engine processed exactly (a Flate stream
@@ -187,12 +191,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Extract text with positions ([`examples/extract_text.rs`](examples/extract_text.rs)):
 
 ```rust,no_run
-use kasane_pdf::{extract_text, Document, Limits};
+use kasane_pdf::{extract_text, Document, TextOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let data = std::fs::read("input.pdf")?;
     let doc = Document::from_bytes(&data)?;
-    let text = extract_text(&doc, &doc.pages()[0], &Limits::default())?;
+    // `TextOptions` carries the limits and the switches (hidden
+    // optional content, a region filter); the defaults mirror a viewer.
+    let text = extract_text(&doc, &doc.pages()[0], &TextOptions::default())?;
     for c in &text.chars {
         if let Some(u) = &c.unicode {
             println!("{u} at ({:.1}, {:.1})", c.origin.0, c.origin.1);
@@ -279,6 +285,7 @@ Errors are printed with their stable category, e.g.
 
 | feature | default | effect |
 |---|---|---|
+| `tiny-skia-interop` | on | Exposes the `tiny-skia` `Pixmap` behind `RenderedPage` (`pixmap()`, `into_pixmap()`, the `Pixmap` re-export, `pixmap_to_png`). The rasteriser is always tiny-skia; the flag only decides whether its type is part of kasane-pdf's public API. The backend-neutral accessors (`pixels()`, `stride()`, `pixel_format()`, `into_rgba8()`, `to_png()`) are always available. |
 | `cjk-fallback` | off | Embeds the Adobe-Japan1 predefined CMaps (`90ms-RKSJ-*`, `UniJIS-*`, `EUC-*`, …), the Adobe-Japan1 CID → Unicode table and Noto Sans JP Regular (about 4.3 MB) so that **non-embedded Japanese CID fonts** render. Glyph shapes come from Noto Sans, metrics from the PDF; every such render is reported in `font_substitutions`. The assets ship in the crate under `assets/cjk/` (Adobe resources BSD-3-Clause, Noto SIL OFL 1.1; pinned upstream commits, SHA-256 lock in `scripts/cjk-assets.sha256`), so `--features cjk-fallback` needs no extra step. |
 
 Without the feature, a non-embedded CID font or a predefined
@@ -388,9 +395,10 @@ matters. [`docs/security.md`](docs/security.md) has the full posture.
 - **Resource limits.** Every unbounded operation is capped by
   `Limits` (input size, decoded bytes, pixels, operator counts,
   depths, edit budgets). The defaults suit ordinary documents;
-  tighten them for untrusted input in constrained environments.
-  Exceeding one is `Error::LimitExceeded { limit, max }`, distinct
-  from a malformed file.
+  tighten them for untrusted input in constrained environments with
+  `Limits::default().with_<field>(value)`. Exceeding one is
+  `Error::LimitExceeded { limit, max }`, distinct from a malformed
+  file; a zero structural bound is `Error::InvalidArgument`.
 - **Not a redaction tool.** The `remove_*` editors and
   `diagnose_redaction` report what they changed or found; they do not
   prove data is gone.

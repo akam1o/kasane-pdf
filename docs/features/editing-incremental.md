@@ -79,7 +79,7 @@ can be appended without contradicting what the signer declared.
 | Situation | Full rewrite | Incremental save |
 |---|---|---|
 | no signature | allowed | allowed |
-| any signature | **refused** (`Error::Unsupported`) — every signed byte would move | see below |
+| any signature | **refused** (`Error::SignaturePolicy { rule: RewriteOfSignedDocument }`) — every signed byte would move | see below |
 | `/ByteRange` not intact (not four non-negative integers, does not start at 0, gap is not the `/Contents` string, extends past the file) | refused | **refused** — the claim cannot be reasoned about |
 | `/FieldMDP` present | refused | **refused** — field locks are not evaluated |
 | certification `/DocMDP /P 1` | refused | refused for every change |

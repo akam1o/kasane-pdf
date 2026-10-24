@@ -4,7 +4,59 @@ All notable changes to this project are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [Unreleased] — 0.2.0
+
+The API-stability release: the breaking changes scheduled in
+`docs/api-stability.md`, made once so that later releases can add
+without breaking. Behaviour on PDF input is unchanged (the 511-file
+corpus renders, extracts and rewrites identically). Every change is
+mechanical; `docs/migration-0.2.md` has the one-line replacement for
+each.
+
+### Breaking
+- `#[non_exhaustive]` on `Error`, `ChangeKind`, `ResolveKind`,
+  `SubstKind`, `DestSource`, `TargetKind`, and on the option and
+  result structs `Limits`, `RenderOptions`, `RenderedPage`,
+  `ExtractedText`, `CharInfo`, `SignatureInfo`, `RecoveryReport`,
+  `FontSubstitution`, `MissingReference`. Exhaustive matches need a
+  wildcard arm; struct literals of `Limits` / `RenderOptions` become
+  `Limits::default().with_<field>(v)` / `RenderOptions::default()
+  .with_dpi(d).with_limits(l)` (fields stay `pub` for reading and
+  assignment).
+- `Error::kind()` returns the new `ErrorKind` enum instead of
+  `&'static str`; `ErrorKind::as_str()` yields the 0.1 strings
+  unchanged, so CLI output is identical.
+- `extract_text(&Document, &Page, &TextOptions)`: the third argument
+  is the new `TextOptions` (`with_limits`, `with_hidden_content`,
+  `with_region`). `extract_text_all` is removed (=
+  `with_hidden_content(true)`).
+- `RenderedPage` fields are private: `width()`, `height()`, `dpi()`,
+  `page_size_pts()`, `font_substitutions()`, `color_approximations()`;
+  the pixel buffer through the backend-neutral `pixels()`, `stride()`,
+  `pixel_format()`, `into_rgba8()`, `to_png()`; `pixmap()` /
+  `into_pixmap()`, the `Pixmap` re-export and `pixmap_to_png` only
+  with the new default feature `tiny-skia-interop`.
+- A signature's refusal is `Error::SignaturePolicy { rule:
+  SignatureRule, detail }` (`ByteRangeNotIntact`, `DocMdpNoChanges`,
+  `DocMdpFormFillOnly`, `DocMdpFormFillAndAnnotations`,
+  `FieldMdpNotEvaluated`, `RewriteOfSignedDocument`) instead of
+  `Error::Unsupported { feature: "signed document" | "edit of a
+  signed document" }`.
+- An invalid `dpi` is `Error::InvalidArgument { argument: "dpi" }`
+  instead of `Error::Structure`.
+
+### Added
+- `ErrorKind` (`as_str`, `is_malformed_input`), `SignatureRule`,
+  `Error::InvalidArgument`, `MissingReference` re-exported.
+- `Limits::new`, `Limits::validate` (rejects a zero *structural*
+  bound; feature bounds may still be 0 to forbid the feature), one
+  `with_<field>` per bound; `RenderOptions::new/with_dpi/with_limits/
+  validate`; `TextOptions`; `PixelFormat`.
+- Every entry point that takes limits or options validates them first.
+
+### Changed
+- Documentation: `docs/migration-0.2.md`, `docs/api-stability.md`
+  rewritten for the 0.2 contract, README and examples on the new API.
 
 ## [0.1.1] - 2026-10-24
 
