@@ -3996,7 +3996,7 @@ mod tests {
     // the clone's blackened samples are exactly those pixels.
 
     /// Build a 1-page PDF painting the 3×2 gray image under `cm`.
-    fn m28_gray_pdf(cm: &str) -> Vec<u8> {
+    fn grid_ctm_gray_pdf(cm: &str) -> Vec<u8> {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -4045,7 +4045,7 @@ mod tests {
 
     /// Decode the edited clone's samples (KasIm0) as a flat
     /// width*height gray vector.
-    fn m28_edited_samples(d: &Document) -> Vec<u8> {
+    fn grid_ctm_edited_samples(d: &Document) -> Vec<u8> {
         let page = d.pages().first().unwrap();
         let res = page.resources().unwrap();
         // Find the KasIm0 XObject ref.
@@ -4064,12 +4064,12 @@ mod tests {
     /// `[6 0 0 10 20 60] cm`: pixel (0,0) covers user space
     /// x∈[20,22], y∈[65,70].
     #[test]
-    fn m28_axis_aligned_baseline() {
-        let d = doc(&m28_gray_pdf("6 0 0 10 20 60 cm"));
+    fn grid_ctm_axis_aligned_baseline() {
+        let d = doc(&grid_ctm_gray_pdf("6 0 0 10 20 60 cm"));
         let r =
             remove_image_region(&d, 0, &[(20.0, 65.0, 22.0, 70.0)], &Limits::default()).unwrap();
         assert_eq!(r.pixels_changed, 1);
-        let s = m28_edited_samples(&doc(&r.output));
+        let s = grid_ctm_edited_samples(&doc(&r.output));
         assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
     }
 
@@ -4077,12 +4077,12 @@ mod tests {
     /// lands at x∈[36,38], y∈[65,70] (the image's left edge is on
     /// the right of the painted rect).
     #[test]
-    fn m28_horizontal_flip() {
-        let d = doc(&m28_gray_pdf("-6 0 0 10 38 60 cm"));
+    fn grid_ctm_horizontal_flip() {
+        let d = doc(&grid_ctm_gray_pdf("-6 0 0 10 38 60 cm"));
         let r =
             remove_image_region(&d, 0, &[(36.0, 65.0, 38.0, 70.0)], &Limits::default()).unwrap();
         assert_eq!(r.pixels_changed, 1);
-        let s = m28_edited_samples(&doc(&r.output));
+        let s = grid_ctm_edited_samples(&doc(&r.output));
         assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
     }
 
@@ -4090,24 +4090,24 @@ mod tests {
     /// lands at x∈[20,22], y∈[70,75] (the image's top row is on
     /// the bottom of the painted rect).
     #[test]
-    fn m28_vertical_flip() {
-        let d = doc(&m28_gray_pdf("6 0 0 -10 20 80 cm"));
+    fn grid_ctm_vertical_flip() {
+        let d = doc(&grid_ctm_gray_pdf("6 0 0 -10 20 80 cm"));
         let r =
             remove_image_region(&d, 0, &[(20.0, 70.0, 22.0, 75.0)], &Limits::default()).unwrap();
         assert_eq!(r.pixels_changed, 1);
-        let s = m28_edited_samples(&doc(&r.output));
+        let s = grid_ctm_edited_samples(&doc(&r.output));
         assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
     }
 
     /// 180° rotation (both flips) — `[−6 0 0 −10 38 80]`: pixel
     /// (0,0) lands at x∈[36,38], y∈[70,75].
     #[test]
-    fn m28_rot180() {
-        let d = doc(&m28_gray_pdf("-6 0 0 -10 38 80 cm"));
+    fn grid_ctm_rot180() {
+        let d = doc(&grid_ctm_gray_pdf("-6 0 0 -10 38 80 cm"));
         let r =
             remove_image_region(&d, 0, &[(36.0, 70.0, 38.0, 75.0)], &Limits::default()).unwrap();
         assert_eq!(r.pixels_changed, 1);
-        let s = m28_edited_samples(&doc(&r.output));
+        let s = grid_ctm_edited_samples(&doc(&r.output));
         assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
     }
 
@@ -4115,14 +4115,14 @@ mod tests {
     /// y' = 10u+60. Pixel (0,0) covers u∈[0,1/3], v∈[1/2,1] →
     /// user x∈[32,35], y∈[60,63.33].
     #[test]
-    fn m28_rot90() {
-        let d = doc(&m28_gray_pdf("0 10 -6 0 38 60 cm"));
+    fn grid_ctm_rot90() {
+        let d = doc(&grid_ctm_gray_pdf("0 10 -6 0 38 60 cm"));
         // Strictly inside pixel (0,0)'s painted rect so the
         // floor/ceil expansion covers only that pixel.
         let r =
             remove_image_region(&d, 0, &[(32.0, 60.0, 35.0, 63.3)], &Limits::default()).unwrap();
         assert_eq!(r.pixels_changed, 1);
-        let s = m28_edited_samples(&doc(&r.output));
+        let s = grid_ctm_edited_samples(&doc(&r.output));
         assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
     }
 
@@ -4130,11 +4130,11 @@ mod tests {
     /// y' = −10u+70. Pixel (0,0) covers u∈[0,1/3], v∈[1/2,1] →
     /// user x∈[5,8], y∈[66.67,70].
     #[test]
-    fn m28_rot270() {
-        let d = doc(&m28_gray_pdf("0 -10 6 0 2 70 cm"));
+    fn grid_ctm_rot270() {
+        let d = doc(&grid_ctm_gray_pdf("0 -10 6 0 2 70 cm"));
         let r = remove_image_region(&d, 0, &[(5.0, 66.7, 8.0, 70.0)], &Limits::default()).unwrap();
         assert_eq!(r.pixels_changed, 1);
-        let s = m28_edited_samples(&doc(&r.output));
+        let s = grid_ctm_edited_samples(&doc(&r.output));
         assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
     }
 
@@ -4143,12 +4143,12 @@ mod tests {
     /// scaled). Pixel (0,0) covers u∈[0,1/3], v∈[1/2,1] →
     /// user x∈[23,26], y∈[60,63.33].
     #[test]
-    fn m28_axis_swap_reflect() {
-        let d = doc(&m28_gray_pdf("0 10 6 0 20 60 cm"));
+    fn grid_ctm_axis_swap_reflect() {
+        let d = doc(&grid_ctm_gray_pdf("0 10 6 0 20 60 cm"));
         let r =
             remove_image_region(&d, 0, &[(23.0, 60.0, 26.0, 63.3)], &Limits::default()).unwrap();
         assert_eq!(r.pixels_changed, 1);
-        let s = m28_edited_samples(&doc(&r.output));
+        let s = grid_ctm_edited_samples(&doc(&r.output));
         assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
     }
 
@@ -4157,12 +4157,12 @@ mod tests {
     /// Pixel (0,0) covers u∈[0,1/3], v∈[1/2,1] →
     /// user x∈[34,36], y∈[60,66.67].
     #[test]
-    fn m28_nonuniform_swapped() {
-        let d = doc(&m28_gray_pdf("0 20 -4 0 38 60 cm"));
+    fn grid_ctm_nonuniform_swapped() {
+        let d = doc(&grid_ctm_gray_pdf("0 20 -4 0 38 60 cm"));
         let r =
             remove_image_region(&d, 0, &[(34.0, 60.0, 36.0, 66.6)], &Limits::default()).unwrap();
         assert_eq!(r.pixels_changed, 1);
-        let s = m28_edited_samples(&doc(&r.output));
+        let s = grid_ctm_edited_samples(&doc(&r.output));
         assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
     }
 
@@ -4170,14 +4170,14 @@ mod tests {
     /// painted rect at x∈[-38,-20]; a rect into negative space
     /// still selects pixel (0,0).
     #[test]
-    fn m28_negative_coords() {
-        let d = doc(&m28_gray_pdf("-6 0 0 10 -20 60 cm"));
+    fn grid_ctm_negative_coords() {
+        let d = doc(&grid_ctm_gray_pdf("-6 0 0 10 -20 60 cm"));
         // Pixel (0,0): unit(0,1/2)-(1/3,1) → x∈[-20,-22] wait —
         // x' = -6u - 20: u=0→-20, u=1/3→-22 → x∈[-22,-20].
         let r =
             remove_image_region(&d, 0, &[(-22.0, 65.0, -20.0, 70.0)], &Limits::default()).unwrap();
         assert_eq!(r.pixels_changed, 1);
-        let s = m28_edited_samples(&doc(&r.output));
+        let s = grid_ctm_edited_samples(&doc(&r.output));
         assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
     }
 
@@ -4185,29 +4185,29 @@ mod tests {
     /// pixels only — with a reflection so the covered half is the
     /// image's *right* half (pixels x≥1).
     #[test]
-    fn m28_partial_cover_reflected() {
+    fn grid_ctm_partial_cover_reflected() {
         // `[6 0 0 10 20 60]` paints the image at x∈[20,26]. A rect
         // covering the right portion x∈[23,26] selects pixel
         // columns px≥1 on both rows → 4 pixels.
-        let d = doc(&m28_gray_pdf("6 0 0 10 20 60 cm"));
+        let d = doc(&grid_ctm_gray_pdf("6 0 0 10 20 60 cm"));
         let r =
             remove_image_region(&d, 0, &[(23.0, 60.0, 26.0, 80.0)], &Limits::default()).unwrap();
         assert_eq!(r.pixels_changed, 4);
-        let s = m28_edited_samples(&doc(&r.output));
+        let s = grid_ctm_edited_samples(&doc(&r.output));
         assert_eq!(s, vec![0x10, 0x00, 0x00, 0x40, 0x00, 0x00]);
     }
 
     /// Pixel-boundary rounding — a rect that clips part of a pixel
     /// still selects it (floor/ceil outward rule, unchanged).
     #[test]
-    fn m28_partial_pixel_cover() {
-        let d = doc(&m28_gray_pdf("6 0 0 10 20 60 cm"));
+    fn grid_ctm_partial_pixel_cover() {
+        let d = doc(&grid_ctm_gray_pdf("6 0 0 10 20 60 cm"));
         // Rect covers only the right half of pixel (0,0)'s painted
         // area (x∈[21,22] of its [20,22] span) — still selects it.
         let r =
             remove_image_region(&d, 0, &[(21.0, 65.0, 22.0, 70.0)], &Limits::default()).unwrap();
         assert_eq!(r.pixels_changed, 1);
-        let s = m28_edited_samples(&doc(&r.output));
+        let s = grid_ctm_edited_samples(&doc(&r.output));
         assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
     }
 
@@ -4215,8 +4215,8 @@ mod tests {
     /// two non-adjacent pixels; the L-shape between them is not
     /// filled.
     #[test]
-    fn m28_disjoint_rects_reflected() {
-        let d = doc(&m28_gray_pdf("-6 0 0 10 38 60 cm"));
+    fn grid_ctm_disjoint_rects_reflected() {
+        let d = doc(&grid_ctm_gray_pdf("-6 0 0 10 38 60 cm"));
         // Image is painted at x∈[32,38]; pixel (0,0) covers
         // x∈[36,38], pixel (2,0) covers x∈[32,34] (the image's
         // right column lands on the left after reflection).
@@ -4228,14 +4228,14 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r.pixels_changed, 2);
-        let s = m28_edited_samples(&doc(&r.output));
+        let s = grid_ctm_edited_samples(&doc(&r.output));
         assert_eq!(s, vec![0x00, 0x20, 0x00, 0x40, 0x50, 0x60]);
     }
 
     /// RGB image — pixel (0,0) under a 90° rotation; each pixel is
     /// three components but counts once.
     #[test]
-    fn m28_rgb_rotated() {
+    fn grid_ctm_rgb_rotated() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -4288,7 +4288,7 @@ mod tests {
             remove_image_region(&d, 0, &[(32.0, 60.0, 35.0, 63.3)], &Limits::default()).unwrap();
         assert_eq!(r.pixels_changed, 1);
         let out = doc(&r.output);
-        let s = m28_edited_samples(&out);
+        let s = grid_ctm_edited_samples(&out);
         assert_eq!(
             s,
             vec![
@@ -4300,10 +4300,10 @@ mod tests {
 
     /// A shear CTM is refused (not grid-aligned).
     #[test]
-    fn m28_shear_refused() {
+    fn grid_ctm_shear_refused() {
         // Shear: [1 0 0.5 1 20 60] — a=c≠0? no: a=1,b=0,c=0.5,d=1
         // → b==0 but c≠0 → neither class → refused.
-        let d = doc(&m28_gray_pdf("1 0 0.5 1 20 60 cm"));
+        let d = doc(&grid_ctm_gray_pdf("1 0 0.5 1 20 60 cm"));
         let e = remove_image_region(&d, 0, &[(20.0, 60.0, 40.0, 80.0)], &Limits::default())
             .unwrap_err();
         assert!(matches!(e, Error::Unsupported { .. }), "{e:?}");
@@ -4311,8 +4311,8 @@ mod tests {
 
     /// A singular CTM (a=0,b=0,c=0,d=0 or degenerate) is refused.
     #[test]
-    fn m28_singular_refused() {
-        let d = doc(&m28_gray_pdf("0 0 0 0 20 60 cm"));
+    fn grid_ctm_singular_refused() {
+        let d = doc(&grid_ctm_gray_pdf("0 0 0 0 20 60 cm"));
         let e = remove_image_region(&d, 0, &[(20.0, 60.0, 40.0, 80.0)], &Limits::default())
             .unwrap_err();
         assert!(matches!(e, Error::Unsupported { .. }), "{e:?}");
@@ -4322,7 +4322,7 @@ mod tests {
     /// `image_pixel_ranges` since a real `cm` operand can't carry
     /// NaN/∞ through the parser.
     #[test]
-    fn m28_nonfinite_refused() {
+    fn grid_ctm_nonfinite_refused() {
         let m = Matrix::new(f64::INFINITY, 0.0, 0.0, 10.0, 20.0, 60.0);
         let e = image_pixel_ranges(&m, 3, 2, &[]).unwrap_err();
         assert!(matches!(e, Error::Structure(_)), "{e:?}");
@@ -4334,8 +4334,8 @@ mod tests {
     /// A 90° rotation through `remove_region` (the integrated
     /// text+image path) — same shared transform logic.
     #[test]
-    fn m28_rot90_via_remove_region() {
-        let d = doc(&m28_gray_pdf("0 10 -6 0 38 60 cm"));
+    fn grid_ctm_rot90_via_remove_region() {
+        let d = doc(&grid_ctm_gray_pdf("0 10 -6 0 38 60 cm"));
         let r = crate::remove_region::remove_region(
             &d,
             0,
@@ -4350,7 +4350,7 @@ mod tests {
     /// calls — only the rotated one is edited; the axis-aligned one
     /// keeps the original object.
     #[test]
-    fn m28_two_invocations_different_transforms() {
+    fn grid_ctm_two_invocations_different_transforms() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -4419,7 +4419,7 @@ mod tests {
     /// A JPEG image under a 90° rotation — the shared transform
     /// applies before decode, same as raw/Flate.
     #[test]
-    fn m28_jpeg_rotated() {
+    fn grid_ctm_jpeg_rotated() {
         // 8×8 gray JPEG + 90° CTM.
         let jpeg = {
             use crate::remove_image::decode_image;
@@ -4505,7 +4505,7 @@ mod tests {
     /// user-space coordinates; the page rotation is *not* applied
     /// to the selection rect.
     #[test]
-    fn m28_page_rotate_unaffected() {
+    fn grid_ctm_page_rotate_unaffected() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -4552,7 +4552,7 @@ mod tests {
         parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
         parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
         let d = doc(&parts.concat());
-        // Same un-rotated rect as m28_axis_aligned_baseline — the
+        // Same un-rotated rect as grid_ctm_axis_aligned_baseline — the
         // page /Rotate is display metadata, not a transform of the
         // content stream's coordinate space.
         let r =
@@ -4564,7 +4564,7 @@ mod tests {
     /// editing one page's rect leaves the other page's pixels and
     /// the original stream untouched.
     #[test]
-    fn m28_two_pages_shared_image() {
+    fn grid_ctm_two_pages_shared_image() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -4642,7 +4642,7 @@ mod tests {
     /// A FlateDecode image under a 90° rotation — the shared
     /// transform applies before decode, same as raw/JPEG.
     #[test]
-    fn m28_flate_rotated() {
+    fn grid_ctm_flate_rotated() {
         use flate2::{write::ZlibEncoder, Compression};
         use std::io::Write;
         let img_data = [0x10u8, 0x20, 0x30, 0x40, 0x50, 0x60];
@@ -4695,19 +4695,19 @@ mod tests {
         parts.push(b"trailer\n<< /Size 11 /Root 1 0 R >>\n".to_vec());
         parts.push(format!("startxref\n{xref}\n%%EOF\n").into_bytes());
         let d = doc(&parts.concat());
-        // Same geometry as m28_rot90 — pixel (0,0) at x∈[32,35],
+        // Same geometry as grid_ctm_rot90 — pixel (0,0) at x∈[32,35],
         // y∈[60,63.33].
         let r =
             remove_image_region(&d, 0, &[(32.0, 60.0, 35.0, 63.3)], &Limits::default()).unwrap();
         assert_eq!(r.pixels_changed, 1);
-        let s = m28_edited_samples(&doc(&r.output));
+        let s = grid_ctm_edited_samples(&doc(&r.output));
         assert_eq!(s, vec![0x00, 0x20, 0x30, 0x40, 0x50, 0x60]);
     }
 
     /// Text + rotated image mixed on one page — the text op and the
     /// rotated `Do` are edited in the same integrated pass.
     #[test]
-    fn m28_text_and_rotated_image() {
+    fn grid_ctm_text_and_rotated_image() {
         let font_bytes = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/KasaneTest.ttf"
@@ -4817,7 +4817,7 @@ mod tests {
     /// Rotated image through the metadata-integrated entry — the
     /// document's `/Info` is stripped in the same edit.
     #[test]
-    fn m28_metadata_integrated_rotated() {
+    fn grid_ctm_metadata_integrated_rotated() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {

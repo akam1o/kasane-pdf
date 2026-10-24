@@ -2228,7 +2228,7 @@ use crate::object::Dict;
 #[cfg(test)]
 mod tests {
     //! Unit tests for the diagnosis helpers — the CLI path is covered
-    //! by `tests/m8_cli.rs`; here we pin the geometry and the
+    //! by `tests/cli_preflight.rs`; here we pin the geometry and the
     //! rect-validation rules that the caller-visible contract rests
     //! on, plus the conservative bbox intersection.
     use super::*;

@@ -2759,7 +2759,7 @@ mod tests {
     /// One image, one `Do`, edited — the original name is orphaned
     /// and removed from /XObject.
     #[test]
-    fn m21_orphaned_name_removed() {
+    fn orphaned_xobject_name_removed() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -2816,7 +2816,7 @@ mod tests {
     /// Two `Do`s to the same image, only one edited — the original
     /// name is kept because the unedited `Do` still uses it.
     #[test]
-    fn m21_partial_edit_keeps_name() {
+    fn orphaned_name_kept_while_another_do_uses_it() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -2877,7 +2877,7 @@ mod tests {
     /// not remove `/ImAlias`, and the original image object stays
     /// reachable via the unedited `/ImAlias Do`.
     #[test]
-    fn m21_alias_keeps_original() {
+    fn orphaned_name_alias_keeps_original() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -2937,7 +2937,7 @@ mod tests {
     /// from *this* page's /XObject, but the image object stays in the
     /// output because the other page still references it.
     #[test]
-    fn m21_shared_image_other_page() {
+    fn orphaned_name_shared_image_other_page() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -3011,7 +3011,7 @@ mod tests {
     /// inherits from /Pages. The cloned XObject dict must not
     /// mutate the shared /Pages resources.
     #[test]
-    fn m21_inherited_resources() {
+    fn orphaned_name_inherited_resources() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -3123,7 +3123,7 @@ mod tests {
     /// `max_diag_exec_ops` boundary: exactly at the limit passes,
     /// one op under is refused.
     #[test]
-    fn m20_1_max_diag_exec_ops_boundary() {
+    fn max_diag_exec_ops_boundary() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -3205,7 +3205,7 @@ mod tests {
     /// Re-parse the output and verify by *content* (not object number):
     /// the edited image stream exists, the original does not.
     #[test]
-    fn m21_1_original_image_absent_by_content() {
+    fn output_original_image_absent_by_content() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -3285,7 +3285,7 @@ mod tests {
     /// Shared image with another page — the original image object
     /// stays in the output because the other page still references it.
     #[test]
-    fn m21_1_shared_image_present_by_content() {
+    fn output_shared_image_present_by_content() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -3383,7 +3383,7 @@ mod tests {
     /// materialised — the traversal does not stop at a resourceless
     /// intermediate node.
     #[test]
-    fn m22_1_resourceless_intermediate() {
+    fn materialise_resourceless_intermediate() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -3462,7 +3462,7 @@ mod tests {
     /// clone is created, but the page still gets its effective
     /// /Resources materialised (the Contents edit is not lost).
     #[test]
-    fn m22_1_text_only_materialises_resources() {
+    fn materialise_text_only_materialises_resources() {
         let font_bytes = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tests/fixtures/KasaneTest.ttf"
@@ -3583,7 +3583,7 @@ mod tests {
     /// no IndirectRef) — the parent's /Resources must NOT be stripped
     /// even though the child was pushed to the stack.
     #[test]
-    fn m22_2_unmaterialised_child_blocks_parent() {
+    fn materialise_unmaterialised_child_blocks_parent() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -3674,7 +3674,7 @@ mod tests {
     /// `plan_resource_materialisation` directly so the per-node
     /// `false` is asserted, not just the final strip outcome.
     #[test]
-    fn m22_3_failure_propagates_three_levels() {
+    fn materialise_failure_propagates_three_levels() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -3757,7 +3757,7 @@ mod tests {
     /// branch 2 to the root — the root must NOT drop /Resources even
     /// though branch 1 succeeded.
     #[test]
-    fn m22_3_mixed_branches() {
+    fn materialise_mixed_branches() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -3849,7 +3849,7 @@ mod tests {
     /// Confirms `true` results are recorded and the parent drops
     /// /Resources only when every descendant is materialised.
     #[test]
-    fn m22_4_all_branches_materialised() {
+    fn materialise_all_branches_strips_root() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -3932,7 +3932,7 @@ mod tests {
     /// branch records `false`. Distinct from the direct-kid case: the
     /// leaf *has* a ref, it is just not materialised.
     #[test]
-    fn m22_4_indirect_leaf_without_resources() {
+    fn materialise_indirect_leaf_without_resources() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -4125,7 +4125,7 @@ mod tests {
     /// Two pages, different rect regions — both edits land in one
     /// output through one Edit/rewrite.
     #[test]
-    fn m24_two_pages_different_rects() {
+    fn multipage_two_pages_different_rects() {
         let d = doc(&two_page_text_image_pdf());
         // Page 1: cover 'A' text. Page 2: cover image pixels.
         let r = remove_regions(
@@ -4151,7 +4151,7 @@ mod tests {
     /// Text edit on one page, image edit on the other — a mixed
     /// multi-page pass.
     #[test]
-    fn m24_mixed_text_and_image_pages() {
+    fn multipage_mixed_text_and_image_pages() {
         let d = doc(&two_page_text_image_pdf());
         let r = remove_regions(
             &d,
@@ -4173,7 +4173,7 @@ mod tests {
     /// Same page repeated with multiple rect groups — merged into
     /// one plan, not double-counted.
     #[test]
-    fn m24_same_page_repeated_merges_rects() {
+    fn multipage_same_page_repeated_merges_rects() {
         let d = doc(&two_page_text_image_pdf());
         // Page 1 listed twice — rects merge.
         let r = remove_regions(
@@ -4194,7 +4194,7 @@ mod tests {
 
     /// A failure on page 2 fails the whole call — no partial output.
     #[test]
-    fn m24_failure_on_later_page_fails_all() {
+    fn multipage_failure_on_later_page_fails_all() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -4257,7 +4257,7 @@ mod tests {
     /// A cumulative limit that fits one page but not two is refused
     /// — `max_diag_exec_ops` carries across pages.
     #[test]
-    fn m24_cumulative_exec_ops_budget() {
+    fn multipage_cumulative_exec_ops_budget() {
         let d = doc(&two_page_text_image_pdf());
         // Each page runs ~9 ops (BT/ET/Tj/cm/Do). A cap of 5 allows
         // page 1 but not both.
@@ -4284,7 +4284,7 @@ mod tests {
 
     /// Same cumulative boundary — the exact limit succeeds.
     #[test]
-    fn m24_cumulative_budget_boundary() {
+    fn multipage_cumulative_budget_boundary() {
         let d = doc(&two_page_text_image_pdf());
         // Generous enough for both pages.
         let r = remove_regions(
@@ -4302,7 +4302,7 @@ mod tests {
     /// Empty specs, empty rect list, bad page index — all refused
     /// up front, before any walk runs.
     #[test]
-    fn m24_input_validation() {
+    fn multipage_input_validation() {
         let d = doc(&two_page_text_image_pdf());
         // Empty specs.
         assert!(matches!(
@@ -4328,7 +4328,7 @@ mod tests {
 
     /// Debug must not leak output bytes or site content.
     #[test]
-    fn m24_debug_no_leak() {
+    fn multipage_debug_no_leak() {
         let d = doc(&two_page_text_image_pdf());
         let r = remove_regions(
             &d,
@@ -4391,7 +4391,7 @@ mod tests {
     /// `max_diag_rects` bounds the *merged* per-page rect count —
     /// repeated specs for one page cannot bypass it.
     #[test]
-    fn m24_1_rect_count_limit() {
+    fn multipage_rect_count_limit() {
         let d = doc(&two_page_text_image_pdf());
         // A tiny cap — one rect fits, two do not.
         let limits = Limits {
@@ -4465,7 +4465,7 @@ mod tests {
 
     /// The limit boundary exactly succeeds.
     #[test]
-    fn m24_1_rect_count_boundary() {
+    fn multipage_rect_count_boundary() {
         let d = doc(&two_page_text_image_pdf());
         let limits = Limits {
             max_diag_rects: 2,
@@ -4485,7 +4485,7 @@ mod tests {
     /// `usize::MAX` as a page index must not overflow the `page + 1`
     /// error path — the refusal is `Error::Structure`, not a panic.
     #[test]
-    fn m24_1_page_index_overflow() {
+    fn multipage_page_index_overflow() {
         let d = doc(&two_page_text_image_pdf());
         // usize::MAX + 1 would wrap in release and panic in debug.
         let e = remove_regions(
@@ -4543,7 +4543,7 @@ mod tests {
     /// different pixels. Each page's clone is independent — page 1's
     /// edit does not leak into page 2's clone and vice versa.
     #[test]
-    fn m24_1_shared_image_two_edited_pages() {
+    fn multipage_shared_image_two_edited_pages() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -4656,7 +4656,7 @@ mod tests {
     /// Different branches of the page tree give `/Im1` different
     /// effective resources — each page edits *its own* image.
     #[test]
-    fn m24_1_same_name_different_image_per_branch() {
+    fn multipage_same_name_different_image_per_branch() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -4788,7 +4788,7 @@ mod tests {
     /// An unedited page sharing the image keeps the original —
     /// the edited page's clone does not leak back.
     #[test]
-    fn m24_1_unedited_page_keeps_shared_original() {
+    fn multipage_unedited_page_keeps_shared_original() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -5000,7 +5000,7 @@ mod tests {
     /// Both edits and both metadata entries are removed in one
     /// rewrite — verified by re-parsing the output.
     #[test]
-    fn m26_combined_edit_and_metadata_removal() {
+    fn combined_edit_and_metadata_removal() {
         let d = doc(&two_page_text_image_metadata_pdf());
         let r = remove_regions_and_document_metadata(
             &d,
@@ -5036,7 +5036,7 @@ mod tests {
     /// Metadata absent — the call still succeeds and the flags are
     /// false.
     #[test]
-    fn m26_metadata_absent_succeeds() {
+    fn combined_metadata_absent_succeeds() {
         let d = doc(&two_page_text_image_pdf()); // no /Info, no /Metadata
         let r = remove_regions_and_document_metadata(
             &d,
@@ -5052,7 +5052,7 @@ mod tests {
 
     /// A dangling /Info ref is still removed without resolving it.
     #[test]
-    fn m26_info_dangling_ref_removed() {
+    fn combined_info_dangling_ref_removed() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -5096,7 +5096,7 @@ mod tests {
     /// Page-level /Metadata is kept — only the catalog one is
     /// removed.
     #[test]
-    fn m26_page_metadata_kept() {
+    fn combined_page_metadata_kept() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -5161,7 +5161,7 @@ mod tests {
     /// An Info dict shared through another catalog key stays
     /// reachable — the *entry* is removed, not the data.
     #[test]
-    fn m26_shared_info_kept_via_other_ref() {
+    fn combined_shared_info_kept_via_other_ref() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -5210,7 +5210,7 @@ mod tests {
     /// Without the metadata strip, `remove_regions` still keeps
     /// Info and /Metadata — the combined entry point is opt-in.
     #[test]
-    fn m26_remove_regions_still_keeps_metadata() {
+    fn remove_regions_alone_keeps_metadata() {
         let d = doc(&two_page_text_image_metadata_pdf());
         let r = remove_regions(
             &d,
@@ -5226,7 +5226,7 @@ mod tests {
     /// A failure on a later page fails the whole combined call —
     /// no partial output, and metadata is not stripped either.
     #[test]
-    fn m26_failure_on_later_page_fails_all() {
+    fn combined_failure_on_later_page_fails_all() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -5283,7 +5283,7 @@ mod tests {
     /// A cumulative budget that fits one page but not two is still
     /// enforced when the metadata strip is also requested.
     #[test]
-    fn m26_cumulative_budget_still_applies() {
+    fn combined_cumulative_budget_still_applies() {
         let d = doc(&two_page_text_image_metadata_pdf());
         let limits = Limits {
             max_diag_exec_ops: 5,
@@ -5309,7 +5309,7 @@ mod tests {
     /// An inherited rewrite refusal (signed document) still fires
     /// through the combined entry point.
     #[test]
-    fn m26_rewrite_refusal_inherited() {
+    fn combined_rewrite_refusal_inherited() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -5359,7 +5359,7 @@ mod tests {
 
     /// Input document is unchanged and the bytes are not mutated.
     #[test]
-    fn m26_input_not_mutated() {
+    fn combined_input_not_mutated() {
         let bytes = two_page_text_image_metadata_pdf();
         let d = doc(&bytes);
         let _ = remove_regions_and_document_metadata(
@@ -5375,7 +5375,7 @@ mod tests {
     /// Debug output never leaks output bytes, site content, or
     /// metadata values.
     #[test]
-    fn m26_debug_no_leak() {
+    fn combined_debug_no_leak() {
         let d = doc(&two_page_text_image_metadata_pdf());
         let r = remove_regions_and_document_metadata(
             &d,
@@ -5704,7 +5704,7 @@ mod tests {
     /// pixels of the 8×8 image (rect in user space maps to pixel
     /// rows 0..2, cols 0..2 after the y-flip).
     #[test]
-    fn m27_gray_jpeg_partial_edit() {
+    fn jpeg_gray_partial_edit() {
         // 8×8 gray JPEG painted over the whole 200×200 page.
         let d = doc(&jpeg_page_pdf(
             &unhex(JPEG_G8_HEX),
@@ -5761,7 +5761,7 @@ mod tests {
     /// RGB JPEG: same geometry — each changed pixel zeroes all 3
     /// channels but counts as one pixel.
     #[test]
-    fn m27_rgb_jpeg_partial_edit() {
+    fn jpeg_rgb_partial_edit() {
         let d = doc(&jpeg_page_pdf(
             &unhex(JPEG_C8_HEX),
             8,
@@ -5792,7 +5792,7 @@ mod tests {
     /// Whole-image rect blacks every pixel; `pixels_changed` counts
     /// only pixels that were not already black.
     #[test]
-    fn m27_jpeg_whole_image() {
+    fn jpeg_whole_image() {
         let d = doc(&jpeg_page_pdf(
             &unhex(JPEG_G8_HEX),
             8,
@@ -5827,7 +5827,7 @@ mod tests {
     /// Two disjoint rects produce an L-shape — the pixels between
     /// them are *not* filled.
     #[test]
-    fn m27_jpeg_disjoint_rects_l_shape() {
+    fn jpeg_disjoint_rects_l_shape() {
         let d = doc(&jpeg_page_pdf(
             &unhex(JPEG_G8_HEX),
             8,
@@ -5881,7 +5881,7 @@ mod tests {
 
     /// Overlapping rects count each pixel once — no double-count.
     #[test]
-    fn m27_jpeg_overlapping_rects_count_once() {
+    fn jpeg_overlapping_rects_count_once() {
         let d = doc(&jpeg_page_pdf(
             &unhex(JPEG_G8_HEX),
             8,
@@ -5904,7 +5904,7 @@ mod tests {
     /// Unselected decoded samples are preserved — the *exact* byte
     /// the JPEG decoder produced stays in the clone.
     #[test]
-    fn m27_jpeg_unselected_samples_unchanged() {
+    fn jpeg_unselected_samples_unchanged() {
         let d = doc(&jpeg_page_pdf(
             &unhex(JPEG_C8_HEX),
             8,
@@ -5948,7 +5948,7 @@ mod tests {
     /// A JPEG outside every rect is never decoded — the clone is
     /// not made and the original stream survives.
     #[test]
-    fn m27_jpeg_outside_rect_not_decoded() {
+    fn jpeg_outside_rect_not_decoded() {
         let jpeg = unhex(JPEG_G8_HEX);
         // The image covers a small corner (40×40 at 20,60); a rect
         // in the opposite corner misses it entirely — the stream is
@@ -5974,7 +5974,7 @@ mod tests {
 
     /// An already-black region contributes zero to pixels_changed.
     #[test]
-    fn m27_jpeg_already_black_not_counted() {
+    fn jpeg_already_black_not_counted() {
         // First edit blacks the corner; second edit on the output
         // finds nothing to change.
         let d = doc(&jpeg_page_pdf(
@@ -6002,7 +6002,7 @@ mod tests {
 
     /// One `Do` edited, the other untouched — same JPEG object.
     #[test]
-    fn m27_jpeg_two_invocations_one_edited() {
+    fn jpeg_two_invocations_one_edited() {
         // Two Do calls to the same image: first painted in the rect,
         // second outside it.
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
@@ -6077,7 +6077,7 @@ mod tests {
 
     /// Two pages share one JPEG; each is edited in a different rect.
     #[test]
-    fn m27_jpeg_shared_two_pages_different_rects() {
+    fn jpeg_shared_two_pages_different_rects() {
         let d = doc(&two_page_jpeg_pdf(&unhex(JPEG_G8_HEX), 8, 8, "DeviceGray"));
         let r = remove_regions(
             &d,
@@ -6135,7 +6135,7 @@ mod tests {
 
     /// The unedited page keeps the original JPEG stream.
     #[test]
-    fn m27_jpeg_unedited_page_keeps_original() {
+    fn jpeg_unedited_page_keeps_original() {
         let d = doc(&two_page_jpeg_pdf(&unhex(JPEG_G8_HEX), 8, 8, "DeviceGray"));
         let r = remove_regions(
             &d,
@@ -6164,7 +6164,7 @@ mod tests {
 
     /// Text + JPEG on one page are edited together.
     #[test]
-    fn m27_text_and_jpeg_together() {
+    fn jpeg_and_text_together() {
         // One page with text `(ABC)` and an 8×8 gray JPEG.
         let font_bytes = std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -6273,7 +6273,7 @@ mod tests {
 
     /// Combined API: page edit + metadata strip with JPEG.
     #[test]
-    fn m27_combined_jpeg_and_metadata() {
+    fn jpeg_combined_with_metadata_removal() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
         macro_rules! push {
@@ -6345,7 +6345,7 @@ mod tests {
 
     /// A corrupt JPEG fails with Parse, not a panic.
     #[test]
-    fn m27_jpeg_corrupt_data_refused() {
+    fn jpeg_corrupt_data_refused() {
         let d = doc(&jpeg_page_pdf(
             &[0xffu8, 0xd8, 0xff],
             8,
@@ -6360,7 +6360,7 @@ mod tests {
 
     /// Dict declares 8×8 but the JPEG is 16×16 → refused.
     #[test]
-    fn m27_jpeg_dimension_mismatch_refused() {
+    fn jpeg_dimension_mismatch_refused() {
         let d = doc(&jpeg_page_pdf(
             &unhex(JPEG_C16_HEX),
             8,
@@ -6379,7 +6379,7 @@ mod tests {
     /// Dict declares DeviceRGB (3 comp) but the JPEG is gray (1) →
     /// refused on the component count.
     #[test]
-    fn m27_jpeg_ncomps_mismatch_refused() {
+    fn jpeg_ncomps_mismatch_refused() {
         let d = doc(&jpeg_page_pdf(
             &unhex(JPEG_G8_HEX),
             8,
@@ -6397,7 +6397,7 @@ mod tests {
 
     /// An unsupported DecodeParms key is refused, not ignored.
     #[test]
-    fn m27_jpeg_unknown_decodeparms_refused() {
+    fn jpeg_unknown_decodeparms_refused() {
         let jpeg = unhex(JPEG_G8_HEX);
         // Build the fixture manually so we can inject DecodeParms.
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
@@ -6463,7 +6463,7 @@ mod tests {
     /// A multi-filter chain ending in DCTDecode is refused — we only
     /// accept a *single* DCTDecode.
     #[test]
-    fn m27_jpeg_filter_chain_refused() {
+    fn jpeg_filter_chain_refused() {
         let jpeg = unhex(JPEG_G8_HEX);
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
@@ -6521,7 +6521,7 @@ mod tests {
     /// `max_image_bytes` bounds the JPEG decode — a tiny cap refuses
     /// before the pixel buffer is held.
     #[test]
-    fn m27_jpeg_max_image_bytes() {
+    fn jpeg_max_image_bytes() {
         let d = doc(&jpeg_page_pdf(
             &unhex(JPEG_G8_HEX),
             8,
@@ -6543,7 +6543,7 @@ mod tests {
     /// Cumulative `max_edit_content_bytes` over two JPEG edits on
     /// one call is still enforced.
     #[test]
-    fn m27_jpeg_cumulative_budget() {
+    fn jpeg_cumulative_budget() {
         let d = doc(&two_page_jpeg_pdf(&unhex(JPEG_G8_HEX), 8, 8, "DeviceGray"));
         // Two 64-byte clones fit individually but not together.
         let limits = Limits {
@@ -6570,7 +6570,7 @@ mod tests {
     /// A failure on the second page fails the whole combined call —
     /// even when the JPEG on page 1 was fine.
     #[test]
-    fn m27_jpeg_failure_on_later_page_fails_all() {
+    fn jpeg_failure_on_later_page_fails_all() {
         let jpeg = unhex(JPEG_G8_HEX);
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, usize)> = Vec::new();
@@ -6645,7 +6645,7 @@ mod tests {
     /// well-formed, just out of scope. Checked *before* decode so no
     /// partial output is produced.
     #[test]
-    fn m27_1_progressive_jpeg_unsupported() {
+    fn jpeg_progressive_jpeg_unsupported() {
         let d = doc(&jpeg_page_pdf(
             &unhex(JPEG_C8_PROG_HEX),
             8,
@@ -6672,7 +6672,7 @@ mod tests {
     /// The same progressive refusal through `remove_regions` — the
     /// shared `decode_image` path refuses it identically.
     #[test]
-    fn m27_1_progressive_via_remove_regions() {
+    fn jpeg_progressive_via_remove_regions() {
         let d = doc(&jpeg_page_pdf(
             &unhex(JPEG_C8_PROG_HEX),
             8,
@@ -6692,7 +6692,7 @@ mod tests {
     /// A progressive refusal inside `remove_regions_and_document_metadata`
     /// still fails the whole call — no partial output.
     #[test]
-    fn m27_1_progressive_via_combined_entry() {
+    fn jpeg_progressive_via_combined_entry() {
         let d = doc(&jpeg_page_pdf(
             &unhex(JPEG_C8_PROG_HEX),
             8,
@@ -6714,7 +6714,7 @@ mod tests {
     /// the per-component planes as interleaved RGB, so we refuse
     /// explicitly rather than emit a wrong shape.
     #[test]
-    fn m27_1_ct0_on_subsampled_jpeg_refused() {
+    fn jpeg_color_transform_0_on_subsampled_refused() {
         let d = doc(&jpeg_page_pdf_parms(
             &unhex(JPEG_C8_HEX), // subsampled YCbCr (comp 1 = 2×2)
             8,
@@ -6741,7 +6741,7 @@ mod tests {
     /// accepted — the raw component values *are* RGB, and the APP14
     /// marker's transform=0 agrees with the PDF request.
     #[test]
-    fn m27_1_ct0_on_rgb_jpeg_accepted() {
+    fn jpeg_color_transform_0_on_rgb_accepted() {
         let d = doc(&jpeg_page_pdf_parms(
             &unhex(JPEG_C8_RGB_HEX),
             8,
@@ -6766,7 +6766,7 @@ mod tests {
     /// transform=0 wins); asserting the *samples* distinguishes
     /// "marker honoured" from "PDF honoured".
     #[test]
-    fn m27_1_app14_wins_over_pdf_ct() {
+    fn jpeg_app14_wins_over_pdf_color_transform() {
         let d = doc(&jpeg_page_pdf_parms(
             &unhex(JPEG_C8_RGB_HEX), // APP14 transform=0 → raw RGB
             8,
@@ -6797,12 +6797,54 @@ mod tests {
         assert_eq!(&samples[3..6], &[0x1f, 0x00, 0x0f], "pixel 1");
     }
 
+    /// Decode the image object of a one-page JPEG PDF as 8×8 RGB.
+    fn rgb8x8_samples(pdf: &[u8]) -> Vec<u8> {
+        let d = doc(pdf);
+        let orig = d
+            .deref(&Object::Ref(IndirectRef {
+                number: 10,
+                generation: 0,
+            }))
+            .unwrap();
+        match orig {
+            Object::Stream { ref dict, ref data } => {
+                decode_image(dict, data, &Limits::default(), (8, 8, 3)).unwrap()
+            }
+            _ => panic!("not a stream"),
+        }
+    }
+
+    /// The JFIF-marked c8.jpg decoded as every reader decodes it
+    /// (JFIF ⇒ YCbCr): the in-process reference for the two tests
+    /// below, which feed the *same* entropy-coded data without the
+    /// JFIF marker. Comparing against this — rather than against
+    /// libjpeg-turbo's `01 00 00 16 07 0c` — makes the assertion
+    /// independent of the decoder's IDCT and colour-conversion
+    /// rounding: jpeg-decoder's x86 SSSE3/AVX2 paths and its
+    /// aarch64 NEON / scalar paths each differ from libjpeg-turbo by
+    /// up to ±1 per IDCT output (the ITU-T T.81 Annex A / ISO/IEC
+    /// 10918-2 accuracy allowance) and ±1 in the fixed-point YCbCr→RGB
+    /// step, so two conforming decoders can legitimately disagree by
+    /// 2 (observed: sample 5 is 0x0e on x86-64, 0x0c on arm64 and in
+    /// djpeg). Within one decoder on one machine the path is fixed,
+    /// so equality with the JFIF decode proves the colour-space
+    /// decision exactly.
+    fn c8_jfif_reference() -> Vec<u8> {
+        rgb8x8_samples(&jpeg_page_pdf(
+            &unhex(JPEG_C8_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ))
+    }
+
     /// `/ColorTransform 1` on a JPEG *without* APP14 forces the
-    /// YCbCr→RGB conversion — same result as the default (the decoder
-    /// picks YCbCr from component IDs 1,2,3 anyway).
+    /// YCbCr→RGB conversion — the same result as the JFIF-marked file
+    /// carrying the same coefficients.
     #[test]
-    fn m27_1_ct1_forces_ycbcr_without_app14() {
-        let d = doc(&jpeg_page_pdf_parms(
+    fn jpeg_color_transform_explicit_ycbcr_without_app14() {
+        let samples = rgb8x8_samples(&jpeg_page_pdf_parms(
             &unhex(JPEG_C8_NOJFIF_HEX), // no JFIF, no APP14
             8,
             8,
@@ -6810,66 +6852,55 @@ mod tests {
             "200 0 0 200 0 0 cm",
             "/DecodeParms << /ColorTransform 1 >>",
         ));
-        let orig = d
-            .deref(&Object::Ref(IndirectRef {
-                number: 10,
-                generation: 0,
-            }))
-            .unwrap();
-        let samples = match orig {
-            Object::Stream { ref dict, ref data } => {
-                decode_image(dict, data, &Limits::default(), (8, 8, 3)).unwrap()
-            }
-            _ => panic!("not a stream"),
-        };
-        // Same chromatic content as c8: djpeg gives `01 00 00 16 07 0c`
-        // for the first two pixels; jpeg-decoder's fixed-point YCbCr→RGB
-        // rounds ±1 (documented tolerance — not a colour-space swap).
-        let expected = [0x01u8, 0x00, 0x00, 0x16, 0x07, 0x0c];
-        for (i, (&a, &b)) in samples.iter().zip(expected.iter()).enumerate() {
-            assert!(
-                a.abs_diff(b) <= 1,
-                "sample {i}: got {a:#04x}, expected ~{b:#04x}"
-            );
-        }
+        assert_eq!(
+            samples,
+            c8_jfif_reference(),
+            "CT=1 without APP14 is the JFIF decode"
+        );
+        // And it is the *converted* colour, not the stored YCbCr
+        // triplets (which start `00 80 80`): the second pixel's green
+        // and blue are nowhere near 0x80.
+        assert!(
+            samples[4] < 0x40 && samples[5] < 0x40,
+            "{:?}",
+            &samples[..6]
+        );
     }
 
     /// The default (no `/ColorTransform`, no APP14) on a 3-component
-    /// JPEG applies YCbCr→RGB — the spec default for three components.
+    /// JPEG applies YCbCr→RGB — the spec default for three components
+    /// — and therefore equals both the explicit CT=1 decode and the
+    /// JFIF decode.
     #[test]
-    fn m27_1_default_ct_is_ycbcr_on_3comp() {
-        let d = doc(&jpeg_page_pdf(
+    fn jpeg_color_transform_default_ycbcr_on_3comp() {
+        let samples = rgb8x8_samples(&jpeg_page_pdf(
             &unhex(JPEG_C8_NOJFIF_HEX),
             8,
             8,
             "DeviceRGB",
             "200 0 0 200 0 0 cm",
         ));
-        let orig = d
-            .deref(&Object::Ref(IndirectRef {
-                number: 10,
-                generation: 0,
-            }))
-            .unwrap();
-        let samples = match orig {
-            Object::Stream { ref dict, ref data } => {
-                decode_image(dict, data, &Limits::default(), (8, 8, 3)).unwrap()
-            }
-            _ => panic!("not a stream"),
-        };
-        // Same chromatic YCbCr→RGB content as m27_1_ct1 — the default
-        // matches the explicit CT=1 result on 3-component data.
-        let expected = [0x01u8, 0x00, 0x00, 0x16, 0x07, 0x0c];
-        for (i, (&a, &b)) in samples.iter().zip(expected.iter()).enumerate() {
-            assert!(a.abs_diff(b) <= 1, "sample {i}: {a:#04x} vs {b:#04x}");
-        }
+        assert_eq!(
+            samples,
+            c8_jfif_reference(),
+            "default on 3 components is YCbCr"
+        );
+        let explicit = rgb8x8_samples(&jpeg_page_pdf_parms(
+            &unhex(JPEG_C8_NOJFIF_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+            "/DecodeParms << /ColorTransform 1 >>",
+        ));
+        assert_eq!(samples, explicit, "default equals explicit CT=1");
     }
 
     /// `/ColorTransform 1` on a *gray* JPEG is ignored per spec (the
     /// transform applies only to 3- or 4-component data) — decode
     /// succeeds and the samples are the plain gray values.
     #[test]
-    fn m27_1_ct1_on_gray_ignored() {
+    fn jpeg_color_transform_ignored_on_gray() {
         let d = doc(&jpeg_page_pdf_parms(
             &unhex(JPEG_G8_HEX),
             8,
@@ -6901,7 +6932,7 @@ mod tests {
     /// `/ColorTransform` with a non-integer value is a typed
     /// `Structure` error, not a silent default.
     #[test]
-    fn m27_1_ct_bad_type_refused() {
+    fn jpeg_color_transform_bad_type_refused() {
         let d = doc(&jpeg_page_pdf_parms(
             &unhex(JPEG_G8_HEX),
             8,
@@ -6918,7 +6949,7 @@ mod tests {
     /// `/ColorTransform` outside {0,1} is `Unsupported`, distinct
     /// from a parse error on corrupt data.
     #[test]
-    fn m27_1_ct_bad_value_refused() {
+    fn jpeg_color_transform_bad_value_refused() {
         let d = doc(&jpeg_page_pdf_parms(
             &unhex(JPEG_G8_HEX),
             8,
@@ -6942,9 +6973,47 @@ mod tests {
     // Each case lists the *spec-mandated* effective transform (ISO
     // 32000-1 §7.4.8 + Adobe TN #5116), whether the edit accepts or
     // refuses the image, the decoder setting we force, and the
-    // expected sample evidence. Expected samples come from `djpeg`
-    // (libjpeg-turbo) on the same files — the ±1 tolerance covers
-    // jpeg-decoder's fixed-point rounding, not a colour-space swap.
+    // expected sample evidence. `djpeg` (libjpeg-turbo) values are
+    // quoted for orientation; the assertions that involve a YCbCr→RGB
+    // conversion compare against the conversion of the *same decoder's
+    // raw samples* computed with the JFIF / ITU-T T.871 formula
+    // (`ycbcr_to_rgb_reference`), so the only difference left is the
+    // rounding of that one step (< 1), never the IDCT path — which
+    // differs between jpeg-decoder's SIMD back-ends and libjpeg-turbo
+    // by the ±1 that ISO/IEC 10918-2 allows. Untransformed samples are
+    // compared exactly.
+
+    /// JFIF / ITU-T T.871 §7 YCbCr→RGB in floating point, rounded —
+    /// the specification formula, independent of any decoder.
+    fn ycbcr_to_rgb_reference(y: u8, cb: u8, cr: u8) -> [u8; 3] {
+        let (y, cb, cr) = (y as f64, cb as f64 - 128.0, cr as f64 - 128.0);
+        let clamp = |v: f64| v.round().clamp(0.0, 255.0) as u8;
+        [
+            clamp(y + 1.402 * cr),
+            clamp(y - 0.344136 * cb - 0.714136 * cr),
+            clamp(y + 1.772 * cb),
+        ]
+    }
+
+    /// Apply the reference conversion to interleaved raw triplets.
+    fn convert_reference(raw: &[u8]) -> Vec<u8> {
+        raw.chunks(3)
+            .flat_map(|p| ycbcr_to_rgb_reference(p[0], p[1], p[2]))
+            .collect()
+    }
+
+    /// `a` equals `b` within the rounding of one colour-conversion
+    /// step (jpeg-decoder's fixed-point arithmetic vs the floating
+    /// reference): at most 1 per sample.
+    fn assert_within_conversion_rounding(a: &[u8], b: &[u8]) {
+        assert_eq!(a.len(), b.len());
+        for (i, (&x, &y)) in a.iter().zip(b).enumerate() {
+            assert!(
+                x.abs_diff(y) <= 1,
+                "sample {i}: {x:#04x} vs reference {y:#04x}"
+            );
+        }
+    }
 
     /// Helper: decode the image stream on a one-page JPEG PDF and
     /// return the raw samples.
@@ -6989,7 +7058,7 @@ mod tests {
     /// component values `00 80 80 0b 83 8c`; any YCbCr→RGB applied
     /// would shift them towards `00 00 00 1c 01 10`.
     #[test]
-    fn m27_2_app14_0_beats_ycbcr_ids() {
+    fn jpeg_effective_transform_app14_0_beats_ycbcr_ids() {
         let samples = jpeg_samples(&jpeg_page_pdf(
             &unhex(JPEG_C8_444_APP14_0_HEX),
             8,
@@ -7022,7 +7091,7 @@ mod tests {
     /// `1f 00 0f` gives `00 87 00` / `00 9c 00` — the shifted
     /// (wrong-looking) colours the spec requires.
     #[test]
-    fn m27_2_app14_1_beats_rgb_ids() {
+    fn jpeg_effective_transform_app14_1_beats_rgb_ids() {
         let samples = jpeg_samples(&jpeg_page_pdf(
             &unhex(JPEG_C8_RGB_APP14_1_HEX),
             8,
@@ -7030,13 +7099,23 @@ mod tests {
             "DeviceRGB",
             "200 0 0 200 0 0 cm",
         ));
-        let expected = [0x00u8, 0x87, 0x00, 0x00, 0x9c, 0x00];
-        for (i, (&a, &b)) in samples.iter().zip(expected.iter()).enumerate() {
-            assert!(
-                a.abs_diff(b) <= 2,
-                "sample {i}: got {a:#04x}, expected ~{b:#04x} (forced YCbCr→RGB)"
-            );
-        }
+        // The stored values are the raw RGB of c8_rgb (its APP14 says
+        // transform=0; the two files differ in that one byte only), so
+        // the forced conversion must equal YCbCr→RGB *of those values*
+        // — djpeg: `00 87 00 00 9c 00`.
+        let raw = jpeg_samples(&jpeg_page_pdf(
+            &unhex(JPEG_C8_RGB_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        assert_eq!(
+            &raw[..6],
+            &[0x00, 0x00, 0x00, 0x1f, 0x00, 0x0f],
+            "raw c8_rgb"
+        );
+        assert_within_conversion_rounding(&samples, &convert_reference(&raw));
     }
 
     /// Case 3 — APP14 conflicts with PDF `/ColorTransform`.
@@ -7047,7 +7126,7 @@ mod tests {
     /// Decoder setting: `ColorTransform::YCbCr` (driven by the
     /// APP14 byte, not the PDF value).
     #[test]
-    fn m27_2_app14_wins_over_pdf() {
+    fn jpeg_effective_transform_app14_wins_over_pdf() {
         let d2 = doc(&jpeg_page_pdf_parms(
             &unhex(JPEG_C8_RGB_APP14_1_HEX), // APP14 tf=1
             8,
@@ -7068,12 +7147,21 @@ mod tests {
             }
             _ => panic!("not a stream"),
         };
-        // APP14=1 wins → YCbCr→RGB applied to RGB data → shifted
-        // colours `00 87 00 …`, not the raw RGB `00 00 00 …`.
-        let expected = [0x00u8, 0x87, 0x00, 0x00, 0x9c, 0x00];
-        for (i, (&a, &b)) in samples.iter().zip(expected.iter()).enumerate() {
-            assert!(a.abs_diff(b) <= 2, "sample {i}: {a:#04x} vs ~{b:#04x}");
-        }
+        // APP14=1 wins → YCbCr→RGB applied to the stored RGB data →
+        // shifted colours (`00 87 00 …`), not the raw `00 00 00 …`.
+        let raw = jpeg_samples(&jpeg_page_pdf(
+            &unhex(JPEG_C8_RGB_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        assert_ne!(
+            &samples[..6],
+            &raw[..6],
+            "PDF /ColorTransform 0 must not win"
+        );
+        assert_within_conversion_rounding(&samples, &convert_reference(&raw));
     }
 
     /// Case 4 — no APP14, no PDF ColorTransform, component IDs R,G,B.
@@ -7089,7 +7177,7 @@ mod tests {
     /// marked by IDs but unmarked for transform) — the spec's
     /// default applies regardless.
     #[test]
-    fn m27_2_default_ct_applies_even_with_rgb_ids() {
+    fn jpeg_effective_transform_default_ct_applies_even_with_rgb_ids() {
         // c8_rgb has APP14 transform=0 — strip that case by using a
         // file with RGB IDs and *no* APP14: rebuild c8_rgb minus APP14.
         // JPEG_C8_RGB_HEX keeps APP14=0; we need an RGB-ID file with
@@ -7109,10 +7197,14 @@ mod tests {
         // Spec default for 3 components → YCbCr→RGB applied to the
         // stored RGB values `00 00 00` / `1f 00 0f` → `00 87 00` /
         // `00 9c 00` (same shifted colours as case 2).
-        let expected = [0x00u8, 0x87, 0x00, 0x00, 0x9c, 0x00];
-        for (i, (&a, &b)) in samples.iter().zip(expected.iter()).enumerate() {
-            assert!(a.abs_diff(b) <= 2, "sample {i}: {a:#04x} vs ~{b:#04x}");
-        }
+        let raw = jpeg_samples(&jpeg_page_pdf(
+            &unhex(JPEG_C8_RGB_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+        ));
+        assert_within_conversion_rounding(&samples, &convert_reference(&raw));
     }
 
     /// Case 5 — no APP14, PDF `/ColorTransform 0`, non-subsampled.
@@ -7121,7 +7213,7 @@ mod tests {
     /// interleave; `None` would panic on subsampled data — checked
     /// separately in case 9).
     #[test]
-    fn m27_2_no_app14_pdf_ct0_nonsubsampled() {
+    fn jpeg_effective_transform_no_app14_pdf_ct0_nonsubsampled() {
         let samples = jpeg_samples(&jpeg_page_pdf_parms(
             &unhex(JPEG_C8_444_HEX), // 4:4:4 YCbCr, no APP14
             8,
@@ -7130,7 +7222,9 @@ mod tests {
             "200 0 0 200 0 0 cm",
             "/DecodeParms << /ColorTransform 0 >>",
         ));
-        // Raw YCbCr values interleaved — `djpeg` gives `00 80 80`
+        // Raw YCbCr values interleaved — `djpeg` gives `00 80 80`. No
+        // colour conversion is involved; ±1 is the IDCT accuracy
+        // allowance of ISO/IEC 10918-2 between two conforming decoders.
         // `0b 83 8c` for the first two pixels.
         let expected = [0x00u8, 0x80, 0x80, 0x0b, 0x83, 0x8c];
         for (i, (&a, &b)) in samples.iter().zip(expected.iter()).enumerate() {
@@ -7142,7 +7236,7 @@ mod tests {
     ///
     /// Effective transform: YCbCr→RGB. Decoder setting `YCbCr`.
     #[test]
-    fn m27_2_no_app14_pdf_ct1() {
+    fn jpeg_effective_transform_no_app14_pdf_ct1() {
         let samples = jpeg_samples(&jpeg_page_pdf_parms(
             &unhex(JPEG_C8_444_HEX),
             8,
@@ -7151,17 +7245,24 @@ mod tests {
             "200 0 0 200 0 0 cm",
             "/DecodeParms << /ColorTransform 1 >>",
         ));
-        // YCbCr→RGB applied — `djpeg` gives `00 00 00 1c 01 10`.
-        let expected = [0x00u8, 0x00, 0x00, 0x1c, 0x01, 0x10];
-        for (i, (&a, &b)) in samples.iter().zip(expected.iter()).enumerate() {
-            assert!(a.abs_diff(b) <= 1, "sample {i}: {a:#04x} vs ~{b:#04x}");
-        }
+        // YCbCr→RGB applied — `djpeg` gives `00 00 00 1c 01 10`. The
+        // expectation is the conversion of the same file's raw samples
+        // (case 5 decodes them untransformed).
+        let raw = jpeg_samples(&jpeg_page_pdf_parms(
+            &unhex(JPEG_C8_444_HEX),
+            8,
+            8,
+            "DeviceRGB",
+            "200 0 0 200 0 0 cm",
+            "/DecodeParms << /ColorTransform 0 >>",
+        ));
+        assert_within_conversion_rounding(&samples, &convert_reference(&raw));
     }
 
     /// Case 7 — gray JPEG, `/ColorTransform 1` is ignored per spec
     /// (transform only applies to 3/4-component data).
     #[test]
-    fn m27_2_gray_ignores_ct() {
+    fn jpeg_effective_transform_gray_ignores_ct() {
         let samples = jpeg_samples(&jpeg_page_pdf_parms(
             &unhex(JPEG_G8_HEX),
             8,
@@ -7180,7 +7281,7 @@ mod tests {
     /// Case 8 — APP14 transform value outside 0–2 (Adobe TN #5116
     /// defines only those three) is refused as `Unsupported`.
     #[test]
-    fn m27_2_app14_bad_transform_refused() {
+    fn jpeg_effective_transform_app14_bad_transform_refused() {
         let d = doc(&jpeg_page_pdf(
             &unhex(JPEG_C8_APP14_BAD_HEX),
             8,
@@ -7208,7 +7309,7 @@ mod tests {
     /// JPEG is refused regardless of *why* it was requested.
     /// Here via APP14=0 on a 4:2:0 frame.
     #[test]
-    fn m27_2_no_transform_subsampled_refused() {
+    fn jpeg_effective_transform_no_transform_subsampled_refused() {
         // c8 is 4:2:0-subsampled YCbCr (IDs 1,2,3) with no APP14 —
         // inject one with transform=0 by borrowing the 16-byte APP14
         // segment from the generated fixture.
@@ -7234,7 +7335,7 @@ mod tests {
     /// Case 10 — two contradictory APP14 markers are ambiguous;
     /// refused rather than guessing.
     #[test]
-    fn m27_2_conflicting_app14_refused() {
+    fn jpeg_effective_transform_conflicting_app14_refused() {
         let d = doc(&jpeg_page_pdf(
             &unhex(JPEG_C8_APP14_DUP_HEX),
             8,
@@ -7255,7 +7356,7 @@ mod tests {
     /// A truncated marker walk — SOI + a length that overruns the
     /// buffer — is `Parse`, not a silent "no APP14" default.
     #[test]
-    fn m27_2_truncated_markers_refused() {
+    fn jpeg_effective_transform_truncated_markers_refused() {
         // SOI + APP14 marker + length 0x00 0x0E but only 3 payload
         // bytes — the segment overruns the buffer.
         let bad = [0xFF, 0xD8, 0xFF, 0xEE, 0x00, 0x0E, b'A', b'd', b'o'];
@@ -7282,7 +7383,7 @@ mod tests {
 
     /// New `/Contents` + `/Resources` both exist and are consistent.
     #[test]
-    fn m27_jpeg_contents_and_resources_consistent() {
+    fn jpeg_contents_and_resources_consistent() {
         let d = doc(&jpeg_page_pdf(
             &unhex(JPEG_G8_HEX),
             8,

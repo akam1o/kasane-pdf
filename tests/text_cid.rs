@@ -1744,7 +1744,7 @@ fn sheared_text_positions() {
 }
 
 #[test]
-fn m5_simple_font_regression() {
+fn simple_font_regression() {
     // Existing simple-font fixtures still work — no composite regression.
     let pdf = std::fs::read("tests/fixtures/text_basic.pdf").unwrap();
     let doc = Document::from_bytes(&pdf).unwrap();
