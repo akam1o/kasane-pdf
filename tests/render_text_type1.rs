@@ -357,15 +357,18 @@ fn type1_standard14_substitute_metrics_and_report() {
 }
 
 #[test]
-fn type1_symbol_fonts_are_refused_not_approximated() {
+fn type1_symbol_fonts_draw_with_the_reported_symbol_fallback() {
+    // Non-embedded Symbol / ZapfDingbats: drawn through their built-in
+    // encodings with the bundled symbol face, never silently — the
+    // substitution is on the result as an approximation.
     for base in ["Symbol", "ZapfDingbats"] {
-        let pdf = pdf_std14(b"BT /F0 20 Tf 10 100 Td (a) Tj ET", base);
-        match render(&pdf) {
-            Err(Error::Unsupported { feature, .. }) => {
-                assert!(feature.contains("non-embedded"), "{base}: {feature}")
-            }
-            other => panic!("{base}: expected Unsupported, got {other:?}"),
-        }
+        let pdf = pdf_std14(b"BT /F0 20 Tf 10 100 Td (a3) Tj ET", base);
+        let page = render(&pdf).unwrap_or_else(|e| panic!("{base}: {e:?}"));
+        assert!(inked(&page) > 0, "{base}: glyphs were drawn");
+        let subs = page.font_substitutions();
+        assert_eq!(subs.len(), 1, "{base}: {subs:?}");
+        assert_eq!(subs[0].kind, kasane_pdf::SubstKind::SymbolFallback);
+        assert_eq!(subs[0].substitute, "KasaneSymbolFallback");
     }
 }
 

@@ -20,7 +20,9 @@
 //!
 //! What is deliberately **not** done:
 //! * no host-OS font lookup — output is reproducible everywhere;
-//! * no Symbol / ZapfDingbats substitute — there is no licence-clean
+//! * Symbol / ZapfDingbats draw with a bundled DejaVu Sans subset
+//!   through their built-in encodings (`SubstKind::SymbolFallback`,
+//!   an approximation that is always reported); previously refused as
 //!   metric-compatible clone, and drawing those codes with Latin
 //!   glyphs would be wrong, so they are refused (`Unsupported`);
 //! * no guess for fonts whose glyph set we cannot know — a symbolic
@@ -63,6 +65,12 @@ pub enum SubstKind {
     /// glyph shapes differ from the intended font, metrics come from
     /// the PDF `/W`/`/DW`.
     CjkFallback,
+    /// A non-embedded Symbol or ZapfDingbats font drawn with the
+    /// bundled symbol fallback face (a DejaVu Sans subset) through the
+    /// font's built-in encoding and glyph names → Unicode; glyph shapes
+    /// differ from Adobe's, metrics come from the PDF `/Widths` or the
+    /// Adobe AFM widths. An approximation, always reported.
+    SymbolFallback,
 }
 
 /// One substitution the renderer performed on a page — surfaced in
@@ -87,6 +95,12 @@ pub(crate) struct SubstFace {
     pub(crate) kind: SubstKind,
     pub(crate) base_font: String,
     face: Face<'static>,
+    /// The font's own built-in encoding when it is not
+    /// StandardEncoding (Symbol, ZapfDingbats — Annex D.5/D.6).
+    pub(crate) builtin_encoding: Option<&'static [Option<&'static str>; 256]>,
+    /// AFM advance widths by glyph name, when the substitute's own
+    /// metrics must not be used (Symbol, ZapfDingbats).
+    pub(crate) afm_widths: Option<&'static [(&'static str, u16)]>,
 }
 
 impl SubstFace {
@@ -98,7 +112,7 @@ impl SubstFace {
     /// face's cmap. `None` when the name has no Unicode mapping or the
     /// substitute lacks the character.
     pub(crate) fn glyph_for_name(&self, name: &str) -> Option<GlyphId> {
-        let u = glyph_name_unicode(name)?;
+        let u = glyph_name_unicode(name).or_else(|| crate::symbol_fonts::name_to_unicode(name))?;
         let c = char::from_u32(u)?;
         self.face.glyph_index(c)
     }
@@ -305,20 +319,20 @@ pub(crate) fn pick(
         }
         "couriernew" | "couriernewps" | "couriernewpsmt" => (SubstFamily::Mono, SubstKind::Alias),
         "symbol" => {
-            return Err(Error::Unsupported {
-                feature: "non-embedded Symbol font",
-                detail: "no licence-clean metric-compatible substitute is bundled for Symbol; \
-                         drawing its codes with Latin glyphs would be wrong"
-                    .into(),
-            })
+            return symbol_fallback(
+                stripped,
+                &crate::symbol_fonts::SYMBOL_ENCODING,
+                crate::symbol_fonts::SYMBOL_WIDTHS,
+            )
+            .map(Some);
         }
         "zapfdingbats" | "dingbats" => {
-            return Err(Error::Unsupported {
-                feature: "non-embedded ZapfDingbats font",
-                detail: "no licence-clean metric-compatible substitute is bundled for \
-                         ZapfDingbats"
-                    .into(),
-            })
+            return symbol_fallback(
+                stripped,
+                &crate::symbol_fonts::ZAPF_DINGBATS_ENCODING,
+                crate::symbol_fonts::ZAPF_DINGBATS_WIDTHS,
+            )
+            .map(Some);
         }
         _ => {
             // Unknown name. A symbolic font with no Nonsymbolic bit has
@@ -367,7 +381,39 @@ pub(crate) fn pick(
         kind,
         base_font: stripped.to_string(),
         face,
+        builtin_encoding: None,
+        afm_widths: None,
     }))
+}
+
+/// The bundled symbol fallback face (`fonts/symbol-fallback/`): a
+/// DejaVu Sans subset covering the Symbol and ZapfDingbats repertoires.
+const SYMBOL_FALLBACK: FaceData = (
+    "KasaneSymbolFallback",
+    include_bytes!("../fonts/symbol-fallback/KasaneSymbolFallback.ttf") as &'static [u8],
+);
+
+/// Substitute for a non-embedded Symbol or ZapfDingbats font: the
+/// bundled symbol face, the font's built-in encoding (Annex D.5/D.6)
+/// for codes the PDF does not name, and the Adobe AFM widths when the
+/// PDF supplies no `/Widths`. Reported as `SubstKind::SymbolFallback`.
+fn symbol_fallback(
+    stripped: &str,
+    builtin: &'static [Option<&'static str>; 256],
+    afm: &'static [(&'static str, u16)],
+) -> Result<SubstFace, Error> {
+    let (name, data) = SYMBOL_FALLBACK;
+    let face = Face::parse(data, 0)
+        .map_err(|e| Error::Structure(format!("bundled substitute font {name}: {e:?}")))?;
+    Ok(SubstFace {
+        name,
+        data,
+        kind: SubstKind::SymbolFallback,
+        base_font: stripped.to_string(),
+        face,
+        builtin_encoding: Some(builtin),
+        afm_widths: Some(afm),
+    })
 }
 
 /// What the engine would do for a non-embedded simple font with this
@@ -494,16 +540,28 @@ mod tests {
     }
 
     #[test]
-    fn symbol_fonts_are_refused_not_approximated() {
+    fn symbol_fonts_use_the_symbol_fallback() {
+        // Symbol and ZapfDingbats draw with the bundled symbol face
+        // through their built-in encodings, reported as an
+        // approximation; their AFM widths stand in for /Widths.
         for n in ["Symbol", "ZapfDingbats", "Dingbats"] {
-            match pick(n.as_bytes(), None) {
-                Err(Error::Unsupported { feature, .. }) => {
-                    assert!(feature.contains(n.trim_start_matches("Zapf")), "{feature}")
-                }
-                other => panic!(
-                    "{n}: expected Unsupported, got {:?}",
-                    other.map(|o| o.map(|s| s.name))
-                ),
+            let s = pick(n.as_bytes(), None).unwrap().expect(n);
+            assert_eq!(s.kind, SubstKind::SymbolFallback, "{n}");
+            assert_eq!(s.name, "KasaneSymbolFallback");
+            let builtin = s.builtin_encoding.expect("built-in encoding");
+            let afm = s.afm_widths.expect("AFM widths");
+            if n == "Symbol" {
+                assert_eq!(builtin[0x61], Some("alpha"));
+                assert_eq!(builtin[0x22], Some("universal"));
+                assert!(s.glyph_for_name("alpha").is_some(), "α");
+                assert!(s.glyph_for_name("universal").is_some(), "∀");
+                assert!(s.glyph_for_name("bracelefttp").is_some(), "⎧");
+                assert_eq!(crate::symbol_fonts::afm_width(afm, "alpha"), Some(631.0));
+            } else {
+                assert_eq!(builtin[0x33], Some("a19"));
+                assert!(s.glyph_for_name("a19").is_some(), "✓");
+                assert!(s.glyph_for_name("a20").is_some(), "✔");
+                assert!(crate::symbol_fonts::afm_width(afm, "a19").is_some());
             }
         }
     }

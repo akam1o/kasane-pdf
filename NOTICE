@@ -37,6 +37,19 @@ License. It is distributed under the SIL Open Font License, Version
     changed to 'KSBSY10' so the Reserved Font Name is not used.
     Licence: tests/fixtures/OFL-1.1.txt. Test fixture only.
 
+This product also bundles font data under the Bitstream Vera Fonts
+licence (not OFL, not Apache):
+
+  * fonts/symbol-fallback/KasaneSymbolFallback.ttf — a 414-glyph subset
+    of DejaVu Sans 2.37 (DejaVu changes are in the public domain;
+    glyphs imported from Arev fonts are Copyright (c) 2006 Tavmjong
+    Bah), derived from Bitstream Vera Sans, Copyright (c) 2003 by
+    Bitstream, Inc. The subset is renamed 'Kasane Symbol Fallback' as
+    the licence requires for a modified version and must not be sold
+    by itself. Licence: fonts/symbol-fallback/LICENSE. Used only as the
+    substitute for non-embedded Symbol and ZapfDingbats fonts; the
+    substitution is always reported.
+
 With the optional `cjk-fallback` Cargo feature, the build additionally
 embeds the assets under assets/cjk/ (committed, taken from pinned
 upstream commits and verified against scripts/cjk-assets.sha256):

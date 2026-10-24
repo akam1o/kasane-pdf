@@ -164,21 +164,39 @@ pub(crate) fn load_font(
     limits: &Limits,
 ) -> Result<Font, Error> {
     // Peek at the subtype to pick the loader; each loader re-resolves.
-    let obj = doc
-        .resolve_resource(resources, "Font", name)?
-        .ok_or_else(|| {
-            Error::Structure(format!(
+    let obj = doc.resolve_resource(resources, "Font", name)?;
+    let dict = match obj.as_ref().and_then(|o| o.as_dict()) {
+        Some(d) => d.clone(),
+        None if doc.recovery_mode() => {
+            // Recovery rule: a missing or non-dictionary font resource
+            // (including one that is null through an undefined
+            // reference) is replaced by Helvetica, drawn with the
+            // bundled substitute and reported as such — the text is
+            // shown approximately rather than refused.
+            doc.push_warning(crate::Warning::RecoveryApplied {
+                rule: crate::RecoveryRule::DefaultFontSubstituted,
+                detail: format!("/Font /{}", String::from_utf8_lossy(name)),
+            });
+            let mut d = Dict::new();
+            d.insert(b"Type".to_vec(), Object::Name(b"Font".to_vec()));
+            d.insert(b"Subtype".to_vec(), Object::Name(b"Type1".to_vec()));
+            d.insert(b"BaseFont".to_vec(), Object::Name(b"Helvetica".to_vec()));
+            d
+        }
+        None if obj.is_none() => {
+            return Err(Error::Structure(format!(
                 "/Font /{} is not defined in the current resources",
                 String::from_utf8_lossy(name)
-            ))
-        })?;
-    let dict = obj.as_dict().ok_or_else(|| {
-        Error::Structure(format!(
-            "/Font /{} is not a dictionary",
-            String::from_utf8_lossy(name)
-        ))
-    })?;
-    load_font_dict(doc, dict, name, limits)
+            )))
+        }
+        None => {
+            return Err(Error::Structure(format!(
+                "/Font /{} is not a dictionary",
+                String::from_utf8_lossy(name)
+            )))
+        }
+    };
+    load_font_dict(doc, &dict, name, limits)
 }
 
 /// Load a font from its dictionary — the resource lookup already
@@ -611,6 +629,13 @@ fn resolve_type1_encoding(
                         table[i] = Some(n.clone());
                         idx = Some(i + 1);
                     }
+                    other if doc.recovery_mode() => {
+                        // Recovery rule: skip the element, keep the rest.
+                        doc.push_warning(crate::Warning::RecoveryApplied {
+                            rule: crate::RecoveryRule::IgnoredInvalidEncodingEntry,
+                            detail: format!("/Differences element {other:?}"),
+                        });
+                    }
                     _ => {
                         return Err(Error::Structure(
                             "/Differences entries must be integers or names".into(),
@@ -708,6 +733,13 @@ fn resolve_truetype_encoding(
                     }
                     table[i] = Some(n.clone());
                     idx = Some(i + 1);
+                }
+                other if doc.recovery_mode() => {
+                    // Recovery rule: skip the element, keep the rest.
+                    doc.push_warning(crate::Warning::RecoveryApplied {
+                        rule: crate::RecoveryRule::IgnoredInvalidEncodingEntry,
+                        detail: format!("/Differences element {other:?}"),
+                    });
                 }
                 _ => {
                     return Err(Error::Structure(
@@ -937,6 +969,7 @@ pub(crate) fn name_to_unicode(name: &str) -> Option<u32> {
         .find(|(n, _)| *n == name)
         .map(|(_, u)| *u)
         .or_else(|| crate::encodings::uni_name_to_unicode(name))
+        .or_else(|| crate::symbol_fonts::name_to_unicode(name))
 }
 
 /// glyph name → Mac OS Roman code — the fallback for fonts without a
@@ -1162,6 +1195,17 @@ impl Type1Font {
     pub(crate) fn width(&self, code: u8) -> f64 {
         if !self.has_widths {
             if let Some(s) = &self.subst {
+                // Symbol / ZapfDingbats: the Adobe AFM widths, never the
+                // fallback face's own advances.
+                if let Some(afm) = s.afm_widths {
+                    if let Some(w) = self
+                        .subst_glyph_name(code)
+                        .and_then(|n| crate::symbol_fonts::afm_width(afm, &n))
+                    {
+                        return w;
+                    }
+                    return 0.0;
+                }
                 if let Some(gid) = self.subst_glyph(code) {
                     if let Some(w) = s.advance_1000(gid) {
                         return w;
@@ -1177,11 +1221,24 @@ impl Type1Font {
     /// of every non-symbolic Standard 14 Type 1 font).
     fn subst_glyph(&self, code: u8) -> Option<GlyphId> {
         let s = self.subst.as_ref()?;
-        let name: Vec<u8> = match self.glyph_name_bytes(code) {
-            Some(n) => n.to_vec(),
-            None => crate::type1::std_encoding_name(code as i64)?.to_vec(),
-        };
-        s.glyph_for_name(std::str::from_utf8(&name).ok()?)
+        let name = self.subst_glyph_name(code)?;
+        s.glyph_for_name(&name)
+    }
+
+    /// The glyph name a substituted code stands for: the PDF
+    /// `/Encoding` name, else the substitute's built-in encoding
+    /// (Symbol, ZapfDingbats), else StandardEncoding (the built-in
+    /// encoding of every other Standard 14 Type 1 font).
+    fn subst_glyph_name(&self, code: u8) -> Option<String> {
+        let s = self.subst.as_ref()?;
+        if let Some(n) = self.glyph_name_bytes(code) {
+            return std::str::from_utf8(n).ok().map(str::to_string);
+        }
+        if let Some(table) = s.builtin_encoding {
+            return table[code as usize].map(str::to_string);
+        }
+        crate::type1::std_encoding_name(code as i64)
+            .map(|n| String::from_utf8_lossy(n).into_owned())
     }
 
     /// The substitution in effect, if any — for render reporting.
