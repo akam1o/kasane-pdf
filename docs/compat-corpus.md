@@ -1144,7 +1144,7 @@ employer domains, personal e-mail). Findings, classified:
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, `KASANE_R2_*` | **variable / secret names only**; no value has ever been committed (0 hits for key-ID, secret or token patterns in any commit) | docs, example env file, `.github/workflows/nightly.yml` | nothing to rotate; keep `.env` / `compat/corpus.env` ignored |
 | local paths (`/Users/…`), employer domain, personal e-mail | — | 0 hits in tree or history (commit author is the GitHub noreply address) | nothing |
 | generated PDFs, rendered images, diff images, logs | — | none tracked; `compat/corpus/`, `compat/reports/`, `assets/cjk/`, `target*/`, `.venv-corpus/` are ignored; the only committed results are the aggregate baselines under `compat/baselines/` | nothing |
-| `tests/fixtures/eexec_cmsy10.bin`, `type1_cff.bin` | font subsets extracted from corpus PDFs | tracked | licence noted in `tests/fixtures/README.md` and `NOTICE`; the cmsy10 program's source distribution is **unverified** — replace with a generated fixture or confirm before release if strictness is wanted |
+| `tests/fixtures/eexec_cmsy10.bin`, `type1_cff.bin` | font subsets extracted from corpus PDFs | tracked | **resolved**: both programs carry their own copyright and licence statements (AMS 1997/2009 + OFL 1.1 with Reserved Font Name CMBSY10; Adobe 2010/2012 Source Sans Pro, OFL with Reserved Font Name 'Source'); the subsets are renamed inside the files so the reserved names are not used, and the notices are in `NOTICE` and `tests/fixtures/README.md` |
 
 So: **no secret has ever been committed and no rotation is needed.**
 The one pre-publication decision is whether to scrub the account ID

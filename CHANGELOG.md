@@ -38,5 +38,20 @@ crates.io yet; the API is not stable.
 - Compatibility runner (`compat/runner`) with Poppler/qpdf
   cross-checks, all-page round-trip verification and CI workflows.
 
+### Fixed
+- JPEG colour-transform tests no longer depend on the decoder's SIMD
+  back-end: expectations are derived in-process (JFIF decode of the
+  same coefficients, or the T.871 conversion of the decoder's own raw
+  samples) instead of libjpeg-turbo sample values, which differ by
+  the IDCT accuracy allowance between x86-64 and arm64.
+- Nightly workflow calls `fetch-corpus.py download --dir` and passes
+  the store location and credentials under the names the tool and
+  boto3 read; actions pinned to commit SHAs; a consistency check runs
+  on every pull request.
+- CJK fallback assets are fetched from pinned commits and verified
+  against `scripts/cjk-assets.sha256`.
+- Test-fixture font subsets renamed internally so OFL Reserved Font
+  Names are not used; provenance recorded.
+
 ### Licence
 - Apache License 2.0.
