@@ -6,6 +6,51 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **§7.3.10 undefined references.** An indirect reference to an object
+  the file does not define (no cross-reference entry for that number
+  and generation, or a free entry) resolves to null in strict mode, as
+  the standard requires, and is recorded once as
+  `Warning::UndefinedReference`. The writers and the audit still see
+  `Error::MissingReference` (`Document::resolve_defined`, crate-private)
+  so a rewrite never turns a dangling reference into `null` silently.
+- **Open content-stream blocks.** A stream ending inside `q`, `BT`,
+  `BMC`/`BDC` or `BX` is closed at its end and recorded as
+  `Warning::UnterminatedContentBlock` (nothing after the end could
+  depend on the closing operator). Stray closing operators stay errors.
+- **Recovery rules.** `Document::from_bytes_recovering` now also
+  applies, and records as `Warning::RecoveryApplied { rule:
+  RecoveryRule, .. }`, the reinterpretations every major reader makes
+  and ISO 32000-1 does not sanction: US Letter for a page without
+  `/MediaBox`, a stray `Q` ignored, an unknown operator dropped, a
+  graphics-state or colour operator inside a path object applied, an
+  invalid `/Annots` entry or appearance state skipped. Strict mode
+  refuses every one of them unchanged. `Document::recovery_mode()`
+  reports the mode; `recovery()` still reports only a rebuilt table.
+- **Knockout transparency groups** (`/K true`, §11.4.8): each object is
+  composited against the group's initial backdrop and replaces earlier
+  objects within its shape; isolated and non-isolated, with the group's
+  alpha, blend mode and soft mask. New bound
+  `Limits::max_knockout_objects` (default 4 096).
+- **Symbol and ZapfDingbats fallback.** Non-embedded Symbol /
+  ZapfDingbats fonts draw with a bundled 414-glyph DejaVu Sans subset
+  (`fonts/symbol-fallback/`, Bitstream Vera licence) through their
+  built-in encodings (Annex D.5/D.6) and the Adobe AFM widths when the
+  PDF has no `/Widths`; reported as `SubstKind::SymbolFallback`.
+- `Warning::UnknownRenderingIntent` (an `/RI` or `ri` name outside
+  §8.6.5.8, treated as RelativeColorimetric) and
+  `Warning::IgnoredFilterFragment` (an ASCII85 final group of one
+  character).
+- Compatibility runner: strict / recovered / approximate render
+  outcomes counted independently (a recovered render is never a strict
+  one), a recovery-mode render attempt after a strict render error,
+  warning and recovery-note totals.
+
+### Changed
+- A `/SMask`, `/Contents` element, appearance state or `/AP /N` that
+  is null (including through an undefined reference) is treated as
+  absent rather than as a type error.
+
 ## [0.2.0] - 2026-10-24
 
 The API-stability release: the breaking changes scheduled in

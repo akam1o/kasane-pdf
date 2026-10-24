@@ -59,6 +59,17 @@ patch release.
 | `TextOptions` replacing `&Limits` and `extract_text_all` | breaking | room for text options without a signature change each time |
 | `RenderedPage` private fields + accessors; `tiny-skia-interop` | breaking | detaches the stable API from the rasteriser's major version |
 
+## Added in 0.2.1 (additive)
+
+- `Warning::{UndefinedReference, UnterminatedContentBlock,
+  UnknownRenderingIntent, IgnoredFilterFragment, RecoveryApplied}`,
+  `RecoveryRule` (`#[non_exhaustive]`), `Document::recovery_mode()`,
+  `SubstKind::SymbolFallback`, `Limits::max_knockout_objects` +
+  `with_max_knockout_objects`. Behaviour changes on previously refused
+  input (undefined references → null, open blocks closed, knockout
+  groups rendered, Symbol / ZapfDingbats substituted) are recorded in
+  `CHANGELOG.md`; no signature or default changed.
+
 ## Open items (additive, any 0.2.x)
 
 - `Document::from_vec(Vec<u8>)` to hand ownership over without a copy.

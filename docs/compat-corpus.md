@@ -983,6 +983,76 @@ timeout. The signature-policy refusals now arrive as
 `Error::SignaturePolicy` and are mapped by the runner to the same
 `rewrite.signature.unsupported` cause id as before.
 
+### Results after §7.3.10 null references, recovery rules, knockout groups and the symbol fallback (run-1792865059)
+
+Same 511 files, `--mode full`, default features, measured against
+run-1792853774 (the 0.2.0 engine). The runner now reports three
+independent render attributes (see § *Result classification* below):
+**strict**, **approximate** (part of strict) and **recovered** (never
+part of strict). Per-file findings are in the gitignored diagnosis
+report written by `scripts/diag-render-blockers.py`; only category
+counts appear here.
+
+| files | n | parse | render (strict) | text | rewrite | full PASS | recovered | crash/timeout |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| all | 511 | 446 | 408 | 422 | 385 | **353** | 37 | 0 |
+| expect: pass | 427 | 406 (95.1%) | **376 (88.1%)** | 390 (91.3%) | 350 (82.0%) | **323 (75.6%)** | 12 | 0 |
+| expect: reject | 43 | 1 | 0 | 0 | 0 | 0 | 24 | 0 |
+| expect: any | 41 | 39 | 32 | 32 | 35 | 30 | 1 | 0 |
+
+| render outcomes | n | strict | of which approximate | recovered | unsupported | rejected | warnings | recovery notes |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| all | 511 | **408** | 68 | 40 | 14 | 49 | 50 | 36 |
+| expect: pass | 427 | **376** | 67 | 18 | 9 | 24 | 39 | 27 |
+| expect: reject | 43 | **0** | 0 | 20 | 0 | 23 | 10 | 9 |
+| expect: any | 41 | **32** | 1 | 2 | 5 | 2 | 1 | 0 |
+
+Against the 0.2.0 engine on `expect: pass`: strict render **368 → 376**
+(+8; the 90 % line is 385), text 384 → 390, rewrite 350 → 350, full
+PASS 318 → 323; recovered render 8 → 18; no file or stage that passed
+strictly before fails now; 0 crash / 0 timeout; robustness 43/43
+refused in strict mode (20 of the 43 now render in recovery mode, where
+they are reported as such). Round trip: 385 strictly parsed files
+rewritten, 385 reparse with an identical object graph, render and text
+identical on every compared page, 411 full round trips (unchanged), no
+new qpdf or Poppler diagnostic; Poppler SSIM did not drop on any file.
+27 files are accepted with warnings (5 before), 6 of them full PASS.
+
+Strict gains by cause (10 new strict renders):
+
+| cause removed | files | how |
+|---|---:|---|
+| reference to an undefined object | 5 | null per §7.3.10, `Warning::UndefinedReference` (also fixes an annotation whose `/AP /N` was undefined and a font whose `/SMask` was) |
+| content stream ending inside `q` / `BT` | 2 | closed at the end, `Warning::UnterminatedContentBlock` |
+| unrecognised rendering intent | 1 | RelativeColorimetric fallback (§8.6.5.8), `Warning::UnknownRenderingIntent` |
+| knockout transparency group | 1 | §11.4.8 implemented; the second candidate is now blocked by `max_xobject_depth` |
+| non-embedded Symbol | 1 | the bundled symbol fallback face, `SubstKind::SymbolFallback` (approximate, reported) |
+
+Recovered renders by rule (10 new; `Warning::RecoveryApplied`, strict
+mode refuses each): page-box defaults 4, operator inside a path object
+3, stray `Q` 1, unknown operator 0 (the file then hits an ambiguous
+operand count), invalid annotation entry / appearance 2, undefined
+`/Properties` 1, missing font resource 1, malformed `/Differences` 1,
+image `/SMask` that is not a stream 1 (several files apply more than
+one rule).
+
+Classification changes that are not regressions: two files moved from
+*unsupported* to *error* because an earlier refusal was removed and a
+later fault is reached (an appearance state that is not a stream; form
+nesting deeper than `max_xobject_depth`); both still do not render
+strictly, and the first renders in recovery mode.
+
+Remaining strict blockers on `expect: pass` (51), by category: damaged
+file structure 5 (recovery parse, then the content decides), page
+without `/MediaBox` 4 (recovered), operator inside a path object 3
+(recovered), encryption 3, Identity-ordering CID fonts 3, `/AP /N`
+without `/AS` and several states 2, `max_image_dimension` 2, invalid
+page tree 2, single files 27 (nine of them recovered). Performance:
+median 168 ms per file, p90 1.2 s, max 43.9 s; render total 148 s over
+the corpus (173 s before — the knockout per-object passes cost nothing
+measurable on this corpus). The plan to 385 is in
+[`plans/render-90.md`](plans/render-90.md).
+
 ## External verification findings (this phase)
 
 What the independent parsers said about the rewrites, file by file,

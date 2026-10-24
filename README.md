@@ -331,12 +331,15 @@ and the remaining blockers are in
   edits a signer permitted and refuses the rest; it never checks the
   digest or certificate and never reports a signature as valid. A full
   rewrite of a signed document is always refused.
-- **Strict mode fails on malformed files** (dangling references,
-  unbalanced `q`/`Q`, truncated streams); the explicit recovery parser
+- **Strict mode fails on malformed files** (damaged cross-reference
+  tables, stray `Q`, truncated streams); a reference to an undefined
+  object is null as §7.3.10 requires, and an open `q`/`BT` block at the
+  end of a stream is closed — both recorded as warnings. The explicit
+  recovery parser
   handles some of them and reports what it assumed.
-- **Rendering gaps:** knockout transparency groups, a shading
-  pattern's `/ExtGState` override, non-embedded Symbol and
-  ZapfDingbats, non-embedded CJK fonts outside the Adobe-Japan1
+- **Rendering gaps:** a shading pattern's `/ExtGState` override,
+  transfer functions other than `/Default`, non-embedded CJK fonts
+  outside the Adobe-Japan1
   fallback, Type 3 fonts in text clipping modes, `/Matte`
   pre-blended soft masks, non-default transfer functions. ICC profiles
   the engine cannot evaluate exactly fall back to the alternate space

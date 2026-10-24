@@ -14,9 +14,16 @@ are on the [roadmap](architecture.md#roadmap).
   Dangling references, a wrong `startxref`, a damaged cross-reference
   table, objects not closed by `endobj` and similar faults are errors.
   `Document::from_bytes_recovering` rebuilds the cross-reference table
-  by scanning and reports every assumption; it does not yet treat
-  dangling references as `null` (§7.3.10) or tolerate malformed
-  content streams. *Planned.*
+  by scanning and reports every assumption. A reference to an
+  *undefined* object (no cross-reference entry, or a free one) is null
+  in both modes, as §7.3.10 requires, and recorded as
+  `Warning::UndefinedReference`; a reference whose entry points at
+  damage is still an error. Recovery mode additionally applies the
+  `RecoveryRule`s (US Letter for a page without `/MediaBox`, a stray
+  `Q` ignored, an unknown operator dropped, a state or colour operator
+  inside a path object applied, an invalid `/Annots` entry skipped),
+  each recorded as `Warning::RecoveryApplied`; strict mode refuses
+  every one of them.
 - **Accepted with warnings** is a narrow third outcome, not a lenient
   mode: only deviations the engine can process *exactly* are
   recorded on the `Document` as a `Warning` instead of refused
@@ -30,10 +37,16 @@ are on the [roadmap](architecture.md#roadmap).
 
 ## Rendering
 
-- **Knockout transparency groups** (`/K true`) — refused. *Planned.*
+- **Knockout transparency groups** (`/K true`) are rendered per
+  §11.4.8 (each object against the group's initial backdrop); the one
+  inexactness is a nested form whose own ExtGState changes its opacity
+  — its shape is taken with those changes. Bounded by
+  `max_knockout_objects`.
 - **Shading pattern `/ExtGState`** override — refused.
-- **Non-embedded fonts**: Symbol and ZapfDingbats have no
-  licence-clean metric clone and are refused; non-embedded CID fonts
+- **Non-embedded fonts**: Symbol and ZapfDingbats draw with a bundled
+  DejaVu Sans subset through their built-in encodings and the Adobe
+  AFM widths (`SubstKind::SymbolFallback`) — glyph shapes differ from
+  Adobe's and the substitution is always reported; non-embedded CID fonts
   are refused unless the `cjk-fallback` feature is enabled and the
   ordering is Adobe-Japan1 (GB1 / CNS1 / Korea1 are not bundled;
   `/Ordering (Identity)` can never be substituted soundly). Symbolic

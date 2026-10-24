@@ -1,85 +1,98 @@
 # Plan — Render 90 % on the compatibility corpus
 
-Written after the 0.2.0 release (run-1792850880 / run-1792845977:
-511 files, every page, default features).
+Status after the recovery / knockout / symbol-fallback phase (the run
+recorded in `compat-corpus.md` § *Results after §7.3.10 null
+references, recovery rules, knockout groups and the symbol fallback*).
+Per-file details live in the gitignored runner reports and in
+`scripts/diag-render-blockers.py`'s output; this file carries only
+category counts and the generalised plan.
 
-| metric (expect: pass, 427 files) | now | 90 % line | needed |
-|---|---:|---:|---:|
-| render, strict counting | 368 (86.2 %) | 385 | **+17** |
+| metric (expect: pass, 427 files) | 0.2.0 | now | 90 % line | still needed |
+|---|---:|---:|---:|---:|
+| strict render | 368 (86.2 %) | **376 (88.1 %)** | 385 | **+9** |
+| of which approximate (reported substitution or colour approximation) | 65 | 67 | — | — |
+| recovered render (recovery mode only, never counted as strict) | 8 | 18 | — | — |
+| text, strict | 384 | 390 | — | — |
+| full PASS | 318 | 323 | — | — |
 
-"Strict counting" means a page counts only when the document parsed
-strictly; 13 of the 59 non-passing files fail at parse. The rule for
-every item below is the one 0.1.1 introduced: a deviation is accepted
-only when its exact meaning is defined — by ISO 32000-1 itself or by a
-recovery rule every major reader applies identically — and it is then
-recorded as a `Warning`, counted apart from a clean pass. Nothing
-here widens a tolerance or silences a refusal to move a number.
+"Strict" counts a file only when it parsed strictly and rendered every
+page with constructs the specification allows; a warning the standard
+itself resolves (§7.3.10 null, an open block closed at the end of a
+stream, an unrecognised rendering intent) does not disqualify it, a
+recovery rule does. Nothing in this phase widened a tolerance to move
+the number: every acceptance is recorded as a `Warning`, counted apart
+from a clean pass, and listed in `security.md` § Three outcomes.
 
-## The 59 blockers, re-aggregated
+## What this phase did
 
-| cause | files | class |
+| item | result on `expect: pass` | class |
 |---|---:|---|
-| strict parse: `/MediaBox` missing on page and ancestors | 4 | parse error |
-| strict parse: encrypted (`/Encrypt`) | 3 | parse unsupported |
-| strict parse: no `startxref`, bad xref offset, unbalanced token, page-tree type/cycle, fuzzed ASCII85, … | 6 | parse error (1 each) |
-| reference to an undefined object (§7.3.10) | 4 | render error |
-| non-embedded CIDFont with `/Ordering (Identity)` | 3 | render unsupported |
-| operators inside a path object (`w`, `rg`, `cs`), unmatched `q`, stream ending inside `BT`, unknown operator, inline image without `EI` | 8 | render error |
-| `/AP /N` state dictionary without `/AS` | 2 | render unsupported |
-| knockout transparency group (`/K true`) | 2 | render unsupported |
-| `max_image_dimension` (16 384) exceeded | 2 | render limit |
-| non-embedded Symbol / ZapfDingbats | 2 | render unsupported |
-| other single files: shading output count, JBIG2 on a content stream, `/BrotliDecode`, invalid `/BBox` allocation, Type 3 / pattern cycle, `/Differences` type, non-Latin field value, corrupt Flate, `/DecodeParms` type, undefined `/Properties`, JBIG2 size mismatch, `/RI` type, JPEG component mismatch, non-embedded TrueType without substitute, bad `/Annots` entry | 17 | mixed |
+| references to undefined objects are null (§7.3.10), recorded once | +5 strict | spec-required |
+| open `q` / `BT` / `BMC` / `BX` blocks closed at the end of a stream, recorded | +2 strict | exact |
+| unrecognised rendering intent → RelativeColorimetric (§8.6.5.8), recorded | +1 strict | spec fallback |
+| knockout transparency groups (§11.4.8) | +1 strict (the second candidate file is blocked by nesting depth) | exact |
+| Symbol / ZapfDingbats drawn with the bundled symbol fallback face | +1 strict, approximate | reported approximation |
+| indirect image `/DecodeParms`, `/TR /Identity`, ASCII85 one-character final group | fixes on the way to the above | exact |
+| recovery rules: page-box defaults, stray `Q`, unknown operator, operator inside a path object, invalid annotation entries / states / appearances without `/BBox`, undefined `/Properties`, missing font resource → Helvetica, malformed `/Differences` element, image `/SMask` that is not a stream | +10 recovered | recovery only, each recorded |
 
-Chinese / Korean predefined CMaps block **0** `expect: pass` files
-(the two affected files are `expect: any`).
+## The remaining 51 strict blockers, by category
 
-## Candidates
+| category | files | strict possible? | recovery | note |
+|---|---:|---|---|---|
+| damaged file structure (no `startxref`, bad offsets, broken syntax) | 5 | no | xref rebuild; then the content decides | 2 of them then hit an ambiguous operand count or a form without `/BBox` |
+| page without `/MediaBox` | 4 | no — Table 30 gives no default | **yes** (US Letter) | counted as recovered |
+| operator inside a path object | 3 | no — §8.2 Figure 9 | **yes** | counted as recovered |
+| encryption | 3 | feature work | no | v0.3.0 (RC4 / AES, empty user password) |
+| non-embedded CID font with `/Ordering (Identity)` | 3 | no — glyph indices of an unknown font | only with a complete `/ToUnicode`, as an approximation | 2 of the 3 carry one |
+| `/AP /N` with several states and no `/AS` | 2 | no — no basis to choose | no | — |
+| image larger than `max_image_dimension` | 2 | yes, with DCT scaled decode under the same limit | n/a | 2 d |
+| invalid page tree (`/Type /Template` kid, cycle) | 2 | no | no | — |
+| stray `Q`, unknown operator, non-dictionary `/Annots` entry, appearance state that is not a stream, undefined `/Properties`, malformed `/Differences`, missing font resource, image `/SMask` that is not a stream, degenerate page boxes | 9 | no | **yes** | counted as recovered |
+| shading function with fewer outputs than the colour space has components | 1 | no | possible (replicate), approximate | 1 d |
+| form nesting deeper than `max_xobject_depth` (32) | 1 | limits policy | n/a | the knockout file; not raised for a number |
+| JBIG2 on a content stream; JBIG2 page size ≠ `/Width`×`/Height`; corrupt Flate; undecodable DCT; inline image without `EI`; pattern cell cycle; `/BrotliDecode`; non-Latin field value with a single-byte field font; symbolic non-embedded TrueType with an unknown name | 9 | no | no | each needs either a feature (Brotli, Unicode field font) or is unrecoverable |
 
-| # | candidate | effort | expected new PASS | spec position | security risk | WASM | font licence | rank |
-|---|---|---:|---:|---|---|---|---|---:|
-| 5 | **Undefined object → `null` with `Warning::DanglingReference`** (strict and recovery) | 1–2 d | **+4** (`doc_actions`, `freetexts`, `pdfium-annotiter`, `pdfium-weblinks`) | §7.3.10 *requires* a conforming reader to treat it as null — strict mode is currently stricter than the standard | low: the object is absent either way; the warning records what was skipped; limits unchanged | yes | — | **1** |
-| 6a | **Defined recovery rules for malformed content streams**, each a `Warning` variant: unmatched `q` at end of stream (implicit `Q`), stream ending inside `BT` (implicit `ET`), `w`/`rg`/`cs`/`gs` inside a path object (applied before the painting operator, as Acrobat/pdf.js/Poppler do), `/MediaBox` missing (Letter, as every viewer), `/AP /N` with one state and no `/AS` (that state) | 3–5 d | **+9 to +12** (`issue14256`, `issue14165`, `bug2065923`, `filled-background`, `issue7847_radial`, 4 × MediaBox, `issue15557`, `pdfium-bug_572871`; not `bug1157493`, `pdfium-tagged_table_bad_parent`, `bug1513120_reduced` whose meaning is ambiguous) | not conforming input; each rule has one reading shared by every major reader; refused when the reading is ambiguous | low–medium: each rule needs a fixture proving the result is identical to Poppler; the renderer must not resynchronise on arbitrary garbage | yes | — | **2** |
-| 1 | **Knockout groups** (`/K true`): composite each object against the group's initial backdrop instead of the accumulated group | 3–5 d | **+2** (`issue1905`, `mlp-mixer`) | §11.4.8, exact implementation | low; bounded by the existing group buffers and `max_render_buffer_bytes` | yes | — | **3** |
-| 2 | **Symbol / ZapfDingbats fallback**: Adobe Core 14 AFM metrics (redistributable under Adobe's AFM licence) + glyph shapes from an OFL face (Noto Sans Symbols / Symbols 2) through the Symbol and ZapfDingbats built-in encodings; reported as `SubstKind::Approximate` | 2–3 d + asset review | **+2** (`standard_fonts`, `checkbox-bad-appearance`) | approximation, reported on `RenderedPage::font_substitutions()` like the Liberation substitutes | low | yes (bundled bytes) | OFL 1.1 + Adobe AFM licence; URW base35 (AGPL) is *not* an option | **4** |
-| 3 | **Identity-ordering non-embedded CID fonts** via `/ToUnicode` → Unicode → substitute glyph | 2–3 d | +0 to +3 (`issue11578/11740/12418_reduced`, only where a complete `/ToUnicode` exists) | CIDs are glyph indices of an unknown font: unsound without `/ToUnicode`; with it, an approximation — must be reported and refused when any code is unmapped | low | yes | reuses bundled faces | 5 |
-| 7 | **Broader real-document corpus** (office exports, scanners, forms, non-Latin scripts) with licence-cleared sources | continuous | widens the denominator; expected to *lower* the ratio first | — | — | — | — | 6 (start in parallel) |
-| 4 | **GB1 / CNS1 / Korea1 fallback** as a separate asset crate (`kasane-pdf-cjk-assets`; 7.2 MiB of 10 MiB crates.io budget already used) | 3–5 d + crate | **+0** on this corpus; needed for Chinese/Korean documents in general | approximation, as `cjk-fallback` | low | yes | Adobe CMaps BSD-3, Noto Sans SC/TC/KR OFL (≈ 20 MiB) | 7 |
-| — | Encryption (RC4 / AES-128 / AES-256, empty user password; owner password refused) | 5–8 d | +3 (`bug900822`, `issue19484_1`, `pdfium-encrypted_hello_world_r3`) | §7.6, exact; today `Error::Encrypted` | medium: crypto code paths, new dependency (`aes`, `sha2`, `md-5` — RustCrypto, MIT/Apache, pure Rust, WASM-clean) | yes | — | v0.3.0 |
-| — | `max_image_dimension`: DCT downscaled decode (1/2, 1/4, 1/8) when the target raster is smaller than the image | 2 d | +2 | exact at the output resolution; the limit stays | low | yes | — | v0.3.0 |
+Recovery mode now renders 18 of these 51; 9 more remain for a
+hypothetical "trust the codestream" class of rules that were
+deliberately not added (they change the drawing, not only the
+structure).
 
-## Shortest path to 385
+## Shortest path to 385 from here
 
-Ranks 1 + 2 + 3 + 4 give **+17 to +20** on the current corpus
-(385–388 / 427) in roughly **9–15 working days**, with no change to
-strict refusals that are not defined by the specification or by a
-unanimous reader rule, and every acceptance visible as a warning or a
-reported substitution. Rank 5 adds up to 3 more only where sound.
-Items marked v0.3.0 are worth doing for users but are not the short
-path.
+| # | item | effort | expected strict gain | what it needs |
+|---|---|---:|---:|---|
+| 1 | DCT scaled decode when `/Width`×`/Height` exceeds `max_image_dimension` but the page raster does not (the limit stays; exact at the output resolution) | 2 d | +2 | `jpeg-decoder` scale request; a reported note that the image was decoded at reduced size |
+| 2 | Identity-ordering CID fonts through a *complete* `/ToUnicode` → Unicode → bundled face (refused when any code is unmapped) | 2–3 d | +2 | `SubstKind` variant; approximation reported |
+| 3 | encryption: RC4 and AES-128/256 with the empty user password; owner-password-only files refused | 5–8 d | +3 | RustCrypto `aes`, `sha2`, `md-5` (pure Rust, WASM-clean); `Error::Encrypted` stays for anything else |
+| 4 | transfer functions (`/TR` with a function) and `max_xobject_depth` review for the one deep-nesting file | 2–3 d | +1 | per-channel sampled/exponential transfer applied to colours, images and shadings |
+| 5 | shading function output replication (1 → n), reported as an approximation | 1 d | +1 (approximate) | `color_approximations` entry |
+
+Items 1–4 give **+8 to +9**, reaching 384–385 of 427 in roughly
+**11–16 working days**; items 1, 2 and 5 are additive under the 0.2
+contract, item 3 adds a document-options builder (additive) and turns
+some `Error::Encrypted` refusals into successes. The remaining 42
+blockers after that are files the standard does not define a result
+for, or features (Brotli, a Unicode field font) that the corpus
+exercises once each; past 385 the corpus itself has to grow.
 
 ## Recommended order
 
-1. **0.2.1** — §7.3.10 null references (rank 1), the MediaBox default
-   and the single-state `/AS` rule (both warnings). +10 expected,
-   lowest risk, additive API (new `Warning` variants; the enum is
-   `#[non_exhaustive]`).
-2. **0.2.2** — the remaining content-stream recovery rules (rank 2),
-   one fixture and one Poppler comparison per rule. +4 to +6.
-3. **0.2.3** — knockout groups (rank 3). +2.
-4. **0.2.4** — Symbol / ZapfDingbats (rank 4) once the asset licences
-   are recorded in `docs/third-party.md` and `NOTICE`. +2.
-5. **0.3.0** — encryption, DCT downscaling, Identity-CID via
-   ToUnicode, the CJK asset crate, and the corpus expansion that will
-   reset the target.
+1. **0.2.1** — this phase (release the recovery rules, knockout groups,
+   the symbol fallback, the runner's three render outcomes).
+2. **0.2.2** — DCT scaled decode (item 1), transfer functions (item 4).
+3. **0.2.3** — Identity-CID via `/ToUnicode` (item 2), shading output
+   replication (item 5).
+4. **0.3.0** — encryption (item 3), the CJK asset crate for
+   GB1 / CNS1 / Korea1 (no gain on this corpus; needed for Chinese and
+   Korean documents in general), and corpus expansion with
+   licence-cleared real-world documents, which will reset the target.
 
 ## Compatibility of the published API
 
-Every item is additive under the 0.2 contract: new `Warning` and
-`SubstKind` variants (both `#[non_exhaustive]`), new `Limits` fields
-through `with_*`, new feature flags for assets. None changes a
-signature or a default. Encryption will add a way to pass a password
-(a `with_password` on a document-options builder, additive) and will
-turn some `Error::Encrypted` refusals into successes — a behaviour
-change on previously refused input, recorded in the changelog as the
-Flate and ToUnicode changes were in 0.1.1.
+Everything in this phase and in the shortest path is additive under the
+0.2 contract: new `Warning` and `RecoveryRule` variants (both
+`#[non_exhaustive]`), new `Limits` fields through `with_*`, new
+`SubstKind` variants, new accessors (`Document::recovery_mode`). No
+signature or default changed; `Document::from_bytes_recovering` applies
+its rules to conforming input identically to a strict parse. Encryption
+will add a password option on a document-options builder.

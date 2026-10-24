@@ -116,7 +116,10 @@ deviates from ISO 32000-1 in a way the engine could still process
 rewrite, incremental save — appends to the same list, so read it
 after the operation you care about. The CLI prints each one as
 `warning: …` on stderr. `Warning` is `#[non_exhaustive]`; match with
-a wildcard arm.
+a wildcard arm. Documents opened with `from_bytes_recovering` also
+record `Warning::RecoveryApplied { rule, .. }` for every recovery
+rule they applied (`doc.recovery_mode()` tells you the mode; `rule` is
+a `RecoveryRule`); a strict document never carries those.
 
 ## Feature flag: `cjk-fallback`
 
