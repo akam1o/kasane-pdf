@@ -31,6 +31,8 @@ src/
   filter.rs    stream /Filter decoding: Flate, LZW (+ predictors),
                ASCII85, ASCIIHex, RunLength; every output capped while
                produced; image-only filters are routed to the image path
+  jpx.rs       /JPXDecode (hayro-jpeg2000): codestream/JP2 → 8-bit
+               samples + optional alpha, colour declaration, limits
   bilevel.rs   /JBIG2Decode (hayro-jbig2) and /CCITTFaxDecode
                (hayro-ccitt) into packed 1 bpc rows under the image
                limits; 0 = black on output, /BlackIs1 honoured
