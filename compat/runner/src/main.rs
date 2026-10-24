@@ -18,11 +18,13 @@ mod cause;
 mod fontaudit;
 mod gsaudit;
 mod probe;
+mod roundtrip;
 
 use analysis::{priorities_table, PrioritiesConfig};
 use cause::classify;
 use kasane_pdf::{extract_text, render_page, rewrite, Document, Limits, RenderOptions};
 use probe::probe_document;
+use roundtrip::{RoundTrip, RtClass, RtTally};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -171,6 +173,15 @@ struct FileResult {
     pub probe_forms: usize,
     /// Extra metrics collected regardless of verdict.
     metrics: Metrics,
+    /// Document features relevant to round-trip coverage
+    /// (`roundtrip::features`): multipage, acroform, annots, dests,
+    /// signed, incremental, transparency, embedded-fonts, …
+    #[serde(default)]
+    features: Vec<String>,
+    /// Rewrite → reparse → compare pipeline (`roundtrip::run`); `None`
+    /// when the strict parse failed (and for reports saved before it).
+    #[serde(default)]
+    roundtrip: Option<RoundTrip>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -489,15 +500,15 @@ fn compare_render(
     tag: &str,
 ) -> Option<Fidelity> {
     let prefix = diff_dir.join(format!("{tag}-ref"));
-    let out = Command::new("pdftoppm")
-        .args(["-f", &page.to_string(), "-l", &page.to_string()])
-        // `-cropbox`: our page size is the /CropBox (the visible region),
-        // so the reference must be too or the pixmaps cannot be aligned.
-        .args(["-r", &dpi.to_string(), "-gray", "-singlefile", "-cropbox"])
-        .arg(pdf)
-        .arg(&prefix)
-        .output()
-        .ok()?;
+    let out = roundtrip::run_bounded(
+        Command::new("pdftoppm")
+            .args(["-f", &page.to_string(), "-l", &page.to_string()])
+            // `-cropbox`: our page size is the /CropBox (the visible region),
+            // so the reference must be too or the pixmaps cannot be aligned.
+            .args(["-r", &dpi.to_string(), "-gray", "-singlefile", "-cropbox"])
+            .arg(pdf)
+            .arg(&prefix),
+    )?;
     if !out.status.success() {
         return None;
     }
@@ -833,6 +844,8 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                             metrics.max_rss_bytes = max_rss_bytes();
                             metrics
                         },
+                        features: Vec::new(),
+                        roundtrip: None,
                     });
                 }
             }
@@ -968,36 +981,38 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         }
     }
 
-    // ---- Rewrite + reparse + qpdf ----------------------------------
+    // ---- Rewrite → reparse → round-trip comparison ----------------
+    let features = roundtrip::features(&doc, &data);
     let t = Instant::now();
     let mut rewrite_res = StageResult::pass(0);
-    match rewrite(&doc) {
+    let rt = match rewrite(&doc) {
         Ok(out) => {
-            metrics.rewrite_qpdf_ok = Some(qpdf_check(&out));
-            match Document::from_bytes(&out) {
-                Ok(d2) => {
-                    metrics.rewrite_reparsed = Some(d2.pages().len() == pages.len());
-                }
-                Err(e) => {
-                    let (c, d, f, cid) = classify_err("rewrite", &e);
-                    rewrite_res = StageResult::caused(
-                        c,
-                        format!("reparse: {d}"),
-                        f,
-                        cid,
-                        t.elapsed().as_millis(),
-                    );
-                }
+            let rewrite_ms = t.elapsed().as_millis();
+            let rt = roundtrip::run(&doc, &data, &out, rewrite_ms, args.with_poppler, id);
+            metrics.rewrite_qpdf_ok = rt
+                .qpdf
+                .as_ref()
+                .map(|q| q.exit_code == 0 && q.warnings == 0 && q.errors == 0);
+            metrics.rewrite_reparsed = Some(rt.reparse.class == RtClass::Pass);
+            if rt.reparse.class != RtClass::Pass {
+                rewrite_res = StageResult::caused(
+                    Class::Error,
+                    format!("reparse: {}", rt.reparse.notes.join("; ")),
+                    String::new(),
+                    "rewrite.reparse".into(),
+                    t.elapsed().as_millis(),
+                );
             }
-            let _ = out;
+            rt
         }
         Err(e) => {
             let (c, d, f, cid) = classify_err("rewrite", &e);
             rewrite_res = StageResult::caused(c, d, f, cid, t.elapsed().as_millis());
+            roundtrip::refused(&e, t.elapsed().as_millis())
         }
-    }
+    };
     if rewrite_res.class == Class::Pass {
-        rewrite_res.ms = t.elapsed().as_millis();
+        rewrite_res.ms = rt.rewrite.ms;
     }
 
     let verdict = [parse.class, render.class, text.class, rewrite_res.class]
@@ -1031,6 +1046,8 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         probe_walk_errors: probe.walk_errors,
         probe_forms: probe.forms,
         metrics,
+        features,
+        roundtrip: Some(rt),
     }
 }
 
@@ -1044,21 +1061,6 @@ fn poppler_page_count(pdf: &Path) -> Option<i64> {
     let s = String::from_utf8_lossy(&out.stdout);
     s.lines()
         .find_map(|l| l.strip_prefix("Pages:").map(|v| v.trim().parse().ok()))?
-}
-
-fn qpdf_check(pdf_bytes: &[u8]) -> bool {
-    // qpdf reads files, so spool to a temp file.
-    let tmp = std::env::temp_dir().join(format!("kasane-qc-{}.pdf", std::process::id()));
-    if fs::write(&tmp, pdf_bytes).is_err() {
-        return false;
-    }
-    let ok = Command::new("qpdf")
-        .args(["--check", tmp.to_str().unwrap_or("")])
-        .output()
-        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).find("warning").is_none())
-        .unwrap_or(false);
-    let _ = fs::remove_file(&tmp);
-    ok
 }
 
 // ------------------------------------------------------------------
@@ -1200,6 +1202,7 @@ fn main() {
     let categories = analysis::category_summary(&results);
     let split = analysis::split_summary(&results);
     let tallies = analysis::tallies(&results);
+    let roundtrip = roundtrip_tallies(&results);
 
     // Record the corpus location relative to the cwd when possible so a
     // report written under an absolute --corpus doesn't leak a local
@@ -1226,6 +1229,7 @@ fn main() {
             split: Some(split),
             tallies,
             combos,
+            roundtrip,
             effort_is_estimate: true,
         }),
     };
@@ -1241,6 +1245,172 @@ fn main() {
     fs::write(args.out.join("latest.md"), &md).unwrap();
 
     eprintln!("\nWrote {json_path:?} and {md_path:?}");
+}
+
+/// Round-trip tallies: all strictly parsed files, by expect tag, by
+/// category and by document feature. Rates are PASS over *attempted*;
+/// not-applicable and refused rewrites never count as passes.
+fn roundtrip_tallies(files: &[FileResult]) -> Vec<RtTally> {
+    let eligible: Vec<&FileResult> = files
+        .iter()
+        .filter(|f| !f.recovered && f.parse.class == Class::Pass && f.roundtrip.is_some())
+        .collect();
+    let of = |name: &str, pred: &dyn Fn(&FileResult) -> bool| -> RtTally {
+        RtTally::of(
+            name,
+            eligible
+                .iter()
+                .filter(|f| pred(f))
+                .filter_map(|f| f.roundtrip.as_ref()),
+        )
+    };
+    let mut out = vec![of("all", &|_| true)];
+    for tag in ["pass", "reject", "any"] {
+        out.push(of(&format!("expect:{tag}"), &|f| f.expect == tag));
+    }
+    let mut cats: Vec<String> = eligible.iter().map(|f| f.category.clone()).collect();
+    cats.sort();
+    cats.dedup();
+    for c in cats {
+        out.push(of(&format!("category:{c}"), &|f| f.category == c));
+    }
+    let mut feats: Vec<String> = eligible.iter().flat_map(|f| f.features.clone()).collect();
+    feats.sort();
+    feats.dedup();
+    for ft in feats {
+        out.push(of(&format!("feature:{ft}"), &|f| f.features.contains(&ft)));
+    }
+    out
+}
+
+fn roundtrip_section(s: &mut String, r: &RunReport) {
+    let Some(a) = &r.analysis else { return };
+    if a.roundtrip.is_empty() {
+        return;
+    }
+    s.push_str("## Round trip (rewrite → reparse → compare)\n\n");
+    s.push_str(
+        "Does the rewrite preserve the document? Each strictly parsed file is rewritten, \
+         reparsed, and compared with the original: the **object graph** reachable from \
+         `/Root` and `/Info` (renumbering-independent — every key, value, stream byte and \
+         reference target), the **render** (kasane on both files, first 8 pages at 48 dpi; \
+         a match proves only that the rewrite changed nothing *this* renderer shows), the \
+         **text** (characters, Unicode, positions, ActualText per page) and the \
+         **annotations / form fields / named destinations**. Poppler renders page 1 of both \
+         files as an independent witness. Each cell is PASS/FAIL over *attempted*; U = the \
+         engine refused the rewrite (profile limit, not damage), N/A = nothing of that kind \
+         in the file. *full* = rewrite passed and every attempted comparison passed; its \
+         denominator is *files*.\n\n\
+         | group | files | rewrite P/F/U | reparse P/F | structure P/F | render P/F/N/A | text P/F/N/A | annots P/F/N/A | qpdf clean/warn/err | **full** | size ×mean/max |\n\
+         |---|---:|---|---|---|---|---|---|---|---:|---|\n",
+    );
+    let c = |x: &roundtrip::RtCounts, na: bool| {
+        if na {
+            format!("{}/{}/{}", x.pass, x.fail, x.not_applicable)
+        } else {
+            format!("{}/{}", x.pass, x.fail)
+        }
+    };
+    for t in &a.roundtrip {
+        if t.files == 0 {
+            continue;
+        }
+        s.push_str(&format!(
+            "| {} | {} | {}/{}/{} | {} | {} | {} | {} | {} | {}/{}/{} | **{}** | {:.2}/{:.2} |\n",
+            t.group,
+            t.files,
+            t.rewrite.pass,
+            t.rewrite.fail,
+            t.rewrite.unsupported,
+            c(&t.reparse, false),
+            c(&t.structure, false),
+            c(&t.render, true),
+            c(&t.text, true),
+            c(&t.annotations, true),
+            t.qpdf_clean,
+            t.qpdf_warnings,
+            t.qpdf_errors,
+            t.full,
+            t.size_ratio_mean,
+            t.size_ratio_max
+        ));
+    }
+    s.push('\n');
+    // Failures, with their first note.
+    let mut rows = 0;
+    for f in &r.files {
+        let Some(rt) = &f.roundtrip else { continue };
+        if f.recovered || f.parse.class != Class::Pass {
+            continue;
+        }
+        let failing: Vec<(&str, &roundtrip::RtCheck)> = [
+            ("rewrite", &rt.rewrite),
+            ("reparse", &rt.reparse),
+            ("structure", &rt.structure),
+            ("render", &rt.render),
+            ("text", &rt.text),
+            ("annotations", &rt.annotations),
+        ]
+        .into_iter()
+        .filter(|(_, c)| c.class == RtClass::Fail)
+        .collect();
+        if failing.is_empty() {
+            continue;
+        }
+        if rows == 0 {
+            s.push_str("Round-trip failures (first note each):\n\n| file | check | result | note |\n|---|---|---|---|\n");
+        }
+        rows += 1;
+        if rows > 60 {
+            s.push_str("| … | | | |\n");
+            break;
+        }
+        for (name, chk) in failing {
+            s.push_str(&format!(
+                "| {} | {} | {} | {} |\n",
+                f.id,
+                name,
+                chk.class.label(),
+                chk.notes
+                    .first()
+                    .map(|n| n.replace('|', "\\|"))
+                    .unwrap_or_default()
+            ));
+        }
+    }
+    if rows > 0 {
+        s.push('\n');
+    }
+    // Poppler witness summary.
+    let w: Vec<f64> = r
+        .files
+        .iter()
+        .filter_map(|f| f.roundtrip.as_ref().and_then(|rt| rt.poppler_ssim))
+        .collect();
+    if !w.is_empty() {
+        let low = w.iter().filter(|v| **v < 0.99).count();
+        s.push_str(&format!(
+            "Poppler witness (page 1 of original vs rewritten, SSIM): {} files, mean {:.4}, {} below 0.99.\n\n",
+            w.len(),
+            w.iter().sum::<f64>() / w.len() as f64,
+            low
+        ));
+    }
+    let ms: Vec<u128> = r
+        .files
+        .iter()
+        .filter_map(|f| f.roundtrip.as_ref().map(|rt| rt.total_ms))
+        .collect();
+    if !ms.is_empty() {
+        let mut sorted = ms.clone();
+        sorted.sort_unstable();
+        s.push_str(&format!(
+            "Round-trip time per file: median {} ms, p90 {} ms, max {} ms.\n\n",
+            sorted[sorted.len() / 2],
+            sorted[sorted.len() * 9 / 10],
+            sorted[sorted.len() - 1]
+        ));
+    }
 }
 
 /// One grouped table: `key` names the group; counts are strict (see
@@ -1440,6 +1610,9 @@ struct Analysis {
     /// together would unblock (see `analysis::combo_analysis`).
     #[serde(default)]
     combos: Vec<analysis::ComboStat>,
+    /// Round-trip tallies per group (`roundtrip::RtTally`).
+    #[serde(default)]
+    roundtrip: Vec<RtTally>,
     /// effort values are person-day *estimates*, flagged so readers
     /// don't treat them as measured.
     effort_is_estimate: bool,
@@ -1605,6 +1778,7 @@ fn render_markdown(r: &RunReport) -> String {
         debug_assert!(t.consistent(), "{t:?}");
     }
     s.push('\n');
+    roundtrip_section(&mut s, r);
 
     let mut tally: BTreeMap<&str, usize> = BTreeMap::new();
     for f in &r.files {
