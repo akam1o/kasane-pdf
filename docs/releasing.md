@@ -20,9 +20,10 @@ been verified from the exact commit it will point at.
 
 ## 2. CI green
 
-Push the preparation commit; `pr.yml` (test / fmt / clippy, compat +
-round-trip smoke, crate package check) and CodeQL must pass; the
-latest nightly must be green on the same code.
+Push the preparation commit; `pr.yml` (test / fmt / clippy, feature
+matrix + docs, wasm32 build, dependency audit, compat + round-trip
+smoke, crate package check) and CodeQL must pass; the latest nightly
+must be green on the same code.
 
 ## 3. Package verification (local, from the clean tree)
 

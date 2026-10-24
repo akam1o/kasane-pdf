@@ -4,7 +4,9 @@ All notable changes to this project are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased] — 0.2.0
+## [Unreleased]
+
+## [0.2.0] - 2026-10-24
 
 The API-stability release: the breaking changes scheduled in
 `docs/api-stability.md`, made once so that later releases can add
@@ -161,6 +163,7 @@ are possible between minor versions and are recorded here.
   1.1 and Adobe CMap resources under BSD-3-Clause (`NOTICE`,
   `docs/third-party.md`).
 
-[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.2.0
 [0.1.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.1.1
 [0.1.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.1.0

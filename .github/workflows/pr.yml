@@ -35,6 +35,49 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo test
 
+  features:
+    name: feature matrix + docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # The public API must be consistent whichever features are on:
+      # the backend-neutral RenderedPage accessors always exist, the
+      # tiny-skia interop only with its feature. Integration tests use
+      # the interop and need the default features; without them the
+      # lib, bins, examples, unit tests and doctests are checked.
+      - run: cargo clippy --all-targets --features cjk-fallback -- -D warnings
+      - run: cargo clippy --lib --bins --examples --no-default-features -- -D warnings
+      - run: cargo clippy --lib --bins --examples --no-default-features --features cjk-fallback -- -D warnings
+      - run: cargo clippy --all-targets --no-default-features --features tiny-skia-interop -- -D warnings
+      - run: cargo test --features cjk-fallback
+      - run: cargo test --no-default-features --lib
+      - run: cargo test --no-default-features --doc
+      - run: cargo test --no-default-features --features cjk-fallback --lib
+      - run: cargo test --no-default-features --features cjk-fallback --doc
+      - name: docs build without warnings (all features, and none)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: |
+          cargo doc --no-deps --all-features
+          cargo doc --no-deps --no-default-features
+
+  wasm:
+    name: wasm32 build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --lib --target wasm32-unknown-unknown
+      - run: cargo build --lib --target wasm32-unknown-unknown --features cjk-fallback
+      - run: cargo build --lib --target wasm32-unknown-unknown --no-default-features
+
   audit:
     name: dependency audit (RustSec)
     runs-on: ubuntu-latest

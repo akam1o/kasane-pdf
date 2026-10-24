@@ -13,7 +13,7 @@
 //!   (image XObjects / region editing).
 //! - Load the document catalog and page tree with inherited page
 //!   attributes; `page_contents`/`page_operations`/`page_resource`.
-//! - Render pages to a pixmap via [`render_page`] / [`pixmap_to_png`]:
+//! - Render pages to a premultiplied RGBA8 buffer via [`render_page`] (`RenderedPage::to_png`, `pixels`, `into_rgba8`):
 //!   paths, clipping, Device colours, Form & Image XObjects, embedded
 //!   TrueType and Type0/Identity-H/CIDFontType2 text.
 //! - Extract positioned Unicode text via [`extract_text`]

@@ -8,10 +8,9 @@ rasteriser and writer are implemented in this repository, and the
 only external code is a handful of permissively licensed codec and
 raster crates.
 
-Status: 0.1.x on [crates.io](https://crates.io/crates/kasane-pdf),
-documented on [docs.rs](https://docs.rs/kasane-pdf); this branch is
-the unreleased 0.2 line. The API is 0.x: additions arrive in minor
-releases, breaking changes are recorded in
+Status: 0.2.x on [crates.io](https://crates.io/crates/kasane-pdf),
+documented on [docs.rs](https://docs.rs/kasane-pdf). The API is 0.x:
+additions arrive in minor releases, breaking changes are recorded in
 [`CHANGELOG.md`](CHANGELOG.md), classified in
 [`docs/api-stability.md`](docs/api-stability.md), and 0.1 → 0.2 is a
 mechanical migration ([`docs/migration-0.2.md`](docs/migration-0.2.md)).
@@ -95,14 +94,14 @@ experimental scoped content editors (`remove_text`,
 
 ```toml
 [dependencies]
-kasane-pdf = "0.1"
+kasane-pdf = "0.2"
 ```
 
 Or track the repository directly:
 
 ```toml
 [dependencies]
-kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.1.1" }
+kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.2.0" }
 ```
 
 Supported Rust versions: 1.92 or newer (`rust-version` in
