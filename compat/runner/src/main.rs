@@ -67,7 +67,7 @@ impl Class {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct StageResult {
     class: Class,
     /// Machine-readable error kind from kasane_pdf::Error::kind(), or
@@ -93,6 +93,11 @@ impl StageResult {
             ms,
         }
     }
+    /// Serde default for reports written before the field existed.
+    fn not_run() -> Self {
+        StageResult::skip("not run")
+    }
+
     /// Like `new` but records the structured cause id too.
     fn caused(class: Class, detail: String, feature: String, cause: String, ms: u128) -> Self {
         StageResult {
@@ -137,6 +142,20 @@ struct FileResult {
     #[serde(default)]
     recovered: bool,
     render: StageResult,
+    /// Render on a recovery-mode document (`Document::from_bytes_recovering`):
+    /// the `render` stage itself when the strict parse failed and the
+    /// xref was rebuilt, or a second attempt made after the strict render
+    /// failed with an error. Skipped when the strict render passed.
+    #[serde(default = "StageResult::not_run")]
+    render_recovered: StageResult,
+    /// The counted render used a reported approximation (a substituted
+    /// font, an approximated colour conversion).
+    #[serde(default)]
+    render_approximate: bool,
+    /// Recovery-mode reinterpretations recorded while rendering
+    /// (`Warning::RecoveryApplied`), plus the xref rebuild's notes.
+    #[serde(default)]
+    recovery_notes: usize,
     text: StageResult,
     rewrite: StageResult,
     /// Every cause id the probe found on this file (union over pages);
@@ -854,6 +873,9 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                         recover: rec,
                         recovered: false,
                         render: StageResult::skip("parse failed"),
+                        render_recovered: StageResult::skip("recovery parse failed"),
+                        render_approximate: false,
+                        recovery_notes: 0,
                         text: StageResult::skip("parse failed"),
                         rewrite: StageResult::skip("parse failed"),
                         causes: Vec::new(),
@@ -877,6 +899,8 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
             }
         }
     };
+    // Notes the xref rebuild made (counted with the render-time rules).
+    let recover_notes = doc.recovery().map(|r| r.warnings.len()).unwrap_or(0);
     let pages: Vec<kasane_pdf::Page> = doc.pages().to_vec();
 
     // ---- Probe: enumerate *all* blockers (read-only) ----------------
@@ -956,6 +980,53 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     }
     metrics.render_pages_ok = rendered as u32;
     metrics.render_pages_total = attempted as u32;
+    let render_approximate = !metrics.render_font_substitutions.is_empty()
+        || !metrics.render_color_approximations.is_empty();
+    // Recovered render: the render above already ran on a recovery-mode
+    // document when the strict parse failed; otherwise, a strict render
+    // *error* (not an unsupported feature, not a limit) is retried on a
+    // recovery-mode document so the recovery rules can be measured —
+    // counted apart from the strict render, never in its place.
+    let render_recovered = if recovered {
+        render.clone()
+    } else if render.class == Class::Error {
+        let t3 = Instant::now();
+        match Document::from_bytes_recovering(&data) {
+            Ok(rdoc) => {
+                let mut res = StageResult::pass(0);
+                for (i, page) in rdoc.pages().iter().take(args.max_pages).enumerate() {
+                    let opts = RenderOptions::default()
+                        .with_dpi(args.dpi)
+                        .with_limits(Limits::default());
+                    match render_page(&rdoc, page, &opts) {
+                        Ok(_) => {}
+                        Err(e) => {
+                            let (c, d, f, cid) = classify_err("render", &e);
+                            res = StageResult::caused(
+                                c,
+                                format!("page {}: {d}", i + 1),
+                                f,
+                                cid,
+                                t3.elapsed().as_millis(),
+                            );
+                            break;
+                        }
+                    }
+                }
+                collect_warnings(&rdoc, &mut metrics.warnings);
+                if res.class == Class::Pass {
+                    res.ms = t3.elapsed().as_millis();
+                }
+                res
+            }
+            Err(e) => {
+                let (c, d, f, cid) = classify_err("recover", &e);
+                StageResult::caused(c, d, f, cid, t3.elapsed().as_millis())
+            }
+        }
+    } else {
+        StageResult::skip("strict render passed or was unsupported")
+    };
     if rendered > 0 && render.class == Class::Pass {
         render.ms = t.elapsed().as_millis();
     }
@@ -1068,6 +1139,14 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         recover,
         recovered,
         render,
+        render_recovered,
+        render_approximate,
+        recovery_notes: metrics
+            .warnings
+            .iter()
+            .filter(|w| w.starts_with("recovery:"))
+            .count()
+            + recover_notes,
         text,
         rewrite: rewrite_res,
         causes,
@@ -1894,6 +1973,32 @@ fn render_markdown(r: &RunReport) -> String {
             t.crash_or_timeout
         ));
         debug_assert!(t.consistent(), "{t:?}");
+    }
+    s.push('\n');
+    s.push_str(
+        "Render outcomes: *strict* is the render column above (strictly parsed, rendered \
+         with every construct the specification allows — the number comparable across \
+         runs); *approximate* is the part of it that used a reported substitution or colour \
+         approximation; *recovered* rendered only on a recovery-mode document \
+         (`Document::from_bytes_recovering`: rebuilt xref and/or the recovery rules, each \
+         recorded as a warning) — never counted as strict; *unsupported* and *rejected* \
+         did not render either way. Each row is its own population.\n\n\
+         | files | n | strict | of which approximate | recovered | unsupported | rejected | warnings | recovery notes |\n\
+         |---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+    );
+    for t in analysis::tallies(&r.files) {
+        s.push_str(&format!(
+            "| {} | {} | **{}** | {} | {} | {} | {} | {} | {} |\n",
+            t.group,
+            t.files,
+            t.render,
+            t.render_approximate,
+            t.render_recovered,
+            t.render_unsupported,
+            t.render_rejected,
+            t.warnings,
+            t.recovery_notes
+        ));
     }
     s.push('\n');
     let warned: Vec<&FileResult> = r

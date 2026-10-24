@@ -36,6 +36,9 @@ def summarize(run):
             "stages": {s: (f.get(s) or {}).get("class", "") for s in STAGES},
             "causes": sorted(f.get("causes") or []),
             "warnings": len((f.get("metrics") or {}).get("warnings") or []),
+            "render_recovered": ((f.get("render_recovered") or {}).get("class") or "skip"),
+            "render_approximate": bool(f.get("render_approximate", False)),
+            "recovery_notes": int(f.get("recovery_notes", 0) or 0),
             "roundtrip": {c: (rt.get(c) or {}).get("class", "") for c in RT_CHECKS} if rt else {},
             "roundtrip_full": bool(rt.get("full")) if rt else None,
         }
@@ -73,6 +76,14 @@ def check(run, base):
                 improvements.append(f"{fid}: {s} {o['stages'][s]} -> pass")
         if n.get("warnings", 0) and not o.get("warnings", 0) and n["verdict"] == "pass":
             print(f"note: {fid}: now accepted with warnings (was a clean pass)")
+        if (
+            n.get("render_recovered") == "pass"
+            and o.get("render_recovered", "skip") != "pass"
+            and n.get("render") != "pass"
+        ):
+            print(f"note: {fid}: now renders in recovery mode (not counted as strict)")
+        if n.get("render_approximate") and not o.get("render_approximate") and n.get("render") == "pass":
+            print(f"note: {fid}: strict render now uses a reported approximation")
         for c in RT_CHECKS:
             oc, nc = o["roundtrip"].get(c, ""), n["roundtrip"].get(c, "")
             if oc == "Pass" and nc == "Fail":

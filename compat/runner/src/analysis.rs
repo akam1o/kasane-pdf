@@ -789,6 +789,27 @@ pub struct Tally {
     pub recovered: usize,
     /// Crash or timeout in any stage.
     pub crash_or_timeout: usize,
+    /// Of `render`: files whose counted render used a reported
+    /// approximation (font substitution, colour approximation).
+    #[serde(default)]
+    pub render_approximate: usize,
+    /// Files whose strict render did not pass (or whose strict parse
+    /// failed) and whose render on a recovery-mode document passed.
+    #[serde(default)]
+    pub render_recovered: usize,
+    /// Strictly parsed files whose render was refused as unsupported.
+    #[serde(default)]
+    pub render_unsupported: usize,
+    /// Everything else: `files − render − render_recovered −
+    /// render_unsupported`.
+    #[serde(default)]
+    pub render_rejected: usize,
+    /// Non-fatal warnings recorded, summed over the files.
+    #[serde(default)]
+    pub warnings: usize,
+    /// Recovery-mode reinterpretations recorded, summed over the files.
+    #[serde(default)]
+    pub recovery_notes: usize,
 }
 
 impl Tally {
@@ -804,6 +825,12 @@ impl Tally {
             full_pass: 0,
             recovered: 0,
             crash_or_timeout: 0,
+            render_approximate: 0,
+            render_recovered: 0,
+            render_unsupported: 0,
+            render_rejected: 0,
+            warnings: 0,
+            recovery_notes: 0,
         };
         for f in files {
             let p = f.parse.class == Class::Pass;
@@ -820,6 +847,14 @@ impl Tally {
                 .iter()
                 .any(|s| matches!(s.class, Class::Crash | Class::Timeout));
             t.crash_or_timeout += bad as usize;
+            t.render_approximate += (r && f.render_approximate) as usize;
+            let rec_ok = !r && f.render_recovered.class == Class::Pass;
+            t.render_recovered += rec_ok as usize;
+            let unsup = !r && !rec_ok && p && f.render.class == Class::Unsupported;
+            t.render_unsupported += unsup as usize;
+            t.render_rejected += (!r && !rec_ok && !unsup) as usize;
+            t.warnings += f.metrics.warnings.len();
+            t.recovery_notes += f.recovery_notes;
         }
         t
     }
@@ -832,6 +867,9 @@ impl Tally {
             && self.text <= self.parse
             && self.rewrite <= self.parse
             && self.recovered + self.parse <= self.files
+            && self.render_approximate <= self.render
+            && self.render + self.render_recovered + self.render_unsupported + self.render_rejected
+                == self.files
     }
 }
 
@@ -989,6 +1027,9 @@ mod tests {
             recover: Default::default(),
             recovered: false,
             render: StageResult::pass(0),
+            render_recovered: StageResult::skip("not run"),
+            render_approximate: false,
+            recovery_notes: 0,
             text: StageResult::pass(0),
             rewrite: StageResult::pass(0),
             causes: causes.iter().map(|s| s.to_string()).collect(),
