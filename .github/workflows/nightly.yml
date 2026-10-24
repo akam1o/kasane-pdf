@@ -36,8 +36,8 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: external verifiers (qpdf, poppler)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qpdf poppler-utils python3-pip
-      - name: CJK fallback assets (pinned commits, SHA-256 verified)
-        run: ./scripts/fetch-cjk-assets.sh
+      - name: CJK fallback assets (committed; verified against the lock)
+        run: ./scripts/fetch-cjk-assets.sh --check
       - name: build runner (with cjk-fallback)
         working-directory: compat/runner
         run: cargo build --release --features cjk-fallback
@@ -83,6 +83,6 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: ./scripts/fetch-cjk-assets.sh
+      - run: ./scripts/fetch-cjk-assets.sh --check
       - run: cargo clippy --all-targets --features cjk-fallback -- -D warnings
       - run: cargo test --features cjk-fallback

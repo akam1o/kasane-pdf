@@ -38,12 +38,21 @@ License. It is distributed under the SIL Open Font License, Version
     Licence: tests/fixtures/OFL-1.1.txt. Test fixture only.
 
 With the optional `cjk-fallback` Cargo feature, the build additionally
-embeds assets fetched by scripts/fetch-cjk-assets.sh from pinned
-upstream commits and verified against scripts/cjk-assets.sha256 (not
-part of this repository): Noto Sans JP Regular (OFL-1.1) and the Adobe
-CMap and mapping resources (BSD-3-Clause). Their licence files are
-fetched alongside and must accompany any binary built with that
-feature.
+embeds the assets under assets/cjk/ (committed, taken from pinned
+upstream commits and verified against scripts/cjk-assets.sha256):
+
+  * Noto Sans JP Regular (assets/cjk/NotoSansJP-Regular.otf) —
+    Copyright 2014-2021 Adobe (http://www.adobe.com/), with Reserved
+    Font Name 'Source'. SIL Open Font License 1.1:
+    assets/cjk/NotoSansJP-LICENSE.
+
+  * Adobe-Japan1 CMap resources (assets/cjk/cmap/) — Copyright
+    1990-2023 Adobe. BSD-3-Clause: assets/cjk/cmap/LICENSE.
+
+  * Adobe-Japan1-UCS2 mapping resource (assets/cjk/cmap/Adobe-Japan1-UCS2)
+    — Copyright Adobe. BSD-3-Clause: assets/cjk/cmap/Adobe-Japan1-UCS2-LICENSE.
+
+Their licence texts must accompany any binary built with that feature.
 
 Third-party Rust crates and their licences are listed in
 docs/third-party.md.

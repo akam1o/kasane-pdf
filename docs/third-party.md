@@ -60,13 +60,16 @@ development tool that is not part of the engine) additionally uses
 | `tests/fixtures/eexec_cmsy10.bin` | 2-glyph Type 1 subset of CMBSY10 v003.002 (AMS Computer Modern, 2009 Type 1 release), internal names changed to `KSBSY10` (Reserved Font Name not used); its clear-text header carries the AMS copyright and the OFL statement | SIL OFL 1.1 — Copyright (c) 1997, 2009 American Mathematical Society; `tests/fixtures/OFL-1.1.txt`, notice in `NOTICE` |
 | `tests/fixtures/KasaneTest.ttf`, `KasaneCIDTest.ttf` | synthetic fonts generated from scratch | none (generated) |
 
-## Optional `cjk-fallback` assets (fetched, never committed)
+## Optional `cjk-fallback` assets (`assets/cjk/`, committed)
 
-`scripts/fetch-cjk-assets.sh` downloads into `assets/cjk/` (ignored
-by git). Every file comes from a commit pinned in the script and is
-verified against `scripts/cjk-assets.sha256` before anything is
-installed; a failed download, a missing licence file or a checksum
-mismatch aborts without touching `assets/cjk/`:
+The assets are committed so that the crate published on crates.io —
+and the tagged source it is built from — contain them: a crate built
+with `--features cjk-fallback` needs no network and no extra step.
+`scripts/fetch-cjk-assets.sh` is how they were obtained and how they
+are updated: every file comes from a commit pinned in the script and
+is verified against `scripts/cjk-assets.sha256` before anything is
+installed; `scripts/fetch-cjk-assets.sh --check` verifies the
+committed copy against the lock (CI runs it on every pull request):
 
 | asset | source | licence |
 |---|---|---|
@@ -81,8 +84,8 @@ To update the assets: change the `CMAP_REV` / `MAP_REV` / `NOTO_REV`
 commit pins in `scripts/fetch-cjk-assets.sh`, run
 `scripts/fetch-cjk-assets.sh --update-lock`, review the regenerated
 `scripts/cjk-assets.sha256` and the fetched licence files, re-run
-`cargo test --features cjk-fallback`, and commit the pins and the
-lock together. `scripts/check-workflows.py` (run on every pull
+`cargo test --features cjk-fallback`, and commit the pins, the lock
+and `assets/cjk/` together. `scripts/check-workflows.py` (run on every pull
 request) fails if the pins are not commit SHAs or the lock is
 incomplete.
 

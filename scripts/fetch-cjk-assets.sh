@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Fetch the licence-clean assets the `cjk-fallback` feature embeds into
-# assets/cjk/ (git-ignored):
+# assets/cjk/ (committed; this script is how they are updated and how
+# the committed copy is verified — `--check`):
 #   * Adobe-Japan1 predefined CMaps  — adobe-type-tools/cmap-resources (BSD-3-Clause)
 #   * Adobe-Japan1-UCS2 CID→Unicode  — adobe-type-tools/mapping-resources-pdf (BSD-3-Clause)
 #   * Noto Sans JP Regular (JP subset OTF) — notofonts/noto-cjk (SIL OFL 1.1)
@@ -15,7 +16,9 @@
 # Updating: bump the commit pins below, run
 #   scripts/fetch-cjk-assets.sh --update-lock
 # review the new scripts/cjk-assets.sha256 (and the licence files), then
-# commit the pins and the lock together. See docs/third-party.md.
+# commit the pins, the lock and assets/cjk/ together. See
+# docs/third-party.md. `scripts/fetch-cjk-assets.sh --check` verifies the
+# committed assets against the lock (CI runs it; no network).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -33,6 +36,27 @@ dst=assets/cjk
 update=0
 [ "${1:-}" = "--update-lock" ] && update=1
 
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
+  else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+# --check: verify the assets already present in assets/cjk/ (they are
+# committed) against the lock without touching the network.
+if [ "${1:-}" = "--check" ]; then
+  bad=0
+  while read -r sum rel; do
+    [ -n "$rel" ] || continue
+    if [ ! -f "$dst/$rel" ]; then echo "error: $dst/$rel missing" >&2; bad=1; continue; fi
+    got=$(sha256_of "$dst/$rel")
+    [ "$got" = "$sum" ] || { echo "error: checksum mismatch for $rel" >&2; bad=1; }
+  done < "$lock"
+  n=$(find "$dst" -type f | wc -l | tr -d ' ')
+  [ "$n" = "$(grep -c . "$lock")" ] || { echo "error: $dst has $n files, lock lists $(grep -c . "$lock")" >&2; bad=1; }
+  [ "$bad" = 0 ] && echo "assets/cjk: $n files match $lock" && exit 0
+  exit 1
+fi
+
 # ---- file list: "<relative path in assets/cjk>|<url>" -----------------
 files=()
 for n in H V 90ms-RKSJ-H 90ms-RKSJ-V 90msp-RKSJ-H 90msp-RKSJ-V 90pv-RKSJ-H 90pv-RKSJ-V \
@@ -47,11 +71,6 @@ files+=("cmap/Adobe-Japan1-UCS2|$map_base/pdf2unicode/Adobe-Japan1-UCS2")
 files+=("cmap/Adobe-Japan1-UCS2-LICENSE|$map_base/LICENSE.txt")
 files+=("NotoSansJP-Regular.otf|$noto_base/Sans/SubsetOTF/JP/NotoSansJP-Regular.otf")
 files+=("NotoSansJP-LICENSE|$noto_base/Sans/LICENSE")
-
-sha256_of() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
-  else shasum -a 256 "$1" | cut -d' ' -f1; fi
-}
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/kasane-cjk.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT

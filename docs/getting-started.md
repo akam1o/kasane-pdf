@@ -101,10 +101,10 @@ feature is distinguishable from a malformed one.
 ## Feature flag: `cjk-fallback`
 
 Non-embedded Japanese CID fonts render only when the fallback assets
-are compiled in:
+are compiled in. The assets ship with the crate (`assets/cjk/`), so
+the feature needs nothing but the flag:
 
 ```console
-scripts/fetch-cjk-assets.sh                  # downloads into assets/cjk/ (ignored by git)
 cargo build --release --features cjk-fallback
 ```
 
