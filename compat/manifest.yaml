@@ -4018,9 +4018,9 @@ files:
   category: misc
   source: https://pdfium.googlesource.com/pdfium/+/refs/heads/main/testing/resources/bug_779.pdf
   license: BSD-3-Clause
-  expect: pass
+  expect: any
   pages: 1
-  notes: ''
+  notes: 'object 6 0 (the ExtGState) is not closed by endobj (§7.3.10): the strict rewrite walk refuses it, recovery reads it'
   redistribute: 'yes'
   producer: unknown
   producer_raw: ''
@@ -4044,9 +4044,9 @@ files:
   category: misc
   source: https://pdfium.googlesource.com/pdfium/+/refs/heads/main/testing/resources/hello_world_2_pages_split_streams.pdf
   license: BSD-3-Clause
-  expect: pass
+  expect: any
   pages: 2
-  notes: ''
+  notes: 'object 7 0 is not closed by endobj (§7.3.10): the strict rewrite walk refuses it, recovery reads it'
   redistribute: 'yes'
   producer: unknown
   producer_raw: ''
@@ -4396,9 +4396,9 @@ files:
   category: misc
   source: https://pdfium.googlesource.com/pdfium/+/refs/heads/main/testing/resources/bug_459580.pdf
   license: BSD-3-Clause
-  expect: pass
+  expect: any
   pages: 1
-  notes: ''
+  notes: 'object 1 0 is not closed by endobj (ISO 32000-1 §7.3.10): the strict parse refuses it, recovery reads it'
   redistribute: 'yes'
   producer: unknown
   producer_raw: ''
@@ -4643,9 +4643,9 @@ files:
   category: misc
   source: https://pdfium.googlesource.com/pdfium/+/refs/heads/main/testing/resources/gotoe_action.pdf
   license: BSD-3-Clause
-  expect: pass
+  expect: any
   pages: 1
-  notes: ''
+  notes: 'object 5 0 has a stray `>>` and is not closed by endobj (§7.3.10): the strict rewrite walk refuses it, recovery reads it'
   redistribute: 'yes'
   producer: unknown
   producer_raw: ''

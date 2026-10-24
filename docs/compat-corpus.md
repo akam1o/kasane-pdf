@@ -148,7 +148,7 @@ per-file `expect:` tag in `manifest.yaml`:
 |---|---|---|
 | `pass` | well-formed document the engine should handle | **Compatibility** rate |
 | `reject` | adversarial / malformed / fuzzed / encrypted — must be *refused safely* | **Robustness** score |
-| `any` | valid doc using out-of-scope features | neither rate |
+| `any` | valid doc using out-of-scope features, or a file whose only fault is one the strict parse reports and recovery reads (named in `notes`) | neither rate |
 
 - **Compatibility** = per-stage pass rate over the `pass` files.
 - **Robustness** = a `reject` file is OK when the engine refuses it
@@ -397,7 +397,13 @@ CUPS/Quartz text-to-PDF, `sips` image-only pages rasterised from
 corpus files (scan-like, no text layer), and deterministic mutations
 (truncation, byte flips, zeroed xref, bad `startxref`, bad `/Length`,
 dropped `endobj`, renumbered objects, giant `/Count`, stray bytes;
-`expect: reject`) of those files and of the test fixtures.
+`expect: reject`) of those files and of the test fixtures. The
+`drop-endobj` mutations are the reason the strict parser now requires
+`endobj` (§7.3.10): until it did, three of them parsed, rendered and
+rewrote cleanly — "processed" without being valid PDF — and were the
+only `expect: reject` files to score a full PASS. They are recovered
+now, as are four pdfium test files whose hand-written objects also
+lack `endobj` (retagged `expect: any` with the fault in `notes`).
 
 What the expansion did **not** reach, and why: arXiv added 10 papers
 (licence verified on each abstract page; the OAI-PMH endpoint
@@ -528,7 +534,126 @@ CFF CID text on 30+ pages); no file approached the 20 s timeout and
 no limit was hit except the two deliberate `max_image_dimension`
 refusals.
 
-## JBIG2: implementation options (decision for the next phase)
+### Results after JBIG2/CCITT, byte filters, markup annotations and tiling patterns (run-1792801802)
+
+Same 511 files, measured against run-1792769430 above. Four pdfium
+test files whose hand-written objects lack `endobj` were retagged
+`expect: any` (see the mutation note), so the compatibility population
+is 427.
+
+| files | n | parse | render | text | rewrite | full PASS | recovered | crash/timeout |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| all | 511 | 444 | 372 | 399 | 383 | **329** | 34 | 0 |
+| expect: pass | 427 | 404 (94.6%) | **342 (80.1%)** | 368 (86.2%) | 348 (81.5%) | **301 (70.5%)** | 10 | 0 |
+| expect: reject | 43 | 1 | 0 | 0 | 0 | **0** | 23 | 0 |
+| expect: any | 41 | 39 | 30 | 31 | 35 | 28 | 1 | 0 |
+
+Against run-1792769430 (all 511): render **296 → 372**, text 389 →
+399, rewrite 390 → 383, full PASS **254 → 329** (+80 newly, −5), 0
+crash / 0 timeout; robustness 43/43 safely handled, 43 refused, and
+for the first time **no `expect: reject` file scores a full PASS**.
+The five files that left full PASS all lack `endobj` on at least one
+object (three `drop-endobj` mutations, `pdfium-bug_459580`,
+`pdfium-gotoe_action` — the latter also has a stray `>>`): the strict
+parser now reports that (§7.3.10) and recovery reads them, which is
+the classification they should always have had. Two more pdfium files
+(`bug_779`, `hello_world_2_pages_split_streams`) keep render/text but
+lose the strict rewrite walk for the same reason.
+
+What each feature unblocked (newly full PASS, by first-error cause):
+
+| feature | newly full PASS | files |
+|---|---:|---|
+| JBIG2 (`hayro-jbig2`) | 45 | the 44 pdf.js `bitmap-*` files (generic, refinement, symbol/text with Huffman variants, halftone, composition ops, TPGDON) and `jbig2_file_header` |
+| CCITT (`hayro-ccitt`) | 5 | `ccitt_endofblock_false`, `images_1bit_grayscale`, `issue13372` (stencil painted with a shading pattern), `issue14999_reduced` (Type 3 glyphs as inline `/CCF` images — also fixed `/Widths` through a `[1 0 0 -1 0 0]` `/FontMatrix`), `issue19532` (inline `/CCF` running straight into `EI`) |
+| ASCII85 / ASCIIHex / LZW / RunLength | 6 | `bug1337429`, `bug864847`, `pdfium-bug_1646`, `pdfium-bug_402562387`, `pdfium-bug_444176962`, `pdfium-jpeg_reduced_size_with_smask` |
+| markup annotations without `/AP` | 13 | the nine `annotation-*-without-appearance` files (Square/Circle, Line, Line with empty `/Rect`, Polygon/PolyLine, Ink, Highlight, Underline, StrikeOut, Squiggly), `issue12337`, `issue22124`, `pdfium-freetext_annotation_without_da`, `pdfium-redact_annot` |
+| tiling patterns (+ pattern strokes and text) | 11 | `tiling_patterns_variations`, `tiling-pattern-box`, `pdfium-pattern_fill_uncolored`, `pdfium-pattern_stroke_uncolored`, `colorkeymask`, `issue16038`, `issue21878`, `pattern_text_embedded_font`, `showtext-shadingpattern`, `contentstreamnocycletype3insidetype3`, `verapdf…6-2-3-3-t01-fail-o` |
+
+Per category (expect: pass; render and full PASS as before → after):
+
+| category | n | parse | render | text | rewrite | full PASS |
+|---|---:|---:|---:|---:|---:|---:|
+| misc | 154 | 136 | 85 → 112 | 119 | 122 | 77 → 104 |
+| graphics | 61 | 61 | 21 → **52** | 57 | 59 | 19 → **50** |
+| annotations | 52 | 50 | 33 → **44** | 49 | 42 | 28 → **39** |
+| forms | 38 | 38 | 30 | 31 | 13 | 11 |
+| browser | 19 | 19 | 16 | 16 | 19 | 16 |
+| pdfa | 17 | 17 | 16 | 16 | 17 | 16 |
+| office | 16 | 16 | 11 | 14 | 13 | 8 |
+| images | 14 | 14 | 9 → 11 | 14 | 13 | 8 → 10 |
+| latex | 13 | 13 | 12 → 13 | 13 | 12 | 11 → 12 |
+| scan | 13 | 13 | 12 → **13** | 13 | 13 | 12 → 13 |
+| papers | 10 | 10 | 10 | 10 | 9 | 9 |
+| japanese | 9 | 9 | 8 → **9** | 9 | 8 | 7 → 8 |
+| transparency | 5 | 5 | 1 → 4 | 5 | 5 | 1 → 4 |
+
+Fidelity (render success and quality are separate counts). Common
+pages measured in both runs: 299 files, mean SSIM 0.9344 → 0.9406; the
+nine files that moved (`copy_paste_ligatures` 0.005 → 0.765,
+`issue21068` 0.50 → 0.95, `issue18072`, `highlight_popup`, …) did so
+because the runner now renders the Poppler reference with
+`pdftoppm -cropbox` — our page is the `/CropBox`, Poppler's default is
+the `/MediaBox`, and the two pixmaps could not be aligned before. No
+common page regressed. Newly measured: 80 files, mean 0.9575, median
+0.986; below 0.8: `issue21878` (0.45 — a 60 × 36 pt page of
+LaTeX/pgf hatching whose tile seams dominate at 96 dpi; identical
+to Poppler at 288 dpi, see below), `jbig2_file_header` (0.46 —
+Poppler's `jbig2dec` *fails* on the T.88 file header and renders a
+blank page, so the reference is empty while ours shows the bitmap),
+`issue13372` (0.65 — 646 × 761 halftone stencil through a rainbow
+shading, identical placement and colours; the dot pattern is
+resampled differently), `issue16038` (0.67 — 73 × 39 pt pgf hatch,
+same seam effect). Mean MAE over all 379 measured files is 0.018.
+
+Visually inspected against Poppler at 72 dpi unless noted (page 1 in
+each case): `bitmap-symbol-textrefine` (smiley; identical, no
+inversion), `ccitt_endofblock_false` (six `/K -1 / 0 / 1` labels on a
+blue card; identical), `issue13372` (balloons stencil; identical
+layout), `issue19532` and `issue14999_reduced` (Type 3 text made of
+CCITT glyphs; identical after the `/Widths` fix — before it the
+glyphs piled up at one origin), `bug1337429` (LZW text; identical),
+`jbig2_file_header` (ours: two black shapes, Poppler: blank),
+`annotation-square-circle-without-appearance`,
+`annotation-ink-without-appearance`,
+`annotation-polyline-polygon-without-appearance`,
+`annotation-line-without-appearance`, `…-empty-rect`,
+`annotation-squiggly-without-appearance` (all identical in position,
+line width, colour),
+`pdfium-freetext_annotation_without_da` (red box, "Hello!" in the
+Helvetica fallback; identical), `issue12337` (yellow highlight over
+an ACM abstract; the `/Multiply` blend keeps the text black as in
+Poppler), `tiling_patterns_variations` (nine panels: coloured and
+uncoloured, matrix, gaps, rotation; identical),
+`tiling-pattern-box` (dashed grid — ours slightly lighter at the
+left/bottom edge cells), `pdfium-pattern_stroke_uncolored` and
+`colorkeymask` (identical), `issue16038` and `issue21878` at 288 dpi
+and a replica of the `issue16038` cell at 576 dpi (the faint seams at
+every tile edge appear in Poppler's output as well — they are the
+anti-aliased `/BBox` clip of each cell, not a stamping error). Not
+inspected: the remaining 43 `bitmap-*` files beyond the four viewed
+(all SSIM ≥ 0.908 with ink ratios within 1 % of the reference).
+
+Remaining render blockers (expect: pass, strict parse, first error):
+`/X is not a stream` 3, ExtGState luminosity soft masks 3,
+non-embedded CID fonts 3, `/Annots` entries that are not
+dictionaries 2, `/UserUnit` 3 2, `bfrange` overflow 2,
+function-based shading 2, `max_image_dimension` 2, JPX 2, dangling
+references 4, malformed content streams (unbalanced `q`/`Q`, operators
+inside a path object) 4, non-separable blend on an image 1,
+non-Normal blend inside a group 1, a Type 3 glyph whose pattern cell
+paints with its own font (`contentstreamcycletype3insidetype3`,
+refused as a cycle — Poppler breaks the cycle and draws the rest) 1,
+Arabic FreeText contents (`freetext_no_appearance`, no CJK/Arabic
+fallback font) 1, `/JBIG2Decode` on a *content* stream
+(`bomb_giant`, an image-only filter applied to page content) 1.
+Rewrite is bounded by the deliberate profile (27 signed, 14
+`/OCProperties`, 3 XFA, 3 `/AA`, 2 PDF-2.0) plus 6 dangling
+references. Performance: median 43 ms per file, p90 232 ms, p99 902
+ms, max 1.34 s; no limit was hit except the two deliberate
+`max_image_dimension` refusals.
+
+## JBIG2: implementation options (decision, implemented in run-1792801802)
 
 JBIG2 (ITU-T T.88) is the single largest render blocker on the 511
 files (45 first-error hits, all `expect: pass`, 48 files carry the
@@ -544,7 +669,8 @@ refinement all index into caller-sized buffers). The options:
 | own implementation | ours | none | yes | would start with generic regions only (covers scans, not the symbol-coded text pages that dominate real scanners) | 5–7 days for generic + symbol + refinement + halftone, plus the MQ arithmetic decoder; the security surface is exactly where readers have had CVEs | reject for now — no advantage over a maintained safe crate |
 | no JBIG2 (status quo) | — | — | — | 0 | 0 | 45 files stay blocked; every bilevel scan from a modern scanner fails |
 
-Decision: integrate `hayro-jbig2` (and `hayro-ccitt` for CCITT G3/G4
+Decision (since carried out — `src/bilevel.rs`): integrate
+`hayro-jbig2` 0.3.1 (and `hayro-ccitt` 0.4.0 for CCITT G3/G4
 through the same crate family) with the `simd` and `image` features
 off, behind the existing image pipeline. The MSRV jump (1.70 → 1.92)
 is the only cost worth flagging; the crate's dependency tree is two

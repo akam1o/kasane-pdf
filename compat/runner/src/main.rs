@@ -491,7 +491,9 @@ fn compare_render(
     let prefix = diff_dir.join(format!("{tag}-ref"));
     let out = Command::new("pdftoppm")
         .args(["-f", &page.to_string(), "-l", &page.to_string()])
-        .args(["-r", &dpi.to_string(), "-gray", "-singlefile"])
+        // `-cropbox`: our page size is the /CropBox (the visible region),
+        // so the reference must be too or the pixmaps cannot be aligned.
+        .args(["-r", &dpi.to_string(), "-gray", "-singlefile", "-cropbox"])
         .arg(pdf)
         .arg(&prefix)
         .output()
