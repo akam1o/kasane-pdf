@@ -230,9 +230,27 @@ struct Metrics {
     /// Non-empty means hues may differ from a CMS-backed viewer.
     #[serde(default)]
     render_color_approximations: Vec<String>,
+    /// Non-fatal findings the engine recorded on the document while
+    /// the stages ran (`Document::take_warnings`), deduplicated: the
+    /// input deviated from the specification in a way the engine
+    /// processed exactly. A stage that passed with a warning is
+    /// *accepted with warnings*, counted separately from a clean pass.
+    #[serde(default)]
+    warnings: Vec<String>,
     text_match_ratio: Option<f64>,
     rewrite_qpdf_ok: Option<bool>,
     rewrite_reparsed: Option<bool>,
+}
+
+/// Drain the document's warnings into the per-file list (deduplicated
+/// by text, bounded so a pathological file cannot bloat the report).
+fn collect_warnings(doc: &Document, into: &mut Vec<String>) {
+    for w in doc.take_warnings() {
+        let s = w.to_string();
+        if !into.contains(&s) && into.len() < 64 {
+            into.push(s);
+        }
+    }
 }
 
 /// Content-aware fidelity metrics that complement the whole-page
@@ -768,6 +786,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         render_pages: Vec::new(),
         render_font_substitutions: Vec::new(),
         render_color_approximations: Vec::new(),
+        warnings: Vec::new(),
         text_match_ratio: None,
         rewrite_qpdf_ok: None,
         rewrite_reparsed: None,
@@ -890,6 +909,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                         metrics.render_color_approximations.push(a.clone());
                     }
                 }
+                collect_warnings(&doc, &mut metrics.warnings);
                 // Visual fidelity vs poppler on every rendered page.
                 if args.with_poppler {
                     let diff_dir = args.out.join("diff");
@@ -956,6 +976,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     for (i, page) in pages.iter().take(args.max_pages).enumerate() {
         match extract_text(&doc, page, &Limits::default()) {
             Ok(t2) => {
+                collect_warnings(&doc, &mut metrics.warnings);
                 for ch in &t2.chars {
                     if let Some(u) = &ch.unicode {
                         our_text.push_str(u);
@@ -1871,6 +1892,21 @@ fn render_markdown(r: &RunReport) -> String {
         debug_assert!(t.consistent(), "{t:?}");
     }
     s.push('\n');
+    let warned: Vec<&FileResult> = r
+        .files
+        .iter()
+        .filter(|f| !f.metrics.warnings.is_empty())
+        .collect();
+    let warned_pass = warned.iter().filter(|f| f.verdict == Class::Pass).count();
+    s.push_str(&format!(
+        "Accepted with warnings: {} file(s) recorded a non-fatal deviation the engine \
+         processed exactly (`Document::take_warnings`) — {} of them are full PASS, so a \
+         *clean* full PASS is {} on all files. Per-file warnings are listed under \
+         *Warnings* below.\n\n",
+        warned.len(),
+        warned_pass,
+        r.files.iter().filter(|f| f.verdict == Class::Pass).count() - warned_pass
+    ));
     roundtrip_section(&mut s, r);
 
     let mut tally: BTreeMap<&str, usize> = BTreeMap::new();
@@ -2457,6 +2493,23 @@ fn render_markdown(r: &RunReport) -> String {
     }
 
     // per-file table
+    let warned: Vec<&FileResult> = r
+        .files
+        .iter()
+        .filter(|f| !f.metrics.warnings.is_empty())
+        .collect();
+    if !warned.is_empty() {
+        s.push_str("## Warnings\n\nFiles the engine accepted while recording a non-fatal deviation (the result is exact for the bytes present; the input is not conforming):\n\n| file | verdict | warnings |\n|---|---|---|\n");
+        for f in &warned {
+            s.push_str(&format!(
+                "| `{}` | {} | {} |\n",
+                f.id,
+                f.verdict.label(),
+                f.metrics.warnings.join("; ")
+            ));
+        }
+        s.push('\n');
+    }
     s.push_str("## Per-file\n\n| file | verdict | parse | render | text | rewrite | pages | bytes | ms |\n|---|---|---|---|---|---|---|---|---|\n");
     for f in &r.files {
         s.push_str(&format!(

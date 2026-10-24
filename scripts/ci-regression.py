@@ -35,6 +35,7 @@ def summarize(run):
             "verdict": f.get("verdict", ""),
             "stages": {s: (f.get(s) or {}).get("class", "") for s in STAGES},
             "causes": sorted(f.get("causes") or []),
+            "warnings": len((f.get("metrics") or {}).get("warnings") or []),
             "roundtrip": {c: (rt.get(c) or {}).get("class", "") for c in RT_CHECKS} if rt else {},
             "roundtrip_full": bool(rt.get("full")) if rt else None,
         }
@@ -70,6 +71,8 @@ def check(run, base):
                 regressions.append(f"{fid}: {s} {o['stages'][s]} -> {n['stages'][s]}")
             elif n["stages"][s] == "pass" and o["stages"][s] != "pass":
                 improvements.append(f"{fid}: {s} {o['stages'][s]} -> pass")
+        if n.get("warnings", 0) and not o.get("warnings", 0) and n["verdict"] == "pass":
+            print(f"note: {fid}: now accepted with warnings (was a clean pass)")
         for c in RT_CHECKS:
             oc, nc = o["roundtrip"].get(c, ""), n["roundtrip"].get(c, "")
             if oc == "Pass" and nc == "Fail":

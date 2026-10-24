@@ -908,6 +908,67 @@ ZapfDingbats 2, `/Annots` entries that are not dictionaries 2,
 hex 1, Arabic FreeText fallback 1, Type 3 / pattern cycle 1, JBIG2 on
 a content stream 1, `/BrotliDecode` 1, others 1 each.
 
+### Results after the warnings channel: unterminated Flate streams and malformed `/ToUnicode` entries (run-1792845977)
+
+Same 511 files, `--mode full` (every page), default features, measured
+against run-1792812028 like for like. The code change is narrow — see
+[`security.md`](security.md) § Three outcomes: a `/FlateDecode`
+stream that ends exactly after a sync-flush block without the final
+block and Adler-32 is now decoded (every block was complete; only the
+checksum is unverifiable) and recorded as
+`Warning::UnterminatedFlateStream`; hex strings in a `/ToUnicode`
+CMap may contain white space (§7.3.4.3); a `bfchar`/`bfrange` entry
+that cannot be read is skipped with `Warning::MalformedToUnicodeEntry`
+and its codes stay unmapped. A stream cut inside a block, a corrupt
+stream, and a malformed codespace range are still errors.
+
+| files | n | parse | render | text | rewrite | full PASS | recovered | crash/timeout |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| all | 511 | 446 | 400 | 416 | 385 | **348** | 32 | 0 |
+| expect: pass | 427 | 406 (95.1%) | **368 (86.2%)** | 384 (89.9%) | 350 (82.0%) | **318 (74.5%)** | 8 | 0 |
+| expect: reject | 43 | 1 | 0 | 0 | 0 | 0 | 23 | 0 |
+| expect: any | 41 | 39 | 32 | 32 | 35 | 30 | 1 | 0 |
+
+Against run-1792812028: parse **404 → 406**, render **365 → 368**,
+text 381 → 384, rewrite 348 → 350, full PASS **315 → 318** on
+`expect: pass`; all 511: full PASS 345 → 348; 0 crash / 0 timeout;
+robustness 43/43 refused.
+
+Newly passing (3, `expect: pass`):
+
+| cause removed | files | how |
+|---|---|---|
+| xref stream and annotation appearance streams end after a sync flush (70 / 851 bytes decoded exactly) | `comments` `highlights` | **accepted with warnings** — the only two warned files in the corpus; both are full PASS, so the clean full PASS is 316 on `expect: pass` and 346 on all files |
+| white space inside `/ToUnicode` hex strings (`<00 41>`) on page 17 | `arxiv-2303.18223` | conforming per §7.3.4.3 — a parser gap, not a deviation; no warning |
+
+Regressions: **none** — no file and no stage that passed in
+run-1792812028 fails now; `issue13316_reduced` (corrupt Flate data)
+is still refused with the new, more specific message
+`FlateDecode failed: corrupt deflate stream`. Round trip: 385 strictly
+parsed files rewritten (10 rewrite failures, 51 unsupported), 385
+reparse with an identical object graph, render and text identical on
+every compared page (352 / 362 files; the rest have no comparable
+page), external validation introduced no new qpdf or Poppler
+diagnostic in any file (`external_no_new` 0 failures), Poppler
+mean SSIM 0.99997 on 1 488 pages.
+
+Remaining render blockers on `expect: pass` (59 files, 13 of them
+strict-parse failures) after this run, in the order the next phase
+should take them: dangling references in strict mode 4 (a recovery
+`null` policy — the fix is in the recovery parser, not the strict
+one), operators inside path objects or unbalanced `q`/`Q` 7 (file
+faults; candidates for warnings only where the drawing is provably
+unaffected), non-embedded CID fonts with `/Ordering (Identity)` 3
+(no sound fallback exists), knockout groups 2, `max_image_dimension`
+2 (a `Limits` decision, not a gap), non-embedded Symbol /
+ZapfDingbats 2 (no licence-clean metric clone), `/Annots` entries
+that are not dictionaries 2, `/AP /N` state dictionaries without
+`/AS` 2, Arabic FreeText fallback 1, Type 3 / pattern cycle 1, JBIG2
+on a content stream 1, `/BrotliDecode` 1, others 1 each. Chinese and
+Korean predefined CMaps (`GB1`, `CNS1`, `Korea1`) are not bundled:
+the crate is 7.2 MiB compressed against the 10 MiB crates.io limit,
+so they would need a separate asset crate.
+
 ## External verification findings (this phase)
 
 What the independent parsers said about the rewrites, file by file,
@@ -1234,6 +1295,22 @@ Each file gets one verdict — the **worst** class across its stages
 Unsupported features are **never counted as success** — the report
 keeps `UNSUPPORTED` separate so "we can't do it" is visible, not
 hidden inside a pass rate.
+
+### Accepted with warnings
+
+A `PASS` whose document recorded a `Warning` (`Document::take_warnings`
+after the render and text stages; `metrics.warnings` in the JSON,
+deduplicated, at most 64 per file) is a pass — the output is exact —
+but the input was not conforming. The report keeps the two apart:
+the headline states how many files were *accepted with warnings* and
+how many of the full passes are *clean*, and a **Warnings** section
+lists each warned file with its findings. `scripts/ci-regression.py
+check` prints a `note:` (not a regression) when a file that passed
+cleanly in the baseline now passes with a warning, so the shift is
+visible in CI without blocking it. The engine records a warning only
+for the enumerated deviations it can process exactly (see
+[`security.md`](security.md) § Three outcomes); the runner never
+turns an `ERROR` or `UNSUPPORTED` into a warned pass.
 
 ## Render execution vs visual fidelity
 
