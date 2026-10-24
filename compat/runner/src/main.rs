@@ -286,7 +286,9 @@ fn sha256_file(p: &Path) -> String {
     let d = fs::read(p).unwrap_or_default();
     let mut h = Sha256::new();
     h.update(&d);
-    format!("{:x}", h.finalize())
+    // Formatted byte by byte so the code is independent of the digest
+    // type's `LowerHex` support, which changed between sha2 0.10 and 0.11.
+    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn max_rss_bytes() -> u64 {
