@@ -72,6 +72,10 @@ pub(crate) struct Parser<'a> {
     /// Strict mode (the default) requires every indirect object to be
     /// closed by `endobj` (§7.3.10); recovery tolerates its absence.
     require_endobj: bool,
+    /// Resolves an *indirect* stream `/Length` (`n g R`) to a byte
+    /// count while a stream is captured; without it the capture falls
+    /// back to scanning for `endstream`.
+    length_resolver: Option<&'a dyn Fn(IndirectRef) -> Option<usize>>,
 }
 
 impl<'a> Parser<'a> {
@@ -80,7 +84,14 @@ impl<'a> Parser<'a> {
             require_endobj: true,
             lexer: Lexer::new(input, limits),
             limits,
+            length_resolver: None,
         }
+    }
+
+    /// Resolve indirect `/Length` values through `f` when capturing
+    /// stream data (see [`Parser::find_stream_end`]).
+    pub(crate) fn with_length_resolver(&mut self, f: &'a dyn Fn(IndirectRef) -> Option<usize>) {
+        self.length_resolver = Some(f);
     }
 
     /// Byte offset the lexer is currently positioned at.
@@ -374,14 +385,25 @@ impl<'a> Parser<'a> {
 
     /// Determine where stream data ends (exclusive offset).
     ///
-    /// If `/Length` is a direct non-negative integer and `endstream`
+    /// If `/Length` is a non-negative integer — direct, or indirect and
+    /// resolvable through the length resolver — and `endstream`
     /// follows at that position (after optional EOL), trust it.
     /// Otherwise scan for the first `endstream` keyword and back off the
-    /// EOL that precedes it.
+    /// EOL that precedes it. The scan is a heuristic: data whose last
+    /// byte is itself CR or LF loses it, which is why a resolvable
+    /// `/Length` always wins.
     fn find_stream_end(&self, dict: &Dict, data_start: usize) -> Result<usize, Error> {
         let input = self.lexer.input;
 
-        if let Some(len) = dict.get(b"Length".as_slice()).and_then(|o| o.as_i64()) {
+        let declared: Option<i64> = match dict.get(b"Length".as_slice()) {
+            Some(Object::Ref(r)) => self
+                .length_resolver
+                .and_then(|f| f(*r))
+                .and_then(|n| i64::try_from(n).ok()),
+            Some(o) => o.as_i64(),
+            None => None,
+        };
+        if let Some(len) = declared {
             if len >= 0 {
                 let end = data_start.saturating_add(len as usize);
                 if end <= input.len() && self.endstream_follows(end) {

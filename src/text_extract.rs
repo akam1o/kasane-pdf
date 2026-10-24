@@ -172,6 +172,7 @@ fn extract_text_impl(
     limits: &Limits,
     include_hidden: bool,
 ) -> Result<ExtractedText, Error> {
+    let _budget = doc.decoded_budget_scope();
     let opts = crate::render::RenderOptions {
         dpi: 72.0, // unused — extraction reports user space, no pixels
         limits: limits.clone(),

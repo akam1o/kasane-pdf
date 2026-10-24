@@ -37,3 +37,9 @@ ttf-parser = { version = "0.25", default-features = false, features = ["std", "g
 hayro-jbig2 = { version = "0.3", default-features = false }
 hayro-ccitt = { version = "0.4", default-features = false }
 hayro-jpeg2000 = { version = "0.4", default-features = false }
+
+[features]
+# Bundle the Adobe-Japan1 predefined CMaps, the CID → Unicode map and a
+# Japanese fallback face (assets/cjk/, fetched by scripts/fetch-cjk-assets.sh)
+# so non-embedded Adobe-Japan1 CID fonts render. Off by default.
+cjk-fallback = []

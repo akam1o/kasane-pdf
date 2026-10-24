@@ -42,9 +42,13 @@ pub struct Limits {
     /// Maximum decoded size of a single stream (before and after each
     /// filter stage). Default: 256 MiB.
     pub max_stream_bytes: u64,
-    /// Maximum cumulative decoded bytes across all streams decoded by a
-    /// single [`Document`](crate::Document). Guards against many small
-    /// streams exhausting memory. Default: 1 GiB.
+    /// Maximum cumulative decoded bytes across all streams decoded by
+    /// one *operation* on a [`Document`](crate::Document) — a page
+    /// render, a text extraction, a rewrite — plus the object streams
+    /// the document keeps cached; document-level lookups between
+    /// operations share the same budget. Guards against many small
+    /// streams exhausting memory while letting every page of a long
+    /// document be processed in turn. Default: 1 GiB.
     pub max_total_decoded_bytes: u64,
     /// Maximum number of filters in a `/Filter` array. Default: 8.
     pub max_filter_chain: usize,
@@ -93,6 +97,11 @@ pub struct Limits {
     /// cell and stamp it with a repeating shader, whose cost is per
     /// device pixel, so they do not count. Default: 4,096.
     pub max_pattern_tiles: u64,
+    /// Maximum triangles one mesh shading (§8.7.4.5, types 4–7) may
+    /// rasterise: free-form and lattice meshes beyond it are refused,
+    /// patch meshes reduce their subdivision to stay under it.
+    /// Default: 500,000.
+    pub max_shading_triangles: u64,
     /// Maximum width or height of an image XObject in samples.
     /// Default: 16,384.
     pub max_image_dimension: u32,
@@ -240,6 +249,7 @@ impl Default for Limits {
             max_xobject_depth: 32,
             max_xobject_invocations: 10_000,
             max_pattern_tiles: 4_096,
+            max_shading_triangles: 500_000,
             max_image_dimension: 16_384,
             max_image_total_samples: 67_108_864,
             max_image_bytes: 256 * 1024 * 1024,

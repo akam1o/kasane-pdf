@@ -338,6 +338,7 @@ pub fn render_page(
     opts: &RenderOptions,
 ) -> Result<RenderedPage, Error> {
     let limits = &opts.limits;
+    let _budget = doc.decoded_budget_scope();
 
     // ---- Reject pages we cannot faithfully draw ---------------------
     // (`/Annots` are drawn after the content — see `draw_annotations`.)
@@ -420,6 +421,7 @@ pub fn render_page(
         gs_stack: Vec::new(),
         path: CurrentPath::default(),
         in_text: false,
+        text_clip: None,
         resources,
         xobject_depth: 0,
         xobject_invocations: 0,
@@ -589,6 +591,10 @@ pub(crate) struct Renderer<'a> {
     gs_stack: Vec<GraphicsState>,
     path: CurrentPath,
     in_text: bool,
+    /// Glyph outlines (device space) accumulated by the text clipping
+    /// modes `Tr 4`–`7` inside the current text object; intersected
+    /// with the clip at `ET` (§9.3.6). `None` = no clipping mode used.
+    text_clip: Option<PathBuilder>,
     /// Current effective `/Resources` dictionary — the page's at top
     /// level, the form's own while executing a Form XObject.
     /// §7.8.3: a form without `/Resources` inherits the caller's
@@ -738,6 +744,7 @@ struct CellSaved {
     pattern_base: Matrix,
     path: CurrentPath,
     in_text: bool,
+    text_clip: Option<PathBuilder>,
     text_tm: Matrix,
     text_tlm: Matrix,
     pushed_ref: bool,
@@ -780,6 +787,7 @@ impl<'a> Renderer<'a> {
             gs_stack: Vec::new(),
             path: CurrentPath::default(),
             in_text: false,
+            text_clip: None,
             resources,
             xobject_depth: 0,
             xobject_invocations: 0,
@@ -1088,6 +1096,20 @@ impl<'a> Renderer<'a> {
                     return Err(Error::Structure("ET without a matching BT".into()));
                 }
                 self.in_text = false;
+                // §9.3.6: the glyphs shown in a clipping mode become
+                // the clip once the text object ends — an empty set
+                // (a clipping mode with no glyph outline) clips
+                // everything away.
+                if let Some(b) = self.text_clip.take() {
+                    if !self.extraction_only {
+                        match b.finish() {
+                            Some(p) => {
+                                self.clip_intersect(&p, FillRule::Winding, Transform::identity())?
+                            }
+                            None => self.clip_empty()?,
+                        }
+                    }
+                }
             }
             // Text-state operators — usable both inside and outside
             // BT/ET (their values persist across text objects).
@@ -1098,12 +1120,6 @@ impl<'a> Renderer<'a> {
             Operation::SetTextRenderingMode(m) => {
                 if *m < 0 || *m > 7 {
                     return Err(Error::Structure(format!("Tr {m} out of range 0..=7")));
-                }
-                if *m >= 4 {
-                    return Err(Error::Unsupported {
-                        feature: "text rendering mode",
-                        detail: format!("{m} — clipping modes 4–7 are not implemented"),
-                    });
                 }
                 self.gs.text.render_mode = *m;
             }
@@ -1739,18 +1755,49 @@ impl<'a> Renderer<'a> {
                 // knobs with no PDF-semantics change on our rasteriser
                 // → accepted.
                 b"HT" | b"HTP" | b"SM" => {}
-                // `/Font [ref size]` sets the text font via gs. It is
-                // an *object reference*, not a resource name, so it
-                // can't go through load_font's name lookup; rather than
-                // hand-roll a parallel loader we refuse — it does not
-                // appear in the corpus.
+                // `/Font [ref size]` (§8.4.5, Table 58) sets the text
+                // font and size like `Tf`, except that the font is an
+                // object reference, not a resource name.
                 b"Font" => {
-                    return Err(Error::Unsupported {
-                        feature: "ExtGState /Font",
-                        detail: "font selection via gs is not implemented".into(),
-                    });
+                    let arr = self.doc.deref(v)?;
+                    let arr = arr.as_array().ok_or_else(|| {
+                        Error::Structure("ExtGState /Font must be [font size]".into())
+                    })?;
+                    if arr.len() != 2 {
+                        return Err(Error::Structure(
+                            "ExtGState /Font must be [font size]".into(),
+                        ));
+                    }
+                    let size = self.doc.deref(&arr[1])?.as_number().ok_or_else(|| {
+                        Error::Structure("ExtGState /Font size must be a number".into())
+                    })?;
+                    if !(size.is_finite() && size > 0.0) {
+                        return Err(Error::Structure(format!(
+                            "ExtGState /Font size {size} is not a positive finite number"
+                        )));
+                    }
+                    let fobj = self.doc.deref(&arr[0])?;
+                    let fdict = fobj.as_dict().ok_or_else(|| {
+                        Error::Structure("ExtGState /Font entry is not a font dictionary".into())
+                    })?;
+                    let label = format!("gs:{}", show_name(name)).into_bytes();
+                    let f = crate::font::load_font_dict(self.doc, fdict, &label, self.limits)?;
+                    if let Some(s) = f.substitution() {
+                        if !self.substitutions.contains(&s) {
+                            self.substitutions.push(s);
+                        }
+                    }
+                    self.gs.text.font = Some(f);
+                    self.gs.text.font_name = label;
+                    self.gs.text.font_size = size;
                 }
 
+                // Apple Quartz private keys (`/AAPL:AA` anti-aliasing,
+                // `/AAPL:ST` …): second-class names of a registered
+                // producer that carry viewer hints, not graphics-state
+                // semantics — a conforming reader ignores them (§7.3.5,
+                // Annex E).
+                k if k.starts_with(b"AAPL:") => {}
                 // Anything else is an unknown parameter — be strict so
                 // a silent mis-render can't masquerade as support.
                 other => {
@@ -2648,6 +2695,7 @@ impl<'a> Renderer<'a> {
         let saved_gs = std::mem::replace(&mut self.gs, fresh);
         let saved_stack = std::mem::take(&mut self.gs_stack);
         let saved_path = std::mem::take(&mut self.path);
+        let saved_text_clip = self.text_clip.take();
         let saved_text = (
             std::mem::replace(&mut self.in_text, false),
             std::mem::replace(&mut self.text_tm, Matrix::IDENTITY),
@@ -2662,6 +2710,7 @@ impl<'a> Renderer<'a> {
         self.gs_stack = saved_stack;
         self.path = saved_path;
         self.in_text = saved_text.0;
+        self.text_clip = saved_text_clip;
         self.text_tm = saved_text.1;
         self.text_tlm = saved_text.2;
         r?;
@@ -4113,6 +4162,7 @@ impl<'a> Renderer<'a> {
             pattern_base: self.pattern_base,
             path: std::mem::take(&mut self.path),
             in_text: std::mem::replace(&mut self.in_text, false),
+            text_clip: self.text_clip.take(),
             text_tm: std::mem::replace(&mut self.text_tm, Matrix::IDENTITY),
             text_tlm: std::mem::replace(&mut self.text_tlm, Matrix::IDENTITY),
             pushed_ref,
@@ -4127,6 +4177,7 @@ impl<'a> Renderer<'a> {
         self.pattern_base = saved.pattern_base;
         self.path = saved.path;
         self.in_text = saved.in_text;
+        self.text_clip = saved.text_clip;
         self.text_tm = saved.text_tm;
         self.text_tlm = saved.text_tlm;
         if saved.pushed_ref {
@@ -4384,6 +4435,32 @@ impl<'a> Renderer<'a> {
         let alpha = clamp01(self.gs.fill_alpha);
         let bm = self.gs.blend_mode;
         let bg = if with_background { sh.background } else { None };
+        // Mesh shadings are rasterised as a whole in device space and
+        // read back per pixel; the other kinds are evaluated per pixel.
+        let raster = match sh.mesh() {
+            Some(m) => {
+                let map = |x: f64, y: f64| {
+                    let mut p = tiny_skia::Point {
+                        x: x as f32,
+                        y: y as f32,
+                    };
+                    ts.map_point(&mut p);
+                    (p.x as f64, p.y as f64)
+                };
+                let r = m.rasterize(&map, sh.lut(), (x0, y0, x1, y1), self.limits)?;
+                if bg.is_none() {
+                    x0 = x0.max(r.x0);
+                    y0 = y0.max(r.y0);
+                    x1 = x1.min(r.x0 + r.w as i32);
+                    y1 = y1.min(r.y0 + r.h as i32);
+                    if x0 >= x1 || y0 >= y1 {
+                        return Ok(());
+                    }
+                }
+                Some(r)
+            }
+            None => None,
+        };
         let clip = self.gs.clip.take();
         for py in y0..y1 {
             for px in x0..x1 {
@@ -4413,8 +4490,12 @@ impl<'a> Renderer<'a> {
                         continue;
                     }
                 }
-                let rgb8 = match sh.param_at(x, y) {
-                    Some(s) => sh.color(s),
+                let painted = match &raster {
+                    Some(r) => r.get(px, py),
+                    None => sh.rgb_at(x, y),
+                };
+                let rgb8 = match painted {
+                    Some(c) => c,
                     None => match bg {
                         Some(b) => b,
                         None => continue,
@@ -4632,6 +4713,13 @@ impl<'a> Renderer<'a> {
         // computation below — exactly one of the two per call.
         let glyph_path = if has_outline { gp.finish() } else { None };
 
+        if t.render_mode >= 4 && !self.extraction_only && self.hidden == 0 {
+            // A glyph shown in a clipping mode marks the mode as used
+            // even when it has no outline (a space): the clip at ET is
+            // then the union of whatever outlines were added — empty
+            // when none were.
+            self.text_clip.get_or_insert_with(PathBuilder::new);
+        }
         if let Some(path) = &glyph_path {
             if !self.extraction_only && self.hidden == 0 {
                 // Text→render matrix (§9.4.4 note 2).
@@ -4653,12 +4741,12 @@ impl<'a> Renderer<'a> {
                 // → pixmap therefore wants `trm.post_concat(upx)`.
                 let full = trm_ts.post_concat(self.user_to_pix);
                 match t.render_mode {
-                    0 | 2 if gs.fill_space.is_pattern() => {
+                    0 | 2 | 4 | 6 if gs.fill_space.is_pattern() => {
                         // Filled with the pattern once the gs borrow ends.
                         pattern_fill = Some((path.clone(), full));
                     }
-                    0 | 2 => {
-                        // fill (mode 2 also strokes below)
+                    0 | 2 | 4 | 6 => {
+                        // fill (modes 2 and 6 also stroke below)
                         let mut p = Paint {
                             anti_alias: true,
                             blend_mode: gs.blend_mode,
@@ -4671,7 +4759,7 @@ impl<'a> Renderer<'a> {
                     }
                     _ => {}
                 }
-                if t.render_mode == 1 || t.render_mode == 2 {
+                if matches!(t.render_mode, 1 | 2 | 5 | 6) {
                     // stroke
                     let stroke = tiny_skia::Stroke {
                         width: (gs.line_width * t.font_size / 1000.0) as f32,
@@ -4692,6 +4780,15 @@ impl<'a> Renderer<'a> {
                     }
                 }
                 // mode 3: invisible — paint nothing, still advance.
+                if t.render_mode >= 4 {
+                    // Clipping modes 4–7: the outline joins the text
+                    // clip (device space) applied at ET.
+                    if let Some(dev) = path.clone().transform(full) {
+                        self.text_clip
+                            .get_or_insert_with(PathBuilder::new)
+                            .push_path(&dev);
+                    }
+                }
             }
         }
         // Record the extraction event before advancing — the char's
@@ -4848,6 +4945,15 @@ impl<'a> Renderer<'a> {
         let h_scale = self.gs.text.h_scale;
         let rise = self.gs.text.rise;
         let render_mode = self.gs.text.render_mode;
+        if render_mode >= 4 && !self.extraction_only {
+            // A CharProc paints arbitrary content, not an outline;
+            // there is no glyph shape to clip with (§9.3.6 leaves it
+            // to the implementation, so refuse rather than guess).
+            return Err(Error::Unsupported {
+                feature: "text rendering mode",
+                detail: format!("Tr {render_mode} (clipping) with a Type 3 font"),
+            });
+        }
         let char_spacing = self.gs.text.char_spacing;
         let word_spacing = self.gs.text.word_spacing;
 
@@ -4900,6 +5006,7 @@ impl<'a> Renderer<'a> {
                 // the parent's text state must not leak in. Save and
                 // clear `in_text` for the nested run, restore after.
                 let saved_in_text = self.in_text;
+                let saved_text_clip = self.text_clip.take();
                 self.in_text = false;
                 let run_result = (|| {
                     let decoded = self.doc.decode_stream(&cdict, &craw)?;
@@ -4910,6 +5017,7 @@ impl<'a> Renderer<'a> {
                     r
                 })();
                 self.in_text = saved_in_text;
+                self.text_clip = saved_text_clip;
                 self.pattern_base = saved_pattern_base;
                 self.swap_resources(saved_resources);
                 self.gs = self.gs_stack.pop().expect("pushed above");

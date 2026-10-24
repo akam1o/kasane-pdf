@@ -192,11 +192,9 @@ fn scan_ops(
     for op in ops {
         match op {
             Operation::SetExtGState(n) => probe_extgstate(doc, resources, n, pi, res, record),
-            Operation::Shading(n) => {
-                // Axial/radial shadings render; types 1 and 4–7 do not.
-                if !shading_supported(doc, resources, "Shading", n) {
-                    record(res, "render.shading.unsupported", pi)
-                }
+            Operation::Shading(_) => {
+                // Every shading type (1–7) renders; malformed
+                // dictionaries are structure errors found at run time.
             }
             Operation::SetColorSpaceFill(_) | Operation::SetColorSpaceStroke(_) => {
                 // Every colour-space family resolves now, /Pattern
@@ -205,17 +203,12 @@ fn scan_ops(
             }
             Operation::SetColorFill(o) | Operation::SetColorStroke(o) => {
                 // `scn`/`SCN` with a trailing pattern name: shading
-                // patterns (type 2 over an axial/radial shading) and
-                // tiling patterns render; mesh shadings do not.
+                // patterns and tiling patterns render; only a shading
+                // pattern with an /ExtGState override does not.
                 if let Some(Object::Name(p)) = o.last() {
                     if !pattern_supported(doc, resources, p) {
                         record(res, "render.pattern.unsupported", pi)
                     }
-                }
-            }
-            Operation::SetTextRenderingMode(m) => {
-                if *m >= 4 {
-                    record(res, "render.textmode.unsupported", pi)
                 }
             }
             Operation::SetTextFont { font, .. } => {
@@ -231,31 +224,9 @@ fn scan_ops(
     }
 }
 
-/// `true` when the shading `n` in `category` (`/Shading` or, for a
-/// pattern, the pattern's own `/Shading` entry) is a type the renderer
-/// draws (2 axial, 3 radial). Unresolvable names are left to the run
-/// (they are structure errors, not feature gaps).
-fn shading_supported(doc: &Document, resources: &Object, category: &str, n: &[u8]) -> bool {
-    let Ok(Some(o)) = doc.resolve_resource(resources, category, n) else {
-        return true;
-    };
-    shading_obj_supported(doc, &o)
-}
-
-fn shading_obj_supported(doc: &Document, o: &Object) -> bool {
-    let Ok(o) = doc.deref(o) else { return true };
-    let Some(d) = o.as_dict_like() else {
-        return true;
-    };
-    match d.get(b"ShadingType".as_slice()).and_then(|o| o.as_i64()) {
-        Some(2) | Some(3) | None => true,
-        Some(_) => false,
-    }
-}
-
 /// `true` when `/Pattern p` is a tiling pattern (type 1, rendered cell
 /// by cell or through a cached cell) or a `/PatternType 2` shading
-/// pattern over a supported shading without an `/ExtGState` override.
+/// pattern without an `/ExtGState` override.
 fn pattern_supported(doc: &Document, resources: &Object, p: &[u8]) -> bool {
     let Ok(Some(o)) = doc.resolve_resource(resources, "Pattern", p) else {
         return true;
@@ -264,14 +235,7 @@ fn pattern_supported(doc: &Document, resources: &Object, p: &[u8]) -> bool {
         return true;
     };
     match d.get(b"PatternType".as_slice()).and_then(|o| o.as_i64()) {
-        Some(2) => {
-            if d.contains_key(b"ExtGState".as_slice()) {
-                return false;
-            }
-            d.get(b"Shading".as_slice())
-                .map(|s| shading_obj_supported(doc, s))
-                .unwrap_or(true)
-        }
+        Some(2) => !d.contains_key(b"ExtGState".as_slice()),
         Some(1) => true,
         _ => true,
     }
@@ -316,7 +280,11 @@ fn probe_extgstate(
                     record(res, "render.transfer.unsupported", pi);
                 }
             }
-            b"Font" => record(res, "render.extgstate.font.unsupported", pi),
+            // `/Font [ref size]` loads like `Tf`; a broken font is a
+            // structure error found at run time.
+            b"Font" => {}
+            // Apple Quartz private hints are ignored by the renderer.
+            k if k.starts_with(b"AAPL:") => {}
             _ => record(res, "render.extgstate.unsupported", pi),
         }
     }
@@ -397,10 +365,11 @@ fn probe_font(
         }
         Some(b"Type0") => {
             // descendant kind + encoding + ToUnicode
-            // Identity-H/V and embedded CMap streams load; a predefined
-            // non-Identity CMap name is the only encoding still refused.
+            // Identity-H/V, embedded CMap streams and (with the
+            // `cjk-fallback` feature) the Adobe-Japan1 predefined CMaps
+            // load; any other predefined name is refused.
             match dict.get(b"Encoding".as_slice()) {
-                Some(Object::Name(n)) if n != b"Identity-H" && n != b"Identity-V" => {
+                Some(Object::Name(n)) if !kasane_pdf::predefined_cmap_known(n) => {
                     record(res, "render.font.type0-enc.unsupported", pi)
                 }
                 _ => {}
@@ -431,7 +400,22 @@ fn probe_font(
                                                     || fd.contains_key(b"FontFile3".as_slice())
                                             })
                                             .unwrap_or(false);
-                                        if !has_program {
+                                        // A non-embedded Adobe-Japan1 font draws
+                                        // with the bundled fallback when the
+                                        // `cjk-fallback` feature is compiled in.
+                                        let japan1 = dd
+                                            .get(b"CIDSystemInfo".as_slice())
+                                            .and_then(|o| doc.deref(o).ok())
+                                            .and_then(|o| o.as_dict().cloned())
+                                            .and_then(|si| {
+                                                si.get(b"Ordering".as_slice())
+                                                    .and_then(|o| doc.deref(o).ok())
+                                            })
+                                            .map(|o| o.as_string() == Some(b"Japan1".as_slice()))
+                                            .unwrap_or(false);
+                                        if !has_program
+                                            && !(japan1 && kasane_pdf::cjk_fallback_enabled())
+                                        {
                                             record(res, "render.font.nonembedded.unsupported", pi);
                                         }
                                     }

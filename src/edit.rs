@@ -69,6 +69,11 @@ pub struct Edit<'a> {
     /// is still treated as the dangling reference it is, never
     /// silently resolved to a synthetic body.
     synth_numbers: HashSet<(u32, u16)>,
+    /// Replacement `/Info` dictionary (`set_info`), written by the
+    /// incremental save as a new object.
+    info: Option<Dict>,
+    /// What the session changed, for the signature policy.
+    changes: Vec<crate::signature::ChangeKind>,
     limits: Limits,
 }
 
@@ -85,6 +90,8 @@ impl<'a> Edit<'a> {
             appearance_bytes: 0,
             synth_objects: 0,
             synth_numbers: HashSet::new(),
+            info: None,
+            changes: Vec::new(),
             limits,
         })
     }
@@ -220,6 +227,7 @@ impl<'a> Edit<'a> {
             }
         }
 
+        self.changes.push(crate::signature::ChangeKind::Annotations);
         self.pending.push(PendingSquare {
             page_index,
             rect,
@@ -236,6 +244,288 @@ impl<'a> Edit<'a> {
     /// a failure leaves the underlying `Document` untouched.
     pub fn rewrite(self) -> Result<Vec<u8>, Error> {
         self.rewrite_with_overrides(&rewrite::RewriteOverrides::default())
+    }
+
+    /// Append the session's changes to the original bytes as a new
+    /// revision (§7.5.6; see [`crate::incremental`]). The original
+    /// file is kept byte-for-byte, so earlier revisions and the bytes
+    /// a signature covers survive; the signature policy
+    /// ([`crate::signature`]) decides whether the changes may be
+    /// appended at all — anything a signature does not permit is
+    /// refused before a byte is written. Metadata set with
+    /// [`Edit::set_info`] becomes a new `/Info` object.
+    pub fn save_incremental(mut self) -> Result<Vec<u8>, Error> {
+        let mut kinds = self.changes.clone();
+        kinds.dedup();
+        crate::signature::incremental_policy(self.doc, &kinds)?;
+        self.commit()?;
+        crate::incremental::write(
+            self.doc,
+            &self.overlay,
+            &self.synth_numbers,
+            self.info.as_ref(),
+            &self.limits,
+        )
+    }
+
+    /// Replace document-information entries: `entries` are merged
+    /// over the current `/Info` (a `null` value removes a key). Written
+    /// as a new `/Info` dictionary by [`Edit::save_incremental`]; a
+    /// full [`Edit::rewrite`] does not carry it (use
+    /// `remove_document_metadata` / the rewrite overrides there).
+    pub fn set_info(&mut self, entries: Dict) -> Result<(), Error> {
+        let mut info = match self.doc.trailer().get(b"Info".as_slice()) {
+            Some(o) => self.doc.deref(o)?.as_dict().cloned().unwrap_or_default(),
+            None => Dict::new(),
+        };
+        if let Some(cur) = &self.info {
+            info = cur.clone();
+        }
+        for (k, v) in entries {
+            if matches!(v, Object::Null) {
+                info.remove(&k);
+            } else {
+                info.insert(k, v);
+            }
+        }
+        self.info = Some(info);
+        self.changes.push(crate::signature::ChangeKind::Metadata);
+        Ok(())
+    }
+
+    /// The (overlay-owned) `/Annots` array of a page, created from the
+    /// page's current array on first use so shared arrays are never
+    /// mutated in place.
+    fn annots_array_ref(&mut self, page_index: usize) -> Result<(IndirectRef, IndirectRef), Error> {
+        let page = self
+            .doc
+            .pages()
+            .get(page_index)
+            .cloned()
+            .ok_or_else(|| Error::Structure(format!("page index {page_index} out of range")))?;
+        let page_ref = page.object_ref().ok_or_else(|| {
+            Error::Structure("cannot edit a page that has no indirect reference".into())
+        })?;
+        if let Some(&r) = self.annots_by_page.get(&page_ref) {
+            return Ok((page_ref, r));
+        }
+        let page_obj = self.doc.resolve(page_ref)?;
+        let mut page_dict = page_obj
+            .as_dict()
+            .cloned()
+            .ok_or_else(|| Error::Structure(format!("page {page_ref} is not a dictionary")))?;
+        let existing: Vec<Object> = match page_dict.get(b"Annots".as_slice()) {
+            Some(o) => match self.doc.deref(o)? {
+                Object::Array(a) => a,
+                Object::Null => Vec::new(),
+                other => {
+                    return Err(Error::Structure(format!(
+                        "page /Annots is not an array ({other:?})"
+                    )))
+                }
+            },
+            None => Vec::new(),
+        };
+        let arr_ref = self.alloc()?;
+        self.overlay.insert(
+            (arr_ref.number, arr_ref.generation),
+            Object::Array(existing),
+        );
+        self.annots_by_page.insert(page_ref, arr_ref);
+        page_dict.insert(b"Annots".to_vec(), Object::Ref(arr_ref));
+        self.overlay.insert(
+            (page_ref.number, page_ref.generation),
+            Object::Dict(page_dict),
+        );
+        Ok((page_ref, arr_ref))
+    }
+
+    /// Remove annotation `index` (0-based, in `/Annots` order) from
+    /// page `page_index`. The annotation object itself stays in the
+    /// file (an incremental save cannot delete bytes); the page no
+    /// longer references it.
+    pub fn remove_annotation(&mut self, page_index: usize, index: usize) -> Result<(), Error> {
+        let (_, arr_ref) = self.annots_array_ref(page_index)?;
+        let arr = self
+            .overlay
+            .get_mut(&(arr_ref.number, arr_ref.generation))
+            .and_then(|o| o.as_array_mut())
+            .ok_or_else(|| Error::Structure("annot array missing from overlay".into()))?;
+        if index >= arr.len() {
+            return Err(Error::Structure(format!(
+                "page {page_index} has {} annotations, index {index} is out of range",
+                arr.len()
+            )));
+        }
+        arr.remove(index);
+        self.changes.push(crate::signature::ChangeKind::Annotations);
+        Ok(())
+    }
+
+    /// Set (or, with a `null` value, remove) entries of annotation
+    /// `index` on page `page_index` — e.g. `/Contents`, `/Rect`, `/C`,
+    /// `/F`. An existing `/AP` is kept: a changed `/Rect` refits it
+    /// (§12.5.5), a changed colour does not redraw it; remove `/AP`
+    /// explicitly (set it to `null`) to have the appearance
+    /// synthesised from the new entries.
+    pub fn set_annotation_entries(
+        &mut self,
+        page_index: usize,
+        index: usize,
+        entries: Dict,
+    ) -> Result<(), Error> {
+        let (_, arr_ref) = self.annots_array_ref(page_index)?;
+        let entry = self
+            .overlay
+            .get(&(arr_ref.number, arr_ref.generation))
+            .and_then(|o| o.as_array())
+            .and_then(|a| a.get(index).cloned())
+            .ok_or_else(|| Error::Structure(format!("annotation index {index} out of range")))?;
+        let apply = |d: &mut Dict| {
+            for (k, v) in &entries {
+                if matches!(v, Object::Null) {
+                    d.remove(k);
+                } else {
+                    d.insert(k.clone(), v.clone());
+                }
+            }
+        };
+        match entry {
+            Object::Ref(r) => {
+                let key = (r.number, r.generation);
+                let mut d = match self.overlay.get(&key) {
+                    Some(Object::Dict(d)) => d.clone(),
+                    Some(_) => {
+                        return Err(Error::Structure(format!(
+                            "annotation {r} is not a dictionary"
+                        )))
+                    }
+                    None => self.doc.resolve(r)?.as_dict().cloned().ok_or_else(|| {
+                        Error::Structure(format!("annotation {r} is not a dictionary"))
+                    })?,
+                };
+                apply(&mut d);
+                self.overlay.insert(key, Object::Dict(d));
+            }
+            Object::Dict(mut d) => {
+                apply(&mut d);
+                let arr = self
+                    .overlay
+                    .get_mut(&(arr_ref.number, arr_ref.generation))
+                    .and_then(|o| o.as_array_mut())
+                    .ok_or_else(|| Error::Structure("annot array missing from overlay".into()))?;
+                arr[index] = Object::Dict(d);
+            }
+            other => {
+                return Err(Error::Structure(format!(
+                    "annotation entry {index} is not a dictionary ({other:?})"
+                )))
+            }
+        }
+        self.changes.push(crate::signature::ChangeKind::Annotations);
+        Ok(())
+    }
+
+    /// Set the value of form field `name` (its fully qualified name,
+    /// `parent.child`) to `value`: `/V` on the field; for a name value
+    /// also `/AS` on the field's widgets whose `/AP /N` has that state
+    /// (`/Off` otherwise); and `/NeedAppearances true` on `/AcroForm`
+    /// so viewers (and this renderer) regenerate text appearances.
+    pub fn set_field_value(&mut self, name: &str, value: Object) -> Result<(), Error> {
+        let af_entry = self
+            .doc
+            .catalog()
+            .get(b"AcroForm".as_slice())
+            .cloned()
+            .ok_or_else(|| Error::Structure("document has no /AcroForm".into()))?;
+        let af = self.doc.deref(&af_entry)?;
+        let mut af_dict = af
+            .as_dict()
+            .cloned()
+            .ok_or_else(|| Error::Structure("/AcroForm is not a dictionary".into()))?;
+        let fields = match af_dict.get(b"Fields".as_slice()) {
+            Some(o) => self
+                .doc
+                .deref(o)?
+                .as_array()
+                .map(|a| a.to_vec())
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let field_ref = find_field(self.doc, &fields, name, "", 0)?
+            .ok_or_else(|| Error::Structure(format!("form field {name:?} not found")))?;
+        let mut fd = self
+            .doc
+            .resolve(field_ref)?
+            .as_dict()
+            .cloned()
+            .ok_or_else(|| Error::Structure(format!("field {field_ref} is not a dictionary")))?;
+        fd.insert(b"V".to_vec(), value.clone());
+        // Widgets: the field itself when it carries /AP, else its /Kids.
+        if let Object::Name(state) = &value {
+            let mut widgets: Vec<(IndirectRef, Dict)> = Vec::new();
+            if fd.contains_key(b"AP".as_slice()) {
+                widgets.push((field_ref, fd.clone()));
+            } else if let Some(kids) = fd.get(b"Kids".as_slice()) {
+                if let Some(ks) = self.doc.deref(kids)?.as_array() {
+                    for k in ks {
+                        if let Some(kr) = k.as_ref() {
+                            if let Some(kd) = self.doc.resolve(kr)?.as_dict() {
+                                if kd.contains_key(b"AP".as_slice()) {
+                                    widgets.push((kr, kd.clone()));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            for (wr, mut wd) in widgets {
+                let has_state = wd
+                    .get(b"AP".as_slice())
+                    .and_then(|o| self.doc.deref(o).ok())
+                    .and_then(|ap| ap.as_dict().and_then(|d| d.get(b"N".as_slice()).cloned()))
+                    .and_then(|n| self.doc.deref(&n).ok())
+                    .and_then(|n| n.as_dict().map(|d| d.contains_key(state.as_slice())))
+                    .unwrap_or(false);
+                let as_name = if has_state {
+                    state.clone()
+                } else {
+                    b"Off".to_vec()
+                };
+                wd.insert(b"AS".to_vec(), Object::Name(as_name.clone()));
+                if wr == field_ref {
+                    fd.insert(b"AS".to_vec(), Object::Name(as_name));
+                } else {
+                    self.overlay
+                        .insert((wr.number, wr.generation), Object::Dict(wd));
+                }
+            }
+        }
+        self.overlay
+            .insert((field_ref.number, field_ref.generation), Object::Dict(fd));
+        // /NeedAppearances true on the AcroForm dictionary (indirect:
+        // its own object; direct: through the catalog).
+        af_dict.insert(b"NeedAppearances".to_vec(), Object::Bool(true));
+        match af_entry.as_ref() {
+            Some(r) => {
+                self.overlay
+                    .insert((r.number, r.generation), Object::Dict(af_dict));
+            }
+            None => {
+                let root = self
+                    .doc
+                    .trailer()
+                    .get(b"Root".as_slice())
+                    .and_then(|o| o.as_ref())
+                    .ok_or_else(|| Error::Structure("trailer /Root is not a reference".into()))?;
+                let mut cat = self.doc.catalog().clone();
+                cat.insert(b"AcroForm".to_vec(), Object::Dict(af_dict));
+                self.overlay
+                    .insert((root.number, root.generation), Object::Dict(cat));
+            }
+        }
+        self.changes.push(crate::signature::ChangeKind::FormFill);
+        Ok(())
     }
 
     /// `pub(crate)` — M26's combined region-removal + metadata-strip
@@ -277,48 +567,8 @@ impl<'a> Edit<'a> {
     /// emit each annot + its appearance stream into the overlay, then
     /// store the modified page dict in the overlay.
     fn commit_page(&mut self, page_index: usize, squares: &[PendingSquare]) -> Result<(), Error> {
-        let page = self.doc.pages()[page_index].clone();
-        let page_ref = page.object_ref().ok_or_else(|| {
-            Error::Structure("cannot annotate a page that has no indirect reference".into())
-        })?;
-        let page_obj = self.doc.resolve(page_ref)?;
-        let mut page_dict = page_obj
-            .as_dict()
-            .cloned()
-            .ok_or_else(|| Error::Structure(format!("page {page_ref} is not a dictionary")))?;
+        let (page_ref, annots_ref) = self.annots_array_ref(page_index)?;
 
-        // Get or create the /Annots array object for this page.
-        let annots_ref = match self.annots_by_page.get(&page_ref) {
-            Some(&r) => r,
-            None => {
-                // Read existing /Annots (may be direct array, indirect
-                // ref, or absent). We always materialise a fresh array
-                // object so shared arrays are never mutated in place.
-                let existing: Vec<Object> = match page_dict.get(b"Annots".as_slice()) {
-                    Some(o) => {
-                        let resolved = self.doc.deref(o)?;
-                        match resolved {
-                            Object::Array(a) => a,
-                            other => {
-                                return Err(Error::Structure(format!(
-                                    "page /Annots is not an array ({other:?})"
-                                )))
-                            }
-                        }
-                    }
-                    None => Vec::new(),
-                };
-                let arr_ref = self.alloc()?;
-                self.overlay.insert(
-                    (arr_ref.number, arr_ref.generation),
-                    Object::Array(existing),
-                );
-                self.annots_by_page.insert(page_ref, arr_ref);
-                arr_ref
-            }
-        };
-
-        // Append each new annotation to the shared array.
         for sq in squares {
             let annot_ref = self.emit_square(sq, annots_ref, page_ref)?;
             let arr = self
@@ -330,11 +580,7 @@ impl<'a> Edit<'a> {
         }
 
         // Point the page dict at the (possibly new) array and store it.
-        page_dict.insert(b"Annots".to_vec(), Object::Ref(annots_ref));
-        self.overlay.insert(
-            (page_ref.number, page_ref.generation),
-            Object::Dict(page_dict),
-        );
+        let _ = page_ref;
         Ok(())
     }
 
@@ -488,6 +734,54 @@ impl<'a> std::fmt::Debug for Edit<'a> {
             .field("overlay_objects", &self.overlay.len())
             .finish()
     }
+}
+
+/// Find a field by fully qualified name (`/T` chain joined by `.`),
+/// returning its reference; direct (non-indirect) field dicts cannot
+/// be updated in place and are reported as such.
+fn find_field(
+    doc: &Document,
+    fields: &[Object],
+    want: &str,
+    prefix: &str,
+    depth: usize,
+) -> Result<Option<IndirectRef>, Error> {
+    if depth > 32 {
+        return Ok(None);
+    }
+    for f in fields {
+        let fo = doc.deref(f)?;
+        let Some(fd) = fo.as_dict() else { continue };
+        let t = fd
+            .get(b"T".as_slice())
+            .and_then(|o| o.as_string())
+            .map(crate::render::pdf_text_string)
+            .unwrap_or_default();
+        let full = match (prefix.is_empty(), t.is_empty()) {
+            (true, _) => t.clone(),
+            (false, true) => prefix.to_string(),
+            (false, false) => format!("{prefix}.{t}"),
+        };
+        if full == want {
+            return match f.as_ref() {
+                Some(r) => Ok(Some(r)),
+                None => Err(Error::Unsupported {
+                    feature: "form field value",
+                    detail: format!(
+                        "field {want:?} is a direct object and cannot be updated in place"
+                    ),
+                }),
+            };
+        }
+        if let Some(kids) = fd.get(b"Kids".as_slice()) {
+            if let Some(ks) = doc.deref(kids)?.as_array() {
+                if let Some(r) = find_field(doc, ks, want, &full, depth + 1)? {
+                    return Ok(Some(r));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]

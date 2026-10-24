@@ -42,8 +42,12 @@ src/
                inline images (BI/ID/EI) with a computed data end
   encodings.rs StandardEncoding / MacRomanEncoding tables, uniXXXX
                and gNN glyph-name forms (§9.6.6, Annex D)
-  shading.rs   axial/radial shadings sampled through function.rs +
-               colorspace.rs into a colour table; param_at() per pixel
+  shading.rs   shadings types 1–7: axial/radial sampled through
+               function.rs + colorspace.rs into a colour table
+               (param_at() per pixel); function-based sampled on a
+               bounded grid; mesh/patch streams decoded (bit reader,
+               flags, Decode) and rasterised as Gouraud triangles
+               under max_shading_triangles + a pixel budget
   acroform.rs  AcroForm widget appearance synthesis → Form XObject
                (text/check/radio/push/combo/list, /DA /MK /Q, /Parent
                inheritance), painted through the annotation path
@@ -51,8 +55,12 @@ src/
                Line + endings, Polygon/PolyLine, Ink, Highlight/
                Underline/StrikeOut/Squiggly, FreeText) → Form XObject
                in page space, /CA as a transparency group
-  cmap.rs      embedded /Encoding CMaps for Type 0 fonts (codespaces,
-               cidchar/cidrange, usecmap Identity, /WMode)
+  cmap.rs      /Encoding CMaps for Type 0 fonts (codespaces,
+               cidchar/cidrange, usecmap chains, /WMode); predefined
+               Identity-H/V always, the Adobe-Japan1 set via cjk.rs
+  cjk.rs       `cjk-fallback` feature: bundled Adobe-Japan1 CMaps,
+               CID→Unicode table and Noto Sans JP fallback face for
+               non-embedded Japan1 CID fonts (reported as substitution)
   optcontent.rs optional-content default configuration (§8.11): OCG
                ON/OFF, /AS View usage, OCMD /P and /VE evaluation
   colorspace.rs ColorSpace: every §8.6 family → sRGB (Device*, Cal*,
@@ -90,8 +98,14 @@ src/
   remove_metadata.rs document-metadata entry removal
   audit.rs     residual-information inventory (read-only)
   rewrite.rs   full single-revision rewrite
-  edit.rs      Edit session: synthetic-object overlay for annotations
-               and edits
+  incremental.rs incremental save (§7.5.6): original bytes verbatim +
+               appended revision (updated/new objects, xref table or
+               xref stream matching the input, /Prev chain)
+  signature.rs signature detection (/Sig fields, /ByteRange intact?,
+               /DocMDP /P, /FieldMDP) and the incremental edit policy;
+               no cryptographic verification
+  edit.rs      Edit session: synthetic-object overlay for annotations,
+               field values and /Info; rewrite() or save_incremental()
   serialize.rs op → bytes serialiser + BoundedWriter
   main.rs      kasane-pdf CLI (info, contents, operations, render,
                text, rewrite, annotate-rect, inspect,
@@ -294,7 +308,7 @@ Every unbounded operation has a `Limits` bound:
 | `max_string_bytes` | name/string length |
 | `max_nesting_depth` | `[[[…]]]` / `<<…>>` recursion and `(` nesting |
 | `max_stream_bytes` | decoded size of a single stream (checked after each filter stage) |
-| `max_total_decoded_bytes` | cumulative *work* (bytes decoded) across all streams in a Document; cached ObjStm reuse does not re-charge |
+| `max_total_decoded_bytes` | cumulative *work* (bytes decoded) across all streams of one operation (`render_page`, `extract_text`, `rewrite`, incremental save) plus the retained ObjStm cache; refreshed per operation so page 40 of a long document has the same budget as page 1; cached ObjStm reuse does not re-charge |
 | `max_filter_chain` | filters applied to one stream |
 | `max_objstm_entries` / `max_objstm_bytes` | `/N` and `/First`+body bounds in object streams |
 | `max_operations` / `max_operand_stack` / `max_gsave_depth` | parsed ops per page, pending operands, `q` stack depth |

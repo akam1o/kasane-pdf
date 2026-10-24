@@ -24,7 +24,7 @@ use analysis::{priorities_table, PrioritiesConfig};
 use cause::classify;
 use kasane_pdf::{extract_text, render_page, rewrite, Document, Limits, RenderOptions};
 use probe::probe_document;
-use roundtrip::{RoundTrip, RtClass, RtTally};
+use roundtrip::{RoundTrip, RtClass, RtOptions, RtTally};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -988,7 +988,14 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     let rt = match rewrite(&doc) {
         Ok(out) => {
             let rewrite_ms = t.elapsed().as_millis();
-            let rt = roundtrip::run(&doc, &data, &out, rewrite_ms, args.with_poppler, id);
+            let rt_opts = RtOptions {
+                max_pages: (args.rt_pages != usize::MAX).then_some(args.rt_pages),
+                dpi: args.rt_dpi,
+                poppler: args.with_poppler,
+                poppler_pages: (args.poppler_pages != usize::MAX).then_some(args.poppler_pages),
+                budget_ms: args.rt_budget_secs as u128 * 1000,
+            };
+            let rt = roundtrip::run(&doc, &data, &out, rewrite_ms, &rt_opts, id);
             metrics.rewrite_qpdf_ok = rt
                 .qpdf
                 .as_ref()
@@ -1083,6 +1090,12 @@ struct Args {
     gs_audit: bool,
     /// Run the font usage audit instead of a compat run.
     font_audit: bool,
+    /// Round-trip knobs (`--mode smoke|full` sets them together).
+    rt_pages: usize,
+    rt_dpi: f64,
+    poppler_pages: usize,
+    rt_budget_secs: u64,
+    mode: String,
 }
 
 fn parse_args() -> Args {
@@ -1099,6 +1112,11 @@ fn parse_args() -> Args {
         compare: None,
         gs_audit: false,
         font_audit: false,
+        rt_pages: usize::MAX,
+        rt_dpi: 48.0,
+        poppler_pages: usize::MAX,
+        rt_budget_secs: 120,
+        mode: "full".into(),
     };
     let mut it = std::env::args().skip(1).peekable();
     while let Some(arg) = it.next() {
@@ -1125,6 +1143,45 @@ fn parse_args() -> Args {
             "--format" => a.report_format = it.next().unwrap_or_else(|| "md".into()),
             "--compare" => a.compare = it.next().map(PathBuf::from),
             "--gs-audit" => a.gs_audit = true,
+            "--rt-pages" => {
+                a.rt_pages = it.next().and_then(|v| v.parse().ok()).unwrap_or(a.rt_pages)
+            }
+            "--rt-dpi" => a.rt_dpi = it.next().and_then(|v| v.parse().ok()).unwrap_or(a.rt_dpi),
+            "--poppler-pages" => {
+                a.poppler_pages = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(a.poppler_pages)
+            }
+            "--rt-budget-secs" => {
+                a.rt_budget_secs = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(a.rt_budget_secs)
+            }
+            // Presets. `smoke`: PR-sized (2 pages, low dpi, short
+            // budget); `full`: every page of every file, Poppler on
+            // every page.
+            "--mode" => {
+                a.mode = it.next().unwrap_or_else(|| "full".into());
+                match a.mode.as_str() {
+                    "smoke" => {
+                        a.max_pages = 2;
+                        a.rt_pages = 2;
+                        a.rt_dpi = 24.0;
+                        a.poppler_pages = 1;
+                        a.rt_budget_secs = 10;
+                        a.timeout_secs = 10;
+                    }
+                    _ => {
+                        a.max_pages = usize::MAX;
+                        a.rt_pages = usize::MAX;
+                        a.rt_dpi = 48.0;
+                        a.poppler_pages = usize::MAX;
+                        a.rt_budget_secs = 120;
+                    }
+                }
+            }
             "--font-audit" => a.font_audit = true,
             _ => {}
         }
@@ -1336,6 +1393,37 @@ fn roundtrip_section(s: &mut String, r: &RunReport) {
         ));
     }
     s.push('\n');
+    s.push_str(
+        "External validity and page coverage (same groups): *valid* = qpdf accepts the \
+         rewritten file with no warning; *no new* = no qpdf warning/error and no Poppler \
+         syntax diagnostic beyond what the original already produced; *pages* = pages our \
+         renderer compared / files whose budget left pages uncompared (those count as \
+         PARTIAL, never as a pass); *Poppler* = files Poppler compared on every page / files \
+         with any divergent page.\n\n\
+         | group | valid P/F/N/A | no new P/F/N/A | render partial | pages compared / files with skipped pages | Poppler files / divergent |\n\
+         |---|---|---|---:|---|---|\n",
+    );
+    for t in &a.roundtrip {
+        if t.files == 0 {
+            continue;
+        }
+        s.push_str(&format!(
+            "| {} | {}/{}/{} | {}/{}/{} | {} | {} / {} | {} / {} |\n",
+            t.group,
+            t.external_valid.pass,
+            t.external_valid.fail,
+            t.external_valid.not_applicable,
+            t.external_no_new.pass,
+            t.external_no_new.fail,
+            t.external_no_new.not_applicable,
+            t.render.partial,
+            t.pages_compared,
+            t.pages_skipped_files,
+            t.poppler_files,
+            t.poppler_divergent
+        ));
+    }
+    s.push('\n');
     // Failures, with their first note.
     let mut rows = 0;
     for f in &r.files {
@@ -1350,9 +1438,11 @@ fn roundtrip_section(s: &mut String, r: &RunReport) {
             ("render", &rt.render),
             ("text", &rt.text),
             ("annotations", &rt.annotations),
+            ("external-valid", &rt.external_valid),
+            ("external-no-new", &rt.external_no_new),
         ]
         .into_iter()
-        .filter(|(_, c)| c.class == RtClass::Fail)
+        .filter(|(_, c)| matches!(c.class, RtClass::Fail | RtClass::Partial))
         .collect();
         if failing.is_empty() {
             continue;
