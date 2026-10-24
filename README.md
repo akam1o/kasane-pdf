@@ -287,7 +287,8 @@ reporting security problems privately.
 
 ## License
 
-kasane-pdf is licensed under the [Apache License, Version 2.0](LICENSE).
+Copyright 2026 Akira Kamio. kasane-pdf is licensed under the
+[Apache License, Version 2.0](LICENSE).
 The bundled Liberation fonts and the font subsets among the test
 fixtures are under the SIL Open Font License 1.1 and are listed in
 [`NOTICE`](NOTICE); all dependencies and their licences are in

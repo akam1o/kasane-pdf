@@ -29,6 +29,9 @@ submit changes. Design principles and the module map are in
 - Contributions are accepted under the Apache License 2.0
   (`LICENSE`); by submitting a pull request you agree to license your
   contribution under it, including the patent grant in section 3.
+  Contributors keep the copyright in their contributions — do not add
+  the project copyright line to third-party code, and record any
+  third-party asset in `docs/third-party.md` and `NOTICE`.
 
 ## Building
 

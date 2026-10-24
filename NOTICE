@@ -1,5 +1,11 @@
 kasane-pdf
-Licensed under the Apache License, Version 2.0 (see LICENSE).
+Copyright 2026 Akira Kamio
+
+Licensed under the Apache License, Version 2.0 (see LICENSE). The
+copyright above covers the kasane-pdf source code, documentation and
+generated test fixtures; it does not extend to the third-party
+components listed below and in docs/third-party.md, which remain
+under their own copyrights and licences.
 
 This product bundles font data that is NOT covered by the Apache
 License. It is distributed under the SIL Open Font License, Version

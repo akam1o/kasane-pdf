@@ -1,7 +1,8 @@
 # Third-party components and licences
 
-kasane-pdf itself is licensed under the Apache License, Version 2.0
-(`LICENSE`). This file lists everything else that ships with or is
+kasane-pdf itself is Copyright 2026 Akira Kamio and licensed under
+the Apache License, Version 2.0 (`LICENSE`, `NOTICE`). This file lists
+everything else that ships with or is
 linked into it, with the licence each component is used under.
 Regenerate the crate table from `cargo metadata` after changing
 dependencies; the policy that governs additions is in
