@@ -969,6 +969,20 @@ Korean predefined CMaps (`GB1`, `CNS1`, `Korea1`) are not bundled:
 the crate is 7.2 MiB compressed against the 10 MiB crates.io limit,
 so they would need a separate asset crate.
 
+### 0.2 API refactor: results identical (run-1792850880)
+
+The 0.2.0 public-API changes (`docs/migration-0.2.md`) touch no
+engine logic. Same 511 files, `--mode full`, default features,
+measured against run-1792845977 with the runner migrated to the new
+API: every stage class, every verdict, every per-file warning list,
+every round-trip class, every Poppler SSIM value and every cause id
+are identical (0 differences across all four comparisons); the
+headline table, the round-trip table and the accepted-with-warnings
+count are the same to the digit. Robustness 43/43, 0 crash / 0
+timeout. The signature-policy refusals now arrive as
+`Error::SignaturePolicy` and are mapped by the runner to the same
+`rewrite.signature.unsupported` cause id as before.
+
 ## External verification findings (this phase)
 
 What the independent parsers said about the rewrites, file by file,

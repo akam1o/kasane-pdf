@@ -71,7 +71,23 @@ pub fn classify(stage: &str, e: &Error) -> Cause {
         }
         Error::CycleDetected { .. } => Cause::new(format!("{stage}.cycle.error"), e.to_string()),
         Error::LimitExceeded { .. } => Cause::new(format!("{stage}.limit.error"), e.to_string()),
+        // Same id as the 0.1 `Unsupported { feature: "signed document" }`
+        // so blocker rankings stay comparable across the API change.
+        Error::SignaturePolicy { rule, detail } => Cause::new(
+            format!("{stage}.signature.unsupported"),
+            format!("signed document: {rule} — {detail}"),
+        ),
+        Error::InvalidArgument { .. } => {
+            Cause::new(format!("{stage}.argument.error"), e.to_string())
+        }
         Error::Io(_) => Cause::new(format!("{stage}.io.error"), e.to_string()),
+        // `Error` is #[non_exhaustive]: a kind this runner does not know
+        // yet buckets by its stable kind string instead of failing to
+        // compile.
+        other => Cause::new(
+            format!("{stage}.{}.error", other.kind().as_str().replace(' ', "-")),
+            other.to_string(),
+        ),
     }
 }
 

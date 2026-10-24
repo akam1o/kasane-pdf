@@ -32,7 +32,7 @@
 
 use kasane_pdf::{
     extract_text, named_destinations, render_page, Document, Error, IndirectRef, Limits, Object,
-    RenderOptions,
+    RenderOptions, TextOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -464,7 +464,9 @@ const MAX_GRAPH_DEPTH: usize = 96;
 /// error a failure.
 pub fn refused(e: &Error, ms: u128) -> RoundTrip {
     let class = match e {
-        Error::Unsupported { .. } | Error::Encrypted => RtClass::Unsupported,
+        Error::Unsupported { .. } | Error::SignaturePolicy { .. } | Error::Encrypted => {
+            RtClass::Unsupported
+        }
         _ => RtClass::Fail,
     };
     RoundTrip {
@@ -796,10 +798,7 @@ fn compare_render(
     b: &Document,
     opts: &RtOptions,
 ) -> (RtCheck, Vec<RtRenderPage>, RtPageStats) {
-    let ropts = RenderOptions {
-        dpi: opts.dpi,
-        ..RenderOptions::default()
-    };
+    let ropts = RenderOptions::default().with_dpi(opts.dpi);
     let total = a.pages().len().min(b.pages().len());
     let n = opts.max_pages.map(|m| m.min(total)).unwrap_or(total);
     let mut pages = Vec::new();
@@ -849,16 +848,16 @@ fn compare_render(
                 continue;
             }
         };
-        let size_equal =
-            ra.pixmap.width() == rb.pixmap.width() && ra.pixmap.height() == rb.pixmap.height();
+        let size_equal = ra.pixmap().width() == rb.pixmap().width()
+            && ra.pixmap().height() == rb.pixmap().height();
         if !size_equal {
             notes.push(format!(
                 "page {}: size {}x{} → {}x{}",
                 i + 1,
-                ra.pixmap.width(),
-                ra.pixmap.height(),
-                rb.pixmap.width(),
-                rb.pixmap.height()
+                ra.pixmap().width(),
+                ra.pixmap().height(),
+                rb.pixmap().width(),
+                rb.pixmap().height()
             ));
             stats.failed_pages += 1;
             stats.first_divergent_page.get_or_insert(i + 1);
@@ -874,7 +873,7 @@ fn compare_render(
         }
         let la = crate::pixmap_luma(&ra);
         let lb = crate::pixmap_luma(&rb);
-        let (w, h) = (ra.pixmap.width() as usize, ra.pixmap.height() as usize);
+        let (w, h) = (ra.pixmap().width() as usize, ra.pixmap().height() as usize);
         let mae = la
             .iter()
             .zip(&lb)
@@ -1100,12 +1099,20 @@ fn compare_text(a: &Document, b: &Document) -> (RtCheck, Option<f64>) {
     let mut norm_match = 0usize;
     let mut norm_total = 0usize;
     for i in 0..n {
-        let ta = match extract_text(a, &a.pages()[i], &limits) {
+        let ta = match extract_text(
+            a,
+            &a.pages()[i],
+            &TextOptions::default().with_limits(limits.clone()),
+        ) {
             Ok(t) => t,
             Err(_) => continue, // extraction fails on the original: not comparable
         };
         attempted += 1;
-        let tb = match extract_text(b, &b.pages()[i], &limits) {
+        let tb = match extract_text(
+            b,
+            &b.pages()[i],
+            &TextOptions::default().with_limits(limits.clone()),
+        ) {
             Ok(t) => t,
             Err(e) => {
                 notes.push(format!(

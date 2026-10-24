@@ -22,7 +22,9 @@ mod roundtrip;
 
 use analysis::{priorities_table, PrioritiesConfig};
 use cause::classify;
-use kasane_pdf::{extract_text, render_page, rewrite, Document, Limits, RenderOptions};
+use kasane_pdf::{
+    extract_text, render_page, rewrite, Document, Limits, RenderOptions, TextOptions,
+};
 use probe::probe_document;
 use roundtrip::{RoundTrip, RtClass, RtOptions, RtTally};
 use serde::{Deserialize, Serialize};
@@ -327,13 +329,16 @@ fn classify_err(stage: &str, e: &kasane_pdf::Error) -> (Class, String, String, S
     use kasane_pdf::Error::*;
     let feature = match e {
         Unsupported { feature, .. } => feature.to_string(),
+        SignaturePolicy { .. } => "signed document".into(),
         Encrypted => "encrypted".into(),
         LimitExceeded { .. } => "limit".into(),
         Io(_) => "io".into(),
         _ => String::new(),
     };
+    // A signature-policy refusal is a documented profile limit, like
+    // an unsupported feature — never a failure of the engine.
     let class = match e {
-        Unsupported { .. } | Encrypted => Class::Unsupported,
+        Unsupported { .. } | SignaturePolicy { .. } | Encrypted => Class::Unsupported,
         _ => Class::Error,
     };
     (class, c.feature, feature, c.id)
@@ -537,8 +542,8 @@ fn compare_render(
     let (rw, rh, ref_pix) = parse_pgm(&ref_bytes)?;
 
     // kasane pixmap → luminance buffer at its own resolution.
-    let kw = kasane.width as usize;
-    let kh = kasane.height as usize;
+    let kw = kasane.width() as usize;
+    let kh = kasane.height() as usize;
     let kpix = pixmap_luma(kasane);
 
     // If dims differ (rounding/DPI), resample ref to kasane size by
@@ -645,8 +650,8 @@ fn ssim_gray(a: &[u8], b: &[u8], w: usize, h: usize) -> f64 {
 /// luminance of a premultiplied RGBA8 pixmap on white (PDF background
 /// convention) — matches pdftoppm -gray output.
 fn pixmap_luma(p: &kasane_pdf::RenderedPage) -> Vec<u8> {
-    let d = p.pixmap.data();
-    let mut out = Vec::with_capacity((p.width * p.height) as usize);
+    let d = p.pixmap().data();
+    let mut out = Vec::with_capacity((p.width() * p.height()) as usize);
     #[allow(clippy::chunks_exact_to_as_chunks)]
     for px in d.chunks_exact(4) {
         // unpremultiply on white: c' = c*a + 255*(1-a)
@@ -891,20 +896,19 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     let mut best_pgno = 0usize;
     for (i, page) in render_pages.enumerate() {
         attempted += 1;
-        let opts = RenderOptions {
-            dpi: args.dpi,
-            limits: Limits::default(),
-        };
+        let opts = RenderOptions::default()
+            .with_dpi(args.dpi)
+            .with_limits(Limits::default());
         match render_page(&doc, page, &opts) {
             Ok(r) => {
                 rendered += 1;
-                for s in &r.font_substitutions {
+                for s in r.font_substitutions() {
                     let tag = format!("{} → {}", s.base_font, s.substitute);
                     if !metrics.render_font_substitutions.contains(&tag) {
                         metrics.render_font_substitutions.push(tag);
                     }
                 }
-                for a in &r.color_approximations {
+                for a in r.color_approximations() {
                     if !metrics.render_color_approximations.contains(a) {
                         metrics.render_color_approximations.push(a.clone());
                     }
@@ -974,7 +978,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     let mut our_text = String::new();
     let mut extracted = 0usize;
     for (i, page) in pages.iter().take(args.max_pages).enumerate() {
-        match extract_text(&doc, page, &Limits::default()) {
+        match extract_text(&doc, page, &TextOptions::default()) {
             Ok(t2) => {
                 collect_warnings(&doc, &mut metrics.warnings);
                 for ch in &t2.chars {
