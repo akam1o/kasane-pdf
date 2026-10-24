@@ -31,25 +31,31 @@ jobs:
     # repository variable the maintainers set alongside the secrets.
     if: ${{ vars.KASANE_CORPUS_ENABLED == 'true' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: external verifiers (qpdf, poppler)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qpdf poppler-utils python3-pip
-      - name: CJK fallback assets (pinned upstream, licence-clean)
+      - name: CJK fallback assets (pinned commits, SHA-256 verified)
         run: ./scripts/fetch-cjk-assets.sh
       - name: build runner (with cjk-fallback)
         working-directory: compat/runner
         run: cargo build --release --features cjk-fallback
       - name: fetch corpus from the private store
+        # fetch-corpus.py reads the store location from
+        # KASANE_CORPUS_ENDPOINT / KASANE_CORPUS_BUCKET and lets boto3
+        # pick the credentials up from the standard AWS_* variables;
+        # the repository secrets keep their KASANE_R2_* names. Every
+        # downloaded file is checked against the manifest's SHA-256.
         env:
-          R2_ENDPOINT: ${{ secrets.KASANE_R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.KASANE_R2_BUCKET }}
-          R2_ACCESS_KEY_ID: ${{ secrets.KASANE_R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.KASANE_R2_SECRET_ACCESS_KEY }}
+          KASANE_CORPUS_ENDPOINT: ${{ secrets.KASANE_R2_ENDPOINT }}
+          KASANE_CORPUS_BUCKET: ${{ secrets.KASANE_R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.KASANE_R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.KASANE_R2_SECRET_ACCESS_KEY }}
+          AWS_REGION: auto
         run: |
           pip3 install --quiet boto3 pyyaml
-          python3 compat/fetch-corpus.py --dest compat/corpus
+          python3 compat/fetch-corpus.py download --dir compat/corpus
       - name: full run (all pages, Poppler witness, external checks)
         run: |
           mkdir -p /tmp/full
@@ -60,7 +66,7 @@ jobs:
         run: python3 scripts/ci-regression.py check /tmp/full/latest.json compat/baselines/corpus-full.json
       - name: upload aggregate report (no PDFs, no images)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: compat-full-report
           path: |
@@ -72,11 +78,11 @@ jobs:
     name: engine tests with cjk-fallback
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: ./scripts/fetch-cjk-assets.sh
       - run: cargo clippy --all-targets --features cjk-fallback -- -D warnings
       - run: cargo test --features cjk-fallback

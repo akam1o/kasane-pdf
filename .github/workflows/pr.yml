@@ -20,11 +20,11 @@ jobs:
     name: test / fmt / clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
         with:
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
@@ -39,14 +39,19 @@ jobs:
     name: compat + round-trip smoke (fixtures)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: external verifiers (qpdf, poppler)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qpdf poppler-utils
       - name: build runner
         working-directory: compat/runner
         run: cargo build --release
+      - name: workflow / corpus-tool consistency (no credentials needed)
+        run: |
+          pip3 install --quiet pyyaml
+          python3 scripts/check-workflows.py
+          python3 compat/fetch-corpus.py list > /dev/null
       - name: smoke run over tests/fixtures
         run: |
           mkdir -p /tmp/smoke
@@ -57,7 +62,7 @@ jobs:
         run: python3 scripts/ci-regression.py check /tmp/smoke/latest.json compat/baselines/fixtures-smoke.json
       - name: upload report (markdown + json, no images)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: compat-smoke-report
           path: |
