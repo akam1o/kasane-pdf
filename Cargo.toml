@@ -11,12 +11,33 @@ homepage = "https://github.com/akam1o/kasane-pdf"
 readme = "README.md"
 keywords = ["pdf", "parser", "renderer", "rasterizer", "document"]
 categories = ["parser-implementations", "rendering", "text-processing", "multimedia::images"]
-# Not published to crates.io yet; the API is still settling.
-publish = false
-# Packaging excludes the corpus tooling, the CI definitions and the
-# fetched CJK assets; the bundled Liberation fonts and the test
-# fixtures ship with the crate.
-exclude = ["/compat", "/assets", "/.github", "/scripts"]
+# What ships in the crate. An explicit list so the `cjk-fallback` assets
+# — fetched into the git-ignored assets/cjk/ by scripts/fetch-cjk-assets.sh
+# and verified against scripts/cjk-assets.sha256 — are packaged too; a
+# crate built from crates.io with that feature must not need the network.
+# The compatibility corpus tooling, its baselines and the CI definitions
+# stay out.
+include = [
+    "/src",
+    "/examples",
+    "/tests",
+    "/fonts",
+    "/docs",
+    "/assets/cjk",
+    "/scripts/fetch-cjk-assets.sh",
+    "/scripts/cjk-assets.sha256",
+    "/Cargo.toml",
+    "/README.md",
+    "/LICENSE",
+    "/NOTICE",
+    "/CHANGELOG.md",
+    "/CONTRIBUTING.md",
+    "/SECURITY.md",
+]
+
+[package.metadata.docs.rs]
+# Document the cjk-fallback API too; the assets ship in the crate.
+all-features = true
 
 [dependencies]
 # FlateDecode (zlib/DEFLATE). flate2 = MIT or Apache-2.0; the default
