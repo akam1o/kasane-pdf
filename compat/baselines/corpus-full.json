@@ -3,18 +3,15 @@
   "crash": 0,
   "files": 511,
   "parse_pass": 444,
-  "render_pass": 421,
+  "render_pass": 423,
   "rewrite_pass": 413,
-  "roundtrip_full": 411,
-  "text_pass": 444,
+  "roundtrip_full": 410,
+  "text_pass": 446,
   "timeout": 0
  },
  "files": {
   "90ms_rksj_h_sample": {
-   "causes": [
-    "render.font.nonembedded.unsupported",
-    "render.font.type0-enc.unsupported"
-   ],
+   "causes": [],
    "expect": "any",
    "roundtrip": {
     "annotations": "NotApplicable",
@@ -28,11 +25,11 @@
    "roundtrip_full": true,
    "stages": {
     "parse": "pass",
-    "render": "unsupported",
+    "render": "error",
     "rewrite": "pass",
-    "text": "unsupported"
+    "text": "error"
    },
-   "verdict": "unsupported"
+   "verdict": "error"
   },
   "acroform_calculation_order": {
    "causes": [],
@@ -6265,7 +6262,7 @@
     "structure": "Pass",
     "text": "Pass"
    },
-   "roundtrip_full": true,
+   "roundtrip_full": false,
    "stages": {
     "parse": "error",
     "render": "pass",
@@ -6702,28 +6699,25 @@
    "verdict": "error"
   },
   "mixedfonts": {
-   "causes": [
-    "render.font.nonembedded.unsupported",
-    "render.font.type0-enc.unsupported"
-   ],
+   "causes": [],
    "expect": "any",
    "roundtrip": {
     "annotations": "Pass",
     "external_no_new": "Pass",
     "external_valid": "Pass",
-    "render": "NotApplicable",
+    "render": "Pass",
     "reparse": "Pass",
     "structure": "Pass",
-    "text": "NotApplicable"
+    "text": "Pass"
    },
    "roundtrip_full": true,
    "stages": {
     "parse": "pass",
-    "render": "unsupported",
+    "render": "pass",
     "rewrite": "pass",
-    "text": "unsupported"
+    "text": "pass"
    },
-   "verdict": "unsupported"
+   "verdict": "pass"
   },
   "mlp-mixer": {
    "causes": [],
@@ -7289,28 +7283,25 @@
    "verdict": "error"
   },
   "noembed-eucjp": {
-   "causes": [
-    "render.font.nonembedded.unsupported",
-    "render.font.type0-enc.unsupported"
-   ],
+   "causes": [],
    "expect": "any",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
     "external_valid": "Pass",
-    "render": "NotApplicable",
+    "render": "Pass",
     "reparse": "Pass",
     "structure": "Pass",
-    "text": "NotApplicable"
+    "text": "Pass"
    },
    "roundtrip_full": true,
    "stages": {
     "parse": "pass",
-    "render": "unsupported",
+    "render": "pass",
     "rewrite": "pass",
-    "text": "unsupported"
+    "text": "pass"
    },
-   "verdict": "unsupported"
+   "verdict": "pass"
   },
   "operator_list_cycle": {
    "causes": [],

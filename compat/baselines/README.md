@@ -8,7 +8,7 @@ smoke run; nightly: the full corpus).
 | file | source run | population |
 |---|---|---|
 | `fixtures-smoke.json` | `kasane-compat run --corpus tests/fixtures --mode smoke --with-poppler` | the 66 deterministic fixtures under `tests/fixtures/` |
-| `corpus-full.json` | `kasane-compat run --corpus compat/corpus --mode full --with-poppler` | the 511-file real-world corpus (`compat/manifest.yaml`) |
+| `corpus-full.json` | the nightly job: runner built with `--features cjk-fallback` on ubuntu-latest, `kasane-compat run --corpus compat/corpus --mode full --with-poppler --dpi 96 --timeout-secs 20` | the 511-file real-world corpus (`compat/manifest.yaml`) |
 
 ## How to read the fixtures smoke result
 
@@ -26,6 +26,21 @@ any crash or timeout). Classification of the current baseline:
 | Unsupported by design | 5 | a valid construct the renderer refuses rather than approximates: `flate_predictor_bad` (`/Predictor 16`), `render_annot` (annotation without appearance, subtype outside the synthesised set), `unsupported_filter` (`/JPXDecode` on a content stream), `xobject_unknown_subtype` (`/PS`) — plus `encrypted` counted above |
 | Known limitation | 1 | `xref_stream_bad_type`: the strict parser refuses the file (expected), the recovery parser reads it, and the *rewrite of the recovered document* draws one qpdf warning (`Resources is missing or invalid; repairing`) that the original does not draw because qpdf cannot read the original's page tree at all. Round-trip `external_no_new` is FAIL for this file in the baseline; it is a property of repairing a broken input, not of the rewriter, and it is tracked here so the regression check keeps flagging any *new* file that behaves this way |
 | Unexpected failure | 0 | — |
+
+## Notes on the full-corpus baseline
+
+The baseline is taken from the nightly configuration itself
+(`cjk-fallback` enabled, Linux), so it must be regenerated from a
+nightly artifact — not from a default-feature local run — whenever
+support changes: download `compat-full-report`, then
+`python3 scripts/ci-regression.py summarize latest.json > compat/baselines/corpus-full.json`.
+Linux and macOS results are identical for every file except the
+effect of the feature flag (the first nightly run confirmed this).
+With the feature, `90ms_rksj_h_sample` (`expect: any`) is classified
+`error` instead of `unsupported`: its predefined CMap now loads and
+the strict parser then refuses the CIDFont for lacking the required
+`/FontDescriptor` — the correct outcome for that sample, recorded
+here so it does not read as a regression.
 
 Numbers above refer to the baseline committed alongside this file;
 update both when the fixtures or the engine change
