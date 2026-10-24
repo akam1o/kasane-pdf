@@ -24,19 +24,21 @@
 //!   `diagnose_redaction`/`audit_residuals`.
 //!
 //! Explicitly **not** supported (typed `Error::Unsupported` or
-//! `Error::Encrypted`, never a partial result): stream filters other
-//! than `/FlateDecode`/`/DCTDecode` (JBIG2, CCITT, JPX, LZW, ASCII*),
-//! encrypted files, tiling patterns, function-based and mesh shadings
+//! `Error::Encrypted`, never a partial result): `/JPXDecode` and
+//! `/Crypt` filters, encrypted files, function-based and mesh shadings
 //! (types 1, 4–7), knockout transparency groups and ExtGState soft
 //! masks, `/Matte` soft-mask images, predefined non-Identity CMaps,
-//! `/UserUnit` ≠ 1, singular CTMs, non-widget annotations without an
-//! appearance stream. Colour spaces, image masks, inline images,
-//! axial/radial shadings, every simple-font encoding, CID-keyed CFF
-//! and OpenType CID fonts, embedded CMaps, vertical writing, optional
-//! content (default configuration), `/ActualText`, synthesised
-//! AcroForm widget appearances and non-knockout transparency groups
-//! render; an `ICCBased` profile the engine cannot evaluate exactly
-//! falls back to `/Alternate` and is reported on
+//! `/UserUnit` ≠ 1, singular CTMs, annotations without an appearance
+//! stream other than form widgets and the geometric markup subtypes.
+//! Colour spaces, image masks, inline images, every byte filter
+//! (Flate, LZW, ASCII85, ASCIIHex, RunLength) and the JPEG, JBIG2 and
+//! CCITT image filters, axial/radial shadings, tiling patterns, every
+//! simple-font encoding, CID-keyed CFF and OpenType CID fonts, embedded
+//! CMaps, vertical writing, optional content (default configuration),
+//! `/ActualText`, synthesised AcroForm widget and markup annotation
+//! appearances and non-knockout transparency groups render; an
+//! `ICCBased` profile the engine cannot evaluate exactly falls back to
+//! `/Alternate` and is reported on
 //! [`RenderedPage::color_approximations`].
 //!
 //! Damaged files: [`Document::from_bytes`] is strict. A caller that
@@ -67,6 +69,7 @@
 //! ```
 
 mod acroform;
+mod annot_appearance;
 pub mod audit;
 mod bilevel;
 mod cmap;

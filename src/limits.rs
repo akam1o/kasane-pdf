@@ -86,6 +86,13 @@ pub struct Limits {
     /// rendering one page (Forms and images together). Bounds sibling
     /// fan-out that a depth cap alone cannot stop. Default: 10,000.
     pub max_xobject_invocations: u64,
+    /// Maximum tiling-pattern cells executed individually on one page
+    /// (§8.7.3): cells whose `/BBox` exceeds the step (overlapping
+    /// tiles) and fills with few cells run the cell content once per
+    /// tile and count here. Dense non-overlapping tilings render one
+    /// cell and stamp it with a repeating shader, whose cost is per
+    /// device pixel, so they do not count. Default: 4,096.
+    pub max_pattern_tiles: u64,
     /// Maximum width or height of an image XObject in samples.
     /// Default: 16,384.
     pub max_image_dimension: u32,
@@ -232,6 +239,7 @@ impl Default for Limits {
             max_path_elements: 100_000,
             max_xobject_depth: 32,
             max_xobject_invocations: 10_000,
+            max_pattern_tiles: 4_096,
             max_image_dimension: 16_384,
             max_image_total_samples: 67_108_864,
             max_image_bytes: 256 * 1024 * 1024,

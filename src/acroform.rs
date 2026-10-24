@@ -110,7 +110,7 @@ fn inherited(doc: &Document, widget: &Dict, key: &[u8]) -> Result<Option<Object>
     })
 }
 
-fn num_array(doc: &Document, o: &Object) -> Result<Vec<f64>, Error> {
+pub(crate) fn num_array(doc: &Document, o: &Object) -> Result<Vec<f64>, Error> {
     let o = doc.deref(o)?;
     Ok(o.as_array()
         .map(|a| a.iter().filter_map(|x| x.as_number()).collect())
@@ -119,7 +119,7 @@ fn num_array(doc: &Document, o: &Object) -> Result<Vec<f64>, Error> {
 
 /// `/MK /BG` or `/BC` → a colour operator (`g`/`rg`/`k`) with the
 /// given operator family, or `None` when transparent (empty array).
-fn color_op(comps: &[f64], fill: bool) -> Option<String> {
+pub(crate) fn color_op(comps: &[f64], fill: bool) -> Option<String> {
     let f = |v: &f64| format!("{:.4}", v.clamp(0.0, 1.0));
     match comps.len() {
         1 => Some(format!("{} {}", f(&comps[0]), if fill { "g" } else { "G" })),
@@ -144,13 +144,13 @@ fn color_op(comps: &[f64], fill: bool) -> Option<String> {
 
 /// Parsed `/DA`: font resource name, size (0 = auto) and the colour
 /// operator string (only `g`/`rg`/`k` with numeric operands survive).
-struct Da {
-    font: Vec<u8>,
-    size: f64,
-    color: String,
+pub(crate) struct Da {
+    pub(crate) font: Vec<u8>,
+    pub(crate) size: f64,
+    pub(crate) color: String,
 }
 
-fn parse_da(da: Option<&[u8]>) -> Da {
+pub(crate) fn parse_da(da: Option<&[u8]>) -> Da {
     let mut out = Da {
         font: b"Helv".to_vec(),
         size: 0.0,
@@ -228,7 +228,7 @@ fn encode_latin(s: &str) -> Result<Vec<u8>, Error> {
     Ok(out)
 }
 
-fn literal(bytes: &[u8]) -> String {
+pub(crate) fn literal(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() + 2);
     s.push('(');
     for &b in bytes {
@@ -696,7 +696,7 @@ fn auto_size(h: f64, pad: f64, width_at: impl Fn(f64) -> f64, avail: f64) -> f64
 }
 
 /// Greedy word wrap of `value` into lines of at most `avail` points.
-fn wrap_lines(
+pub(crate) fn wrap_lines(
     value: &str,
     avail: f64,
     width: impl Fn(&[u8]) -> f64,
@@ -793,7 +793,11 @@ fn mark_path(style: u8, w: f64, h: f64, pad: f64) -> String {
 /// Resources for the text: `/DR` with the `/DA` font guaranteed to
 /// exist — a missing one gets a Standard 14 Helvetica entry, which
 /// the font loader draws with its bundled substitute (and reports).
-fn text_resources(doc: &Document, defaults: &FormDefaults, font: &[u8]) -> Result<Object, Error> {
+pub(crate) fn text_resources(
+    doc: &Document,
+    defaults: &FormDefaults,
+    font: &[u8],
+) -> Result<Object, Error> {
     let mut res: Dict = match &defaults.dr {
         Some(Object::Dict(d)) => d.clone(),
         _ => Dict::new(),
@@ -821,7 +825,13 @@ fn text_resources(doc: &Document, defaults: &FormDefaults, font: &[u8]) -> Resul
     Ok(Object::Dict(res))
 }
 
-fn finish(content: String, w: f64, h: f64, matrix: &str, resources: Option<Object>) -> Appearance {
+pub(crate) fn finish(
+    content: String,
+    w: f64,
+    h: f64,
+    matrix: &str,
+    resources: Option<Object>,
+) -> Appearance {
     let mut dict = Dict::new();
     dict.insert(b"Type".to_vec(), Object::Name(b"XObject".to_vec()));
     dict.insert(b"Subtype".to_vec(), Object::Name(b"Form".to_vec()));

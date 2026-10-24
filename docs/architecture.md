@@ -28,7 +28,12 @@ src/
                `n g obj` + trailer/XRef-dict/Catalog /Root + ObjStm
                members → RecoveryReport (opt-in, never silent)
                /XRefStm (hybrid) merging
-  filter.rs    stream /Filter decoding: FlateDecode + predictors
+  filter.rs    stream /Filter decoding: Flate, LZW (+ predictors),
+               ASCII85, ASCIIHex, RunLength; every output capped while
+               produced; image-only filters are routed to the image path
+  bilevel.rs   /JBIG2Decode (hayro-jbig2) and /CCITTFaxDecode
+               (hayro-ccitt) into packed 1 bpc rows under the image
+               limits; 0 = black on output, /BlackIs1 honoured
   objstm.rs    /ObjStm parsing (header, bounds, member objects)
   matrix.rs    Matrix [a b c d e f] affine transform (§8.3)
   content.rs   content-stream parser → Vec<Operation> (§7.8, §8–§9);
@@ -40,6 +45,10 @@ src/
   acroform.rs  AcroForm widget appearance synthesis → Form XObject
                (text/check/radio/push/combo/list, /DA /MK /Q, /Parent
                inheritance), painted through the annotation path
+  annot_appearance.rs  markup annotations without /AP (Square, Circle,
+               Line + endings, Polygon/PolyLine, Ink, Highlight/
+               Underline/StrikeOut/Squiggly, FreeText) → Form XObject
+               in page space, /CA as a transparency group
   cmap.rs      embedded /Encoding CMaps for Type 0 fonts (codespaces,
                cidchar/cidrange, usecmap Identity, /WMode)
   optcontent.rs optional-content default configuration (§8.11): OCG

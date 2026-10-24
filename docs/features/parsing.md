@@ -33,14 +33,18 @@ parsing. Everything not listed as supported is a typed error.
 | arrays, dictionaries | ✅ | `null` dict values treated as absent (§7.3.7) |
 | indirect references `n g R` | ✅ | chained refs followed; loops → `Error::CycleDetected` |
 | `stream … endstream` | ✅ | raw bytes captured; extent via consistent direct `/Length`, else `endstream` scan |
-| `obj … endobj` | ✅ | missing `endobj` tolerated (offset-driven parse) |
+| `obj … endobj` | ✅ | a missing `endobj` is a parse error in the strict parse (§7.3.10); recovery mode (`from_bytes_recovering`) reads the object anyway, since its own syntax delimits it |
 
 ## Stream decoding (ISO 32000-1 §7.4)
 
 | Feature | Status | Notes |
 |---|---|---|
 | No filter | ✅ | raw bytes returned |
-| `/FlateDecode` (`/Fl`) | ✅ | zlib/DEFLATE via `flate2`/`miniz_oxide` |
+| `/FlateDecode` (`/Fl`) | ✅ | zlib/DEFLATE via `flate2`/`miniz_oxide`; output capped at `max_stream_bytes` while it is produced |
+| `/LZWDecode` (`/LZW`) | ✅ | 9–12-bit codes MSB first, clear (256) / EOD (257), `/EarlyChange` 0 or 1 (default 1), KwKwK case, mid-stream clear; data ending inside a code with non-zero bits → `Error::Parse`, zero padding without EOD accepted; predictors as for Flate |
+| `/ASCII85Decode` (`/A85`) | ✅ | `z`, partial final group, `~>` EOD (its absence accepted at a clean group boundary), an optional `<~` prefix skipped; `~` not followed by `>`, a one-character final group, `z` inside a group, a byte outside `!`..`u` → `Error::Parse` |
+| `/ASCIIHexDecode` (`/AHx`) | ✅ | white space ignored, odd final digit padded, `>` EOD (absence accepted); a non-hex byte → `Error::Parse` |
+| `/RunLengthDecode` (`/RL`) | ✅ | literal and repeat runs, 128 EOD (absence at a run boundary accepted); a run cut off mid-way → `Error::Parse` |
 | `/Filter` as name or array | ✅ | array order applied sequentially |
 | `/DecodeParms` dict/array/null | ✅ | positional match with `/Filter` |
 | `/Length` direct or indirect | ✅ | indirect `/Length` resolved at decode time |
@@ -48,7 +52,8 @@ parsing. Everything not listed as supported is a typed error.
 | TIFF predictor 2 | ✅ | `/BitsPerComponent` 8 only; other values → `Error::Unsupported` |
 | `/Predictor` 1 | ✅ | no-op |
 | `/Predictor` 3–9, 16+ | ❌ | `Error::Unsupported` (reserved/undefined in spec) |
-| Other filters (`/LZWDecode`, `/DCTDecode`, `/ASCIIHexDecode`, `/ASCII85Decode`, `/RunLengthDecode`, `/CCITTFaxDecode`, `/JBIG2Decode`, `/JPXDecode`, `/Crypt`, unknown) | ❌ | `Error::Unsupported` when the stream is requested; document still loads |
+| Image filters (`/DCTDecode`, `/JBIG2Decode`, `/CCITTFaxDecode`) | ◐ | they yield image samples, not bytes, so they are decoded by the image pipeline (see rendering.md, `Do`) and refused here with `Error::Unsupported` when they appear on a content stream, font program or other byte stream |
+| `/JPXDecode`, `/Crypt`, unknown names | ❌ | `Error::Unsupported` when the stream is requested; document still loads |
 
 ## Document layer
 

@@ -116,9 +116,26 @@ fn probe_annotation(
         return;
     }
     let Some(ap) = ad.get(b"AP".as_slice()) else {
-        // Form widgets get a synthesised appearance (§12.7.3.3); every
-        // other subtype without /AP is still refused.
-        if subtype != b"Link" && subtype != b"Widget" {
+        // Form widgets (§12.7.3.3) and the geometric markup subtypes
+        // (§12.5.6) get a synthesised appearance; /Redact marks draw
+        // nothing; every other subtype without /AP is refused.
+        if !matches!(
+            subtype,
+            b"Link"
+                | b"Widget"
+                | b"Square"
+                | b"Circle"
+                | b"Line"
+                | b"Polygon"
+                | b"PolyLine"
+                | b"Ink"
+                | b"Highlight"
+                | b"Underline"
+                | b"StrikeOut"
+                | b"Squiggly"
+                | b"FreeText"
+                | b"Redact"
+        ) {
             record(res, "render.annotation.unsupported", pi);
         }
         return;
@@ -188,8 +205,8 @@ fn scan_ops(
             }
             Operation::SetColorFill(o) | Operation::SetColorStroke(o) => {
                 // `scn`/`SCN` with a trailing pattern name: shading
-                // patterns (type 2 over an axial/radial shading) render
-                // as fills; tiling patterns and mesh shadings do not.
+                // patterns (type 2 over an axial/radial shading) and
+                // tiling patterns render; mesh shadings do not.
                 if let Some(Object::Name(p)) = o.last() {
                     if !pattern_supported(doc, resources, p) {
                         record(res, "render.pattern.unsupported", pi)
@@ -236,9 +253,9 @@ fn shading_obj_supported(doc: &Document, o: &Object) -> bool {
     }
 }
 
-/// `true` when `/Pattern p` is a `/PatternType 2` shading pattern over
-/// a supported shading without an `/ExtGState` override. Tiling
-/// patterns (type 1) are refused by the renderer.
+/// `true` when `/Pattern p` is a tiling pattern (type 1, rendered cell
+/// by cell or through a cached cell) or a `/PatternType 2` shading
+/// pattern over a supported shading without an `/ExtGState` override.
 fn pattern_supported(doc: &Document, resources: &Object, p: &[u8]) -> bool {
     let Ok(Some(o)) = doc.resolve_resource(resources, "Pattern", p) else {
         return true;
@@ -255,7 +272,7 @@ fn pattern_supported(doc: &Document, resources: &Object, p: &[u8]) -> bool {
                 .map(|s| shading_obj_supported(doc, s))
                 .unwrap_or(true)
         }
-        Some(1) => false,
+        Some(1) => true,
         _ => true,
     }
 }

@@ -80,8 +80,8 @@ struct GraphicsState {
     /// The shading pattern selected by `scn`/`SCN` while the colour
     /// space is `/Pattern` (§8.7.3.3); `None` = no pattern selected
     /// (paints nothing) or a non-pattern space.
-    fill_pattern: Option<Rc<ShadingPattern>>,
-    stroke_pattern: Option<Rc<ShadingPattern>>,
+    fill_pattern: Option<Rc<PatternPaint>>,
+    stroke_pattern: Option<Rc<PatternPaint>>,
     /// Non-stroking alpha `ca` (§11.3.7.2) — multiplies the fill
     /// colour's alpha at paint time. 1.0 = opaque.
     fill_alpha: f64,
@@ -419,6 +419,10 @@ pub fn render_page(
         blend_restricted: 0,
         layer_bytes: 0,
         pattern_base: Matrix::IDENTITY,
+        pattern_depth: 0,
+        pattern_stack: Vec::new(),
+        pattern_tiles: 0,
+        uncolored_depth: 0,
         oc: crate::optcontent::OcConfig::from_catalog(doc)?,
         oc_include_hidden: false,
         mc_stack: Vec::new(),
@@ -625,6 +629,17 @@ pub(crate) struct Renderer<'a> {
     /// (§8.7.3.1): identity for the page, the form's CTM (after its
     /// `/Matrix`) inside a Form XObject or Type 3 glyph.
     pattern_base: Matrix,
+    /// Nesting depth of tiling-pattern cells being painted.
+    pattern_depth: u32,
+    /// Tiling patterns (by indirect reference) whose cells are being
+    /// painted — a cell that paints with its own pattern is a cycle.
+    pattern_stack: Vec<IndirectRef>,
+    /// Tiling cells executed individually on this page
+    /// (`max_pattern_tiles`).
+    pattern_tiles: u64,
+    /// Depth of `/PaintType 2` (uncoloured) cells being painted: colour
+    /// operators inside are ignored (§8.7.3.3).
+    uncolored_depth: u32,
     /// Optional-content configuration of the document (§8.11).
     oc: crate::optcontent::OcConfig,
     /// Extraction only: report text inside hidden optional content too
@@ -651,6 +666,73 @@ struct McFrame {
 struct ShadingPattern {
     shading: Rc<Shading>,
     matrix: Matrix,
+}
+
+/// A `/PatternType 1` tiling pattern (§8.7.3): the cell content stream
+/// and the parameters that place its copies.
+struct TilingPattern {
+    dict: Dict,
+    raw: Vec<u8>,
+    matrix: Matrix,
+    /// Normalised `/BBox` (cell clip).
+    bbox: crate::page::Rect,
+    xstep: f64,
+    ystep: f64,
+    /// `/PaintType 2`: the cell paints in this colour (the `scn`
+    /// components through the base space), ignoring its own colour
+    /// operators.
+    under: Option<Color>,
+    resources: Object,
+    entry_ref: Option<IndirectRef>,
+}
+
+/// What a `/Pattern` colour currently selects.
+enum PatternPaint {
+    Shading(Rc<ShadingPattern>),
+    Tiling(Rc<TilingPattern>),
+}
+
+/// Deepest nesting of tiling-pattern cells (a cell filling with a
+/// pattern whose cell fills with a pattern …).
+const MAX_PATTERN_DEPTH: u32 = 8;
+/// Up to this many cells a fill is executed cell by cell (crisp,
+/// exact); denser tilings go through the cached cell.
+const DIRECT_TILES: u64 = 64;
+
+/// Device bounding box (inclusive pixels) of the non-zero coverage in
+/// `mask`, or `None` when it is empty.
+fn mask_bounds(mask: &Mask) -> Option<(i32, i32, i32, i32)> {
+    let (w, h) = (mask.width() as usize, mask.height() as usize);
+    let data = mask.data();
+    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0usize, 0usize);
+    let mut any = false;
+    for y in 0..h {
+        let row = &data[y * w..(y + 1) * w];
+        let Some(first) = row.iter().position(|&v| v != 0) else {
+            continue;
+        };
+        let last = row.iter().rposition(|&v| v != 0).unwrap_or(first);
+        any = true;
+        x0 = x0.min(first);
+        x1 = x1.max(last);
+        y0 = y0.min(y);
+        y1 = y;
+    }
+    any.then_some((x0 as i32, y0 as i32, x1 as i32, y1 as i32))
+}
+
+/// Interpreter state a pattern cell replaces while it runs.
+struct CellSaved {
+    gs: GraphicsState,
+    gs_stack: Vec<GraphicsState>,
+    resources: Object,
+    pattern_base: Matrix,
+    path: CurrentPath,
+    in_text: bool,
+    text_tm: Matrix,
+    text_tlm: Matrix,
+    pushed_ref: bool,
+    uncolored: bool,
 }
 
 impl<'a> Renderer<'a> {
@@ -705,6 +787,10 @@ impl<'a> Renderer<'a> {
             blend_restricted: 0,
             layer_bytes: 0,
             pattern_base: Matrix::IDENTITY,
+            pattern_depth: 0,
+            pattern_stack: Vec::new(),
+            pattern_tiles: 0,
+            uncolored_depth: 0,
             oc: crate::optcontent::OcConfig::from_catalog(doc)?,
             oc_include_hidden: false,
             mc_stack: Vec::new(),
@@ -748,6 +834,26 @@ impl<'a> Renderer<'a> {
         // semantics.
         if self.path.in_progress && !op.is_path_level() {
             return Err(placement_err(op.name()));
+        }
+        // §8.7.3.3: an uncoloured pattern cell "shall not" set colour;
+        // the colour comes from the `scn` that selected the pattern,
+        // so colour operators inside are ignored, as every viewer does.
+        if self.uncolored_depth > 0
+            && matches!(
+                op,
+                Operation::SetGrayStroke(_)
+                    | Operation::SetGrayFill(_)
+                    | Operation::SetRgbStroke(..)
+                    | Operation::SetRgbFill(..)
+                    | Operation::SetCmykStroke(..)
+                    | Operation::SetCmykFill(..)
+                    | Operation::SetColorSpaceStroke(_)
+                    | Operation::SetColorSpaceFill(_)
+                    | Operation::SetColorStroke(_)
+                    | Operation::SetColorFill(_)
+            )
+        {
+            return Ok(());
         }
         match op {
             // ---- graphics state stack ---------------------------
@@ -1403,14 +1509,21 @@ impl<'a> Renderer<'a> {
                     show_name(n)
                 )));
             }
-            let pat = self.load_shading_pattern(n)?;
+            // Components before the name colour an uncoloured tiling
+            // pattern (through the `[/Pattern base]` space).
+            let nums: Vec<f64> = comps
+                .iter()
+                .map(|o| o.as_number())
+                .collect::<Option<Vec<_>>>()
+                .ok_or_else(|| {
+                    Error::Parse("scn operands before the pattern name must be numbers".into())
+                })?;
+            let pat = self.load_pattern(n, &space, &nums)?;
             if stroke {
                 self.gs.stroke_pattern = Some(pat);
             } else {
                 self.gs.fill_pattern = Some(pat);
             }
-            // Components before the name belong to an uncoloured
-            // tiling pattern, which `load_shading_pattern` refused.
             return Ok(());
         }
         if space.is_pattern() {
@@ -2068,6 +2181,9 @@ impl<'a> Renderer<'a> {
             // /NeedAppearances) — one synthesised from the field
             // (§12.7.3.3, `crate::acroform`).
             let has_ap = ad.contains_key(b"AP".as_slice());
+            let mut fit_rect = [rx0, ry0, rx1, ry1];
+            let mut group_alpha: Option<f64> = None;
+            let mut multiply = false;
             let synth = if subtype == b"Widget"
                 && crate::acroform::needs_synthesis(self.doc, ad, &form, has_ap)?
             {
@@ -2083,9 +2199,29 @@ impl<'a> Renderer<'a> {
                     // value, no /MK): the widget is simply blank.
                     None => continue,
                 }
+            } else if !has_ap && subtype != b"Widget" && subtype != b"Link" {
+                // Markup annotations without /AP (§12.5.6,
+                // `crate::annot_appearance`); unhandled subtypes are
+                // refused there.
+                match crate::annot_appearance::synthesize(
+                    self.doc,
+                    ad,
+                    &subtype,
+                    [rx0, ry0, rx1, ry1],
+                    self.limits,
+                )? {
+                    Some(m) => {
+                        fit_rect = m.rect;
+                        group_alpha = m.alpha;
+                        multiply = m.multiply;
+                        Some(m.appearance)
+                    }
+                    None => continue,
+                }
             } else {
                 None
             };
+            let [rx0, ry0, rx1, ry1] = fit_rect;
             let (sdict, sraw, stream_ref): (Dict, Vec<u8>, Option<IndirectRef>) = match synth {
                 Some(a) => (a.dict, a.content, None),
                 None => {
@@ -2230,6 +2366,16 @@ impl<'a> Renderer<'a> {
             // matrices and any leftover gsave stack do not leak in.
             self.gs = GraphicsState::new();
             self.gs.ctm = a;
+            // A synthesised markup appearance is a transparency group
+            // composited once with the annotation's /CA (and /Multiply
+            // for highlights).
+            if let Some(ca) = group_alpha {
+                self.gs.fill_alpha = ca;
+                self.gs.stroke_alpha = ca;
+            }
+            if multiply {
+                self.gs.blend_mode = tiny_skia::BlendMode::Multiply;
+            }
             self.gs_stack.clear();
             self.in_text = false;
             self.text_tm = Matrix::IDENTITY;
@@ -2410,9 +2556,12 @@ impl<'a> Renderer<'a> {
                 }
             }
         }
-        let to_page = pat.matrix.concat(self.pattern_base);
-        let shading = pat.shading.clone();
-        self.paint_shading(&shading, &to_page, Some(&mask), true)
+        if let Some(clip) = &self.gs.clip {
+            for (m, c) in mask.data_mut().iter_mut().zip(clip.data()) {
+                *m = mul255(*m, *c);
+            }
+        }
+        self.paint_pattern_under_mask(&pat, mask)
     }
 
     /// Paint an inline image (§8.9.7) through the image XObject path:
@@ -3140,37 +3289,29 @@ impl<'a> Renderer<'a> {
     /// pattern (`/PatternType 2`). Tiling patterns (`/PatternType 1`)
     /// need their cell content tiled across the fill — not
     /// implemented, refused.
-    fn load_shading_pattern(&mut self, name: &[u8]) -> Result<Rc<ShadingPattern>, Error> {
-        let obj = self
+    /// Resolve `/Pattern name` (§8.7.3): a shading pattern, or a tiling
+    /// pattern whose uncoloured variant takes its colour from `comps`
+    /// through the base space of `space`.
+    fn load_pattern(
+        &mut self,
+        name: &[u8],
+        space: &ColorSpace,
+        comps: &[f64],
+    ) -> Result<Rc<PatternPaint>, Error> {
+        let entry = self
             .doc
-            .resolve_resource(&self.resources, "Pattern", name)?
+            .resolve_resource_raw(&self.resources, "Pattern", name)?
             .ok_or_else(|| {
                 Error::Structure(format!(
                     "/Pattern /{} is not defined in the current resources",
                     show_name(name)
                 ))
             })?;
+        let entry_ref = entry.as_ref();
+        let obj = self.doc.deref(&entry)?;
         let dict = obj
             .as_dict_like()
             .ok_or_else(|| Error::Structure("pattern is not a dictionary".into()))?;
-        match dict.get(b"PatternType".as_slice()).and_then(|o| o.as_i64()) {
-            Some(2) => {}
-            Some(1) => {
-                return Err(Error::Unsupported {
-                    feature: "tiling pattern",
-                    detail: format!(
-                        "/{} — /PatternType 1 tiling is not implemented",
-                        show_name(name)
-                    ),
-                })
-            }
-            other => {
-                return Err(Error::Structure(format!(
-                    "/Pattern /{} has /PatternType {other:?}",
-                    show_name(name)
-                )))
-            }
-        }
         let matrix = match dict.get(b"Matrix".as_slice()) {
             None | Some(Object::Null) => Matrix::IDENTITY,
             Some(o) => {
@@ -3185,6 +3326,20 @@ impl<'a> Renderer<'a> {
                 "pattern /Matrix has non-finite values".into(),
             ));
         }
+        match dict.get(b"PatternType".as_slice()).and_then(|o| o.as_i64()) {
+            Some(2) => {}
+            Some(1) => {
+                return Ok(Rc::new(PatternPaint::Tiling(Rc::new(
+                    self.load_tiling_pattern(name, &obj, matrix, space, comps, entry_ref)?,
+                ))))
+            }
+            other => {
+                return Err(Error::Structure(format!(
+                    "/Pattern /{} has /PatternType {other:?}",
+                    show_name(name)
+                )))
+            }
+        }
         if dict.contains_key(b"ExtGState".as_slice()) {
             return Err(Error::Unsupported {
                 feature: "shading pattern /ExtGState",
@@ -3194,46 +3349,143 @@ impl<'a> Renderer<'a> {
         let sh_obj = dict
             .get(b"Shading".as_slice())
             .ok_or_else(|| Error::Structure("shading pattern has no /Shading".into()))?;
-        if self.extraction_only {
-            // Nothing is painted; keep the resource walk cheap.
-            return Ok(Rc::new(ShadingPattern {
-                shading: Rc::new(parse_shading(
-                    self.doc,
-                    sh_obj,
-                    &self.resources,
-                    self.limits,
-                )?),
-                matrix,
-            }));
-        }
         let shading = parse_shading(self.doc, sh_obj, &self.resources, self.limits)?;
-        if let Some(a) = &shading.approximation {
-            if !self.color_approximations.contains(a) {
-                self.color_approximations.push(a.clone());
+        if !self.extraction_only {
+            if let Some(a) = &shading.approximation {
+                if !self.color_approximations.contains(a) {
+                    self.color_approximations.push(a.clone());
+                }
             }
         }
-        Ok(Rc::new(ShadingPattern {
+        Ok(Rc::new(PatternPaint::Shading(Rc::new(ShadingPattern {
             shading: Rc::new(shading),
             matrix,
-        }))
+        }))))
     }
 
-    /// Fill `path` with the current fill pattern: the path (under the
-    /// current clip) becomes the shading's clip, the shading is drawn
-    /// in pattern space (`/Matrix` × the parent stream's base CTM —
-    /// §8.7.3.1), and `/Background` covers the parts of the path the
-    /// geometry leaves unpainted (§8.7.4.3).
+    /// `/PatternType 1` (Table 75): `/PaintType` 1 coloured / 2
+    /// uncoloured, `/TilingType` 1–3 (spacing hints — the cells are
+    /// placed exactly either way), `/BBox`, `/XStep`/`/YStep`
+    /// (non-zero; the sign is irrelevant since tiles extend both ways),
+    /// `/Resources`. The stream is kept and parsed when painted.
+    fn load_tiling_pattern(
+        &mut self,
+        name: &[u8],
+        obj: &Object,
+        matrix: Matrix,
+        space: &ColorSpace,
+        comps: &[f64],
+        entry_ref: Option<IndirectRef>,
+    ) -> Result<TilingPattern, Error> {
+        let (pdict, raw) = obj.as_stream().ok_or_else(|| {
+            Error::Structure(format!(
+                "tiling pattern /{} is not a stream",
+                show_name(name)
+            ))
+        })?;
+        let under = match pdict.get(b"PaintType".as_slice()).and_then(|o| o.as_i64()) {
+            Some(1) => None,
+            Some(2) => {
+                let base = match space {
+                    ColorSpace::Pattern { base: Some(b) } => b.clone(),
+                    _ => {
+                        return Err(Error::Structure(format!(
+                            "uncoloured tiling pattern /{} needs a [/Pattern base] colour space",
+                            show_name(name)
+                        )))
+                    }
+                };
+                if comps.len() != base.ncomps() {
+                    return Err(Error::Parse(format!(
+                        "uncoloured pattern /{} expects {} colour component(s) before the name, got {}",
+                        show_name(name),
+                        base.ncomps(),
+                        comps.len()
+                    )));
+                }
+                Some(color_in(&base, comps)?)
+            }
+            other => {
+                return Err(Error::Structure(format!(
+                    "tiling pattern /{} has /PaintType {other:?} (must be 1 or 2)",
+                    show_name(name)
+                )))
+            }
+        };
+        match pdict.get(b"TilingType".as_slice()).and_then(|o| o.as_i64()) {
+            None | Some(1..=3) => {}
+            Some(other) => {
+                return Err(Error::Structure(format!(
+                    "tiling pattern /{} has /TilingType {other} (must be 1, 2 or 3)",
+                    show_name(name)
+                )))
+            }
+        }
+        let bbox_obj = pdict
+            .get(b"BBox".as_slice())
+            .ok_or_else(|| Error::Structure("tiling pattern has no /BBox".into()))?;
+        let bbox_obj = self.doc.deref(bbox_obj)?;
+        let b = crate::page::Rect::from_object(&bbox_obj).ok_or_else(|| {
+            Error::Structure("tiling pattern /BBox is not a 4-number rectangle".into())
+        })?;
+        if !rect_is_finite(&b) {
+            return Err(Error::Structure(
+                "tiling pattern /BBox has non-finite values".into(),
+            ));
+        }
+        let bbox = crate::page::Rect {
+            llx: b.llx.min(b.urx),
+            lly: b.lly.min(b.ury),
+            urx: b.llx.max(b.urx),
+            ury: b.lly.max(b.ury),
+        };
+        let step = |key: &[u8]| -> Result<f64, Error> {
+            let v = pdict.get(key).and_then(|o| o.as_number()).ok_or_else(|| {
+                Error::Structure(format!(
+                    "tiling pattern /{} is missing or not a number",
+                    String::from_utf8_lossy(key)
+                ))
+            })?;
+            if !v.is_finite() || v == 0.0 {
+                return Err(Error::Structure(format!(
+                    "tiling pattern /{} must be a non-zero finite number",
+                    String::from_utf8_lossy(key)
+                )));
+            }
+            Ok(v.abs())
+        };
+        let xstep = step(b"XStep")?;
+        let ystep = step(b"YStep")?;
+        let resources = match pdict.get(b"Resources".as_slice()) {
+            None | Some(Object::Null) => Object::Dict(Dict::new()),
+            Some(r) => self.doc.deref(r)?,
+        };
+        Ok(TilingPattern {
+            dict: pdict.clone(),
+            raw: raw.to_vec(),
+            matrix,
+            bbox,
+            xstep,
+            ystep,
+            under,
+            resources,
+            entry_ref,
+        })
+    }
+
+    /// Fill `path` with `pat`: the path (under the current clip)
+    /// becomes the pattern's coverage mask; a shading is drawn in
+    /// pattern space (`/Matrix` × the parent stream's base CTM —
+    /// §8.7.3.1) with `/Background` where its geometry leaves the path
+    /// unpainted (§8.7.4.3); a tiling pattern's cells are stamped
+    /// across it.
     fn fill_path_with_pattern(
         &mut self,
+        pat: Rc<PatternPaint>,
         path: &tiny_skia::Path,
         rule: FillRule,
         ts: Transform,
     ) -> Result<(), Error> {
-        let Some(pat) = self.gs.fill_pattern.clone() else {
-            // /Pattern space with no pattern selected paints nothing
-            // (the initial pattern colour is "no pattern").
-            return Ok(());
-        };
         let mask = match &self.gs.clip {
             Some(m) => {
                 let mut m = m.clone();
@@ -3247,13 +3499,396 @@ impl<'a> Renderer<'a> {
                 m
             }
         };
-        let to_page = pat.matrix.concat(self.pattern_base);
-        let shading = pat.shading.clone();
-        // Paint under the combined mask instead of the gs clip.
-        let saved = self.gs.clip.replace(mask);
-        let r = self.paint_shading(&shading, &to_page, None, true);
-        self.gs.clip = saved;
+        self.paint_pattern_under_mask(&pat, mask)
+    }
+
+    /// Stroke `path` with the stroke pattern: the stroke outline is
+    /// computed in user space (so line width, joins and dashes are in
+    /// user units, §8.4.3) and filled with the pattern.
+    fn stroke_path_with_pattern(
+        &mut self,
+        path: &tiny_skia::Path,
+        stroke: &Stroke,
+        ts: Transform,
+    ) -> Result<(), Error> {
+        let Some(pat) = self.gs.stroke_pattern.clone() else {
+            return Ok(());
+        };
+        let scale = (ts.sx * ts.sy - ts.kx * ts.ky).abs().sqrt().max(0.01);
+        let Some(outline) = path.stroke(stroke, scale) else {
+            return Ok(());
+        };
+        self.fill_path_with_pattern(pat, &outline, FillRule::Winding, ts)
+    }
+
+    /// Paint `pat` wherever `mask` has coverage (the mask already
+    /// includes the clip).
+    fn paint_pattern_under_mask(&mut self, pat: &PatternPaint, mask: Mask) -> Result<(), Error> {
+        match pat {
+            PatternPaint::Shading(sp) => {
+                let to_page = sp.matrix.concat(self.pattern_base);
+                let shading = sp.shading.clone();
+                let saved = self.gs.clip.replace(mask);
+                let r = self.paint_shading(&shading, &to_page, None, true);
+                self.gs.clip = saved;
+                r
+            }
+            PatternPaint::Tiling(tp) => self.paint_tiling(tp.clone(), mask),
+        }
+    }
+
+    /// Paint tiling pattern `tp` under `mask`. Pattern space maps to
+    /// the page through `/Matrix` × `pattern_base` (§8.7.3.1); tile
+    /// (i, j) is the cell translated by (i·XStep, j·YStep) in pattern
+    /// space, clipped to `/BBox`, and only the tiles that can touch the
+    /// mask's device bounds are considered. Two strategies, one result:
+    /// a fill with at most [`DIRECT_TILES`] cells — or whose `/BBox`
+    /// exceeds the step, so tiles overlap — executes the cell content
+    /// once per tile (bounded by `max_pattern_tiles`); a dense
+    /// non-overlapping tiling renders one cell into an offscreen
+    /// pixmap of its device size and stamps it with a repeating
+    /// bilinear shader (cost per device pixel, so no tile bound).
+    /// The fill alpha and blend mode apply once to the stamped result,
+    /// as for a transparency group.
+    fn paint_tiling(&mut self, tp: Rc<TilingPattern>, mask: Mask) -> Result<(), Error> {
+        if self.pattern_depth >= MAX_PATTERN_DEPTH {
+            return Err(Error::LimitExceeded {
+                limit: "tiling pattern nesting depth",
+                max: MAX_PATTERN_DEPTH as u64,
+            });
+        }
+        if let Some(r) = tp.entry_ref {
+            if self.pattern_stack.contains(&r) {
+                return Err(Error::CycleDetected {
+                    context: "tiling pattern cell painting with its own pattern",
+                });
+            }
+        }
+        let Some(dev) = mask_bounds(&mask) else {
+            return Ok(());
+        };
+        let to_page = tp.matrix.concat(self.pattern_base);
+        if !to_page.is_finite() {
+            return Err(Error::Structure(
+                "tiling pattern matrix is not finite".into(),
+            ));
+        }
+        let pat_ts = Transform::from_row(
+            to_page.a as f32,
+            to_page.b as f32,
+            to_page.c as f32,
+            to_page.d as f32,
+            to_page.e as f32,
+            to_page.f as f32,
+        )
+        .post_concat(self.user_to_pix);
+        let Some(inv) = pat_ts.invert() else {
+            return Err(Error::Unsupported {
+                feature: "singular CTM (determinant 0)",
+                detail: "tiling pattern under a degenerate transform is not supported".into(),
+            });
+        };
+        // Pattern-space bounds of the device box to cover.
+        let (mut px0, mut py0, mut px1, mut py1) = (
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        );
+        for (x, y) in [
+            (dev.0, dev.1),
+            (dev.2 + 1, dev.1),
+            (dev.0, dev.3 + 1),
+            (dev.2 + 1, dev.3 + 1),
+        ] {
+            let mut p = tiny_skia::Point {
+                x: x as f32,
+                y: y as f32,
+            };
+            inv.map_point(&mut p);
+            px0 = px0.min(p.x);
+            py0 = py0.min(p.y);
+            px1 = px1.max(p.x);
+            py1 = py1.max(p.y);
+        }
+        if !(px0.is_finite() && py0.is_finite() && px1.is_finite() && py1.is_finite()) {
+            return Err(Error::Structure(
+                "tiling pattern transform overflows pattern space".into(),
+            ));
+        }
+        let bb = tp.bbox;
+        let i0 = ((px0 as f64 - bb.urx) / tp.xstep).floor();
+        let i1 = ((px1 as f64 - bb.llx) / tp.xstep).ceil();
+        let j0 = ((py0 as f64 - bb.ury) / tp.ystep).floor();
+        let j1 = ((py1 as f64 - bb.lly) / tp.ystep).ceil();
+        let tiles = (i1 - i0 + 1.0).max(0.0) * (j1 - j0 + 1.0).max(0.0);
+        if !tiles.is_finite() || tiles > u64::MAX as f64 / 4.0 {
+            return Err(Error::Structure(
+                "tiling pattern tile count overflows".into(),
+            ));
+        }
+        let cell_w = (pat_ts.sx * tp.xstep as f32).hypot(pat_ts.ky * tp.xstep as f32);
+        let cell_h = (pat_ts.kx * tp.ystep as f32).hypot(pat_ts.sy * tp.ystep as f32);
+        let overlap =
+            bb.urx - bb.llx > tp.xstep * (1.0 + 1e-6) || bb.ury - bb.lly > tp.ystep * (1.0 + 1e-6);
+        let cached_ok = !overlap
+            && cell_w.is_finite()
+            && cell_h.is_finite()
+            && cell_w >= 1e-3
+            && cell_h >= 1e-3;
+        let direct = !cached_ok || tiles <= DIRECT_TILES as f64;
+        if direct {
+            let n = tiles as u64;
+            if n > self.limits.max_pattern_tiles
+                || self.pattern_tiles.saturating_add(n) > self.limits.max_pattern_tiles
+            {
+                return Err(Error::LimitExceeded {
+                    limit: "max_pattern_tiles",
+                    max: self.limits.max_pattern_tiles,
+                });
+            }
+            self.pattern_tiles += n;
+        }
+        let decoded = self.doc.decode_stream(&tp.dict, &tp.raw)?;
+        let ops = crate::content::parse_content_stream(&[decoded], self.limits)?;
+        let alpha = (self.gs.fill_alpha, self.gs.stroke_alpha, self.gs.blend_mode);
+        let saved = self.enter_cell(&tp);
+        let r = if direct {
+            self.paint_tiles_direct(
+                &tp,
+                &ops,
+                &to_page,
+                &mask,
+                [i0 as i64, i1 as i64, j0 as i64, j1 as i64],
+                dev,
+                alpha,
+            )
+        } else {
+            self.paint_tiles_cached(&tp, &ops, pat_ts, &mask, cell_w, cell_h, dev, alpha)
+        };
+        self.leave_cell(saved);
         r
+    }
+
+    /// Swap in the interpreter state a pattern cell runs under
+    /// (§8.7.3.1: the cell's own resources, pattern space as its base,
+    /// no text object, no path in progress).
+    fn enter_cell(&mut self, tp: &TilingPattern) -> CellSaved {
+        let pushed_ref = match tp.entry_ref {
+            Some(r) => {
+                self.pattern_stack.push(r);
+                true
+            }
+            None => false,
+        };
+        self.pattern_depth += 1;
+        let uncolored = tp.under.is_some();
+        if uncolored {
+            self.uncolored_depth += 1;
+        }
+        CellSaved {
+            gs: std::mem::replace(&mut self.gs, GraphicsState::new()),
+            gs_stack: std::mem::take(&mut self.gs_stack),
+            resources: self.swap_resources(tp.resources.clone()),
+            pattern_base: self.pattern_base,
+            path: std::mem::take(&mut self.path),
+            in_text: std::mem::replace(&mut self.in_text, false),
+            text_tm: std::mem::replace(&mut self.text_tm, Matrix::IDENTITY),
+            text_tlm: std::mem::replace(&mut self.text_tlm, Matrix::IDENTITY),
+            pushed_ref,
+            uncolored,
+        }
+    }
+
+    fn leave_cell(&mut self, saved: CellSaved) {
+        self.gs = saved.gs;
+        self.gs_stack = saved.gs_stack;
+        self.swap_resources(saved.resources);
+        self.pattern_base = saved.pattern_base;
+        self.path = saved.path;
+        self.in_text = saved.in_text;
+        self.text_tm = saved.text_tm;
+        self.text_tlm = saved.text_tlm;
+        if saved.pushed_ref {
+            self.pattern_stack.pop();
+        }
+        self.pattern_depth -= 1;
+        if saved.uncolored {
+            self.uncolored_depth -= 1;
+        }
+    }
+
+    /// Fresh graphics state for one cell: `ctm` as the CTM, the outer
+    /// fill colour for an uncoloured pattern, `clip` as the clip.
+    fn reset_cell_state(&mut self, tp: &TilingPattern, ctm: Matrix, clip: Option<Mask>) {
+        self.gs = GraphicsState::new();
+        self.gs.ctm = ctm;
+        if let Some(u) = tp.under {
+            self.gs.fill_color = u;
+            self.gs.stroke_color = u;
+        }
+        self.gs.clip = clip;
+        self.gs_stack.clear();
+        self.pattern_base = ctm;
+        self.in_text = false;
+        self.text_tm = Matrix::IDENTITY;
+        self.text_tlm = Matrix::IDENTITY;
+        self.path = CurrentPath::default();
+    }
+
+    /// Execute the cell content once per tile, each under `mask` ∩
+    /// its translated `/BBox`.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_tiles_direct(
+        &mut self,
+        tp: &TilingPattern,
+        ops: &[Operation],
+        to_page: &Matrix,
+        mask: &Mask,
+        range: [i64; 4],
+        dev: (i32, i32, i32, i32),
+        alpha: (f64, f64, tiny_skia::BlendMode),
+    ) -> Result<(), Error> {
+        let bb = tp.bbox;
+        for j in range[2]..=range[3] {
+            for i in range[0]..=range[1] {
+                let cell =
+                    Matrix::new(1.0, 0.0, 0.0, 1.0, i as f64 * tp.xstep, j as f64 * tp.ystep)
+                        .concat(*to_page);
+                // Cull cells whose /BBox misses the device box.
+                let ts = Transform::from_row(
+                    cell.a as f32,
+                    cell.b as f32,
+                    cell.c as f32,
+                    cell.d as f32,
+                    cell.e as f32,
+                    cell.f as f32,
+                )
+                .post_concat(self.user_to_pix);
+                let (mut cx0, mut cy0, mut cx1, mut cy1) = (
+                    f32::INFINITY,
+                    f32::INFINITY,
+                    f32::NEG_INFINITY,
+                    f32::NEG_INFINITY,
+                );
+                for (x, y) in [
+                    (bb.llx, bb.lly),
+                    (bb.urx, bb.lly),
+                    (bb.llx, bb.ury),
+                    (bb.urx, bb.ury),
+                ] {
+                    let mut p = tiny_skia::Point {
+                        x: x as f32,
+                        y: y as f32,
+                    };
+                    ts.map_point(&mut p);
+                    cx0 = cx0.min(p.x);
+                    cy0 = cy0.min(p.y);
+                    cx1 = cx1.max(p.x);
+                    cy1 = cy1.max(p.y);
+                }
+                if cx1 < dev.0 as f32
+                    || cx0 > (dev.2 + 1) as f32
+                    || cy1 < dev.1 as f32
+                    || cy0 > (dev.3 + 1) as f32
+                {
+                    continue;
+                }
+                self.reset_cell_state(tp, cell, Some(mask.clone()));
+                self.gs.fill_alpha = alpha.0;
+                self.gs.stroke_alpha = alpha.1;
+                self.gs.blend_mode = alpha.2;
+                self.intersect_clip_rect(&bb)?;
+                self.run(ops)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Render one cell into a pixmap of its device size and stamp it
+    /// across the mask with a repeating shader.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_tiles_cached(
+        &mut self,
+        tp: &TilingPattern,
+        ops: &[Operation],
+        pat_ts: Transform,
+        mask: &Mask,
+        cell_w: f32,
+        cell_h: f32,
+        dev: (i32, i32, i32, i32),
+        alpha: (f64, f64, tiny_skia::BlendMode),
+    ) -> Result<(), Error> {
+        let cw = (cell_w.ceil() as u32).clamp(1, self.limits.max_render_pixels);
+        let ch = (cell_h.ceil() as u32).clamp(1, self.limits.max_render_pixels);
+        let bytes = cw as u64 * ch as u64 * 4;
+        let page_bytes = self.pixmap.width() as u64 * self.pixmap.height() as u64 * 4;
+        if self
+            .layer_bytes
+            .saturating_add(page_bytes)
+            .saturating_add(bytes)
+            > self.limits.max_render_buffer_bytes
+        {
+            return Err(Error::LimitExceeded {
+                limit: "max_render_buffer_bytes",
+                max: self.limits.max_render_buffer_bytes,
+            });
+        }
+        let mut cell = Pixmap::new(cw, ch)
+            .ok_or_else(|| Error::Structure("pattern cell allocation failed".into()))?;
+        // Pattern space → cell pixels: one step along each axis fills
+        // the cell exactly; (llx, lly) sits at the origin.
+        let sx = cw as f32 / tp.xstep as f32;
+        let sy = ch as f32 / tp.ystep as f32;
+        let cell_ts = Transform::from_row(
+            sx,
+            0.0,
+            0.0,
+            sy,
+            -(tp.bbox.llx as f32) * sx,
+            -(tp.bbox.lly as f32) * sy,
+        );
+        std::mem::swap(&mut *self.pixmap, &mut cell);
+        let saved_u2p = std::mem::replace(&mut self.user_to_pix, cell_ts);
+        self.layer_bytes += bytes;
+        let r = (|| {
+            // Alpha and blend are reset inside the cell and applied once
+            // when the tiles are stamped.
+            self.reset_cell_state(tp, Matrix::IDENTITY, None);
+            self.intersect_clip_rect(&tp.bbox)?;
+            self.run(ops)
+        })();
+        self.layer_bytes -= bytes;
+        self.user_to_pix = saved_u2p;
+        std::mem::swap(&mut *self.pixmap, &mut cell);
+        r?;
+        let Some(cell_inv) = cell_ts.invert() else {
+            return Ok(());
+        };
+        let shader_ts = cell_inv.post_concat(pat_ts);
+        let paint = Paint {
+            shader: tiny_skia::Pattern::new(
+                cell.as_ref(),
+                tiny_skia::SpreadMode::Repeat,
+                tiny_skia::FilterQuality::Bilinear,
+                clamp01(alpha.0) as f32,
+                shader_ts,
+            ),
+            blend_mode: alpha.2,
+            anti_alias: false,
+            ..Default::default()
+        };
+        let Some(rect) = tiny_skia::Rect::from_ltrb(
+            dev.0 as f32,
+            dev.1 as f32,
+            (dev.2 + 1) as f32,
+            (dev.3 + 1) as f32,
+        ) else {
+            return Ok(());
+        };
+        self.pixmap
+            .fill_rect(rect, &paint, Transform::identity(), Some(mask));
+        Ok(())
     }
 
     /// Rasterise `sh` whose space maps to *page* space through
@@ -3424,17 +4059,6 @@ impl<'a> Renderer<'a> {
         if !(self.gs.text.font_size.is_finite() && self.gs.text.font_size > 0.0) {
             return Err(Error::Structure("Tj before Tf — no font size".into()));
         }
-        // Glyphs are filled with a solid colour; a /Pattern fill or
-        // stroke space would need the glyph outlines as a shading clip.
-        if !self.extraction_only
-            && self.gs.text.render_mode != 3
-            && (self.gs.fill_space.is_pattern() || self.gs.stroke_space.is_pattern())
-        {
-            return Err(Error::Unsupported {
-                feature: "pattern-filled text",
-                detail: "text drawn in a /Pattern colour space is not implemented".into(),
-            });
-        }
         let mut pos = 0;
         while pos < bytes.len() {
             let (code, len) = font.read_code(bytes, pos)?;
@@ -3527,6 +4151,10 @@ impl<'a> Renderer<'a> {
 
         let record = self.hidden == 0;
         let actual = self.take_actual_text();
+        // A glyph filled with a /Pattern colour is deferred past the
+        // `gs` borrow below.
+        let mut pattern_fill: Option<(tiny_skia::Path, Transform)> = None;
+        let mut pattern_stroke: Option<(tiny_skia::Path, Transform, Stroke)> = None;
         let gs = &mut self.gs;
         let t = &mut gs.text;
 
@@ -3595,6 +4223,10 @@ impl<'a> Renderer<'a> {
                 // → pixmap therefore wants `trm.post_concat(upx)`.
                 let full = trm_ts.post_concat(self.user_to_pix);
                 match t.render_mode {
+                    0 | 2 if gs.fill_space.is_pattern() => {
+                        // Filled with the pattern once the gs borrow ends.
+                        pattern_fill = Some((path.clone(), full));
+                    }
                     0 | 2 => {
                         // fill (mode 2 also strokes below)
                         let mut p = Paint {
@@ -3611,24 +4243,27 @@ impl<'a> Renderer<'a> {
                 }
                 if t.render_mode == 1 || t.render_mode == 2 {
                     // stroke
-                    let mut p = Paint {
-                        anti_alias: true,
-                        blend_mode: gs.blend_mode,
-                        ..Default::default()
-                    };
-                    let c = gs.stroke_color.with_alpha(gs.stroke_alpha);
-                    p.set_color(tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a));
                     let stroke = tiny_skia::Stroke {
                         width: (gs.line_width * t.font_size / 1000.0) as f32,
                         ..Default::default()
                     };
-                    self.pixmap
-                        .stroke_path(path, &p, &stroke, full, gs.clip.as_ref());
+                    if gs.stroke_space.is_pattern() {
+                        pattern_stroke = Some((path.clone(), full, stroke));
+                    } else {
+                        let mut p = Paint {
+                            anti_alias: true,
+                            blend_mode: gs.blend_mode,
+                            ..Default::default()
+                        };
+                        let c = gs.stroke_color.with_alpha(gs.stroke_alpha);
+                        p.set_color(tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a));
+                        self.pixmap
+                            .stroke_path(path, &p, &stroke, full, gs.clip.as_ref());
+                    }
                 }
                 // mode 3: invisible — paint nothing, still advance.
             }
         }
-
         // Record the extraction event before advancing — the char's
         // origin is the *current* Tm translation, and its advance is
         // what we are about to add.
@@ -3739,6 +4374,16 @@ impl<'a> Renderer<'a> {
             Matrix::new(1.0, 0.0, 0.0, 1.0, tx, 0.0)
         };
         self.text_tm = adv.concat(self.text_tm);
+        // Paint a pattern-filled glyph now that the text-state borrow
+        // is over (the path and its transform were captured above).
+        if let Some((p, full)) = pattern_fill {
+            if let Some(pat) = self.gs.fill_pattern.clone() {
+                self.fill_path_with_pattern(pat, &p, FillRule::Winding, full)?;
+            }
+        }
+        if let Some((p, full, stroke)) = pattern_stroke {
+            self.stroke_path_with_pattern(&p, &stroke, full)?;
+        }
         Ok(())
     }
 
@@ -3980,29 +4625,23 @@ impl<'a> Renderer<'a> {
             }),
         };
 
-        // Stroking with a pattern needs the stroke outline as a clip
-        // for the shading — not implemented; refuse rather than stroke
-        // in the pattern space's black placeholder colour.
-        if self.gs.stroke_space.is_pattern()
-            && matches!(kind, PaintKind::Stroke | PaintKind::FillStroke(_))
-        {
-            return Err(Error::Unsupported {
-                feature: "pattern stroke",
-                detail: "stroking with a /Pattern colour space is not implemented".into(),
-            });
-        }
-
         match kind {
             PaintKind::Stroke => {
-                paint.set_color(ts_color(
-                    self.gs.stroke_color.with_alpha(self.gs.stroke_alpha),
-                ));
-                self.pixmap
-                    .stroke_path(&path, &paint, &stroke, ts, self.gs.clip.as_ref());
+                if self.gs.stroke_space.is_pattern() {
+                    self.stroke_path_with_pattern(&path, &stroke, ts)?;
+                } else {
+                    paint.set_color(ts_color(
+                        self.gs.stroke_color.with_alpha(self.gs.stroke_alpha),
+                    ));
+                    self.pixmap
+                        .stroke_path(&path, &paint, &stroke, ts, self.gs.clip.as_ref());
+                }
             }
             PaintKind::Fill(rule) => {
                 if self.gs.fill_space.is_pattern() {
-                    self.fill_path_with_pattern(&path, rule, ts)?;
+                    if let Some(pat) = self.gs.fill_pattern.clone() {
+                        self.fill_path_with_pattern(pat, &path, rule, ts)?;
+                    }
                 } else {
                     paint.set_color(ts_color(self.gs.fill_color.with_alpha(self.gs.fill_alpha)));
                     self.pixmap
@@ -4011,17 +4650,23 @@ impl<'a> Renderer<'a> {
             }
             PaintKind::FillStroke(rule) => {
                 if self.gs.fill_space.is_pattern() {
-                    self.fill_path_with_pattern(&path, rule, ts)?;
+                    if let Some(pat) = self.gs.fill_pattern.clone() {
+                        self.fill_path_with_pattern(pat, &path, rule, ts)?;
+                    }
                 } else {
                     paint.set_color(ts_color(self.gs.fill_color.with_alpha(self.gs.fill_alpha)));
                     self.pixmap
                         .fill_path(&path, &paint, rule, ts, self.gs.clip.as_ref());
                 }
-                paint.set_color(ts_color(
-                    self.gs.stroke_color.with_alpha(self.gs.stroke_alpha),
-                ));
-                self.pixmap
-                    .stroke_path(&path, &paint, &stroke, ts, self.gs.clip.as_ref());
+                if self.gs.stroke_space.is_pattern() {
+                    self.stroke_path_with_pattern(&path, &stroke, ts)?;
+                } else {
+                    paint.set_color(ts_color(
+                        self.gs.stroke_color.with_alpha(self.gs.stroke_alpha),
+                    ));
+                    self.pixmap
+                        .stroke_path(&path, &paint, &stroke, ts, self.gs.clip.as_ref());
+                }
             }
         }
         // §8.5.4: the clip is updated *after* the path is painted.
