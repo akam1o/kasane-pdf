@@ -44,6 +44,9 @@ pub(crate) struct ToUnicode {
     code_len: u8,
     /// Sorted by `code`. Bound by `max_text_codes`.
     entries: Vec<Mapping>,
+    /// `/ToUnicode /Identity-H` (a predefined CMap *name* rather than
+    /// a stream): every code maps to the scalar of the same value.
+    identity: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +77,9 @@ impl ToUnicode {
     /// empty string. Lone surrogates produce `None` — they are
     /// malformed UTF-16BE.
     pub(crate) fn decode(&self, code: u32) -> Option<String> {
+        if self.identity {
+            return char::from_u32(code).map(|c| c.to_string());
+        }
         let u16s = self.lookup(code)?;
         // UTF-16BE → String; lone surrogates make it invalid.
         String::from_utf16(u16s).ok()
@@ -98,6 +104,7 @@ impl ToUnicode {
         let mut out = ToUnicode {
             code_len: 0, // set by begincodespacerange
             entries: Vec::new(),
+            identity: false,
         };
         let mut seen_codespace = false;
         let mut _entry_count: u64 = 0;
@@ -213,6 +220,29 @@ impl ToUnicode {
 // Low-level tokeniser
 // ---------------------------------------------------------------------
 
+/// White space or a PostScript delimiter — ends a name, number or bare
+/// word (`0>>def` is three tokens).
+fn is_cmap_delim(b: u8) -> bool {
+    matches!(
+        b,
+        b' ' | b'\t'
+            | b'\n'
+            | b'\r'
+            | 0x0C
+            | 0
+            | b'<'
+            | b'>'
+            | b'['
+            | b']'
+            | b'{'
+            | b'}'
+            | b'('
+            | b')'
+            | b'/'
+            | b'%'
+    )
+}
+
 #[derive(Debug)]
 enum Tok<'a> {
     Num(i64),
@@ -311,9 +341,7 @@ impl<'a> Parser<'a> {
             b'/' => {
                 let start = self.pos + 1;
                 let mut end = start;
-                while end < self.data.len()
-                    && !matches!(self.data[end], b' ' | b'\t' | b'\n' | b'\r' | 0x0C | 0)
-                {
+                while end < self.data.len() && !is_cmap_delim(self.data[end]) {
                     end += 1;
                 }
                 self.pos = end;
@@ -341,9 +369,7 @@ impl<'a> Parser<'a> {
             c if c.is_ascii_digit() || c == b'-' || c == b'+' => {
                 let start = self.pos;
                 let mut end = start;
-                while end < self.data.len()
-                    && !matches!(self.data[end], b' ' | b'\t' | b'\n' | b'\r' | 0x0C | 0)
-                {
+                while end < self.data.len() && !is_cmap_delim(self.data[end]) {
                     end += 1;
                 }
                 let s = std::str::from_utf8(&self.data[start..end])
@@ -361,9 +387,7 @@ impl<'a> Parser<'a> {
                 // A bare word — `begincmap`, `endbfchar`, etc.
                 let start = self.pos;
                 let mut end = start;
-                while end < self.data.len()
-                    && !matches!(self.data[end], b' ' | b'\t' | b'\n' | b'\r' | 0x0C | 0)
-                {
+                while end < self.data.len() && !is_cmap_delim(self.data[end]) {
                     end += 1;
                 }
                 let word = &self.data[start..end];
@@ -555,12 +579,6 @@ impl<'a> Parser<'a> {
                         });
                     }
                     let base = decode_utf16be(d)?;
-                    // The spec's overflow check: the last byte must
-                    // not be incremented past 0xFF.
-                    let last_byte = base.last().map(|u| (*u & 0xFF) as u64).unwrap_or(0);
-                    if last_byte + (range_len - 1) > 0xFF {
-                        return Err(Error::Structure("bfrange range overflows last byte".into()));
-                    }
                     let mut cur = base.clone();
                     for i in 0..range_len {
                         // Push the current value, then increment the
@@ -574,21 +592,27 @@ impl<'a> Parser<'a> {
                         if i + 1 == range_len {
                             break;
                         }
-                        if let Some(last) = cur.last_mut() {
-                            // §9.10.3: only the *last byte* of the
-                            // destination increments. `cur` holds UTF-16
-                            // code units, so test the low byte — testing
-                            // the whole unit rejected every range whose
-                            // destination sits above U+00FF (e.g. a
-                            // `<2212>` math-symbol range), which is the
-                            // common case for non-Latin ToUnicode maps.
-                            let v = *last as u32;
-                            if (v & 0xFF) >= 0xFF {
-                                return Err(Error::Structure(
-                                    "bfrange increment overflows last byte".into(),
-                                ));
+                        // §9.10.3 says "the last byte of dstString
+                        // shall be incremented"; a range such as
+                        // `<AC00> <ACFF> <AC00>` followed by `<AD00>`
+                        // relies on the carry into the next byte, and
+                        // Chrome/Skia emit exactly that for Hangul.
+                        // pdf.js and Poppler increment the whole
+                        // string as a big-endian integer, so do we;
+                        // overflowing the whole string is an error.
+                        let mut carry = true;
+                        for unit in cur.iter_mut().rev() {
+                            if !carry {
+                                break;
                             }
-                            *last = (*last & 0xFF00) | ((v + 1) as u16 & 0xFF);
+                            let (v, c) = unit.overflowing_add(1);
+                            *unit = v;
+                            carry = c;
+                        }
+                        if carry {
+                            return Err(Error::Structure(
+                                "bfrange destination overflows its length".into(),
+                            ));
                         }
                     }
                 }
@@ -690,6 +714,22 @@ pub(crate) fn load_tounicode(
         Some(o) => o.clone(),
     };
     let resolved = doc.deref(&obj)?;
+    if let Some(name) = resolved.as_name() {
+        // A predefined CMap name. Only the identity mappings are
+        // defined without external resources (§9.10.2 names
+        // `/Identity-H`/`-V`; pdf.js and Skia write `/Identity`).
+        if name.starts_with(b"Identity") {
+            return Ok(Some(ToUnicode {
+                code_len: 2,
+                entries: Vec::new(),
+                identity: true,
+            }));
+        }
+        return Err(Error::Unsupported {
+            feature: "ToUnicode predefined CMap",
+            detail: format!("/{}", String::from_utf8_lossy(name)),
+        });
+    }
     let (dict, raw) = resolved
         .as_stream()
         .ok_or_else(|| Error::Structure("/ToUnicode is not a stream".into()))?;

@@ -308,11 +308,9 @@ fn probe_extgstate(
                     }
                 }
             }
-            b"SMask" => {
-                if !matches!(v.as_name(), Some(b"None")) {
-                    record(res, "render.smask.unsupported", pi);
-                }
-            }
+            // /SMask dictionaries (alpha and luminosity) are rendered
+            // through an offscreen group; malformed ones fail at run time.
+            b"SMask" => {}
             b"TR" | b"TR2" | b"BG" | b"BG2" | b"UCR" | b"UCR2" => {
                 if !matches!(v.as_name(), Some(b"Default")) {
                     record(res, "render.transfer.unsupported", pi);
@@ -589,14 +587,6 @@ fn probe_xobject(
                     record(res, "render.image.smask.unsupported", pi);
                 }
             }
-            if dict
-                .get(b"SMaskInData".as_slice())
-                .and_then(|o| o.as_i64())
-                .unwrap_or(0)
-                != 0
-            {
-                record(res, "render.image.smask.unsupported", pi);
-            }
             // filters
             if let Some(f) = dict.get(b"Filter".as_slice()) {
                 for name in filter_names(doc, f) {
@@ -606,7 +596,6 @@ fn probe_xobject(
                         b"FlateDecode" | b"DCTDecode" | b"JBIG2Decode" | b"CCITTFaxDecode"
                         | b"LZWDecode" | b"ASCIIHexDecode" | b"ASCII85Decode"
                         | b"RunLengthDecode" => {}
-                        b"JPXDecode" => record(res, "parse.filter.jpx.unsupported", pi),
                         _ => record(res, "parse.filter.unsupported", pi),
                     }
                 }

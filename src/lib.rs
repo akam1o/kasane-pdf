@@ -85,6 +85,7 @@ mod font;
 mod fontsubst;
 mod function;
 mod icc;
+mod jpx;
 mod lexer;
 mod limits;
 mod matrix;

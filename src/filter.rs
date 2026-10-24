@@ -110,6 +110,8 @@ pub(crate) fn normalize_decode_parms(
                 ))
             }
         }
+        // `[]` is written by some producers for "no parameters at all".
+        Some(Object::Array(a)) if a.is_empty() => Ok(vec![None; n_filters]),
         Some(Object::Array(a)) => {
             if a.len() != n_filters {
                 return Err(Error::Structure(format!(

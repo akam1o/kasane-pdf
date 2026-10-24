@@ -36,3 +36,4 @@ ttf-parser = { version = "0.25", default-features = false, features = ["std", "g
 # hayro-ccitt, which also serves /CCITTFaxDecode (G3 1D/2D, G4).
 hayro-jbig2 = { version = "0.3", default-features = false }
 hayro-ccitt = { version = "0.4", default-features = false }
+hayro-jpeg2000 = { version = "0.4", default-features = false }

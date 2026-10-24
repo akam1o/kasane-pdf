@@ -214,17 +214,16 @@ fn gs_ri_accepted() {
 // -------------------------------------------------------------------
 
 #[test]
-fn gs_real_smask_is_unsupported() {
-    // A luminosity soft mask — we refuse rather than mis-render.
+fn gs_smask_group_must_be_a_transparency_group() {
+    // Soft masks render (tests/render_softmask.rs); a /G that is not a
+    // transparency-group form is malformed.
     let r = render_gs(
         b"/GS0 gs 0 g 0 0 100 100 re f",
-        "<< /SMask << /Type /Mask /S /Luminosity /G 9 0 R >> >>",
+        "<< /SMask << /Type /Mask /S /Luminosity /G 3 0 R >> >>",
     );
     match r {
-        Err(Error::Unsupported { feature, .. }) => {
-            assert_eq!(feature, "soft mask (/SMask)");
-        }
-        other => panic!("expected Unsupported soft mask, got {other:?}"),
+        Err(Error::Structure(m)) => assert!(m.contains("form XObject"), "{m}"),
+        other => panic!("expected a structure error, got {other:?}"),
     }
 }
 
@@ -357,16 +356,10 @@ fn image_multiply_blend_darkens() {
 }
 
 #[test]
-fn image_nonseparable_blend_refused() {
-    // /Hue on an image: needs per-pixel colour conversion → refuse
-    // rather than mis-render as Normal.
+fn image_nonseparable_blend_renders() {
+    // /Hue on an image is composited per pixel (§11.3.5.3; see
+    // tests/render_softmask.rs for the values).
     let pdf = pdf_image_with_gs("Hue");
     let doc = Document::from_bytes(&pdf).unwrap();
-    let r = render_page(&doc, &doc.pages()[0], &RenderOptions::default());
-    match r {
-        Err(Error::Unsupported { feature, .. }) => {
-            assert_eq!(feature, "non-separable blend mode on image");
-        }
-        other => panic!("expected non-separable refusal, got {other:?}"),
-    }
+    render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap();
 }

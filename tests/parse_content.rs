@@ -369,6 +369,26 @@ fn split_contents_share_operand_stack() {
     assert_eq!(ops, vec![Operation::MoveTo(10.0, 20.0)]);
 }
 
+/// §7.8.2: the parts of a `/Contents` array divide one stream only at
+/// token boundaries, so a property-list dictionary may continue in the
+/// next part (Acrobat Distiller splits IRS forms inside
+/// `/Artifact <</MCID 59 >>BDC`).
+#[test]
+fn dictionary_split_across_two_streams() {
+    let pdf = pdf_with_two_streams(b"/Artifact <</MCID", b"59 >>BDC EMC");
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let ops = doc.page_operations(&doc.pages()[0]).unwrap();
+    assert_eq!(ops.len(), 2, "{ops:?}");
+    assert!(matches!(
+        ops[0],
+        Operation::BeginMarkedContentWithProps { .. }
+    ));
+    // A token itself never spans the join: `1` + `0` are two numbers.
+    let pdf = pdf_with_two_streams(b"1", b"0 20 m");
+    let doc = Document::from_bytes(&pdf).unwrap();
+    assert!(doc.page_operations(&doc.pages()[0]).is_err());
+}
+
 #[test]
 fn split_contents_share_q_depth() {
     let pdf = pdf_with_two_streams(b"q 1 0 0 1 0 0 cm", b"Q");

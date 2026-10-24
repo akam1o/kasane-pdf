@@ -198,8 +198,10 @@ fn tounicode_bfrange_sequential_above_latin1() {
     assert_eq!(t.chars[0].unicode.as_deref(), Some("\u{2212}"));
     assert_eq!(t.chars[1].unicode.as_deref(), Some("\u{2213}"));
     assert_eq!(t.chars[2].unicode.as_deref(), Some("\u{2214}"));
-    // The real overflow (low byte would pass 0xFF) is still refused.
-    let bad = b"begincmap
+    // A range whose destination's low byte passes 0xFF carries into
+    // the next byte (pdf.js/Poppler behaviour; Chrome emits Hangul
+    // ranges that rely on it): <22FE> <22FF> <2300>.
+    let carry = b"begincmap
         1 begincodespacerange
         <00> <FF>
         endcodespacerange
@@ -207,10 +209,40 @@ fn tounicode_bfrange_sequential_above_latin1() {
         <41> <43> <22FE>
         endbfrange
         endcmap";
+    let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (ABC) Tj ET", Some(carry));
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    assert_eq!(t.chars[2].unicode.as_deref(), Some("\u{2300}"));
+    // Overflowing the whole destination is still refused.
+    let bad = b"begincmap
+        1 begincodespacerange
+        <00> <FF>
+        endcodespacerange
+        1 beginbfrange
+        <41> <43> <FFFE>
+        endbfrange
+        endcmap";
     let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (ABC) Tj ET", Some(bad));
     let doc = Document::from_bytes(&pdf).unwrap();
     let err = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap_err();
     assert!(matches!(err, Error::Structure(_)), "got {err:?}");
+}
+
+/// PostScript delimiters end a token: `/Supplement 0>>def` is the
+/// number 0, `>>`, and the word `def` (Acrobat Distiller writes
+/// `/CIDSystemInfo <</Registry (Adobe) /Ordering (UCS) /Supplement 0>>def`).
+#[test]
+fn tounicode_tokens_end_at_delimiters() {
+    let cmap = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap
+        /CIDSystemInfo <</Registry (Adobe) /Ordering (UCS) /Supplement 0>>def
+        /CMapName /Adobe-Identity-UCS def
+        1 begincodespacerange <00> <FF> endcodespacerange
+        1 beginbfchar <41> <0042> endbfchar
+        endcmap CMapName currentdict /CMap defineresource pop end end";
+    let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (A) Tj ET", Some(cmap));
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    assert_eq!(t.chars[0].unicode.as_deref(), Some("B"));
 }
 
 #[test]
