@@ -772,9 +772,11 @@ files with dangling references or objects without `endobj` — the
 strict walker reports the fault the file has (recovery mode would
 read them). The 51 refusals are the deliberate profile: 27 signed
 documents, 17 `/OCProperties`, 3 XFA, 3 `/AA`, 2 PDF 2.0. qpdf finds
-no errors in 365 of 383 outputs; the 16 warnings are all of one
-kind ("object 3 0 at offset 131: kid 0 (from 0) Resources is missing or invalid; repairing" — a property of the content streams, which the rewrite
-copies verbatim from the inputs) and the 2 errors are the two
+no errors in 365 of 383 outputs; the 16 warnings are properties of the
+inputs that the rewrite copies verbatim — pages without a
+`/Resources` dictionary ("kid … Resources is missing or invalid;
+repairing") and Flate streams qpdf flags as "complete but output may
+still be valid" — and the 2 errors are the two
 decompression-bomb inputs whose content qpdf cannot decode either. Output size: mean 0.99× the input (object
 streams are written as plain objects, which costs up to 1.64× on
 `smaskdim`/`issue14307`; unreferenced objects and dead revisions are
