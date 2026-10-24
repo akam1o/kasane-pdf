@@ -111,10 +111,13 @@ fn bad_startxref_offset_is_an_error() {
 
 #[test]
 fn missing_pages_reference_is_reported() {
+    // /Pages points at an undefined object: §7.3.10 makes the
+    // reference null, and a catalog without /Pages is a structure
+    // error — the file is still refused, with the right reason.
     let err = Document::from_bytes(&fixture("missing_ref.pdf")).unwrap_err();
     assert!(
-        matches!(err, Error::MissingReference(_)),
-        "expected MissingReference, got: {err:?}"
+        matches!(err, Error::Structure(_)),
+        "expected Structure (catalog without /Pages), got: {err:?}"
     );
 }
 
@@ -217,8 +220,10 @@ fn missing_reference_inside_pages_kids() {
     data.extend_from_slice(b"trailer\n<< /Size 3 /Root 1 0 R >>\n");
     data.extend_from_slice(format!("startxref\n{xref_pos}\n%%EOF\n").as_bytes());
 
+    // The undefined kid is null (§7.3.10); a page tree whose kid is
+    // not a dictionary is a structure error.
     let err = Document::from_bytes(&data).unwrap_err();
-    assert!(matches!(err, Error::MissingReference(_)), "got: {err:?}");
+    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
 }
 
 #[test]

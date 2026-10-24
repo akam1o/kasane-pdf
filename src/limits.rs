@@ -105,6 +105,9 @@ pub struct Limits {
     /// patch meshes reduce their subdivision to stay under it.
     /// Default: 500,000.
     pub max_shading_triangles: u64,
+    /// Objects composited individually inside knockout transparency
+    /// groups (§11.4.8) per page; each costs two page-sized passes.
+    pub max_knockout_objects: u64,
     /// Maximum width or height of an image XObject in samples.
     /// Default: 16,384.
     pub max_image_dimension: u32,
@@ -253,6 +256,7 @@ impl Default for Limits {
             max_xobject_invocations: 10_000,
             max_pattern_tiles: 4_096,
             max_shading_triangles: 500_000,
+            max_knockout_objects: 4_096,
             max_image_dimension: 16_384,
             max_image_total_samples: 67_108_864,
             max_image_bytes: 256 * 1024 * 1024,
@@ -616,6 +620,13 @@ impl Limits {
     #[must_use]
     pub fn with_max_pattern_tiles(mut self, value: u64) -> Self {
         self.max_pattern_tiles = value;
+        self
+    }
+
+    /// Set `max_knockout_objects` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_knockout_objects(mut self, value: u64) -> Self {
+        self.max_knockout_objects = value;
         self
     }
 

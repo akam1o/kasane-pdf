@@ -451,12 +451,25 @@ fn matrix_non_finite_detected() {
 // Structural balance
 // -------------------------------------------------------------------
 
+/// Parse through a document and return the operations with the
+/// warnings the parse recorded.
+fn ops_and_warnings(stream: &[u8]) -> Result<(Vec<Operation>, Vec<kasane_pdf::Warning>), Error> {
+    let pdf = pdf_with_stream(stream);
+    let doc = Document::from_bytes(&pdf)?;
+    let ops = doc.page_operations(&doc.pages()[0])?;
+    Ok((ops, doc.take_warnings()))
+}
+
 #[test]
-fn unbalanced_q_is_structure_error() {
-    let err = ops_of(b"q 1 0 0 1 0 0 cm").unwrap_err();
+fn unbalanced_q_is_closed_with_a_warning() {
+    // §7.8.2 wants the block closed; closing it at the end of the
+    // stream changes nothing that follows, so the result is exact and
+    // the deviation is recorded, not refused.
+    let (ops, w) = ops_and_warnings(b"q 1 0 0 1 0 0 cm").unwrap();
+    assert_eq!(ops.last(), Some(&Operation::RestoreState));
     assert!(
-        matches!(err, Error::Structure(ref m) if m.contains("unmatched 'q'")),
-        "got: {err:?}"
+        matches!(&w[..], [kasane_pdf::Warning::UnterminatedContentBlock { detail }] if detail.contains("unmatched 'q'")),
+        "{w:?}"
     );
 }
 
@@ -470,11 +483,12 @@ fn q_underflow_is_structure_error() {
 }
 
 #[test]
-fn unclosed_text_block_is_structure_error() {
-    let err = ops_of(b"BT /F1 12 Tf").unwrap_err();
+fn unclosed_text_block_is_closed_with_a_warning() {
+    let (ops, w) = ops_and_warnings(b"BT /F1 12 Tf").unwrap();
+    assert_eq!(ops.last(), Some(&Operation::EndText));
     assert!(
-        matches!(err, Error::Structure(ref m) if m.contains("BT/ET")),
-        "got: {err:?}"
+        matches!(&w[..], [kasane_pdf::Warning::UnterminatedContentBlock { detail }] if detail.contains("BT without ET")),
+        "{w:?}"
     );
 }
 
@@ -491,17 +505,21 @@ fn nested_bt_is_structure_error() {
 }
 
 #[test]
-fn unbalanced_marked_content_is_structure_error() {
-    let err = ops_of(b"/Tag BMC").unwrap_err();
-    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
+fn unbalanced_marked_content() {
+    // An open block is closed with a warning; a stray EMC has no
+    // block to close and stays an error.
+    let (ops, w) = ops_and_warnings(b"/Tag BMC").unwrap();
+    assert_eq!(ops.last(), Some(&Operation::EndMarkedContent));
+    assert_eq!(w.len(), 1, "{w:?}");
     let err = ops_of(b"EMC").unwrap_err();
     assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
 }
 
 #[test]
-fn unclosed_compat_section_is_structure_error() {
-    let err = ops_of(b"BX").unwrap_err();
-    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
+fn unclosed_compat_section() {
+    let (ops, w) = ops_and_warnings(b"BX").unwrap();
+    assert_eq!(ops.last(), Some(&Operation::EndCompatibility));
+    assert_eq!(w.len(), 1, "{w:?}");
     let err = ops_of(b"EX").unwrap_err();
     assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
 }
@@ -847,11 +865,17 @@ fn error_discards_all_operations() {
 #[test]
 fn existing_pages_still_load() {
     // A document with unbalanced content still loads and reports pages;
-    // the error only surfaces when operations are requested.
+    // the unmatched block is closed with a warning when operations are
+    // requested.
     let doc = Document::from_bytes(&fixture("contents_array.pdf")).unwrap();
     assert_eq!(doc.page_count(), 1);
-    let err = doc.page_operations(&doc.pages()[0]).unwrap_err();
-    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
+    doc.page_operations(&doc.pages()[0]).unwrap();
+    assert!(
+        doc.take_warnings()
+            .iter()
+            .any(|w| matches!(w, kasane_pdf::Warning::UnterminatedContentBlock { .. })),
+        "a warning records the unmatched block"
+    );
     // And the raw contents API is unaffected.
     let contents = doc.page_contents(&doc.pages()[0]).unwrap();
     assert_eq!(contents.len(), 2);

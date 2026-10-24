@@ -316,8 +316,8 @@ fn cli_inspect_annot_missing_rect_errors() {
 }
 
 #[test]
-fn cli_inspect_annot_dangling_ref_errors() {
-    // /Annots [4 0 R] where object 4 does not exist → MissingReference.
+fn cli_inspect_annot_dangling_ref_is_null_with_a_warning() {
+    // /Annots [4 0 R] where object 4 does not exist → null (§7.3.10), warned.
     let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
     let mut offs: Vec<(u32, usize)> = Vec::new();
     let mut push = |n: u32, body: &[u8]| {
@@ -345,7 +345,18 @@ fn cli_inspect_annot_dangling_ref_errors() {
     let src = dir.join("in.pdf");
     fs::write(&src, parts.concat()).unwrap();
     let out = bin().args(["inspect"]).arg(&src).arg("1").output().unwrap();
-    assert!(!out.status.success(), "dangling annot ref must fail");
+    // §7.3.10: the dangling reference is null — an absent annotation —
+    // so the inspection succeeds and records the omission on stderr.
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("warning:") && stderr.contains("undefined object"),
+        "{stderr}"
+    );
 }
 
 // ------------------------------------------------------------------

@@ -394,7 +394,8 @@ fn opaque_transparency_group_appearance_runs_inline() {
     ];
     let r = render(&page_pdf("", "10 0 R", &extra)).unwrap();
     assert_eq!(px(&r, 100, 100), RED);
-    // A knockout group needs real group compositing → refused.
+    // A knockout group composites each object against the group's
+    // initial backdrop; a single opaque object paints the same.
     let ko = stream(
         "/Type /XObject /Subtype /Form /BBox [0 0 10 10] /Group << /S /Transparency /K true >>",
         "1 0 0 rg 0 0 10 10 re f",
@@ -404,8 +405,8 @@ fn opaque_transparency_group_appearance_runs_inline() {
         (11, ko),
     ];
     assert!(matches!(
-        render(&page_pdf("", "10 0 R", &extra)),
-        Err(Error::Unsupported { .. })
+        render(&page_pdf("", "10 0 R", &extra)).map(|r| px(&r, 100, 100)),
+        Ok(RED)
     ));
 }
 

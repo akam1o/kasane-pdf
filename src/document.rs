@@ -94,6 +94,13 @@ impl Document {
     /// * [`Error::CycleDetected`]/[`Error::LimitExceeded`] — hostile
     ///   structure (reference loops, `/Prev` loops, oversized trees).
     pub fn from_bytes_with_limits(data: &[u8], limits: Limits) -> Result<Document, Error> {
+        Self::from_bytes_inner(data, limits, false)
+    }
+
+    /// The load pipeline over the file's own cross-reference table;
+    /// `lenient` switches the recovery rules on (page attributes,
+    /// content streams, objects without `endobj`).
+    fn from_bytes_inner(data: &[u8], limits: Limits, lenient: bool) -> Result<Document, Error> {
         limits.validate()?;
         if data.len() > limits.max_input_bytes {
             return Err(Error::LimitExceeded {
@@ -128,7 +135,7 @@ impl Document {
             objstm_cache: std::cell::RefCell::new(HashMap::new()),
             warnings: std::cell::RefCell::new(Default::default()),
             recovery: None,
-            lenient: false,
+            lenient,
             limits,
         };
 
@@ -159,11 +166,12 @@ impl Document {
         limits: Limits,
     ) -> Result<Document, Error> {
         limits.validate()?;
-        let strict_error = match Self::from_bytes_with_limits(data, limits.clone()) {
-            Ok(mut doc) => {
-                doc.lenient = true;
-                return Ok(doc);
-            }
+        // First over the file's own cross-reference table with the
+        // recovery rules on (identical to a strict parse on conforming
+        // input — the rules only fire on malformed constructs, each
+        // recorded); the table is rebuilt only when that fails.
+        let strict_error = match Self::from_bytes_inner(data, limits.clone(), true) {
+            Ok(doc) => return Ok(doc),
             Err(e @ (Error::NotPdf | Error::Encrypted | Error::LimitExceeded { .. })) => {
                 return Err(e)
             }
@@ -226,6 +234,17 @@ impl Document {
         self.warnings.borrow_mut().push(w);
     }
 
+    /// Whether the document was opened through
+    /// [`Document::from_bytes_recovering`]: besides the cross-reference
+    /// rebuild (reported by [`Document::recovery`] when it happened),
+    /// recovery mode applies the reinterpretations listed in
+    /// [`crate::RecoveryRule`] to malformed content and page
+    /// attributes, each recorded as [`crate::Warning::RecoveryApplied`].
+    /// A strict document never applies them.
+    pub fn recovery_mode(&self) -> bool {
+        self.lenient
+    }
+
     /// How the cross-reference table was rebuilt, when the document
     /// came from [`Document::from_bytes_recovering`] and the strict
     /// parse had failed. `None` for a strictly parsed document.
@@ -244,6 +263,27 @@ impl Document {
     /// detection on the chain itself. Free entries and absent objects
     /// produce [`Error::MissingReference`].
     pub fn resolve(&self, r: IndirectRef) -> Result<Object, Error> {
+        self.resolve_inner(r, true)
+    }
+
+    /// [`Document::resolve`] for the writers and the audit, where a
+    /// reference to an undefined object must surface as
+    /// [`Error::MissingReference`] rather than be carried forward as
+    /// null: a rewrite must not quietly turn a dangling reference into
+    /// `null`, and an audit must report what it could not examine.
+    pub(crate) fn resolve_defined(&self, r: IndirectRef) -> Result<Object, Error> {
+        self.resolve_inner(r, false)
+    }
+
+    /// [`Document::deref`] with the [`Document::resolve_defined`] rule.
+    pub(crate) fn deref_defined(&self, obj: &Object) -> Result<Object, Error> {
+        match obj {
+            Object::Ref(r) => self.resolve_defined(*r),
+            other => Ok(other.clone()),
+        }
+    }
+
+    fn resolve_inner(&self, r: IndirectRef, undefined_is_null: bool) -> Result<Object, Error> {
         let mut seen = HashSet::new();
         let mut current = r;
         loop {
@@ -265,12 +305,21 @@ impl Document {
                 return self.resolve_compressed(current, objstm_num, index);
             }
 
-            let offset = self.xref.offset_of(current).ok_or({
-                Error::MissingReference(MissingReference {
-                    reference: current,
-                    context: "indirect object",
-                })
-            })?;
+            let Some(offset) = self.xref.offset_of(current) else {
+                // §7.3.10: a reference to an undefined object — no
+                // entry for this number and generation, or a free
+                // entry — is a reference to the null object, in strict
+                // mode too. Recorded so the omission is visible. The
+                // writers and the audit ask for the error instead.
+                if !undefined_is_null {
+                    return Err(Error::MissingReference(MissingReference {
+                        reference: current,
+                        context: "indirect object",
+                    }));
+                }
+                self.push_warning(crate::Warning::UndefinedReference { reference: current });
+                return Ok(Object::Null);
+            };
 
             let length_of = |r: IndirectRef| self.indirect_stream_length(r);
             let mut parser = Parser::new(&self.data, &self.limits);
@@ -635,6 +684,11 @@ impl Document {
         let mut out = Vec::with_capacity(items.len());
         for item in items {
             let obj = self.deref(&item)?;
+            if matches!(obj, Object::Null) {
+                // §7.3.9 / §7.3.10: null (or a reference to an undefined
+                // object) contributes no content.
+                continue;
+            }
             let (dict, raw) = obj
                 .as_stream()
                 .ok_or_else(|| Error::Structure("page /Contents entry is not a stream".into()))?;
@@ -657,7 +711,13 @@ impl Document {
     /// discards all operations parsed so far.
     pub fn page_operations(&self, page: &Page) -> Result<Vec<Operation>, Error> {
         let contents = self.page_contents(page)?;
-        content::parse_content_stream(&contents, &self.limits)
+        {
+            let mut warnings = Vec::new();
+            let r =
+                content::parse_content_stream(&contents, &self.limits, self.lenient, &mut warnings);
+            self.warnings.borrow_mut().extend(warnings);
+            r
+        }
     }
 
     /// Like [`page_operations`](Self::page_operations) but also returns
@@ -667,7 +727,17 @@ impl Document {
     /// count.
     pub fn page_operations_counted(&self, page: &Page) -> Result<(Vec<Operation>, usize), Error> {
         let contents = self.page_contents(page)?;
-        content::parse_content_stream_counted(&contents, &self.limits)
+        {
+            let mut warnings = Vec::new();
+            let r = content::parse_content_stream_counted(
+                &contents,
+                &self.limits,
+                self.lenient,
+                &mut warnings,
+            );
+            self.warnings.borrow_mut().extend(warnings);
+            r
+        }
     }
 
     /// Like [`page_operations_counted`](Self::page_operations_counted)
@@ -677,7 +747,17 @@ impl Document {
     /// operator names, not grouped display labels.
     pub fn page_operations_named(&self, page: &Page) -> Result<crate::content::NamedOps, Error> {
         let contents = self.page_contents(page)?;
-        content::parse_content_stream_named(&contents, &self.limits)
+        {
+            let mut warnings = Vec::new();
+            let r = content::parse_content_stream_named(
+                &contents,
+                &self.limits,
+                self.lenient,
+                &mut warnings,
+            );
+            self.warnings.borrow_mut().extend(warnings);
+            r
+        }
     }
 
     // ---------------------------------------------------------------
@@ -963,13 +1043,79 @@ impl Document {
             return Ok(());
         }
 
-        let media_box = attrs.media_box.ok_or_else(|| {
-            Error::Structure(format!(
-                "page {} has no MediaBox (not set on page or any ancestor)",
-                pages.len() + 1
-            ))
-        })?;
-        let crop_box = attrs.crop_box.unwrap_or(media_box);
+        let degenerate =
+            |r: &Rect| !(r.urx - r.llx).abs().is_normal() || !(r.ury - r.lly).abs().is_normal();
+        let media_box = match attrs.media_box {
+            Some(mb) if self.lenient && degenerate(&mb) => {
+                // Recovery rule: a zero-area /MediaBox is as unusable as
+                // a missing one; US Letter, as every major reader.
+                self.push_warning(crate::Warning::RecoveryApplied {
+                    rule: crate::RecoveryRule::MediaBoxDefault,
+                    detail: format!("page {}: degenerate /MediaBox", pages.len() + 1),
+                });
+                attrs.crop_box = None;
+                Rect {
+                    llx: 0.0,
+                    lly: 0.0,
+                    urx: 612.0,
+                    ury: 792.0,
+                }
+            }
+            Some(mb) => mb,
+            None if self.lenient => {
+                // Recovery rule: US Letter, what every major reader
+                // assumes. Table 30 requires /MediaBox, so strict mode
+                // refuses below.
+                self.push_warning(crate::Warning::RecoveryApplied {
+                    rule: crate::RecoveryRule::MediaBoxDefault,
+                    detail: format!("page {}", pages.len() + 1),
+                });
+                Rect {
+                    llx: 0.0,
+                    lly: 0.0,
+                    urx: 612.0,
+                    ury: 792.0,
+                }
+            }
+            None => {
+                return Err(Error::Structure(format!(
+                    "page {} has no MediaBox (not set on page or any ancestor)",
+                    pages.len() + 1
+                )))
+            }
+        };
+        let crop_box = match attrs.crop_box {
+            Some(cb) if self.lenient && degenerate(&cb) => {
+                // Recovery rule: a zero-area /CropBox would render
+                // nothing; the media box is used instead.
+                self.push_warning(crate::Warning::RecoveryApplied {
+                    rule: crate::RecoveryRule::MediaBoxDefault,
+                    detail: format!("page {}: degenerate /CropBox ignored", pages.len() + 1),
+                });
+                media_box
+            }
+            Some(cb)
+                if self.lenient && {
+                    // The crop box is used as its intersection with the
+                    // media box (Table 30); an empty intersection renders
+                    // nothing.
+                    let (x0, x1) = (cb.llx.max(media_box.llx), cb.urx.min(media_box.urx));
+                    let (y0, y1) = (cb.lly.max(media_box.lly), cb.ury.min(media_box.ury));
+                    !(x1 - x0).is_normal() || x1 <= x0 || !(y1 - y0).is_normal() || y1 <= y0
+                } =>
+            {
+                self.push_warning(crate::Warning::RecoveryApplied {
+                    rule: crate::RecoveryRule::MediaBoxDefault,
+                    detail: format!(
+                        "page {}: /CropBox outside the media box ignored",
+                        pages.len() + 1
+                    ),
+                });
+                media_box
+            }
+            Some(cb) => cb,
+            None => media_box,
+        };
         let rotate = attrs.rotate.unwrap_or(0);
         let contents = node.get(b"Contents".as_slice()).cloned();
         pages.push(Page::new(

@@ -226,7 +226,7 @@ impl GraphicsState {
 /// `in_progress` tracks whether we're inside a path object so the
 /// renderer can reject out-of-place operators with a typed error
 /// rather than guessing at unspecified behaviour.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct CurrentPath {
     builder: PathBuilder,
     has_open_subpath: bool,
@@ -969,7 +969,17 @@ impl<'a> Renderer<'a> {
         // order and rejected rather than interpreted under undefined
         // semantics.
         if self.path.in_progress && !op.is_path_level() {
-            return Err(placement_err(op.name()));
+            if self.doc.recovery_mode() {
+                // Recovery rule: applied where it stands, before the
+                // path is painted — the reading every major reader
+                // gives a colour or state change inside a path object.
+                self.doc.push_warning(crate::Warning::RecoveryApplied {
+                    rule: crate::RecoveryRule::OperatorInsidePathObject,
+                    detail: op.name().to_string(),
+                });
+            } else {
+                return Err(placement_err(op.name()));
+            }
         }
         // §8.7.3.3: an uncoloured pattern cell "shall not" set colour;
         // the colour comes from the `scn` that selected the pattern,
@@ -1026,8 +1036,22 @@ impl<'a> Renderer<'a> {
             Operation::SetMiterLimit(m) => self.gs.miter_limit = *m,
             Operation::SetDash { dashes, phase } => self.gs.dash = Some((dashes.clone(), *phase)),
             Operation::SetFlatness(f) => self.gs.flatness = *f,
-            Operation::SetRenderingIntent(_) => {
-                // Stored; no effect on device-space output.
+            Operation::SetRenderingIntent(name) => {
+                // No effect on device-space output (no colour
+                // management). §8.6.5.8: an unrecognised name falls back
+                // to RelativeColorimetric — recorded.
+                if !matches!(
+                    name.as_slice(),
+                    b"AbsoluteColorimetric"
+                        | b"RelativeColorimetric"
+                        | b"Saturation"
+                        | b"Perceptual"
+                ) {
+                    self.doc
+                        .push_warning(crate::Warning::UnknownRenderingIntent {
+                            name: String::from_utf8_lossy(name).into_owned(),
+                        });
+                }
             }
 
             // ---- path construction ------------------------------
@@ -1374,6 +1398,16 @@ impl<'a> Renderer<'a> {
                     .resolve_resource_raw(&self.resources, "Properties", n)?
                 {
                     Some(o) => o,
+                    None if self.doc.recovery_mode() => {
+                        // Recovery rule: no properties, hence no
+                        // optional-content membership — the sequence
+                        // is plain marked content and stays visible.
+                        self.doc.push_warning(crate::Warning::RecoveryApplied {
+                            rule: crate::RecoveryRule::IgnoredUndefinedProperty,
+                            detail: format!("/{}", show_name(n)),
+                        });
+                        Object::Dict(Dict::new())
+                    }
                     None => {
                         return Err(Error::Structure(format!(
                             "marked-content /Properties entry /{} is undefined",
@@ -1794,7 +1828,16 @@ impl<'a> Renderer<'a> {
                             | b"Saturation"
                             | b"Perceptual",
                         ) => {}
-                        _ => {
+                        Some(other) => {
+                            // §8.6.5.8: an unrecognised intent falls
+                            // back to RelativeColorimetric; no colour
+                            // management here depends on it.
+                            self.doc
+                                .push_warning(crate::Warning::UnknownRenderingIntent {
+                                    name: String::from_utf8_lossy(other).into_owned(),
+                                });
+                        }
+                        None => {
                             return Err(Error::Structure(
                                 "/RI must be a rendering-intent name".into(),
                             ))
@@ -1851,11 +1894,13 @@ impl<'a> Renderer<'a> {
                         }
                     }
                 }
-                // Transfer functions TR/TR2 — accepted only as the
-                // name `/Default` (no adjustment). A real function
-                // (dict / array of functions) changes tone → refuse.
+                // Transfer functions TR/TR2 — accepted as the names
+                // `/Default` (TR2: the device default) and `/Identity`
+                // (Table 58: the identity function), both no
+                // adjustment. A real function (dict / array of
+                // functions) changes tone → refuse.
                 b"TR" | b"TR2" | b"BG" | b"BG2" | b"UCR" | b"UCR2" => {
-                    if !matches!(v.as_name(), Some(b"Default")) {
+                    if !matches!(v.as_name(), Some(b"Default") | Some(b"Identity")) {
                         return Err(Error::Unsupported {
                             feature: "transfer/black-generation function",
                             detail: format!(
@@ -2168,14 +2213,6 @@ impl<'a> Renderer<'a> {
                 });
             }
             let knockout = gd.get(b"K".as_slice()).and_then(|o| o.as_bool()) == Some(true);
-            if knockout {
-                return Err(Error::Unsupported {
-                    feature: "group XObject (/Group in a form dictionary)",
-                    detail: "knockout transparency group (/K true) needs per-object backdrop \
-                             replacement, which is not implemented"
-                        .into(),
-                });
-            }
             let isolated = gd.get(b"I".as_slice()).and_then(|o| o.as_bool()) == Some(true);
             let opaque_normal = self.gs.fill_alpha >= 1.0
                 && self.gs.stroke_alpha >= 1.0
@@ -2186,12 +2223,25 @@ impl<'a> Renderer<'a> {
             // its contents blend with. A non-isolated group sees the
             // page: exact inline when opaque-Normal; through a layer
             // otherwise, provided its contents blend Normal.
-            group = if isolated {
-                GroupMode::Layer { isolated: true }
+            group = if knockout {
+                // Each object replaces, within its shape, what earlier
+                // objects of the group painted: always offscreen.
+                GroupMode::Layer {
+                    isolated,
+                    knockout: true,
+                }
+            } else if isolated {
+                GroupMode::Layer {
+                    isolated: true,
+                    knockout: false,
+                }
             } else if opaque_normal {
                 GroupMode::Inline
             } else {
-                GroupMode::Layer { isolated: false }
+                GroupMode::Layer {
+                    isolated: false,
+                    knockout: false,
+                }
             };
         }
         // /OC was evaluated by `do_xobject`. A /Ref (reference
@@ -2257,11 +2307,25 @@ impl<'a> Renderer<'a> {
         let run_result = (|| {
             clip_result?;
             let decoded = self.doc.decode_stream(dict, raw)?;
-            let ops = crate::content::parse_content_stream(&[decoded], self.limits)?;
+            let ops = {
+                let mut warnings = Vec::new();
+                let ops = crate::content::parse_content_stream(
+                    &[decoded],
+                    self.limits,
+                    self.doc.recovery_mode(),
+                    &mut warnings,
+                )?;
+                for w in warnings {
+                    self.doc.push_warning(w);
+                }
+                ops
+            };
             self.xobject_depth += 1;
             let r = match group {
                 GroupMode::None | GroupMode::Inline => self.run(&ops),
-                GroupMode::Layer { isolated } => self.run_in_layer(&ops, isolated),
+                GroupMode::Layer { isolated, knockout } => {
+                    self.run_in_layer(&ops, isolated, knockout)
+                }
             };
             self.xobject_depth -= 1;
             r
@@ -2289,13 +2353,25 @@ impl<'a> Renderer<'a> {
     /// backdrop's contribution is then removed per §11.4.7,
     /// C = Cn + (Cn − C0)·(α0/αgn − α0), leaving the group's colour and
     /// αgn to composite exactly like an isolated group.
-    fn run_in_layer(&mut self, ops: &[Operation], isolated: bool) -> Result<(), Error> {
+    fn run_in_layer(
+        &mut self,
+        ops: &[Operation],
+        isolated: bool,
+        knockout: bool,
+    ) -> Result<(), Error> {
         if self.extraction_only {
             return self.run(ops);
         }
         let (w, h) = (self.pixmap.width(), self.pixmap.height());
         let bytes = w as u64 * h as u64 * 4;
-        let layers = if isolated { 1 } else { 2 };
+        // Knockout: the accumulated group, a shape layer and an object
+        // layer (plus the non-isolated second pass).
+        let layers = match (knockout, isolated) {
+            (false, true) => 1,
+            (false, false) => 2,
+            (true, true) => 3,
+            (true, false) => 4,
+        };
         // The page pixmap plus every live layer must fit the budget.
         if self
             .layer_bytes
@@ -2315,6 +2391,10 @@ impl<'a> Renderer<'a> {
         self.gs.fill_alpha = 1.0;
         self.gs.stroke_alpha = 1.0;
         self.gs.blend_mode = tiny_skia::BlendMode::SourceOver;
+
+        if knockout {
+            return self.run_knockout(ops, isolated, alpha, bm, mask, bytes);
+        }
 
         // Pass 1: onto transparency → the group's own colour (isolated
         // semantics) and alpha αgn.
@@ -2340,31 +2420,145 @@ impl<'a> Renderer<'a> {
             self.layer_bytes -= bytes;
             std::mem::swap(&mut *self.pixmap, &mut over);
             r?;
-            let backdrop = self.pixmap.data();
-            for ((g, n), b) in layer
+            remove_backdrop(&mut layer, &over, self.pixmap.data());
+        }
+        self.composite_layer(&layer, alpha, bm, mask.as_deref());
+        Ok(())
+    }
+
+    /// A knockout group (§11.4.8): every object is composited against
+    /// the group's *initial* backdrop rather than against what earlier
+    /// objects of the group painted, and replaces them within its
+    /// shape: `G_j = (1 − f_j)·G_{j−1} + f_j·R_j`, where `R_j` is the
+    /// object painted over the initial backdrop with its own alpha,
+    /// blend mode and soft mask, and `f_j` its shape (coverage with
+    /// opacity 1). An object is one painting operator — a path paint,
+    /// a text-showing operator, an image, a shading, a form XObject
+    /// (a nested group is a single object). Isolated groups start from
+    /// transparency; non-isolated groups start from the page and have
+    /// the backdrop's contribution removed afterwards exactly as in
+    /// `run_in_layer` (§11.4.7). Graphics-state changes inside an
+    /// object's own form that alter its opacity are applied in both
+    /// passes, so such a nested object's shape is taken with those
+    /// changes — the one place this implementation is not exact.
+    #[allow(clippy::too_many_arguments)]
+    fn run_knockout(
+        &mut self,
+        ops: &[Operation],
+        isolated: bool,
+        alpha: f64,
+        bm: tiny_skia::BlendMode,
+        mask: Option<Rc<Mask>>,
+        bytes: u64,
+    ) -> Result<(), Error> {
+        let (w, h) = (self.pixmap.width(), self.pixmap.height());
+        let saved = (self.gs.clone(), self.gs_stack.len());
+        // Pass 1: against transparency — the group's own colour and
+        // alpha (exact for an isolated group).
+        let mut layer = Pixmap::new(w, h)
+            .ok_or_else(|| Error::Structure("cannot allocate transparency-group layer".into()))?;
+        self.knockout_pass(ops, &mut layer, None, bytes)?;
+        if !isolated {
+            // Pass 2: against a copy of the page, then remove the
+            // backdrop's contribution (§11.4.7).
+            self.gs = saved.0;
+            self.gs_stack.truncate(saved.1);
+            let backdrop = self.pixmap.clone();
+            let mut over = backdrop.clone();
+            self.knockout_pass(ops, &mut over, Some(&backdrop), bytes)?;
+            remove_backdrop(&mut layer, &over, backdrop.data());
+        }
+        self.composite_layer(&layer, alpha, bm, mask.as_deref());
+        Ok(())
+    }
+
+    /// One knockout pass: `acc` starts as the initial backdrop
+    /// (`initial`, or transparent) and receives each object through the
+    /// knockout formula. Non-painting operators run once, directly;
+    /// each painting operator runs twice — once with opacity 1 onto a
+    /// transparent layer for its shape, once with its real state onto a
+    /// copy of the initial backdrop — from the same saved state.
+    fn knockout_pass(
+        &mut self,
+        ops: &[Operation],
+        acc: &mut Pixmap,
+        initial: Option<&Pixmap>,
+        bytes: u64,
+    ) -> Result<(), Error> {
+        let (w, h) = (acc.width(), acc.height());
+        if let Some(i) = initial {
+            acc.data_mut().copy_from_slice(i.data());
+        }
+        let mut shape = Pixmap::new(w, h)
+            .ok_or_else(|| Error::Structure("cannot allocate knockout shape layer".into()))?;
+        let mut object = Pixmap::new(w, h)
+            .ok_or_else(|| Error::Structure("cannot allocate knockout object layer".into()))?;
+        let mut objects: u64 = 0;
+        for op in ops {
+            if !is_knockout_object(op) {
+                self.execute(op)?;
+                continue;
+            }
+            objects += 1;
+            if objects > self.limits.max_knockout_objects {
+                return Err(Error::LimitExceeded {
+                    limit: "max_knockout_objects",
+                    max: self.limits.max_knockout_objects,
+                });
+            }
+            let snap_gs = self.gs.clone();
+            let snap_path = self.path.clone();
+            let (snap_tm, snap_tlm) = (self.text_tm, self.text_tlm);
+
+            // Shape: the object at opacity 1, Normal, unmasked.
+            shape.fill(tiny_skia::Color::TRANSPARENT);
+            self.clear_soft_mask();
+            self.gs.fill_alpha = 1.0;
+            self.gs.stroke_alpha = 1.0;
+            self.gs.blend_mode = tiny_skia::BlendMode::SourceOver;
+            std::mem::swap(&mut *self.pixmap, &mut shape);
+            self.layer_bytes += bytes;
+            let r = self.execute(op);
+            self.layer_bytes -= bytes;
+            std::mem::swap(&mut *self.pixmap, &mut shape);
+            r?;
+
+            // The object itself, over the initial backdrop, from the
+            // same state.
+            self.gs = snap_gs;
+            self.path = snap_path;
+            self.text_tm = snap_tm;
+            self.text_tlm = snap_tlm;
+            match initial {
+                Some(i) => object.data_mut().copy_from_slice(i.data()),
+                None => object.fill(tiny_skia::Color::TRANSPARENT),
+            }
+            std::mem::swap(&mut *self.pixmap, &mut object);
+            self.layer_bytes += bytes;
+            let r = self.execute(op);
+            self.layer_bytes -= bytes;
+            std::mem::swap(&mut *self.pixmap, &mut object);
+            r?;
+
+            // G = (1 − f)·G + f·R, premultiplied channels.
+            for ((g, o), f) in acc
                 .data_mut()
                 .as_chunks_mut::<4>()
                 .0
                 .iter_mut()
-                .zip(over.data().as_chunks::<4>().0)
-                .zip(backdrop.as_chunks::<4>().0)
+                .zip(object.data().as_chunks::<4>().0)
+                .zip(shape.data().as_chunks::<4>().0)
             {
-                let agn = g[3] as f64 / 255.0;
-                let a0 = b[3] as f64 / 255.0;
-                let an = n[3] as f64 / 255.0;
-                if agn <= 0.0 || a0 <= 0.0 || an <= 0.0 {
-                    continue; // nothing painted, or no backdrop: pass 1 is exact
+                let f = f[3] as f64 / 255.0;
+                if f <= 0.0 {
+                    continue;
                 }
-                let f = a0 / agn - a0;
-                for ch in 0..3 {
-                    let cn = n[ch] as f64 / 255.0 / an;
-                    let c0 = b[ch] as f64 / 255.0 / a0;
-                    let c = clamp01(cn + (cn - c0) * f);
-                    g[ch] = to_u8(c * agn);
+                for ch in 0..4 {
+                    let v = g[ch] as f64 * (1.0 - f) + o[ch] as f64 * f;
+                    g[ch] = v.round().clamp(0.0, 255.0) as u8;
                 }
             }
         }
-        self.composite_layer(&layer, alpha, bm, mask.as_deref());
         Ok(())
     }
 
@@ -2404,6 +2598,13 @@ impl<'a> Renderer<'a> {
                 continue;
             }
             let Some(ad) = annot.as_dict() else {
+                if self.doc.recovery_mode() {
+                    self.doc.push_warning(crate::Warning::RecoveryApplied {
+                        rule: crate::RecoveryRule::IgnoredInvalidAnnotation,
+                        detail: "/Annots entry is not a dictionary".into(),
+                    });
+                    continue;
+                }
                 return Err(Error::Structure(
                     "/Annots entry is not an annotation dictionary".into(),
                 ));
@@ -2447,7 +2648,20 @@ impl<'a> Renderer<'a> {
             // for a form widget without one (or under
             // /NeedAppearances) — one synthesised from the field
             // (§12.7.3.3, `crate::acroform`).
-            let has_ap = ad.contains_key(b"AP".as_slice());
+            // An /AP whose normal appearance /N is null (absent, or a
+            // reference to an undefined object — §7.3.10) is no
+            // appearance at all: the same path as a missing /AP.
+            let has_ap = match ad.get(b"AP".as_slice()) {
+                None => false,
+                Some(o) => match self.doc.deref(o)? {
+                    Object::Dict(d) => match d.get(b"N".as_slice()) {
+                        None => false,
+                        Some(n) => !matches!(self.doc.deref(n)?, Object::Null),
+                    },
+                    Object::Null => false,
+                    _ => return Err(Error::Structure("/AP is not a dictionary".into())),
+                },
+            };
             let mut fit_rect = [rx0, ry0, rx1, ry1];
             let mut group_alpha: Option<f64> = None;
             let mut multiply = false;
@@ -2492,7 +2706,7 @@ impl<'a> Renderer<'a> {
             let (sdict, sraw, stream_ref): (Dict, Vec<u8>, Option<IndirectRef>) = match synth {
                 Some(a) => (a.dict, a.content, None),
                 None => {
-                    let ap = match ad.get(b"AP".as_slice()) {
+                    let ap = match ad.get(b"AP".as_slice()).filter(|_| has_ap) {
                         Some(o) => self.doc.deref(o)?,
                         None => {
                             if subtype == b"Link" {
@@ -2558,7 +2772,13 @@ impl<'a> Renderer<'a> {
                                 None => continue,
                                 Some(o) => {
                                     stream_ref = o.as_ref();
-                                    self.doc.deref(o)?
+                                    let s = self.doc.deref(o)?;
+                                    if matches!(s, Object::Null) {
+                                        // The state names an undefined
+                                        // object (§7.3.10): nothing to draw.
+                                        continue;
+                                    }
+                                    s
                                 }
                             }
                         }
@@ -2568,9 +2788,16 @@ impl<'a> Renderer<'a> {
                             ))
                         }
                     };
-                    let (sdict, sraw) = stream.as_stream().ok_or_else(|| {
-                        Error::Structure("appearance state is not a stream".into())
-                    })?;
+                    let Some((sdict, sraw)) = stream.as_stream() else {
+                        if self.doc.recovery_mode() {
+                            self.doc.push_warning(crate::Warning::RecoveryApplied {
+                                rule: crate::RecoveryRule::IgnoredInvalidAnnotation,
+                                detail: "appearance state is not a stream".into(),
+                            });
+                            continue;
+                        }
+                        return Err(Error::Structure("appearance state is not a stream".into()));
+                    };
                     (sdict.clone(), sraw.to_vec(), stream_ref)
                 }
             };
@@ -2578,6 +2805,15 @@ impl<'a> Renderer<'a> {
             // Algorithm 8.1: transform /BBox by /Matrix, fit the result's
             // bounds to /Rect. A degenerate transformed box (zero width
             // or height) gets scale 1 on that axis.
+            if !sdict.contains_key(b"BBox".as_slice()) && self.doc.recovery_mode() {
+                // Recovery rule: a form without the required /BBox has
+                // no defined placement; the annotation is skipped.
+                self.doc.push_warning(crate::Warning::RecoveryApplied {
+                    rule: crate::RecoveryRule::IgnoredInvalidAnnotation,
+                    detail: "appearance stream has no /BBox".into(),
+                });
+                continue;
+            }
             let bbox = sdict
                 .get(b"BBox".as_slice())
                 .ok_or_else(|| Error::Structure("appearance stream has no /BBox".into()))
@@ -3438,10 +3674,12 @@ impl<'a> Renderer<'a> {
                     .collect(),
             ),
         );
-        let parms = crate::filter::normalize_decode_parms(
-            dict.get(b"DecodeParms".as_slice()),
-            filters.len(),
-        )?;
+        // `/DecodeParms` may be indirect (§7.3.8.2).
+        let decode_parms = dict
+            .get(b"DecodeParms".as_slice())
+            .map(|o| self.doc.deref(o))
+            .transpose()?;
+        let parms = crate::filter::normalize_decode_parms(decode_parms.as_ref(), filters.len())?;
         pre.insert(
             b"DecodeParms".to_vec(),
             Object::Array(
@@ -3461,7 +3699,20 @@ impl<'a> Renderer<'a> {
     /// (pre-blended colour) is refused rather than approximated.
     fn decode_soft_mask(&mut self, obj: &Object, w: usize, h: usize) -> Result<Vec<u8>, Error> {
         let sm = self.doc.deref(obj)?;
+        if matches!(sm, Object::Null) {
+            // No soft mask (a reference to an undefined object is null,
+            // §7.3.10): fully opaque.
+            return Ok(vec![255; w * h]);
+        }
         let Some((sd, sraw)) = sm.as_stream() else {
+            if self.doc.recovery_mode() {
+                // Recovery rule: `/SMask /None` and the like on an image.
+                self.doc.push_warning(crate::Warning::RecoveryApplied {
+                    rule: crate::RecoveryRule::IgnoredInvalidSoftMask,
+                    detail: format!("{sm:?}").chars().take(40).collect(),
+                });
+                return Ok(vec![255; w * h]);
+            }
             return Err(Error::Structure("image /SMask is not a stream".into()));
         };
         if let Some(st) = sd.get(b"Subtype".as_slice()).and_then(|o| o.as_name()) {
@@ -3591,10 +3842,12 @@ impl<'a> Renderer<'a> {
                 max: self.limits.max_filter_chain as u64,
             });
         }
-        let parms = crate::filter::normalize_decode_parms(
-            dict.get(b"DecodeParms".as_slice()),
-            filters.len(),
-        )?;
+        // `/DecodeParms` may be indirect (§7.3.8.2).
+        let decode_parms = dict
+            .get(b"DecodeParms".as_slice())
+            .map(|o| self.doc.deref(o))
+            .transpose()?;
+        let parms = crate::filter::normalize_decode_parms(decode_parms.as_ref(), filters.len())?;
         let mut buf = raw.to_vec();
         let last = filters.len() - 1;
         for (i, fname) in filters.iter().enumerate() {
@@ -4252,7 +4505,19 @@ impl<'a> Renderer<'a> {
             self.pattern_tiles += n;
         }
         let decoded = self.doc.decode_stream(&tp.dict, &tp.raw)?;
-        let ops = crate::content::parse_content_stream(&[decoded], self.limits)?;
+        let ops = {
+            let mut warnings = Vec::new();
+            let ops = crate::content::parse_content_stream(
+                &[decoded],
+                self.limits,
+                self.doc.recovery_mode(),
+                &mut warnings,
+            )?;
+            for w in warnings {
+                self.doc.push_warning(w);
+            }
+            ops
+        };
         let alpha = (self.gs.fill_alpha, self.gs.stroke_alpha, self.gs.blend_mode);
         let saved = self.enter_cell(&tp);
         let r = if direct {
@@ -5143,7 +5408,19 @@ impl<'a> Renderer<'a> {
                 self.in_text = false;
                 let run_result = (|| {
                     let decoded = self.doc.decode_stream(&cdict, &craw)?;
-                    let ops = crate::content::parse_content_stream(&[decoded], self.limits)?;
+                    let ops = {
+                        let mut warnings = Vec::new();
+                        let ops = crate::content::parse_content_stream(
+                            &[decoded],
+                            self.limits,
+                            self.doc.recovery_mode(),
+                            &mut warnings,
+                        )?;
+                        for w in warnings {
+                            self.doc.push_warning(w);
+                        }
+                        ops
+                    };
                     self.xobject_depth += 1;
                     let r = self.run(&ops);
                     self.xobject_depth -= 1;
@@ -5364,8 +5641,10 @@ enum GroupMode {
     None,
     /// Painted directly on the current pixmap.
     Inline,
-    /// Painted offscreen, composited afterwards (see `run_in_layer`).
-    Layer { isolated: bool },
+    /// Painted offscreen, composited afterwards (see `run_in_layer`);
+    /// `knockout` composites each object against the group's initial
+    /// backdrop (§11.4.8, `run_knockout`).
+    Layer { isolated: bool, knockout: bool },
 }
 
 /// Colour components → RGBA8 through `cs`. A `/None` Separation
@@ -5443,6 +5722,59 @@ fn is_separable_blend(bm: tiny_skia::BlendMode) -> bool {
 /// αr = αb + αs − αb·αs
 /// Cr·αr = (1 − αs)·αb·Cb + αs·[(1 − αb)·Cs + αb·B(Cb, Cs)]
 /// ```
+/// §11.4.7 backdrop removal: `layer` holds the group painted on
+/// transparency (colour `Cn`, alpha `αgn`), `over` the group painted on
+/// the backdrop (`C`, `αn`), `backdrop` the page (`C0`, `α0`);
+/// `C = Cn + (Cn − C0)·(α0/αgn − α0)` leaves the group's own colour.
+fn remove_backdrop(layer: &mut Pixmap, over: &Pixmap, backdrop: &[u8]) {
+    for ((g, n), b) in layer
+        .data_mut()
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(over.data().as_chunks::<4>().0)
+        .zip(backdrop.as_chunks::<4>().0)
+    {
+        let agn = g[3] as f64 / 255.0;
+        let a0 = b[3] as f64 / 255.0;
+        let an = n[3] as f64 / 255.0;
+        if agn <= 0.0 || a0 <= 0.0 || an <= 0.0 {
+            continue; // nothing painted, or no backdrop: pass 1 is exact
+        }
+        let f = a0 / agn - a0;
+        for ch in 0..3 {
+            let cn = n[ch] as f64 / 255.0 / an;
+            let c0 = b[ch] as f64 / 255.0 / a0;
+            let c = clamp01(cn + (cn - c0) * f);
+            g[ch] = to_u8(c * agn);
+        }
+    }
+}
+
+/// Operators that paint an object of a knockout group (§11.4.8): path
+/// painting, text showing, images, shadings and form XObjects. `n`
+/// (`EndPath`) paints nothing and only installs a pending clip.
+fn is_knockout_object(op: &Operation) -> bool {
+    matches!(
+        op,
+        Operation::Stroke
+            | Operation::CloseAndStroke
+            | Operation::Fill
+            | Operation::FillEvenOdd
+            | Operation::FillAndStroke
+            | Operation::FillAndStrokeEvenOdd
+            | Operation::CloseFillAndStroke
+            | Operation::CloseFillAndStrokeEvenOdd
+            | Operation::ShowText(_)
+            | Operation::ShowTextAdjusted(_)
+            | Operation::NextLineShowText(_)
+            | Operation::SetSpacingNextLineShowText { .. }
+            | Operation::Do(_)
+            | Operation::Shading(_)
+            | Operation::InlineImage { .. }
+    )
+}
+
 fn composite_px(dst: &mut [u8], rgb: [f64; 3], a_s: f64, bm: tiny_skia::BlendMode) {
     let a_s = clamp01(a_s);
     if a_s == 0.0 {

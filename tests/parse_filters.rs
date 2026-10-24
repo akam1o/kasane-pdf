@@ -218,17 +218,22 @@ fn ascii85_known_vectors() {
 
 #[test]
 fn ascii85_rejects_bad_input() {
-    for bad in [
-        &b"87cUv~>"[..],
-        b"8~x",
-        b"z8~>",
-        b"8z~>",
-        b"8~>",
-        b"uuuuu~>",
-    ] {
+    for bad in [&b"87cUv~>"[..], b"8~x", b"8z~>", b"uuuuu~>"] {
         let err = decode("/Filter /ASCII85Decode", bad).unwrap_err();
         assert!(matches!(err, Error::Parse(_)), "{bad:?}: {err:?}");
     }
+    // A final group of one character encodes no byte (§7.4.3 allows
+    // 2–4): every byte before it was decoded, so the fragment is
+    // ignored and recorded as a warning rather than refused.
+    assert_eq!(decode("/Filter /ASCII85Decode", b"8~>").unwrap(), b"");
+    assert_eq!(
+        decode("/Filter /ASCII85Decode", b"z8~>").unwrap(),
+        [0, 0, 0, 0]
+    );
+    assert_eq!(
+        decode("/Filter /ASCII85Decode", b"87cURD_*#4DfTZ)~>").unwrap(),
+        b"Hello, World"
+    );
 }
 
 // ---- RunLength -------------------------------------------------------

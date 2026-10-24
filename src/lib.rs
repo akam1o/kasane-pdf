@@ -112,6 +112,7 @@ mod rewrite;
 mod serialize;
 mod shading;
 pub mod signature;
+mod symbol_fonts;
 pub mod text_extract;
 mod tounicode;
 mod type1;
@@ -156,7 +157,7 @@ pub use remove_region::{
 pub use remove_text::{remove_text, Removal};
 pub use rewrite::{rewrite, rewrite_with_limits};
 pub use signature::{signatures, ChangeKind, SignatureInfo};
-pub use warning::Warning;
+pub use warning::{RecoveryRule, Warning};
 
 /// The README's code blocks are compiled as doctests (`no_run`), so
 /// the examples a new user copies cannot drift from the API.

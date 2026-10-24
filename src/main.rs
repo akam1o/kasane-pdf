@@ -815,6 +815,12 @@ fn run_inspect(path: &str, page_no: usize) -> Result<(), Error> {
         let adict = match entry {
             Object::Ref(r) => {
                 adict_owned = doc.resolve(*r)?;
+                if matches!(adict_owned, Object::Null) {
+                    // §7.3.10 / §7.3.9: a reference to an undefined
+                    // object is null, and null in an array is the
+                    // absence of a value (the resolve recorded it).
+                    continue;
+                }
                 adict_owned.as_dict().ok_or_else(|| {
                     Error::Structure(format!("annotation {i} is not a dictionary"))
                 })?
@@ -908,6 +914,7 @@ fn run_inspect(path: &str, page_no: usize) -> Result<(), Error> {
             println!("key {} {}", String::from_utf8_lossy(k), type_name(v));
         }
     }
+    report_warnings(&doc);
     Ok(())
 }
 

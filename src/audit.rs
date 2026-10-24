@@ -536,7 +536,7 @@ impl<'d> Audit<'d> {
             if !visited.insert(r) {
                 continue;
             }
-            let obj = match self.doc.resolve(r) {
+            let obj = match self.doc.resolve_defined(r) {
                 Ok(o) => o,
                 Err(Error::MissingReference(_)) => {
                     // A queued ref that turned out to be absent is a
@@ -902,7 +902,7 @@ impl<'d> Audit<'d> {
                 _ => (None, ReachClass::Reachable),
             };
             let in_latest = self.doc.latest_trailer().contains_key(b"Info".as_slice());
-            let keys: Vec<String> = match self.doc.deref(info_obj) {
+            let keys: Vec<String> = match self.doc.deref_defined(info_obj) {
                 Ok(o) => o
                     .as_dict()
                     .map(|d| {
@@ -997,7 +997,7 @@ impl<'d> Audit<'d> {
                 note: "catalog /AcroForm".into(),
             });
             // /XFA inside it.
-            if let Ok(af) = self.doc.deref(o) {
+            if let Ok(af) = self.doc.deref_defined(o) {
                 if let Some(d) = af.as_dict() {
                     if d.contains_key(b"XFA".as_slice()) {
                         self.add_finding(AuditFinding {
@@ -1083,7 +1083,7 @@ impl<'d> Audit<'d> {
         for (index, pref, resources) in pages {
             // Page dict itself — Annots/Thumb live here.
             if let Some(pr) = pref {
-                if let Ok(pd) = self.doc.resolve(pr).and_then(|o| {
+                if let Ok(pd) = self.doc.resolve_defined(pr).and_then(|o| {
                     o.as_dict()
                         .cloned()
                         .ok_or_else(|| Error::Structure("page is not a dict".into()))
@@ -1142,7 +1142,7 @@ impl<'d> Audit<'d> {
     fn audit_annotations_and_form(&mut self) {
         for p in self.doc.pages() {
             let Some(pr) = p.object_ref() else { continue };
-            let Ok(pd) = self.doc.resolve(pr).and_then(|o| {
+            let Ok(pd) = self.doc.resolve_defined(pr).and_then(|o| {
                 o.as_dict()
                     .cloned()
                     .ok_or_else(|| Error::Structure("page".into()))
@@ -1152,7 +1152,7 @@ impl<'d> Audit<'d> {
             let Some(annots) = pd.get(b"Annots".as_slice()) else {
                 continue;
             };
-            let Ok(resolved) = self.doc.deref(annots) else {
+            let Ok(resolved) = self.doc.deref_defined(annots) else {
                 continue;
             };
             let items = match resolved.as_array() {
@@ -1161,7 +1161,7 @@ impl<'d> Audit<'d> {
             };
             for (i, entry) in items.iter().enumerate() {
                 let (aobj, aref) = match entry {
-                    Object::Ref(r) => match self.doc.resolve(*r) {
+                    Object::Ref(r) => match self.doc.resolve_defined(*r) {
                         Ok(o) => (o, Some(*r)),
                         Err(_) => continue,
                     },
@@ -1309,7 +1309,7 @@ impl<'d> Audit<'d> {
         let Some(root) = self.doc.catalog().get(b"StructTreeRoot".as_slice()) else {
             return;
         };
-        let root_obj = match self.doc.deref(root) {
+        let root_obj = match self.doc.deref_defined(root) {
             Ok(o) => o,
             Err(e) => {
                 self.out.incomplete.push(AuditIncomplete {
@@ -1353,7 +1353,7 @@ impl<'d> Audit<'d> {
             // they create cycles the step cap would only discover
             // after the fact.
             if let Some(k) = d.get(b"K".as_slice()) {
-                let k2 = match self.doc.deref(k) {
+                let k2 = match self.doc.deref_defined(k) {
                     Ok(o) => o,
                     Err(e) => {
                         self.out.incomplete.push(AuditIncomplete {
@@ -1367,7 +1367,7 @@ impl<'d> Audit<'d> {
                 match k2 {
                     Object::Array(items) => {
                         for (i, it) in items.iter().enumerate() {
-                            let resolved = match self.doc.deref(it) {
+                            let resolved = match self.doc.deref_defined(it) {
                                 Ok(o) => o,
                                 Err(e) => {
                                     self.out.incomplete.push(AuditIncomplete {
@@ -1403,7 +1403,7 @@ impl<'d> Audit<'d> {
         let Some(names) = self.doc.catalog().get(b"Names".as_slice()) else {
             return;
         };
-        let names_obj = match self.doc.deref(names) {
+        let names_obj = match self.doc.deref_defined(names) {
             Ok(o) => o,
             Err(e) => {
                 self.out.incomplete.push(AuditIncomplete {
@@ -1429,7 +1429,7 @@ impl<'d> Audit<'d> {
             let Some(tree) = nd.get(tree_key) else {
                 continue;
             };
-            let tree_obj = match self.doc.deref(tree) {
+            let tree_obj = match self.doc.deref_defined(tree) {
                 Ok(o) => o,
                 Err(e) => {
                     self.out.incomplete.push(AuditIncomplete {
@@ -1582,7 +1582,7 @@ impl<'d> Audit<'d> {
                         });
                         continue; // drop this kid, keep siblings
                     }
-                    match self.doc.deref(k) {
+                    match self.doc.deref_defined(k) {
                         Ok(ko) => {
                             // Cycle check: if this kid's ref already
                             // sits on the current path, walking it
@@ -1633,10 +1633,12 @@ impl<'d> Audit<'d> {
         let Some(ocp) = self.doc.catalog().get(b"OCProperties".as_slice()) else {
             return;
         };
-        let Ok(o) = self.doc.deref(ocp) else { return };
+        let Ok(o) = self.doc.deref_defined(ocp) else {
+            return;
+        };
         let Some(d) = o.as_dict() else { return };
         if let Some(ocgs) = d.get(b"OCGs".as_slice()) {
-            if let Ok(arr) = self.doc.deref(ocgs) {
+            if let Ok(arr) = self.doc.deref_defined(ocgs) {
                 if let Some(items) = arr.as_array() {
                     for (i, it) in items.iter().enumerate() {
                         if let Object::Ref(r) = it {
@@ -1668,11 +1670,15 @@ impl<'d> Audit<'d> {
     fn audit_resources(&mut self) {
         for p in self.doc.pages() {
             let Some(res) = p.resources() else { continue };
-            let Ok(r) = self.doc.deref(res) else { continue };
+            let Ok(r) = self.doc.deref_defined(res) else {
+                continue;
+            };
             let Some(rd) = r.as_dict() else { continue };
             for cat in [b"XObject".as_slice(), b"Font".as_slice()] {
                 let Some(c) = rd.get(cat) else { continue };
-                let Ok(co) = self.doc.deref(c) else { continue };
+                let Ok(co) = self.doc.deref_defined(c) else {
+                    continue;
+                };
                 let Some(cd) = co.as_dict() else { continue };
                 for (name, val) in cd {
                     let obj = val.as_ref();
@@ -1714,7 +1720,7 @@ impl<'d> Audit<'d> {
             if !matches!(entry, XrefEntry::InUse { .. }) {
                 continue; // compressed objects are resolved lazily
             }
-            let obj = match self.doc.resolve(r) {
+            let obj = match self.doc.resolve_defined(r) {
                 Ok(o) => o,
                 Err(_) => continue,
             };
@@ -1827,7 +1833,7 @@ impl<'d> Audit<'d> {
     /// bytes actually present. The *decoded* length is not computed:
     /// decoding is unexamined work the audit avoids.
     fn stream_bytes(&self, o: &Object) -> Option<(u64, Option<u64>)> {
-        let resolved = match self.doc.deref(o) {
+        let resolved = match self.doc.deref_defined(o) {
             Ok(r) => r,
             Err(_) => return None,
         };
@@ -1835,7 +1841,7 @@ impl<'d> Audit<'d> {
             Object::Stream { dict, data } => {
                 let declared = dict
                     .get(b"Length".as_slice())
-                    .and_then(|l| self.doc.deref(l).ok())
+                    .and_then(|l| self.doc.deref_defined(l).ok())
                     .and_then(|l| l.as_i64())
                     .map(|n| n as u64);
                 Some((data.len() as u64, declared))
@@ -1848,7 +1854,7 @@ impl<'d> Audit<'d> {
     /// (encoded) — returned for note text so "encoded size" is never
     /// mistaken for "decoded size".
     fn stream_filter_label(&self, o: &Object) -> &'static str {
-        match self.doc.deref(o) {
+        match self.doc.deref_defined(o) {
             Ok(Object::Stream { dict, .. }) => {
                 if dict.contains_key(b"Filter".as_slice()) {
                     " (filtered)"
@@ -1936,7 +1942,7 @@ impl<'d> Audit<'d> {
                         // content object — and, when the walk was
                         // incomplete, say *unevaluated*, not
                         // unreachable.
-                        let obj = self.doc.resolve(r).ok();
+                        let obj = self.doc.resolve_defined(r).ok();
                         let kind_label = obj
                             .as_ref()
                             .and_then(|o| o.as_dict_like())
@@ -2070,6 +2076,31 @@ impl<'d> Audit<'d> {
     /// bounded pass, not the full diagnosis walker.
     fn audit_content_actualtext(&mut self) {
         for p in self.doc.pages() {
+            // A /Contents reference to an undefined object is null for
+            // a reader (§7.3.10) — an empty page — but for an audit it
+            // is content that could not be examined.
+            if let Some(c) = p.contents() {
+                let items: Vec<Object> = match self.doc.deref_defined(c) {
+                    Ok(Object::Array(a)) => a,
+                    Ok(_) => Vec::new(),
+                    Err(e) => {
+                        self.out.incomplete.push(AuditIncomplete {
+                            scope: format!("page {} content", p.index() + 1),
+                            reason: format!("/Contents does not resolve: {}", e.kind()),
+                            limit: false,
+                        });
+                        continue;
+                    }
+                };
+                if let Some(e) = items.iter().find_map(|i| self.doc.deref_defined(i).err()) {
+                    self.out.incomplete.push(AuditIncomplete {
+                        scope: format!("page {} content", p.index() + 1),
+                        reason: format!("/Contents element does not resolve: {}", e.kind()),
+                        limit: false,
+                    });
+                    continue;
+                }
+            }
             let ops = match self.doc.page_operations(p) {
                 Ok(o) => o,
                 Err(e) => {
@@ -3112,7 +3143,14 @@ mod tests {
         let info_obj = d.trailer().get(b"Info".as_slice());
         assert!(matches!(info_obj, Some(Object::Ref(_))), "{info_obj:?}");
         let r = info_obj.unwrap().as_ref().unwrap();
-        assert!(matches!(d.resolve(r), Err(Error::MissingReference(_))));
+        assert!(matches!(
+            d.resolve_defined(r),
+            Err(Error::MissingReference(_))
+        ));
+        assert!(
+            matches!(d.resolve(r), Ok(Object::Null)),
+            "§7.3.10 for readers"
+        );
         let a = audit_residuals(&d, &Limits::default()).unwrap();
         // 4 real objects resolved (1,2,3,4); 99 0 R never examined.
         assert_eq!(a.objects_examined, 4);

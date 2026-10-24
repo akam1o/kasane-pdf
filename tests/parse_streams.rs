@@ -110,10 +110,12 @@ fn hybrid_stream_overrides_classic_entry() {
     // section the /XRefStm stream replaces entries from the classic
     // table. The fixture marks object 3 in-use in the table but free in
     // the stream, so resolution must fail.
+    // Object 3 is the page: the reference is to an undefined object —
+    // null per §7.3.10 — and a page tree with a null kid fails to load.
     let err = Document::from_bytes(&fixture("hybrid.pdf")).unwrap_err();
     assert!(
-        matches!(err, Error::MissingReference(_)),
-        "expected MissingReference, got: {err:?}"
+        matches!(err, Error::Structure(_)),
+        "expected Structure (null page-tree kid), got: {err:?}"
     );
 }
 
@@ -203,9 +205,17 @@ fn free_entry_invalidates_older_object() {
     data.extend_from_slice(format!("startxref\n{xref2}\n%%EOF\n").as_bytes());
 
     let doc = Document::from_bytes(&data).unwrap();
-    // Page 1 has a Contents reference to object 4, which is now free.
-    let err = doc.page_contents(&doc.pages()[0]).unwrap_err();
-    assert!(matches!(err, Error::MissingReference(_)), "got: {err:?}");
+    // Page 1 has a Contents reference to object 4, which is now free:
+    // an undefined object, so /Contents is null and the page is empty
+    // (§7.3.10) — never the stale body from the base section — and the
+    // omission is recorded.
+    let contents = doc.page_contents(&doc.pages()[0]).unwrap();
+    assert!(contents.is_empty(), "{contents:?}");
+    let w = doc.take_warnings();
+    assert!(
+        w.iter().any(|w| matches!(w, kasane_pdf::Warning::UndefinedReference { reference } if reference.number == 4)),
+        "{w:?}"
+    );
 }
 
 #[test]
@@ -241,13 +251,19 @@ fn generation_mismatch_is_reported() {
     data.extend_from_slice(format!("startxref\n{xref}\n%%EOF\n").as_bytes());
 
     let doc = Document::from_bytes(&data).unwrap();
-    let err = doc
+    // (4, 0) is not defined — only (4, 5) is — so the reference is to
+    // an undefined object: null, recorded (§7.3.10).
+    let obj = doc
         .resolve(IndirectRef {
             number: 4,
             generation: 0,
         })
-        .unwrap_err();
-    assert!(matches!(err, Error::MissingReference(_)), "got: {err:?}");
+        .unwrap();
+    assert!(matches!(obj, kasane_pdf::Object::Null), "got: {obj:?}");
+    assert!(matches!(
+        doc.take_warnings()[..],
+        [kasane_pdf::Warning::UndefinedReference { .. }]
+    ));
 }
 
 // -------------------------------------------------------------------

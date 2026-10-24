@@ -60,6 +60,117 @@ pub enum Warning {
         /// What was wrong, as the parser saw it.
         detail: String,
     },
+    /// An indirect reference to an object the file does not define —
+    /// no cross-reference entry for that object number and generation,
+    /// or a free entry. §7.3.10 requires a conforming reader to treat
+    /// such a reference as the null object, so the engine does, and
+    /// records it once per reference. A reference whose entry *exists*
+    /// but points at damage is still `Error::Parse` /
+    /// `Error::MissingReference` (that is corruption, not an undefined
+    /// object).
+    UndefinedReference {
+        /// The reference that resolved to null.
+        reference: crate::IndirectRef,
+    },
+    /// A content stream ended with a block still open — `q` without
+    /// `Q`, `BT` without `ET`, `BMC`/`BDC` without `EMC`, `BX` without
+    /// `EX`. The closing operators were supplied at the end of the
+    /// stream, where nothing further could depend on them, so the
+    /// result is exact; the file is not conforming (§7.8.2).
+    UnterminatedContentBlock {
+        /// Which block(s), as the parser saw them.
+        detail: String,
+    },
+    /// A rendering intent that is not one of the four names of
+    /// §8.6.5.8. Treated as `RelativeColorimetric`, the intent a
+    /// reader falls back to; this engine applies no colour management
+    /// that would depend on it, so the output is unaffected.
+    UnknownRenderingIntent {
+        /// The name as written.
+        name: String,
+    },
+    /// A stream filter's input ended with a fragment that encodes no
+    /// data — an `ASCII85Decode` final group of one character (§7.4.3
+    /// allows 2 to 4). Every byte the stream encodes was produced; the
+    /// fragment was ignored.
+    IgnoredFilterFragment {
+        /// The filter.
+        filter: &'static str,
+        /// What the fragment was.
+        detail: String,
+    },
+    /// A recovery-mode rule was applied: the input was reinterpreted
+    /// the way every major reader does, without a basis in the
+    /// specification. Recorded only on a document opened with
+    /// `Document::from_bytes_recovering` (see
+    /// `Document::recovery_mode`); a strict document refuses the same
+    /// input with an error.
+    RecoveryApplied {
+        /// Which rule.
+        rule: RecoveryRule,
+        /// What was found.
+        detail: String,
+    },
+}
+
+/// The recovery-mode reinterpretations (see
+/// [`Warning::RecoveryApplied`]). Each has one reading shared by the
+/// major readers and none in ISO 32000-1; none is applied in strict
+/// mode. New rules may be added in minor releases; match with a
+/// wildcard arm.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RecoveryRule {
+    /// A page without `/MediaBox` on itself or any ancestor (required
+    /// by Table 30) is given US Letter, 612 × 792 points.
+    MediaBoxDefault,
+    /// A `Q` with no saved state to restore is ignored.
+    IgnoredRestoreWithoutSave,
+    /// An operator the engine does not know, outside a `BX`/`EX`
+    /// section, is dropped with its operands.
+    IgnoredUnknownOperator,
+    /// A graphics-state or colour operator between path construction
+    /// and the painting operator (§8.2 Figure 9 forbids it) is applied
+    /// where it stands, before the path is painted.
+    OperatorInsidePathObject,
+    /// An `/Annots` entry that is not a dictionary, or an appearance
+    /// state that is not a stream, is skipped — nothing is drawn for
+    /// it (Table 164 / §12.5.5 require a dictionary and a stream).
+    IgnoredInvalidAnnotation,
+    /// A font resource that is missing or not a dictionary is replaced
+    /// by Helvetica (drawn with the bundled substitute, reported as a
+    /// substitution) so the text is shown rather than lost.
+    DefaultFontSubstituted,
+    /// A `BDC` property name with no entry in `/Properties` is treated
+    /// as a marked-content sequence without properties (visible).
+    IgnoredUndefinedProperty,
+    /// A `/Differences` element that is neither an integer nor a name
+    /// is skipped (§9.6.6.1).
+    IgnoredInvalidEncodingEntry,
+    /// An image `/SMask` that is not a stream (typically the name
+    /// `/None`, which only an ExtGState may carry) is treated as no
+    /// soft mask.
+    IgnoredInvalidSoftMask,
+}
+
+impl fmt::Display for RecoveryRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            RecoveryRule::MediaBoxDefault => "page without /MediaBox given US Letter",
+            RecoveryRule::IgnoredRestoreWithoutSave => "Q without a saved state ignored",
+            RecoveryRule::IgnoredUnknownOperator => "unknown operator dropped",
+            RecoveryRule::OperatorInsidePathObject => {
+                "operator inside a path object applied before painting"
+            }
+            RecoveryRule::IgnoredInvalidAnnotation => "invalid annotation entry skipped",
+            RecoveryRule::DefaultFontSubstituted => "missing font resource replaced by Helvetica",
+            RecoveryRule::IgnoredUndefinedProperty => {
+                "undefined /Properties name treated as plain marked content"
+            }
+            RecoveryRule::IgnoredInvalidEncodingEntry => "invalid /Differences entry skipped",
+            RecoveryRule::IgnoredInvalidSoftMask => "image /SMask that is not a stream ignored",
+        })
+    }
 }
 
 impl fmt::Display for Warning {
@@ -72,6 +183,29 @@ impl fmt::Display for Warning {
             ),
             Warning::MalformedToUnicodeEntry { detail } => {
                 write!(f, "ToUnicode entry skipped: {detail}")
+            }
+            Warning::UndefinedReference { reference } => write!(
+                f,
+                "reference {} {} R to an undefined object treated as null (§7.3.10)",
+                reference.number, reference.generation
+            ),
+            Warning::UnterminatedContentBlock { detail } => {
+                write!(
+                    f,
+                    "content stream ended with an open block, closed at the end: {detail}"
+                )
+            }
+            Warning::UnknownRenderingIntent { name } => {
+                write!(f, "rendering intent /{name} is not one of §8.6.5.8; treated as RelativeColorimetric")
+            }
+            Warning::IgnoredFilterFragment { filter, detail } => {
+                write!(
+                    f,
+                    "{filter}: trailing fragment that encodes no data ignored ({detail})"
+                )
+            }
+            Warning::RecoveryApplied { rule, detail } => {
+                write!(f, "recovery: {rule} ({detail})")
             }
         }
     }
@@ -86,6 +220,11 @@ pub(crate) struct WarningSink {
 
 impl WarningSink {
     pub(crate) fn push(&mut self, w: Warning) {
+        // One record per undefined reference: the same dangling
+        // reference is resolved again on every page that uses it.
+        if matches!(w, Warning::UndefinedReference { .. }) && self.list.contains(&w) {
+            return;
+        }
         if self.list.len() < MAX_WARNINGS {
             self.list.push(w);
         } else {

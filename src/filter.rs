@@ -156,7 +156,7 @@ pub(crate) fn apply_one_filter(
     match name {
         b"FlateDecode" | b"Fl" => flate_decode(buf, parms, limits, warnings),
         b"LZWDecode" | b"LZW" => lzw_decode(buf, parms, limits),
-        b"ASCII85Decode" | b"A85" => ascii85_decode(buf, limits),
+        b"ASCII85Decode" | b"A85" => ascii85_decode(buf, limits, warnings),
         b"ASCIIHexDecode" | b"AHx" => asciihex_decode(buf, limits),
         b"RunLengthDecode" | b"RL" => runlength_decode(buf, limits),
         b"DCTDecode" | b"DCT" | b"JBIG2Decode" | b"CCITTFaxDecode" | b"CCF" | b"JPXDecode" => {
@@ -236,7 +236,11 @@ fn asciihex_decode(buf: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
 /// partial group of n characters yields n − 1 bytes. A leading `<~`
 /// (not part of the PDF filter, but written by some producers) is
 /// skipped.
-fn ascii85_decode(buf: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
+fn ascii85_decode(
+    buf: &[u8],
+    limits: &Limits,
+    warnings: &mut Vec<Warning>,
+) -> Result<Vec<u8>, Error> {
     let mut out = Vec::with_capacity(buf.len() * 4 / 5 + 4);
     let mut group = [0u8; 5];
     let mut n = 0usize;
@@ -305,9 +309,12 @@ fn ascii85_decode(buf: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
     match n {
         0 => {}
         1 => {
-            return Err(Error::Parse(
-                "ASCII85Decode: final group has a single character (encodes no byte)".into(),
-            ))
+            // A single trailing character cannot encode a byte; every
+            // byte before it was decoded. Recorded, not refused.
+            warnings.push(Warning::IgnoredFilterFragment {
+                filter: "ASCII85Decode",
+                detail: "final group has a single character".into(),
+            });
         }
         _ => flush(&group, n, &mut out)?,
     }

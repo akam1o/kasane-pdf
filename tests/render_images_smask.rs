@@ -378,8 +378,15 @@ fn smask_missing_reference_is_typed() {
         "",
         vec![(5, rgb_image(1, 1, &[255, 0, 0], "/SMask 99 0 R"))],
     );
-    let err = render(&pdf).unwrap_err();
-    assert!(matches!(err, Error::MissingReference(_)), "{err:?}");
+    // /SMask refers to an undefined object: null per §7.3.10, i.e. no
+    // soft mask — the image draws unmasked and the omission is recorded.
+    let pdf_doc = Document::from_bytes(&pdf).unwrap();
+    render_page(&pdf_doc, &pdf_doc.pages()[0], &RenderOptions::default()).unwrap();
+    let w = pdf_doc.take_warnings();
+    assert!(
+        matches!(&w[..], [kasane_pdf::Warning::UndefinedReference { reference }] if reference.number == 99),
+        "{w:?}"
+    );
 }
 
 #[test]

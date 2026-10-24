@@ -34,6 +34,7 @@ use crate::lexer::{Lexer, Token};
 use crate::limits::Limits;
 use crate::matrix::Matrix;
 use crate::object::{Dict, Name, Object};
+use crate::warning::{RecoveryRule, Warning};
 use std::fmt;
 
 /// One element of a `TJ` array.
@@ -390,8 +391,10 @@ impl Operation {
 pub(crate) fn parse_content_stream(
     contents: &[Vec<u8>],
     limits: &Limits,
+    lenient: bool,
+    warnings: &mut Vec<Warning>,
 ) -> Result<Vec<Operation>, Error> {
-    let (ops, _tokens) = parse_content_stream_counted(contents, limits)?;
+    let (ops, _tokens) = parse_content_stream_counted(contents, limits, lenient, warnings)?;
     Ok(ops)
 }
 
@@ -417,11 +420,13 @@ fn join_streams(contents: &[Vec<u8>]) -> Vec<u8> {
 pub(crate) fn parse_content_stream_counted(
     contents: &[Vec<u8>],
     limits: &Limits,
+    lenient: bool,
+    warnings: &mut Vec<Warning>,
 ) -> Result<(Vec<Operation>, usize), Error> {
-    let mut parser = ContentParser::new(limits);
+    let mut parser = ContentParser::new(limits, lenient);
     parser.parse_stream(&join_streams(contents))?;
     let tokens = parser.tokens_seen;
-    let ops = parser.finish()?;
+    let ops = parser.finish(warnings)?;
     Ok((ops, tokens))
 }
 
@@ -438,17 +443,22 @@ pub(crate) type NamedOps = (Vec<Operation>, Vec<Vec<u8>>, usize);
 pub(crate) fn parse_content_stream_named(
     contents: &[Vec<u8>],
     limits: &Limits,
+    lenient: bool,
+    warnings: &mut Vec<Warning>,
 ) -> Result<NamedOps, Error> {
-    let mut parser = ContentParser::new(limits);
+    let mut parser = ContentParser::new(limits, lenient);
     parser.parse_stream(&join_streams(contents))?;
     let tokens = parser.tokens_seen;
     let names = parser.op_names.clone();
-    let ops = parser.finish()?;
+    let ops = parser.finish(warnings)?;
     Ok((ops, names, tokens))
 }
 
 struct ContentParser<'a> {
     limits: &'a Limits,
+    /// Recovery mode: apply the `RecoveryRule`s instead of refusing.
+    lenient: bool,
+    warnings: Vec<Warning>,
     operands: Vec<Object>,
     ops: Vec<Operation>,
     /// Total lexer tokens consumed across all parsed streams —
@@ -471,9 +481,11 @@ struct ContentParser<'a> {
 }
 
 impl<'a> ContentParser<'a> {
-    fn new(limits: &'a Limits) -> Self {
+    fn new(limits: &'a Limits, lenient: bool) -> Self {
         ContentParser {
             limits,
+            lenient,
+            warnings: Vec::new(),
             operands: Vec::new(),
             ops: Vec::new(),
             tokens_seen: 0,
@@ -511,35 +523,49 @@ impl<'a> ContentParser<'a> {
         Ok(())
     }
 
-    fn finish(self) -> Result<Vec<Operation>, Error> {
+    fn finish(mut self, warnings: &mut Vec<Warning>) -> Result<Vec<Operation>, Error> {
         if !self.operands.is_empty() {
             return Err(Error::Parse(format!(
                 "content stream ends with {} un-consumed operand(s)",
                 self.operands.len()
             )));
         }
+        // Blocks still open at the end of the stream (§7.8.2 requires
+        // them closed) are closed here: a `Q`, `ET`, `EMC` or `EX`
+        // supplied at the very end affects nothing that follows, so
+        // the result is exact — recorded, not refused. The closing
+        // operators are emitted so the interpreter's own state stays
+        // balanced.
+        let mut open = Vec::new();
         if self.gsave_depth != 0 {
-            return Err(Error::Structure(format!(
-                "content stream ends with {} unmatched 'q' operator(s)",
-                self.gsave_depth
-            )));
+            open.push(format!("{} unmatched 'q'", self.gsave_depth));
+            for _ in 0..self.gsave_depth {
+                self.ops.push(Operation::RestoreState);
+            }
         }
         if self.in_text {
-            return Err(Error::Structure(
-                "content stream ends inside a BT/ET text block".into(),
-            ));
+            open.push("BT without ET".to_string());
+            self.ops.push(Operation::EndText);
         }
         if self.mc_depth != 0 {
-            return Err(Error::Structure(format!(
-                "content stream ends with {} unmatched marked-content block(s)",
+            open.push(format!(
+                "{} unmatched marked-content block(s)",
                 self.mc_depth
-            )));
+            ));
+            for _ in 0..self.mc_depth {
+                self.ops.push(Operation::EndMarkedContent);
+            }
         }
         if self.in_compat {
-            return Err(Error::Structure(
-                "content stream ends inside a BX/EX compatibility section".into(),
-            ));
+            open.push("BX without EX".to_string());
+            self.ops.push(Operation::EndCompatibility);
         }
+        if !open.is_empty() {
+            warnings.push(Warning::UnterminatedContentBlock {
+                detail: open.join(", "),
+            });
+        }
+        warnings.append(&mut self.warnings);
         Ok(self.ops)
     }
 
@@ -791,6 +817,14 @@ impl<'a> ContentParser<'a> {
             b"Q" => {
                 self.expect_operands(0, n_operands, op, offset)?;
                 if self.gsave_depth == 0 {
+                    if self.lenient {
+                        // Recovery rule: nothing to restore, nothing done.
+                        self.warnings.push(Warning::RecoveryApplied {
+                            rule: RecoveryRule::IgnoredRestoreWithoutSave,
+                            detail: format!("at byte {offset}"),
+                        });
+                        return Ok(());
+                    }
                     return Err(Error::Structure("'Q' without matching 'q'".into()));
                 }
                 self.gsave_depth -= 1;
@@ -1159,7 +1193,15 @@ impl<'a> ContentParser<'a> {
             }
 
             _ => {
-                if self.in_compat {
+                if self.in_compat || self.lenient {
+                    if !self.in_compat {
+                        // Recovery rule: dropped with its operands, as
+                        // inside BX/EX; the interpreter ignores it.
+                        self.warnings.push(Warning::RecoveryApplied {
+                            rule: RecoveryRule::IgnoredUnknownOperator,
+                            detail: format!("'{}' at byte {offset}", String::from_utf8_lossy(op)),
+                        });
+                    }
                     let ops = std::mem::take(&mut self.operands);
                     Operation::Unknown {
                         operator: op.to_vec(),

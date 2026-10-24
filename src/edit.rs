@@ -211,10 +211,10 @@ impl<'a> Edit<'a> {
         // writes the rect verbatim, so a non-unit page would misplace
         // the box — refuse rather than treat it as points.
         if let Some(page_ref) = page.object_ref() {
-            let page_obj = self.doc.resolve(page_ref)?;
+            let page_obj = self.doc.resolve_defined(page_ref)?;
             if let Some(d) = page_obj.as_dict() {
                 if let Some(uu) = d.get(b"UserUnit".as_slice()) {
-                    let uu = self.doc.deref(uu)?;
+                    let uu = self.doc.deref_defined(uu)?;
                     if uu.as_number() != Some(1.0) {
                         return Err(Error::Unsupported {
                             feature: "/UserUnit other than 1",
@@ -275,7 +275,12 @@ impl<'a> Edit<'a> {
     /// `remove_document_metadata` / the rewrite overrides there).
     pub fn set_info(&mut self, entries: Dict) -> Result<(), Error> {
         let mut info = match self.doc.trailer().get(b"Info".as_slice()) {
-            Some(o) => self.doc.deref(o)?.as_dict().cloned().unwrap_or_default(),
+            Some(o) => self
+                .doc
+                .deref_defined(o)?
+                .as_dict()
+                .cloned()
+                .unwrap_or_default(),
             None => Dict::new(),
         };
         if let Some(cur) = &self.info {
@@ -309,13 +314,13 @@ impl<'a> Edit<'a> {
         if let Some(&r) = self.annots_by_page.get(&page_ref) {
             return Ok((page_ref, r));
         }
-        let page_obj = self.doc.resolve(page_ref)?;
+        let page_obj = self.doc.resolve_defined(page_ref)?;
         let mut page_dict = page_obj
             .as_dict()
             .cloned()
             .ok_or_else(|| Error::Structure(format!("page {page_ref} is not a dictionary")))?;
         let existing: Vec<Object> = match page_dict.get(b"Annots".as_slice()) {
-            Some(o) => match self.doc.deref(o)? {
+            Some(o) => match self.doc.deref_defined(o)? {
                 Object::Array(a) => a,
                 Object::Null => Vec::new(),
                 other => {
@@ -400,9 +405,14 @@ impl<'a> Edit<'a> {
                             "annotation {r} is not a dictionary"
                         )))
                     }
-                    None => self.doc.resolve(r)?.as_dict().cloned().ok_or_else(|| {
-                        Error::Structure(format!("annotation {r} is not a dictionary"))
-                    })?,
+                    None => self
+                        .doc
+                        .resolve_defined(r)?
+                        .as_dict()
+                        .cloned()
+                        .ok_or_else(|| {
+                            Error::Structure(format!("annotation {r} is not a dictionary"))
+                        })?,
                 };
                 apply(&mut d);
                 self.overlay.insert(key, Object::Dict(d));
@@ -438,7 +448,7 @@ impl<'a> Edit<'a> {
             .get(b"AcroForm".as_slice())
             .cloned()
             .ok_or_else(|| Error::Structure("document has no /AcroForm".into()))?;
-        let af = self.doc.deref(&af_entry)?;
+        let af = self.doc.deref_defined(&af_entry)?;
         let mut af_dict = af
             .as_dict()
             .cloned()
@@ -467,10 +477,10 @@ impl<'a> Edit<'a> {
             if fd.contains_key(b"AP".as_slice()) {
                 widgets.push((field_ref, fd.clone()));
             } else if let Some(kids) = fd.get(b"Kids".as_slice()) {
-                if let Some(ks) = self.doc.deref(kids)?.as_array() {
+                if let Some(ks) = self.doc.deref_defined(kids)?.as_array() {
                     for k in ks {
                         if let Some(kr) = k.as_ref() {
-                            if let Some(kd) = self.doc.resolve(kr)?.as_dict() {
+                            if let Some(kd) = self.doc.resolve_defined(kr)?.as_dict() {
                                 if kd.contains_key(b"AP".as_slice()) {
                                     widgets.push((kr, kd.clone()));
                                 }
@@ -482,9 +492,9 @@ impl<'a> Edit<'a> {
             for (wr, mut wd) in widgets {
                 let has_state = wd
                     .get(b"AP".as_slice())
-                    .and_then(|o| self.doc.deref(o).ok())
+                    .and_then(|o| self.doc.deref_defined(o).ok())
                     .and_then(|ap| ap.as_dict().and_then(|d| d.get(b"N".as_slice()).cloned()))
-                    .and_then(|n| self.doc.deref(&n).ok())
+                    .and_then(|n| self.doc.deref_defined(&n).ok())
                     .and_then(|n| n.as_dict().map(|d| d.contains_key(state.as_slice())))
                     .unwrap_or(false);
                 let as_name = if has_state {
@@ -750,7 +760,7 @@ fn find_field(
         return Ok(None);
     }
     for f in fields {
-        let fo = doc.deref(f)?;
+        let fo = doc.deref_defined(f)?;
         let Some(fd) = fo.as_dict() else { continue };
         let t = fd
             .get(b"T".as_slice())
@@ -774,7 +784,7 @@ fn find_field(
             };
         }
         if let Some(kids) = fd.get(b"Kids".as_slice()) {
-            if let Some(ks) = doc.deref(kids)?.as_array() {
+            if let Some(ks) = doc.deref_defined(kids)?.as_array() {
                 if let Some(r) = find_field(doc, ks, want, &full, depth + 1)? {
                     return Ok(Some(r));
                 }

@@ -384,8 +384,5 @@ fn malformed_soft_masks_and_knockout_are_refused() {
         .unwrap_err();
         assert!(matches!(err, Error::Structure(_)), "{what}: {err:?}");
     }
-    // Knockout groups stay unsupported.
-    let ko = group("0 0 100 100", "/K true", b"0 g 0 0 50 50 re f");
-    let err = render(&page(b"/F Do", "", &[("F", 10)], vec![(10, ko)])).unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+    // Knockout groups are rendered (tests/render_knockout.rs).
 }

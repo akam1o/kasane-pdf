@@ -364,7 +364,16 @@ pub fn remove_text(
             .as_stream()
             .ok_or_else(|| Error::Structure("form XObject is not a stream".into()))?;
         let decoded = doc.decode_stream(fdict, fraw)?;
-        let form_ops = crate::content::parse_content_stream(&[decoded], limits)?;
+        let mut warnings = Vec::new();
+        let form_ops = crate::content::parse_content_stream(
+            &[decoded],
+            limits,
+            doc.recovery_mode(),
+            &mut warnings,
+        )?;
+        for w in warnings {
+            doc.push_warning(w);
+        }
         // Rewrite the form's own ops — its `to_remove` entries are
         // keyed `(fp, inner_op_index)`.
         let mut new_form_ops: Vec<Operation> = Vec::with_capacity(form_ops.len());

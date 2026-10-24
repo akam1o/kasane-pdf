@@ -2053,7 +2053,16 @@ impl<'a> DiagWalker<'a> {
         });
         let run_result = (|| {
             let decoded = self.doc.decode_stream(dict, raw)?;
-            let ops = crate::content::parse_content_stream(&[decoded], self.limits)?;
+            let mut warnings = Vec::new();
+            let ops = crate::content::parse_content_stream(
+                &[decoded],
+                self.limits,
+                self.doc.recovery_mode(),
+                &mut warnings,
+            )?;
+            for w in warnings {
+                self.doc.push_warning(w);
+            }
             self.xobject_depth += 1;
             let r = self.run(&ops);
             self.xobject_depth -= 1;
