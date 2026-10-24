@@ -1,0 +1,18 @@
+# Keep the Rust dependencies and the pinned GitHub Actions current.
+# Updates arrive as pull requests that run the normal PR gate.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: cargo
+    directory: /compat/runner
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
