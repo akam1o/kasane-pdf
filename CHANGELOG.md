@@ -6,8 +6,10 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-First public state of the repository. Nothing has been released to
-crates.io yet; the API is not stable.
+## [0.1.0] - 2026-10-24
+
+Initial release. The API is not yet stable (0.x): breaking changes
+are possible between minor versions and are recorded here.
 
 ### Added
 - Strict parser for the PDF object layer, classic and stream
@@ -53,5 +55,17 @@ crates.io yet; the API is not stable.
 - Test-fixture font subsets renamed internally so OFL Reserved Font
   Names are not used; provenance recorded.
 
+### Not included
+- Document creation from scratch (no page / content-stream builder),
+  encryption, cryptographic signature verification, knockout
+  transparency groups, non-embedded CJK fonts other than Adobe-Japan1
+  (with `cjk-fallback`), page-level editing — see
+  `docs/limitations.md`.
+
 ### Licence
-- Apache License 2.0.
+- Apache License 2.0; bundled fonts under the SIL Open Font License
+  1.1 and Adobe CMap resources under BSD-3-Clause (`NOTICE`,
+  `docs/third-party.md`).
+
+[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.1.0

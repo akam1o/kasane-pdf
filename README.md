@@ -86,13 +86,22 @@ experimental scoped content editors (`remove_text`,
 
 ## Installation
 
-Rust 1.92 or newer. The crate is not on crates.io yet; depend on the
-repository:
+```toml
+[dependencies]
+kasane-pdf = "0.1"
+```
+
+Or track the repository directly:
 
 ```toml
 [dependencies]
-kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf" }
+kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.1.0" }
 ```
+
+Supported Rust versions: 1.92 or newer (`rust-version` in
+`Cargo.toml`, checked in CI with the stable toolchain and verified
+with 1.92). No build dependencies, no C code, no network access at
+build time.
 
 Build from a checkout:
 
@@ -116,6 +125,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::fs::write("page-1.png", pixmap_to_png(&page.pixmap)?)?;
     for s in &page.font_substitutions {
         eprintln!("substituted font: {} -> {}", s.base_font, s.substitute);
+    }
+    Ok(())
+}
+```
+
+Walk the document structure — every object is reachable through the
+same typed `Object` model the engine uses ([`examples/inspect_objects.rs`](examples/inspect_objects.rs)):
+
+```rust
+use kasane_pdf::{Document, Object};
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::env::args()
+        .nth(1)
+        .ok_or("usage: inspect_objects <input.pdf>")?;
+    let data = std::fs::read(path)?;
+    let doc = Document::from_bytes(&data)?; // strict; `from_bytes_recovering` for damaged files
+    println!(
+        "version {:?}, {} pages",
+        doc.catalog_version()?,
+        doc.page_count()
+    );
+    for page in doc.pages() {
+        let dict = doc.resolve(page.object_ref().ok_or("direct page")?)?;
+        let annots = match dict.as_dict().and_then(|d| d.get(b"Annots".as_slice())) {
+            Some(a) => doc.deref(a)?.as_array().map(|a| a.len()).unwrap_or(0),
+            None => 0,
+        };
+        let mb = page.media_box();
+        println!(
+            "page {}: {} x {} pt, {} annotation(s)",
+            page.index() + 1,
+            mb.urx - mb.llx,
+            mb.ury - mb.lly,
+            annots
+        );
+        for op in doc.page_operations(page)?.iter().take(3) {
+            println!("  {op:?}");
+        }
+    }
+    if let Some(info) = doc.trailer().get(b"Info".as_slice()) {
+        if let Object::Dict(d) = doc.deref(info)? {
+            println!("info keys: {}", d.len());
+        }
     }
     Ok(())
 }
@@ -159,10 +212,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+kasane-pdf does **not** create documents from scratch: there is no
+page or content-stream builder in 0.1. Editing starts from an existing
+file — annotations, form-field values and `/Info` through `Edit`,
+written as a full rewrite or as an incremental update.
+
 Run the examples against a fixture:
 
 ```console
 cargo run --example render_page -- tests/fixtures/render_rects.pdf 1 /tmp/out.png 144
+cargo run --example inspect_objects -- tests/fixtures/hello.pdf
 cargo run --example extract_text -- tests/fixtures/text_basic.pdf
 cargo run --example incremental_save -- tests/fixtures/hello.pdf /tmp/annotated.pdf
 ```
@@ -194,7 +253,7 @@ Errors are printed with their stable category, e.g.
 
 | feature | default | effect |
 |---|---|---|
-| `cjk-fallback` | off | Embeds the Adobe-Japan1 predefined CMaps (`90ms-RKSJ-*`, `UniJIS-*`, `EUC-*`, …), the Adobe-Japan1 CID → Unicode table and Noto Sans JP Regular (about 4.3 MB) so that **non-embedded Japanese CID fonts** render. Glyph shapes come from Noto Sans, metrics from the PDF; every such render is reported in `font_substitutions`. The assets are fetched by `scripts/fetch-cjk-assets.sh` (Adobe resources BSD-3-Clause, Noto SIL OFL 1.1) and are not committed. |
+| `cjk-fallback` | off | Embeds the Adobe-Japan1 predefined CMaps (`90ms-RKSJ-*`, `UniJIS-*`, `EUC-*`, …), the Adobe-Japan1 CID → Unicode table and Noto Sans JP Regular (about 4.3 MB) so that **non-embedded Japanese CID fonts** render. Glyph shapes come from Noto Sans, metrics from the PDF; every such render is reported in `font_substitutions`. The assets ship in the crate under `assets/cjk/` (Adobe resources BSD-3-Clause, Noto SIL OFL 1.1; pinned upstream commits, SHA-256 lock in `scripts/cjk-assets.sha256`), so `--features cjk-fallback` needs no extra step. |
 
 Without the feature, a non-embedded CID font or a predefined
 non-Identity CMap is a typed `Error::Unsupported`. No build ever
