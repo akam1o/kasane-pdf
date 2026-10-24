@@ -19,15 +19,25 @@ License. It is distributed under the SIL Open Font License, Version
     tests/fixtures/OFL-1.1.txt. Test fixture only.
 
   * tests/fixtures/type1_cff.bin — an 800-byte CFF subset of Source
-    Sans Pro Bold, Copyright Adobe Systems Incorporated, with Reserved
-    Font Name 'Source'. Licence: tests/fixtures/OFL-1.1.txt. Test
-    fixture only.
+    Sans Pro Bold, Copyright 2010, 2012 Adobe Systems Incorporated,
+    with Reserved Font Name 'Source'. The subset's internal font names
+    are changed to 'KasaneSansPro' so the Reserved Font Name is not
+    used. Licence: tests/fixtures/OFL-1.1.txt. Test fixture only.
+
+  * tests/fixtures/eexec_cmsy10.bin — a 2-glyph Type 1 subset of
+    CMBSY10 (Computer Modern bold math symbols), Copyright (c) 1997,
+    2009 American Mathematical Society (http://www.ams.org), with
+    Reserved Font Name CMBSY10. The subset's internal font name is
+    changed to 'KSBSY10' so the Reserved Font Name is not used.
+    Licence: tests/fixtures/OFL-1.1.txt. Test fixture only.
 
 With the optional `cjk-fallback` Cargo feature, the build additionally
-embeds assets fetched by scripts/fetch-cjk-assets.sh (not part of this
-repository): Noto Sans JP Regular (OFL-1.1) and the Adobe CMap and
-mapping resources (BSD-3-Clause). Their licence files are fetched
-alongside and must accompany any binary built with that feature.
+embeds assets fetched by scripts/fetch-cjk-assets.sh from pinned
+upstream commits and verified against scripts/cjk-assets.sha256 (not
+part of this repository): Noto Sans JP Regular (OFL-1.1) and the Adobe
+CMap and mapping resources (BSD-3-Clause). Their licence files are
+fetched alongside and must accompany any binary built with that
+feature.
 
 Third-party Rust crates and their licences are listed in
 docs/third-party.md.
