@@ -55,6 +55,9 @@ pub struct Document {
     /// [`Document::from_bytes_recovering`] *and* the strict parse
     /// failed — the cross-reference table was rebuilt by scanning.
     recovery: Option<crate::xref::RecoveryReport>,
+    /// Opened through [`Document::from_bytes_recovering`]: objects not
+    /// closed by `endobj` are accepted when loaded later.
+    lenient: bool,
 }
 
 impl Document {
@@ -105,6 +108,7 @@ impl Document {
             decoded_budget: std::cell::Cell::new(limits.max_total_decoded_bytes),
             objstm_cache: std::cell::RefCell::new(HashMap::new()),
             recovery: None,
+            lenient: false,
             limits,
         };
 
@@ -134,7 +138,10 @@ impl Document {
         limits: Limits,
     ) -> Result<Document, Error> {
         let strict_error = match Self::from_bytes_with_limits(data, limits.clone()) {
-            Ok(doc) => return Ok(doc),
+            Ok(mut doc) => {
+                doc.lenient = true;
+                return Ok(doc);
+            }
             Err(e @ (Error::NotPdf | Error::Encrypted | Error::LimitExceeded { .. })) => {
                 return Err(e)
             }
@@ -156,6 +163,7 @@ impl Document {
             decoded_budget: std::cell::Cell::new(limits.max_total_decoded_bytes),
             objstm_cache: std::cell::RefCell::new(HashMap::new()),
             recovery: Some(report),
+            lenient: true,
             limits,
         };
         doc.load_catalog()?;
@@ -210,6 +218,9 @@ impl Document {
             })?;
 
             let mut parser = Parser::new(&self.data, &self.limits);
+            if self.lenient {
+                parser.tolerate_missing_endobj();
+            }
             parser.seek(offset as usize);
             let obj = parser.parse_indirect_object()?.ok_or_else(|| {
                 Error::Parse(format!(
@@ -277,6 +288,9 @@ impl Document {
             })
         })?;
         let mut parser = Parser::new(&self.data, &self.limits);
+        if self.lenient {
+            parser.tolerate_missing_endobj();
+        }
         parser.seek(offset as usize);
         parser
             .parse_indirect_object()?

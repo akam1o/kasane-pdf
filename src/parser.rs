@@ -69,11 +69,15 @@ pub(crate) struct IndirectObject {
 pub(crate) struct Parser<'a> {
     lexer: Lexer<'a>,
     limits: &'a Limits,
+    /// Strict mode (the default) requires every indirect object to be
+    /// closed by `endobj` (§7.3.10); recovery tolerates its absence.
+    require_endobj: bool,
 }
 
 impl<'a> Parser<'a> {
     pub(crate) fn new(input: &'a [u8], limits: &'a Limits) -> Self {
         Parser {
+            require_endobj: true,
             lexer: Lexer::new(input, limits),
             limits,
         }
@@ -418,9 +422,17 @@ impl<'a> Parser<'a> {
         input[p..].starts_with(b"endstream")
     }
 
+    /// Accept an indirect object that is not closed by `endobj`
+    /// (recovery mode).
+    pub(crate) fn tolerate_missing_endobj(&mut self) {
+        self.require_endobj = false;
+    }
+
     /// Parse an indirect object definition `n g obj … endobj` at the
     /// current position. Returns `Ok(None)` (without consuming input) if
-    /// the position does not start with `<int> <int> obj`.
+    /// the position does not start with `<int> <int> obj`; a missing
+    /// `endobj` is a parse error unless [`Self::tolerate_missing_endobj`]
+    /// was called.
     pub(crate) fn parse_indirect_object(&mut self) -> Result<Option<IndirectObject>, Error> {
         let save = self.lexer.clone();
         let header = (|| -> Result<Option<(i64, i64, usize)>, Error> {
@@ -464,12 +476,22 @@ impl<'a> Parser<'a> {
             context: "indirect object body",
         })?;
 
-        // Consume `endobj` if present (it is required by the spec, but we
-        // tolerate its absence in damaged files since we parsed by offset).
+        // `endobj` is required (§7.3.10). The object was delimited by
+        // its own syntax, so a damaged file can still be read without
+        // it — but only when the caller opted into recovery; a strict
+        // parse reports the file as malformed.
         let save2 = self.lexer.clone();
+        let end_pos = self.lexer.pos();
         match self.lexer.next_token()? {
             Some(Token::Word { bytes, .. }) if bytes == b"endobj" => {}
-            _ => self.lexer = save2,
+            _ => {
+                if self.require_endobj {
+                    return Err(Error::Parse(format!(
+                        "object {num} {gen} is not closed by endobj (at byte {end_pos})"
+                    )));
+                }
+                self.lexer = save2;
+            }
         }
 
         Ok(Some(IndirectObject {

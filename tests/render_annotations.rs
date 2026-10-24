@@ -280,11 +280,16 @@ fn hidden_noview_popup_and_bare_link_are_skipped() {
 
 #[test]
 fn annotation_without_appearance_is_unsupported() {
-    let extra = vec![(10, square("50 50 150 150", "", "/C [1 0 0]"))];
+    // A /Stamp has no normative look without /AP (geometric markups
+    // are synthesised — see render_annot_synthesis.rs).
+    let extra = vec![(
+        10,
+        "<< /Type /Annot /Subtype /Stamp /Rect [50 50 150 150] /C [1 0 0] >>".to_string(),
+    )];
     match render(&page_pdf("", "10 0 R", &extra)) {
         Err(Error::Unsupported { feature, detail }) => {
             assert!(feature.contains("without appearance"), "{feature}");
-            assert!(detail.contains("/Square"), "{detail}");
+            assert!(detail.contains("/Stamp"), "{detail}");
         }
         other => panic!("expected Unsupported, got {other:?}"),
     }

@@ -637,6 +637,7 @@ pub(crate) fn reconstruct(
     };
     let parse_at = |start: u64| -> Option<crate::parser::IndirectObject> {
         let mut p = Parser::new(input, limits);
+        p.tolerate_missing_endobj();
         p.seek(start as usize);
         p.parse_indirect_object().ok().flatten()
     };

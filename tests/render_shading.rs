@@ -331,6 +331,9 @@ fn unsupported_shading_types_and_patterns_are_classified() {
             "type {t}: {err:?}"
         );
     }
+    // A tiling pattern that is a dictionary rather than a stream is
+    // malformed (tiling itself is rendered — see
+    // render_tiling_patterns.rs).
     let pat = "/P << /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] \
                /XStep 10 /YStep 10 /Resources << >> /Length 0 >>";
     let err = render(&page(
@@ -341,22 +344,24 @@ fn unsupported_shading_types_and_patterns_are_classified() {
         vec![],
     ))
     .unwrap_err();
-    assert!(
-        matches!(err, Error::Unsupported { feature, .. } if feature.contains("tiling")),
-        "{err:?}"
-    );
-    // Stroking and text in a pattern space are refused, not black.
+    assert!(matches!(err, Error::Structure(_)), "{err:?}");
+    // Stroking with a shading pattern paints the stroke outline with
+    // the shading: grey along the diagonal, nothing elsewhere.
     let pat = "/P << /PatternType 2 /Shading << /ShadingType 2 /ColorSpace /DeviceGray \
-               /Coords [0 0 100 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >> >>";
-    let err = render(&page(
-        b"/Pattern CS /P SCN 10 10 m 90 90 l S",
+               /Coords [0 0 100 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> \
+               /Extend [true true] >> >>";
+    let r = render(&page(
+        b"/Pattern CS /P SCN 10 w 10 10 m 90 90 l S",
         "",
         pat,
         "",
         vec![],
     ))
-    .unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+    .unwrap();
+    let mid = px(&r, 50, 50);
+    assert!(near(mid, (128, 128, 128), 10), "{mid:?}");
+    assert_eq!(px(&r, 80, 80), WHITE, "off the stroke");
+    assert_eq!(px(&r, 20, 20), WHITE, "off the stroke");
 }
 
 #[test]

@@ -46,6 +46,31 @@ fn strict_parse_is_unchanged_and_reports_no_recovery() {
 }
 
 #[test]
+fn missing_endobj_is_refused_strictly_and_recovered() {
+    // §7.3.10: every indirect object ends with `endobj`. A file whose
+    // definitions lack it is malformed — the strict parser says so —
+    // yet each object is delimited by its own syntax, so recovery
+    // reads it. The keyword is blanked in place so the xref offsets
+    // stay valid and the missing keyword is the only fault.
+    let mut stripped = good_pdf();
+    let mut i = 0;
+    let mut blanked = 0;
+    while let Some(k) = stripped[i..].windows(6).position(|w| w == b"endobj") {
+        stripped[i + k..i + k + 6].copy_from_slice(b"      ");
+        i += k + 6;
+        blanked += 1;
+    }
+    assert!(blanked >= 4);
+    let err = Document::from_bytes(&stripped).unwrap_err();
+    assert!(
+        matches!(&err, Error::Parse(m) if m.contains("endobj")),
+        "{err:?}"
+    );
+    let doc = Document::from_bytes_recovering(&stripped).unwrap();
+    assert!(renders_black(&doc));
+}
+
+#[test]
 fn broken_startxref_is_refused_strictly_and_recovered() {
     let pdf = break_startxref(&good_pdf());
     let err = Document::from_bytes(&pdf).unwrap_err();

@@ -577,7 +577,10 @@ fn filter_chain_limit_is_enforced() {
         offsets.push((*n, data.len()));
         data.extend_from_slice(format!("{n} 0 obj\n").as_bytes());
         data.extend_from_slice(b);
-        data.extend_from_slice(b"\nendstream\nendobj\n");
+        if b.windows(7).any(|w| w == b"stream\n") {
+            data.extend_from_slice(b"\nendstream");
+        }
+        data.extend_from_slice(b"\nendobj\n");
     }
     let xref = data.len();
     data.extend_from_slice(b"xref\n0 5\n");

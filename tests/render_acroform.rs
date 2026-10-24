@@ -239,8 +239,8 @@ fn edge_cases_and_refusals() {
     let b = b"<< /Parent 10 0 R /Kids [10 0 R] >>".to_vec();
     let err = render(&pdf("", &[10], vec![(10, a), (11, b)])).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
-    // Non-widget annotations without /AP are still refused.
-    let sq = b"<< /Type /Annot /Subtype /Square /Rect [20 100 180 130] >>".to_vec();
-    let err = render(&pdf("", &[10], vec![(10, sq)])).unwrap_err();
+    // Non-geometric annotations without /AP are still refused.
+    let st = b"<< /Type /Annot /Subtype /Stamp /Rect [20 100 180 130] >>".to_vec();
+    let err = render(&pdf("", &[10], vec![(10, st)])).unwrap_err();
     assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
 }
