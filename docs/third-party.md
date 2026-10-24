@@ -55,14 +55,17 @@ development tool that is not part of the engine) additionally uses
 |---|---|---|
 | `fonts/liberation/*.ttf` | Liberation Sans / Serif / Mono 2.1.5, unmodified; substitutes for non-embedded Standard 14-style fonts (`src/fontsubst.rs`) | SIL Open Font License 1.1 — `fonts/liberation/LICENSE`, provenance and SHA-256 in `fonts/liberation/README.md` |
 | `tests/fixtures/KasaneJP.ttf` | 17-glyph subset of Noto Sans JP, renamed | SIL OFL 1.1 — `tests/fixtures/OFL-1.1.txt`, notice in `NOTICE` |
-| `tests/fixtures/type1_cff.bin` | 800-byte CFF subset of Source Sans Pro Bold | SIL OFL 1.1 — `tests/fixtures/OFL-1.1.txt`, notice in `NOTICE` |
-| `tests/fixtures/eexec_cmsy10.bin` | 2-glyph Type 1 subset of CMBSY10 (AMS Computer Modern) as embedded in a corpus PDF | the AMS Type 1 fonts are OFL 1.1; the source program of this subset is **not independently verified** (see `tests/fixtures/README.md`) |
+| `tests/fixtures/type1_cff.bin` | 800-byte CFF subset of Source Sans Pro Bold, internal names changed to `KasaneSansPro` (OFL Reserved Font Name 'Source' not used) | SIL OFL 1.1 — Copyright 2010, 2012 Adobe Systems Incorporated; `tests/fixtures/OFL-1.1.txt`, notice in `NOTICE` |
+| `tests/fixtures/eexec_cmsy10.bin` | 2-glyph Type 1 subset of CMBSY10 v003.002 (AMS Computer Modern, 2009 Type 1 release), internal names changed to `KSBSY10` (Reserved Font Name not used); its clear-text header carries the AMS copyright and the OFL statement | SIL OFL 1.1 — Copyright (c) 1997, 2009 American Mathematical Society; `tests/fixtures/OFL-1.1.txt`, notice in `NOTICE` |
 | `tests/fixtures/KasaneTest.ttf`, `KasaneCIDTest.ttf` | synthetic fonts generated from scratch | none (generated) |
 
 ## Optional `cjk-fallback` assets (fetched, never committed)
 
 `scripts/fetch-cjk-assets.sh` downloads into `assets/cjk/` (ignored
-by git):
+by git). Every file comes from a commit pinned in the script and is
+verified against `scripts/cjk-assets.sha256` before anything is
+installed; a failed download, a missing licence file or a checksum
+mismatch aborts without touching `assets/cjk/`:
 
 | asset | source | licence |
 |---|---|---|
@@ -72,6 +75,15 @@ by git):
 
 A binary built with `--features cjk-fallback` embeds these and must
 ship their licence texts.
+
+To update the assets: change the `CMAP_REV` / `MAP_REV` / `NOTO_REV`
+commit pins in `scripts/fetch-cjk-assets.sh`, run
+`scripts/fetch-cjk-assets.sh --update-lock`, review the regenerated
+`scripts/cjk-assets.sha256` and the fetched licence files, re-run
+`cargo test --features cjk-fallback`, and commit the pins and the
+lock together. `scripts/check-workflows.py` (run on every pull
+request) fails if the pins are not commit SHAs or the lock is
+incomplete.
 
 ## Development-time tools (never linked)
 

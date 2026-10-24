@@ -44,8 +44,12 @@ The optional `cjk-fallback` feature embeds licence-clean assets that
 are not committed:
 
 ```console
-scripts/fetch-cjk-assets.sh      # → assets/cjk/ (ignored by git)
+scripts/fetch-cjk-assets.sh      # → assets/cjk/ (ignored by git), verified against scripts/cjk-assets.sha256
 ```
+
+The script fetches from commit pins and fails on any checksum
+mismatch; `docs/third-party.md` describes how to update the pins and
+the lock.
 
 ## Tests and lints
 
