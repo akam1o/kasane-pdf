@@ -653,6 +653,245 @@ references. Performance: median 43 ms per file, p90 232 ms, p99 902
 ms, max 1.34 s; no limit was hit except the two deliberate
 `max_image_dimension` refusals.
 
+### Results after soft masks, group compositing, JPX, parser fixes and the round-trip pipeline (run-1792806451)
+
+Same 511 files, same conditions, measured against run-1792801802.
+Render blockers were re-classified first (62 `expect: pass` files
+that parsed strictly but did not render): 23 engine faults (content
+arrays split inside a dictionary, CMap tokens glued to `>>`, indirect
+`/DecodeParms`, bfrange carry, `/Identity` ToUnicode names, null
+`/Annots` entries), 14 unimplemented features (soft masks, isolated
+groups with blend modes inside, non-separable blends, JPX, UserUnit,
+knockout, function-based and mesh shadings, text clip modes,
+non-embedded CJK fonts), 15 faults in the PDF itself (dangling
+references, unbalanced `q`/`Q`, operators inside path objects,
+truncated Flate streams, a JBIG2 filter on a content stream), 2
+resource limits (`max_image_dimension`), 3 deliberate refusals
+(unsigned Latin-only fallback for Arabic FreeText, ZapfDingbats
+without a licence-clean substitute, a genuine Type 3/pattern cycle)
+and no reference-implementation disagreement. The first two groups
+were addressed where the fix is exact (see the feature docs); the
+third is left to recovery mode by design.
+
+| files | n | parse | render | text | rewrite | full PASS | recovered | crash/timeout |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| all | 511 | 444 | 393 | 411 | 383 | **340** | 34 | 0 |
+| expect: pass | 427 | 404 (94.6%) | **362 (84.8%)** | 380 (89.0%) | 348 (81.5%) | **311 (72.8%)** | 10 | 0 |
+| expect: reject | 43 | 1 | 0 | 0 | 0 | 0 | 23 | 0 |
+| expect: any | 41 | 39 | 31 | 31 | 35 | 29 | 1 | 0 |
+
+Against run-1792801802 (all 511): render **372 → 393**, text 399 →
+411, rewrite 383 → 383, full PASS **329 → 340**; 0 newly failing, 0
+lost in any stage, 0 crash / 0 timeout; robustness 43/43 handled,
+43 refused, 0 `expect: reject` full PASS. Newly rendering (21):
+
+| cause removed | files |
+|---|---|
+| `/Contents` array split inside a `<< >>` (§7.8.2) | `irs-f1040es` `irs-f1040s2` `irs-f1040sd` `irs-f1120s` `irs-f990` `irs-fss4` |
+| ExtGState `/SMask` (luminosity / alpha) | `chrome-wiki-zh-hanzi` `issue14297` |
+| isolated group with a blend mode inside, non-separable blends | `chrome-wiki-de-schriftart` `blendmode` |
+| JPX (`hayro-jpeg2000`), JPX soft mask | `issue19326` `bug_jpx` `s2` |
+| `/UserUnit` honoured | `bug1947248_forms` `bug1947248_text` |
+| bfrange carry (Chrome Hangul), CMap delimiter lexing, `/ToUnicode /Identity`, indirect `/DecodeParms` | `chrome-wiki-ko-hangul` `issue12963` `bug920426` `identitytounicodemap_charcodeof` `bug1650302_reduced` `issue14814` |
+| null `/Annots` entry skipped | `annotation-text-without-popup` |
+
+Per category (expect: pass; render / full PASS before → after):
+misc 112 → 118 / 104 → 108, graphics 52 → 55 / 50 → 53, annotations
+44 → 45 / 39 → 40, **forms 30 → 37** / 11 → 12 (the IRS forms;
+rewrite still refuses the 25 signed ones), **browser 16 → 19** / 16
+→ 17 (every Chrome print now renders), japanese 9 / 8, scan 13 / 13,
+papers 10 / 9, office 11 / 8, images 11 / 10, latex 13 / 12,
+transparency 4 / 4, pdfa 16 / 16.
+
+Fidelity (separate from render success): 379 files measured in both
+runs, mean SSIM 0.9442 → 0.9442, no file moved by more than 0.005.
+Newly measured: 21 files, mean 0.868, median 0.862, 7 below 0.8 —
+the six IRS forms (0.70–0.86: `/NeedAppearances` fields regenerated
+by us, stale appearances kept by Poppler, as with the earlier IRS
+set) and the three Chrome prints (0.71–0.77: CJK/Latin glyph weight
+through CFF hinting, plus the Hangul page's many small glyphs);
+`bug1947248_*` are rendered three times Poppler's size because
+Poppler ignores `/UserUnit`, so their metric is resampled.
+Inspected against Poppler at 72 dpi: `blendmode` (all 16 modes,
+identical including Hue/Saturation/Color/Luminosity),
+`issue14297` (soft-masked header gradients, identical),
+`chrome-wiki-zh-hanzi` (language-switch dialog with a luminosity
+shadow mask over Chinese text; renders, Poppler reference not
+produced for comparison), `irs-f1040s2` (identical),
+`bug1947248_text` (same content at 3× size), `issue19326` (JPX
+"JPX" text, identical), `s2` (JPX photo with JPX soft mask, matches
+the reference colours and masking).
+
+Remaining render blockers (expect: pass, strict parse, 42 files):
+non-embedded CJK CID fonts 3 (+ non-embedded TrueType 1, ZapfDingbats
+1), dangling references 4, function-based shading 2, tensor-patch
+mesh 1, `max_image_dimension` 2, malformed content streams 7
+(unbalanced `q`/`Q`, operators inside path objects, `BT` without
+`ET`, truncated Flate, bad inline-image `EI`, undefined `/Properties`
+name, bad `/Differences`), knockout group 1, text clip modes 4–7 1,
+Arabic FreeText 1, a genuine cycle 1, multi-state `/AP` without `/AS`
+on a non-widget 1, JBIG2 on a content stream 1, zero-size page 1.
+Performance: the slowest is `bomb_giant` at 40 s, which is two
+20-second kills of external tools (Poppler and qpdf) on the rewritten
+JBIG2 bomb — our own stages take milliseconds on it. Peak RSS 710
+MB (page-sized layers and the two-pass non-isolated groups on a large
+transparency page). Median 136 ms per file including the round
+trip, p90 554 ms, p99 4.5 s.
+
+### Round-trip results (run-1792806451)
+
+444 strictly parsed files; rates are PASS over attempted, *full*
+over the 444 (a refused rewrite is not a round trip).
+
+| group | files | rewrite P/F/U | reparse | structure | render P/N/A | text P/N/A | annots P/N/A | qpdf clean/warn/err | **full** | size ×mean/max |
+|---|---:|---|---|---|---|---|---|---|---:|---|
+| all | 444 | 383 / 10 / 51 | 383 / 0 | 383 / 0 | 342 / 41 | 354 / 29 | 122 / 261 | 365 / 16 / 2 | **383 (86.3%)** | 0.99 / 1.64 |
+| expect: pass | 404 | 348 / 6 / 50 | 348 / 0 | 348 / 0 | 313 / 35 | 325 / 23 | 119 / 229 | 330 / 16 / 2 | **348 (86.1%)** | 0.99 / 1.64 |
+| feature: acroform | 89 | 50 / 2 / 37 | 50 / 0 | 50 / 0 | 46 / 4 | 48 / 2 | **50 / 0** | 46 / 4 / 0 | 50 | 0.99 / 1.63 |
+| feature: annots | 163 | 120 / 6 / 37 | 120 / 0 | 120 / 0 | 111 / 9 | 114 / 6 | **118 / 2** | 108 / 12 / 0 | 120 | 1.02 / 1.64 |
+| feature: dests | 80 | 44 / 1 / 35 | 44 / 0 | 44 / 0 | 41 / 3 | 41 / 3 | 43 / 1 | 43 / 1 / 0 | 44 | 1.00 / 1.21 |
+| feature: multipage | 97 | 65 / 5 / 27 | 65 / 0 | 65 / 0 | 61 / 4 | 61 / 4 | 40 / 25 | 60 / 5 / 0 | 65 | 1.01 / 1.50 |
+| feature: incremental | 151 | 111 / 2 / 38 | 111 / 0 | 111 / 0 | 105 / 6 | 107 / 4 | 43 / 68 | 107 / 4 / 0 | 111 | 1.01 / 1.64 |
+| feature: embedded-fonts | 210 | 169 / 3 / 38 | 169 / 0 | 169 / 0 | 155 / 14 | 157 / 12 | 73 / 96 | 165 / 4 / 0 | 169 | 1.02 / 1.64 |
+| feature: nonembedded-fonts | 70 | 66 / 3 / 1 | 66 / 0 | 66 / 0 | 53 / 13 | 54 / 12 | 32 / 34 | 63 / 2 / 1 | 66 | 0.98 / 1.64 |
+| feature: images | 118 | 107 / 1 / 10 | 107 / 0 | 107 / 0 | 100 / 7 | 102 / 5 | 29 / 78 | 106 / 1 / 0 | 107 | 0.99 / 1.64 |
+| feature: transparency | 127 | 113 / 2 / 12 | 113 / 0 | 113 / 0 | 103 / 10 | 104 / 9 | 61 / 52 | 112 / 1 / 0 | 113 | 0.99 / 1.64 |
+| feature: signed | 27 | 0 / 0 / **27** | – | – | – | – | – | – | 0 | – |
+| feature: optional-content | 17 | 0 / 0 / **17** | – | – | – | – | – | – | 0 | – |
+
+Reading: **every rewrite that the engine performed survived
+reparsing and is the same object graph** (383/383), renders
+identically under our renderer wherever the original renders
+(342/342 attempted; 41 N/A are files our renderer refuses), extracts
+the same characters at the same positions (354/354), keeps every
+annotation, field value and named destination (122/122), and
+Poppler agrees: page-1 SSIM between original and rewritten averages
+1.0000 over the 394 pairs it could render (lowest 0.993, Poppler's
+own anti-aliasing noise). The 10 rewrite *failures* are all
+files with dangling references or objects without `endobj` — the
+strict walker reports the fault the file has (recovery mode would
+read them). The 51 refusals are the deliberate profile: 27 signed
+documents, 17 `/OCProperties`, 3 XFA, 3 `/AA`, 2 PDF 2.0. qpdf finds
+no errors in 365 of 383 outputs; the 16 warnings are all of one
+kind ("object 3 0 at offset 131: kid 0 (from 0) Resources is missing or invalid; repairing" — a property of the content streams, which the rewrite
+copies verbatim from the inputs) and the 2 errors are the two
+decompression-bomb inputs whose content qpdf cannot decode either. Output size: mean 0.99× the input (object
+streams are written as plain objects, which costs up to 1.64× on
+`smaskdim`/`issue14307`; unreferenced objects and dead revisions are
+dropped, which is why `filled-background` shrinks to 0.3 %).
+Per-category rows (annotations 42/42, forms 13/13 of 38 — 25 signed
+—, browser 19/19, graphics 59/59, japanese 15/15, scan 13/13, papers
+9/9, office 13/13, images 15/15, latex 12/12 full) are in the report.
+
+## Round-trip verification (rewrite → reparse → compare)
+
+A rewrite that *succeeds* says nothing about whether the document
+survived it. `compat/runner/src/roundtrip.rs` runs, for every file
+whose strict parse succeeded:
+
+```text
+original ──strict parse──▶ Document A
+                              │ rewrite()            (refusal → UNSUPPORTED, error → FAIL)
+                              ▼
+                           bytes B ──strict parse──▶ Document B   (reparse PASS/FAIL)
+                              │
+          ┌───────────────────┼─────────────────────┬────────────────────┐
+          ▼                   ▼                     ▼                    ▼
+   object graph          render A vs B         text A vs B      annotations/forms/dests
+   (/Root, /Info)       kasane, ≤ 8 pages,    chars, Unicode,    per-annotation summary,
+   renumbering-          48 dpi: size, MAE,    origin/advance,    field tree (name, FT, V,
+   independent walk      SSIM, diff-px; plus   code/ActualText    Ff, DA, Opt), named
+   with an old→new       Poppler on page 1     resolution         destinations → page
+   reference map         of both as witness
+          └───────────────────┴─────────────────────┴────────────────────┘
+                              ▼
+                 qpdf --check on B (warnings and errors counted separately)
+                              ▼
+                 full = rewrite PASS ∧ every attempted comparison PASS
+```
+
+Outcomes per check are PASS / FAIL / UNSUPPORTED (the engine refused
+the rewrite — a profile limit such as a signature, not damage) / N/A
+(nothing of that kind in the file: no annotations, or our renderer
+or extractor fails on the *original*, so there is nothing to compare)
+/ not attempted. Rates are PASS over *attempted*; N/A never counts as
+a pass, and a file without forms is never credited with "forms
+preserved". Every `FileResult` records the per-check notes (first
+differences with their object path), per-page render metrics, the
+qpdf diagnostics, the size ratio and the time; the report tallies
+per group — all strictly parsed files, by `expect`, by category and
+by document feature (multipage, acroform, annots, dests, outlines,
+signed, incremental, embedded/non-embedded fonts, images,
+transparency, …).
+
+What the comparisons can and cannot show:
+
+* the object-graph walk is the strongest check: it compares every
+  key, value, stream byte and reference *target* reachable from the
+  catalog and `/Info`, tolerating only renumbering and `/Length`
+  recomputation. A rewrite that drops a key, inlines something,
+  re-encodes a stream or points a reference elsewhere is reported
+  with the path (`/Root/Pages/Kids[0]/Annots[2]/AP/N: stream bytes
+  differ`);
+* kasane-vs-kasane rendering detects damage *added* by the rewrite
+  even where our rendering of the original is itself wrong — but a
+  match only proves the rewrite changed nothing this renderer shows.
+  Two renderers agreeing on both files does not prove either is
+  right; the Poppler witness is the independent second opinion on
+  page 1;
+* text and annotation comparisons are derived views of the same
+  graph; they exist so a failure is attributed to what a user would
+  notice (characters moved, a field value lost) rather than to a path.
+
+### Signed, incrementally updated and encrypted files (safety)
+
+* **Signed** (`/ByteRange` in a `/Sig` value): a signature covers a
+  byte range of the original revision. Any rewrite — new object
+  numbers, offsets, a single xref — breaks it, so the rewriter
+  refuses before writing (`/Perms /DocMDP`/`/UR`/`/UR3`, and any
+  `/FT /Sig` field with a `/V` dictionary under `/Fields` → `/Kids`
+  or as a page widget). Safe handling = read-only: render, extract,
+  audit. Preserving a signature means an *incremental save* that
+  appends a new revision after the signed bytes (and even then
+  `/DocMDP /P 1` forbids every change) — a separate phase.
+* **Incremental updates** (`/Prev` chains, `/XRefStm`): the parser
+  merges them newest-first; the rewrite emits one flat revision with
+  the *current* objects. The history (superseded objects, earlier
+  trailers) is intentionally not carried — a round trip therefore
+  compares the current revision only, and the `incremental` feature
+  row shows how many such files pass.
+* **Encrypted** (`/Encrypt` in the trailer): refused at
+  `Document::from_bytes` (`Error::Encrypted`), so no stage — rewrite
+  included — can emit plaintext from a file it could not decrypt.
+  Decryption is not implemented; when it is, the rewriter must
+  re-encrypt or refuse, never write the decrypted objects as-is.
+
+## Non-embedded CJK CID fonts: options (decision: not in this phase)
+
+Three `expect: pass` files (`issue11578_reduced`, `issue11740_reduced`,
+`issue12418_reduced`) and two more with non-embedded TrueType fonts
+render-fail on "non-embedded CIDFont: /FontFile2 or /FontFile3 is
+required". Drawing them needs (a) a CJK glyph source, (b) the
+predefined CMaps the fonts name (`90ms-RKSJ-H`, `UniGB-UCS2-H`, …) to
+turn codes into CIDs, and (c) the CID → Unicode tables
+(`Adobe-Japan1-UCS2` etc.) to pick glyphs from a font that is not
+CID-keyed the same way. The options:
+
+| option | licence | size | WASM / mobile | fidelity | verdict |
+|---|---|---|---|---|---|
+| bundle a CJK font (Noto Sans CJK / Source Han Sans, OFL 1.1; or the smaller Noto Sans CJK subsets) + Adobe CMap resources (BSD-3) | compatible | 15–20 MB per weight for pan-CJK; CMaps ~2 MB uncompressed | yes, but every consumer pays the size | glyph widths come from the PDF `/W`; shapes differ from the intended font (Mincho vs Gothic) | too heavy for a library crate's default build |
+| optional feature `cjk-fallback` bundling one subset font (Japanese-only Gothic, ~4 MB) + the Adobe-Japan1 CMaps | compatible | ~5 MB behind a feature flag | yes when enabled | Japanese only | **next phase**: implement behind a feature, Japanese first, `font_substitutions` reporting the substitute and the ordering; Chinese/Korean later |
+| caller-supplied font path (`RenderOptions::cjk_font`) | caller's | none | n/a | depends on the caller | possible as an addition, but an *implicit* host-font dependency is ruled out |
+| refuse (status quo) | — | — | — | — | keeps the 5 files blocked; text extraction of these files already works |
+
+The CMaps are needed regardless of the glyph source and are the
+larger engineering item (the parser exists — `src/cmap.rs` reads
+embedded CMap streams — the predefined ones only need to be shipped
+and `usecmap` chains resolved). Estimated 3 person-days for the
+Japanese feature flag including the width/position checks against
+Poppler; the decision is deferred to the next phase so this one could
+concentrate on the round-trip basis.
+
 ## JBIG2: implementation options (decision, implemented in run-1792801802)
 
 JBIG2 (ITU-T T.88) is the single largest render blocker on the 511
