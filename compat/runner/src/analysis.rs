@@ -1020,6 +1020,8 @@ mod tests {
                 rewrite_qpdf_ok: None,
                 rewrite_reparsed: None,
             },
+            features: Vec::new(),
+            roundtrip: None,
         }
     }
 

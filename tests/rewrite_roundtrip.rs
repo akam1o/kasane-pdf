@@ -547,6 +547,33 @@ fn signed_docmdp_refused() {
     }
 }
 
+/// A signature value nested under /Kids (the common Acrobat layout)
+/// or hanging off a page widget outside /Fields is found too; an
+/// unsigned /Sig field (no /V) passes through.
+#[test]
+fn nested_and_widget_only_signatures_refused() {
+    let p = pdf_with(
+        1,
+        "/AcroForm << /Fields [<< /T (grp) /Kids [<< /FT /Sig /T (s1) \
+         /V << /Type /Sig /ByteRange [0 1 2 3] /Contents <00> >> >>] >>] >>",
+        "",
+    );
+    let doc = Document::from_bytes(&p).unwrap();
+    match rewrite(&doc) {
+        Err(Error::Unsupported { feature, detail }) => {
+            assert_eq!(feature, "signed signature field");
+            assert!(detail.contains("ByteRange"), "{detail}");
+        }
+        other => panic!("expected Unsupported, got {other:?}"),
+    }
+    let p = pdf_with(1, "/AcroForm << /Fields [<< /FT /Sig /T (blank) >>] >>", "");
+    let doc = Document::from_bytes(&p).unwrap();
+    assert!(
+        rewrite(&doc).is_ok(),
+        "an unsigned field is not a signature"
+    );
+}
+
 #[test]
 fn xfa_refused() {
     let p = pdf_with(1, "/AcroForm << /XFA 9 0 R /Fields [] >>", "");

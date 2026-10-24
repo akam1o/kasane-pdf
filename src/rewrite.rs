@@ -431,6 +431,75 @@ fn effective_version(doc: &Document) -> Result<String, Error> {
 }
 
 /// Refusals — checked before any collection or output begins.
+/// Walk a field/widget array (and `/Kids`, depth ≤ 32) for a
+/// signature field that actually holds a signature: `/FT /Sig`
+/// (possibly inherited) with a `/V` that is a dictionary (normally
+/// carrying `/ByteRange` and `/Contents`). Returns a short description
+/// of the first one found.
+fn signed_field_in(
+    doc: &Document,
+    fields: &[Object],
+    depth: usize,
+    seen: &mut std::collections::HashSet<crate::object::IndirectRef>,
+) -> Result<Option<String>, Error> {
+    if depth > 32 {
+        return Ok(None);
+    }
+    for f in fields {
+        if let Some(r) = f.as_ref() {
+            if !seen.insert(r) {
+                continue;
+            }
+        }
+        let f = doc.deref(f)?;
+        let Some(fd) = f.as_dict() else { continue };
+        // /FT may be inherited from the parent field; a Kids-only
+        // node carries none and is just walked.
+        let mut ft = fd
+            .get(b"FT".as_slice())
+            .and_then(|o| o.as_name())
+            .map(|n| n.to_vec());
+        if ft.is_none() {
+            if let Some(p) = fd.get(b"Parent".as_slice()) {
+                if let Ok(p) = doc.deref(p) {
+                    ft = p
+                        .as_dict()
+                        .and_then(|pd| pd.get(b"FT".as_slice()))
+                        .and_then(|o| o.as_name())
+                        .map(|n| n.to_vec());
+                }
+            }
+        }
+        if ft.as_deref() == Some(b"Sig") {
+            if let Some(v) = fd.get(b"V".as_slice()) {
+                let v = doc.deref(v)?;
+                if let Some(vd) = v.as_dict() {
+                    let name = fd
+                        .get(b"T".as_slice())
+                        .and_then(|o| o.as_string())
+                        .map(|s| String::from_utf8_lossy(s).into_owned())
+                        .unwrap_or_else(|| "unnamed".into());
+                    let what = if vd.contains_key(b"ByteRange".as_slice()) {
+                        format!("field {name:?} with /ByteRange")
+                    } else {
+                        format!("field {name:?} with a signature dictionary")
+                    };
+                    return Ok(Some(what));
+                }
+            }
+        }
+        if let Some(kids) = fd.get(b"Kids".as_slice()) {
+            let kids = doc.deref(kids)?;
+            if let Some(k) = kids.as_array() {
+                if let Some(w) = signed_field_in(doc, k, depth + 1, seen)? {
+                    return Ok(Some(w));
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
 fn check_refusals(doc: &Document) -> Result<(), Error> {
     let catalog = doc.catalog();
 
@@ -466,27 +535,47 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
                 });
             }
             if let Some(fields_obj) = d.get(b"Fields".as_slice()) {
-                if let Some(fields) = fields_obj.as_array() {
-                    for f in fields {
-                        let f = doc.deref(f)?;
-                        let is_sig = f
-                            .as_dict()
-                            .and_then(|fd| fd.get(b"FT".as_slice()))
-                            .and_then(|o| o.as_name())
-                            == Some(b"Sig");
-                        let filled = f
-                            .as_dict()
-                            .map(|fd| fd.contains_key(b"V".as_slice()))
-                            .unwrap_or(false);
-                        if is_sig && filled {
-                            return Err(Error::Unsupported {
-                                feature: "signed signature field",
-                                detail: "/AcroForm contains a filled /Sig field — cannot rewrite"
-                                    .into(),
-                            });
-                        }
+                let fields = doc.deref(fields_obj)?;
+                if let Some(fields) = fields.as_array() {
+                    let mut seen = std::collections::HashSet::new();
+                    if let Some(what) = signed_field_in(doc, fields, 0, &mut seen)? {
+                        return Err(Error::Unsupported {
+                            feature: "signed signature field",
+                            detail: format!(
+                                "/AcroForm contains a signed /Sig field ({what}) — a rewrite \
+                                 would invalidate the signature"
+                            ),
+                        });
                     }
                 }
+            }
+        }
+    }
+    // A signature value can also hang off a widget that is not in
+    // /AcroForm /Fields (broken forms, or signatures added by tools
+    // that only touched /Annots): any page annotation with /FT /Sig
+    // and a /V carrying /ByteRange counts.
+    for page in doc.pages() {
+        let Some(pref) = page.object_ref() else {
+            continue;
+        };
+        let Ok(pd) = doc.resolve(pref) else { continue };
+        let Some(pd) = pd.as_dict() else { continue };
+        let Some(annots) = pd.get(b"Annots".as_slice()) else {
+            continue;
+        };
+        let annots = doc.deref(annots)?;
+        if let Some(arr) = annots.as_array() {
+            let mut seen = std::collections::HashSet::new();
+            if let Some(what) = signed_field_in(doc, arr, 0, &mut seen)? {
+                return Err(Error::Unsupported {
+                    feature: "signed signature field",
+                    detail: format!(
+                        "page {} carries a signed /Sig widget ({what}) — a rewrite would \
+                         invalidate the signature",
+                        page.index() + 1
+                    ),
+                });
             }
         }
     }
