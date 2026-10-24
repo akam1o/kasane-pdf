@@ -1,74 +1,95 @@
 # kasane-pdf documentation
 
 kasane-pdf is an independent PDF engine (parser, document model,
-content interpreter, writer) — not a wrapper around PDFium/MuPDF/
-Poppler. This directory is split into **reference** (what is
-supported / how it behaves) and **rationale** (why it is built that
-way).
+content interpreter, renderer, writer) — not a wrapper around
+PDFium / MuPDF / Poppler. The documentation is split into
+**reference** (what is supported and how it behaves), **rationale**
+(why it is built that way) and **internal notes** (how it got here).
 
-## Reading order
+## Getting started
 
-1. [`architecture.md`](architecture.md) — goals/non-goals, module
-   map, the core design decisions, the safety/`Limits` model, the
-   licensing policy, and the long-term roadmap.
-2. [`features/`](features/) — the support matrix, one file per area.
-   Everything *not* listed as supported is a typed error — never a
-   silent skip or a partial result.
-3. [`security.md`](security.md) — the safety/`Limits` posture and the
-   "not a redaction/sanitizer" guarantees in one place.
-4. [`decisions/`](decisions/) — design-decision records (one per
-   editing/diagnosis subsystem).
-5. [`testing.md`](testing.md) — test layout, fixtures, and external
-   verification.
-6. [`compat-corpus.md`](compat-corpus.md) — the R2-backed real-world
-   PDF compatibility corpus and runner.
-7. [`redaction-design.md`](redaction-design.md) — the recorded
-   constraints that shape document-model choices.
-
-## Feature support matrix (`features/`)
-
-| File | Area |
+| File | Contents |
 |---|---|
-| [`parsing.md`](features/parsing.md) | file structure, object layer, stream decoding, document layer, content-stream ops |
-| [`rendering.md`](features/rendering.md) | page→pixmap rendering, text rendering & `extract_text` |
-| [`matrices.md`](features/matrices.md) | `Matrix` CTM semantics, singular/non-finite handling |
-| [`rewriting.md`](features/rewriting.md) | full single-revision rewrite — what is carried, refused, and *not* a sanitizer |
-| [`editing-annotations.md`](features/editing-annotations.md) | `/Square` annotation editing |
-| [`editing-incremental.md`](features/editing-incremental.md) | incremental save (append a revision, original bytes kept) and the signed-document policy |
-| [`inspect.md`](features/inspect.md) | `inspect` page/document structure dump |
-| [`diagnosis.md`](features/diagnosis.md) | `diagnose_redaction` / `preflight-redaction` (read-only) |
-| [`editing-text.md`](features/editing-text.md) | experimental scoped text removal |
-| [`editing-image.md`](features/editing-image.md) | experimental image-region removal (raw/Flate) |
-| [`editing-jpeg.md`](features/editing-jpeg.md) | JPEG `DCTDecode` image editing |
-| [`editing-region.md`](features/editing-region.md) | experimental text+image region removal |
-| [`editing-multipage.md`](features/editing-multipage.md) | multi-page region removal |
-| [`editing-metadata.md`](features/editing-metadata.md) | combined region removal + metadata strip |
-| [`metadata.md`](features/metadata.md) | document-metadata entry removal |
-| [`audit.md`](features/audit.md) | residual-information audit (`audit-residuals`) |
+| [`getting-started.md`](getting-started.md) | requirements, build and install, CLI tour, library usage, `Limits`, errors, the `cjk-fallback` feature |
+| [`../README.md`](../README.md) | project overview, feature summary, compatibility numbers, limitations in brief |
+| [`../examples/`](../examples/) | runnable examples: render a page, extract text, incremental save |
 
-## Design decisions (`decisions/`)
+## Architecture
 
-Rationale for the experimental editing/diagnosis subsystems — kept as
-one record per subsystem so a decision's context and its superseded
-form stay traceable.
-
-| File | Decision |
+| File | Contents |
 |---|---|
-| [`diagnosis.md`](decisions/diagnosis.md) | pre-redaction diagnosis walker |
-| [`editing.md`](decisions/editing.md) | scoped text/image/region removal, JPEG, grid-aligned CTM |
-| [`audit.md`](decisions/audit.md) | residual-information audit |
-| [`multi-page.md`](decisions/multi-page.md) | multi-page region removal |
-| [`metadata.md`](decisions/metadata.md) | document-metadata removal |
-| [`combined.md`](decisions/combined.md) | combined region + metadata strip |
+| [`architecture.md`](architecture.md) | goals and non-goals, module map, key design decisions, the `Limits` table, licensing policy, roadmap |
+| [`security.md`](security.md) | the safety posture: resource bounds, typed refusals, what the engine is *not* |
+| [`third-party.md`](third-party.md) | every dependency and bundled asset with its licence |
+
+## Rendering
+
+| File | Contents |
+|---|---|
+| [`features/rendering.md`](features/rendering.md) | the render support matrix: operators, colour spaces, images, transparency, shadings, patterns, fonts, text rendering modes, annotations, `/UserUnit`; font-fixture provenance and colour-conversion notes |
+| [`features/matrices.md`](features/matrices.md) | `Matrix` / CTM semantics, singular and non-finite handling |
+| [`features/parsing.md`](features/parsing.md) | file structure, object layer, stream filters, content-stream operators |
+
+## Text extraction
+
+| File | Contents |
+|---|---|
+| [`features/rendering.md`](features/rendering.md) § text | `extract_text`: fonts, encodings, `/ToUnicode`, `/ActualText`, coordinates (the extractor is the renderer running headless) |
+
+## Editing
+
+| File | Contents |
+|---|---|
+| [`features/rewriting.md`](features/rewriting.md) | the full rewrite: what is carried, what is refused, save guarantees, external validation |
+| [`features/editing-annotations.md`](features/editing-annotations.md) | `/Square` annotation editing |
+| [`features/inspect.md`](features/inspect.md) | the `inspect` structural dump |
+| [`features/diagnosis.md`](features/diagnosis.md) | `diagnose_redaction` / `preflight-redaction` (read-only) |
+| [`features/audit.md`](features/audit.md) | residual-information audit (`audit-residuals`) |
+| [`features/metadata.md`](features/metadata.md) | document-metadata entry removal |
+| [`features/editing-text.md`](features/editing-text.md), [`editing-image.md`](features/editing-image.md), [`editing-jpeg.md`](features/editing-jpeg.md), [`editing-region.md`](features/editing-region.md), [`editing-multipage.md`](features/editing-multipage.md), [`editing-metadata.md`](features/editing-metadata.md) | the **experimental** scoped content editors (`remove_text`, `remove_image_region`, `remove_region`, `remove_regions`, combined with metadata removal) — content editing, not redaction |
+| [`redaction-design.md`](redaction-design.md) | the recorded redaction constraints that shape the document model |
+
+## Incremental save
+
+| File | Contents |
+|---|---|
+| [`features/editing-incremental.md`](features/editing-incremental.md) | `Edit::save_incremental`: original bytes preserved, appended revision, xref table / stream, multiple revisions; the signed-document policy (`/ByteRange`, `/DocMDP`, `/FieldMDP`) and its explicit non-goals |
+
+## Compatibility
+
+| File | Contents |
+|---|---|
+| [`compat-corpus.md`](compat-corpus.md) | the real-world corpus (manifest, store configuration, licences), the runner and its modes, result classification, round-trip and external verification, CI, results per run, failure-cause analysis, pre-publication audit |
+
+## Limitations
+
+| File | Contents |
+|---|---|
+| [`limitations.md`](limitations.md) | everything the engine does not do, collected in one place, with pointers to the roadmap |
+
+## Development
+
+| File | Contents |
+|---|---|
+| [`../CONTRIBUTING.md`](../CONTRIBUTING.md) | build, test, lint, compatibility-test workflow, pull-request rules |
+| [`testing.md`](testing.md) | test layout, fixture tiers, external verification scripts |
+| [`../tests/README.md`](../tests/README.md) | which test file owns which feature |
+| [`../tests/fixtures/README.md`](../tests/fixtures/README.md) | fixture generation and provenance |
+| [`../SECURITY.md`](../SECURITY.md) | reporting security problems |
+
+## Internal historical notes
+
+| File | Contents |
+|---|---|
+| [`decisions/`](decisions/) | design-decision records for the diagnosis and experimental-editing subsystems, and the development history — the *why*, not the *what*; not a statement of current support |
 
 ## Conventions
 
 - ISO 32000-1 section numbers (`§`) are cited inline throughout and
   refer to ISO 32000-1:2008 unless noted.
 - "Spec guarantee" vs "implementation limit" is distinguished in each
-  feature file: a ✅/❌ matrix row is the *contract*, prose under it is
-  the *rationale*.
+  feature file: a ✅/◐/❌ matrix row is the *contract*, prose under it
+  is the *rationale*.
 - The experimental `remove_*` / `experimental-*` commands are content
-  editors, **not** a redaction tool and **not** a sanitizer — see the
-  security note in [`architecture.md`](architecture.md) and each
-  editing feature file.
+  editors, **not** a redaction tool and **not** a sanitizer — see
+  [`security.md`](security.md) and each editing feature file.

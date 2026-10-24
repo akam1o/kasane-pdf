@@ -310,7 +310,7 @@ pub struct RenderedPage {
     /// Rendered rectangle size in PDF points (CropBox, Rotate applied).
     pub page_size_pts: (f64, f64),
     /// Non-embedded fonts that were drawn with a bundled substitute
-    /// (see [`crate::fontsubst`]). Empty means every glyph on the page
+    /// (see `src/fontsubst.rs`). Empty means every glyph on the page
     /// came from an embedded program; non-empty means shapes are
     /// approximations of the named fonts and the image must not be
     /// treated as a faithful render of them.

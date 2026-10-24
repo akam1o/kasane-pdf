@@ -247,7 +247,7 @@ impl<'a> Edit<'a> {
     }
 
     /// Append the session's changes to the original bytes as a new
-    /// revision (§7.5.6; see [`crate::incremental`]). The original
+    /// revision (§7.5.6; see `src/incremental.rs`). The original
     /// file is kept byte-for-byte, so earlier revisions and the bytes
     /// a signature covers survive; the signature policy
     /// ([`crate::signature`]) decides whether the changes may be
