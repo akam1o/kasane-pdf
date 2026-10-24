@@ -68,6 +68,10 @@ hayro-jbig2 = { version = "0.3", default-features = false }
 hayro-ccitt = { version = "0.4", default-features = false }
 hayro-jpeg2000 = { version = "0.4", default-features = false }
 
+[[example]]
+name = "cjk_fallback"
+required-features = ["cjk-fallback"]
+
 [features]
 # Bundle the Adobe-Japan1 predefined CMaps, the CID → Unicode map and a
 # Japanese fallback face (assets/cjk/, fetched by scripts/fetch-cjk-assets.sh)

@@ -6,6 +6,43 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `Warning` (`#[non_exhaustive]`) and the per-document warning
+  channel: `Document::take_warnings`, `warnings`, `warnings_dropped`,
+  `warning::MAX_WARNINGS`. A non-conforming input the engine can
+  still process *exactly* is accepted and recorded instead of refused.
+  Two variants: `UnterminatedFlateStream` (a `/FlateDecode` stream
+  ending after a sync flush without the final block and Adler-32;
+  data ending inside a block is still refused) and
+  `MalformedToUnicodeEntry` (a `bfchar`/`bfrange` entry that cannot
+  be read is skipped; its codes stay unmapped).
+- `kasane_pdf::Pixmap` re-exports the `tiny-skia` type of
+  `RenderedPage::pixmap`.
+- The CLI `render` and `text` subcommands print each warning as
+  `warning: …` on stderr.
+- Examples `rewrite`, `recovery` and `cjk_fallback` (the last behind
+  `--features cjk-fallback`); `tests/public_api.rs` exercises the
+  public surface the README relies on; the README code blocks are
+  compiled as doctests.
+- `docs/api-stability.md` (SemVer classification of the 0.1 API),
+  `docs/decisions/ttf-parser.md`, a RustSec audit job in CI.
+
+### Changed
+- `/ToUnicode` hex strings may contain white space between digits
+  (§7.3.4.3); previously such a CMap failed with
+  `Error::Structure("invalid hex in ToUnicode")`.
+- Flate decoding failures are now distinguished: `"incomplete deflate
+  stream"` (truncated inside a block) versus `"corrupt deflate
+  stream"` (invalid data); both remain `Error::Parse`.
+- Dependencies: `crc32fast` 1.5.3; the compatibility runner uses
+  `sha2` 0.11.
+
+### Dependencies
+- `ttf-parser` 0.25.1 is kept despite RUSTSEC-2026-0192 (an
+  *unmaintained* notice, not a vulnerability); the rationale and the
+  migration conditions are in `docs/decisions/ttf-parser.md`, and
+  `.cargo/audit.toml` ignores only that informational id.
+
 ## [0.1.0] - 2026-10-24
 
 Initial release. The API is not yet stable (0.x): breaking changes

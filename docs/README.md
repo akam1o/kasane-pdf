@@ -12,14 +12,15 @@ PDFium / MuPDF / Poppler. The documentation is split into
 |---|---|
 | [`getting-started.md`](getting-started.md) | requirements, build and install, CLI tour, library usage, `Limits`, errors, the `cjk-fallback` feature |
 | [`../README.md`](../README.md) | project overview, feature summary, compatibility numbers, limitations in brief |
-| [`../examples/`](../examples/) | runnable examples: render a page, extract text, incremental save |
+| [`../examples/`](../examples/) | runnable examples: open and inspect, render a page, extract text, rewrite, incremental save, recovery mode, `cjk-fallback` |
 
 ## Architecture
 
 | File | Contents |
 |---|---|
 | [`architecture.md`](architecture.md) | goals and non-goals, module map, key design decisions, the `Limits` table, licensing policy, roadmap |
-| [`security.md`](security.md) | the safety posture: resource bounds, typed refusals, what the engine is *not* |
+| [`security.md`](security.md) | the safety posture: resource bounds, typed refusals, strict pass vs accepted-with-warnings vs recovery, signatures, what the engine is *not* |
+| [`api-stability.md`](api-stability.md) | the 0.1 public API audited: what is stable, what is additive, what 0.2.0 may break and how to migrate |
 | [`third-party.md`](third-party.md) | every dependency and bundled asset with its licence |
 
 ## Rendering
@@ -81,7 +82,7 @@ PDFium / MuPDF / Poppler. The documentation is split into
 
 | File | Contents |
 |---|---|
-| [`decisions/`](decisions/) | design-decision records for the diagnosis and experimental-editing subsystems, and the development history — the *why*, not the *what*; not a statement of current support |
+| [`decisions/`](decisions/) | design-decision records for the diagnosis and experimental-editing subsystems, the development history, and dependency decisions ([`decisions/ttf-parser.md`](decisions/ttf-parser.md)) — the *why*, not the *what*; not a statement of current support |
 
 ## Conventions
 

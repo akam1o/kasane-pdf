@@ -8,8 +8,11 @@ rasteriser and writer are implemented in this repository, and the
 only external code is a handful of permissively licensed codec and
 raster crates.
 
-Status: pre-1.0, under active development. The API is not stable and
-the crate is not yet published on crates.io.
+Status: 0.1.x on [crates.io](https://crates.io/crates/kasane-pdf),
+documented on [docs.rs](https://docs.rs/kasane-pdf). The API is 0.x:
+additions arrive in minor releases, breaking changes are recorded in
+[`CHANGELOG.md`](CHANGELOG.md) and classified in
+[`docs/api-stability.md`](docs/api-stability.md).
 
 ## Design goals
 
@@ -24,9 +27,11 @@ the crate is not yet published on crates.io.
 - **No partial results.** A construct the engine cannot process
   exactly produces a typed [`Error`](src/error.rs)
   (`Unsupported`, `Structure`, `LimitExceeded`, …) with a stable
-  machine-readable `kind()`. Nothing is skipped silently; unavoidable
+  machine-readable `kind()`. Nothing is skipped silently: unavoidable
   approximations (colour profiles, substituted fonts) are reported
-  on the result.
+  on the result, and a non-conforming input the engine could still
+  process exactly is recorded as a [`Warning`](src/warning.rs) on
+  the `Document` (`take_warnings`), never folded into a clean pass.
 - **Strict by default, recovery by choice.** `Document::from_bytes`
   follows ISO 32000-1; `Document::from_bytes_recovering` rebuilds
   damaged files and reports every assumption it made.
@@ -114,7 +119,7 @@ cargo install --path .                # installs the `kasane-pdf` binary
 
 Render a page to PNG ([`examples/render_page.rs`](examples/render_page.rs)):
 
-```rust
+```rust,no_run
 use kasane_pdf::{pixmap_to_png, render_page, Document, RenderOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -126,6 +131,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for s in &page.font_substitutions {
         eprintln!("substituted font: {} -> {}", s.base_font, s.substitute);
     }
+    // Non-fatal deviations the engine processed exactly (a Flate stream
+    // missing its final block, a malformed /ToUnicode entry, …).
+    for w in doc.take_warnings() {
+        eprintln!("warning: {w}");
+    }
     Ok(())
 }
 ```
@@ -133,7 +143,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Walk the document structure — every object is reachable through the
 same typed `Object` model the engine uses ([`examples/inspect_objects.rs`](examples/inspect_objects.rs)):
 
-```rust
+```rust,no_run
 use kasane_pdf::{Document, Object};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -176,7 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Extract text with positions ([`examples/extract_text.rs`](examples/extract_text.rs)):
 
-```rust
+```rust,no_run
 use kasane_pdf::{extract_text, Document, Limits};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -194,7 +204,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Edit and save incrementally ([`examples/incremental_save.rs`](examples/incremental_save.rs)):
 
-```rust
+```rust,no_run
 use kasane_pdf::{Dict, Document, Object, Rect};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -217,14 +227,30 @@ page or content-stream builder in 0.1. Editing starts from an existing
 file — annotations, form-field values and `/Info` through `Edit`,
 written as a full rewrite or as an incremental update.
 
-Run the examples against a fixture:
+All examples, runnable against the fixtures in `tests/fixtures/`:
+
+| example | shows |
+|---|---|
+| [`render_page.rs`](examples/render_page.rs) | open, render a page at a DPI, write PNG, report substitutions |
+| [`inspect_objects.rs`](examples/inspect_objects.rs) | page info (size, rotation, annotations), object model, operators |
+| [`extract_text.rs`](examples/extract_text.rs) | positioned text with Unicode |
+| [`rewrite.rs`](examples/rewrite.rs) | full rewrite and the typed refusals (signed, PDF 2.0, …) |
+| [`incremental_save.rs`](examples/incremental_save.rs) | `Edit` session saved as an appended revision |
+| [`recovery.rs`](examples/recovery.rs) | strict parse first, explicit recovery parse with its report |
+| [`cjk_fallback.rs`](examples/cjk_fallback.rs) | non-embedded Japanese CID fonts (`--features cjk-fallback`) |
 
 ```console
 cargo run --example render_page -- tests/fixtures/render_rects.pdf 1 /tmp/out.png 144
 cargo run --example inspect_objects -- tests/fixtures/hello.pdf
 cargo run --example extract_text -- tests/fixtures/text_basic.pdf
+cargo run --example rewrite -- tests/fixtures/hello.pdf /tmp/rewritten.pdf
 cargo run --example incremental_save -- tests/fixtures/hello.pdf /tmp/annotated.pdf
+cargo run --example recovery -- tests/fixtures/hello.pdf
+cargo run --example cjk_fallback --features cjk-fallback -- path/to/japanese.pdf /tmp/cjk.png
 ```
+
+The public surface these examples use is also exercised by
+[`tests/public_api.rs`](tests/public_api.rs).
 
 CLI:
 
@@ -272,16 +298,19 @@ expected to be well-formed:
 
 | stage | pass |
 |---|---|
-| strict parse | 404 (94.6%) |
-| render, every page | 365 (85.5%) |
-| text extraction | 381 (89.2%) |
-| rewrite | 348 (81.5%) |
-| all four | 315 (73.8%) |
+| strict parse | 406 (95.1%) |
+| render, every page | 368 (86.2%) |
+| text extraction | 384 (89.9%) |
+| rewrite | 350 (82.0%) |
+| all four | 318 (74.5%) |
 
-Of the 383 files that were rewritten, 383 reparse with an identical
-object graph, 350 render identically on all 1,308 compared pages,
-and the rewrite introduced no new qpdf or Poppler diagnostic in any
-of them; 43 adversarial files are refused without crash or timeout.
+Two of the passing files were *accepted with warnings* (a Flate
+stream missing its final block, processed exactly and recorded); the
+runner counts them apart from a clean pass. Of the 385 files that
+were rewritten, 385 reparse with an identical object graph, 352
+render identically on all their compared pages, and the rewrite
+introduced no new qpdf or Poppler diagnostic in any of them; 43
+adversarial files are refused without crash or timeout.
 These numbers describe that corpus and the strict parser; they are
 not a general compatibility claim. Definitions, per-category results
 and the remaining blockers are in
@@ -323,6 +352,49 @@ The complete per-feature contract, including every refusal, is in
 [`docs/features/`](docs/features/) and summarised in
 [`docs/limitations.md`](docs/limitations.md).
 
+## Security notes
+
+Read these before processing untrusted files or files whose integrity
+matters. [`docs/security.md`](docs/security.md) has the full posture.
+
+- **Rewrite vs incremental save.** `rewrite` / `Edit::rewrite` write a
+  *new* file: the reachable object graph, renumbered, old revisions
+  dropped, unreachable objects gone — but every reachable object is
+  carried verbatim, including payloads the engine does not interpret,
+  so a rewrite is not a sanitizer. `Edit::save_incremental` keeps the
+  input bytes exactly and appends a revision: nothing is removed, the
+  previous state remains readable by anyone with the file.
+- **Signed documents.** Signatures are detected, never verified.
+  Before an incremental save the engine reads `/ByteRange`,
+  `/DocMDP` and `/FieldMDP` and refuses edits the signer did not
+  permit; a full rewrite of a signed file is always refused. Keeping
+  the signed byte range intact is a *structural* property —
+  it says nothing about whether the signature is cryptographically
+  valid, whether the certificate is trusted, or whether the
+  signer's other constraints were honoured. Use a signature
+  validator for that.
+- **Recovery mode means guessing, recorded.** `from_bytes_recovering`
+  rebuilds the cross-reference table from whatever `n g obj` headers
+  and trailers a scan finds. The result is a best effort over a
+  damaged file; `Document::recovery()` lists what was assumed, and
+  the writers refuse to save a recovered document incrementally. A
+  strict parse never produces a report.
+- **Unsupported is an error, not a blank.** A feature the engine does
+  not implement is `Error::Unsupported { feature, detail }` for the
+  operation that needs it; the page is not rendered partially. What
+  *is* reported on a successful result: font substitutions and
+  colour approximations (`RenderedPage`), and non-conforming input
+  processed exactly (`Document::take_warnings`).
+- **Resource limits.** Every unbounded operation is capped by
+  `Limits` (input size, decoded bytes, pixels, operator counts,
+  depths, edit budgets). The defaults suit ordinary documents;
+  tighten them for untrusted input in constrained environments.
+  Exceeding one is `Error::LimitExceeded { limit, max }`, distinct
+  from a malformed file.
+- **Not a redaction tool.** The `remove_*` editors and
+  `diagnose_redaction` report what they changed or found; they do not
+  prove data is gone.
+
 ## Documentation
 
 - [`docs/README.md`](docs/README.md) — index by topic.
@@ -335,6 +407,10 @@ The complete per-feature contract, including every refusal, is in
 - [`docs/compat-corpus.md`](docs/compat-corpus.md) — the compatibility
   corpus, the runner, round-trip verification, results.
 - [`docs/security.md`](docs/security.md) — safety posture.
+- [`docs/api-stability.md`](docs/api-stability.md) — what the 0.1
+  API promises, what may change in 0.2.
+- [`docs/decisions/`](docs/decisions/) — decision records, including
+  the `ttf-parser` maintenance notice.
 - [`docs/third-party.md`](docs/third-party.md) — dependencies and
   bundled assets with their licences.
 
