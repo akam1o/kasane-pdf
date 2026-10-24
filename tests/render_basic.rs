@@ -741,12 +741,15 @@ fn nonzero_origin_page() {
 }
 
 #[test]
-fn userunit_other_than_one_is_unsupported() {
-    let err = render_with(b"", "[0 0 100 100]", "/UserUnit 2", 72.0).unwrap_err();
-    assert!(
-        matches!(err, Error::Unsupported { feature, .. } if feature.contains("UserUnit")),
-        "got: {err:?}"
-    );
+fn userunit_scales_the_page() {
+    // §14.11.5: a user-space unit is /UserUnit × 1/72 inch, so a 100 pt
+    // page with /UserUnit 2 is 200 px at 72 dpi.
+    let r = render_with(b"0 g 0 0 50 50 re f", "[0 0 100 100]", "/UserUnit 2", 72.0).unwrap();
+    assert_eq!((r.pixmap.width(), r.pixmap.height()), (200, 200));
+    assert_eq!(px(&r, 50, 150), [0, 0, 0, 255]);
+    assert_eq!(px(&r, 150, 50), [255, 255, 255, 255]);
+    let err = render_with(b"", "[0 0 100 100]", "/UserUnit 0.5", 72.0).unwrap_err();
+    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
 }
 
 #[test]

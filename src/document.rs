@@ -302,10 +302,48 @@ impl Document {
             })
     }
 
+    /// `true` when `/Filter` or `/DecodeParms` is, or contains, a
+    /// reference that `decode_stream` must resolve first.
+    fn has_indirect_filter_keys(dict: &Dict) -> bool {
+        [&b"Filter"[..], &b"DecodeParms"[..]]
+            .iter()
+            .filter_map(|k| dict.get(*k))
+            .any(|v| match v {
+                Object::Ref(_) => true,
+                Object::Array(a) => a.iter().any(|o| matches!(o, Object::Ref(_))),
+                _ => false,
+            })
+    }
+
     /// Decode a stream body according to its dictionary's `/Filter` and
     /// `/DecodeParms`, bounded by `max_stream_bytes` and the shared
     /// `decoded_budget`.
     pub(crate) fn decode_stream(&self, dict: &Dict, raw: &[u8]) -> Result<Vec<u8>, Error> {
+        // `/Filter` and `/DecodeParms` (and their array elements) may be
+        // indirect (§7.3.8.2 allows it; Word and Ghostscript use it);
+        // the filter layer works on direct values only.
+        let resolved;
+        let dict = if Self::has_indirect_filter_keys(dict) {
+            let mut d = dict.clone();
+            for key in [&b"Filter"[..], &b"DecodeParms"[..]] {
+                if let Some(v) = d.get(key) {
+                    let v = match self.deref(v)? {
+                        Object::Array(items) => Object::Array(
+                            items
+                                .iter()
+                                .map(|o| self.deref(o))
+                                .collect::<Result<Vec<_>, _>>()?,
+                        ),
+                        other => other,
+                    };
+                    d.insert(key.to_vec(), v);
+                }
+            }
+            resolved = d;
+            &resolved
+        } else {
+            dict
+        };
         let out = filter::decode_stream(dict, raw, &self.limits)?;
         let cost = out.len() as u64;
         if cost > self.decoded_budget.get() {

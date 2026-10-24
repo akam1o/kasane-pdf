@@ -395,6 +395,21 @@ pub(crate) fn parse_content_stream(
     Ok(ops)
 }
 
+/// §7.8.2: a `/Contents` array is *one* content stream whose division
+/// into parts may fall only between tokens — so a dictionary, array or
+/// operator's operand list may continue in the next part (Acrobat
+/// Distiller splits IRS forms inside a `/Artifact << … >> BDC`
+/// property list). The parts are therefore joined with a white-space
+/// byte and lexed as a whole; a token never spans the join.
+fn join_streams(contents: &[Vec<u8>]) -> Vec<u8> {
+    let mut all = Vec::with_capacity(contents.iter().map(|c| c.len() + 1).sum());
+    for c in contents {
+        all.extend_from_slice(c);
+        all.push(b'\n');
+    }
+    all
+}
+
 /// Like [`parse_content_stream`] but also returns the total number of
 /// *lexer tokens* consumed across all streams — operands *and*
 /// operators, so `tokens >= ops`. Used by `inspect` to report the
@@ -404,9 +419,7 @@ pub(crate) fn parse_content_stream_counted(
     limits: &Limits,
 ) -> Result<(Vec<Operation>, usize), Error> {
     let mut parser = ContentParser::new(limits);
-    for stream in contents {
-        parser.parse_stream(stream)?;
-    }
+    parser.parse_stream(&join_streams(contents))?;
     let tokens = parser.tokens_seen;
     let ops = parser.finish()?;
     Ok((ops, tokens))
@@ -427,9 +440,7 @@ pub(crate) fn parse_content_stream_named(
     limits: &Limits,
 ) -> Result<NamedOps, Error> {
     let mut parser = ContentParser::new(limits);
-    for stream in contents {
-        parser.parse_stream(stream)?;
-    }
+    parser.parse_stream(&join_streams(contents))?;
     let tokens = parser.tokens_seen;
     let names = parser.op_names.clone();
     let ops = parser.finish()?;

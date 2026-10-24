@@ -403,6 +403,36 @@ fn filter_chains_apply_in_order() {
 }
 
 #[test]
+fn decode_parms_empty_array_and_indirect() {
+    let data = sample(300);
+    let enc = ascii85_encode(&lzw_encode(&data, 1));
+    // `/DecodeParms []` means no parameters for any filter.
+    assert_eq!(
+        decode("/Filter [/ASCII85Decode /LZWDecode] /DecodeParms []", &enc).unwrap(),
+        data
+    );
+    // /Filter, /DecodeParms and their elements may be indirect.
+    let predicted = b"\x00\x01\x02\x03\x02\x01\x01\x01";
+    let enc = lzw_encode(predicted, 1);
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >>".to_vec(),
+        ),
+        (4, stream_obj("/Filter 5 0 R /DecodeParms [6 0 R]", &enc)),
+        (5, b"[/LZWDecode]".to_vec()),
+        (6, b"<< /Predictor 12 /Columns 3 >>".to_vec()),
+    ]);
+    let doc = Document::from_bytes(&pdf).unwrap();
+    assert_eq!(
+        doc.page_contents(&doc.pages()[0]).unwrap().remove(0),
+        [1, 2, 3, 2, 3, 4]
+    );
+}
+
+#[test]
 fn image_only_filters_are_refused_on_content_streams() {
     for f in [
         "/DCTDecode",

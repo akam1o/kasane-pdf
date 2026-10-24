@@ -299,6 +299,26 @@ fn annotation_without_appearance_is_unsupported() {
     assert!(extract_text(&doc, &doc.pages()[0], &Limits::default()).is_ok());
 }
 
+/// A `null` entry (a reference to a free object resolves to null,
+/// §7.3.9/§7.3.10) is skipped; any other non-dictionary is malformed.
+#[test]
+fn null_annots_entries_are_skipped() {
+    let extra = vec![
+        (10, square("50 50 150 100", "/AP << /N 11 0 R >>", "")),
+        (
+            11,
+            stream(
+                "/Type /XObject /Subtype /Form /BBox [0 0 100 50]",
+                "1 0 0 rg 0 0 100 50 re f",
+            ),
+        ),
+    ];
+    let r = render(&page_pdf("", "null 10 0 R", &extra)).unwrap();
+    assert_eq!(px(&r, 100, 125), RED);
+    let err = render(&page_pdf("", "42 10 0 R", &extra)).unwrap_err();
+    assert!(matches!(err, Error::Structure(_)), "{err:?}");
+}
+
 #[test]
 fn malformed_rect_or_bbox_is_a_structure_error() {
     let ok_ap = stream(

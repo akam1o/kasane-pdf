@@ -91,8 +91,16 @@ struct GraphicsState {
     /// `BlendMode` at paint time. `SourceOver` = PDF `/Normal`.
     blend_mode: tiny_skia::BlendMode,
     /// Current clip as a pixmap-space alpha mask; `None` = page bounds
-    /// only. Stacked clips intersect via `Mask::intersect_path`.
+    /// only. Stacked clips intersect via `Mask::intersect_path`. While
+    /// a soft mask is set this is the *effective* mask — hard clip ×
+    /// soft mask (§11.6.4.3: the mask multiplies the source shape).
     clip: Option<Mask>,
+    /// The ExtGState `/SMask` in force (§11.6.5), already in device
+    /// space; `None` = `/SMask /None`.
+    soft_mask: Option<Rc<Mask>>,
+    /// The clip without the soft mask, kept while `soft_mask` is set
+    /// so a later `/SMask /None` can drop the mask and nothing else.
+    hard_clip: Option<Mask>,
     /// Text state (§9.3) — per-object, not part of `q`/`Q` save.
     text: TextState,
 }
@@ -203,6 +211,8 @@ impl GraphicsState {
             stroke_alpha: 1.0,
             blend_mode: tiny_skia::BlendMode::SourceOver,
             clip: None,
+            soft_mask: None,
+            hard_clip: None,
             text: TextState::default(),
         }
     }
@@ -331,17 +341,24 @@ pub fn render_page(
 
     // ---- Reject pages we cannot faithfully draw ---------------------
     // (`/Annots` are drawn after the content — see `draw_annotations`.)
-    if let Some(uu) = page_dict_entry(doc, page, b"UserUnit")? {
-        let v = uu
-            .as_number()
-            .ok_or_else(|| Error::Structure("/UserUnit is not a number".into()))?;
-        if (v - 1.0).abs() > f64::EPSILON {
-            return Err(Error::Unsupported {
-                feature: "/UserUnit other than 1",
-                detail: format!("UserUnit {v}"),
-            });
+    // §14.11.5 /UserUnit: the size of a default user-space unit in
+    // multiples of 1/72 inch (1 by default, 1 ≤ value ≤ 75 000). At a
+    // given dpi the page is drawn that many times larger; the pixel
+    // limits below bound the result.
+    let user_unit = match page_dict_entry(doc, page, b"UserUnit")? {
+        None => 1.0,
+        Some(uu) => {
+            let v = uu
+                .as_number()
+                .ok_or_else(|| Error::Structure("/UserUnit is not a number".into()))?;
+            if !(v.is_finite() && (1.0..=75_000.0).contains(&v)) {
+                return Err(Error::Structure(format!(
+                    "/UserUnit {v} is outside the 1..=75000 range"
+                )));
+            }
+            v
         }
-    }
+    };
 
     // ---- Page geometry ----------------------------------------------
     let crop = page.crop_box();
@@ -350,7 +367,7 @@ pub fn render_page(
     }
     let rotate = page.rotate().rem_euclid(360);
 
-    let scale = opts.dpi / 72.0;
+    let scale = opts.dpi / 72.0 * user_unit;
     if !(scale.is_finite() && scale > 0.0) {
         return Err(Error::Structure(format!(
             "invalid DPI {} (must be positive and finite)",
@@ -416,7 +433,6 @@ pub fn render_page(
         substitutions: Vec::new(),
         color_approximations: Vec::new(),
         default_spaces: None,
-        blend_restricted: 0,
         layer_bytes: 0,
         pattern_base: Matrix::IDENTITY,
         pattern_depth: 0,
@@ -615,13 +631,6 @@ pub(crate) struct Renderer<'a> {
     /// resources (§8.6.5.6), resolved lazily and dropped whenever
     /// `resources` changes — see [`Self::device_space`].
     default_spaces: Option<[Rc<ColorSpace>; 3]>,
-    /// Nesting depth of transparency groups whose *contents* must use
-    /// Normal blending for our rendering of them to be exact: an
-    /// isolated group painted inline (a non-Normal mode inside would
-    /// see the page instead of a transparent backdrop) and a
-    /// non-isolated group painted through an offscreen layer (the
-    /// reverse). `gs` refuses a non-Normal `BM` while this is non-zero.
-    blend_restricted: u32,
     /// Bytes of offscreen group layers currently alive — bounded by
     /// `max_render_buffer_bytes` together with the page pixmap.
     layer_bytes: u64,
@@ -784,7 +793,6 @@ impl<'a> Renderer<'a> {
             substitutions: Vec::new(),
             color_approximations: Vec::new(),
             default_spaces: None,
-            blend_restricted: 0,
             layer_bytes: 0,
             pattern_base: Matrix::IDENTITY,
             pattern_depth: 0,
@@ -1666,18 +1674,7 @@ impl<'a> Renderer<'a> {
                     self.gs.stroke_alpha = alpha_param(v, "CA")?;
                 }
                 b"BM" => {
-                    let bm = parse_blend_mode(v)?;
-                    if bm != tiny_skia::BlendMode::SourceOver && self.blend_restricted > 0 {
-                        return Err(Error::Unsupported {
-                            feature: "group XObject (/Group in a form dictionary)",
-                            detail: "a non-Normal blend mode inside this transparency group \
-                                     would composite against a backdrop (the group's own, \
-                                     or the page's) that our rendering of the group does \
-                                     not provide"
-                                .into(),
-                        });
-                    }
-                    self.gs.blend_mode = bm;
+                    self.gs.blend_mode = parse_blend_mode(v)?;
                 }
 
                 // ---- accepted no-ops (spec-tolerable) ---------------
@@ -1701,13 +1698,21 @@ impl<'a> Renderer<'a> {
                 // A real mask (dict / `/Luminosity`/`/Alpha` name) is a
                 // genuine soft mask → Unsupported.
                 b"SMask" => {
-                    if !matches!(v.as_name(), Some(b"None")) {
-                        return Err(Error::Unsupported {
-                            feature: "soft mask (/SMask)",
-                            detail:
-                                "luminosity/alpha soft masks need transparency-group compositing"
-                                    .into(),
-                        });
+                    let v = self.doc.deref(v)?;
+                    match &v {
+                        Object::Name(n) if n == b"None" => self.clear_soft_mask(),
+                        Object::Null => self.clear_soft_mask(),
+                        Object::Dict(sm) => {
+                            let mask = self.render_soft_mask(sm)?;
+                            if !self.extraction_only {
+                                self.set_soft_mask(mask);
+                            }
+                        }
+                        _ => {
+                            return Err(Error::Structure(
+                                "/SMask must be a dictionary or /None".into(),
+                            ))
+                        }
                     }
                 }
                 // Transfer functions TR/TR2 — accepted only as the
@@ -1776,22 +1781,78 @@ impl<'a> Renderer<'a> {
         let ts = self.paint_ts()?;
         let Some(new_path) = self.path.builder.clone().finish() else {
             // W on an empty path empties the clip.
-            self.gs.clip = Some(
-                Mask::new(self.pixmap.width(), self.pixmap.height())
-                    .ok_or_else(|| Error::Structure("clip mask allocation failed".into()))?,
-            );
-            return Ok(());
+            return self.clip_empty();
         };
-        match &mut self.gs.clip {
-            None => {
-                let mut mask = Mask::new(self.pixmap.width(), self.pixmap.height())
-                    .ok_or_else(|| Error::Structure("clip mask allocation failed".into()))?;
-                mask.fill_path(&new_path, rule, true, ts);
-                self.gs.clip = Some(mask);
+        self.clip_intersect(&new_path, rule, ts)
+    }
+
+    /// Intersect the clip with `path` — the effective clip and, while a
+    /// soft mask is set, the hard clip underneath it.
+    fn clip_intersect(
+        &mut self,
+        path: &tiny_skia::Path,
+        rule: FillRule,
+        ts: Transform,
+    ) -> Result<(), Error> {
+        let (w, h) = (self.pixmap.width(), self.pixmap.height());
+        let apply = |slot: &mut Option<Mask>| -> Result<(), Error> {
+            match slot {
+                None => {
+                    let mut mask = Mask::new(w, h)
+                        .ok_or_else(|| Error::Structure("clip mask allocation failed".into()))?;
+                    mask.fill_path(path, rule, true, ts);
+                    *slot = Some(mask);
+                }
+                Some(existing) => existing.intersect_path(path, rule, true, ts),
             }
-            Some(existing) => existing.intersect_path(&new_path, rule, true, ts),
+            Ok(())
+        };
+        apply(&mut self.gs.clip)?;
+        if self.gs.soft_mask.is_some() {
+            apply(&mut self.gs.hard_clip)?;
         }
         Ok(())
+    }
+
+    /// Clip everything away (`W n` on an empty path, a degenerate BBox).
+    fn clip_empty(&mut self) -> Result<(), Error> {
+        let empty = || {
+            Mask::new(self.pixmap.width(), self.pixmap.height())
+                .ok_or_else(|| Error::Structure("clip mask allocation failed".into()))
+        };
+        self.gs.clip = Some(empty()?);
+        if self.gs.soft_mask.is_some() {
+            self.gs.hard_clip = Some(empty()?);
+        }
+        Ok(())
+    }
+
+    /// Install `mask` as the soft mask: the effective clip becomes the
+    /// hard clip multiplied by it.
+    fn set_soft_mask(&mut self, mask: Mask) {
+        self.clear_soft_mask();
+        let mut eff = match self.gs.clip.take() {
+            Some(c) => c,
+            None => Mask::new(self.pixmap.width(), self.pixmap.height())
+                .map(|mut m| {
+                    m.data_mut().fill(255);
+                    m
+                })
+                .expect("page-sized mask"),
+        };
+        self.gs.hard_clip = Some(eff.clone());
+        for (e, m) in eff.data_mut().iter_mut().zip(mask.data()) {
+            *e = mul255(*e, *m);
+        }
+        self.gs.clip = Some(eff);
+        self.gs.soft_mask = Some(Rc::new(mask));
+    }
+
+    /// `/SMask /None`: back to the hard clip.
+    fn clear_soft_mask(&mut self) {
+        if self.gs.soft_mask.take().is_some() {
+            self.gs.clip = self.gs.hard_clip.take();
+        }
     }
 
     // ----------------------------------------------------------------
@@ -1911,20 +1972,16 @@ impl<'a> Renderer<'a> {
         }
 
         // Group XObjects (§8.10.3, §11.4.7, §11.6.6): a transparency
-        // group is composited as a whole. Which rendering is *exact*:
-        //  * opaque (CA = ca = 1), Normal blend, not knockout, not
-        //    isolated → painting the contents inline on the page;
-        //  * opaque, Normal, isolated → inline too, provided nothing
-        //    inside uses a non-Normal blend mode (it would see the
-        //    page where the spec gives it a transparent backdrop) —
-        //    `blend_restricted` makes `gs` refuse that;
-        //  * non-opaque or non-Normal → an offscreen layer: the
-        //    contents are painted onto transparency with alpha and
-        //    blend reset (§11.6.6), then the layer is composited once
-        //    with the group's `ca` and `BM`. Exact for an isolated
-        //    group; for a non-isolated one only while its contents
-        //    blend Normal (then the backdrop makes no difference) —
-        //    again enforced through `blend_restricted`;
+        // group is composited as a whole.
+        //  * isolated → an offscreen layer that starts transparent (the
+        //    backdrop the spec prescribes), composited once with the
+        //    group's `ca`, `BM` and soft mask;
+        //  * non-isolated, opaque (CA = ca = 1), Normal, no soft mask
+        //    → painted inline on the page (identical result);
+        //  * non-isolated otherwise → painted over a copy of the page
+        //    (so blend modes inside see the real backdrop), the
+        //    backdrop's contribution removed afterwards per §11.4.7,
+        //    then composited once like an isolated group;
         //  * knockout groups need per-object backdrop replacement →
         //    refused.
         let mut group = GroupMode::None;
@@ -1952,24 +2009,22 @@ impl<'a> Renderer<'a> {
                         .into(),
                 });
             }
-            if !is_separable_blend(self.gs.blend_mode) {
-                return Err(Error::Unsupported {
-                    feature: "group XObject (/Group in a form dictionary)",
-                    detail: "a non-separable blend mode on a transparency group needs \
-                             per-pixel colour conversion"
-                        .into(),
-                });
-            }
             let isolated = gd.get(b"I".as_slice()).and_then(|o| o.as_bool()) == Some(true);
             let opaque_normal = self.gs.fill_alpha >= 1.0
                 && self.gs.stroke_alpha >= 1.0
-                && self.gs.blend_mode == tiny_skia::BlendMode::SourceOver;
-            group = if opaque_normal {
-                GroupMode::Inline { restrict: isolated }
+                && self.gs.blend_mode == tiny_skia::BlendMode::SourceOver
+                && self.gs.soft_mask.is_none();
+            // An isolated group composites against a transparent
+            // backdrop, which an offscreen layer *is* — exact whatever
+            // its contents blend with. A non-isolated group sees the
+            // page: exact inline when opaque-Normal; through a layer
+            // otherwise, provided its contents blend Normal.
+            group = if isolated {
+                GroupMode::Layer { isolated: true }
+            } else if opaque_normal {
+                GroupMode::Inline
             } else {
-                GroupMode::Layer {
-                    restrict: !isolated,
-                }
+                GroupMode::Layer { isolated: false }
             };
         }
         // /OC was evaluated by `do_xobject`. A /Ref (reference
@@ -2038,9 +2093,8 @@ impl<'a> Renderer<'a> {
             let ops = crate::content::parse_content_stream(&[decoded], self.limits)?;
             self.xobject_depth += 1;
             let r = match group {
-                GroupMode::None => self.run(&ops),
-                GroupMode::Inline { restrict } => self.run_blend_restricted(&ops, restrict),
-                GroupMode::Layer { restrict } => self.run_in_layer(&ops, restrict),
+                GroupMode::None | GroupMode::Inline => self.run(&ops),
+                GroupMode::Layer { isolated } => self.run_in_layer(&ops, isolated),
             };
             self.xobject_depth -= 1;
             r
@@ -2055,32 +2109,31 @@ impl<'a> Renderer<'a> {
         run_result
     }
 
-    /// Run `ops`, refusing non-Normal blend modes inside when
-    /// `restrict` (see `blend_restricted`).
-    fn run_blend_restricted(&mut self, ops: &[Operation], restrict: bool) -> Result<(), Error> {
-        if restrict {
-            self.blend_restricted += 1;
-        }
-        let r = self.run(ops);
-        if restrict {
-            self.blend_restricted -= 1;
-        }
-        r
-    }
-
-    /// Paint `ops` into a fresh, fully transparent layer the size of
-    /// the page, then composite that layer onto the current pixmap
-    /// with the group's constant alpha (`ca`) and blend mode. Inside
-    /// the layer the alpha constants are 1 and the blend mode Normal
-    /// (§11.6.6); the caller's `gs` pop restores them afterwards.
-    fn run_in_layer(&mut self, ops: &[Operation], restrict: bool) -> Result<(), Error> {
+    /// Paint a transparency group's `ops` offscreen and composite the
+    /// result once with the group's constant alpha (`ca`), blend mode
+    /// and soft mask. Inside the group the alpha constants are 1, the
+    /// blend mode Normal and the soft mask None (§11.6.6); the
+    /// caller's `gs` pop restores them afterwards.
+    ///
+    /// An isolated group is painted onto a transparent layer. A
+    /// non-isolated group is painted onto a *copy of the current page*
+    /// so blend modes inside see the real backdrop, and onto a
+    /// transparent layer to obtain the group's own alpha αgn; the
+    /// backdrop's contribution is then removed per §11.4.7,
+    /// C = Cn + (Cn − C0)·(α0/αgn − α0), leaving the group's colour and
+    /// αgn to composite exactly like an isolated group.
+    fn run_in_layer(&mut self, ops: &[Operation], isolated: bool) -> Result<(), Error> {
         if self.extraction_only {
-            return self.run_blend_restricted(ops, restrict);
+            return self.run(ops);
         }
         let (w, h) = (self.pixmap.width(), self.pixmap.height());
         let bytes = w as u64 * h as u64 * 4;
+        let layers = if isolated { 1 } else { 2 };
         // The page pixmap plus every live layer must fit the budget.
-        if self.layer_bytes.saturating_add(bytes).saturating_add(bytes)
+        if self
+            .layer_bytes
+            .saturating_add(bytes)
+            .saturating_add(bytes * layers)
             > self.limits.max_render_buffer_bytes
         {
             return Err(Error::LimitExceeded {
@@ -2088,20 +2141,63 @@ impl<'a> Renderer<'a> {
                 max: self.limits.max_render_buffer_bytes,
             });
         }
-        let mut layer = Pixmap::new(w, h)
-            .ok_or_else(|| Error::Structure("cannot allocate transparency-group layer".into()))?;
         let alpha = self.gs.fill_alpha;
         let bm = self.gs.blend_mode;
+        let mask = self.gs.soft_mask.clone();
+        self.clear_soft_mask();
         self.gs.fill_alpha = 1.0;
         self.gs.stroke_alpha = 1.0;
         self.gs.blend_mode = tiny_skia::BlendMode::SourceOver;
+
+        // Pass 1: onto transparency → the group's own colour (isolated
+        // semantics) and alpha αgn.
+        let mut layer = Pixmap::new(w, h)
+            .ok_or_else(|| Error::Structure("cannot allocate transparency-group layer".into()))?;
+        let saved = (self.gs.clone(), self.gs_stack.len());
         std::mem::swap(&mut *self.pixmap, &mut layer);
         self.layer_bytes += bytes;
-        let r = self.run_blend_restricted(ops, restrict);
+        let r = self.run(ops);
         self.layer_bytes -= bytes;
         std::mem::swap(&mut *self.pixmap, &mut layer);
         r?;
-        self.composite_layer(&layer, alpha, bm);
+
+        if !isolated {
+            // Pass 2: onto a copy of the backdrop, then remove the
+            // backdrop's contribution.
+            self.gs = saved.0;
+            self.gs_stack.truncate(saved.1);
+            let mut over = self.pixmap.clone();
+            std::mem::swap(&mut *self.pixmap, &mut over);
+            self.layer_bytes += bytes;
+            let r = self.run(ops);
+            self.layer_bytes -= bytes;
+            std::mem::swap(&mut *self.pixmap, &mut over);
+            r?;
+            let backdrop = self.pixmap.data();
+            for ((g, n), b) in layer
+                .data_mut()
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(over.data().as_chunks::<4>().0)
+                .zip(backdrop.as_chunks::<4>().0)
+            {
+                let agn = g[3] as f64 / 255.0;
+                let a0 = b[3] as f64 / 255.0;
+                let an = n[3] as f64 / 255.0;
+                if agn <= 0.0 || a0 <= 0.0 || an <= 0.0 {
+                    continue; // nothing painted, or no backdrop: pass 1 is exact
+                }
+                let f = a0 / agn - a0;
+                for ch in 0..3 {
+                    let cn = n[ch] as f64 / 255.0 / an;
+                    let c0 = b[ch] as f64 / 255.0 / a0;
+                    let c = clamp01(cn + (cn - c0) * f);
+                    g[ch] = to_u8(c * agn);
+                }
+            }
+        }
+        self.composite_layer(&layer, alpha, bm, mask.as_deref());
         Ok(())
     }
 
@@ -2136,6 +2232,10 @@ impl<'a> Renderer<'a> {
         for entry in &entries {
             let entry_ref = entry.as_ref();
             let annot = self.doc.deref(entry)?;
+            if matches!(annot, Object::Null) {
+                // §7.3.9: null in an array is the absence of a value.
+                continue;
+            }
             let Some(ad) = annot.as_dict() else {
                 return Err(Error::Structure(
                     "/Annots entry is not an annotation dictionary".into(),
@@ -2411,22 +2511,180 @@ impl<'a> Renderer<'a> {
         pb.close();
         let Some(path) = pb.finish() else {
             // Degenerate BBox → empty clip.
-            self.gs.clip = Some(
-                Mask::new(self.pixmap.width(), self.pixmap.height())
-                    .ok_or_else(|| Error::Structure("clip mask allocation failed".into()))?,
-            );
-            return Ok(());
+            return self.clip_empty();
         };
-        match &mut self.gs.clip {
-            None => {
-                let mut mask = Mask::new(self.pixmap.width(), self.pixmap.height())
-                    .ok_or_else(|| Error::Structure("clip mask allocation failed".into()))?;
-                mask.fill_path(&path, FillRule::Winding, true, ts);
-                self.gs.clip = Some(mask);
+        self.clip_intersect(&path, FillRule::Winding, ts)
+    }
+
+    /// Render an ExtGState `/SMask` dictionary (§11.6.5) into a device
+    /// mask. The group `/G` is painted with the CTM in force now, under
+    /// a fresh graphics state and no clip, into an offscreen layer:
+    /// for `/S /Luminosity` the layer starts as the opaque backdrop
+    /// `/BC` (in the group's colour space, black by default) and the
+    /// mask is the luminosity of the result — so outside the group's
+    /// `/BBox` it is the backdrop's luminosity; for `/S /Alpha` the
+    /// layer starts transparent and the mask is its alpha. `/TR` maps
+    /// the values through a function (`/Identity` = none).
+    fn render_soft_mask(&mut self, sm: &Dict) -> Result<Mask, Error> {
+        let luminosity = match sm.get(b"S".as_slice()).and_then(|o| o.as_name()) {
+            Some(b"Luminosity") => true,
+            Some(b"Alpha") => false,
+            other => {
+                return Err(Error::Structure(format!(
+                    "/SMask /S must be /Alpha or /Luminosity (is {:?})",
+                    other.map(String::from_utf8_lossy)
+                )))
             }
-            Some(existing) => existing.intersect_path(&path, FillRule::Winding, true, ts),
+        };
+        let g = sm
+            .get(b"G".as_slice())
+            .ok_or_else(|| Error::Structure("/SMask has no /G group".into()))?;
+        let g_ref = g.as_ref();
+        let g = self.doc.deref(g)?;
+        let (gdict, graw) = g
+            .as_stream()
+            .ok_or_else(|| Error::Structure("/SMask /G is not a form XObject stream".into()))?;
+        let group = gdict
+            .get(b"Group".as_slice())
+            .map(|o| self.doc.deref(o))
+            .transpose()?;
+        let group = group.as_ref().and_then(|o| o.as_dict());
+        if group
+            .and_then(|d| d.get(b"S".as_slice()))
+            .and_then(|o| o.as_name())
+            != Some(b"Transparency")
+        {
+            return Err(Error::Structure(
+                "/SMask /G must be a transparency group XObject".into(),
+            ));
         }
-        Ok(())
+        // Backdrop colour in the group's colour space (default black).
+        let mut backdrop = [0u8, 0, 0];
+        if luminosity {
+            if let Some(bc) = sm.get(b"BC".as_slice()) {
+                let comps: Vec<f64> = self
+                    .doc
+                    .deref(bc)?
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|x| x.as_number()).collect())
+                    .unwrap_or_default();
+                let cs = match group.and_then(|d| d.get(b"CS".as_slice())) {
+                    Some(cs) => ColorSpace::parse(self.doc, cs, &self.resources, self.limits)?,
+                    None => match comps.len() {
+                        1 => ColorSpace::DeviceGray,
+                        4 => ColorSpace::DeviceCMYK,
+                        _ => ColorSpace::DeviceRGB,
+                    },
+                };
+                if comps.len() != cs.ncomps() {
+                    return Err(Error::Structure(format!(
+                        "/SMask /BC has {} components, the group colour space {}",
+                        comps.len(),
+                        cs.ncomps()
+                    )));
+                }
+                let rgb = cs.to_rgb(&comps)?;
+                backdrop = [to_u8(rgb[0]), to_u8(rgb[1]), to_u8(rgb[2])];
+            }
+        }
+        // Transfer function: 256-entry table.
+        let tr: Option<Vec<u8>> = match sm.get(b"TR".as_slice()) {
+            None => None,
+            Some(o) => {
+                let o = self.doc.deref(o)?;
+                match o.as_name() {
+                    Some(b"Identity") => None,
+                    Some(other) => {
+                        return Err(Error::Structure(format!(
+                            "/SMask /TR /{} is not a function",
+                            String::from_utf8_lossy(other)
+                        )))
+                    }
+                    None => {
+                        let f = crate::function::parse_function(self.doc, &o, self.limits)?;
+                        if f.n_inputs() != 1 {
+                            return Err(Error::Structure("/SMask /TR must take one input".into()));
+                        }
+                        let mut t = Vec::with_capacity(256);
+                        for i in 0..256 {
+                            let out = f.eval(&[i as f64 / 255.0])?;
+                            let v = out.first().copied().unwrap_or(0.0);
+                            t.push(to_u8(clamp01(v)));
+                        }
+                        Some(t)
+                    }
+                }
+            }
+        };
+        if self.extraction_only {
+            return Mask::new(1, 1).ok_or_else(|| Error::Structure("mask allocation".into()));
+        }
+
+        // ---- paint the group into a layer ------------------------
+        let (w, h) = (self.pixmap.width(), self.pixmap.height());
+        let bytes = w as u64 * h as u64 * 4;
+        if self.layer_bytes.saturating_add(bytes).saturating_add(bytes)
+            > self.limits.max_render_buffer_bytes
+        {
+            return Err(Error::LimitExceeded {
+                limit: "max_render_buffer_bytes",
+                max: self.limits.max_render_buffer_bytes,
+            });
+        }
+        let mut layer = Pixmap::new(w, h)
+            .ok_or_else(|| Error::Structure("cannot allocate soft-mask layer".into()))?;
+        if luminosity {
+            layer.fill(tiny_skia::Color::from_rgba8(
+                backdrop[0],
+                backdrop[1],
+                backdrop[2],
+                255,
+            ));
+        }
+        // Fresh state: the CTM of the moment the ExtGState is applied
+        // (§11.6.5.1), no clip, full alpha, Normal blend, no mask.
+        let mut fresh = GraphicsState::new();
+        fresh.ctm = self.gs.ctm;
+        let saved_gs = std::mem::replace(&mut self.gs, fresh);
+        let saved_stack = std::mem::take(&mut self.gs_stack);
+        let saved_path = std::mem::take(&mut self.path);
+        let saved_text = (
+            std::mem::replace(&mut self.in_text, false),
+            std::mem::replace(&mut self.text_tm, Matrix::IDENTITY),
+            std::mem::replace(&mut self.text_tlm, Matrix::IDENTITY),
+        );
+        std::mem::swap(&mut *self.pixmap, &mut layer);
+        self.layer_bytes += bytes;
+        let r = self.do_form(gdict, graw, b"soft mask group", g_ref);
+        self.layer_bytes -= bytes;
+        std::mem::swap(&mut *self.pixmap, &mut layer);
+        self.gs = saved_gs;
+        self.gs_stack = saved_stack;
+        self.path = saved_path;
+        self.in_text = saved_text.0;
+        self.text_tm = saved_text.1;
+        self.text_tlm = saved_text.2;
+        r?;
+
+        // ---- layer → mask ---------------------------------------
+        let mut mask = Mask::new(w, h)
+            .ok_or_else(|| Error::Structure("soft mask allocation failed".into()))?;
+        let src = layer.data();
+        for (m, px) in mask.data_mut().iter_mut().zip(src.as_chunks::<4>().0) {
+            let v = if luminosity {
+                // The layer is opaque everywhere (backdrop fill), so the
+                // premultiplied bytes are the colour itself.
+                let lum = 0.3 * px[0] as f64 + 0.59 * px[1] as f64 + 0.11 * px[2] as f64;
+                lum.round().clamp(0.0, 255.0) as u8
+            } else {
+                px[3]
+            };
+            *m = match &tr {
+                Some(t) => t[v as usize],
+                None => v,
+            };
+        }
+        Ok(mask)
     }
 
     /// Paint an Image XObject (§8.9): `/BitsPerComponent` 1/2/4/8/16,
@@ -2445,29 +2703,7 @@ impl<'a> Renderer<'a> {
     /// unit square to the destination parallelogram).
     fn paint_image(&mut self, dict: &Dict, raw: &[u8], name: &[u8]) -> Result<(), Error> {
         // A non-separable blend mode (Hue/Saturation/Color/Luminosity)
-        // on an image needs a per-pixel colour-space conversion our
-        // raster path doesn't perform — rather than silently draw it
-        // as Normal (a mis-render) we refuse. Separable modes are
-        // applied per-channel in `composite_px`.
-        if !is_separable_blend(self.gs.blend_mode) {
-            return Err(Error::Unsupported {
-                feature: "non-separable blend mode on image",
-                detail: "Hue/Saturation/Color/Luminosity blend on an image needs per-pixel colour conversion".into(),
-            });
-        }
-        // `SMaskInData 0` is the defined default; non-zero means the
-        // alpha lives inside JPX data we do not decode.
-        if let Some(v) = dict.get(b"SMaskInData".as_slice()) {
-            if v.as_i64().unwrap_or(0) != 0 {
-                return Err(Error::Unsupported {
-                    feature: "image attribute",
-                    detail: format!(
-                        "/SMaskInData on /{} (JPX-embedded alpha) is not implemented",
-                        show_name(name)
-                    ),
-                });
-            }
-        }
+        // on an image is composited per pixel like the separable ones.
         let src = self.decode_image_source(dict, raw, name, false)?;
         let is_mask = dict.get(b"ImageMask".as_slice()).and_then(|o| o.as_bool()) == Some(true);
         if is_mask && self.gs.fill_space.is_pattern() {
@@ -2664,11 +2900,62 @@ impl<'a> Renderer<'a> {
             )));
         }
 
+        // ---- JPX: the codestream decides depth and channels ---------
+        let filters = crate::filter::normalize_filters(dict.get(b"Filter".as_slice()))?;
+        let is_jpx = filters.last().map(|f| f == b"JPXDecode").unwrap_or(false);
+        let smask_in_data = match dict.get(b"SMaskInData".as_slice()) {
+            None | Some(Object::Null) => 0,
+            Some(o) => match o.as_i64() {
+                Some(v @ 0..=2) => v,
+                _ => {
+                    return Err(Error::Structure(format!(
+                        "image /{} has /SMaskInData outside 0..=2",
+                        show_name(name)
+                    )))
+                }
+            },
+        };
+        if smask_in_data != 0 && !is_jpx {
+            return Err(Error::Structure(format!(
+                "image /{} has /SMaskInData but is not JPX-encoded",
+                show_name(name)
+            )));
+        }
+        let jpx = if is_jpx {
+            if is_mask {
+                return Err(Error::Structure(format!(
+                    "image /{} is a JPX image mask (§7.4.9 forbids it)",
+                    show_name(name)
+                )));
+            }
+            let img = self.decode_jpx_stream(dict, raw, &filters)?;
+            if img.width != width || img.height != height {
+                return Err(Error::Structure(format!(
+                    "JPX codestream in /{} is {}x{} but the dictionary says {width}x{height}",
+                    show_name(name),
+                    img.width,
+                    img.height
+                )));
+            }
+            if smask_in_data != 0 && img.alpha.is_none() {
+                return Err(Error::Structure(format!(
+                    "image /{} has /SMaskInData {smask_in_data} but the codestream has no alpha channel",
+                    show_name(name)
+                )));
+            }
+            Some(img)
+        } else {
+            None
+        };
+
         // ---- bit depth & colour space ------------------------------
         let bpc_entry = dict
             .get(b"BitsPerComponent".as_slice())
             .and_then(|o| o.as_i64());
-        let bpc: u32 = if is_mask {
+        let bpc: u32 = if let Some(j) = &jpx {
+            let _ = j;
+            8
+        } else if is_mask {
             match bpc_entry {
                 None | Some(1) => 1,
                 Some(other) => {
@@ -2697,6 +2984,35 @@ impl<'a> Renderer<'a> {
         };
         let cs: Option<Rc<ColorSpace>> = if is_mask {
             None
+        } else if let (Some(j), None) = (&jpx, dict.get(b"ColorSpace".as_slice())) {
+            // §7.4.9: no /ColorSpace → the codestream's declaration.
+            let cs = match j.space {
+                crate::jpx::JpxSpace::Gray => ColorSpace::DeviceGray,
+                crate::jpx::JpxSpace::Rgb => ColorSpace::DeviceRGB,
+                crate::jpx::JpxSpace::Cmyk => ColorSpace::DeviceCMYK,
+                crate::jpx::JpxSpace::Icc(n) | crate::jpx::JpxSpace::Unknown(n) => {
+                    let note = format!(
+                        "JPX image /{}: embedded colour declaration ({} channels) not evaluated, device space used",
+                        show_name(name),
+                        n
+                    );
+                    if !self.color_approximations.contains(&note) {
+                        self.color_approximations.push(note);
+                    }
+                    match n {
+                        1 => ColorSpace::DeviceGray,
+                        3 => ColorSpace::DeviceRGB,
+                        4 => ColorSpace::DeviceCMYK,
+                        other => {
+                            return Err(Error::Unsupported {
+                                feature: "JPX colour space",
+                                detail: format!("{other} channels without a /ColorSpace entry"),
+                            })
+                        }
+                    }
+                }
+            };
+            Some(Rc::new(cs))
         } else {
             let cs_obj = dict.get(b"ColorSpace".as_slice()).ok_or_else(|| {
                 Error::Structure(format!("image /{} has no /ColorSpace", show_name(name)))
@@ -2712,14 +3028,27 @@ impl<'a> Renderer<'a> {
             Some(Rc::new(cs))
         };
         let ncomps = cs.as_ref().map(|c| c.ncomps()).unwrap_or(1);
+        if let Some(j) = &jpx {
+            if j.ncomps != ncomps {
+                return Err(Error::Structure(format!(
+                    "JPX codestream in /{} has {} channels, /ColorSpace has {ncomps}",
+                    show_name(name),
+                    j.ncomps
+                )));
+            }
+        }
         let default_decode = cs
             .as_ref()
             .map(|c| c.default_decode(bpc))
             .unwrap_or_else(|| vec![(0.0, 1.0)]);
-        let decode = self.image_decode_array(dict, ncomps, &default_decode)?;
+        // §7.4.9: /Decode is ignored for JPX images.
+        let decode = if jpx.is_some() {
+            default_decode.clone()
+        } else {
+            self.image_decode_array(dict, ncomps, &default_decode)?
+        };
 
         // ---- sample data -------------------------------------------
-        let filters = crate::filter::normalize_filters(dict.get(b"Filter".as_slice()))?;
         let is_dct = filters
             .last()
             .map(|f| f == b"DCTDecode" || f == b"DCT")
@@ -2737,7 +3066,10 @@ impl<'a> Renderer<'a> {
                 show_name(name)
             )));
         }
-        let data = self.decode_image_data(dict, raw)?;
+        let data = match &jpx {
+            Some(j) => j.samples.clone(),
+            None => self.decode_image_data(dict, raw)?,
+        };
         if is_dct {
             // JPEG always yields 8-bit interleaved samples; the dict's
             // declared depth and component count must agree.
@@ -2874,8 +3206,21 @@ impl<'a> Renderer<'a> {
         }
 
         // ---- soft mask / stencil mask → alpha ----------------------
-        // §8.9.6.4: when both are present /SMask wins.
-        if let Some(sm) = dict.get(b"SMask".as_slice()) {
+        // §8.9.6.4: when both are present /SMask wins; a JPX alpha
+        // channel counts only with /SMaskInData (§7.4.9), 2 meaning
+        // the colour is premultiplied by it.
+        if let (Some(j), true) = (&jpx, smask_in_data != 0) {
+            let alpha = j.alpha.as_ref().expect("checked above");
+            for (i, a) in alpha.iter().enumerate() {
+                let p = &mut rgba[i * 4..i * 4 + 4];
+                if smask_in_data == 2 && *a != 0 && *a != 255 {
+                    for c in p.iter_mut().take(3) {
+                        *c = ((*c as u32 * 255 / *a as u32).min(255)) as u8;
+                    }
+                }
+                p[3] = mul255(p[3], *a);
+            }
+        } else if let Some(sm) = dict.get(b"SMask".as_slice()) {
             let alpha = self.decode_soft_mask(sm, w, h)?;
             for (i, a) in alpha.iter().enumerate() {
                 rgba[i * 4 + 3] = mul255(rgba[i * 4 + 3], *a);
@@ -2905,6 +3250,42 @@ impl<'a> Renderer<'a> {
         })
     }
 
+    /// Run the byte filters that precede `/JPXDecode` (the last entry
+    /// of `filters`) and decode the codestream.
+    fn decode_jpx_stream(
+        &self,
+        dict: &Dict,
+        raw: &[u8],
+        filters: &[Vec<u8>],
+    ) -> Result<crate::jpx::JpxImage, Error> {
+        let mut pre = dict.clone();
+        let n = filters.len() - 1;
+        pre.insert(
+            b"Filter".to_vec(),
+            Object::Array(
+                filters[..n]
+                    .iter()
+                    .map(|f| Object::Name(f.clone()))
+                    .collect(),
+            ),
+        );
+        let parms = crate::filter::normalize_decode_parms(
+            dict.get(b"DecodeParms".as_slice()),
+            filters.len(),
+        )?;
+        pre.insert(
+            b"DecodeParms".to_vec(),
+            Object::Array(
+                parms[..n]
+                    .iter()
+                    .map(|p| p.clone().map(Object::Dict).unwrap_or(Object::Null))
+                    .collect(),
+            ),
+        );
+        let bytes = self.decode_image_data(&pre, raw)?;
+        crate::jpx::decode(&bytes, self.limits)
+    }
+
     /// Decode an image `/SMask` (§11.6.5.3) into a `w × h` alpha
     /// plane (0–255), nearest-resampled when the mask's own size
     /// differs. The mask must be a one-component image; `/Matte`
@@ -2929,10 +3310,35 @@ impl<'a> Renderer<'a> {
         }
         let (sw, sh) = self.image_dims(sd, b"SMask")?;
         let (sw, sh) = (sw as usize, sh as usize);
+        // A JPX-encoded soft mask: one 8-bit channel from the codestream.
+        let sm_filters = crate::filter::normalize_filters(sd.get(b"Filter".as_slice()))?;
+        let jpx = if sm_filters
+            .last()
+            .map(|f| f == b"JPXDecode")
+            .unwrap_or(false)
+        {
+            let img = self.decode_jpx_stream(sd, sraw, &sm_filters)?;
+            if img.width as usize != sw || img.height as usize != sh {
+                return Err(Error::Structure(format!(
+                    "JPX /SMask codestream is {}x{} but the dictionary says {sw}x{sh}",
+                    img.width, img.height
+                )));
+            }
+            if img.ncomps != 1 {
+                return Err(Error::Structure(format!(
+                    "JPX /SMask has {} channels (must be one)",
+                    img.ncomps
+                )));
+            }
+            Some(img)
+        } else {
+            None
+        };
         let bpc = match sd
             .get(b"BitsPerComponent".as_slice())
             .and_then(|o| o.as_i64())
         {
+            _ if jpx.is_some() => 8,
             Some(b @ (1 | 2 | 4 | 8 | 16)) => b as u32,
             Some(other) => {
                 return Err(Error::Unsupported {
@@ -2946,18 +3352,29 @@ impl<'a> Renderer<'a> {
                 ))
             }
         };
-        let cs_obj = sd
-            .get(b"ColorSpace".as_slice())
-            .ok_or_else(|| Error::Structure("image /SMask has no /ColorSpace".into()))?;
-        let cs = ColorSpace::parse(self.doc, cs_obj, &self.resources, self.limits)?;
+        let cs = match (sd.get(b"ColorSpace".as_slice()), &jpx) {
+            (None, Some(_)) => ColorSpace::DeviceGray,
+            (cs_obj, _) => {
+                let cs_obj = cs_obj
+                    .ok_or_else(|| Error::Structure("image /SMask has no /ColorSpace".into()))?;
+                ColorSpace::parse(self.doc, cs_obj, &self.resources, self.limits)?
+            }
+        };
         if cs.ncomps() != 1 {
             return Err(Error::Structure(format!(
                 "image /SMask colour space has {} components (must be DeviceGray)",
                 cs.ncomps()
             )));
         }
-        let decode = self.image_decode_array(sd, 1, &[(0.0, 1.0)])?;
-        let data = self.decode_image_data(sd, sraw)?;
+        let decode = if jpx.is_some() {
+            vec![(0.0, 1.0)]
+        } else {
+            self.image_decode_array(sd, 1, &[(0.0, 1.0)])?
+        };
+        let data = match jpx {
+            Some(img) => img.samples,
+            None => self.decode_image_data(sd, sraw)?,
+        };
         let row_bytes = (sw as u64 * bpc as u64).div_ceil(8);
         if (data.len() as u64) < row_bytes * sh as u64 {
             return Err(Error::Structure(format!(
@@ -3044,10 +3461,13 @@ impl<'a> Renderer<'a> {
                     crate::bilevel::ccitt_decode(&buf, parm, w, h, self.limits)?
                 }
                 b"JPXDecode" => {
+                    // Image colour data is decoded by `decode_image_source`
+                    // (which needs the codestream's channel layout); a
+                    // JPX-encoded /SMask or /Mask stream lands here.
                     return Err(Error::Unsupported {
                         feature: "image stream filter",
-                        detail: "/JPXDecode".into(),
-                    })
+                        detail: "/JPXDecode on a soft-mask or stencil stream".into(),
+                    });
                 }
                 // Byte filters (Flate, LZW, ASCII85, ASCIIHex, RunLength)
                 // and their predictors share the stream decoder.
@@ -4017,17 +4437,27 @@ impl<'a> Renderer<'a> {
     /// Composite a finished transparency-group layer (premultiplied,
     /// same size as the page pixmap) onto the current pixmap with the
     /// group's constant alpha and blend mode (§11.4.7, §11.6.6).
-    fn composite_layer(&mut self, layer: &Pixmap, alpha: f64, bm: tiny_skia::BlendMode) {
+    fn composite_layer(
+        &mut self,
+        layer: &Pixmap,
+        alpha: f64,
+        bm: tiny_skia::BlendMode,
+        mask: Option<&Mask>,
+    ) {
         let alpha = clamp01(alpha);
         let src = layer.data();
         let dst = self.pixmap.data_mut();
-        for (d, s) in dst
+        for (i, (d, s)) in dst
             .as_chunks_mut::<4>()
             .0
             .iter_mut()
             .zip(src.as_chunks::<4>().0)
+            .enumerate()
         {
-            let la = s[3] as f64 / 255.0;
+            let mut la = s[3] as f64 / 255.0;
+            if let Some(m) = mask {
+                la *= m.data().get(i).copied().unwrap_or(0) as f64 / 255.0;
+            }
             if la == 0.0 {
                 continue;
             }
@@ -4692,9 +5122,9 @@ enum GroupMode {
     /// Not a transparency group.
     None,
     /// Painted directly on the current pixmap.
-    Inline { restrict: bool },
-    /// Painted into an offscreen layer, composited afterwards.
-    Layer { restrict: bool },
+    Inline,
+    /// Painted offscreen, composited afterwards (see `run_in_layer`).
+    Layer { isolated: bool },
 }
 
 /// Colour components → RGBA8 through `cs`. A `/None` Separation
@@ -4779,22 +5209,79 @@ fn composite_px(dst: &mut [u8], rgb: [f64; 3], a_s: f64, bm: tiny_skia::BlendMod
     }
     let ab = dst[3] as f64 / 255.0;
     let ar = ab + a_s - ab * a_s;
-    for ch in 0..3 {
-        let cb = if ab > 0.0 {
+    let cb: [f64; 3] = std::array::from_fn(|ch| {
+        if ab > 0.0 {
             (dst[ch] as f64 / 255.0 / ab).min(1.0)
         } else {
             0.0
-        };
-        let cs = clamp01(rgb[ch]);
-        let blended = if bm == tiny_skia::BlendMode::SourceOver {
-            cs
-        } else {
-            blend_mode_channel(bm, to_u8(cs), to_u8(cb)) as f64 / 255.0
-        };
-        let pr = (1.0 - a_s) * ab * cb + a_s * ((1.0 - ab) * cs + ab * blended);
+        }
+    });
+    let cs: [f64; 3] = std::array::from_fn(|ch| clamp01(rgb[ch]));
+    let blended: [f64; 3] = if bm == tiny_skia::BlendMode::SourceOver {
+        cs
+    } else if is_separable_blend(bm) {
+        std::array::from_fn(|ch| {
+            blend_mode_channel(bm, to_u8(cs[ch]), to_u8(cb[ch])) as f64 / 255.0
+        })
+    } else {
+        blend_non_separable(bm, cs, cb)
+    };
+    for ch in 0..3 {
+        let pr = (1.0 - a_s) * ab * cb[ch] + a_s * ((1.0 - ab) * cs[ch] + ab * blended[ch]);
         dst[ch] = to_u8(pr);
     }
     dst[3] = to_u8(ar);
+}
+
+/// The non-separable blend functions of §11.3.5.3 (Hue, Saturation,
+/// Color, Luminosity) on RGB triples in 0..=1.
+fn blend_non_separable(bm: tiny_skia::BlendMode, cs: [f64; 3], cb: [f64; 3]) -> [f64; 3] {
+    fn lum(c: [f64; 3]) -> f64 {
+        0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]
+    }
+    fn clip_color(c: [f64; 3]) -> [f64; 3] {
+        let l = lum(c);
+        let n = c[0].min(c[1]).min(c[2]);
+        let x = c[0].max(c[1]).max(c[2]);
+        let mut out = c;
+        if n < 0.0 {
+            for v in out.iter_mut() {
+                *v = l + (*v - l) * l / (l - n);
+            }
+        }
+        if x > 1.0 {
+            for v in out.iter_mut() {
+                *v = l + (*v - l) * (1.0 - l) / (x - l);
+            }
+        }
+        out
+    }
+    fn set_lum(c: [f64; 3], l: f64) -> [f64; 3] {
+        let d = l - lum(c);
+        clip_color([c[0] + d, c[1] + d, c[2] + d])
+    }
+    fn sat(c: [f64; 3]) -> f64 {
+        c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2])
+    }
+    fn set_sat(c: [f64; 3], s: f64) -> [f64; 3] {
+        let mut idx = [0usize, 1, 2];
+        idx.sort_by(|&a, &b| c[a].partial_cmp(&c[b]).unwrap_or(std::cmp::Ordering::Equal));
+        let (imin, imid, imax) = (idx[0], idx[1], idx[2]);
+        let mut out = [0.0; 3];
+        if c[imax] > c[imin] {
+            out[imid] = (c[imid] - c[imin]) * s / (c[imax] - c[imin]);
+            out[imax] = s;
+        }
+        out
+    }
+    use tiny_skia::BlendMode as B;
+    match bm {
+        B::Hue => set_lum(set_sat(cs, sat(cb)), lum(cb)),
+        B::Saturation => set_lum(set_sat(cb, sat(cs)), lum(cb)),
+        B::Color => set_lum(cs, lum(cb)),
+        B::Luminosity => set_lum(cb, lum(cs)),
+        _ => cs,
+    }
 }
 
 /// Converts raw integer samples of one pixel to sRGB8 through a
