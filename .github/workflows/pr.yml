@@ -35,6 +35,23 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo test
 
+  audit:
+    name: dependency audit (RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Reads .cargo/audit.toml: the only ignored id is the informational
+      # unmaintained notice for ttf-parser (docs/decisions/ttf-parser.md);
+      # any vulnerability advisory fails this job.
+      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: audit the compatibility runner too
+        working-directory: compat/runner
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
   crate-package:
     name: crate package check
     runs-on: ubuntu-latest

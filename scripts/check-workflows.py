@@ -98,7 +98,10 @@ def check_no_secret_echo(path, text):
         problem(f"{path.name}: a step echoes a secret: {m.group(0)[:60]}")
     for m in re.finditer(r"\$\{\{\s*secrets\.[A-Z0-9_]+\s*\}\}", text):
         line = text[: m.start()].rsplit("\n", 1)[-1]
-        if "env:" in line or re.match(r"\s+[A-Z0-9_]+:\s*$", line) or re.match(r"\s+[A-Z0-9_]+:\s", line):
+        # Allowed: a mapping value under `env:` or an action's `with:`
+        # (e.g. `token: ${{ secrets.GITHUB_TOKEN }}`); never inside a
+        # `run:` script or an expression that embeds it.
+        if "env:" in line or re.match(r"\s+[A-Za-z0-9_-]+:\s", line):
             continue
         problem(f"{path.name}: secret referenced outside an env: mapping: `{line.strip()}`")
 

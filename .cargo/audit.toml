@@ -1,0 +1,14 @@
+# cargo-audit configuration (also read by the `cargo audit` CI step).
+#
+# RUSTSEC-2026-0192 is an *unmaintained* notice for ttf-parser, not a
+# vulnerability: no CVE, no known memory-safety or panic issue; the
+# crate forbids `unsafe` and has no dependencies. kasane-pdf uses only
+# its table parsing and outline extraction, feeds it nothing the engine
+# has not already bounded, and never exposes its types publicly. The
+# decision to keep it for now — and the conditions under which it is
+# replaced (skrifa / fontations) — are recorded in
+# docs/decisions/ttf-parser.md. Any *vulnerability* advisory must still
+# fail the audit; only this informational id is ignored.
+[advisories]
+ignore = ["RUSTSEC-2026-0192"]
+informational_warnings = ["unmaintained", "unsound", "notice"]

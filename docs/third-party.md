@@ -38,7 +38,7 @@ is used under the Apache-2.0 or MIT option.
 | `strict-num` | 0.1.1 | MIT | <https://github.com/RazrFalcon/strict-num> |
 | `tiny-skia` | 0.12.0 | BSD-3-Clause | <https://github.com/linebender/tiny-skia> |
 | `tiny-skia-path` | 0.12.0 | BSD-3-Clause | <https://github.com/linebender/tiny-skia/tree/master/path> |
-| `ttf-parser` | 0.25.1 | MIT OR Apache-2.0 | <https://github.com/harfbuzz/ttf-parser> |
+| `ttf-parser` | 0.25.1 | MIT OR Apache-2.0 | <https://github.com/harfbuzz/ttf-parser> — unmaintained notice RUSTSEC-2026-0192 (not a vulnerability); kept deliberately, see [`decisions/ttf-parser.md`](decisions/ttf-parser.md) |
 | `zlib-rs` | 0.6.8 | Zlib | <https://github.com/trifectatechfoundation/zlib-rs> |
 
 `tiny-skia` / `tiny-skia-path` (BSD-3-Clause) and `arrayref`
