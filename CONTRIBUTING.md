@@ -22,8 +22,10 @@ submit changes. Design principles and the module map are in
   `font_substitutions`) and documented.
 - **Everything is bounded.** Any new unbounded operation needs a
   `Limits` field with a documented default.
-- **No `unsafe`** except the two documented self-referential font
-  borrows in `src/font.rs`; hostile input must never panic.
+- **No `unsafe`** except the four documented lifetime transmutes in
+  `src/font.rs` (a parsed font table borrowing the font program that
+  the same struct owns and never moves); hostile input must never
+  panic.
 - **Spec references.** Cite ISO 32000-1 section numbers (`§x.y.z`) in
   comments for behaviour taken from the specification.
 - Contributions are accepted under the Apache License 2.0
@@ -40,19 +42,19 @@ Rust 1.92 or newer (`rust-version` in `Cargo.toml`).
 ```console
 cargo build                      # library + `kasane-pdf` CLI
 cargo build --examples           # examples/*.rs
-cargo build --features cjk-fallback   # needs assets fetched first (below)
+cargo build --features cjk-fallback   # assets are in assets/cjk/ (below)
 ```
 
-The optional `cjk-fallback` feature embeds licence-clean assets that
-are not committed:
+The optional `cjk-fallback` feature embeds the licence-clean assets
+under `assets/cjk/`, which are committed and verified against
+`scripts/cjk-assets.sha256`:
 
 ```console
-scripts/fetch-cjk-assets.sh      # → assets/cjk/ (ignored by git), verified against scripts/cjk-assets.sha256
+scripts/fetch-cjk-assets.sh --check   # verify the committed assets (CI does this)
+scripts/fetch-cjk-assets.sh --update-lock   # re-fetch from the pinned commits after bumping them
 ```
 
-The script fetches from commit pins and fails on any checksum
-mismatch; `docs/third-party.md` describes how to update the pins and
-the lock.
+`docs/third-party.md` describes how to update the pins and the lock.
 
 ## Tests and lints
 

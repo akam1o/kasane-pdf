@@ -19,7 +19,8 @@ the edit `max_edit_*` budgets.
 
 Additionally: cycle detection on reference chains, `/Prev` chains,
 and page-tree node revisits; object-stream bodies decoded once per
-Document; `unsafe` is never used.
+Document; `unsafe` is confined to four documented lifetime transmutes
+in `src/font.rs` (see `architecture.md` § Safety / hostile input).
 
 ## Typed errors, not partial results
 

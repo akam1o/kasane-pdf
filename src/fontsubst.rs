@@ -73,6 +73,8 @@ pub struct FontSubstitution {
     pub base_font: String,
     /// The bundled face used, e.g. `LiberationSans-Bold`.
     pub substitute: &'static str,
+    /// How the substitute was chosen (and therefore how far its
+    /// shapes and metrics can be trusted).
     pub kind: SubstKind,
 }
 

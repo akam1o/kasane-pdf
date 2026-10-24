@@ -46,6 +46,8 @@ pub struct NamedDest {
     /// The view part of the destination array — `/XYZ left top zoom`,
     /// `/Fit`, `/FitH top`, … — exactly as stored (direct objects).
     pub view: Vec<Object>,
+    /// Where the name was found (the name tree or the legacy
+    /// catalog `/Dests` dictionary).
     pub source: DestSource,
 }
 

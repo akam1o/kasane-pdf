@@ -320,7 +320,11 @@ Every unbounded operation has a `Limits` bound:
 Additionally: cycle detection on reference chains, the `/Prev` chain,
 and page-tree node revisits. Object-stream bodies are decoded once per
 Document and cached, so repeated member access does not multiply the
-decoded-bytes cost. `unsafe` is not used anywhere.
+decoded-bytes cost. `unsafe` appears in exactly four places, all in
+`src/font.rs`: a parsed `ttf-parser` face or CFF table is given a
+`'static` lifetime while it borrows the font program owned by the same
+struct, which never moves or mutates that buffer (each site carries a
+`SAFETY` comment). Nothing else in the crate is `unsafe`.
 
 ## Licensing policy
 
