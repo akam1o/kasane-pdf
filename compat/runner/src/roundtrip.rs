@@ -518,6 +518,16 @@ pub fn run(
 
     let t = Instant::now();
     let diffs = graph_diff(doc, &doc2);
+    // The render and text comparisons must open the rewrite the way the
+    // original was opened: a document that renders only under the
+    // recovery rules is compared against its rewrite under the same
+    // rules (the structural checks above stay strict — the rewrite must
+    // always parse strictly).
+    let doc2 = if doc.recovery_mode() {
+        Document::from_bytes_recovering(out).unwrap_or(doc2)
+    } else {
+        doc2
+    };
     rt.structure = if diffs.is_empty() {
         RtCheck::pass(t.elapsed().as_millis())
     } else {

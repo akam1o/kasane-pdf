@@ -50,6 +50,8 @@ RULES = [
     (r"/RI must be", "invalid rendering intent", "§8.6.5.8: fallback RelativeColorimetric", "yes (Warning::UnknownRenderingIntent)", "n/a", "no", "done"),
     (r"JPEG in .* decodes to 0 components", "undecodable DCT data", "§7.4.8", "no", "no", "no", "—"),
     (r"referenced object .* is not defined", "reference to an undefined object", "§7.3.10: null", "yes (Warning::UndefinedReference)", "n/a", "no", "done"),
+    (r"max_xobject_depth", "form XObject nesting deeper than max_xobject_depth", "Limits policy (default 32)", "no (limit)", "n/a", "no", "—"),
+    (r"image /SMask is not a stream", "image /SMask that is not a stream (e.g. the name /None)", "§8.9.5: a stream", "no", "yes (RecoveryRule::IgnoredInvalidSoftMask)", "no", "done"),
     (r"is not a dictionary", "null resource (undefined reference) where a dictionary is required", "§7.3.10 + the resource rule", "no", "possible (default font), approximate", "would be", "1 d"),
 ]
 
