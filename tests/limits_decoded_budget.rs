@@ -8,6 +8,7 @@ mod common;
 use common::{build_pdf, stream_obj};
 use kasane_pdf::{
     extract_text, render_page, rewrite_with_limits, Document, Error, Limits, RenderOptions,
+    TextOptions,
 };
 
 /// Two pages whose content streams decode to `n` bytes each.
@@ -38,10 +39,7 @@ fn two_pages(n: usize) -> Vec<u8> {
 }
 
 fn limits(budget: u64) -> Limits {
-    Limits {
-        max_total_decoded_bytes: budget,
-        ..Limits::default()
-    }
+    Limits::default().with_max_total_decoded_bytes(budget)
 }
 
 #[test]
@@ -53,7 +51,7 @@ fn every_page_gets_the_whole_budget() {
     for _ in 0..3 {
         render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap();
     }
-    extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     // Page 2 decodes 2000 bytes in one operation: over budget, refused.
     let err = render_page(&doc, &doc.pages()[1], &RenderOptions::default()).unwrap_err();
     assert!(

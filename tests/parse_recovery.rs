@@ -23,7 +23,7 @@ fn good_pdf() -> Vec<u8> {
 
 fn renders_black(doc: &Document) -> bool {
     let r = render_page(doc, &doc.pages()[0], &RenderOptions::default()).unwrap();
-    let p = r.pixmap.pixel(50, 50).unwrap();
+    let p = r.pixmap().pixel(50, 50).unwrap();
     (p.red(), p.green(), p.blue()) == (0, 0, 0)
 }
 
@@ -208,10 +208,7 @@ fn recovery_keeps_cycle_detection_and_limits() {
     let pdf = break_startxref(&good_pdf());
     let err = Document::from_bytes_recovering_with_limits(
         &pdf,
-        Limits {
-            max_recovery_objects: 2,
-            ..Limits::default()
-        },
+        Limits::default().with_max_recovery_objects(2),
     )
     .unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");

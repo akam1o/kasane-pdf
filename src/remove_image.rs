@@ -145,6 +145,7 @@ pub fn remove_image_region(
     rects: &[(f64, f64, f64, f64)],
     limits: &Limits,
 ) -> Result<ImageRemoval, Error> {
+    limits.validate()?;
     // ---- input validation (same rules as the diagnosis) -----------
     if rects.is_empty() {
         return Err(Error::Structure("at least one --rect is required".into()));

@@ -3,7 +3,7 @@
 //! painting order, flags, and the refusals for appearances we would
 //! have to invent.
 
-use kasane_pdf::{extract_text, render_page, Document, Error, Limits, RenderOptions};
+use kasane_pdf::{extract_text, render_page, Document, Error, RenderOptions, TextOptions};
 
 /// Assemble a PDF from `(number, body)` pairs; object 1 is the catalog.
 fn pdf_objs(objs: &[(u32, String)]) -> Vec<u8> {
@@ -69,7 +69,7 @@ fn render(pdf: &[u8]) -> Result<kasane_pdf::RenderedPage, Error> {
 
 /// RGB at pixmap (x, y) — y grows downward; page y = 200 − y.
 fn px(page: &kasane_pdf::RenderedPage, x: u32, y: u32) -> (u8, u8, u8) {
-    let p = page.pixmap.pixel(x, y).unwrap();
+    let p = page.pixmap().pixel(x, y).unwrap();
     (p.red(), p.green(), p.blue())
 }
 
@@ -296,7 +296,7 @@ fn annotation_without_appearance_is_unsupported() {
     // Extraction is unaffected by the refusal — annotations are not
     // page text.
     let doc = Document::from_bytes(&page_pdf("", "10 0 R", &extra)).unwrap();
-    assert!(extract_text(&doc, &doc.pages()[0], &Limits::default()).is_ok());
+    assert!(extract_text(&doc, &doc.pages()[0], &TextOptions::default()).is_ok());
 }
 
 /// A `null` entry (a reference to a free object resolves to null,
@@ -436,5 +436,5 @@ fn annotation_state_does_not_leak_from_page_content() {
 fn page_without_annotations_is_unchanged() {
     let r = render(&page_pdf("0 0 1 rg 10 10 20 20 re f", "", &[])).unwrap();
     assert_eq!(px(&r, 20, 180), BLUE);
-    assert!(r.font_substitutions.is_empty());
+    assert!(r.font_substitutions().is_empty());
 }

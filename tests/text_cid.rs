@@ -7,7 +7,9 @@
 //! Tw non-application on 2-byte codes, budgets, and coordinate
 //! semantics shared with simple-font extraction.
 
-use kasane_pdf::{extract_text, render_page, Document, Error, Limits, RenderOptions, ResolveKind};
+use kasane_pdf::{
+    extract_text, render_page, Document, Error, Limits, RenderOptions, ResolveKind, TextOptions,
+};
 
 fn flate(data: &[u8]) -> Vec<u8> {
     use flate2::write::ZlibEncoder;
@@ -249,7 +251,7 @@ fn pdf_jp(
 
 fn extract_bytes(bytes: &[u8]) -> Result<kasane_pdf::ExtractedText, Error> {
     let doc = Document::from_bytes(bytes)?;
-    extract_text(&doc, &doc.pages()[0], &Limits::default())
+    extract_text(&doc, &doc.pages()[0], &TextOptions::default())
 }
 
 fn render_bytes(bytes: &[u8]) -> Result<kasane_pdf::RenderedPage, Error> {
@@ -974,20 +976,14 @@ fn unicode_budget_2byte() {
     let ok = extract_text(
         &doc,
         &doc.pages()[0],
-        &Limits {
-            max_extracted_unicode_bytes: 2,
-            ..Limits::default()
-        },
+        &TextOptions::default().with_limits(Limits::default().with_max_extracted_unicode_bytes(2)),
     )
     .unwrap();
     assert_eq!(ok.chars.len(), 2);
     let err = extract_text(
         &doc,
         &doc.pages()[0],
-        &Limits {
-            max_extracted_unicode_bytes: 1,
-            ..Limits::default()
-        },
+        &TextOptions::default().with_limits(Limits::default().with_max_extracted_unicode_bytes(1)),
     )
     .unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }));
@@ -1010,10 +1006,7 @@ fn max_text_codes_counts_2byte_codes() {
     let err = extract_text(
         &doc,
         &doc.pages()[0],
-        &Limits {
-            max_text_codes: 2,
-            ..Limits::default()
-        },
+        &TextOptions::default().with_limits(Limits::default().with_max_text_codes(2)),
     )
     .unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }));
@@ -1037,7 +1030,7 @@ fn type0_renders_distinct_glyphs() {
         "",
     );
     let page = render_bytes(&bytes).unwrap();
-    let data = page.pixmap.data();
+    let data = page.pixmap().data();
     assert!(data.as_chunks::<4>().0.iter().any(|p| p[0] < 128));
 }
 
@@ -1376,7 +1369,7 @@ fn invisible_mode3_chars_still_extract_and_position() {
     // char2 (mode 0) is painted; char1 (mode 3) is not — ink exists
     // only for char2.
     assert!(page
-        .pixmap
+        .pixmap()
         .data()
         .as_chunks::<4>()
         .0
@@ -1405,7 +1398,7 @@ fn render_and_extract_share_spacing() {
     assert!((o2.0 - expected).abs() < 0.01);
     assert!((o2.1 - t.chars[0].origin.1).abs() < 0.01);
     let page = render_bytes(&bytes).unwrap();
-    let data = page.pixmap.data();
+    let data = page.pixmap().data();
     // char1 at (20,50), 20pt → ink near x≈20. char2 at (40,50).
     assert!(data.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
 }
@@ -1416,7 +1409,7 @@ fn simple_font_tw_applies_to_space() {
     // coverage so the composite Tw rule doesn't regress the simple path.
     let pdf = std::fs::read("tests/fixtures/text_basic.pdf").unwrap();
     let doc = Document::from_bytes(&pdf).unwrap();
-    let _ = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let _ = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     // The real check is the m5 Tw test — here we only assert the
     // simple path still extracts without errors after the composite-font rework.
 }
@@ -1520,14 +1513,14 @@ fn jp_glyph_shapes_differ_by_gid() {
     let st = b"BT /F1 24 Tf 20 40 Td <3042> Tj ET";
     let bytes = pdf_jp(st, Some(Some(jp_cidmap())), Some(1000), None, None);
     let page = render_bytes(&bytes).unwrap();
-    let data = page.pixmap.data();
+    let data = page.pixmap().data();
     let mut minx = u32::MAX;
     let mut maxx = 0u32;
     let mut miny = u32::MAX;
     let mut maxy = 0u32;
     for (i, px) in data.as_chunks::<4>().0.iter().enumerate() {
         if px[0] < 128 {
-            let (x, y) = (i as u32 % page.width, i as u32 / page.width);
+            let (x, y) = (i as u32 % page.width(), i as u32 / page.width());
             minx = minx.min(x);
             maxx = maxx.max(x);
             miny = miny.min(y);
@@ -1748,7 +1741,7 @@ fn simple_font_regression() {
     // Existing simple-font fixtures still work — no composite regression.
     let pdf = std::fs::read("tests/fixtures/text_basic.pdf").unwrap();
     let doc = Document::from_bytes(&pdf).unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     assert_eq!(t.chars.len(), 3);
     assert_eq!(t.chars[0].unicode.as_deref(), Some("A"));
     assert_eq!(t.chars[0].resolved_via, ResolveKind::EncodingFallback);

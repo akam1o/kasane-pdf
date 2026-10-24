@@ -47,6 +47,7 @@ pub enum SubstFamily {
 }
 
 /// How confident the choice is.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubstKind {
     /// One of the Standard 14 names (metric-compatible substitute).
@@ -67,6 +68,7 @@ pub enum SubstKind {
 /// One substitution the renderer performed on a page — surfaced in
 /// `RenderedPage::font_substitutions` so a substituted render is
 /// never mistaken for a faithful one.
+#[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FontSubstitution {
     /// The PDF `/BaseFont` name (subset tag stripped).

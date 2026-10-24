@@ -62,15 +62,12 @@ fn render(pdf: &[u8]) -> Result<RenderedPage, Error> {
 
 fn render_with(pdf: &[u8], limits: Limits) -> Result<RenderedPage, Error> {
     let doc = Document::from_bytes_with_limits(pdf, limits.clone())?;
-    let opts = RenderOptions {
-        limits,
-        ..RenderOptions::default()
-    };
+    let opts = RenderOptions::default().with_limits(limits);
     render_page(&doc, &doc.pages()[0], &opts)
 }
 
 fn px(r: &RenderedPage, x: u32, y: u32) -> (u8, u8, u8) {
-    let p = r.pixmap.pixel(x, y).unwrap();
+    let p = r.pixmap().pixel(x, y).unwrap();
     (p.red(), p.green(), p.blue())
 }
 
@@ -383,10 +380,7 @@ fn overlapping_cells_are_executed_and_bounded() {
             "",
             vec![(10, over)],
         ),
-        Limits {
-            max_pattern_tiles: 8,
-            ..Limits::default()
-        },
+        Limits::default().with_max_pattern_tiles(8),
     )
     .unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");

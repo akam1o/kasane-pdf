@@ -10,7 +10,7 @@
 //!
 //! PDFs are built inline; CharProc bodies are ordinary content ops.
 
-use kasane_pdf::{extract_text, render_page, Document, Error, Limits, RenderOptions};
+use kasane_pdf::{extract_text, render_page, Document, Error, RenderOptions, TextOptions};
 
 /// Build a 1-page PDF with a `/Type3` font `/F0` whose CharProcs are
 /// `[(name, body)]`. `extra` is appended to the page `/Resources`.
@@ -103,9 +103,9 @@ fn render(pdf: &[u8]) -> Result<kasane_pdf::RenderedPage, Error> {
 
 fn inked(page: &kasane_pdf::RenderedPage) -> usize {
     let mut n = 0;
-    for y in 0..page.pixmap.height() {
-        for x in 0..page.pixmap.width() {
-            let p = page.pixmap.pixel(x, y).unwrap();
+    for y in 0..page.pixmap().height() {
+        for x in 0..page.pixmap().width() {
+            let p = page.pixmap().pixel(x, y).unwrap();
             if (p.red(), p.green(), p.blue()) != (255, 255, 255) {
                 n += 1;
             }
@@ -169,9 +169,9 @@ fn type3_colored_glyph_uses_paint_ops() {
     let r = render(&pdf).unwrap();
     // Sample the middle — should be red-tinged, not black.
     let mut red = false;
-    for y in 0..r.pixmap.height() {
-        for x in 0..r.pixmap.width() {
-            let p = r.pixmap.pixel(x, y).unwrap();
+    for y in 0..r.pixmap().height() {
+        for x in 0..r.pixmap().width() {
+            let p = r.pixmap().pixel(x, y).unwrap();
             if p.red() > 150 && p.green() < 100 && p.blue() < 100 {
                 red = true;
             }
@@ -217,7 +217,7 @@ fn type3_advances_by_widths() {
         &[],
     );
     let doc = Document::from_bytes(&pdf).unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     assert_eq!(t.chars.len(), 2);
     let dx = t.chars[1].origin.0 - t.chars[0].origin.0;
     // 600/1000 × 10pt = 6 user units advance.
@@ -243,7 +243,7 @@ fn type3_widths_pass_through_a_non_default_font_matrix() {
     )
     .replace(b"/Widths [600 600]", b"/Widths [6 6]");
     let doc = Document::from_bytes_recovering(&pdf).unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     assert_eq!(t.chars.len(), 2);
     let dx = t.chars[1].origin.0 - t.chars[0].origin.0;
     assert!((dx - 6.0).abs() < 0.01, "advance {dx} ≠ 6.0");
@@ -314,9 +314,9 @@ fn type3_glyph_lands_at_text_position() {
     );
     let r = render(&pdf).unwrap();
     let (mut minx, mut miny, mut maxx, mut maxy) = (u32::MAX, u32::MAX, 0, 0);
-    for y in 0..r.pixmap.height() {
-        for x in 0..r.pixmap.width() {
-            let p = r.pixmap.pixel(x, y).unwrap();
+    for y in 0..r.pixmap().height() {
+        for x in 0..r.pixmap().width() {
+            let p = r.pixmap().pixel(x, y).unwrap();
             if (p.red(), p.green(), p.blue()) != (255, 255, 255) {
                 minx = minx.min(x);
                 maxx = maxx.max(x);

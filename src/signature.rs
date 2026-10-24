@@ -26,11 +26,14 @@
 //!   lock (field-level locks are not evaluated) — is refused.
 
 use crate::document::Document;
-use crate::error::Error;
+use crate::error::{Error, SignatureRule};
 use crate::object::{Dict, IndirectRef, Object};
 use std::collections::HashSet;
 
 /// What an edit session changes, for the signature policy.
+///
+/// New kinds may be added in minor releases; match with a wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChangeKind {
     /// Field values (`/V`, `/AS`, `/NeedAppearances`).
@@ -43,7 +46,11 @@ pub enum ChangeKind {
     Other,
 }
 
-/// One signature found in the document.
+/// One signature found in the document — what it *declares*, read
+/// from the file. Nothing here is a verification result: the engine
+/// never computes the digest, never checks a certificate and never
+/// states that a signature is valid or invalid.
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct SignatureInfo {
     /// Field name (`/T`), or `"unnamed"`.
@@ -52,7 +59,10 @@ pub struct SignatureInfo {
     pub byte_range: Option<[u64; 4]>,
     /// `true` when `/ByteRange` covers the file from byte 0 to the end
     /// of some revision with only the `/Contents` string left out —
-    /// i.e. the signed bytes are intact and still in the file.
+    /// i.e. the bytes the signature *claims* to cover are still in the
+    /// file in that layout. A structural property only: it says
+    /// nothing about whether the digest matches or the signer is
+    /// trusted.
     pub range_intact: bool,
     /// Byte offset the signed revision ends at (`range[2] + range[3]`).
     pub signed_end: Option<u64>,
@@ -312,23 +322,27 @@ pub(crate) fn incremental_policy(doc: &Document, changes: &[ChangeKind]) -> Resu
     if sigs.is_empty() {
         return Ok(());
     }
-    let refuse = |detail: String| Error::Unsupported {
-        feature: "edit of a signed document",
-        detail,
-    };
+    let refuse = |rule: SignatureRule, detail: String| Error::SignaturePolicy { rule, detail };
     for s in &sigs {
         if !s.range_intact {
-            return Err(refuse(format!(
-                "signature field {:?} has a /ByteRange that does not cover the signed revision \
-                 intact ({:?}) — its validity cannot be reasoned about, so no change is appended",
-                s.field, s.byte_range
-            )));
+            return Err(refuse(
+                SignatureRule::ByteRangeNotIntact,
+                format!(
+                    "signature field {:?} has a /ByteRange that does not cover the signed \
+                     revision intact ({:?}) — what it covers cannot be reasoned about, so no \
+                     change is appended",
+                    s.field, s.byte_range
+                ),
+            ));
         }
         if s.field_mdp {
-            return Err(refuse(format!(
-                "signature field {:?} carries a /FieldMDP lock, which is not evaluated",
-                s.field
-            )));
+            return Err(refuse(
+                SignatureRule::FieldMdpNotEvaluated,
+                format!(
+                    "signature field {:?} carries a /FieldMDP lock, which is not evaluated",
+                    s.field
+                ),
+            ));
         }
         for c in changes {
             let ok = match (s.docmdp_p, c) {
@@ -342,15 +356,26 @@ pub(crate) fn incremental_policy(doc: &Document, changes: &[ChangeKind]) -> Resu
                 (None, _) => false,
             };
             if !ok {
-                return Err(refuse(format!(
-                    "signature field {:?} ({}) does not permit {:?} changes",
-                    s.field,
-                    match s.docmdp_p {
-                        Some(p) => format!("certification, /DocMDP /P {p}"),
-                        None => "approval signature".into(),
-                    },
-                    c
-                )));
+                let rule = match s.docmdp_p {
+                    Some(2) => SignatureRule::DocMdpFormFillOnly,
+                    Some(3) => SignatureRule::DocMdpFormFillAndAnnotations,
+                    // /P 1, an out-of-range /P, or an approval signature
+                    // (no /DocMDP): only form filling and annotations are
+                    // ever appended; anything else is refused outright.
+                    Some(_) | None => SignatureRule::DocMdpNoChanges,
+                };
+                return Err(refuse(
+                    rule,
+                    format!(
+                        "signature field {:?} ({}) does not permit {:?} changes",
+                        s.field,
+                        match s.docmdp_p {
+                            Some(p) => format!("certification, /DocMDP /P {p}"),
+                            None => "approval signature".into(),
+                        },
+                        c
+                    ),
+                ));
             }
         }
     }

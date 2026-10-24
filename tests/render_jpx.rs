@@ -44,7 +44,7 @@ fn render(pdf: &[u8]) -> Result<RenderedPage, Error> {
 }
 
 fn px(r: &RenderedPage, x: u32, y: u32) -> (u8, u8, u8) {
-    let p = r.pixmap.pixel(x, y).unwrap();
+    let p = r.pixmap().pixel(x, y).unwrap();
     (p.red(), p.green(), p.blue())
 }
 
@@ -166,13 +166,8 @@ fn refusals_and_limits() {
     }
     // Limits apply before any decoding.
     let doc = Document::from_bytes(&page(DRAW, image("", RGB_J2K))).unwrap();
-    let opts = RenderOptions {
-        limits: Limits {
-            max_image_total_samples: 8,
-            ..Limits::default()
-        },
-        ..RenderOptions::default()
-    };
+    let opts =
+        RenderOptions::default().with_limits(Limits::default().with_max_image_total_samples(8));
     let err = render_page(&doc, &doc.pages()[0], &opts).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
     // /JPXDecode on a content stream is not an image.

@@ -25,6 +25,7 @@ use crate::object::{IndirectRef, Object};
 use std::collections::HashSet;
 
 /// Where a named destination was found.
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DestSource {
     /// Catalog `/Names` → `/Dests` name tree.
@@ -54,6 +55,7 @@ pub struct NamedDest {
 /// All named destinations of `doc`, in tree (sorted-key) order for
 /// the name tree followed by dictionary order for the legacy `/Dests`.
 pub fn named_destinations(doc: &Document, limits: &Limits) -> Result<Vec<NamedDest>, Error> {
+    limits.validate()?;
     let mut out = Vec::new();
     let catalog = doc.catalog();
 
@@ -103,6 +105,7 @@ pub fn resolve_named_destination(
     name: &[u8],
     limits: &Limits,
 ) -> Result<Option<NamedDest>, Error> {
+    limits.validate()?;
     Ok(named_destinations(doc, limits)?
         .into_iter()
         .find(|d| d.name == name))

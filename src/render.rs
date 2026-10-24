@@ -279,12 +279,47 @@ fn placement_err(what: &str) -> Error {
 
 /// Options for [`render_page`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct RenderOptions {
     /// Output resolution in dots per inch. 72 = 1 px per PDF point.
-    /// Must be finite and > 0.
+    /// Must be finite and > 0 ([`RenderOptions::validate`]).
     pub dpi: f64,
     /// Limits for the render.
     pub limits: Limits,
+}
+
+impl RenderOptions {
+    /// The defaults: 72 dpi, default limits.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the output resolution in dots per inch.
+    #[must_use]
+    pub fn with_dpi(mut self, dpi: f64) -> Self {
+        self.dpi = dpi;
+        self
+    }
+
+    /// Replace the resource bounds.
+    #[must_use]
+    pub fn with_limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Check the options: `dpi` finite and positive, limits usable.
+    /// [`render_page`] calls this first and returns
+    /// [`Error::InvalidArgument`] on failure.
+    pub fn validate(&self) -> Result<(), Error> {
+        if !(self.dpi.is_finite() && self.dpi > 0.0) {
+            return Err(Error::invalid_argument(
+                "dpi",
+                format!("{} (must be positive and finite)", self.dpi),
+            ));
+        }
+        self.limits.validate()
+    }
 }
 
 impl Default for RenderOptions {
@@ -298,30 +333,119 @@ impl Default for RenderOptions {
 
 /// The rendered page plus the geometry that produced it.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct RenderedPage {
-    /// Premultiplied RGBA8 pixel buffer.
-    pub pixmap: Pixmap,
+    pixmap: Pixmap,
+    width: u32,
+    height: u32,
+    dpi: f64,
+    page_size_pts: (f64, f64),
+    font_substitutions: Vec<crate::fontsubst::FontSubstitution>,
+    color_approximations: Vec<String>,
+}
+
+/// Layout of the pixel buffer a [`RenderedPage`] holds.
+///
+/// New formats may be added in minor releases; match with a wildcard
+/// arm.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PixelFormat {
+    /// 8 bits per channel, R G B A byte order, alpha-premultiplied
+    /// colour, rows top to bottom, no padding between rows.
+    Rgba8Premultiplied,
+}
+
+impl PixelFormat {
+    /// Bytes per pixel.
+    pub fn bytes_per_pixel(self) -> usize {
+        match self {
+            PixelFormat::Rgba8Premultiplied => 4,
+        }
+    }
+}
+
+impl RenderedPage {
     /// Physical pixel width.
-    pub width: u32,
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
     /// Physical pixel height.
-    pub height: u32,
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Bytes per row of [`RenderedPage::pixels`] (no padding:
+    /// `width × bytes_per_pixel`).
+    pub fn stride(&self) -> usize {
+        self.width as usize * self.pixel_format().bytes_per_pixel()
+    }
+
+    /// Layout of the pixel buffer.
+    pub fn pixel_format(&self) -> PixelFormat {
+        PixelFormat::Rgba8Premultiplied
+    }
+
+    /// The pixel buffer, `height × stride` bytes, borrowed — no copy.
+    pub fn pixels(&self) -> &[u8] {
+        self.pixmap.data()
+    }
+
+    /// Take the pixel buffer (`height × stride` bytes in
+    /// [`PixelFormat::Rgba8Premultiplied`]) without copying.
+    pub fn into_rgba8(self) -> Vec<u8> {
+        self.pixmap.take()
+    }
+
+    /// Encode the page as PNG (RGBA8, alpha un-premultiplied by the
+    /// encoder's convention — identical to `pixmap_to_png`).
+    pub fn to_png(&self) -> Result<Vec<u8>, Error> {
+        pixmap_to_png(&self.pixmap)
+    }
+
     /// DPI used for the conversion.
-    pub dpi: f64,
+    pub fn dpi(&self) -> f64 {
+        self.dpi
+    }
+
     /// Rendered rectangle size in PDF points (CropBox, Rotate applied).
-    pub page_size_pts: (f64, f64),
+    pub fn page_size_pts(&self) -> (f64, f64) {
+        self.page_size_pts
+    }
+
     /// Non-embedded fonts that were drawn with a bundled substitute
     /// (see `src/fontsubst.rs`). Empty means every glyph on the page
     /// came from an embedded program; non-empty means shapes are
     /// approximations of the named fonts and the image must not be
     /// treated as a faithful render of them.
-    pub font_substitutions: Vec<crate::fontsubst::FontSubstitution>,
+    pub fn font_substitutions(&self) -> &[crate::fontsubst::FontSubstitution] {
+        &self.font_substitutions
+    }
+
     /// Colour spaces that were converted through an *approximation*
     /// (an `/ICCBased` profile we cannot evaluate, so its `/Alternate`
     /// was used — §8.6.5.5). Empty means every colour on the page went
     /// through an exact conversion; non-empty means hues may differ
     /// from a CMS-backed viewer and the image must not be treated as
     /// a faithful render of those colours.
-    pub color_approximations: Vec<String>,
+    pub fn color_approximations(&self) -> &[String] {
+        &self.color_approximations
+    }
+
+    /// The underlying `tiny-skia` pixmap, for interoperation with that
+    /// crate. Behind the `tiny-skia-interop` feature so a future
+    /// rasteriser change does not have to break the rest of this API.
+    #[cfg(feature = "tiny-skia-interop")]
+    pub fn pixmap(&self) -> &Pixmap {
+        &self.pixmap
+    }
+
+    /// Take the underlying `tiny-skia` pixmap without copying.
+    #[cfg(feature = "tiny-skia-interop")]
+    pub fn into_pixmap(self) -> Pixmap {
+        self.pixmap
+    }
 }
 
 /// Render `page` of `doc` to a pixel buffer. On failure no
@@ -331,6 +455,7 @@ pub fn render_page(
     page: &Page,
     opts: &RenderOptions,
 ) -> Result<RenderedPage, Error> {
+    opts.validate()?;
     let limits = &opts.limits;
     let _budget = doc.decoded_budget_scope();
 
@@ -364,10 +489,10 @@ pub fn render_page(
 
     let scale = opts.dpi / 72.0 * user_unit;
     if !(scale.is_finite() && scale > 0.0) {
-        return Err(Error::Structure(format!(
-            "invalid DPI {} (must be positive and finite)",
-            opts.dpi
-        )));
+        return Err(Error::invalid_argument(
+            "dpi",
+            format!("{} × /UserUnit {user_unit} is not a usable scale", opts.dpi),
+        ));
     }
     let (w_pts, h_pts) = crop_size_after_rotate(&crop, rotate);
     if !(w_pts.is_finite() && h_pts.is_finite() && w_pts >= 0.0 && h_pts >= 0.0) {
@@ -460,6 +585,7 @@ pub fn render_page(
 }
 
 /// Encode a rendered pixmap as PNG bytes (RGBA8).
+#[cfg_attr(not(feature = "tiny-skia-interop"), allow(dead_code))]
 pub fn pixmap_to_png(pixmap: &Pixmap) -> Result<Vec<u8>, Error> {
     let mut out = Vec::new();
     {

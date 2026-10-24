@@ -119,6 +119,7 @@ pub fn remove_text(
     rects: &[(f64, f64, f64, f64)],
     limits: &Limits,
 ) -> Result<Removal, Error> {
+    limits.validate()?;
     // ---- input validation (same rules as the diagnosis) -----------
     if rects.is_empty() {
         return Err(Error::Structure("at least one --rect is required".into()));
@@ -3054,7 +3055,8 @@ mod tests {
         let d = doc(&one_glyph(b"BT /F1 24 Tf 20 60 Td (ABC) Tj ET\n"));
         let r = remove_text(&d, 0, &[(36.2, 60.0, 39.2, 80.0)], &Limits::default()).unwrap();
         let d2 = doc(&r.output);
-        let text = crate::extract_text(&d2, &d2.pages()[0], &Limits::default()).unwrap();
+        let text =
+            crate::extract_text(&d2, &d2.pages()[0], &crate::TextOptions::default()).unwrap();
         let s: String = text
             .chars
             .iter()
@@ -3809,14 +3811,14 @@ mod tests {
         let r = remove_text(&d, 0, &[(36.2, 60.0, 39.2, 80.0)], &Limits::default()).unwrap();
         let d2 = doc(&r.output);
         // Page 1 extracts "AC"; page 2 still extracts "ABC".
-        let p1 = crate::extract_text(&d2, &d2.pages()[0], &Limits::default()).unwrap();
+        let p1 = crate::extract_text(&d2, &d2.pages()[0], &crate::TextOptions::default()).unwrap();
         let s1: String = p1
             .chars
             .iter()
             .filter_map(|c| c.unicode.as_deref())
             .collect();
         assert_eq!(s1, "AC", "page 1: {s1:?}");
-        let p2 = crate::extract_text(&d2, &d2.pages()[1], &Limits::default()).unwrap();
+        let p2 = crate::extract_text(&d2, &d2.pages()[1], &crate::TextOptions::default()).unwrap();
         let s2: String = p2
             .chars
             .iter()

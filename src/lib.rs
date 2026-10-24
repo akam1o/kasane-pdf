@@ -122,10 +122,16 @@ pub use content::{Operation, TJItem};
 pub use dests::{named_destinations, resolve_named_destination, DestSource, NamedDest};
 pub use fontsubst::{substitution_for, FontSubstitution, SubstKind};
 pub use matrix::Matrix;
-pub use render::{pixmap_to_png, render_page, Color, RenderOptions, RenderedPage};
-pub use text_extract::{extract_text, extract_text_all, CharInfo, ExtractedText, ResolveKind};
-/// The raster type of [`RenderedPage::pixmap`], re-exported so it can
-/// be named without depending on `tiny-skia` at a matching version.
+/// PNG encoding of a raw `tiny-skia` pixmap (`RenderedPage::to_png`
+/// is the backend-neutral form). `tiny-skia-interop` feature.
+#[cfg(feature = "tiny-skia-interop")]
+pub use render::pixmap_to_png;
+pub use render::{render_page, Color, PixelFormat, RenderOptions, RenderedPage};
+pub use text_extract::{extract_text, CharInfo, ExtractedText, ResolveKind, TextOptions};
+/// The raster type behind `RenderedPage::pixmap()`, re-exported so it
+/// can be named without depending on `tiny-skia` at a matching
+/// version. `tiny-skia-interop` feature.
+#[cfg(feature = "tiny-skia-interop")]
 pub use tiny_skia::Pixmap;
 pub use xref::RecoveryReport;
 
@@ -136,7 +142,7 @@ pub use audit::{
 pub use cjk::{cjk_fallback_enabled, predefined_cmap_known, predefined_cmap_names};
 pub use document::Document;
 pub use edit::Edit;
-pub use error::Error;
+pub use error::{Error, ErrorKind, MissingReference, SignatureRule};
 pub use limits::Limits;
 pub use object::{Dict, IndirectRef, Object};
 pub use page::{Page, Rect};

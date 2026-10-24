@@ -4,7 +4,9 @@
 mod common;
 
 use common::{build_pdf, stream_obj};
-use kasane_pdf::{extract_text, render_page, Document, Error, Limits, RenderOptions, ResolveKind};
+use kasane_pdf::{
+    extract_text, render_page, Document, Error, RenderOptions, ResolveKind, TextOptions,
+};
 
 fn pdf(content: &[u8]) -> Vec<u8> {
     build_pdf(&[
@@ -23,7 +25,7 @@ fn pdf(content: &[u8]) -> Vec<u8> {
 
 fn text(content: &[u8]) -> Result<String, Error> {
     let doc = Document::from_bytes(&pdf(content))?;
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default())?;
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default())?;
     Ok(t.chars.iter().filter_map(|c| c.unicode.clone()).collect())
 }
 
@@ -37,7 +39,7 @@ fn span_text_replaces_every_glyph_once() {
         b"BT /F1 20 Tf 10 50 Td /Span << /ActualText (fi) >> BDC (f) Tj (i) Tj EMC ET",
     ))
     .unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     assert_eq!(t.chars.len(), 2, "both glyphs are reported");
     assert_eq!(t.chars[1].unicode.as_deref(), Some(""));
     assert_eq!(t.chars[1].resolved_via, ResolveKind::ActualText);
@@ -76,7 +78,7 @@ fn span_without_glyphs_still_yields_its_text() {
         b"BT /F1 20 Tf 10 50 Td (A) Tj /Span << /ActualText (-) >> BDC EMC (B) Tj ET",
     ))
     .unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     let s: String = t.chars.iter().filter_map(|c| c.unicode.clone()).collect();
     assert_eq!(s, "A-B");
     let synthetic = &t.chars[1];
@@ -103,9 +105,9 @@ fn actual_text_does_not_affect_rendering() {
     ))
     .unwrap();
     let r = render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap();
-    let ink = (0..r.width)
-        .flat_map(|x| (0..r.height).map(move |y| (x, y)))
-        .filter(|(x, y)| r.pixmap.pixel(*x, *y).unwrap().red() < 128)
+    let ink = (0..r.width())
+        .flat_map(|x| (0..r.height()).map(move |y| (x, y)))
+        .filter(|(x, y)| r.pixmap().pixel(*x, *y).unwrap().red() < 128)
         .count();
     assert!(ink > 0, "the glyph A is painted regardless of ActualText");
 }

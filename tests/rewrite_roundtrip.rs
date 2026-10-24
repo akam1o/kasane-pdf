@@ -362,8 +362,8 @@ fn text_basic_roundtrip() {
     let data = std::fs::read("tests/fixtures/text_basic.pdf").unwrap();
     let out = rw(&data);
     let doc = reparse(&out);
-    let text =
-        kasane_pdf::extract_text(&doc, &doc.pages()[0], &kasane_pdf::Limits::default()).unwrap();
+    let text = kasane_pdf::extract_text(&doc, &doc.pages()[0], &kasane_pdf::TextOptions::default())
+        .unwrap();
     assert_eq!(text.chars.len(), 3);
     assert_eq!(text.chars[0].unicode.as_deref(), Some("A"));
 }
@@ -431,8 +431,8 @@ fn cid_font_roundtrip() {
     let src = parts.concat();
     let out = rw(&src);
     let doc = reparse(&out);
-    let text =
-        kasane_pdf::extract_text(&doc, &doc.pages()[0], &kasane_pdf::Limits::default()).unwrap();
+    let text = kasane_pdf::extract_text(&doc, &doc.pages()[0], &kasane_pdf::TextOptions::default())
+        .unwrap();
     assert_eq!(text.chars.len(), 1);
     assert_eq!(text.chars[0].code, 1);
 }
@@ -542,7 +542,9 @@ fn signed_docmdp_refused() {
     let p = pdf_with(1, "/Perms << /DocMDP 9 0 R >>", "");
     let doc = Document::from_bytes(&p).unwrap();
     match rewrite(&doc) {
-        Err(Error::Unsupported { feature, .. }) => assert_eq!(feature, "signed document"),
+        Err(Error::SignaturePolicy { rule, .. }) => {
+            assert_eq!(rule, kasane_pdf::SignatureRule::RewriteOfSignedDocument)
+        }
         other => panic!("expected Unsupported, got {other:?}"),
     }
 }
@@ -780,10 +782,7 @@ fn output_object_limit() {
     // with more reachable objects than the cap fails cleanly.
     let src = pdf_with(10, "", "");
     let doc = Document::from_bytes(&src).unwrap();
-    let limits = kasane_pdf::Limits {
-        max_output_objects: 3, // 10 pages + catalog + contents > 3
-        ..Default::default()
-    };
+    let limits = kasane_pdf::Limits::default().with_max_output_objects(3);
     match kasane_pdf::rewrite_with_limits(&doc, &limits) {
         Err(Error::LimitExceeded { limit, .. }) => {
             assert_eq!(limit, "max_output_objects")
@@ -797,10 +796,7 @@ fn output_byte_limit() {
     // A tight byte cap must fail even on a valid input.
     let src = pdf_with(1, "", "");
     let doc = Document::from_bytes(&src).unwrap();
-    let limits = kasane_pdf::Limits {
-        max_output_bytes: 100,
-        ..Default::default()
-    };
+    let limits = kasane_pdf::Limits::default().with_max_output_bytes(100);
     match kasane_pdf::rewrite_with_limits(&doc, &limits) {
         Err(Error::LimitExceeded { limit, .. }) => {
             assert_eq!(limit, "max_output_bytes")

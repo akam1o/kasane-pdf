@@ -125,6 +125,7 @@ pub fn remove_region(
     rects: &[(f64, f64, f64, f64)],
     limits: &Limits,
 ) -> Result<RegionRemoval, Error> {
+    limits.validate()?;
     // ---- input validation (same rules as the diagnosis) -----------
     if rects.is_empty() {
         return Err(Error::Structure("at least one --rect is required".into()));
@@ -1262,6 +1263,7 @@ pub fn remove_regions(
     specs: &[PageSpec],
     limits: &Limits,
 ) -> Result<RegionsRemoval, Error> {
+    limits.validate()?;
     let s = regions_edit_session(doc, specs, limits)?;
     let output = s.edit.rewrite()?;
     Ok(RegionsRemoval {
@@ -1362,6 +1364,7 @@ pub fn remove_regions_and_document_metadata(
     specs: &[PageSpec],
     limits: &Limits,
 ) -> Result<RegionsAndMetadataRemoval, Error> {
+    limits.validate()?;
     // Presence is checked on the *input* — flags report whether an
     // entry was there to remove, not whether its data vanished.
     let info_present = doc.trailer().contains_key(b"Info".as_slice());
@@ -5350,10 +5353,10 @@ mod tests {
         )
         .unwrap_err();
         match e {
-            Error::Unsupported { feature, .. } => {
-                assert!(feature.contains("signed"), "{feature}");
+            Error::SignaturePolicy { rule, .. } => {
+                assert_eq!(rule, crate::error::SignatureRule::RewriteOfSignedDocument);
             }
-            other => panic!("expected Unsupported(signed), got {other:?}"),
+            other => panic!("expected SignaturePolicy, got {other:?}"),
         }
     }
 

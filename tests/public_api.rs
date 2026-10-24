@@ -10,7 +10,7 @@ mod common;
 use common::{build_pdf, fixture, stream_obj};
 use kasane_pdf::{
     extract_text, pixmap_to_png, render_page, rewrite, rewrite_with_limits, signatures, Dict,
-    Document, Error, Limits, Object, Rect, RenderOptions, Warning,
+    Document, Error, ErrorKind, Limits, Object, Rect, RenderOptions, TextOptions, Warning,
 };
 
 fn hello() -> Vec<u8> {
@@ -38,17 +38,22 @@ fn load_inspect_render_extract_rewrite_through_public_paths() {
     let _ops = doc.page_operations(page).unwrap();
     let _ver = doc.catalog_version().unwrap();
 
-    let opts = RenderOptions {
-        dpi: 36.0,
-        ..RenderOptions::default()
-    };
+    let opts = RenderOptions::default().with_dpi(36.0);
     let r = render_page(&doc, page, &opts).unwrap();
-    assert_eq!((r.width, r.height), (r.pixmap.width(), r.pixmap.height()));
-    assert!(r.font_substitutions.is_empty() || !r.font_substitutions[0].substitute.is_empty());
-    let png = pixmap_to_png(&r.pixmap).unwrap();
+    assert_eq!(
+        (r.width(), r.height()),
+        (r.pixmap().width(), r.pixmap().height())
+    );
+    assert!(r.font_substitutions().is_empty() || !r.font_substitutions()[0].substitute.is_empty());
+    let png = r.to_png().unwrap();
+    assert_eq!(
+        png,
+        pixmap_to_png(r.pixmap()).unwrap(),
+        "interop path encodes identically"
+    );
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
 
-    let t = extract_text(&doc, page, &Limits::default()).unwrap();
+    let t = extract_text(&doc, page, &TextOptions::default()).unwrap();
     assert!(!t.chars.is_empty());
     let c = &t.chars[0];
     let _ = (
@@ -76,7 +81,8 @@ fn load_inspect_render_extract_rewrite_through_public_paths() {
 fn errors_are_classified_by_kind() {
     let e = Document::from_bytes(b"not a pdf at all").unwrap_err();
     assert!(matches!(e, Error::NotPdf));
-    assert_eq!(e.kind(), "not a PDF");
+    assert_eq!(e.kind(), ErrorKind::NotPdf);
+    assert_eq!(e.kind().as_str(), "not a PDF");
     let e = Document::from_bytes(&std::fs::read(fixture("encrypted.pdf")).unwrap()).unwrap_err();
     assert!(matches!(e, Error::Encrypted));
     let e = Document::from_bytes(&std::fs::read(fixture("truncated.pdf")).unwrap()).unwrap_err();
@@ -85,13 +91,10 @@ fn errors_are_classified_by_kind() {
         Error::Parse(_) | Error::Structure(_) | Error::UnexpectedEof { .. }
     ));
     // A limit is its own kind, distinguishable from malformed input.
-    let tiny = Limits {
-        max_input_bytes: 10,
-        ..Limits::default()
-    };
+    let tiny = Limits::default().with_max_input_bytes(10);
     let e = Document::from_bytes_with_limits(&hello(), tiny).unwrap_err();
     assert!(matches!(e, Error::LimitExceeded { .. }));
-    assert_eq!(e.kind(), "limit exceeded");
+    assert_eq!(e.kind(), ErrorKind::LimitExceeded);
     // Error is a std error, Send + Sync, with a Display.
     fn assert_err<E: std::error::Error + Send + Sync + 'static>() {}
     assert_err::<Error>();
@@ -198,7 +201,7 @@ fn unterminated_flate_stream_is_accepted_with_a_warning() {
     let pdf = page_with_contents(stream_obj("/Filter /FlateDecode", &z), &[]);
     let doc = Document::from_bytes(&pdf).unwrap();
     let r = render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap();
-    let p = r.pixmap.pixel(50, 50).unwrap();
+    let p = r.pixmap().pixel(50, 50).unwrap();
     assert_eq!(
         (p.red(), p.green(), p.blue()),
         (0, 0, 255),
@@ -259,7 +262,7 @@ fn malformed_tounicode_entries_are_skipped_with_a_warning() {
         ],
     );
     let doc = Document::from_bytes(&pdf).unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     let uni: Vec<Option<&str>> = t.chars.iter().map(|c| c.unicode.as_deref()).collect();
     assert_eq!(
         uni,
@@ -301,4 +304,199 @@ fn warning_list_is_bounded() {
     render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap();
     assert_eq!(doc.warnings().len(), kasane_pdf::warning::MAX_WARNINGS);
     assert_eq!(doc.warnings_dropped(), 76);
+}
+
+// ---- 0.2 contract: options are built, validated, and results are read
+// through accessors -------------------------------------------------
+
+#[test]
+fn limits_are_built_with_setters_and_validated() {
+    let l = Limits::default()
+        .with_max_input_bytes(1024)
+        .with_max_xobject_depth(0);
+    assert_eq!(l.max_input_bytes, 1024);
+    assert_eq!(
+        l.max_xobject_depth, 0,
+        "a feature bound may be 0 (forbid the feature)"
+    );
+    l.validate().unwrap();
+    // A zero structural bound is a caller mistake, named.
+    let bad = Limits::default().with_max_stream_bytes(0);
+    let e = bad.validate().unwrap_err();
+    assert!(
+        matches!(
+            &e,
+            Error::InvalidArgument {
+                argument: "max_stream_bytes",
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+    assert_eq!(e.kind(), ErrorKind::InvalidArgument);
+    assert!(!e.kind().is_malformed_input());
+    // Every entry point validates first: the document is never blamed.
+    let e = Document::from_bytes_with_limits(&hello(), bad.clone()).unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::InvalidArgument);
+    let doc = Document::from_bytes(&hello()).unwrap();
+    let e = render_page(
+        &doc,
+        &doc.pages()[0],
+        &RenderOptions::default().with_limits(bad.clone()),
+    )
+    .unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::InvalidArgument);
+    let e = extract_text(
+        &doc,
+        &doc.pages()[0],
+        &TextOptions::default().with_limits(bad),
+    )
+    .unwrap_err();
+    assert_eq!(e.kind(), ErrorKind::InvalidArgument);
+    // Defaults are unchanged and usable.
+    Limits::new().validate().unwrap();
+    assert_eq!(
+        Limits::new().max_input_bytes,
+        Limits::default().max_input_bytes
+    );
+}
+
+#[test]
+fn render_options_validate_dpi() {
+    let doc = Document::from_bytes(&hello()).unwrap();
+    for dpi in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        let e = RenderOptions::default()
+            .with_dpi(dpi)
+            .validate()
+            .unwrap_err();
+        assert!(
+            matches!(
+                e,
+                Error::InvalidArgument {
+                    argument: "dpi",
+                    ..
+                }
+            ),
+            "{dpi}: {e:?}"
+        );
+        let e =
+            render_page(&doc, &doc.pages()[0], &RenderOptions::new().with_dpi(dpi)).unwrap_err();
+        assert_eq!(e.kind(), ErrorKind::InvalidArgument, "{dpi}");
+    }
+    let mut o = RenderOptions::new();
+    o.dpi = 36.0; // fields stay assignable
+    o.validate().unwrap();
+}
+
+#[test]
+fn rendered_page_accessors_describe_the_buffer_without_a_copy() {
+    let doc = Document::from_bytes(&hello()).unwrap();
+    let r = render_page(
+        &doc,
+        &doc.pages()[0],
+        &RenderOptions::default().with_dpi(36.0),
+    )
+    .unwrap();
+    assert_eq!(
+        r.pixel_format(),
+        kasane_pdf::PixelFormat::Rgba8Premultiplied
+    );
+    assert_eq!(r.pixel_format().bytes_per_pixel(), 4);
+    assert_eq!(r.stride(), r.width() as usize * 4);
+    assert_eq!(r.pixels().len(), r.stride() * r.height() as usize);
+    assert_eq!(r.dpi(), 36.0);
+    let (w_pts, h_pts) = r.page_size_pts();
+    assert!(w_pts > 0.0 && h_pts > 0.0);
+    assert!(r.font_substitutions().is_empty() || !r.font_substitutions()[0].substitute.is_empty());
+    let _: &[String] = r.color_approximations();
+    // White page background: the first pixel is opaque white.
+    assert_eq!(&r.pixels()[..4], &[255, 255, 255, 255]);
+    let png = r.to_png().unwrap();
+    assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
+    let interop_png = pixmap_to_png(r.pixmap()).unwrap();
+    assert_eq!(png, interop_png);
+    let (w, h) = (r.width(), r.height());
+    let buf = r.into_rgba8();
+    assert_eq!(buf.len(), w as usize * h as usize * 4);
+}
+
+#[test]
+fn text_options_region_and_hidden_content() {
+    let doc = Document::from_bytes(&std::fs::read(fixture("text_basic.pdf")).unwrap()).unwrap();
+    let page = &doc.pages()[0];
+    let all = extract_text(&doc, page, &TextOptions::default()).unwrap();
+    let same = extract_text(&doc, page, &TextOptions::new().with_hidden_content(true)).unwrap();
+    assert_eq!(
+        all.chars.len(),
+        same.chars.len(),
+        "no optional content here"
+    );
+    assert!(!all.chars.is_empty());
+    let (x, y) = all.chars[0].origin;
+    let only_first = extract_text(
+        &doc,
+        page,
+        &TextOptions::default().with_region(Rect {
+            llx: x - 0.5,
+            lly: y - 0.5,
+            urx: x + 0.5,
+            ury: y + 0.5,
+        }),
+    )
+    .unwrap();
+    assert_eq!(only_first.chars.len(), 1);
+    assert_eq!(only_first.chars[0].code, all.chars[0].code);
+    let none = extract_text(
+        &doc,
+        page,
+        &TextOptions::default().with_region(Rect {
+            llx: -1000.0,
+            lly: -1000.0,
+            urx: -900.0,
+            ury: -900.0,
+        }),
+    )
+    .unwrap();
+    assert!(none.chars.is_empty());
+    let e = extract_text(
+        &doc,
+        page,
+        &TextOptions::default().with_region(Rect {
+            llx: f64::NAN,
+            lly: 0.0,
+            urx: 1.0,
+            ury: 1.0,
+        }),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            e,
+            Error::InvalidArgument {
+                argument: "region",
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+}
+
+#[test]
+fn error_kinds_are_stable_strings() {
+    for (k, s) in [
+        (ErrorKind::NotPdf, "not a PDF"),
+        (ErrorKind::Parse, "parse error"),
+        (ErrorKind::Structure, "invalid document structure"),
+        (ErrorKind::Unsupported, "unsupported feature"),
+        (ErrorKind::LimitExceeded, "limit exceeded"),
+        (ErrorKind::InvalidArgument, "invalid argument"),
+        (ErrorKind::SignaturePolicy, "signature policy"),
+    ] {
+        assert_eq!(k.as_str(), s);
+        assert_eq!(k.to_string(), s);
+    }
+    assert!(ErrorKind::Parse.is_malformed_input());
+    assert!(!ErrorKind::Unsupported.is_malformed_input());
+    assert!(!ErrorKind::SignaturePolicy.is_malformed_input());
+    let _: &dyn std::fmt::Display = &kasane_pdf::SignatureRule::RewriteOfSignedDocument;
 }

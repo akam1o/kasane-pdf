@@ -38,7 +38,7 @@ fn render(pdf: &[u8]) -> Result<RenderedPage, Error> {
 }
 
 fn px(r: &RenderedPage, x: u32, y: u32) -> (u8, u8, u8) {
-    let p = r.pixmap.pixel(x, y).unwrap();
+    let p = r.pixmap().pixel(x, y).unwrap();
     (p.red(), p.green(), p.blue())
 }
 
@@ -47,7 +47,7 @@ fn ink(r: &RenderedPage, x0: u32, y0: u32, x1: u32, y1: u32) -> usize {
     (x0..x1)
         .flat_map(|x| (y0..y1).map(move |y| (x, y)))
         .filter(|&(x, y)| {
-            let p = r.pixmap.pixel(x, y).unwrap();
+            let p = r.pixmap().pixel(x, y).unwrap();
             (p.red() as u32 + p.green() as u32 + p.blue() as u32) < 300
         })
         .count()
@@ -71,16 +71,16 @@ fn text_field_without_ap_draws_value_background_and_border() {
     let blue = (22..100)
         .flat_map(|x| (72..98).map(move |y| (x, y)))
         .any(|(x, y)| {
-            let p = r.pixmap.pixel(x, y).unwrap();
+            let p = r.pixmap().pixel(x, y).unwrap();
             p.blue() > 200 && p.red() < 120
         });
     assert!(blue);
     assert!(
-        r.font_substitutions
+        r.font_substitutions()
             .iter()
             .any(|s| s.base_font.contains("Helvetica")),
         "the Helv fallback is reported as a substitution: {:?}",
-        r.font_substitutions
+        r.font_substitutions()
     );
 }
 

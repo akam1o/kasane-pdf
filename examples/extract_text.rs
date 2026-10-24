@@ -4,7 +4,7 @@
 //! cargo run --example extract_text -- input.pdf
 //! ```
 
-use kasane_pdf::{extract_text, Document, Limits};
+use kasane_pdf::{extract_text, Document, Limits, TextOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args()
@@ -15,7 +15,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let limits = Limits::default();
 
     for page in doc.pages() {
-        let text = extract_text(&doc, page, &limits)?;
+        let text = extract_text(
+            &doc,
+            page,
+            &TextOptions::default().with_limits(limits.clone()),
+        )?;
         // Each `CharInfo` carries the character code, its Unicode
         // mapping (`None` when the font gives none — never a guess),
         // and its position in user space.

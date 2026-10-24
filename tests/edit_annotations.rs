@@ -889,10 +889,7 @@ fn refusal_conditions_still_apply() {
 fn annot_count_limit() {
     let d = doc(&page_pdf(""));
     let mut e = d
-        .edit_with_limits(Limits {
-            max_edit_annots: 3,
-            ..Default::default()
-        })
+        .edit_with_limits(Limits::default().with_max_edit_annots(3))
         .unwrap();
     for _ in 0..3 {
         e.add_square(
@@ -928,10 +925,7 @@ fn synthetic_object_limit() {
     // A tiny object cap fails at commit, not at add.
     let d = doc(&page_pdf(""));
     let mut e = d
-        .edit_with_limits(Limits {
-            max_edit_objects: 1,
-            ..Default::default()
-        })
+        .edit_with_limits(Limits::default().with_max_edit_objects(1))
         .unwrap();
     e.add_square(
         0,

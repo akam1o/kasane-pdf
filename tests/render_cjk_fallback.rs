@@ -63,7 +63,7 @@ fn ink(doc: &Document, x0: u32, y0: u32, x1: u32, y1: u32) -> (usize, kasane_pdf
     let n = (x0..x1)
         .flat_map(|x| (y0..y1).map(move |y| (x, y)))
         .filter(|&(x, y)| {
-            let p = r.pixmap.pixel(x, y).unwrap();
+            let p = r.pixmap().pixel(x, y).unwrap();
             (p.red() as u32 + p.green() as u32 + p.blue() as u32) < 600
         })
         .count();
@@ -89,8 +89,8 @@ fn predefined_cmaps_and_fallback_face_draw_japanese_text() {
         let doc = Document::from_bytes(&cjk_pdf(enc, text, "")).unwrap();
         let (n, r) = ink(&doc, 20, 20, 110, 70);
         assert!(n > 200, "{enc}: {n} ink pixels");
-        assert_eq!(r.font_substitutions.len(), 1, "{enc}");
-        let s = &r.font_substitutions[0];
+        assert_eq!(r.font_substitutions().len(), 1, "{enc}");
+        let s = &r.font_substitutions()[0];
         assert_eq!(s.base_font, "MS-Mincho");
         assert_eq!(s.substitute, "NotoSansJP-Regular");
         assert_eq!(s.kind, kasane_pdf::SubstKind::CjkFallback);
@@ -105,7 +105,7 @@ fn predefined_cmaps_and_fallback_face_draw_japanese_text() {
     assert_eq!(n, 0);
     // Text extraction: without /ToUnicode the codes are reported as
     // unmapped, not invented.
-    let text = kasane_pdf::extract_text(&doc, &doc.pages()[0], &kasane_pdf::Limits::default());
+    let text = kasane_pdf::extract_text(&doc, &doc.pages()[0], &kasane_pdf::TextOptions::default());
     assert!(text.is_ok());
 }
 

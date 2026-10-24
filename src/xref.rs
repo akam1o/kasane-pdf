@@ -537,6 +537,7 @@ fn parse_u32_word(bytes: &[u8]) -> Option<u32> {
 /// What the recovery scan (`reconstruct`) did to a damaged file — surfaced through
 /// [`crate::Document::recovery`] so a caller can tell a recovered
 /// document from a well-formed one and see every assumption made.
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecoveryReport {
     /// The error the strict parse stopped at.

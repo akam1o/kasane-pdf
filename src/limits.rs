@@ -4,12 +4,15 @@
 //! these limits. Exceeding a limit produces [`Error::LimitExceeded`]; the
 //! parser never recurses or allocates without bound.
 
+use crate::error::Error;
+
 /// Resource limits applied while parsing a document.
 ///
 /// The default values are generous enough for ordinary documents while
 /// still bounding pathological input. Construct with
 /// `Limits::default()` and adjust fields as needed.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Limits {
     /// Maximum input size in bytes (checked before parsing starts).
     /// Default: 512 MiB.
@@ -275,5 +278,519 @@ impl Default for Limits {
             max_audit_elements: 4_000_000,
             max_audit_content_ops: 200_000,
         }
+    }
+}
+
+impl Limits {
+    /// The default bounds — the same as [`Default::default`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Check that the bounds are usable. The *structural* bounds — those
+    /// without which no document at all can be processed (input size,
+    /// nesting and reference depth, collection sizes, stream bytes,
+    /// operator counts, render buffer, output size) — must be at least
+    /// 1; a zero there is a mistake, never a policy. The *feature*
+    /// bounds (`max_xobject_depth`, `max_image_dimension`,
+    /// `max_pattern_tiles`, the edit / diagnostic / audit budgets, …) may
+    /// be 0 to forbid the feature outright and are not checked. Every
+    /// entry point that takes a `Limits` calls this first and returns
+    /// [`Error::InvalidArgument`] naming the field.
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.max_input_bytes == 0 {
+            return Err(Error::invalid_argument(
+                "max_input_bytes",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_reference_depth == 0 {
+            return Err(Error::invalid_argument(
+                "max_reference_depth",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_page_tree_depth == 0 {
+            return Err(Error::invalid_argument(
+                "max_page_tree_depth",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_page_tree_nodes == 0 {
+            return Err(Error::invalid_argument(
+                "max_page_tree_nodes",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_array_elements == 0 {
+            return Err(Error::invalid_argument(
+                "max_array_elements",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_dict_entries == 0 {
+            return Err(Error::invalid_argument(
+                "max_dict_entries",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_string_bytes == 0 {
+            return Err(Error::invalid_argument(
+                "max_string_bytes",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_nesting_depth == 0 {
+            return Err(Error::invalid_argument(
+                "max_nesting_depth",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_stream_bytes == 0 {
+            return Err(Error::invalid_argument(
+                "max_stream_bytes",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_total_decoded_bytes == 0 {
+            return Err(Error::invalid_argument(
+                "max_total_decoded_bytes",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_filter_chain == 0 {
+            return Err(Error::invalid_argument(
+                "max_filter_chain",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_objstm_entries == 0 {
+            return Err(Error::invalid_argument(
+                "max_objstm_entries",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_objstm_bytes == 0 {
+            return Err(Error::invalid_argument(
+                "max_objstm_bytes",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_operations == 0 {
+            return Err(Error::invalid_argument(
+                "max_operations",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_operand_stack == 0 {
+            return Err(Error::invalid_argument(
+                "max_operand_stack",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_gsave_depth == 0 {
+            return Err(Error::invalid_argument(
+                "max_gsave_depth",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_render_pixels == 0 {
+            return Err(Error::invalid_argument(
+                "max_render_pixels",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_render_total_pixels == 0 {
+            return Err(Error::invalid_argument(
+                "max_render_total_pixels",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_render_buffer_bytes == 0 {
+            return Err(Error::invalid_argument(
+                "max_render_buffer_bytes",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_path_elements == 0 {
+            return Err(Error::invalid_argument(
+                "max_path_elements",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_text_codes == 0 {
+            return Err(Error::invalid_argument(
+                "max_text_codes",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_extracted_unicode_bytes == 0 {
+            return Err(Error::invalid_argument(
+                "max_extracted_unicode_bytes",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_output_objects == 0 {
+            return Err(Error::invalid_argument(
+                "max_output_objects",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_output_bytes == 0 {
+            return Err(Error::invalid_argument(
+                "max_output_bytes",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        if self.max_rewrite_walk_depth == 0 {
+            return Err(Error::invalid_argument(
+                "max_rewrite_walk_depth",
+                "a bound of 0 would refuse every document",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Set `max_input_bytes` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_input_bytes(mut self, value: usize) -> Self {
+        self.max_input_bytes = value;
+        self
+    }
+
+    /// Set `max_reference_depth` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_reference_depth(mut self, value: u64) -> Self {
+        self.max_reference_depth = value;
+        self
+    }
+
+    /// Set `max_page_tree_depth` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_page_tree_depth(mut self, value: u32) -> Self {
+        self.max_page_tree_depth = value;
+        self
+    }
+
+    /// Set `max_page_tree_nodes` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_page_tree_nodes(mut self, value: u64) -> Self {
+        self.max_page_tree_nodes = value;
+        self
+    }
+
+    /// Set `max_array_elements` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_array_elements(mut self, value: usize) -> Self {
+        self.max_array_elements = value;
+        self
+    }
+
+    /// Set `max_dict_entries` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_dict_entries(mut self, value: usize) -> Self {
+        self.max_dict_entries = value;
+        self
+    }
+
+    /// Set `max_string_bytes` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_string_bytes(mut self, value: usize) -> Self {
+        self.max_string_bytes = value;
+        self
+    }
+
+    /// Set `max_nesting_depth` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_nesting_depth(mut self, value: u32) -> Self {
+        self.max_nesting_depth = value;
+        self
+    }
+
+    /// Set `max_stream_bytes` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_stream_bytes(mut self, value: u64) -> Self {
+        self.max_stream_bytes = value;
+        self
+    }
+
+    /// Set `max_total_decoded_bytes` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_total_decoded_bytes(mut self, value: u64) -> Self {
+        self.max_total_decoded_bytes = value;
+        self
+    }
+
+    /// Set `max_filter_chain` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_filter_chain(mut self, value: usize) -> Self {
+        self.max_filter_chain = value;
+        self
+    }
+
+    /// Set `max_objstm_entries` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_objstm_entries(mut self, value: usize) -> Self {
+        self.max_objstm_entries = value;
+        self
+    }
+
+    /// Set `max_objstm_bytes` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_objstm_bytes(mut self, value: usize) -> Self {
+        self.max_objstm_bytes = value;
+        self
+    }
+
+    /// Set `max_recovery_objects` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_recovery_objects(mut self, value: usize) -> Self {
+        self.max_recovery_objects = value;
+        self
+    }
+
+    /// Set `max_operations` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_operations(mut self, value: usize) -> Self {
+        self.max_operations = value;
+        self
+    }
+
+    /// Set `max_operand_stack` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_operand_stack(mut self, value: usize) -> Self {
+        self.max_operand_stack = value;
+        self
+    }
+
+    /// Set `max_gsave_depth` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_gsave_depth(mut self, value: usize) -> Self {
+        self.max_gsave_depth = value;
+        self
+    }
+
+    /// Set `max_render_pixels` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_render_pixels(mut self, value: u32) -> Self {
+        self.max_render_pixels = value;
+        self
+    }
+
+    /// Set `max_render_total_pixels` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_render_total_pixels(mut self, value: u64) -> Self {
+        self.max_render_total_pixels = value;
+        self
+    }
+
+    /// Set `max_render_buffer_bytes` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_render_buffer_bytes(mut self, value: u64) -> Self {
+        self.max_render_buffer_bytes = value;
+        self
+    }
+
+    /// Set `max_path_elements` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_path_elements(mut self, value: usize) -> Self {
+        self.max_path_elements = value;
+        self
+    }
+
+    /// Set `max_xobject_depth` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_xobject_depth(mut self, value: u32) -> Self {
+        self.max_xobject_depth = value;
+        self
+    }
+
+    /// Set `max_xobject_invocations` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_xobject_invocations(mut self, value: u64) -> Self {
+        self.max_xobject_invocations = value;
+        self
+    }
+
+    /// Set `max_pattern_tiles` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_pattern_tiles(mut self, value: u64) -> Self {
+        self.max_pattern_tiles = value;
+        self
+    }
+
+    /// Set `max_shading_triangles` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_shading_triangles(mut self, value: u64) -> Self {
+        self.max_shading_triangles = value;
+        self
+    }
+
+    /// Set `max_image_dimension` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_image_dimension(mut self, value: u32) -> Self {
+        self.max_image_dimension = value;
+        self
+    }
+
+    /// Set `max_image_total_samples` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_image_total_samples(mut self, value: u64) -> Self {
+        self.max_image_total_samples = value;
+        self
+    }
+
+    /// Set `max_image_bytes` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_image_bytes(mut self, value: u64) -> Self {
+        self.max_image_bytes = value;
+        self
+    }
+
+    /// Set `max_text_codes` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_text_codes(mut self, value: u64) -> Self {
+        self.max_text_codes = value;
+        self
+    }
+
+    /// Set `max_extracted_unicode_bytes` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_extracted_unicode_bytes(mut self, value: u64) -> Self {
+        self.max_extracted_unicode_bytes = value;
+        self
+    }
+
+    /// Set `max_output_objects` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_output_objects(mut self, value: usize) -> Self {
+        self.max_output_objects = value;
+        self
+    }
+
+    /// Set `max_output_bytes` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_output_bytes(mut self, value: u64) -> Self {
+        self.max_output_bytes = value;
+        self
+    }
+
+    /// Set `max_rewrite_walk_depth` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_rewrite_walk_depth(mut self, value: usize) -> Self {
+        self.max_rewrite_walk_depth = value;
+        self
+    }
+
+    /// Set `max_edit_annots` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_edit_annots(mut self, value: u64) -> Self {
+        self.max_edit_annots = value;
+        self
+    }
+
+    /// Set `max_edit_objects` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_edit_objects(mut self, value: u64) -> Self {
+        self.max_edit_objects = value;
+        self
+    }
+
+    /// Set `max_edit_annot_bytes` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_edit_annot_bytes(mut self, value: u64) -> Self {
+        self.max_edit_annot_bytes = value;
+        self
+    }
+
+    /// Set `max_diag_rects` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_diag_rects(mut self, value: u64) -> Self {
+        self.max_diag_rects = value;
+        self
+    }
+
+    /// Set `max_diag_items` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_diag_items(mut self, value: u64) -> Self {
+        self.max_diag_items = value;
+        self
+    }
+
+    /// Set `max_diag_share_pages` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_diag_share_pages(mut self, value: u64) -> Self {
+        self.max_diag_share_pages = value;
+        self
+    }
+
+    /// Set `max_diag_share_refs` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_diag_share_refs(mut self, value: u64) -> Self {
+        self.max_diag_share_refs = value;
+        self
+    }
+
+    /// Set `max_diag_exec_ops` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_diag_exec_ops(mut self, value: u64) -> Self {
+        self.max_diag_exec_ops = value;
+        self
+    }
+
+    /// Set `max_show_states` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_show_states(mut self, value: u64) -> Self {
+        self.max_show_states = value;
+        self
+    }
+
+    /// Set `max_edit_content_bytes` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_edit_content_bytes(mut self, value: u64) -> Self {
+        self.max_edit_content_bytes = value;
+        self
+    }
+
+    /// Set `max_audit_findings` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_audit_findings(mut self, value: u64) -> Self {
+        self.max_audit_findings = value;
+        self
+    }
+
+    /// Set `max_audit_edges` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_audit_edges(mut self, value: u64) -> Self {
+        self.max_audit_edges = value;
+        self
+    }
+
+    /// Set `max_audit_paths` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_audit_paths(mut self, value: u64) -> Self {
+        self.max_audit_paths = value;
+        self
+    }
+
+    /// Set `max_audit_walk_depth` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_audit_walk_depth(mut self, value: usize) -> Self {
+        self.max_audit_walk_depth = value;
+        self
+    }
+
+    /// Set `max_audit_elements` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_audit_elements(mut self, value: u64) -> Self {
+        self.max_audit_elements = value;
+        self
+    }
+
+    /// Set `max_audit_content_ops` (see the field's documentation and [`Limits::validate`]).
+    #[must_use]
+    pub fn with_max_audit_content_ops(mut self, value: u64) -> Self {
+        self.max_audit_content_ops = value;
+        self
     }
 }

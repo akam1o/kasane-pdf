@@ -108,8 +108,8 @@ fn cli_remove_text_happy_path() {
     assert!(stdout.contains("codes removed: 1"), "{stdout}");
     // Output re-parses and the removed 'B' is gone from extraction.
     let doc = kasane_pdf::Document::from_bytes(&fs::read(&dst).unwrap()).unwrap();
-    let text =
-        kasane_pdf::extract_text(&doc, &doc.pages()[0], &kasane_pdf::Limits::default()).unwrap();
+    let text = kasane_pdf::extract_text(&doc, &doc.pages()[0], &kasane_pdf::TextOptions::default())
+        .unwrap();
     let s: String = text
         .chars
         .iter()

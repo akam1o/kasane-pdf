@@ -5,7 +5,7 @@
 //! `extract_text` API, char-by-char page-space positions, and the
 //! refusal paths for malformed CMaps and unsupported constructs.
 
-use kasane_pdf::{extract_text, render_page, Document, Error, Limits, RenderOptions};
+use kasane_pdf::{extract_text, render_page, Document, Error, Limits, RenderOptions, TextOptions};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -15,7 +15,7 @@ fn fixture(name: &str) -> Vec<u8> {
 fn extract(name: &str) -> Result<kasane_pdf::ExtractedText, Error> {
     let pdf = fixture(name);
     let doc = Document::from_bytes(&pdf)?;
-    extract_text(&doc, &doc.pages()[0], &Limits::default())
+    extract_text(&doc, &doc.pages()[0], &TextOptions::default())
 }
 
 fn flate(data: &[u8]) -> Vec<u8> {
@@ -148,7 +148,7 @@ fn tounicode_bfchar() {
         end";
     let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (AB) Tj ET", Some(cmap));
     let doc = Document::from_bytes(&pdf).unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     assert_eq!(t.chars.len(), 2);
     assert_eq!(t.chars[0].unicode.as_deref(), Some("A"));
     assert_eq!(t.chars[1].unicode.as_deref(), Some("α")); // U+03B1
@@ -168,7 +168,7 @@ fn tounicode_bfrange_sequential() {
         endcmap";
     let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (ABC) Tj ET", Some(cmap));
     let doc = Document::from_bytes(&pdf).unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     assert_eq!(t.chars.len(), 3);
     assert_eq!(t.chars[0].unicode.as_deref(), Some("A"));
     assert_eq!(t.chars[1].unicode.as_deref(), Some("B"));
@@ -192,7 +192,7 @@ fn tounicode_bfrange_sequential_above_latin1() {
         endcmap";
     let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (ABC) Tj ET", Some(cmap));
     let doc = Document::from_bytes(&pdf).unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default())
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default())
         .expect("bfrange above U+00FF must parse");
     assert_eq!(t.chars.len(), 3);
     assert_eq!(t.chars[0].unicode.as_deref(), Some("\u{2212}"));
@@ -211,7 +211,7 @@ fn tounicode_bfrange_sequential_above_latin1() {
         endcmap";
     let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (ABC) Tj ET", Some(carry));
     let doc = Document::from_bytes(&pdf).unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     assert_eq!(t.chars[2].unicode.as_deref(), Some("\u{2300}"));
     // Overflowing the whole destination is still refused.
     let bad = b"begincmap
@@ -224,7 +224,7 @@ fn tounicode_bfrange_sequential_above_latin1() {
         endcmap";
     let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (ABC) Tj ET", Some(bad));
     let doc = Document::from_bytes(&pdf).unwrap();
-    let err = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap_err();
+    let err = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap_err();
     assert!(matches!(err, Error::Structure(_)), "got {err:?}");
 }
 
@@ -241,7 +241,7 @@ fn tounicode_tokens_end_at_delimiters() {
         endcmap CMapName currentdict /CMap defineresource pop end end";
     let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (A) Tj ET", Some(cmap));
     let doc = Document::from_bytes(&pdf).unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     assert_eq!(t.chars[0].unicode.as_deref(), Some("B"));
 }
 
@@ -258,7 +258,7 @@ fn tounicode_bfrange_array() {
         endcmap";
     let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (ABC) Tj ET", Some(cmap));
     let doc = Document::from_bytes(&pdf).unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     assert_eq!(t.chars[1].unicode.as_deref(), Some("α"));
 }
 
@@ -277,7 +277,7 @@ fn tounicode_surrogate_pair() {
         endcmap";
     let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (A) Tj ET", Some(cmap));
     let doc = Document::from_bytes(&pdf).unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     assert_eq!(t.chars[0].unicode.as_deref(), Some("\u{2003E}"));
 }
 
@@ -294,7 +294,7 @@ fn tounicode_multi_scalar() {
         endcmap";
     let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (A) Tj ET", Some(cmap));
     let doc = Document::from_bytes(&pdf).unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     assert_eq!(t.chars.len(), 1);
     assert_eq!(t.chars[0].unicode.as_deref(), Some("ff")); // two f's
 }
@@ -312,7 +312,7 @@ fn tounicode_missing_entry_unresolved() {
         endcmap";
     let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (AB) Tj ET", Some(cmap));
     let doc = Document::from_bytes(&pdf).unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     assert_eq!(t.chars[0].unicode.as_deref(), Some("A"));
     assert_eq!(t.chars[1].unicode, None);
     assert_eq!(t.chars[1].resolved_via, kasane_pdf::ResolveKind::Unresolved);
@@ -416,7 +416,7 @@ fn tounicode_usecmap_refused() {
     out.extend_from_slice(b"trailer\n<< /Size 10 /Root 1 0 R >>\n");
     out.extend_from_slice(format!("startxref\n{xref}\n%%EOF\n").as_bytes());
     let doc = Document::from_bytes(&out).unwrap();
-    let err = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap_err();
+    let err = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap_err();
     assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
 }
 
@@ -507,7 +507,7 @@ fn invisible_text_extracted() {
         pdf_with_font(stream, None)
     };
     let doc = Document::from_bytes(&pdf).unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     assert_eq!(t.chars.len(), 2);
     assert_eq!(t.chars[0].render_mode, 3);
     assert_eq!(t.chars[1].render_mode, 0);
@@ -555,7 +555,7 @@ fn tounicode_does_not_change_rendering() {
     let with_tu = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (A) Tj ET", Some(cmap));
     let doc2 = Document::from_bytes(&with_tu).unwrap();
     let r2 = render_page(&doc2, &doc2.pages()[0], &RenderOptions::default()).unwrap();
-    assert_eq!(r1.pixmap.data(), r2.pixmap.data());
+    assert_eq!(r1.pixmap().data(), r2.pixmap().data());
 }
 
 // --------------------------------------------------------------------
@@ -568,10 +568,12 @@ fn tounicode_size_limit() {
     let big_cmap = vec![b'%'; 200]; // comment-filled — still a stream
     let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (A) Tj ET", Some(&big_cmap));
     let doc = Document::from_bytes(&pdf).unwrap();
-    let limits = Limits {
-        max_stream_bytes: 10,
-        ..Limits::default()
-    };
-    let err = extract_text(&doc, &doc.pages()[0], &limits).unwrap_err();
+    let limits = Limits::default().with_max_stream_bytes(10);
+    let err = extract_text(
+        &doc,
+        &doc.pages()[0],
+        &TextOptions::default().with_limits(limits.clone()),
+    )
+    .unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
 }

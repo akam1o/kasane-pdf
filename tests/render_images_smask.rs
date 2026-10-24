@@ -47,7 +47,7 @@ fn render(pdf: &[u8]) -> Result<kasane_pdf::RenderedPage, Error> {
 }
 
 fn px(r: &kasane_pdf::RenderedPage, x: u32, y: u32) -> (u8, u8, u8, u8) {
-    let p = r.pixmap.pixel(x, y).expect("in bounds");
+    let p = r.pixmap().pixel(x, y).expect("in bounds");
     (p.red(), p.green(), p.blue(), p.alpha())
 }
 
@@ -407,13 +407,8 @@ fn smask_matte_is_unsupported() {
 fn smask_oversize_hits_limit() {
     let pdf = smask_case(gray_mask(5000, 5000, &[0], ""));
     let doc = Document::from_bytes(&pdf).unwrap();
-    let opts = RenderOptions {
-        limits: Limits {
-            max_image_dimension: 1024,
-            ..Limits::default()
-        },
-        ..RenderOptions::default()
-    };
+    let opts =
+        RenderOptions::default().with_limits(Limits::default().with_max_image_dimension(1024));
     let err = render_page(&doc, &doc.pages()[0], &opts).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
 }

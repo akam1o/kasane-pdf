@@ -83,6 +83,7 @@ impl std::fmt::Debug for MetadataRemoval {
 /// and the usual output budgets bound the result. On any failure
 /// nothing is emitted — the input is never modified.
 pub fn remove_document_metadata(doc: &Document, limits: &Limits) -> Result<MetadataRemoval, Error> {
+    limits.validate()?;
     // Decide what to remove from the *current* trailer/catalog —
     // before any collection runs. Flags report whether an entry was
     // present to remove, not whether its data is gone from the file.
@@ -617,10 +618,10 @@ mod tests {
         let d = doc(&parts.concat());
         let e = remove_document_metadata(&d, &Limits::default()).unwrap_err();
         match e {
-            Error::Unsupported { feature, .. } => {
-                assert!(feature.contains("signed"), "{feature}");
+            Error::SignaturePolicy { rule, .. } => {
+                assert_eq!(rule, crate::error::SignatureRule::RewriteOfSignedDocument);
             }
-            other => panic!("expected Unsupported(signed), got {other:?}"),
+            other => panic!("expected SignaturePolicy, got {other:?}"),
         }
     }
 

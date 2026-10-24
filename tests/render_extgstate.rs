@@ -60,8 +60,8 @@ fn render_gs(stream: &[u8], gs: &str) -> Result<kasane_pdf::RenderedPage, Error>
 }
 
 fn px(page: &kasane_pdf::RenderedPage, x: u32, y: u32) -> [u8; 4] {
-    let i = (y * page.width + x) as usize * 4;
-    let d = page.pixmap.data();
+    let i = (y * page.width() + x) as usize * 4;
+    let d = page.pixmap().data();
     [d[i], d[i + 1], d[i + 2], d[i + 3]]
 }
 

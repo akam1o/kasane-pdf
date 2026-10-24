@@ -694,7 +694,7 @@ fn cli_remove_document_metadata_failure_preserves_output() {
         .unwrap();
     assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert!(stderr.contains("signed"), "{stderr}");
+    assert!(stderr.contains("[signature policy]"), "{stderr}");
     assert_eq!(fs::read(&dst).unwrap(), b"SENTINEL");
     // No temp file remains.
     let stray: Vec<_> = fs::read_dir(&dir)

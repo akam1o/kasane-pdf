@@ -50,6 +50,7 @@ pub struct FormFrame {
 }
 
 /// The kind of a diagnosed occurrence.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TargetKind {
     /// A character shown by `Tj`/`TJ`/`'`/`"`.
@@ -366,6 +367,7 @@ pub fn diagnose_redaction(
     rects: &[(f64, f64, f64, f64)],
     limits: &Limits,
 ) -> Result<Diagnosis, Error> {
+    limits.validate()?;
     // ---- input validation ----------------------------------------
     if rects.is_empty() {
         return Err(Error::Structure("at least one --rect is required".into()));

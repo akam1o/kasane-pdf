@@ -68,6 +68,7 @@ pub fn rewrite(doc: &Document) -> Result<Vec<u8>, Error> {
 /// Like [`rewrite`] but with explicit output limits — the traversal
 /// budget, emitted-byte cap and walk depth come from `limits`.
 pub fn rewrite_with_limits(doc: &Document, limits: &Limits) -> Result<Vec<u8>, Error> {
+    limits.validate()?;
     rewrite_overlay(doc, &HashMap::new(), &HashSet::new(), limits)
 }
 
@@ -511,8 +512,8 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
         if let Some(d) = perms.as_dict() {
             for key in [&b"DocMDP"[..], &b"UR"[..], &b"UR3"[..]] {
                 if d.contains_key(key) {
-                    return Err(Error::Unsupported {
-                        feature: "signed document",
+                    return Err(Error::SignaturePolicy {
+                        rule: crate::error::SignatureRule::RewriteOfSignedDocument,
                         detail: format!(
                             "/Perms /{} present — rewrite would invalidate the signature",
                             String::from_utf8_lossy(key)

@@ -38,7 +38,7 @@ fn render(pdf: &[u8]) -> Result<RenderedPage, Error> {
 }
 
 fn px(r: &RenderedPage, x: u32, y: u32) -> (u8, u8, u8) {
-    let p = r.pixmap.pixel(x, y).unwrap();
+    let p = r.pixmap().pixel(x, y).unwrap();
     (p.red(), p.green(), p.blue())
 }
 
@@ -53,7 +53,7 @@ fn ink(r: &RenderedPage, x0: u32, y0: u32, x1: u32, y1: u32) -> usize {
     (x0..x1)
         .flat_map(|x| (y0..y1).map(move |y| (x, y)))
         .filter(|&(x, y)| {
-            let p = r.pixmap.pixel(x, y).unwrap();
+            let p = r.pixmap().pixel(x, y).unwrap();
             (p.red() as u32 + p.green() as u32 + p.blue() as u32) < 600
         })
         .count()
@@ -234,7 +234,7 @@ fn free_text_draws_background_border_and_contents() {
     let blue = (24..100)
         .flat_map(|x| (62..98).map(move |y| (x, y)))
         .any(|(x, y)| {
-            let p = r.pixmap.pixel(x, y).unwrap();
+            let p = r.pixmap().pixel(x, y).unwrap();
             p.blue() > 200 && p.red() < 120
         });
     assert!(blue, "text in the /DA colour");
@@ -249,7 +249,7 @@ fn free_text_draws_background_border_and_contents() {
     let r = render(&pdf(b"", &[a])).unwrap();
     assert!(ink(&r, 22, 62, 100, 98) > 10);
     assert!(r
-        .font_substitutions
+        .font_substitutions()
         .iter()
         .any(|s| s.base_font.contains("Helvetica")));
     // Contents outside the Latin range are refused, not mangled.

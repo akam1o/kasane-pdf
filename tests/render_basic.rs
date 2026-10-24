@@ -2,7 +2,7 @@
 //! raster rendering, PNG output, and the error/limits surface
 //! for unsupported content.
 
-use kasane_pdf::{pixmap_to_png, render_page, Document, Error, Limits, RenderOptions};
+use kasane_pdf::{render_page, Document, Error, Limits, RenderOptions};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -62,17 +62,14 @@ fn render_with(
     render_page(
         &doc,
         &doc.pages()[0],
-        &RenderOptions {
-            dpi,
-            ..Default::default()
-        },
+        &RenderOptions::default().with_dpi(dpi),
     )
 }
 
 /// Read one RGBA pixel.
 fn px(page: &kasane_pdf::RenderedPage, x: u32, y: u32) -> [u8; 4] {
-    let i = (y * page.width + x) as usize * 4;
-    let d = page.pixmap.data();
+    let i = (y * page.width() + x) as usize * 4;
+    let d = page.pixmap().data();
     [d[i], d[i + 1], d[i + 2], d[i + 3]]
 }
 
@@ -83,22 +80,22 @@ fn px(page: &kasane_pdf::RenderedPage, x: u32, y: u32) -> [u8; 4] {
 #[test]
 fn blank_page_is_white() {
     let r = render(b"").unwrap();
-    assert_eq!((r.width, r.height), (100, 100));
+    assert_eq!((r.width(), r.height()), (100, 100));
     assert_eq!(px(&r, 50, 50), [255, 255, 255, 255]);
 }
 
 #[test]
 fn dpi_scales_dimensions() {
     let r = render_with(b"", "[0 0 100 100]", "", 144.0).unwrap();
-    assert_eq!((r.width, r.height), (200, 200));
+    assert_eq!((r.width(), r.height()), (200, 200));
     let r = render_with(b"", "[0 0 100 50]", "", 72.0).unwrap();
-    assert_eq!((r.width, r.height), (100, 50));
+    assert_eq!((r.width(), r.height()), (100, 50));
 }
 
 #[test]
 fn png_output_is_decodable() {
     let r = render(b"0 0 0 rg 10 10 20 20 re f").unwrap();
-    let png = pixmap_to_png(&r.pixmap).unwrap();
+    let png = r.to_png().unwrap();
     assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n");
     // PNG dims must match the pixmap.
     let w = u32::from_be_bytes([png[16], png[17], png[18], png[19]]);
@@ -618,7 +615,7 @@ fn wstar_clip_then_fill_is_clipped() {
     // paths to observe clipping of later painting.)
     let r = render(b"10 10 80 80 re W* n 0 0 0 rg 0 0 100 100 re f").unwrap();
     let black = r
-        .pixmap
+        .pixmap()
         .data()
         .as_chunks::<4>()
         .0
@@ -703,7 +700,7 @@ fn path_inside_q_paints_then_q_restores() {
 #[test]
 fn rotate_90_swaps_dimensions() {
     let r = render_with(b"", "[0 0 200 100]", "/Rotate 90", 72.0).unwrap();
-    assert_eq!((r.width, r.height), (100, 200));
+    assert_eq!((r.width(), r.height()), (100, 200));
 }
 
 #[test]
@@ -716,7 +713,7 @@ fn cropbox_offset_is_used() {
         72.0,
     )
     .unwrap();
-    assert_eq!((r.width, r.height), (100, 100));
+    assert_eq!((r.width(), r.height()), (100, 100));
     // The whole visible area is inside the black fill.
     assert_eq!(px(&r, 50, 50), [0, 0, 0, 255]);
 }
@@ -733,7 +730,7 @@ fn nonzero_origin_page() {
         72.0,
     )
     .unwrap();
-    assert_eq!((r.width, r.height), (200, 200));
+    assert_eq!((r.width(), r.height()), (200, 200));
     // The rect PDF (100,100)-(120,120) → pixmap x 0–20, y 180–200.
     assert_eq!(px(&r, 10, 190), [0, 0, 0, 255]);
     // Outside the rect stays white.
@@ -745,7 +742,7 @@ fn userunit_scales_the_page() {
     // §14.11.5: a user-space unit is /UserUnit × 1/72 inch, so a 100 pt
     // page with /UserUnit 2 is 200 px at 72 dpi.
     let r = render_with(b"0 g 0 0 50 50 re f", "[0 0 100 100]", "/UserUnit 2", 72.0).unwrap();
-    assert_eq!((r.pixmap.width(), r.pixmap.height()), (200, 200));
+    assert_eq!((r.pixmap().width(), r.pixmap().height()), (200, 200));
     assert_eq!(px(&r, 50, 150), [0, 0, 0, 255]);
     assert_eq!(px(&r, 150, 50), [255, 255, 255, 255]);
     let err = render_with(b"", "[0 0 100 100]", "/UserUnit 0.5", 72.0).unwrap_err();
@@ -760,13 +757,19 @@ fn bad_dpi_is_rejected() {
         let err = render_page(
             &doc,
             &doc.pages()[0],
-            &RenderOptions {
-                dpi,
-                ..Default::default()
-            },
+            &RenderOptions::default().with_dpi(dpi),
         )
         .unwrap_err();
-        assert!(matches!(err, Error::Structure(_)), "dpi {dpi}: {err:?}");
+        assert!(
+            matches!(
+                err,
+                Error::InvalidArgument {
+                    argument: "dpi",
+                    ..
+                }
+            ),
+            "dpi {dpi}: {err:?}"
+        );
     }
 }
 
@@ -781,13 +784,9 @@ fn render_pixel_limit() {
     let err = render_page(
         &doc,
         &doc.pages()[0],
-        &RenderOptions {
-            dpi: 72.0,
-            limits: Limits {
-                max_render_pixels: 500,
-                ..Default::default()
-            },
-        },
+        &RenderOptions::default()
+            .with_dpi(72.0)
+            .with_limits(Limits::default().with_max_render_pixels(500)),
     )
     .unwrap_err();
     assert!(
@@ -804,13 +803,9 @@ fn render_total_pixels_limit() {
     let err = render_page(
         &doc,
         &doc.pages()[0],
-        &RenderOptions {
-            dpi: 72.0,
-            limits: Limits {
-                max_render_total_pixels: 300_000,
-                ..Default::default()
-            },
-        },
+        &RenderOptions::default()
+            .with_dpi(72.0)
+            .with_limits(Limits::default().with_max_render_total_pixels(300_000)),
     )
     .unwrap_err();
     assert!(
@@ -821,13 +816,15 @@ fn render_total_pixels_limit() {
 
 #[test]
 fn path_elements_limit() {
-    let limits = Limits {
-        max_path_elements: 3,
-        ..Default::default()
-    };
+    let limits = Limits::default().with_max_path_elements(3);
     let pdf = pdf_with_stream(b"0 0 m 1 1 l 2 2 l 3 3 l 4 4 l f", "[0 0 100 100]", "");
     let doc = Document::from_bytes(&pdf).unwrap();
-    let err = render_page(&doc, &doc.pages()[0], &RenderOptions { dpi: 72.0, limits }).unwrap_err();
+    let err = render_page(
+        &doc,
+        &doc.pages()[0],
+        &RenderOptions::default().with_limits(limits),
+    )
+    .unwrap_err();
     assert!(
         matches!(err, Error::LimitExceeded { limit, .. } if limit == "max_path_elements"),
         "got: {err:?}"
@@ -844,7 +841,7 @@ fn render_rects_fixture_paints_expected_pixels() {
     // and a green+red rect at (60,60)-(140,100).
     let doc = Document::from_bytes(&fixture("render_rects.pdf")).unwrap();
     let r = render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap();
-    assert_eq!((r.width, r.height), (200, 200));
+    assert_eq!((r.width(), r.height()), (200, 200));
     // Inside first rect (PDF 40,40 → pixmap 40,160).
     assert_eq!(px(&r, 40, 160), [128, 128, 128, 255]);
     // The final clipped fill covers pixmap x ≥ 100 (PDF x ≥ 100 in a

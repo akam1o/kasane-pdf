@@ -304,6 +304,7 @@ pub struct ResidualAudit {
 /// inspect — that becomes `incomplete`/`unexamined`. Fails only when
 /// the audit itself cannot run (e.g. the catalog is unreadable).
 pub fn audit_residuals(doc: &Document, limits: &Limits) -> Result<ResidualAudit, Error> {
+    limits.validate()?;
     let mut a = Audit {
         doc,
         limits,

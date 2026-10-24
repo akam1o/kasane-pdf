@@ -41,7 +41,7 @@ fn render(pdf: &[u8]) -> Result<RenderedPage, Error> {
 }
 
 fn px(r: &RenderedPage, x: u32, y: u32) -> (u8, u8, u8) {
-    let p = r.pixmap.pixel(x, y).expect("in bounds");
+    let p = r.pixmap().pixel(x, y).expect("in bounds");
     (p.red(), p.green(), p.blue())
 }
 
@@ -522,15 +522,9 @@ fn lattice_mesh_and_triangle_limit() {
         px(&r, 50, 75)
     );
     // The mesh has two triangles; a budget of one refuses it.
-    let limits = kasane_pdf::Limits {
-        max_shading_triangles: 1,
-        ..kasane_pdf::Limits::default()
-    };
+    let limits = kasane_pdf::Limits::default().with_max_shading_triangles(1);
     let doc = Document::from_bytes(&pdf).unwrap();
-    let opts = RenderOptions {
-        limits,
-        ..RenderOptions::default()
-    };
+    let opts = RenderOptions::default().with_limits(limits);
     let err = render_page(&doc, &doc.pages()[0], &opts).unwrap_err();
     assert!(
         matches!(

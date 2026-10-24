@@ -50,7 +50,7 @@ fn render(pdf: &[u8]) -> Result<RenderedPage, Error> {
 }
 
 fn px(r: &RenderedPage, x: u32, y: u32) -> (u8, u8, u8) {
-    let p = r.pixmap.pixel(x, y).unwrap();
+    let p = r.pixmap().pixel(x, y).unwrap();
     (p.red(), p.green(), p.blue())
 }
 

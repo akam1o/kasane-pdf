@@ -31,15 +31,12 @@ fn render_lim(name: &str, limits: Limits) -> Result<kasane_pdf::RenderedPage, Er
     render_page(
         &doc,
         &doc.pages()[0],
-        &RenderOptions {
-            limits,
-            ..RenderOptions::default()
-        },
+        &RenderOptions::default().with_limits(limits),
     )
 }
 
 fn pixel(page: &kasane_pdf::RenderedPage, x: u32, y: u32) -> (u8, u8, u8, u8) {
-    let p = page.pixmap.pixel(x, y).expect("pixel in bounds");
+    let p = page.pixmap().pixel(x, y).expect("pixel in bounds");
     (p.red(), p.green(), p.blue(), p.alpha())
 }
 
@@ -109,7 +106,7 @@ fn form_group_opaque_normal_runs_inline() {
     // composites exactly like direct painting (§11.4.7) — it renders.
     // The group's 10×10 black square lands at the page origin.
     let r = render("xobject_form_group.pdf").unwrap();
-    assert_eq!(pixel(&r, 5, r.height - 5), (0, 0, 0, 255));
+    assert_eq!(pixel(&r, 5, r.height() - 5), (0, 0, 0, 255));
 }
 
 #[test]
@@ -150,7 +147,7 @@ fn form_group_under_alpha_composites_as_layer() {
     };
     let doc = Document::from_bytes(&pdf).unwrap();
     let r = render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap();
-    let (r_, g, b, a) = pixel(&r, 5, r.height - 5);
+    let (r_, g, b, a) = pixel(&r, 5, r.height() - 5);
     assert!(
         (126..=129).contains(&r_) && r_ == g && g == b && a == 255,
         "{:?}",
@@ -261,7 +258,7 @@ fn image_mask_all_ones_paints_nothing() {
     // (§8.9.6.2). Drawn into the unit square at the origin: that pixel
     // must stay white.
     let r = render("xobject_image_mask.pdf").unwrap();
-    assert_eq!(pixel(&r, 0, r.height - 1), (255, 255, 255, 255));
+    assert_eq!(pixel(&r, 0, r.height() - 1), (255, 255, 255, 255));
 }
 
 #[test]
@@ -270,7 +267,7 @@ fn image_smask_opaque_mask_paints_image() {
     // whole image lands in one device pixel, which area-averages the
     // two samples (minification) — half red, half green, alpha 255.
     let r = render("xobject_image_smask.pdf").unwrap();
-    assert_eq!(pixel(&r, 0, r.height - 1), (128, 128, 0, 255));
+    assert_eq!(pixel(&r, 0, r.height() - 1), (128, 128, 0, 255));
 }
 
 #[test]
@@ -304,35 +301,23 @@ fn unused_xobject_does_not_block_page() {
 
 #[test]
 fn image_dimension_limit() {
-    let limits = Limits {
-        max_image_dimension: 2,
-        ..Limits::default()
-    };
+    let limits = Limits::default().with_max_image_dimension(2);
     let err = render_lim("xobject_image_gray_raw.pdf", limits).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
 }
 
 #[test]
 fn xobject_invocation_limit() {
-    let limits = Limits {
-        max_xobject_invocations: 1,
-        ..Limits::default()
-    };
+    let limits = Limits::default().with_max_xobject_invocations(1);
     render_lim("xobject_form_basic.pdf", limits).unwrap();
-    let limits = Limits {
-        max_xobject_invocations: 0,
-        ..Limits::default()
-    };
+    let limits = Limits::default().with_max_xobject_invocations(0);
     let err = render_lim("xobject_form_basic.pdf", limits).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
 }
 
 #[test]
 fn xobject_depth_limit() {
-    let limits = Limits {
-        max_xobject_depth: 0,
-        ..Limits::default()
-    };
+    let limits = Limits::default().with_max_xobject_depth(0);
     let err = render_lim("xobject_form_basic.pdf", limits).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
 }
@@ -656,20 +641,14 @@ fn form_placement_rules_still_enforced() {
 
 #[test]
 fn image_total_samples_limit() {
-    let limits = Limits {
-        max_image_total_samples: 4, // 4x4=16 > 4
-        ..Limits::default()
-    };
+    let limits = Limits::default().with_max_image_total_samples(4);
     let err = render_lim("xobject_image_gray_raw.pdf", limits).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
 }
 
 #[test]
 fn image_bytes_limit() {
-    let limits = Limits {
-        max_image_bytes: 8, // 16 bytes needed
-        ..Limits::default()
-    };
+    let limits = Limits::default().with_max_image_bytes(8);
     let err = render_lim("xobject_image_gray_raw.pdf", limits).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
 }

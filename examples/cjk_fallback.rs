@@ -8,9 +8,7 @@
 //! cargo run --example cjk_fallback --features cjk-fallback -- japanese.pdf out.png
 //! ```
 
-use kasane_pdf::{
-    cjk_fallback_enabled, pixmap_to_png, render_page, Document, Error, RenderOptions,
-};
+use kasane_pdf::{cjk_fallback_enabled, render_page, Document, Error, RenderOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -26,8 +24,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let doc = Document::from_bytes(&std::fs::read(&args[1])?)?;
     match render_page(&doc, &doc.pages()[0], &RenderOptions::default()) {
         Ok(page) => {
-            std::fs::write(&args[2], pixmap_to_png(&page.pixmap)?)?;
-            for s in &page.font_substitutions {
+            std::fs::write(&args[2], page.to_png()?)?;
+            for s in page.font_substitutions() {
                 // `SubstKind::CjkFallback`: shapes from Noto Sans JP,
                 // advances from the PDF's own /W and /DW.
                 println!(
@@ -35,7 +33,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     s.base_font, s.substitute, s.kind
                 );
             }
-            if page.font_substitutions.is_empty() {
+            if page.font_substitutions().is_empty() {
                 println!("every font was embedded; no fallback used");
             }
         }

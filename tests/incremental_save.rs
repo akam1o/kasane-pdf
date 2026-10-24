@@ -39,7 +39,7 @@ fn base_pdf() -> Vec<u8> {
 }
 
 fn px(r: &kasane_pdf::RenderedPage, x: u32, y: u32) -> (u8, u8, u8) {
-    let p = r.pixmap.pixel(x, y).unwrap();
+    let p = r.pixmap().pixel(x, y).unwrap();
     (p.red(), p.green(), p.blue())
 }
 
@@ -47,7 +47,7 @@ fn ink(r: &kasane_pdf::RenderedPage, x0: u32, y0: u32, x1: u32, y1: u32) -> usiz
     (x0..x1)
         .flat_map(|x| (y0..y1).map(move |y| (x, y)))
         .filter(|&(x, y)| {
-            let p = r.pixmap.pixel(x, y).unwrap();
+            let p = r.pixmap().pixel(x, y).unwrap();
             (p.red() as u32 + p.green() as u32 + p.blue() as u32) < 600
         })
         .count()
@@ -343,7 +343,7 @@ fn signature_policy_gates_incremental_saves() {
     // A full rewrite is always refused.
     assert!(matches!(
         kasane_pdf::rewrite(&doc),
-        Err(Error::Unsupported { .. })
+        Err(Error::SignaturePolicy { .. })
     ));
     // /P 2: form filling may be appended; annotations and metadata may not.
     let mut e = doc.edit().unwrap();
@@ -371,13 +371,13 @@ fn signature_policy_gates_incremental_saves() {
     .unwrap();
     assert!(matches!(
         e.save_incremental(),
-        Err(Error::Unsupported { .. })
+        Err(Error::SignaturePolicy { .. })
     ));
     let mut e = doc.edit().unwrap();
     e.set_info(Dict::new()).unwrap();
     assert!(matches!(
         e.save_incremental(),
-        Err(Error::Unsupported { .. })
+        Err(Error::SignaturePolicy { .. })
     ));
     // /P 1: nothing.
     let doc = Document::from_bytes(&signed_pdf(Some(1))).unwrap();
@@ -386,7 +386,7 @@ fn signature_policy_gates_incremental_saves() {
         .unwrap();
     assert!(matches!(
         e.save_incremental(),
-        Err(Error::Unsupported { .. })
+        Err(Error::SignaturePolicy { .. })
     ));
     // /P 3 and an approval signature: annotations too, metadata not.
     for p in [Some(3), None] {
@@ -408,7 +408,7 @@ fn signature_policy_gates_incremental_saves() {
         let mut e = doc.edit().unwrap();
         e.set_info(Dict::new()).unwrap();
         assert!(
-            matches!(e.save_incremental(), Err(Error::Unsupported { .. })),
+            matches!(e.save_incremental(), Err(Error::SignaturePolicy { .. })),
             "{p:?}"
         );
     }
@@ -429,7 +429,7 @@ fn signature_policy_gates_incremental_saves() {
         .unwrap();
     assert!(matches!(
         e.save_incremental(),
-        Err(Error::Unsupported { .. })
+        Err(Error::SignaturePolicy { .. })
     ));
     // Unsigned: everything may be appended.
     let doc = Document::from_bytes(&base_pdf()).unwrap();

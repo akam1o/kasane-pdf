@@ -2,7 +2,9 @@
 //! cumulative Unicode output budget, headless extraction (no
 //! rasterising/image decode), and pinned-down coordinate semantics.
 
-use kasane_pdf::{extract_text, render_page, Document, Error, Limits, RenderOptions, ResolveKind};
+use kasane_pdf::{
+    extract_text, render_page, Document, Error, Limits, RenderOptions, ResolveKind, TextOptions,
+};
 
 fn fixture(name: &str) -> Vec<u8> {
     let path = format!("{}/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
@@ -12,7 +14,7 @@ fn fixture(name: &str) -> Vec<u8> {
 fn extract(name: &str) -> Result<kasane_pdf::ExtractedText, Error> {
     let pdf = fixture(name);
     let doc = Document::from_bytes(&pdf)?;
-    extract_text(&doc, &doc.pages()[0], &Limits::default())
+    extract_text(&doc, &doc.pages()[0], &TextOptions::default())
 }
 
 fn flate(data: &[u8]) -> Vec<u8> {
@@ -124,7 +126,11 @@ fn pdf(
 
 fn extract_pdf(bytes: &[u8], limits: &Limits) -> Result<kasane_pdf::ExtractedText, Error> {
     let doc = Document::from_bytes(bytes)?;
-    extract_text(&doc, &doc.pages()[0], limits)
+    extract_text(
+        &doc,
+        &doc.pages()[0],
+        &TextOptions::default().with_limits(limits.clone()),
+    )
 }
 
 const FONT_RES: &str = "/Font << /F1 5 0 R >>";
@@ -276,17 +282,21 @@ fn unicode_budget_exact_boundary() {
     assert_eq!(t.chars.len(), 3);
     let pdf_bytes = fixture("text_basic.pdf");
     let doc = Document::from_bytes(&pdf_bytes).unwrap();
-    let limits = Limits {
-        max_extracted_unicode_bytes: 3,
-        ..Limits::default()
-    };
-    let ok = extract_text(&doc, &doc.pages()[0], &limits).unwrap();
+    let limits = Limits::default().with_max_extracted_unicode_bytes(3);
+    let ok = extract_text(
+        &doc,
+        &doc.pages()[0],
+        &TextOptions::default().with_limits(limits.clone()),
+    )
+    .unwrap();
     assert_eq!(ok.chars.len(), 3);
-    let under = Limits {
-        max_extracted_unicode_bytes: 2,
-        ..Limits::default()
-    };
-    let err = extract_text(&doc, &doc.pages()[0], &under).unwrap_err();
+    let under = Limits::default().with_max_extracted_unicode_bytes(2);
+    let err = extract_text(
+        &doc,
+        &doc.pages()[0],
+        &TextOptions::default().with_limits(under.clone()),
+    )
+    .unwrap_err();
     assert!(
         matches!(err, Error::LimitExceeded { limit, .. } if limit.contains("unicode")),
         "{err:?}"
@@ -310,20 +320,14 @@ fn unicode_budget_counts_repeated_mapping() {
     let ok = extract_text(
         &doc,
         &doc.pages()[0],
-        &Limits {
-            max_extracted_unicode_bytes: 16,
-            ..Limits::default()
-        },
+        &TextOptions::default().with_limits(Limits::default().with_max_extracted_unicode_bytes(16)),
     )
     .unwrap();
     assert_eq!(ok.chars.len(), 4);
     let err = extract_text(
         &doc,
         &doc.pages()[0],
-        &Limits {
-            max_extracted_unicode_bytes: 15,
-            ..Limits::default()
-        },
+        &TextOptions::default().with_limits(Limits::default().with_max_extracted_unicode_bytes(15)),
     )
     .unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }));
@@ -355,20 +359,14 @@ fn unicode_budget_form_repetition_counts() {
     let ok = extract_text(
         &doc,
         &doc.pages()[0],
-        &Limits {
-            max_extracted_unicode_bytes: 2,
-            ..Limits::default()
-        },
+        &TextOptions::default().with_limits(Limits::default().with_max_extracted_unicode_bytes(2)),
     )
     .unwrap();
     assert_eq!(ok.chars.len(), 2);
     let err = extract_text(
         &doc,
         &doc.pages()[0],
-        &Limits {
-            max_extracted_unicode_bytes: 1,
-            ..Limits::default()
-        },
+        &TextOptions::default().with_limits(Limits::default().with_max_extracted_unicode_bytes(1)),
     )
     .unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }));
@@ -392,19 +390,13 @@ fn unicode_budget_uses_utf8_bytes_not_utf16() {
     extract_text(
         &doc,
         &doc.pages()[0],
-        &Limits {
-            max_extracted_unicode_bytes: 3,
-            ..Limits::default()
-        },
+        &TextOptions::default().with_limits(Limits::default().with_max_extracted_unicode_bytes(3)),
     )
     .unwrap();
     let err = extract_text(
         &doc,
         &doc.pages()[0],
-        &Limits {
-            max_extracted_unicode_bytes: 2,
-            ..Limits::default()
-        },
+        &TextOptions::default().with_limits(Limits::default().with_max_extracted_unicode_bytes(2)),
     )
     .unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }));
@@ -524,7 +516,7 @@ fn extraction_skips_broken_image_decode() {
     let doc = Document::from_bytes(&bytes).unwrap();
     assert!(render_page(&doc, &doc.pages()[0], &RenderOptions::default()).is_err());
     // Extraction still succeeds with just the text.
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     assert_eq!(t.chars.len(), 1);
     assert_eq!(t.chars[0].unicode.as_deref(), Some("A"));
 }
@@ -542,22 +534,24 @@ fn extraction_does_not_allocate_page_sized_buffer() {
         &[],
     );
     let doc = Document::from_bytes(&bytes).unwrap();
-    let tiny = Limits {
-        max_render_pixels: 64,
-        max_render_total_pixels: 64 * 64,
-        max_render_buffer_bytes: 64 * 64 * 4,
-        ..Limits::default()
-    };
+    let tiny = Limits::default()
+        .with_max_render_pixels(64)
+        .with_max_render_total_pixels(64 * 64)
+        .with_max_render_buffer_bytes(64 * 64 * 4);
     assert!(render_page(
         &doc,
         &doc.pages()[0],
-        &RenderOptions {
-            dpi: 200.0,
-            limits: tiny.clone(),
-        }
+        &RenderOptions::default()
+            .with_dpi(200.0)
+            .with_limits(tiny.clone())
     )
     .is_err());
-    let t = extract_text(&doc, &doc.pages()[0], &tiny).unwrap();
+    let t = extract_text(
+        &doc,
+        &doc.pages()[0],
+        &TextOptions::default().with_limits(tiny.clone()),
+    )
+    .unwrap();
     assert_eq!(t.chars.len(), 1);
 }
 

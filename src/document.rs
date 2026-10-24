@@ -94,6 +94,7 @@ impl Document {
     /// * [`Error::CycleDetected`]/[`Error::LimitExceeded`] — hostile
     ///   structure (reference loops, `/Prev` loops, oversized trees).
     pub fn from_bytes_with_limits(data: &[u8], limits: Limits) -> Result<Document, Error> {
+        limits.validate()?;
         if data.len() > limits.max_input_bytes {
             return Err(Error::LimitExceeded {
                 limit: "max_input_bytes",
@@ -157,6 +158,7 @@ impl Document {
         data: &[u8],
         limits: Limits,
     ) -> Result<Document, Error> {
+        limits.validate()?;
         let strict_error = match Self::from_bytes_with_limits(data, limits.clone()) {
             Ok(mut doc) => {
                 doc.lenient = true;
@@ -527,6 +529,7 @@ impl Document {
     /// Like [`Self::edit`] but with explicit `Limits` — used by tests
     /// and callers that cap edit resources below the defaults.
     pub fn edit_with_limits(&self, limits: Limits) -> Result<crate::edit::Edit<'_>, Error> {
+        limits.validate()?;
         crate::edit::Edit::new(self, limits)
     }
 

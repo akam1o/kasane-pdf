@@ -35,7 +35,7 @@ fn render(pdf: &[u8]) -> Result<RenderedPage, Error> {
 }
 
 fn px(r: &RenderedPage, x: u32, y: u32) -> (u8, u8, u8) {
-    let p = r.pixmap.pixel(x, y).expect("in bounds");
+    let p = r.pixmap().pixel(x, y).expect("in bounds");
     (p.red(), p.green(), p.blue())
 }
 
@@ -192,9 +192,9 @@ fn iccbased_matrix_trc_profile_is_evaluated_exactly() {
         px(&r, 50, 50)
     );
     assert!(
-        r.color_approximations.is_empty(),
+        r.color_approximations().is_empty(),
         "{:?}",
-        r.color_approximations
+        r.color_approximations()
     );
 }
 
@@ -213,11 +213,11 @@ fn iccbased_unsupported_profile_uses_alternate_and_records_it() {
     );
     let r = render(&pdf).unwrap();
     assert_eq!(px(&r, 50, 50), (0, 0, 0));
-    assert_eq!(r.color_approximations.len(), 1);
+    assert_eq!(r.color_approximations().len(), 1);
     assert!(
-        r.color_approximations[0].contains("CMYK"),
+        r.color_approximations()[0].contains("CMYK"),
         "{:?}",
-        r.color_approximations
+        r.color_approximations()
     );
 }
 
@@ -231,7 +231,7 @@ fn iccbased_garbage_stream_falls_back_with_note() {
     );
     let r = render(&pdf).unwrap();
     assert_eq!(px(&r, 50, 50), (0, 255, 0));
-    assert_eq!(r.color_approximations.len(), 1);
+    assert_eq!(r.color_approximations().len(), 1);
 }
 
 #[test]

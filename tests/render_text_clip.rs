@@ -60,7 +60,7 @@ fn render(content: &[u8]) -> Result<RenderedPage, Error> {
 }
 
 fn px(r: &RenderedPage, x: u32, y: u32) -> (u8, u8, u8) {
-    let p = r.pixmap.pixel(x, y).unwrap();
+    let p = r.pixmap().pixel(x, y).unwrap();
     (p.red(), p.green(), p.blue())
 }
 
@@ -174,7 +174,7 @@ fn type3_font_in_a_clipping_mode_is_refused() {
 fn extgstate_font_selects_the_font_like_tf() {
     let a = render(b"BT /F1 40 Tf 20 30 Td (A) Tj ET").unwrap();
     let b = render(b"/GF gs BT 20 30 Td (A) Tj ET").unwrap();
-    assert_eq!(a.pixmap.data(), b.pixmap.data(), "gs /Font == Tf");
+    assert_eq!(a.pixmap().data(), b.pixmap().data(), "gs /Font == Tf");
     // The gs font persists across text objects and is overridden by Tf.
     let c = render(b"/GF gs BT 20 30 Td (A) Tj ET BT /F1 20 Tf 100 30 Td (B) Tj ET").unwrap();
     assert!(ink(&c, 20, 42, 44, 70) > 50);

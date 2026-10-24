@@ -14,8 +14,8 @@
 //! (a SourceSansPro-Bold subset, charset `A`–`f`). Stored as a binary
 //! fixture and embedded with `include_bytes!`.
 
-use kasane_pdf::{extract_text, render_page};
-use kasane_pdf::{Document, Error, Limits, RenderOptions};
+use kasane_pdf::{extract_text, render_page, TextOptions};
+use kasane_pdf::{Document, Error, RenderOptions};
 
 /// The raw CFF program (a `/FontFile3` `/Type1C` subset).
 const CFF: &[u8] = include_bytes!("fixtures/type1_cff.bin");
@@ -123,7 +123,7 @@ fn render(pdf: &[u8]) -> Result<kasane_pdf::RenderedPage, Error> {
 fn text(pdf: &[u8]) -> Result<String, Error> {
     let doc = Document::from_bytes(pdf)?;
     let mut s = String::new();
-    for c in extract_text(&doc, &doc.pages()[0], &Limits::default())?.chars {
+    for c in extract_text(&doc, &doc.pages()[0], &TextOptions::default())?.chars {
         if let Some(u) = &c.unicode {
             s.push_str(u);
         }
@@ -133,9 +133,9 @@ fn text(pdf: &[u8]) -> Result<String, Error> {
 
 fn inked(page: &kasane_pdf::RenderedPage) -> usize {
     let mut n = 0;
-    for y in 0..page.pixmap.height() {
-        for x in 0..page.pixmap.width() {
-            let p = page.pixmap.pixel(x, y).unwrap();
+    for y in 0..page.pixmap().height() {
+        for x in 0..page.pixmap().width() {
+            let p = page.pixmap().pixel(x, y).unwrap();
             if (p.red(), p.green(), p.blue()) != (255, 255, 255) {
                 n += 1;
             }
@@ -276,8 +276,8 @@ fn type1_nonembedded_unknown_name_uses_generic_substitute() {
     assert_eq!(s.trim_end_matches('\n'), "AB", "got {s:?}");
     let r = render(&pdf).unwrap();
     assert!(inked(&r) > 20, "substitute drew no ink");
-    assert_eq!(r.font_substitutions.len(), 1);
-    let sub = &r.font_substitutions[0];
+    assert_eq!(r.font_substitutions().len(), 1);
+    let sub = &r.font_substitutions()[0];
     assert_eq!(sub.base_font, "Test");
     assert_eq!(sub.kind, kasane_pdf::SubstKind::Generic);
     assert!(
@@ -339,15 +339,15 @@ fn type1_standard14_substitute_metrics_and_report() {
         let pdf = pdf_std14(b"BT /F0 20 Tf 10 100 Td (A) Tj ET", base);
         let r = render(&pdf).unwrap_or_else(|e| panic!("{base}: {e:?}"));
         assert!(inked(&r) > 10, "{base}: no ink");
-        assert_eq!(r.font_substitutions.len(), 1, "{base}");
-        assert_eq!(r.font_substitutions[0].substitute, expect_face, "{base}");
+        assert_eq!(r.font_substitutions().len(), 1, "{base}");
+        assert_eq!(r.font_substitutions()[0].substitute, expect_face, "{base}");
         assert_eq!(
-            r.font_substitutions[0].kind,
+            r.font_substitutions()[0].kind,
             kasane_pdf::SubstKind::Standard14
         );
         // No /Widths → advance comes from the metric-compatible face.
         let doc = Document::from_bytes(&pdf).unwrap();
-        let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+        let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
         let adv = t.chars[0].advance.0;
         assert!(
             (adv - expect_adv_a * 20.0 / 1000.0).abs() < 0.05,
@@ -386,7 +386,7 @@ fn type1_substitute_honours_pdf_widths_and_tounicode() {
         &objs,
     );
     let doc = Document::from_bytes(&pdf).unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     assert_eq!(t.chars[0].unicode.as_deref(), Some("B"));
     // pdf_with_font declares /Widths[0] = 573 for 'A' → 573/1000 × 40.
     assert!(

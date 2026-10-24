@@ -393,10 +393,7 @@ fn predictor_output_limit() {
     // A large decoded stream will exceed the cap mid-decode.
     let decoded = vec![0u8; 1024];
     let pdf = pdf_with_flate(&decoded, "<< /Predictor 15 /Colors 1 /Columns 1023 >>");
-    let limits = Limits {
-        max_stream_bytes: 10,
-        ..Default::default()
-    };
+    let limits = Limits::default().with_max_stream_bytes(10);
     let doc = Document::from_bytes_with_limits(&pdf, limits).unwrap();
     let err = doc.page_contents(&doc.pages()[0]).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "got: {err:?}");

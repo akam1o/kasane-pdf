@@ -264,10 +264,7 @@ fn runlength_output_is_capped() {
         enc.extend_from_slice(&[129, b'x']);
     }
     enc.push(128);
-    let limits = Limits {
-        max_stream_bytes: 32 * 1024,
-        ..Limits::default()
-    };
+    let limits = Limits::default().with_max_stream_bytes(32 * 1024);
     let err = decode_with("/Filter /RunLengthDecode", &enc, limits).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
 }
@@ -367,10 +364,7 @@ fn lzw_missing_eod_and_bad_codes() {
 fn lzw_output_is_capped() {
     let data = vec![7u8; 200_000];
     let enc = lzw_encode(&data, 1);
-    let limits = Limits {
-        max_stream_bytes: 100_000,
-        ..Limits::default()
-    };
+    let limits = Limits::default().with_max_stream_bytes(100_000);
     let err = decode_with("/Filter /LZWDecode", &enc, limits).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
 }

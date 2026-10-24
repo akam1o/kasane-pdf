@@ -256,10 +256,7 @@ fn generation_mismatch_is_reported() {
 
 #[test]
 fn decoded_stream_limit_is_enforced() {
-    let limits = Limits {
-        max_stream_bytes: 10, // tiny: any decoded stream exceeds this
-        ..Default::default()
-    };
+    let limits = Limits::default().with_max_stream_bytes(10);
     let doc = Document::from_bytes_with_limits(&fixture("flate_contents.pdf"), limits).unwrap();
     let err = doc.page_contents(&doc.pages()[0]).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "got: {err:?}");
@@ -315,18 +312,12 @@ fn decoded_stream_limit_boundary() {
     data.extend_from_slice(format!("startxref\n{xref}\n%%EOF\n").as_bytes());
 
     // Exactly at the limit: OK.
-    let limits = Limits {
-        max_stream_bytes: 10,
-        ..Default::default()
-    };
+    let limits = Limits::default().with_max_stream_bytes(10);
     let doc = Document::from_bytes_with_limits(&data, limits).unwrap();
     assert_eq!(doc.page_contents(&doc.pages()[0]).unwrap()[0], decoded);
 
     // One byte less: fail.
-    let limits = Limits {
-        max_stream_bytes: 9,
-        ..Default::default()
-    };
+    let limits = Limits::default().with_max_stream_bytes(9);
     let doc = Document::from_bytes_with_limits(&data, limits).unwrap();
     let err = doc.page_contents(&doc.pages()[0]).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "got: {err:?}");
@@ -397,11 +388,9 @@ fn cumulative_decoded_limit() {
 
     // Each stream is 4 bytes; total = 8.  A cumulative limit of 6 lets
     // the first pass and the second fail.
-    let limits = Limits {
-        max_stream_bytes: 100,
-        max_total_decoded_bytes: 6,
-        ..Default::default()
-    };
+    let limits = Limits::default()
+        .with_max_stream_bytes(100)
+        .with_max_total_decoded_bytes(6);
     let doc = Document::from_bytes_with_limits(&data, limits).unwrap();
     let err = doc.page_contents(&doc.pages()[0]).unwrap_err();
     assert!(
@@ -487,10 +476,7 @@ fn objstm_entries_limit() {
     pdf.extend_from_slice(b"\nendstream\nendobj\n");
     pdf.extend_from_slice(format!("startxref\n{xref_obj_pos}\n%%EOF\n").as_bytes());
 
-    let limits = Limits {
-        max_objstm_entries: 1,
-        ..Default::default()
-    };
+    let limits = Limits::default().with_max_objstm_entries(1);
     let err = Document::from_bytes_with_limits(&pdf, limits).unwrap_err();
     assert!(
         matches!(err, Error::Structure(ref m) if m.contains("/N")),
@@ -501,10 +487,7 @@ fn objstm_entries_limit() {
 /// max_reference_depth: exhaust the budget with a reference chain.
 #[test]
 fn reference_depth_limit() {
-    let limits = Limits {
-        max_reference_depth: 3,
-        ..Default::default()
-    };
+    let limits = Limits::default().with_max_reference_depth(3);
     // Chain 4->5->6->7, but budget is 3.
     let mut data = Vec::new();
     data.extend_from_slice(b"%PDF-1.4\n");
@@ -548,10 +531,7 @@ fn reference_depth_limit() {
 
 #[test]
 fn filter_chain_limit_is_enforced() {
-    let limits = Limits {
-        max_filter_chain: 1,
-        ..Default::default()
-    };
+    let limits = Limits::default().with_max_filter_chain(1);
     // Craft a stream with two filters (both FlateDecode, but that's 2).
     let raw = zlib_compress(b"hi");
     let mut data = Vec::new();

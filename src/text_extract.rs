@@ -72,8 +72,66 @@ use crate::limits::Limits;
 use crate::page::Page;
 use crate::render::Renderer;
 
+/// Options for [`extract_text`].
+///
+/// Construct with [`TextOptions::default`] and the `with_*` methods;
+/// the struct is `#[non_exhaustive]` so options can be added without
+/// a breaking change. What is deliberately *not* an option: the
+/// `/ActualText` replacement (§14.9.4) is always applied — it is the
+/// producer's statement of what the text is; Unicode normalisation,
+/// reading order, word and line grouping are out of scope (the
+/// result is one entry per character code in content order).
+#[non_exhaustive]
+#[derive(Debug, Clone, Default)]
+pub struct TextOptions {
+    /// Resource bounds for the extraction.
+    pub limits: Limits,
+    /// Also report text inside optional content (§8.11) that is OFF in
+    /// the default configuration. Off by default, so the result mirrors
+    /// what a viewer shows; an OFF layer is still *interpreted* either
+    /// way (its operators and resources must be valid).
+    pub include_hidden_content: bool,
+    /// Keep only characters whose glyph origin lies inside this
+    /// rectangle (user space, PDF points, `/Rotate` not applied).
+    /// `None` keeps every character. The filter is applied after
+    /// extraction, so limits and errors are unaffected by it.
+    pub region: Option<crate::page::Rect>,
+}
+
+impl TextOptions {
+    /// The defaults: default limits, hidden content excluded, no region.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replace the resource bounds.
+    #[must_use]
+    pub fn with_limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// Include (`true`) or exclude (`false`, the default) text in
+    /// optional content that is OFF.
+    #[must_use]
+    pub fn with_hidden_content(mut self, include: bool) -> Self {
+        self.include_hidden_content = include;
+        self
+    }
+
+    /// Keep only characters whose origin lies inside `region`.
+    #[must_use]
+    pub fn with_region(mut self, region: crate::page::Rect) -> Self {
+        self.region = Some(region);
+        self
+    }
+}
+
 /// One extracted character — a single PDF character code with its
 /// resolved Unicode value and page-space geometry.
+///
+/// Fields may be added in minor releases (`#[non_exhaustive]`).
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub struct CharInfo {
     /// The raw character code — 0–255 for simple fonts, 0–65535
@@ -108,6 +166,9 @@ pub struct CharInfo {
 }
 
 /// How a `CharInfo`'s Unicode value was resolved.
+///
+/// New kinds may be added in minor releases; match with a wildcard arm.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolveKind {
     /// Via `/ToUnicode` CMap (preferred).
@@ -126,6 +187,9 @@ pub enum ResolveKind {
 }
 
 /// The extracted text for one page.
+///
+/// Fields may be added in minor releases (`#[non_exhaustive]`).
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct ExtractedText {
     /// Character entries in content-execution order.
@@ -148,22 +212,30 @@ pub struct ExtractedText {
 /// unsupported constructs (e.g. `/ActualText` replacement or Optional
 /// Content in the executed stream), and resource limits. Unresolved
 /// characters are part of a *successful* result, distinct from `Err`.
-pub fn extract_text(doc: &Document, page: &Page, limits: &Limits) -> Result<ExtractedText, Error> {
-    extract_text_impl(doc, page, limits, false)
-}
-
-/// Like [`extract_text`] but also reports text inside optional content
-/// that the document's default configuration hides (§8.11). The
-/// default [`extract_text`] mirrors what a viewer shows — hidden
-/// layers (alternate languages, print-only marks, collapsed answers)
-/// are left out, as `pdftotext` does; this variant is for indexing
-/// every string the page carries.
-pub fn extract_text_all(
+pub fn extract_text(
     doc: &Document,
     page: &Page,
-    limits: &Limits,
+    opts: &TextOptions,
 ) -> Result<ExtractedText, Error> {
-    extract_text_impl(doc, page, limits, true)
+    opts.limits.validate()?;
+    if let Some(r) = &opts.region {
+        if !(r.llx.is_finite() && r.lly.is_finite() && r.urx.is_finite() && r.ury.is_finite()) {
+            return Err(Error::invalid_argument(
+                "region",
+                "rectangle has non-finite values",
+            ));
+        }
+    }
+    let mut out = extract_text_impl(doc, page, &opts.limits, opts.include_hidden_content)?;
+    if let Some(r) = &opts.region {
+        let (x0, x1) = (r.llx.min(r.urx), r.llx.max(r.urx));
+        let (y0, y1) = (r.lly.min(r.ury), r.lly.max(r.ury));
+        out.chars.retain(|c| {
+            let (x, y) = c.origin;
+            x >= x0 && x <= x1 && y >= y0 && y <= y1
+        });
+    }
+    Ok(out)
 }
 
 fn extract_text_impl(

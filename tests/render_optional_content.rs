@@ -7,8 +7,7 @@ mod common;
 
 use common::{build_pdf, stream_obj};
 use kasane_pdf::{
-    extract_text, extract_text_all, render_page, Document, Error, Limits, RenderOptions,
-    RenderedPage,
+    extract_text, render_page, Document, Error, RenderOptions, RenderedPage, TextOptions,
 };
 
 /// Page with `content`; `ocprops` is the catalog's `/OCProperties`
@@ -80,7 +79,7 @@ fn render(pdf: &[u8]) -> Result<RenderedPage, Error> {
 }
 
 fn px(r: &RenderedPage, x: u32, y: u32) -> (u8, u8, u8) {
-    let p = r.pixmap.pixel(x, y).unwrap();
+    let p = r.pixmap().pixel(x, y).unwrap();
     (p.red(), p.green(), p.blue())
 }
 
@@ -142,14 +141,19 @@ fn nested_hidden_spans_and_text() {
     assert_eq!(px(&r, 20, 80), WHITE);
     assert_eq!(px(&r, 70, 80), BLACK);
     let doc = Document::from_bytes(&p).unwrap();
-    let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
     let s: String = t.chars.iter().filter_map(|c| c.unicode.clone()).collect();
     assert_eq!(s, "shown");
     assert!(
         t.chars[0].origin.0 > 10.0 + 40.0,
         "hidden text still advanced the position"
     );
-    let t = extract_text_all(&doc, &doc.pages()[0], &Limits::default()).unwrap();
+    let t = extract_text(
+        &doc,
+        &doc.pages()[0],
+        &TextOptions::default().with_hidden_content(true),
+    )
+    .unwrap();
     let s: String = t.chars.iter().filter_map(|c| c.unicode.clone()).collect();
     assert_eq!(s, "hiddenshown");
 }

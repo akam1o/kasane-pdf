@@ -8,9 +8,7 @@
 //! dump file data. Exit code 0 on success, 1 on any error (the error
 //! is printed with its category).
 
-use kasane_pdf::{
-    pixmap_to_png, render_page, Dict, Document, Error, Limits, Object, RenderOptions,
-};
+use kasane_pdf::{render_page, Dict, Document, Error, Limits, Object, RenderOptions};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -1108,16 +1106,18 @@ fn run_render(path: &str, page_no: usize, args: &[String]) -> Result<(), Error> 
         .get(page_no - 1)
         .ok_or_else(|| Error::Structure(format!("page {page_no} does not exist")))?;
 
-    let opts = RenderOptions {
-        dpi,
-        limits: Limits::default(),
-    };
+    let opts = RenderOptions::default().with_dpi(dpi);
     let rendered = render_page(&doc, page, &opts)?;
-    let png = pixmap_to_png(&rendered.pixmap)?;
+    let png = rendered.to_png()?;
     std::fs::write(&output, png)?;
     println!(
         "rendered page {} -> {} ({}x{} px, {} pts, dpi {})",
-        page_no, output, rendered.width, rendered.height, rendered.page_size_pts.0, rendered.dpi
+        page_no,
+        output,
+        rendered.width(),
+        rendered.height(),
+        rendered.page_size_pts().0,
+        rendered.dpi()
     );
     report_warnings(&doc);
     Ok(())
@@ -1169,7 +1169,7 @@ fn run_text(path: &str, page_no: usize, args: &[String]) -> Result<(), Error> {
         .get(page_no - 1)
         .ok_or_else(|| Error::Structure(format!("page {page_no} does not exist")))?;
 
-    let text = kasane_pdf::extract_text(&doc, page, &Limits::default())?;
+    let text = kasane_pdf::extract_text(&doc, page, &kasane_pdf::TextOptions::default())?;
     match format {
         "json" => print_json(&text),
         "lines" => print_lines(&text),

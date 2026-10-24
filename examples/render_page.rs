@@ -4,7 +4,7 @@
 //! cargo run --example render_page -- input.pdf 1 out.png [dpi]
 //! ```
 
-use kasane_pdf::{pixmap_to_png, render_page, Document, RenderOptions};
+use kasane_pdf::{render_page, Document, RenderOptions};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -22,22 +22,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .get(page_no.wrapping_sub(1))
         .ok_or("page number out of range")?;
 
-    let opts = RenderOptions {
-        dpi,
-        ..RenderOptions::default()
-    };
+    let opts = RenderOptions::default().with_dpi(dpi);
     let rendered = render_page(&doc, page, &opts)?;
-    std::fs::write(&args[3], pixmap_to_png(&rendered.pixmap)?)?;
+    std::fs::write(&args[3], rendered.to_png()?)?;
 
     println!(
         "{}x{} px at {} dpi",
-        rendered.pixmap.width(),
-        rendered.pixmap.height(),
+        rendered.width(),
+        rendered.height(),
         dpi
     );
     // A render that used a bundled substitute for a non-embedded font
     // is reported, so it is never mistaken for a faithful one.
-    for s in &rendered.font_substitutions {
+    for s in rendered.font_substitutions() {
         println!("substituted font: {} -> {}", s.base_font, s.substitute);
     }
     Ok(())

@@ -769,10 +769,7 @@ fn resource_lookup_bad_category_type_errors() {
 
 #[test]
 fn operations_limit_is_enforced() {
-    let limits = Limits {
-        max_operations: 3,
-        ..Default::default()
-    };
+    let limits = Limits::default().with_max_operations(3);
     let pdf = pdf_with_stream(b"q 1 w 2 w 3 w");
     let doc = Document::from_bytes_with_limits(&pdf, limits).unwrap();
     let err = doc.page_operations(&doc.pages()[0]).unwrap_err();
@@ -785,10 +782,7 @@ fn operations_limit_is_enforced() {
 #[test]
 fn operations_limit_boundary() {
     // Exactly max_operations ops succeed.
-    let limits = Limits {
-        max_operations: 3,
-        ..Default::default()
-    };
+    let limits = Limits::default().with_max_operations(3);
     let pdf = pdf_with_stream(b"1 w 2 w 3 w");
     let doc = Document::from_bytes_with_limits(&pdf, limits).unwrap();
     assert_eq!(doc.page_operations(&doc.pages()[0]).unwrap().len(), 3);
@@ -796,10 +790,7 @@ fn operations_limit_boundary() {
 
 #[test]
 fn operand_stack_limit_is_enforced() {
-    let limits = Limits {
-        max_operand_stack: 4,
-        ..Default::default()
-    };
+    let limits = Limits::default().with_max_operand_stack(4);
     // 5 operands are pushed before the operator runs.
     let pdf = pdf_with_stream(b"1 2 3 4 5 m");
     let doc = Document::from_bytes_with_limits(&pdf, limits).unwrap();
@@ -812,10 +803,7 @@ fn operand_stack_limit_is_enforced() {
 
 #[test]
 fn gsave_depth_limit_is_enforced() {
-    let limits = Limits {
-        max_gsave_depth: 2,
-        ..Default::default()
-    };
+    let limits = Limits::default().with_max_gsave_depth(2);
     let pdf = pdf_with_stream(b"q q q Q Q Q");
     let doc = Document::from_bytes_with_limits(&pdf, limits).unwrap();
     let err = doc.page_operations(&doc.pages()[0]).unwrap_err();
@@ -825,24 +813,15 @@ fn gsave_depth_limit_is_enforced() {
     );
     // Exactly 2 deep is fine.
     let pdf = pdf_with_stream(b"q q Q Q");
-    let doc = Document::from_bytes_with_limits(
-        &pdf,
-        Limits {
-            max_gsave_depth: 2,
-            ..Default::default()
-        },
-    )
-    .unwrap();
+    let doc =
+        Document::from_bytes_with_limits(&pdf, Limits::default().with_max_gsave_depth(2)).unwrap();
     assert_eq!(doc.page_operations(&doc.pages()[0]).unwrap().len(), 4);
 }
 
 #[test]
 fn nesting_depth_limit_in_content_array() {
     // [[[1]]] TJ with a depth limit of 2 → LimitExceeded.
-    let limits = Limits {
-        max_nesting_depth: 2,
-        ..Default::default()
-    };
+    let limits = Limits::default().with_max_nesting_depth(2);
     let pdf = pdf_with_stream(b"BT [[[(a)]]] TJ ET");
     let doc = Document::from_bytes_with_limits(&pdf, limits).unwrap();
     let err = doc.page_operations(&doc.pages()[0]).unwrap_err();

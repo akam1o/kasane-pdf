@@ -31,19 +31,16 @@ fn render_lim(name: &str, limits: Limits) -> Result<kasane_pdf::RenderedPage, Er
     render_page(
         &doc,
         &doc.pages()[0],
-        &RenderOptions {
-            limits,
-            ..RenderOptions::default()
-        },
+        &RenderOptions::default().with_limits(limits),
     )
 }
 
 fn ink_bbox(page: &kasane_pdf::RenderedPage) -> Option<(u32, u32, u32, u32)> {
     let (mut minx, mut miny, mut maxx, mut maxy) = (u32::MAX, u32::MAX, 0, 0);
     let mut any = false;
-    for y in 0..page.pixmap.height() {
-        for x in 0..page.pixmap.width() {
-            let p = page.pixmap.pixel(x, y).unwrap();
+    for y in 0..page.pixmap().height() {
+        for x in 0..page.pixmap().width() {
+            let p = page.pixmap().pixel(x, y).unwrap();
             if (p.red(), p.green(), p.blue()) != (255, 255, 255) {
                 minx = minx.min(x);
                 miny = miny.min(y);
@@ -271,7 +268,7 @@ fn nonembedded_type1_renders_with_substitute_and_says_so() {
     let r = render("text_unsupported_type1.pdf").unwrap();
     assert!(ink_bbox(&r).is_some(), "substitute drew no ink");
     assert!(
-        !r.font_substitutions.is_empty(),
+        !r.font_substitutions().is_empty(),
         "substitution must be reported"
     );
 }
@@ -610,7 +607,7 @@ fn horizontal_scaling_stretches() {
 #[test]
 fn glyph_selection_distinct_shapes() {
     let r = render("text_basic.pdf").unwrap(); // "(ABC)"
-    let pm = &r.pixmap;
+    let pm = r.pixmap();
     // Three chars at 24pt, widths 600 → each glyph ~14.4 px wide.
     // First char: A — full box 600×700 → spans 20..34, y 23..39.
     // Check that the *right edge* of the first glyph is at ~34 (600/1000×24=14.4).
@@ -651,7 +648,7 @@ fn glyph_selection_via_differences() {
     // After the swap, the first glyph drawn (leftmost) is B — a left
     // bar, not A's full box.
     let r = render("text_differences_encoding.pdf").unwrap();
-    let pm = &r.pixmap;
+    let pm = r.pixmap();
     // First glyph's right edge should be < right edge if it were A.
     // A is full-width (600 units = 14.4 px at 24pt).
     // B is left-bar (250 units = 6 px).
@@ -680,7 +677,7 @@ fn composite_glyph_has_distinct_shape() {
     // Ä = A body + 2 dieresis dots at top — pixel pattern differs
     // from a plain A.
     let r = render("text_composite_glyph.pdf").unwrap();
-    let pm = &r.pixmap;
+    let pm = r.pixmap();
     // Ä is at 24pt, positioned at (20,60) — occupies pixmap y ≈ 22..40.
     // It should have dots above the main box.
     // Check ink in the top row of the char cell (dieresis dots).
@@ -702,16 +699,10 @@ fn composite_glyph_has_distinct_shape() {
 #[test]
 fn font_stream_size_limit() {
     // FontFile2 smaller than max_stream_bytes — under limit renders.
-    let limits = Limits {
-        max_stream_bytes: 1 << 20, // 1 MiB — our TTF is ~4 KiB
-        ..Limits::default()
-    };
+    let limits = Limits::default().with_max_stream_bytes(1 << 20);
     render_lim("text_basic.pdf", limits).unwrap();
     // A limit below the flate-encoded size refuses the font.
-    let limits = Limits {
-        max_stream_bytes: 100, // < 888-byte flate payload
-        ..Limits::default()
-    };
+    let limits = Limits::default().with_max_stream_bytes(100);
     let err = render_lim("text_basic.pdf", limits).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
 }
@@ -796,17 +787,11 @@ fn text_code_budget_at_limit() {
     // 5-char string fits exactly; 6-char exceeds.
     let pdf5 = text_pdf_with_string(b"AAAAA");
     let doc = Document::from_bytes(&pdf5).unwrap();
-    let limits = Limits {
-        max_text_codes: 5,
-        ..Limits::default()
-    };
+    let limits = Limits::default().with_max_text_codes(5);
     render_page(
         &doc,
         &doc.pages()[0],
-        &RenderOptions {
-            limits: limits.clone(),
-            ..RenderOptions::default()
-        },
+        &RenderOptions::default().with_limits(limits.clone()),
     )
     .unwrap();
 
@@ -815,10 +800,7 @@ fn text_code_budget_at_limit() {
     let err = render_page(
         &doc,
         &doc.pages()[0],
-        &RenderOptions {
-            limits,
-            ..RenderOptions::default()
-        },
+        &RenderOptions::default().with_limits(limits),
     )
     .unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
@@ -896,17 +878,11 @@ fn text_code_budget_counts_across_tj() {
     out.extend_from_slice(format!("startxref\n{xref}\n%%EOF\n").as_bytes());
 
     let doc = Document::from_bytes(&out).unwrap();
-    let limits = Limits {
-        max_text_codes: 5, // 6th code overflows
-        ..Limits::default()
-    };
+    let limits = Limits::default().with_max_text_codes(5);
     let err = render_page(
         &doc,
         &doc.pages()[0],
-        &RenderOptions {
-            limits,
-            ..RenderOptions::default()
-        },
+        &RenderOptions::default().with_limits(limits),
     )
     .unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
@@ -1003,7 +979,7 @@ fn text_state_persists_across_bt_et() {
     let mut min_c = u32::MAX;
     for y in 60..80 {
         for x in 20..80 {
-            let p = r.pixmap.pixel(x, y).unwrap();
+            let p = r.pixmap().pixel(x, y).unwrap();
             if (p.red(), p.green(), p.blue()) != (255, 255, 255) {
                 min_c = min_c.min(x);
             }
@@ -1101,7 +1077,7 @@ fn tm_tlm_reset_per_bt_not_per_q() {
     let mut minx = u32::MAX;
     for y in 40..60 {
         for x in 0..60 {
-            let p = r.pixmap.pixel(x, y).unwrap();
+            let p = r.pixmap().pixel(x, y).unwrap();
             if (p.red(), p.green(), p.blue()) != (255, 255, 255) {
                 minx = minx.min(x);
             }
@@ -1128,7 +1104,7 @@ fn extended_winansi_chars_paint() {
 fn tj_split_equals_tj() {
     // [(A) (B)] TJ and (AB) Tj produce identical output.
     let r = render("text_tj_split.pdf").unwrap();
-    let pm = &r.pixmap;
+    let pm = r.pixmap();
     // Compare the two rows pixel by pixel.
     let mut diffs = 0;
     for x in 0..pm.width() {
@@ -1250,17 +1226,11 @@ fn invisible_and_space_codes_count() {
     out.extend_from_slice(format!("startxref\n{xref}\n%%EOF\n").as_bytes());
 
     let doc = Document::from_bytes(&out).unwrap();
-    let limits = Limits {
-        max_text_codes: 5,
-        ..Limits::default()
-    };
+    let limits = Limits::default().with_max_text_codes(5);
     let err = render_page(
         &doc,
         &doc.pages()[0],
-        &RenderOptions {
-            limits,
-            ..RenderOptions::default()
-        },
+        &RenderOptions::default().with_limits(limits),
     )
     .unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
