@@ -98,6 +98,19 @@ limit is `Error::LimitExceeded { limit, max }`.
 the engine declined to process — a valid file using an unimplemented
 feature is distinguishable from a malformed one.
 
+### Warnings
+
+A third outcome sits between a clean result and a refusal: input that
+deviates from ISO 32000-1 in a way the engine could still process
+*exactly* is accepted and recorded as a `Warning` on the `Document`
+(`doc.take_warnings()` drains the list, `doc.warnings()` peeks,
+`doc.warnings_dropped()` counts overflow past
+`warning::MAX_WARNINGS`). Every operation — render, extraction,
+rewrite, incremental save — appends to the same list, so read it
+after the operation you care about. The CLI prints each one as
+`warning: …` on stderr. `Warning` is `#[non_exhaustive]`; match with
+a wildcard arm.
+
 ## Feature flag: `cjk-fallback`
 
 Non-embedded Japanese CID fonts render only when the fallback assets

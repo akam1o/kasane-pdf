@@ -33,6 +33,7 @@
 use crate::error::Error;
 use crate::limits::Limits;
 use crate::object::Object;
+use crate::warning::Warning;
 use crate::Document;
 
 /// A parsed ToUnicode CMap — a sorted list of single-code →
@@ -95,7 +96,26 @@ impl ToUnicode {
     ///
     /// `limits` bounds: total mappings, UTF-16 output per entry, and
     /// the source byte length of the CMap itself.
+    #[cfg_attr(not(feature = "cjk-fallback"), allow(dead_code))]
     pub(crate) fn parse(data: &[u8], limits: &Limits) -> Result<Self, Error> {
+        let mut warnings = Vec::new();
+        let tu = Self::parse_with_warnings(data, limits, &mut warnings)?;
+        if let Some(w) = warnings.into_iter().next() {
+            // A caller without a warning sink gets the strict outcome.
+            return Err(Error::Structure(w.to_string()));
+        }
+        Ok(tu)
+    }
+
+    /// [`ToUnicode::parse`], with malformed `bfchar`/`bfrange` entries
+    /// skipped and reported through `warnings` instead of failing the
+    /// whole CMap (§9.10.3: a mapping that cannot be read leaves its
+    /// codes unmapped — nothing is guessed).
+    pub(crate) fn parse_with_warnings(
+        data: &[u8],
+        limits: &Limits,
+        warnings: &mut Vec<Warning>,
+    ) -> Result<Self, Error> {
         if data.len() as u64 > limits.max_stream_bytes {
             return Err(Error::LimitExceeded {
                 limit: "max_stream_bytes (ToUnicode)",
@@ -144,11 +164,11 @@ impl ToUnicode {
                             seen_codespace = true;
                         }
                         Tok::BareWord(b"beginbfchar") => {
-                            let used = p.parse_bfchar(n, limits, &mut out)?;
+                            let used = p.parse_bfchar(n, limits, &mut out, warnings)?;
                             _entry_count += used;
                         }
                         Tok::BareWord(b"beginbfrange") => {
-                            let used = p.parse_bfrange(n, limits, &mut out)?;
+                            let used = p.parse_bfrange(n, limits, &mut out, warnings)?;
                             _entry_count += used;
                         }
                         Tok::BareWord(b"endcmap") => {
@@ -467,7 +487,13 @@ impl<'a> Parser<'a> {
     }
 
     /// `n beginbfchar` — each entry is `<src> <dst>`.
-    fn parse_bfchar(&mut self, n: i64, limits: &Limits, out: &mut ToUnicode) -> Result<u64, Error> {
+    fn parse_bfchar(
+        &mut self,
+        n: i64,
+        limits: &Limits,
+        out: &mut ToUnicode,
+        warnings: &mut Vec<Warning>,
+    ) -> Result<u64, Error> {
         if n < 0 || n as u64 > limits.max_text_codes {
             return Err(Error::LimitExceeded {
                 limit: "max_text_codes (bfchar entries)",
@@ -504,8 +530,15 @@ impl<'a> Parser<'a> {
                     max: 1024,
                 });
             }
-            let code = hex_uint(s)? as u32;
-            let utf16 = decode_utf16be(d)?;
+            let (code, utf16) = match (hex_uint(s), decode_utf16be(d)) {
+                (Ok(c), Ok(u)) => (c as u32, u),
+                (Err(e), _) | (_, Err(e)) => {
+                    warnings.push(Warning::MalformedToUnicodeEntry {
+                        detail: format!("bfchar <{}> <{}>: {e}", lossy(s), lossy(d)),
+                    });
+                    continue;
+                }
+            };
             out.entries.push(Mapping {
                 code,
                 utf16be: utf16,
@@ -524,6 +557,7 @@ impl<'a> Parser<'a> {
         n: i64,
         limits: &Limits,
         out: &mut ToUnicode,
+        warnings: &mut Vec<Warning>,
     ) -> Result<u64, Error> {
         if n < 0 || n as u64 > limits.max_text_codes {
             return Err(Error::LimitExceeded {
@@ -552,8 +586,18 @@ impl<'a> Parser<'a> {
                     ),
                 });
             }
-            let lo = hex_uint(lo)? as u32;
-            let hi = hex_uint(hi)? as u32;
+            let (lo_b, hi_b) = (lo, hi);
+            let (lo, hi) = match (hex_uint(lo), hex_uint(hi)) {
+                (Ok(l), Ok(h)) => (l as u32, h as u32),
+                (Err(e), _) | (_, Err(e)) => {
+                    // Skip the whole entry, third operand included.
+                    warnings.push(Warning::MalformedToUnicodeEntry {
+                        detail: format!("bfrange <{}> <{}>: {e}", lossy(lo_b), lossy(hi_b)),
+                    });
+                    self.skip_bfrange_dst()?;
+                    continue;
+                }
+            };
             if lo > hi {
                 return Err(Error::Structure("bfrange low bound exceeds high".into()));
             }
@@ -584,7 +628,15 @@ impl<'a> Parser<'a> {
                             max: 1024,
                         });
                     }
-                    let base = decode_utf16be(d)?;
+                    let base = match decode_utf16be(d) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            warnings.push(Warning::MalformedToUnicodeEntry {
+                                detail: format!("bfrange dst <{}>: {e}", lossy(d)),
+                            });
+                            continue;
+                        }
+                    };
                     let mut cur = base.clone();
                     for i in 0..range_len {
                         // Push the current value, then increment the
@@ -635,11 +687,15 @@ impl<'a> Parser<'a> {
                                         max: 1024,
                                     });
                                 }
-                                let utf16 = decode_utf16be(d)?;
-                                out.entries.push(Mapping {
-                                    code: lo.wrapping_add(count as u32),
-                                    utf16be: utf16,
-                                });
+                                match decode_utf16be(d) {
+                                    Ok(utf16) => out.entries.push(Mapping {
+                                        code: lo.wrapping_add(count as u32),
+                                        utf16be: utf16,
+                                    }),
+                                    Err(e) => warnings.push(Warning::MalformedToUnicodeEntry {
+                                        detail: format!("bfrange array <{}>: {e}", lossy(d)),
+                                    }),
+                                }
                                 count += 1;
                             }
                             Tok::ArrEnd => break,
@@ -671,17 +727,57 @@ impl<'a> Parser<'a> {
     }
 }
 
+impl<'a> Parser<'a> {
+    /// Consume the third operand of a `bfrange` entry (a hex string or
+    /// an array of hex strings) whose bounds were unreadable, so the
+    /// next entry starts in the right place.
+    fn skip_bfrange_dst(&mut self) -> Result<(), Error> {
+        match self.next_token()? {
+            Tok::HexStr(_) => Ok(()),
+            Tok::ArrStart => loop {
+                match self.next_token()? {
+                    Tok::ArrEnd => return Ok(()),
+                    Tok::HexStr(_) => {}
+                    _ => {
+                        return Err(Error::Structure(
+                            "bfrange array elements must be hex strings".into(),
+                        ))
+                    }
+                }
+            },
+            _ => Err(Error::Structure(
+                "bfrange expects a hex string or array".into(),
+            )),
+        }
+    }
+}
+
+fn lossy(b: &[u8]) -> std::borrow::Cow<'_, str> {
+    String::from_utf8_lossy(&b[..b.len().min(32)])
+}
+
+/// Hex digits of a `<…>` string with the white space §7.3.4.3 allows
+/// between digits removed.
+fn hex_digits(s: &[u8]) -> Vec<u8> {
+    s.iter()
+        .copied()
+        .filter(|b| !b.is_ascii_whitespace())
+        .collect()
+}
+
 /// Parse a hex digit string (2 or 4 digits) to an unsigned value.
 fn hex_uint(s: &[u8]) -> Result<u16, Error> {
-    let s = std::str::from_utf8(s).map_err(|_| Error::Structure("invalid hex".into()))?;
+    let s = hex_digits(s);
+    let s = std::str::from_utf8(&s).map_err(|_| Error::Structure("invalid hex".into()))?;
     u16::from_str_radix(s, 16).map_err(|_| Error::Structure(format!("invalid hex '{s}'")))
 }
 
 /// Decode a hex string to UTF-16BE code units. Odd-length hex
 /// strings are padded with a leading zero per PDF convention.
 fn decode_utf16be(hex: &[u8]) -> Result<Vec<u16>, Error> {
+    let hex = hex_digits(hex);
     let mut bytes = Vec::with_capacity(hex.len() / 2 + 1);
-    let hex_str = std::str::from_utf8(hex)
+    let hex_str = std::str::from_utf8(&hex)
         .map_err(|_| Error::Structure("invalid hex in ToUnicode".into()))?;
     // Odd hex length → prefix a 0 per spec convention.
     let padded = if hex_str.len() % 2 == 1 {
@@ -690,8 +786,9 @@ fn decode_utf16be(hex: &[u8]) -> Result<Vec<u16>, Error> {
         hex_str.to_string()
     };
     for i in (0..padded.len()).step_by(2) {
-        let b = u8::from_str_radix(&padded[i..i + 2], 16)
-            .map_err(|_| Error::Structure("invalid hex in ToUnicode".into()))?;
+        let b = u8::from_str_radix(&padded[i..i + 2], 16).map_err(|_| {
+            Error::Structure(format!("invalid hex in ToUnicode: '{}'", &padded[i..i + 2]))
+        })?;
         bytes.push(b);
     }
     // Must be even length for UTF-16.
@@ -749,5 +846,10 @@ pub(crate) fn load_tounicode(
     }
 
     let data = doc.decode_stream(dict, raw)?;
-    ToUnicode::parse(&data, limits).map(Some)
+    let mut warnings = Vec::new();
+    let tu = ToUnicode::parse_with_warnings(&data, limits, &mut warnings)?;
+    for w in warnings {
+        doc.push_warning(w);
+    }
+    Ok(Some(tu))
 }

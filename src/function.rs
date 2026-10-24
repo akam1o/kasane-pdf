@@ -174,6 +174,23 @@ fn numbers(obj: Option<&Object>, doc: &Document, what: &str) -> Result<Option<Ve
 }
 
 /// Parse a function object (dictionary, stream, or array of them).
+/// Decode a sampled / PostScript function stream under the caller's
+/// `limits` (the render options, not the document's), recording any
+/// non-fatal finding on the document.
+fn decode_function_stream(
+    doc: &Document,
+    dict: &crate::object::Dict,
+    raw: &[u8],
+    limits: &Limits,
+) -> Result<Vec<u8>, Error> {
+    let mut warnings = Vec::new();
+    let data = crate::filter::decode_stream(dict, raw, limits, &mut warnings)?;
+    for w in warnings {
+        doc.push_warning(w);
+    }
+    Ok(data)
+}
+
 pub(crate) fn parse_function(
     doc: &Document,
     obj: &Object,
@@ -283,7 +300,7 @@ fn parse_function_depth(
                     "/Encode or /Decode length mismatch".into(),
                 ));
             }
-            let data = crate::filter::decode_stream(dict, raw, limits)?;
+            let data = decode_function_stream(doc, dict, raw, limits)?;
             let needed_bits = (total as u64) * bps as u64;
             if (data.len() as u64) * 8 < needed_bits {
                 return Err(Error::Structure(format!(
@@ -404,7 +421,7 @@ fn parse_function_depth(
                 .ok_or_else(|| Error::Structure("type 4 function must be a stream".into()))?;
             let range =
                 range.ok_or_else(|| Error::Structure("type 4 function needs /Range".into()))?;
-            let src = crate::filter::decode_stream(dict, raw, limits)?;
+            let src = decode_function_stream(doc, dict, raw, limits)?;
             if src.len() > PS_PROGRAM_MAX {
                 return Err(Error::LimitExceeded {
                     limit: "PostScript calculator program bytes",

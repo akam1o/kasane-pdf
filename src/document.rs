@@ -69,6 +69,9 @@ pub struct Document {
     /// Opened through [`Document::from_bytes_recovering`]: objects not
     /// closed by `endobj` are accepted when loaded later.
     lenient: bool,
+    /// Non-fatal findings of every operation on this document (see
+    /// [`crate::Warning`]), read with [`Document::take_warnings`].
+    warnings: std::cell::RefCell<crate::warning::WarningSink>,
 }
 
 impl Document {
@@ -102,7 +105,8 @@ impl Document {
         let header_version = parser.check_header()?;
         let startxref = parser.find_startxref()?;
 
-        let xref = xref::read_xref_chain(data, &limits, startxref)?;
+        let mut xref = xref::read_xref_chain(data, &limits, startxref)?;
+        let xref_warnings = std::mem::take(&mut xref.warnings);
 
         // Refuse encrypted files entirely.
         if xref.trailer.contains_key(b"Encrypt".as_slice()) {
@@ -121,11 +125,13 @@ impl Document {
             budget_scope_depth: std::cell::Cell::new(0),
             length_resolve_depth: std::cell::Cell::new(0),
             objstm_cache: std::cell::RefCell::new(HashMap::new()),
+            warnings: std::cell::RefCell::new(Default::default()),
             recovery: None,
             lenient: false,
             limits,
         };
 
+        doc.warnings.borrow_mut().extend(xref_warnings);
         doc.load_catalog()?;
         doc.load_pages()?;
         Ok(doc)
@@ -179,6 +185,7 @@ impl Document {
             budget_scope_depth: std::cell::Cell::new(0),
             length_resolve_depth: std::cell::Cell::new(0),
             objstm_cache: std::cell::RefCell::new(HashMap::new()),
+            warnings: std::cell::RefCell::new(Default::default()),
             recovery: Some(report),
             lenient: true,
             limits,
@@ -186,6 +193,35 @@ impl Document {
         doc.load_catalog()?;
         doc.load_pages()?;
         Ok(doc)
+    }
+
+    /// Non-fatal findings recorded since the last call (or since the
+    /// document was loaded): deviations from ISO 32000-1 that the
+    /// engine processed exactly and recorded instead of refusing (see
+    /// [`crate::Warning`] for the list). Every operation on the
+    /// document — render, extraction, rewrite, incremental save —
+    /// appends to the same list; call this after the operation whose
+    /// findings you want. Bounded by [`crate::warning::MAX_WARNINGS`];
+    /// see [`Document::warnings_dropped`].
+    pub fn take_warnings(&self) -> Vec<crate::Warning> {
+        std::mem::take(&mut self.warnings.borrow_mut().list)
+    }
+
+    /// The warnings recorded so far, without clearing them.
+    pub fn warnings(&self) -> Vec<crate::Warning> {
+        self.warnings.borrow().list.clone()
+    }
+
+    /// Warnings that were not retained because the list was full
+    /// (`MAX_WARNINGS`); never reset.
+    pub fn warnings_dropped(&self) -> u64 {
+        self.warnings.borrow().dropped
+    }
+
+    /// Record a warning (engine-internal producers that have no
+    /// stream of their own, e.g. the ToUnicode parser).
+    pub(crate) fn push_warning(&self, w: crate::Warning) {
+        self.warnings.borrow_mut().push(w);
     }
 
     /// How the cross-reference table was rebuilt, when the document
@@ -409,7 +445,9 @@ impl Document {
         } else {
             dict
         };
-        let out = filter::decode_stream(dict, raw, &self.limits)?;
+        let mut warnings = Vec::new();
+        let out = filter::decode_stream(dict, raw, &self.limits, &mut warnings)?;
+        self.warnings.borrow_mut().extend(warnings);
         let cost = out.len() as u64;
         if cost > self.decoded_budget.get() {
             return Err(Error::LimitExceeded {

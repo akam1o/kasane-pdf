@@ -57,6 +57,10 @@ pub(crate) struct XrefTable {
     /// `trailer` can carry keys (e.g. a stale `/Info`) that the
     /// newest trailer no longer has.
     pub(crate) latest_trailer: Dict,
+    /// Non-fatal findings while reading the sections (an unterminated
+    /// Flate cross-reference stream whose entries were nevertheless
+    /// complete) — moved onto the `Document` by its constructor.
+    pub(crate) warnings: Vec<crate::warning::Warning>,
     /// Byte offsets of all xref sections read, newest first.
     /// Retained for diagnostics (e.g. explaining /Prev chain failures)
     /// and for the audit's revision history.
@@ -131,6 +135,7 @@ pub(crate) fn read_xref_chain(
     let mut latest_trailer: Option<Dict> = None;
     let mut section_offsets = Vec::new();
     let mut visited_offsets: HashSet<u64> = HashSet::new();
+    let mut warnings = Vec::new();
 
     let mut current = Some(startxref);
     while let Some(offset) = current {
@@ -153,10 +158,16 @@ pub(crate) fn read_xref_chain(
         }
         section_offsets.push(offset);
 
-        let trailer_dict = read_one_section(input, limits, offset, &mut |key, entry| {
-            // Newest section wins: /Prev sections only fill gaps.
-            entries.entry(key).or_insert(entry);
-        })?;
+        let trailer_dict = read_one_section(
+            input,
+            limits,
+            offset,
+            &mut |key, entry| {
+                // Newest section wins: /Prev sections only fill gaps.
+                entries.entry(key).or_insert(entry);
+            },
+            &mut warnings,
+        )?;
 
         if latest_trailer.is_none() {
             latest_trailer = Some(trailer_dict.clone());
@@ -191,10 +202,16 @@ pub(crate) fn read_xref_chain(
                     "/XRefStm offset {pos} is beyond end of input"
                 )));
             }
-            read_one_section(input, limits, pos, &mut |key, entry| {
-                // XRefStm overrides classic entries from *this* section.
-                entries.insert(key, entry);
-            })?;
+            read_one_section(
+                input,
+                limits,
+                pos,
+                &mut |key, entry| {
+                    // XRefStm overrides classic entries from *this* section.
+                    entries.insert(key, entry);
+                },
+                &mut warnings,
+            )?;
         }
 
         current = next_prev(&trailer_dict)?;
@@ -204,6 +221,7 @@ pub(crate) fn read_xref_chain(
         entries,
         trailer,
         latest_trailer: latest_trailer.unwrap_or_default(),
+        warnings,
         section_offsets,
     })
 }
@@ -217,6 +235,7 @@ pub(crate) fn read_one_section(
     limits: &Limits,
     offset: u64,
     on_entry: &mut dyn FnMut((u32, u16), XrefEntry),
+    warnings: &mut Vec<crate::warning::Warning>,
 ) -> Result<Dict, Error> {
     let mut parser = Parser::new(input, limits);
     parser.seek(offset as usize);
@@ -242,7 +261,7 @@ pub(crate) fn read_one_section(
                 .map(|n| n == b"XRef")
                 .unwrap_or(false);
             if is_xref_stream {
-                read_xref_stream_section(&ind, limits, on_entry)
+                read_xref_stream_section(&ind, limits, on_entry, warnings)
             } else {
                 Err(Error::Parse(format!(
                     "expected 'xref' at byte {offset}, found object {}",
@@ -263,6 +282,7 @@ fn read_xref_stream_section(
     ind: &crate::parser::IndirectObject,
     limits: &Limits,
     on_entry: &mut dyn FnMut((u32, u16), XrefEntry),
+    warnings: &mut Vec<crate::warning::Warning>,
 ) -> Result<Dict, Error> {
     let (dict, raw) = ind
         .object
@@ -270,7 +290,11 @@ fn read_xref_stream_section(
         .ok_or_else(|| Error::Parse(format!("object {} is not a stream", ind.object_ref)))?;
     // The entries live in the *decoded* stream (§7.5.8.2 — xref
     // streams are almost always FlateDecode + PNG predictor).
-    let decoded = crate::filter::decode_stream(dict, raw, limits)?;
+    // An unterminated Flate stream is accepted here on the same terms
+    // as everywhere else (the entries are complete; the warning is
+    // recorded on the document); `/W`/`/Index` consistency is still
+    // checked below.
+    let decoded = crate::filter::decode_stream(dict, raw, limits, warnings)?;
     let data: &[u8] = &decoded;
 
     // /W: three integer widths, each 0..=8 (enough for 8-byte fields).
@@ -694,8 +718,14 @@ pub(crate) fn reconstruct(
             warn("object-stream count limit reached; remaining streams not expanded".into());
             break;
         }
-        let decoded = match crate::filter::decode_stream(dict, raw, limits) {
-            Ok(d) => d,
+        let mut stream_warnings = Vec::new();
+        let decoded = match crate::filter::decode_stream(dict, raw, limits, &mut stream_warnings) {
+            Ok(d) => {
+                for w in &stream_warnings {
+                    warn(format!("object stream {num}: {w}"));
+                }
+                d
+            }
             Err(e) => {
                 warn(format!(
                     "object stream {num} could not be decoded ({e}); its members are unavailable"
@@ -799,6 +829,7 @@ pub(crate) fn reconstruct(
             entries,
             latest_trailer: trailer.clone(),
             trailer,
+            warnings: Vec::new(),
             section_offsets: Vec::new(),
         },
         report,

@@ -29,8 +29,8 @@
 use crate::error::Error;
 use crate::limits::Limits;
 use crate::object::{Dict, Object};
-use flate2::read::ZlibDecoder;
-use std::io::Read;
+use crate::warning::Warning;
+use flate2::{Decompress, FlushDecompress, Status};
 
 /// Decode `data` according to the stream dictionary's `/Filter` and
 /// `/DecodeParms`, bounded by `limits`.
@@ -38,7 +38,12 @@ use std::io::Read;
 /// `raw_len` is the encoded length (for diagnostics). Returns the decoded
 /// bytes. On any failure the whole decode fails — partial output is
 /// never returned.
-pub(crate) fn decode_stream(dict: &Dict, data: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
+pub(crate) fn decode_stream(
+    dict: &Dict,
+    data: &[u8],
+    limits: &Limits,
+    warnings: &mut Vec<Warning>,
+) -> Result<Vec<u8>, Error> {
     let filters = normalize_filters(dict.get(b"Filter".as_slice()))?;
     if filters.is_empty() {
         return Ok(data.to_vec());
@@ -55,7 +60,7 @@ pub(crate) fn decode_stream(dict: &Dict, data: &[u8], limits: &Limits) -> Result
     let mut buf = data.to_vec();
     for (i, fname) in filters.iter().enumerate() {
         let parm = parms.get(i).and_then(|o| o.as_ref());
-        buf = apply_one_filter(fname, parm, &buf, limits)?;
+        buf = apply_one_filter(fname, parm, &buf, limits, warnings)?;
         if buf.len() as u64 > limits.max_stream_bytes {
             return Err(Error::LimitExceeded {
                 limit: "max_stream_bytes (decoded)",
@@ -146,9 +151,10 @@ pub(crate) fn apply_one_filter(
     parms: Option<&Dict>,
     buf: &[u8],
     limits: &Limits,
+    warnings: &mut Vec<Warning>,
 ) -> Result<Vec<u8>, Error> {
     match name {
-        b"FlateDecode" | b"Fl" => flate_decode(buf, parms, limits),
+        b"FlateDecode" | b"Fl" => flate_decode(buf, parms, limits, warnings),
         b"LZWDecode" | b"LZW" => lzw_decode(buf, parms, limits),
         b"ASCII85Decode" | b"A85" => ascii85_decode(buf, limits),
         b"ASCIIHexDecode" | b"AHx" => asciihex_decode(buf, limits),
@@ -477,27 +483,62 @@ fn lzw_decode(buf: &[u8], parms: Option<&Dict>, limits: &Limits) -> Result<Vec<u
 }
 
 /// zlib/DEFLATE with optional predictor post-processing.
-fn flate_decode(buf: &[u8], parms: Option<&Dict>, limits: &Limits) -> Result<Vec<u8>, Error> {
-    let mut decoder = ZlibDecoder::new(buf);
-    let mut out = Vec::new();
-    // Read in bounded chunks; check the cap as we go so a hostile stream
-    // cannot force an allocation beyond max_stream_bytes.
+fn flate_decode(
+    buf: &[u8],
+    parms: Option<&Dict>,
+    limits: &Limits,
+    warnings: &mut Vec<Warning>,
+) -> Result<Vec<u8>, Error> {
+    // Driven through the low-level decompressor so the three outcomes
+    // stay distinguishable: a complete zlib stream (`StreamEnd`), data
+    // that ends inside a deflate block (refused), and data that ends
+    // on a block boundary after a sync flush with the final block and
+    // checksum missing — a deviation that several producers ship and
+    // every major reader accepts; accepted here and recorded as a
+    // `Warning::UnterminatedFlateStream`, never silently.
+    let mut d = Decompress::new(true);
+    let mut out: Vec<u8> = Vec::new();
     let cap = limits.max_stream_bytes as usize;
-    let mut chunk = [0u8; 64 * 1024];
+    let mut status;
     loop {
-        let n = decoder
-            .read(&mut chunk)
-            .map_err(|e| Error::Parse(format!("FlateDecode failed: {e}")))?;
-        if n == 0 {
-            break;
+        if out.capacity() - out.len() < 32 * 1024 {
+            out.reserve(64 * 1024);
         }
-        if out.len() + n > cap {
+        let before_out = out.len();
+        let before_in = d.total_in();
+        let rest = &buf[(d.total_in() as usize).min(buf.len())..];
+        status = d
+            .decompress_vec(rest, &mut out, FlushDecompress::None)
+            .map_err(|_| Error::Parse("FlateDecode failed: corrupt deflate stream".into()))?;
+        if out.len() > cap {
             return Err(Error::LimitExceeded {
                 limit: "max_stream_bytes (decoded)",
                 max: limits.max_stream_bytes,
             });
         }
-        out.extend_from_slice(&chunk[..n]);
+        if status == Status::StreamEnd {
+            break;
+        }
+        if out.len() == before_out && d.total_in() == before_in {
+            // No progress: the input is exhausted without a final block.
+            break;
+        }
+    }
+    if status != Status::StreamEnd {
+        // Z_SYNC_FLUSH ends with an empty stored block, `00 00 FF FF`;
+        // when the data ends exactly there every earlier block was
+        // complete and `out` is exact. Anything else ended mid-block.
+        const SYNC_FLUSH: [u8; 4] = [0x00, 0x00, 0xFF, 0xFF];
+        let consumed_all = d.total_in() as usize >= buf.len();
+        if consumed_all && buf.ends_with(&SYNC_FLUSH) {
+            warnings.push(Warning::UnterminatedFlateStream {
+                decoded_bytes: out.len(),
+            });
+        } else {
+            return Err(Error::Parse(
+                "FlateDecode failed: incomplete deflate stream".into(),
+            ));
+        }
     }
 
     apply_predictor(out, parms, limits)

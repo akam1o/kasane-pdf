@@ -115,6 +115,7 @@ pub mod signature;
 pub mod text_extract;
 mod tounicode;
 mod type1;
+pub mod warning;
 mod xref;
 
 pub use content::{Operation, TJItem};
@@ -123,6 +124,9 @@ pub use fontsubst::{substitution_for, FontSubstitution, SubstKind};
 pub use matrix::Matrix;
 pub use render::{pixmap_to_png, render_page, Color, RenderOptions, RenderedPage};
 pub use text_extract::{extract_text, extract_text_all, CharInfo, ExtractedText, ResolveKind};
+/// The raster type of [`RenderedPage::pixmap`], re-exported so it can
+/// be named without depending on `tiny-skia` at a matching version.
+pub use tiny_skia::Pixmap;
 pub use xref::RecoveryReport;
 
 pub use audit::{
@@ -146,3 +150,10 @@ pub use remove_region::{
 pub use remove_text::{remove_text, Removal};
 pub use rewrite::{rewrite, rewrite_with_limits};
 pub use signature::{signatures, ChangeKind, SignatureInfo};
+pub use warning::Warning;
+
+/// The README's code blocks are compiled as doctests (`no_run`), so
+/// the examples a new user copies cannot drift from the API.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

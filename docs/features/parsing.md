@@ -40,7 +40,7 @@ parsing. Everything not listed as supported is a typed error.
 | Feature | Status | Notes |
 |---|---|---|
 | No filter | ✅ | raw bytes returned |
-| `/FlateDecode` (`/Fl`) | ✅ | zlib/DEFLATE via `flate2`/`miniz_oxide`; output capped at `max_stream_bytes` while it is produced |
+| `/FlateDecode` (`/Fl`) | ✅ | zlib/DEFLATE via `flate2`/`miniz_oxide`; output capped at `max_stream_bytes` while it is produced. Data that ends exactly after a sync-flush block (`00 00 FF FF`) with the final block and Adler-32 missing is **accepted with `Warning::UnterminatedFlateStream`** — every block was complete, so the output is exact; only the checksum is unverifiable. Data that ends inside a block is `Error::Parse("… incomplete deflate stream")`; corrupt data is `"… corrupt deflate stream"` |
 | `/LZWDecode` (`/LZW`) | ✅ | 9–12-bit codes MSB first, clear (256) / EOD (257), `/EarlyChange` 0 or 1 (default 1), KwKwK case, mid-stream clear; data ending inside a code with non-zero bits → `Error::Parse`, zero padding without EOD accepted; predictors as for Flate |
 | `/ASCII85Decode` (`/A85`) | ✅ | `z`, partial final group, `~>` EOD (its absence accepted at a clean group boundary), an optional `<~` prefix skipped; `~` not followed by `>`, a one-character final group, `z` inside a group, a byte outside `!`..`u` → `Error::Parse` |
 | `/ASCIIHexDecode` (`/AHx`) | ✅ | white space ignored, odd final digit padded, `>` EOD (absence accepted); a non-hex byte → `Error::Parse` |

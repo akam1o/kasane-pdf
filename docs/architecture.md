@@ -83,7 +83,10 @@ src/
                2-byte BE codes → CID → CIDToGIDMap → GID; /DW//W widths)
   tounicode.rs ToUnicode CMap parser (§9.10.3): 1- or 2-byte
                codespaces (uniform width required), bfchar, bfrange
-               sequential + array → UTF-16BE
+               sequential + array → UTF-16BE; malformed entries are
+               skipped and reported as warnings
+  warning.rs   Warning (#[non_exhaustive]) + the bounded per-Document
+               sink: non-fatal deviations processed exactly
   text_extract.rs extract_text → ExtractedText: positioned Unicode
                per character code, user-space origin/advance/bounds
   document.rs  Document: load pipeline + lazy resolve() + page tree walk

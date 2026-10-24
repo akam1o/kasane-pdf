@@ -17,6 +17,12 @@ are on the [roadmap](architecture.md#roadmap).
   by scanning and reports every assumption; it does not yet treat
   dangling references as `null` (§7.3.10) or tolerate malformed
   content streams. *Planned.*
+- **Accepted with warnings** is a narrow third outcome, not a lenient
+  mode: only deviations the engine can process *exactly* are
+  recorded on the `Document` as a `Warning` instead of refused
+  (today: a Flate stream missing its final block after a sync flush,
+  a malformed `/ToUnicode` entry). Everything else that is not
+  conforming is still an error in strict mode.
 - **PDF 2.0**: files are read; features new in 2.0 are not interpreted
   and the rewriter refuses a document that declares version 2.0.
 - `Document` holds interior caches (`Cell`/`RefCell`) and is not
@@ -55,8 +61,10 @@ are on the [roadmap](architecture.md#roadmap).
 - Positioned characters only: no layout analysis, reading order,
   word or line grouping, or search.
 - A code the font cannot map to Unicode is reported as `None`, never
-  guessed. Text drawn through optional content that is OFF is
-  excluded; `/ActualText` replaces the drawn codes.
+  guessed — including codes whose `/ToUnicode` entry was malformed
+  and skipped (recorded as `Warning::MalformedToUnicodeEntry`). Text
+  drawn through optional content that is OFF is excluded;
+  `/ActualText` replaces the drawn codes.
 
 ## Writing and editing
 

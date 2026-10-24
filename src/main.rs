@@ -1119,7 +1119,21 @@ fn run_render(path: &str, page_no: usize, args: &[String]) -> Result<(), Error> 
         "rendered page {} -> {} ({}x{} px, {} pts, dpi {})",
         page_no, output, rendered.width, rendered.height, rendered.page_size_pts.0, rendered.dpi
     );
+    report_warnings(&doc);
     Ok(())
+}
+
+/// Print the document's non-fatal findings (`Document::take_warnings`)
+/// on stderr, one `warning: …` line each, so an accepted-with-warnings
+/// result is never mistaken for a clean one.
+fn report_warnings(doc: &Document) {
+    for w in doc.take_warnings() {
+        eprintln!("warning: {w}");
+    }
+    let dropped = doc.warnings_dropped();
+    if dropped > 0 {
+        eprintln!("warning: {dropped} further warning(s) not retained");
+    }
 }
 
 /// `text` subcommand: `text <file.pdf> <page> [--format json|lines]`.
@@ -1161,6 +1175,7 @@ fn run_text(path: &str, page_no: usize, args: &[String]) -> Result<(), Error> {
         "lines" => print_lines(&text),
         _ => unreachable!(),
     }
+    report_warnings(&doc);
     Ok(())
 }
 

@@ -3514,7 +3514,20 @@ impl<'a> Renderer<'a> {
                 }
                 // Byte filters (Flate, LZW, ASCII85, ASCIIHex, RunLength)
                 // and their predictors share the stream decoder.
-                _ => crate::filter::apply_one_filter(name, parm, &buf, self.limits)?,
+                _ => {
+                    let mut warnings = Vec::new();
+                    let out = crate::filter::apply_one_filter(
+                        name,
+                        parm,
+                        &buf,
+                        self.limits,
+                        &mut warnings,
+                    )?;
+                    for w in warnings {
+                        self.doc.push_warning(w);
+                    }
+                    out
+                }
             };
             if buf.len() as u64 > self.limits.max_image_bytes {
                 return Err(Error::LimitExceeded {

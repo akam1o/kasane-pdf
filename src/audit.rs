@@ -1990,6 +1990,7 @@ impl<'d> Audit<'d> {
                 self.limits,
                 sec_off,
                 &mut |key, entry| sec_entries.push((key, entry)),
+                &mut Vec::new(),
             ) {
                 self.out.incomplete.push(AuditIncomplete {
                     scope: format!("old xref section at {sec_off}"),
