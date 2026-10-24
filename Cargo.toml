@@ -1,24 +1,33 @@
 [package]
 name = "kasane-pdf"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.92"
 authors = ["akam1o <5158577+akam1o@users.noreply.github.com>"]
-description = "A PDF parsing/processing engine written in Rust (early development)"
+description = "Independent PDF engine: parsing, rendering, text extraction, rewriting and incremental editing with strict resource limits"
+license = "Apache-2.0"
+repository = "https://github.com/akam1o/kasane-pdf"
+homepage = "https://github.com/akam1o/kasane-pdf"
+readme = "README.md"
+keywords = ["pdf", "parser", "renderer", "rasterizer", "document"]
+categories = ["parser-implementations", "rendering", "text-processing", "multimedia::images"]
+# Not published to crates.io yet; the API is still settling.
 publish = false
-# License is intentionally undecided. Until decided, all rights reserved.
-# See docs/architecture.md for the dependency licensing policy.
+# Packaging excludes the corpus tooling, the CI definitions and the
+# fetched CJK assets; the bundled Liberation fonts and the test
+# fixtures ship with the crate.
+exclude = ["/compat", "/assets", "/.github", "/scripts"]
 
 [dependencies]
 # FlateDecode (zlib/DEFLATE). flate2 = MIT or Apache-2.0; the default
 # rust_backend uses miniz_oxide (MIT). No copyleft code is linked.
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 
-# 2D raster backend for M3 rendering. BSD-3-Clause.
+# 2D raster backend for page rendering. BSD-3-Clause.
 # Used only to rasterize paths/fills; all PDF interpretation is ours.
 tiny-skia = "0.12"
 
-# PNG encoding for M3 render output. MIT or Apache-2.0.
+# PNG encoding for render output. MIT or Apache-2.0.
 png = "0.18"
 
 # JPEG (DCTDecode) decoding for image XObjects. Pure Rust,

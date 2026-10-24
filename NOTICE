@@ -1,0 +1,33 @@
+kasane-pdf
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product bundles font data that is NOT covered by the Apache
+License. It is distributed under the SIL Open Font License, Version
+1.1 (OFL-1.1), whose text accompanies the files:
+
+  * Liberation Fonts 2.1.5 (fonts/liberation/) — Digitized data
+    copyright (c) 2010 Google Corporation, with Reserved Font Names
+    Arimo, Tinos and Cousine; Copyright (c) 2012 Red Hat, Inc., with
+    Reserved Font Name Liberation. Licence: fonts/liberation/LICENSE.
+    Used unmodified as substitutes for non-embedded Standard 14-style
+    fonts; never sold separately.
+
+  * tests/fixtures/KasaneJP.ttf — a 17-glyph subset of Noto Sans JP
+    (notofonts/noto-cjk), Copyright 2014-2021 Adobe
+    (http://www.adobe.com/), with Reserved Font Name 'Source'. The
+    subset is renamed so the Reserved Font Name is not used. Licence:
+    tests/fixtures/OFL-1.1.txt. Test fixture only.
+
+  * tests/fixtures/type1_cff.bin — an 800-byte CFF subset of Source
+    Sans Pro Bold, Copyright Adobe Systems Incorporated, with Reserved
+    Font Name 'Source'. Licence: tests/fixtures/OFL-1.1.txt. Test
+    fixture only.
+
+With the optional `cjk-fallback` Cargo feature, the build additionally
+embeds assets fetched by scripts/fetch-cjk-assets.sh (not part of this
+repository): Noto Sans JP Regular (OFL-1.1) and the Adobe CMap and
+mapping resources (BSD-3-Clause). Their licence files are fetched
+alongside and must accompany any binary built with that feature.
+
+Third-party Rust crates and their licences are listed in
+docs/third-party.md.

@@ -3,6 +3,8 @@ name = "kasane-compat"
 version = "0.0.0"
 edition = "2021"
 publish = false
+license = "Apache-2.0"
+repository = "https://github.com/akam1o/kasane-pdf"
 description = "Compatibility-test runner for kasane-pdf (dev tool; not part of the engine)"
 
 [dependencies]

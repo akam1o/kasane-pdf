@@ -323,33 +323,37 @@ decoded-bytes cost. `unsafe` is not used anywhere.
 
 ## Licensing policy
 
-- kasane-pdf's own license is **undecided** (private commercial
-  distribution must remain possible; AGPL has been rejected by the
-  developer). Until decided: all rights reserved, `publish = false`.
-- Dependencies: only permissive licenses (MIT / Apache-2.0 / BSD /
-  Zlib-style). No copyleft code may be linked into the engine.
-  Current dependencies: `flate2` (MIT or Apache-2.0) with the
-  `rust_backend` (`miniz_oxide`, MIT) for `/FlateDecode`; `tiny-skia`
-  (BSD-3-Clause) for rasterization; `png` (MIT or Apache-2.0) for PNG
-  encoding; `jpeg-decoder` 0.3 (MIT or Apache-2.0, `rayon` disabled)
-  for `DCTDecode` image data; `ttf-parser` 0.25 (MIT or Apache-2.0,
-  `std` + `glyph-names` only) for embedded TrueType outlines.
-- Bundled font data: `fonts/liberation/` — Liberation Sans/Serif/
-  Mono 2.1.5 (SIL Open Font License 1.1, unmodified, provenance and
-  SHA-256 in its README) as the substitutes for non-embedded
-  Standard 14-style fonts. The OFL permits bundling in sold software
-  as long as the fonts are not sold alone and the licence text ships
-  with them; it does not touch the crate's own licence. No font is
-  ever loaded from the host OS. Symbol and ZapfDingbats have no
-  licence-clean metric clone and are refused rather than approximated.
-- Acceptable building blocks per the project brief: compression,
-  image decoding, font handling, generic 2D rasterization — e.g.
-  `flate2`/`miniz_oxide` (MIT), `freetype`/`fontdue`, `tiny-skia`
-  (Skia-derived, BSD). Each addition must have its license and
-  redistribution terms re-checked and recorded here before use.
+- kasane-pdf is licensed under the **Apache License, Version 2.0**
+  (`LICENSE`; `license = "Apache-2.0"` in both `Cargo.toml` files).
+  Per-file SPDX headers are not used — the repository-level licence
+  applies to every source file, as is usual for Rust crates.
+- Dependencies: only permissive licences (MIT / Apache-2.0 / BSD /
+  Zlib / 0BSD). No copyleft code is linked into the engine. The
+  full list of crates in the engine's dependency graph with their
+  licences is kept in [`third-party.md`](third-party.md); a new
+  dependency must have its licence and redistribution terms checked
+  and recorded there before use. `tiny-skia` (BSD-3-Clause) requires
+  its copyright notice to be reproduced in binary distributions —
+  see `NOTICE` and `third-party.md`.
+- Bundled font data is **not** under the Apache licence:
+  `fonts/liberation/` — Liberation Sans/Serif/Mono 2.1.5 (SIL Open
+  Font License 1.1, unmodified, provenance and SHA-256 in its README)
+  as the substitutes for non-embedded Standard 14-style fonts; two
+  OFL font subsets among the test fixtures (`NOTICE`,
+  `tests/fixtures/README.md`). The OFL permits bundling the fonts in
+  software, including sold software, as long as the fonts are not
+  sold on their own and the licence text ships with them; it does not
+  affect the crate's own licence. No font is ever loaded from the
+  host OS. Symbol and ZapfDingbats have no licence-clean metric clone
+  and are refused rather than approximated.
+- The optional `cjk-fallback` feature embeds assets fetched at build
+  time (Noto Sans JP, OFL 1.1; Adobe CMap / mapping resources,
+  BSD-3-Clause) — never committed; their licence files are fetched
+  with them.
 - PDFium (BSD) / MuPDF (AGPL) / Poppler (GPL) are excluded from the
-  product path by policy; MuPDF and Poppler are doubly excluded by
-  license.
+  product path by policy — they are used only as development-time
+  verification tools (`compat/runner`, `scripts/verify-*.sh`) and
+  are never linked.
 
 ## Future milestones (long-term roadmap)
 
