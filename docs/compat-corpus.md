@@ -793,6 +793,121 @@ Per-category rows (annotations 42/42, forms 13/13 of 38 — 25 signed
 —, browser 19/19, graphics 59/59, japanese 15/15, scan 13/13, papers
 9/9, office 13/13, images 15/15, latex 12/12 full) are in the report.
 
+### Results after shadings 1/4–7, text clip modes, CJK fallback, incremental save and the all-page round-trip (run-1792812028)
+
+Same 511 files, measured against run-1792806451 — with one change of
+conditions that matters for every comparison below: the run used
+`--mode full`, so **every page** of every file was rendered and
+extracted (1 491 pages), where the baseline evaluated the first 3
+pages. The two runs are therefore compared twice: like for like
+(pages 1–3) for the regression check, and on the new all-page basis
+for the baseline.
+
+| files | n | parse | render | text | rewrite | full PASS | recovered | crash/timeout |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| all | 511 | 444 | 397 | 413 | 383 | **345** | 34 | 0 |
+| expect: pass | 427 | 404 (94.6%) | **365 (85.5%)** | 381 (89.2%) | 348 (81.5%) | **315 (73.8%)** | 10 | 0 |
+| expect: reject | 43 | 1 | 0 | 0 | 0 | 0 | 23 | 0 |
+| expect: any | 41 | 39 | 32 | 32 | 35 | 30 | 1 | 0 |
+
+Against run-1792806451 (all 511): render **393 → 397**, text 411 →
+413, rewrite 383 → 383, full PASS **340 → 345**; 0 crash / 0
+timeout; robustness 43/43 handled. Render on `expect: pass`:
+84.8 % → **85.5 %** on the all-page basis; on the like-for-like
+(pages 1–3) basis the same files give **86.2 %** (368/427) — the 90 %
+target was not reached (see the blocker list below for what the
+remaining 59 files need).
+
+Newly rendering (6, `expect: pass`):
+
+| cause removed | files |
+|---|---|
+| function-based shading (type 1) | `function_based_shading` `function_based_shading_cmyk` |
+| tensor-product patch mesh (type 7) | `issue13520` |
+| text clipping mode `Tr 4` | `glyph_accent` |
+| `/ExtGState /Font [ref size]` | `verapdf_verapdf-test-suite-6-1-12-t02-pass-l` |
+| indirect stream `/Length` clipped by the `endstream` scan (parser fix) | `images` |
+
+Regressions: **none like for like** — no file that rendered in the
+baseline fails on pages 1–3. Three files now fail on pages the
+baseline never evaluated: `arxiv-2303.18223` (page 17, invalid hex
+in a `/ToUnicode` CMap — a structure fault of the file that does not
+affect drawing; candidate for "report, don't fail" in the next
+phase), `mlp-mixer` (page 42, knockout group) and `standard_fonts`
+(page 13, non-embedded Symbol font). They are reclassified from
+PASS to FAIL by the wider denominator (3 pages → all pages), not by
+a code change; three more all-page failures found by the first
+full run (`max_total_decoded_bytes` exhausted on pages 4–13 of
+`arxiv-2610.24216`, `chrome-wiki-ko-hangul`, `chrome-wiki-zh-hanzi`)
+were engine limitations and were fixed before this run.
+
+Per category (expect: pass; render / full PASS before → after, raw
+stage classes): misc 123 → 123 / 108 → 107, graphics 55 → **57** /
+53 → 55, annotations 45 / 40, forms 37 / 12, browser 19 / **17 → 19**,
+images 11 → **12** / 10 → 11, japanese 9 / 8, latex 13 → 11 / 12 → 10
+(the two all-page failures above), scan 13 / 13, papers 10 / 9,
+office 11 / 8, transparency 4 → **5** / 4 → 5, pdfa 16 → **17** /
+16 → 17.
+
+Fidelity (separate from render success): measured on 407 files /
+**1 087 pages** (was 400 files / 540 pages) with a Poppler
+reference; 245 (was 241) meet the comparability bar, 255 (was 249)
+the content bar. 66 files draw with a bundled Latin substitute. The
+three new shading files land at SSIM 0.95 (`function_based_shading`:
+a 128-sample grid against Poppler's per-pixel evaluation — visible
+only in the sharp-edged checkerboard panel), 0.97 and 0.99.
+
+Round-trip (444 strictly parsed files; the full table is in
+`compat/reports/run-1792812028.md`): rewrite 383 PASS / 10 FAIL /
+51 UNSUPPORTED (the 10 failures are dangling references and
+unterminated objects the strict parser accepts lazily — unchanged),
+reparse 383/383, structure 383/383, render **350/350 over every
+page** (33 N/A: our renderer refuses the original), text 360/360,
+annotations/forms/dests 122/122; **pages compared 1 308, skipped 0
+(no file hit the 120 s budget), failed 0**; Poppler witnessed 382
+files on every page with **0 divergent**, mean SSIM 0.99997, worst
+0.9931 (`mut-*` recovered inputs that Poppler renders differently
+are outside the strict set); qpdf on the rewritten file: 369 clean /
+12 warning / 2 error — **external validity 369/383**, **no newly
+introduced external diagnostic 383/383** (the four warnings the
+rewrite used to add are gone with the `/Length` fix; the 12
+remaining and both errors are present on the originals too, see the
+findings table). *full* (all eight judgements) **383/444**.
+
+CJK fallback (measured separately with a `cjk-fallback` runner
+build, `--only`, since the baseline binary is the default build):
+`noembed-eucjp` (`EUC-H`, non-embedded MS-Gothic, `expect: any`)
+UNSUPPORTED → **PASS**, Poppler SSIM **0.9966**, diff-px 0.17 %,
+reported as `MS-Gothic → NotoSansJP-Regular`; `90ms_rksj_h_sample`
+(`expect: any`) now loads its CMap and fails on the next fault — the
+CIDFont has no `/FontDescriptor` (required by Table 117) — a
+structure error of the sample, not a fallback gap; the Japanese
+files with embedded fonts render identically with and without the
+feature (SSIM unchanged to the last digit). The three `expect: pass`
+non-embedded CID files (`issue11578_reduced`, `issue11740_reduced`,
+`issue12418_reduced`) use `/Ordering (Identity)` — CIDs are glyph
+indices of an unknown font, so no fallback can be sound and they
+stay refused; `simfang-variant` / `xiaobiaosong` are non-embedded
+Chinese TrueType (`expect: any`, GB1 not bundled).
+
+Performance (all pages, Poppler and image comparison included):
+median 192 ms per file, p90 1.1 s, p99 29.8 s, max 44.8 s
+(`chrome-wiki-ko-hangul`, 23 pages); engine stage totals over the
+corpus: parse 0.06 s, render 204 s, text 49 s, rewrite 0.5 s;
+process high-water mark 949 MB (cumulative over the run, an upper
+bound per file). Robustness: 43/43 `expect: reject` files refused
+without crash or timeout.
+
+Remaining render blockers on `expect: pass` (59 files, 13 of them
+strict-parse failures): non-embedded CID fonts with Identity
+ordering 3, truncated / unterminated Flate streams 3, dangling
+references 4, operators inside path objects or unbalanced `q`/`Q` 7,
+`max_image_dimension` 2, knockout groups 2, non-embedded Symbol /
+ZapfDingbats 2, `/Annots` entries that are not dictionaries 2,
+`/AP /N` state dictionaries without `/AS` 2, invalid `/ToUnicode`
+hex 1, Arabic FreeText fallback 1, Type 3 / pattern cycle 1, JBIG2 on
+a content stream 1, `/BrotliDecode` 1, others 1 each.
+
 ## External verification findings (this phase)
 
 What the independent parsers said about the rewrites, file by file,

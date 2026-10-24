@@ -20,3 +20,4 @@ __pycache__/
 
 # CJK fallback assets (fetched by scripts/fetch-cjk-assets.sh, never committed)
 assets/cjk/
+compat/runner/target-cjk/
