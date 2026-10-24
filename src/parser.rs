@@ -7,7 +7,7 @@
 //!
 //! Stream objects: when a parsed dictionary is immediately followed by
 //! the `stream` keyword, the raw (still-encoded) stream bytes are
-//! captured. `/Filter` decoding is intentionally out of scope for M0.
+//! captured. `/Filter` decoding is intentionally left to the document layer.
 //! The stream extent is determined from a direct-integer `/Length` when
 //! it is present and consistent (keyword `endstream` follows the data);
 //! otherwise we fall back to scanning for the `endstream` keyword, which

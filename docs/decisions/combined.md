@@ -1,8 +1,8 @@
-# Decision — combined region removal + metadata strip (M26)
+# Decision — combined region removal + metadata strip
 
-## M26 — combined region removal + metadata entry removal
+## Combined region removal + metadata entry removal
 
-`remove_regions_and_document_metadata` composes M24 and M25 in
+`remove_regions_and_document_metadata` composes `remove_regions` and `remove_document_metadata` in
 **one `Edit` session and one `rewrite`** — not by chaining the two
 public APIs (which would produce an intermediate PDF).
 
@@ -28,7 +28,7 @@ Key choices:
   only falls back to `doc.catalog()` when absent — so an earlier
   edit to the catalog can never be silently rolled back. Other
   overlay entries are preserved via `entry().or_insert`.
-- **Single rewrite, cumulative budgets.** All M24 cumulative
+- **Single rewrite, cumulative budgets.** All multi-page cumulative
   limits still bound the whole call; the metadata strip adds no
   new limits and never resets a budget. Any failure (per-page
   eligibility, cumulative budget, rewrite refusal, output cap)
@@ -40,5 +40,5 @@ Key choices:
   bytes, site content, or metadata values.
 
 CLI: `experimental-remove-regions` gains `--remove-document-metadata`;
-without it behaviour is identical to M24. The standalone
+without it behaviour is identical to `remove_regions`. The standalone
 `remove-document-metadata` command is kept.

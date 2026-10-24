@@ -1,4 +1,4 @@
-//! M25 — remove the document-level metadata *entries* and write a
+//! Remove the document-level metadata *entries* and write a
 //! new PDF.
 //!
 //! [`remove_document_metadata`] deletes exactly two entries:

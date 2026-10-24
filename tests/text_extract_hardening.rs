@@ -1,4 +1,4 @@
-//! M6.1 — extraction hardening: ActualText/Optional Content refusal,
+//! Extraction hardening: ActualText/Optional Content refusal,
 //! cumulative Unicode output budget, headless extraction (no
 //! rasterising/image decode), and pinned-down coordinate semantics.
 

@@ -1,26 +1,20 @@
-//! M3: render a page to a pixel buffer (basic paths, clipping, Device
-//! colours) and encode it as PNG.
+//! Render a page to a pixel buffer and encode it as PNG; the same
+//! interpreter runs headless for text extraction.
 //!
-//! This is the first execution layer on top of the M2 `Operation`
-//! stream. It is intentionally narrow:
+//! This is the execution layer on top of the `Operation` stream: the
+//! graphics state (`q`/`Q`/`cm`, line state, colour spaces of §8.6,
+//! ExtGState parameters including soft masks and blend modes), path
+//! construction, painting and clipping, shadings and tiling/shading
+//! patterns, Form and Image XObjects (with transparency groups), inline
+//! images, text in every font type the crate loads (rendering modes
+//! 0–7), optional content, and annotation appearances. The feature
+//! matrix with every refusal is `docs/features/rendering.md`; a
+//! construct the renderer cannot draw exactly is a typed
+//! `Error::Unsupported`/`Error::Structure`, never a silent skip.
 //!
-//! **Rendered**: `q`/`Q`/`cm`, path construction (`m l c v y h re`),
-//! painting (`S s f F f* B B* b b* n`), clipping (`W W*`), line state
-//! (`w J j M d i`), Device colours (`G g RG rg K k` and `CS/cs +
-//! SC/sc` selecting `DeviceGray`/`DeviceRGB`/`DeviceCMYK`, plus
-//! `DefaultGray`/`DefaultRGB`/`DefaultCMYK` substitution), `ri`
-//! (stored; no effect on device-space output).
-//!
-//! **Refused as `Error::Unsupported`** (never silently skipped):
-//! text (`Tf`, `Tj`, `TJ`, `'`, `"`), `Do`/`sh`, `gs` (any ExtGState —
-//! M3 interprets none), `SCN`/`scn` pattern names, `CS`/`cs` naming a
-//! non-device colour space, page annotations (`/Annots` non-empty),
-//! `/UserUnit` ≠ 1, inline images (rejected at M2 parse).
-//!
-//! Ignored per spec (no effect on output): `BMC`/`BDC`/`EMC`,
-//! `MP`/`DP`, `BX`/`EX` and `Operation::Unknown` inside them, and the
-//! text-state operators (`Tc`/`Tw`/`Tz`/`TL`/`Tr`/`Ts`/`Td`/`TD`/`Tm`/
-//! `T*`) — they only matter once a text-showing op runs.
+//! Ignored per spec (no effect on output): `BMC`/`BDC`/`EMC` without
+//! optional-content meaning, `MP`/`DP`, `BX`/`EX` and
+//! `Operation::Unknown` inside them.
 //!
 //! Path model: path elements are stored in *user space*
 //! (untransformed) and the paint-time `CTM × page→pixmap` is applied
@@ -129,7 +123,7 @@ struct TextState {
     /// Font size `Tfs` (unscaled text-space units).
     font_size: f64,
     /// Rendering mode `Tmode` — 0 fill, 1 stroke, 2 fill+stroke, 3
-    /// invisible, 4–7 clip variants (M5: refused).
+    /// invisible, 4–7 clip variants.
     render_mode: i64,
     /// Text rise `Trise` (unscaled text-space units).
     rise: f64,
@@ -172,7 +166,7 @@ impl Color {
         b: 0,
         a: 255,
     };
-    /// Opaque white (the M3 page background).
+    /// Opaque white (the page background).
     pub const WHITE: Color = Color {
         r: 255,
         g: 255,
@@ -5490,7 +5484,7 @@ fn rgb_to_rgba(r: f64, g: f64, b: f64) -> Color {
 }
 
 /// DeviceCMYK → RGBA, naive subtractive form `1 − min(1, c + k)`
-/// (§10.4.3 note). Not colour-managed; ICC is out of M3 scope.
+/// (§10.4.3 note). Not colour-managed.
 fn ts_color(c: Color) -> tiny_skia::Color {
     tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a)
 }

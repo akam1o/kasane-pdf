@@ -1,6 +1,6 @@
-# Decision — residual-information audit (M23)
+# Decision — residual-information audit
 
-## Residual-information audit (M23)
+## Residual-information audit
 
 `audit_residuals(doc, limits) -> ResidualAudit` is a **read-only**
 inventory of where a PDF can still carry information. It exists so a
@@ -69,7 +69,7 @@ Design choices:
   *elements* are a separate `max_audit_elements` budget so wide
   structures are still bounded.
 
-- **Incremental traversal (M23.2).** `walk_object_refs` no longer
+- **Incremental traversal.** `walk_object_refs` no longer
   expands a container's children into the stack up front. A frame
   is one of:
   ```text
@@ -91,7 +91,7 @@ Design choices:
   descended into. `enum Frame` holds no per-element state beyond
   the iterator position, so a budget stop never held the whole
   container in memory.
-- **Name-tree entry failures are recorded (M23.2).** `audit_name_trees`
+- **Name-tree entry failures are recorded.** `audit_name_trees`
   used to `let Ok(..) = deref(..)` on the `/Names` root and on each
   tree root (`/EmbeddedFiles`, `/JavaScript`) — a missing or
   unresolvable ref silently produced "no attachments". Now each
@@ -110,10 +110,10 @@ Design choices:
   entries, not ObjStm member bodies. The docs now state this
   distinction and that no classification feature was added.
 
-- **Stack-height probe moved into production (M23.3).** M23.2's
+- **Stack-height probe moved into production.** The earlier
   `Probe` test duplicated `walk_object_refs` to record
   `stack.len()` — a copy that could not detect a regression in the
-  real walker. M23.3 replaces it with a `#[cfg(test)]`-only field
+  real walker. The current code replaces it with a `#[cfg(test)]`-only field
   `max_walk_stack` on the `Audit` struct plus a `push_frame!`
   macro that records the high-water mark at every stack push.
   Tests call the production `walk_object_refs` through a small
@@ -124,7 +124,7 @@ Design choices:
   (never to breadth), and `element_budget_stop_keeps_stack_small_and_incomplete`
   checks that a budget stop reports `walk_complete = false` with
   unvisited objects as `Unevaluated`, not `UnreachableLive`.
-- **CLI-level incomplete verification (M23.3).** `cli_audit_incomplete_text_names_scope_and_reason`
+- **CLI-level incomplete verification.** `cli_audit_incomplete_text_names_scope_and_reason`
   and `cli_audit_incomplete_json_structure` run the real binary
   (`CARGO_BIN_EXE_kasane-pdf`) against a PDF whose
   `/EmbeddedFiles` root is a dangling ref: text output shows the

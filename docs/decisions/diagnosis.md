@@ -1,6 +1,6 @@
-# Decision — pre-redaction diagnosis (M16)
+# Decision — pre-redaction diagnosis
 
-## M16 — pre-redaction diagnosis
+## Pre-redaction diagnosis
 
 `src/redact_diag.rs` implements `diagnose_redaction` +
 `preflight-redaction` — a **read-only** preflight that walks a page's

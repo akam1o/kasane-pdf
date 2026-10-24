@@ -1,6 +1,6 @@
 #!/bin/sh
 # External verification of inherited-/Resources materialisation
-# (milestone M22.4) on a multi-branch, multi-page document.
+# on a multi-branch, multi-page document.
 #
 # Generates tests/fixtures/m224_branches.pdf (deterministic), runs
 # experimental-remove-region on page 1, then checks, per page:

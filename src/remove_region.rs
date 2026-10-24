@@ -1,4 +1,4 @@
-//! M20 — **experimental** scoped region removal (text + image).
+//! **Experimental** scoped region removal (text + image).
 //!
 //! [`remove_region`] performs a single integrated edit pass over one
 //! page: it removes character codes whose filled-ink bounds hit a
@@ -18,7 +18,7 @@
 //! - `/Annots` — annotations are out of scope.
 //! - `/UserUnit` ≠ 1 — coordinates are not default units.
 //! - Any `Do` to a `/Form` — nested XObjects are out of scope
-//!   (M20 does not inherit M18's form handling; a form `Do` is
+//!   (`remove_region` does not inherit `remove_text`'s form handling; a form `Do` is
 //!   refused even when it contains no text/images).
 //! - Any inline image (`BI`/`ID`/`EI`), `gs`, `sh`, Pattern colour
 //!   space, `/ActualText`/`OC` marked content, or any other construct
@@ -38,9 +38,9 @@
 //! **Planning against the original `Document`.** The walk runs on the
 //! original content stream; every target is keyed by its original
 //! `op_index`. Text ops are rewritten by `remove_text::rewrite_ops_for`
-//! (the same TJ/kern logic M17 uses); image `Do`s are repointed to
+//! (the same TJ/kern logic `remove_text` uses); image `Do`s are repointed to
 //! cloned image objects via `KasIm{n}` names (the same per-invocation
-//! cloning M19 uses). Both kinds of edits are applied to the *same*
+//! cloning `remove_image_region` uses). Both kinds of edits are applied to the *same*
 //! output ops list in one pass — a `Tj` that loses codes becomes a
 //! `TJ` at the same `op_index`, and a `Do` that hits a rect gets a
 //! new name at the same `op_index`. The page's `/Contents` is
@@ -82,7 +82,7 @@ pub struct RegionRemoval {
     /// How many pixels were changed to black (at least one component).
     pub pixels_changed: u64,
     /// How many XObject names were removed from the page's
-    /// `/Resources` because they were orphaned by the edit (M21).
+    /// `/Resources` because they were orphaned by the edit.
     /// A removed name does *not* imply the object itself was
     /// deleted — the writer's reachability scan decides that.
     pub orphaned_names_removed: u64,
@@ -199,14 +199,14 @@ pub fn remove_region(
     }
 
     // ---- page-level eligibility ------------------------------------
-    // M20's own rules — not a simple union of M17+M19 refusals:
+    // `remove_region`'s own rules — not a simple union of the text- and image-removal refusals:
     //
     // - `Text` targets must all be `Tr 0` fill — page-level *and*
     //   form-level alike. (`Tr 4–7` and `w = 0` already landed in
     //   `blockers`/`uncertain` above.)
     // - `Image` targets at `form_path` depth 0 are in scope; at
     //   depth ≥ 1 they are inside a form → refused.
-    // - `Form` targets are refused — M20 does not inherit M18's
+    // - `Form` targets are refused — `remove_region` does not inherit `remove_text`'s
     //   form handling; a `Do` to a `/Form` is refused even when it
     //   contains no text or images.
     // - `Other` targets are refused regardless of rects.
@@ -438,7 +438,7 @@ pub fn remove_region(
         }
     }
 
-    // ---- M21: collect XObject names orphaned by the edit ------------
+    // ---- collect XObject names orphaned by the edit ------------
     // Names that were edited (old names) are candidates for removal;
     // they are kept only if some *remaining* `Do` still uses them.
     // We scan `new_ops` (the post-edit ops) — not the original ops —
@@ -488,14 +488,14 @@ pub fn remove_region(
         .ok_or_else(|| Error::Structure(format!("page {page_ref} is not a dictionary")))?;
     page_dict.insert(b"Contents".to_vec(), Object::Ref(stream_ref));
 
-    // ---- M22: materialise inherited Resources -----------------------
+    // ---- materialise inherited Resources -----------------------
     // Each page's *effective* Resources (as resolved by the page-tree
     // walk) is written explicitly into the page dict. A parent /Pages
     // can then drop its /Resources — but only when *every* descendant
     // page has been materialised. This is the same Edit/overlay as the
     // text/image edits — one rewrite, not two.
     //
-    // M22.2: page refs are indexed by HashMap so a leaf lookup is O(1),
+    // Page refs are indexed by HashMap so a leaf lookup is O(1),
     // not O(n) per kid. The strip decision is post-order — a /Pages
     // node's `all_materialised` is computed only after its children's
     // results are known, and a child's failure propagates upward.
@@ -569,7 +569,7 @@ pub fn remove_region(
         for (name, r) in &new_xobject_entries {
             xobj_dict.insert(name.clone(), Object::Ref(*r));
         }
-        // M21: remove orphaned names — XObject names that were edited
+        // Remove orphaned names — XObject names that were edited
         // and are no longer referenced by any remaining `Do`. The
         // orphaned image object itself is left to the writer's
         // reachability scan: if nothing else references it, it is
@@ -628,7 +628,7 @@ pub struct RegionsRemoval {
     /// Total pixels changed to black across all edited pages.
     pub pixels_changed: u64,
     /// XObject names orphaned by the edit, removed from each edited
-    /// page's `/Resources` (M21) — total across pages.
+    /// page's `/Resources` — total across pages.
     pub orphaned_names_removed: u64,
     /// `(page_index, sites)` pairs — each entry carries the 0-based
     /// page index plus the `Site`s edited on that page.
@@ -675,7 +675,7 @@ fn page_label(page_index: usize) -> String {
 /// session plus the aggregated counters — *without* writing.
 ///
 /// The caller decides what to do with the session: `remove_regions`
-/// calls `edit.rewrite()`; the M26 combined entry point calls
+/// calls `edit.rewrite()`; the combined entry point calls
 /// `edit.rewrite_with_overrides` so the trailer `/Info` and catalog
 /// `/Metadata` entries are stripped in the *same* rewrite.
 struct RegionsEdit<'a> {
@@ -1086,7 +1086,7 @@ fn regions_edit_session<'a>(
             }
         }
 
-        // ---- M21: orphaned XObject names for this page --------------
+        // ---- orphaned XObject names for this page --------------
         let mut candidate_names: BTreeSet<Vec<u8>> = BTreeSet::new();
         for (_site, _ctm, _xobj_ref, name) in to_edit_image.values() {
             candidate_names.insert(name.clone());
@@ -1130,7 +1130,7 @@ fn regions_edit_session<'a>(
             .cloned()
             .ok_or_else(|| Error::Structure(format!("page {page_ref} is not a dictionary")))?;
         // Contents and Resources coexist in *this* page dict — the
-        // M22.1 rule: never write Contents separately from the
+        // Rule: never write Contents separately from the
         // materialised Resources.
         page_dict.insert(b"Contents".to_vec(), Object::Ref(stream_ref));
         if let Some(res) = page.resources() {
@@ -1238,7 +1238,7 @@ fn regions_edit_session<'a>(
     })
 }
 
-/// M24 — experimental scoped region removal over **multiple pages**
+/// Experimental scoped region removal over **multiple pages**
 /// in one edit session and one rewrite.
 ///
 /// `specs` is `(0-based_page_index, rects)` pairs; rects use the same
@@ -1338,7 +1338,7 @@ impl std::fmt::Debug for RegionsAndMetadataRemoval {
     }
 }
 
-/// M26 — experimental scoped region removal over multiple pages
+/// Experimental scoped region removal over multiple pages
 /// **and** document-metadata entry removal in *one* edit session and
 /// *one* rewrite.
 ///
@@ -1414,13 +1414,13 @@ pub fn remove_regions_and_document_metadata(
     })
 }
 
-/// M22.4 — post-order traversal over the `/Pages` tree that decides
+/// Post-order traversal over the `/Pages` tree that decides
 /// which intermediate nodes may drop their `/Resources`.
 ///
 /// A `/Pages` node's result is `true` only when *every* descendant
 /// leaf page has been materialised (`pages_with_resources`). The
 /// result is recorded in `node_results` so the parent sees a
-/// definitive `false`, not `None` — M22.3 fixed a bug where a node
+/// definitive `false`, not `None` — an earlier version had a bug where a node
 /// that broke out of its kid loop on a *failure* was left unrecorded,
 /// causing the parent to re-push the same child indefinitely.
 ///
@@ -1689,7 +1689,7 @@ mod tests {
         assert_eq!(r.sites.len(), 0);
     }
 
-    /// A page with a Form `Do` is refused — M20 does not handle forms.
+    /// A page with a Form `Do` is refused — `remove_region` does not handle forms.
     #[test]
     fn form_do_is_refused() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
@@ -1924,7 +1924,7 @@ mod tests {
         assert!(out.contains("/KasIm0"), "{out}");
     }
 
-    // ---- M20.1 — regression tests -----------------------------------
+    // ---- regression tests -----------------------------------
 
     /// Multiple `Do` calls to the same image at different CTMs —
     /// each gets its own clone with the correct pixel range.
@@ -2367,7 +2367,7 @@ mod tests {
         let d = doc(&parts.concat());
         // Text is editable but the image's JPEG bytes are truncated
         // junk — when the rect hits it the whole call fails. A JPEG
-        // image *outside* the rect is left alone (M20's policy).
+        // image *outside* the rect is left alone (`remove_region`'s policy).
         let err = remove_region(
             &d,
             0,
@@ -2754,7 +2754,7 @@ mod tests {
         assert!(out.contains("TJ"), "{out}");
     }
 
-    // ---- M21 — orphaned XObject name removal -------------------------
+    // ---- orphaned XObject name removal -------------------------
 
     /// One image, one `Do`, edited — the original name is orphaned
     /// and removed from /XObject.
@@ -3069,7 +3069,7 @@ mod tests {
         assert_eq!(r.invocations_edited, 1);
         assert_eq!(r.orphaned_names_removed, 1);
 
-        // M21.1: re-parse the output and verify by structure.
+        // Re-parse the output and verify by structure.
         let out_doc = doc(&r.output);
         let out_str = String::from_utf8_lossy(&r.output).into_owned();
         // The materialised /Resources keeps /Font and /Unused.
@@ -3080,7 +3080,7 @@ mod tests {
         );
         assert!(out_str.contains("/KasIm0"), "{out_str}");
 
-        // M22: the parent /Pages has had /Resources stripped (all
+        // The parent /Pages has had /Resources stripped (all
         // descendants were materialised). The page's own /Resources
         // is the materialised copy — it has /Font and /Unused but
         // /Im1 was orphaned and removed.
@@ -3121,7 +3121,7 @@ mod tests {
     }
 
     /// `max_diag_exec_ops` boundary: exactly at the limit passes,
-    /// one op under is refused (M20.1 requirement A).
+    /// one op under is refused.
     #[test]
     fn m20_1_max_diag_exec_ops_boundary() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
@@ -3200,7 +3200,7 @@ mod tests {
         );
     }
 
-    // ---- M21.1 — content-based image verification ---------------------
+    // ---- content-based image verification ---------------------
 
     /// Re-parse the output and verify by *content* (not object number):
     /// the edited image stream exists, the original does not.
@@ -3377,7 +3377,7 @@ mod tests {
         assert!(found_edited, "edited image must be in output");
     }
 
-    // ---- M22.1 — multi-level page tree materialisation --------------
+    // ---- multi-level page tree materialisation --------------
 
     /// A /Pages node *without* /Resources still has its descendants
     /// materialised — the traversal does not stop at a resourceless
@@ -4010,7 +4010,7 @@ mod tests {
         assert_eq!(pages_to_strip, vec![IndirectRef::new(10, 0)]);
     }
 
-    // ---- M24 — multi-page region removal ---------------------------
+    // ---- multi-page region removal ---------------------------
 
     /// A 2-page fixture: page 1 has text `(ABC)` at (20,140) and a
     /// 2x2 gray image at (20,60); page 2 has text `(XYZ)` at (20,140)
@@ -4386,7 +4386,7 @@ mod tests {
         entry.as_ref()
     }
 
-    // ---- M24.1 — per-page rect count limit -------------------------
+    // ---- per-page rect count limit -------------------------
 
     /// `max_diag_rects` bounds the *merged* per-page rect count —
     /// repeated specs for one page cannot bypass it.
@@ -4480,7 +4480,7 @@ mod tests {
         assert_eq!(r.per_page.len(), 1);
     }
 
-    // ---- M24.1 — page-index overflow -------------------------------
+    // ---- page-index overflow -------------------------------
 
     /// `usize::MAX` as a page index must not overflow the `page + 1`
     /// error path — the refusal is `Error::Structure`, not a panic.
@@ -4537,7 +4537,7 @@ mod tests {
         assert_eq!(r.per_page.len(), 2);
     }
 
-    // ---- M24.1 — shared image across two edited pages --------------
+    // ---- shared image across two edited pages --------------
 
     /// Two pages share the same image object; different rects edit
     /// different pixels. Each page's clone is independent — page 1's
@@ -4877,7 +4877,7 @@ mod tests {
         );
     }
 
-    // ---- M26 — region removal + document-metadata entry removal ----
+    // ---- region removal + document-metadata entry removal ----
 
     /// 2-page fixture with trailer /Info and catalog /Metadata.
     /// Page 1: text `(ABC)` at (20,140) + shared 2x2 image at
@@ -5390,7 +5390,7 @@ mod tests {
         assert!(dbg.contains("info_removed"));
     }
 
-    // ---- M27 — JPEG (DCTDecode) image editing -----------------------
+    // ---- JPEG (DCTDecode) image editing -----------------------
 
     /// Decode a hex string — test fixture helper only.
     fn unhex(s: &str) -> Vec<u8> {
@@ -6639,7 +6639,7 @@ mod tests {
         }
     }
 
-    // -- M27.1 — coding-process check + ColorTransform precedence ----
+    // -- coding-process check + ColorTransform precedence ----
 
     /// A progressive JPEG is `Unsupported`, not `Parse` — the data is
     /// well-formed, just out of scope. Checked *before* decode so no
@@ -6937,7 +6937,7 @@ mod tests {
         }
     }
 
-    // -- M27.2 — explicit effective-transform decision ---------------
+    // -- explicit effective-transform decision ---------------
     //
     // Each case lists the *spec-mandated* effective transform (ISO
     // 32000-1 §7.4.8 + Adobe TN #5116), whether the edit accepts or

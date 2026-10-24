@@ -1,4 +1,4 @@
-//! Content stream parser → typed operations (M2).
+//! Content stream parser → typed operations.
 //!
 //! Parses the postfix-notation command stream of a page (or Form
 //! XObject) into a [`Vec<Operation>`]. Operands are collected until an

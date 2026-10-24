@@ -1,6 +1,6 @@
 # `inspect` — page/document structure dump
 
-## Page structure inspection (M10, CLI `inspect`)
+## Page structure inspection (CLI `inspect`)
 
 `kasane-pdf inspect <file.pdf> <page>` — a read-only diagnostic dump
 of a single page's structure. Fixed line order, no rendering, no
@@ -48,7 +48,7 @@ and `SCN` are counted separately (never the grouped `SC/SCN`
 label), `sc`/`scn` likewise, and an `Unknown` op is reported under
 its real name, not `unknown`. Order is byte order. A malformed
 content stream — a `/Contents` that isn't a ref or ref array, a
-stream that fails to decode, or a syntax/balance error the M2
+stream that fails to decode, or a syntax/balance error the content
 parser rejects — is a typed error, not silently skipped.
 
 Errors are typed (`Error::Structure`/`MissingReference`/`Parse`): a

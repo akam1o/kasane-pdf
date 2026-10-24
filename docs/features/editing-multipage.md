@@ -1,6 +1,6 @@
 # Experimental multi-page region removal
 
-## Experimental multi-page region removal (M24, `remove_regions`, CLI `experimental-remove-regions`)
+## Experimental multi-page region removal (`remove_regions`, CLI `experimental-remove-regions`)
 
 **Not a redaction tool** — the same experiment boundary as
 `remove_region`, extended across pages in one edit session and one
@@ -16,7 +16,7 @@ where `specs` is `(0-based_page_index, rects)` pairs:
   into one plan; pages are processed in ascending order regardless
   of input order. Empty specs, empty rect lists, out-of-range page
   indices and malformed rects are all refused *before* any walk.
-- **Per-page `max_diag_rects`** (M24.1) — the merged per-page rect
+- **Per-page `max_diag_rects`** — the merged per-page rect
   count is bounded by the same `max_diag_rects` limit as the
   single-page API; a page repeated across several specs cannot
   bypass it. The count is per page, not a document-wide rect
@@ -39,7 +39,7 @@ where `specs` is `(0-based_page_index, rects)` pairs:
   `LimitExceeded` error.
 - **Contents + Resources integration** — each edited page's dict
   gets its new `/Contents` *and* materialised `/Resources` in the
-  same `page_dict` before the overlay insert, so the M22.1 rule
+  same `page_dict` before the overlay insert, so the rule
   (never write `Contents` separately from materialised `Resources`)
   holds across pages. `/Resources` materialisation and `/Pages`
   stripping run once over the whole document after all per-page

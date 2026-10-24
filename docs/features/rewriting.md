@@ -1,6 +1,6 @@
 # Full-rewrite output — support & guarantees
 
-## Rewrite output (M8, ISO 32000-1 §7.5)
+## Rewrite output (ISO 32000-1 §7.5)
 
 `rewrite(&Document)` rebuilds a loaded document as a fresh
 single-revision PDF: DFS from trailer `/Root` (plus `/Info`), dense
@@ -10,7 +10,7 @@ reachable object graph.
 
 "Reachable" means objects the DFS can reach through `/Ref`s starting
 at `/Root`/`/Info`. Keys *inside* a reachable dictionary are kept
-verbatim — including keys M8 does not understand. That is distinct
+verbatim — including keys the rewriter does not understand. That is distinct
 from *unreferenced* objects elsewhere in the file: unreferenced
 objects are simply never walked and never emitted (the only
 deliberate exception is an indirect stream `/Length`, whose slot is
@@ -41,10 +41,10 @@ is preserved verbatim). Do not present a rewrite as redaction.
 
 **Preserve ≠ guarantee ≠ inspect.** The rewrite preserves every
 reachable dictionary key verbatim — including keys whose *feature*
-M8 does not implement (colour management, transparency, patterns,
+the engine does not implement (colour management, transparency, patterns,
 optional content inside content streams, etc.). "Preserved" means the
 bytes are carried over; it does **not** mean the feature works, is
-validated, or is safe. The refusal list above is exactly the set M8
+validated, or is safe. The refusal list above is exactly the set the rewriter
 inspects — a payload hidden in a key not listed is preserved, not
 removed. Do not widen this to a sanitizing claim.
 

@@ -1,6 +1,6 @@
 # Residual-information audit
 
-## Residual-information audit (M23, `audit`, CLI `audit-residuals`)
+## Residual-information audit (`audit`, CLI `audit-residuals`)
 
 **Read-only.** `audit_residuals(&Document, &Limits)` returns a
 `ResidualAudit`; nothing is written, nothing is deleted, and the
@@ -102,7 +102,7 @@ that yields its children lazily, so a low `max_audit_elements`
 budget stops the walk before all children are expanded into frames
 or paths. A `Vec<PathStep>` is cloned only when a `Ref` is found or
 a container is descended into, not for every element visited.
-(M23.3: the test-only `max_walk_stack` field on `Audit` plus a
+(the test-only `max_walk_stack` field on `Audit` plus a
 `push_frame!` macro let tests assert this against the *production*
 walker — no duplicated scan.)
 
@@ -135,9 +135,9 @@ stream entry count and byte range, parsed-operation count
 `q`/`Q` depth (`max_gsave_depth`), rendered output dimensions and
 total pixels (`max_render_pixels`, `max_render_total_pixels`,
 `max_render_buffer_bytes`), and path complexity
-(`max_path_elements`). The M1 decoded-byte budget counts decode
-*work*; the M2 operation limits bound the retained structure; the M3
-render limits bound the output. M16 diagnosis adds input/output
+(`max_path_elements`). The decoded-byte budget counts decode
+*work*; the operation limits bound the retained structure; the
+render limits bound the output. the diagnosis adds input/output
 bounds — `max_diag_rects`, `max_diag_items` (reported targets +
 uncertain + blockers), `max_diag_share_pages` (cross-page sharing
 scan), `max_diag_share_refs` (resource entries inspected), and a
@@ -145,7 +145,7 @@ CLI output cap of 1_000 lines per category — so a diagnosis never
 grows without bound and its partial-result markers (`incomplete`,
 `shared_scope.truncated`) are always stated.
 
-M18.1 adds three cumulative budgets that the per-stream parse cap
+The text editor adds three cumulative budgets that the per-stream parse cap
 (`max_operations`) cannot express:
 
 - `max_diag_exec_ops` (200,000) — every content-stream *execution*

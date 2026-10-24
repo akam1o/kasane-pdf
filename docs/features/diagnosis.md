@@ -1,6 +1,6 @@
 # Pre-redaction diagnosis (`diagnose_redaction`)
 
-## Pre-redaction diagnosis (M16, `redact_diag`, CLI `preflight-redaction`)
+## Pre-redaction diagnosis (`redact_diag`, CLI `preflight-redaction`)
 
 `diagnose_redaction(&doc, page_index, rects, limits) -> Diagnosis`
 inspects one page's content streams *as a reader* and reports what a

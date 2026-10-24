@@ -1,5 +1,5 @@
 #!/bin/sh
-# Warning-free structural validation of rewrite output (milestone M8.2).
+# Warning-free structural validation of rewrite output.
 # Requires: qpdf, the kasane-pdf CLI built (cargo build).
 # Usage:  scripts/verify-rewrite.sh
 # Prints one line per fixture:  "name: PASS" or "name: <detail>".

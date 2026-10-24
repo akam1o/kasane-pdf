@@ -1,9 +1,9 @@
 # Experimental image-region removal
 
-## Experimental image-region removal (M19/M19.1, `remove_image`, CLI `experimental-remove-image-region`)
+## Experimental image-region removal (`remove_image`, CLI `experimental-remove-image-region`)
 
 **Not a redaction tool** — same guarantee boundary as `remove_text`.
-M19 *replaces* the image samples whose painted positions land inside
+`remove_image_region` *replaces* the image samples whose painted positions land inside
 caller-supplied rectangles with opaque black (all-zero samples) in a
 *new* image object; the original stream is never mutated, and only
 the `Do` call sites that hit a rect are repointed to the clone. It
@@ -18,11 +18,11 @@ pixels_changed, sites, scope }`:
 
 - Rects are un-rotated, un-cropped user space — same convention as
   `preflight-redaction`/`inspect`/`remove_text`.
-- Reuses the M16 `DiagWalker` (`new_diag_only` — no text snapshots)
+- Reuses the diagnosis `DiagWalker` (`new_diag_only` — no text snapshots)
   so the graphics state and hit tests are the diagnosis's; any
   `blocker`/`uncertain` entry or a mid-stream walk failure is a
   typed refusal.
-- **Exact pixel union, not a bounding box (M19.2)**: each rect
+- **Exact pixel union, not a bounding box**: each rect
   produces its own `(x0,y0,x1,y1)` pixel range via inverse-CTM
   mapping. The union is computed by splitting into horizontal bands
   at every distinct y-boundary, then merging x-intervals within each
@@ -32,7 +32,7 @@ pixels_changed, sites, scope }`:
   is visited twice. Outward rounding (`floor`/`ceil`) and the y-flip
   (image rows top-down) are unchanged. The intermediate `Vec` is
   bounded by `rects.len()` (`max_diag_rects`), never by image height.
-- **Grid-aligned image CTMs (M28)**: the `Do` CTM is classified
+- **Grid-aligned image CTMs**: the `Do` CTM is classified
   before inversion — exact components only, no epsilon. Accepted:
   (A) *axis-aligned* `b==0, c==0` with non-zero `a`,`d` of either
   sign — covers horizontal/vertical reflection and 180° rotation;
@@ -45,12 +45,12 @@ pixels_changed, sites, scope }`:
   rotation, shear, singular, or non-finite CTM → `Error::Unsupported`
   / `Error::Structure`; the input rect stays in un-rotated user
   space and the page's `/Rotate` is *not* applied to it.
-- **Pixel count, not component count (M19.1)**: `pixels_changed`
+- **Pixel count, not component count**: `pixels_changed`
   counts *pixels* — a pixel is one unit when at least one of its
   components changed **from non-0 to 0**. RGB `[r,g,b]` → `[0,0,0]`
   counts as 1; `[0,128,0]` → `[0,0,0]` also counts as 1; an
   already-all-0 pixel counts as 0. Gray follows the same definition.
-- **Colour-space resolution + Default* substitution (M19.2)**:
+- **Colour-space resolution + Default* substitution**:
   `/ColorSpace` names are resolved through the page's effective
   `/Resources /ColorSpace` dict — `/CS1` → `/DeviceGray` works.
   A *device* name (`/DeviceGray`, `/DeviceRGB`) is then checked
@@ -61,7 +61,7 @@ pixels_changed, sites, scope }`:
   `/ColorSpace` resource entry is `Error::Structure`, not a guess.
   Substitution does not recurse — a `Default*` that is itself a
   device name is ignored.
-- **Pre-decode budget check (M19.2)**: `max_image_bytes` and
+- **Pre-decode budget check**: `max_image_bytes` and
   `max_edit_content_bytes` are both checked *before* decoding —
   an image whose expected `Width × Height × ncomps` size exceeds
   the remaining cumulative budget is refused without allocating
@@ -86,7 +86,7 @@ DeviceGray/DeviceRGB (post-resolution), a `/Mask`/`SMask`/
 `SMaskInData`/`OC`/`ImageMask`/`Interpolate`, a non-default
 `/Decode`, a `/Filter` other than none or `/FlateDecode`, or a
 non-grid-aligned/singular/non-finite CTM (arbitrary-angle rotation
-and shear are refused; grid-aligned forms are edited — see M28
+and shear are refused; grid-aligned forms are edited — see the grid-aligned CTM notes
 above).
 
 Limitations — by design and explicitly *not* done:

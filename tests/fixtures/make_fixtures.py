@@ -14,7 +14,7 @@ Fixtures produced:
   render_rects.pdf     Renderable page: rectangles, strokes, fills,
                        clipping, cm, q/Q — no text/XObject/gs.
   render_annot.pdf     Page with /Annots — render must refuse.
-  render_text.pdf      Page with Tj — render must refuse (text is M4+).
+  render_text.pdf      Page with Tj — render must refuse (no font resource).
   pages.pdf            3 pages in a 2-level page tree; inherited MediaBox
                        on the root, a nested Pages node overriding it,
                        a Rotate on one page, a shared (indirect) MediaBox,
@@ -247,7 +247,7 @@ def truncated():
 
 
 # --------------------------------------------------------------------
-# M1 fixtures
+# Stream and xref fixtures
 # --------------------------------------------------------------------
 
 
@@ -663,12 +663,12 @@ def xref_stream_bad_type():
 
 
 # --------------------------------------------------------------------
-# M2 fixtures
+# Content-stream fixtures
 # --------------------------------------------------------------------
 
 
 def content_ops():
-    """Content stream covering the operators M2 parses, incl. a
+    """Content stream covering the operators the parser handles, incl. a
     compatibility section, marked content, XObject/ExtGState names and
     a TJ array with kerning numbers."""
     stream = (
@@ -711,7 +711,7 @@ def content_ops():
 
 
 # --------------------------------------------------------------------
-# M3 fixtures
+# Render fixtures
 # --------------------------------------------------------------------
 
 
@@ -762,7 +762,7 @@ def render_annot():
 
 
 def render_text():
-    """Page with a Tj — render must refuse (text is out of M3)."""
+    """Page with a Tj — render must refuse (no font resource)."""
     stream = b"BT /F1 12 Tf 10 50 Td (hi) Tj ET"
     objects = [
         (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
@@ -777,7 +777,7 @@ def render_text():
 
 
 # ---------------------------------------------------------------------
-# M4: Form XObjects and images
+# Form XObjects and images
 # ---------------------------------------------------------------------
 
 def xobject_form_basic():
@@ -1124,7 +1124,7 @@ def xobject_unused_bad():
 
 
 # ---------------------------------------------------------------------
-# M5: embedded TrueType text
+# Embedded TrueType text
 # ---------------------------------------------------------------------
 
 def _font_objects(ttf_bytes, widths):
@@ -1623,7 +1623,7 @@ if __name__ == "__main__":
     missing_ref()
     cyclic_pages()
     truncated()
-    # M1
+    # streams and xref
     flate_contents()
     contents_array()
     contents_none()
@@ -1633,12 +1633,12 @@ if __name__ == "__main__":
     unsupported_filter()
     objstm()
     hybrid()
-    # M1.1
+    # predictors
     hybrid_compressed()
     hybrid_gap()
     prev_chain()
     xref_stream_bad_type()
-    # M4
+    # xobjects
     xobject_form_basic()
     xobject_form_matrix()
     xobject_form_bbox_clip()
@@ -1655,7 +1655,7 @@ if __name__ == "__main__":
     xobject_unknown_subtype()
     xobject_missing()
     xobject_unused_bad()
-    # M5
+    # text
     text_basic()
     text_tj()
     text_quote_ops()

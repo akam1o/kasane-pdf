@@ -1,4 +1,4 @@
-//! M19 — **experimental** image-region removal.
+//! **Experimental** image-region removal.
 //!
 //! [`remove_image_region`] replaces the image samples whose painted
 //! positions land inside caller-supplied rectangles with opaque black
@@ -233,13 +233,13 @@ pub fn remove_image_region(
 
     // ---- page-level eligibility -----------------------------------
     // A page is eligible only when every occurrence the walk produced
-    // is one M19 can faithfully rewrite:
+    // is one `remove_image_region` can faithfully rewrite:
     //
     // - `Image` targets at `form_path` depth 0 are the page-level
     //   `Do` calls we may edit. At depth ≥ 1 they are inside a form
     //   → nested, refused.
     // - `Form` targets are refused — nested XObjects are out of
-    //   scope for M19.
+    //   scope for `remove_image_region`.
     // - `Text` and `Path` targets are unaffected — we only rewrite
     //   `Do` calls, and the page's other content passes through
     //   unchanged.
@@ -262,7 +262,7 @@ pub fn remove_image_region(
             TargetKind::Form => {
                 return Err(Error::Unsupported {
                     feature: "image removal on a page with form XObjects",
-                    detail: "a /Form Do is out of scope for M19".into(),
+                    detail: "a /Form Do is out of scope for `remove_image_region`".into(),
                 });
             }
             TargetKind::Text | TargetKind::Path => {}
@@ -291,7 +291,7 @@ pub fn remove_image_region(
             } = &t.detail
             {
                 // The CTM is recorded by the walker at the `Do`
-                // call site — no re-walk needed (M20.1).
+                // call site — no re-walk needed.
                 to_edit.insert(t.site.op_index, (t.site.clone(), *ctm, *xobj, name.clone()));
             }
         }
@@ -327,7 +327,7 @@ pub fn remove_image_region(
             .as_stream()
             .ok_or_else(|| Error::Structure("image XObject is not a stream".into()))?;
 
-        // ---- validate the image for M19 ----------------------------
+        // ---- validate the image ----------------------------
         let (width, height, ncomps) = validate_image(dict, page.resources(), doc, limits)?;
 
         // ---- compute the pixel ranges to blacken -------------------
@@ -542,13 +542,13 @@ pub fn remove_image_region(
     })
 }
 
-/// Validate an image XObject for M19/M20 — returns `(width, height,
+/// Validate an image XObject for region removal — returns `(width, height,
 /// ncomps)` on success, `Err` on any unsupported attribute.
 ///
 /// `resources` is the page's effective `/Resources` — needed to
 /// resolve named colour spaces (`/CS1`) and `Default*` substitutions.
 ///
-/// Shared with `remove_region.rs` (M20).
+/// Shared with `remove_region.rs`.
 pub(crate) fn validate_image(
     dict: &Dict,
     resources: Option<&Object>,
@@ -736,7 +736,7 @@ pub(crate) fn validate_image(
 /// JPEG decoder's own `max_decoding_buffer_size` is set to the same
 /// cap so a hostile JPEG cannot allocate past it.
 ///
-/// Shared with `remove_region.rs` (M20) and the M26 combined entry.
+/// Shared with `remove_region.rs` and the combined entry point.
 pub(crate) fn decode_image(
     dict: &Dict,
     raw: &[u8],
@@ -1278,7 +1278,7 @@ fn apply_default_substitution(
 
 /// Whether a `/Decode` array is the default `[0 1 …]` for `ncomps`.
 ///
-/// Shared with `remove_region.rs` (M20).
+/// Shared with `remove_region.rs`.
 pub(crate) fn is_default_decode(obj: &Object, ncomps: usize) -> bool {
     let arr = match obj.as_array() {
         Some(a) => a,
@@ -1319,7 +1319,7 @@ enum CtmClass {
 /// refused. Returns an *exact* union of `(x0, y0, x1, y1)` pixel
 /// ranges, one per covered band-interval, expanded *outward*
 /// (`floor`/`ceil`) so no covered pixel is lost. Shared with
-/// `remove_region.rs` (M20).
+/// `remove_region.rs`.
 pub(crate) fn image_pixel_ranges(
     ctm: &Matrix,
     width: u32,
@@ -2051,7 +2051,7 @@ fn fmt_num(n: f64) -> String {
 /// against the page's effective `/XObject` dict plus the names this
 /// call already allocated.
 ///
-/// Shared with `remove_region.rs` (M20).
+/// Shared with `remove_region.rs`.
 pub(crate) fn fresh_xobject_name(
     page: &crate::page::Page,
     doc: &Document,
@@ -2722,7 +2722,7 @@ mod tests {
     }
 
     /// A page with a `/Form` XObject is refused — nested XObjects are
-    /// out of scope for M19.
+    /// out of scope for `remove_image_region`.
     #[test]
     fn form_xobject_is_refused() {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
@@ -3027,7 +3027,7 @@ mod tests {
         );
     }
 
-    /// A page-level `Do` to a `/Form` is refused — M19 does not edit
+    /// A page-level `Do` to a `/Form` is refused — `remove_image_region` does not edit
     /// inside forms.
     #[test]
     fn form_do_is_refused() {
@@ -3077,7 +3077,7 @@ mod tests {
         );
     }
 
-    // ---- M19.1 — regression tests ------------------------------------
+    // ---- regression tests ------------------------------------
 
     /// Two rects covering the top-left and bottom-right pixels only —
     /// the middle pixels must stay unchanged (no bounding-box fill).
@@ -3512,7 +3512,7 @@ mod tests {
         );
     }
 
-    // ---- M19.2 — regression tests ------------------------------------
+    // ---- regression tests ------------------------------------
 
     /// Corner-touching rects: two pixels that share only a corner
     /// must not fill the 2×2 block between them.
@@ -3978,7 +3978,7 @@ mod tests {
         // Im2 was never decoded — the corrupt data is not an error.
     }
 
-    // ---- M28 — rotated / reflected image region editing --------------
+    // ---- rotated / reflected image region editing --------------
     //
     // The shared `image_pixel_ranges` accepts the two grid-aligned
     // CTM classes; these tests verify the *pixel* each user-space

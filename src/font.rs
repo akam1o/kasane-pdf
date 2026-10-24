@@ -1,12 +1,12 @@
 //! Font handling for text rendering (ISO 32000-1 §9).
 //!
-//! M5 covers **embedded TrueType simple fonts**:
+//! **Embedded TrueType simple fonts**:
 //! `/Subtype /TrueType` + `/FontDescriptor /FontFile2` + a
 //! `WinAnsiEncoding` (or an encoding dictionary with a
 //! `WinAnsiEncoding`/`MacRomanEncoding` `BaseEncoding` plus an
 //! optional `Differences` array).
 //!
-//! M7 adds **composite Type 0 fonts** — `/Subtype /Type0` with
+//! **Composite Type 0 fonts** — `/Subtype /Type0` with
 //! `/Encoding /Identity-H`, exactly one `/DescendantFonts` entry of
 //! `/CIDFontType2`, and a `/FontFile2` TrueType program. String bytes
 //! are read as 2-byte big-endian codes → CID (= code) →
@@ -118,8 +118,8 @@ pub(crate) struct Type1Font {
 }
 
 /// The resolved font behind a `Tf` selection — a simple TrueType
-/// font (M5), a CFF Type1 font, or a composite Type 0 / CIDFontType2
-/// font (M7). They share outline extraction and the §9.4 text-state
+/// font, a CFF Type1 font, or a composite Type 0 / CIDFontType2
+/// font. They share outline extraction and the §9.4 text-state
 /// machinery; they differ in how string bytes become codes, how codes
 /// become glyph ids, and where widths come from.
 /// A `/Type3` font — each glyph is a `/CharProcs` content stream the
@@ -254,7 +254,7 @@ pub(crate) fn load_simple_font_dict(
             return Err(Error::Unsupported {
                 feature: "font subtype",
                 detail: format!(
-                    "/{} — only /TrueType is supported in M5",
+                    "/{} — not a simple TrueType font",
                     String::from_utf8_lossy(other)
                 ),
             })
@@ -1305,7 +1305,7 @@ impl Type1Font {
 }
 
 // --------------------------------------------------------------------
-// Composite font (Type 0 / CIDFontType2 / CIDFontType0) — M7, M9
+// Composite font (Type 0 / CIDFontType2 / CIDFontType0)
 // --------------------------------------------------------------------
 
 /// The glyph program behind a CIDFont.

@@ -4,7 +4,7 @@
 //! objects are represented by [`Object::Stream`], which carries the
 //! **raw, still-encoded** byte range of the stream data within the input
 //! buffer. Decoding filters (`/FlateDecode`, …) is intentionally out of
-//! scope for M0; the raw range is recorded so that future layers do not
+//! scope for the object layer; the raw range is recorded so that future layers do not
 //! have to re-discover it.
 
 use std::collections::BTreeMap;

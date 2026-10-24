@@ -1,4 +1,4 @@
-//! Full-rewrite / round-trip integration tests (milestone M8).
+//! Full-rewrite / round-trip integration tests.
 
 use kasane_pdf::{rewrite, Document, Error, Limits, Object};
 
@@ -251,7 +251,7 @@ fn pdf_from_bodies(bodies: &[(u32, &[u8])]) -> Vec<u8> {
 fn stream_indirect_length_not_orphaned() {
     // /Length as an indirect ref shared by two streams. After rewrite
     // the output has no reference to the old Length object — it must
-    // not be emitted as an orphan (M8.1 fix: the collector skips the
+    // not be emitted as an orphan (the collector skips the
     // /Length slot inside stream dicts).
     let src = pdf_from_bodies(&[
         (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
@@ -833,7 +833,7 @@ fn incremental_input_latest_state() {
 // ------------------------------------------------------------------
 
 // --------------------------------------------------------------------
-// Named destinations — preserved through the rewrite (M8.1 B revisited)
+// Named destinations — preserved through the rewrite
 // --------------------------------------------------------------------
 
 /// Assemble a PDF from `(number, body)` pairs; object 1 must be the

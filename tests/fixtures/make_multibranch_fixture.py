@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the M22.4 multi-branch, multi-page fixture.
+"""Generate the multi-branch, multi-page fixture.
 
 Structure (3-level /Pages tree, two branches, different inherited
 /Resources per branch, shared name /Im1 resolves to a *different*
@@ -31,7 +31,7 @@ decision must walk through them; both branches fully materialised
 resource-bearing branch nodes (10, 11) are *not* stripped because
 their /Resources is what the leaves inherit…
 
-Wait — M22 materialises each *page's* effective Resources into the
+Note — the region editor materialises each *page's* effective Resources into the
 page dict. After materialisation, branch nodes 10/11 are candidates
 for stripping *their own* /Resources (all descendants materialised).
 So in the output, pages 3 and 4 carry explicit /Resources, and

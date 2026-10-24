@@ -1,4 +1,4 @@
-//! Stream-decoding and object-layer integration tests (milestone M1):
+//! Stream-decoding and object-layer integration tests:
 //! stream decoding, xref streams, object streams, page contents,
 //! free-entry invalidation, and resource limits.
 

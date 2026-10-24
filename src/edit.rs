@@ -1,4 +1,4 @@
-//! Minimal annotation-edit session — M9 "add a rectangle annotation".
+//! Annotation-edit session: `/Square` additions and the incremental-save edits (metadata, annotations, form-field values).
 //!
 //! An [`Edit`] borrows an immutable [`Document`] and accumulates
 //! additions as **synthetic objects** in a reserved indirect-number
@@ -9,7 +9,7 @@
 //! collector resolves synthetic refs from the overlay and *real* refs
 //! from the document — producing a normal single-revision file.
 //!
-//! Scope (M9): `/Subtype /Square` annotations only — opaque RGB stroke
+//! Scope: `/Subtype /Square` annotations only — opaque RGB stroke
 //! colour, positive line width, unfilled interior, a generated `/AP`
 //! `/N` appearance stream, and printing+viewing flag set. Nothing else
 //! (no fill, dashes, other subtypes, editing/deleting existing
@@ -48,7 +48,7 @@ pub struct Edit<'a> {
     /// `(obj, gen) → body` for every synthetic object and every real
     /// object whose body the edit replaces (the page dict and any
     /// copied `/Annots` array). Fed to [`rewrite::rewrite_overlay`].
-    /// `pub(crate)` — M17's `remove_text` inserts its `/Contents`
+    /// `pub(crate)` — `remove_text` inserts its `/Contents`
     /// stream and page-dict update through the same overlay.
     pub(crate) overlay: HashMap<(u32, u16), Object>,
     /// Next synthetic object number to hand out.
@@ -78,7 +78,7 @@ pub struct Edit<'a> {
 }
 
 impl<'a> Edit<'a> {
-    /// `pub(crate)` — M17's `remove_text` allocates one synthetic
+    /// `pub(crate)` — `remove_text` allocates one synthetic
     /// object (the new `/Contents` stream) through the same allocator.
     pub(crate) fn new(doc: &'a Document, limits: Limits) -> Result<Self, Error> {
         Ok(Edit {
@@ -106,7 +106,7 @@ impl<'a> Edit<'a> {
     /// region is exhausted (input filled `SYNTH_TOP`…`0`) only in a
     /// pathological file; hitting `max_edit_objects` or `0` is a typed
     /// `LimitExceeded`/`Unsupported` error, never a wraparound.
-    /// `pub(crate)` — M17 allocates the new `/Contents` stream ref
+    /// `pub(crate)` — `remove_text` allocates the new `/Contents` stream ref
     /// through the same synthetic-number allocator.
     pub(crate) fn alloc(&mut self) -> Result<IndirectRef, Error> {
         self.synth_objects += 1;
@@ -142,7 +142,7 @@ impl<'a> Edit<'a> {
     /// `page_index` (0-based, matching [`Document::pages`] order).
     ///
     /// `rect` is in un-rotated PDF user space (+x right, +y up) — the
-    /// same coordinates `M6.1` extraction reports. `rgb` is the
+    /// same coordinates `extract_text` reports. `rgb` is the
     /// stroke colour, each channel `0..=1`; `width` is the stroke
     /// line width in user units, must be `> 0`.
     ///
@@ -207,7 +207,7 @@ impl<'a> Edit<'a> {
                 rect.height()
             )));
         }
-        // /UserUnit ≠ 1 changes the meaning of user-space units; M9
+        // /UserUnit ≠ 1 changes the meaning of user-space units; the editor
         // writes the rect verbatim, so a non-unit page would misplace
         // the box — refuse rather than treat it as points.
         if let Some(page_ref) = page.object_ref() {
@@ -528,7 +528,7 @@ impl<'a> Edit<'a> {
         Ok(())
     }
 
-    /// `pub(crate)` — M26's combined region-removal + metadata-strip
+    /// `pub(crate)` — the combined region-removal + metadata-strip
     /// call needs the same overlay+commit pipeline but with the
     /// writer's internal trailer/catalog overrides applied in the
     /// same rewrite. Behaviour is identical to [`Edit::rewrite`]
@@ -801,7 +801,7 @@ mod tests {
     }
 
     /// Build a minimal 1-page PDF plus extra objects declared at
-    /// `(num, gen)` — gen may be non-zero to reproduce the M9.2
+    /// `(num, gen)` — gen may be non-zero to reproduce the
     /// generation-mismatch cases.
     fn base_pdf(extra: &[(u32, u16, &[u8])]) -> Vec<u8> {
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
@@ -895,7 +895,7 @@ mod tests {
         assert!(matches!(e.alloc(), Err(Error::LimitExceeded { .. })));
     }
 
-    // --- M9.2: generation mismatch / dangling-ref protection ---
+    // --- generation mismatch / dangling-ref protection ---
 
     /// A: input has a *valid* object at (n, 1) and a *bad* ref to
     /// (n, 0). The bad ref is an input defect; it must fail, not be
@@ -903,7 +903,7 @@ mod tests {
     #[test]
     fn alloc_skips_number_reserved_at_other_generation() {
         // (u32::MAX-1, gen 1) is a real object; (u32::MAX-1, 0) is a
-        // dangling ref inside the page dict — M9.2 scenario.
+        // dangling ref inside the page dict scenario.
         let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
         let mut offs: Vec<(u32, u16, usize)> = Vec::new();
         let mut push = |n: u32, g: u16, body: &[u8]| {

@@ -1,8 +1,8 @@
 # Experimental scoped text removal
 
-## Experimental scoped text removal (M17, `remove_text`, CLI `experimental-remove-text`)
+## Experimental scoped text removal (`remove_text`, CLI `experimental-remove-text`)
 
-**Not a redaction tool** — the name and docs say so up front. M17
+**Not a redaction tool** — the name and docs say so up front. `remove_text`
 *deletes* the character codes whose filled-ink bounds overlap a
 caller rectangle and writes a new single-revision PDF; it does not
 paint over anything, does not touch other copies of the same data
@@ -19,27 +19,27 @@ returning `Removal { output, codes_removed, sites, scope }`:
   *filled* glyph-outline bounds overlap any rect (edge-touching
   counts); a code is one removal unit even when it expands to several
   Unicode characters.
-- Reuses the M16 `DiagWalker` so the graphics/text state and hit
+- Reuses the diagnosis `DiagWalker` so the graphics/text state and hit
   tests are exactly the diagnosis's — any `blocker`/`uncertain`
   entry, or a mid-stream walk failure, is a typed refusal, not a
   best-effort skip. Walk failures keep their typed error
   (`LimitExceeded`, `Structure`, `Parse`…) — they are never
   flattened into `Unsupported`.
-- **Op-time state (M17.1)**: the walker records the text state at
+- **Op-time state**: the walker records the text state at
   each page-level show op — resolved font, `Tfs`, `Th`, `Tc`, `Tw`
   — keyed by `op_index`. Selection and the rewrite read the *same*
   snapshot, so a later `Tf`/`Tc`/`Tw`/`Tz` change, `q`/`Q` restore,
   or second `BT`/`ET` can never rewrite an earlier show under the
   wrong parameters. `"`'s snapshot is taken *after* its `Tw`/`Tc`
   update.
-- **Page-level eligibility (M17.1, extended M18)**: a page is
+- **Page-level eligibility**: a page is
   eligible only when *every* shown text occurrence is `Tr 0` fill —
   an out-of-rect `Tr 3`/`Tr 1`/`Tr 2` glyph still refuses the page,
   whether it's at page level or inside a form. `Tr 4–7` and `w = 0`
   hairlines arrive via `blocker`/`uncertain` and refuse the same
   way. A `Tr` value *set* but never used to show text is harmless
   (the mode only matters when a glyph paints under it).
-- **One level of `/Form` (M18)**: a page-level `Do` whose target is
+- **One level of `/Form`**: a page-level `Do` whose target is
   a `/Form` XObject is editable per-invocation — the form's inner
   text is rewritten into a *clone* of its stream (new object,
   `/Filter`/`/DecodeParms` dropped since the clone body is emitted
@@ -55,7 +55,7 @@ returning `Removal { output, codes_removed, sites, scope }`:
   own `/Resources` replaces the caller's per §8.10.1; a form
   *without* `/Resources` inherits them, and the clone reaches the
   same fonts because the names live in the page's effective dict.
-- **Do-level eligibility (M18)**: a `Do` inside a form (`form_path`
+- **Do-level eligibility**: a `Do` inside a form (`form_path`
   depth ≥ 2 anywhere in the walk) refuses — nested XObjects are out
   of scope. `Image` and `Other` targets refuse outright; `Form`
   targets are the invocation records themselves (depth 0, allowed).

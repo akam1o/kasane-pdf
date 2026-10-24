@@ -1,4 +1,4 @@
-//! M4 — Form XObjects and basic image XObjects (ISO 32000-1 §8.8–§8.10).
+//! Form XObjects and basic image XObjects (ISO 32000-1 §8.8–§8.10).
 //!
 //! Covers:
 //!   * `Do` resolution via the effective `/Resources /XObject` dict

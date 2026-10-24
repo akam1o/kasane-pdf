@@ -1,11 +1,11 @@
-//! M7 — Type 0 / CIDFontType2 / Identity-H: rendering and extraction.
+//! Type 0 / CIDFontType2 / Identity-H: rendering and extraction.
 //!
 //! Covers: dictionary validation, 2-byte code reading (odd tails
 //! refused, codes never joined across TJ items), CIDToGIDMap
 //! (Identity/stream/absent, CID≠GID), DW/W (both forms, defaults),
 //! 2-byte ToUnicode (incl. surrogates, multi-scalar, unresolved),
 //! Tw non-application on 2-byte codes, budgets, and coordinate
-//! semantics shared with M6.1.
+//! semantics shared with simple-font extraction.
 
 use kasane_pdf::{extract_text, render_page, Document, Error, Limits, RenderOptions, ResolveKind};
 
@@ -799,7 +799,7 @@ fn glyph_and_unicode_are_independent() {
 }
 
 // --------------------------------------------------------------------
-// Position / spacing / form / limits — shared with M5/M6
+// Position / spacing / form / limits — shared with simple fonts
 // --------------------------------------------------------------------
 
 #[test]
@@ -1079,11 +1079,11 @@ fn actual_text_applies_to_composite_text() {
 }
 
 // ====================================================================
-// M7.1 — numeric character-positioning regression tests
+// Numeric character-positioning regression tests
 //
-// These pin the *exact* §9.4.4 advance/origin arithmetic that M7's
+// These pin the *exact* §9.4.4 advance/origin arithmetic that the composite-font
 // `show_glyph`/`show_text_adjusted` implement — not the current
-// output. Two pre-M7 bugs (found via these tests) were:
+// output. Two earlier bugs (found via these tests) were:
 //   * TJ numbers shifted at 1/Tfs scale (×Tfs·Th missing when
 //     concatenating onto Tm's page-space `e`);
 //   * the extraction `tx_text` term added Tc/Tw unscaled into Trm's
@@ -1160,7 +1160,7 @@ fn advance_tz_scales_width_and_tc() {
 #[test]
 fn tj_number_scales_with_font_size() {
     // TJ +100 → −100/1000·10·1 = −1pt shift of the *next* glyph's origin.
-    // The buggy pre-M7 code applied −100/1000 = −0.1.
+    // The buggy earlier code applied −100/1000 = −0.1.
     let bytes = pdf_type0(
         b"BT /F1 10 Tf 20 60 Td [<0001> 100 <0002>] TJ ET",
         "Identity-H",
@@ -1266,7 +1266,7 @@ fn advance_font_size_scales_width() {
 
 #[test]
 fn tc_not_multiplied_by_font_size() {
-    // M7 regression target: the extraction path used to add Tc unscaled
+    // Regression target: the extraction path used to add Tc unscaled
     // into the glyph-space tx_text, so ×Tfs·Th then over-scaled it.
     // Tfs=20, Tc=1 → page-space advance should be (600/1000·20 + 1)·1 = 13,
     // not (600/1000 + 1)·20 = 26.
@@ -1412,17 +1412,17 @@ fn render_and_extract_share_spacing() {
 
 #[test]
 fn simple_font_tw_applies_to_space() {
-    // M5 simple font: Tw *does* apply to single-byte 0x20. Regression
+    // Simple font: Tw *does* apply to single-byte 0x20. Regression
     // coverage so the composite Tw rule doesn't regress the simple path.
     let pdf = std::fs::read("tests/fixtures/text_basic.pdf").unwrap();
     let doc = Document::from_bytes(&pdf).unwrap();
     let _ = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();
     // The real check is the m5 Tw test — here we only assert the
-    // simple path still extracts without errors after M7's rework.
+    // simple path still extracts without errors after the composite-font rework.
 }
 
 // ====================================================================
-// M7.1 — real Japanese glyph outlines (Noto Sans JP subset)
+// Real Japanese glyph outlines (Noto Sans JP subset)
 //
 // `KasaneJP.ttf` is a 17-glyph subset of Noto Sans JP (OFL) built by
 // `fixtures/make_jp_font.py`. GIDs are deliberately ≠ CIDs so the
@@ -1745,7 +1745,7 @@ fn sheared_text_positions() {
 
 #[test]
 fn m5_simple_font_regression() {
-    // Existing M5/M6 fixtures still work — no composite regression.
+    // Existing simple-font fixtures still work — no composite regression.
     let pdf = std::fs::read("tests/fixtures/text_basic.pdf").unwrap();
     let doc = Document::from_bytes(&pdf).unwrap();
     let t = extract_text(&doc, &doc.pages()[0], &Limits::default()).unwrap();

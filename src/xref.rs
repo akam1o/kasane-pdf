@@ -53,13 +53,13 @@ pub(crate) struct XrefTable {
     /// keys (e.g. `/Root` and `/Size` surviving across increments).
     pub(crate) trailer: Dict,
     /// The trailer closest to `startxref` (the authoritative one).
-    /// Used by the M23 audit for trailer-key provenance — the merged
+    /// Used by the audit for trailer-key provenance — the merged
     /// `trailer` can carry keys (e.g. a stale `/Info`) that the
     /// newest trailer no longer has.
     pub(crate) latest_trailer: Dict,
     /// Byte offsets of all xref sections read, newest first.
     /// Retained for diagnostics (e.g. explaining /Prev chain failures)
-    /// and for the M23 audit's revision history.
+    /// and for the audit's revision history.
     pub(crate) section_offsets: Vec<u64>,
 }
 
@@ -106,7 +106,7 @@ impl XrefTable {
     }
 
     /// Iterate every merged xref entry (newest-wins view), in
-    /// `(number, generation)` order. Used by the M23 residual audit
+    /// `(number, generation)` order. Used by the residual audit
     /// to enumerate live objects without scanning every object number
     /// up to `/Size`.
     pub(crate) fn iter_entries(&self) -> impl Iterator<Item = (IndirectRef, XrefEntry)> + '_ {
@@ -209,7 +209,7 @@ pub(crate) fn read_xref_chain(
 }
 
 /// Read one xref section at `offset`. Returns its trailer dictionary.
-/// `pub(crate)` so the M23 audit can enumerate per-section entries —
+/// `pub(crate)` so the audit can enumerate per-section entries —
 /// the merged view discards superseded bodies that an audit must
 /// still report.
 pub(crate) fn read_one_section(
