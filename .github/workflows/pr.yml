@@ -35,6 +35,32 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo test
 
+  crate-package:
+    name: crate package check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: committed cjk assets match the lock
+        run: ./scripts/fetch-cjk-assets.sh --check
+      - name: package from the clean tree (verifies the default build)
+        run: cargo package
+      - name: the packaged crate builds and tests on its own, default and cjk-fallback
+        run: |
+          set -e
+          crate=$(ls target/package/kasane-pdf-*.crate)
+          echo "crate: $crate ($(stat -c %s "$crate") bytes)"
+          mkdir -p /tmp/crate && tar -xzf "$crate" -C /tmp/crate
+          dir=$(ls -d /tmp/crate/kasane-pdf-*)
+          test -f "$dir/assets/cjk/NotoSansJP-Regular.otf"
+          test -f "$dir/LICENSE" && test -f "$dir/NOTICE"
+          cd "$dir"
+          cargo build --release --features cjk-fallback --examples
+          cargo test --features cjk-fallback
+          cargo doc --no-deps --all-features
+          grep -q '"sha1"' .cargo_vcs_info.json
+
   compat-smoke:
     name: compat + round-trip smoke (fixtures)
     runs-on: ubuntu-latest
