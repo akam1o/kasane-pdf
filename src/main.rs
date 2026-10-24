@@ -2606,7 +2606,7 @@ fn print_audit_json(a: &kasane_pdf::ResidualAudit) {
 #[cfg(test)]
 mod tests {
     //! Unit tests for the atomic-write helper — the CLI-level
-    //! behaviour is covered by `tests/m8_cli.rs`; here we pin down
+    //! behaviour is covered by `tests/cli_rewrite.rs`; here we pin down
     //! `create_new` semantics that a PID-named child can't hit
     //! deterministically.
 

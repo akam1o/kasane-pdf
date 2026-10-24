@@ -3586,7 +3586,7 @@ mod tests {
 
     /// A broken name-tree root produces an `incomplete` record at
     /// the audit level — the CLI text/JSON surface is covered by
-    /// `m8_cli.rs::cli_audit_incomplete_*` tests that run the real
+    /// `cli_audit_remove_multi.rs::cli_audit_incomplete_*` tests that run the real
     /// binary against the same kind of input.
     #[test]
     fn audit_incomplete_for_broken_name_tree() {

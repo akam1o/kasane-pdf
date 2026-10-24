@@ -245,7 +245,7 @@ fn cli_remove_region_progressive_jpeg_unsupported() {
 /// A raw 3×2 gray image painted under `cm` — non-square so each
 /// pixel's position is identifiable. Rows top-down:
 /// `0x10 0x20 0x30 / 0x40 0x50 0x60`.
-fn m28_gray_pdf(cm: &str) -> Vec<u8> {
+fn grid_ctm_gray_pdf(cm: &str) -> Vec<u8> {
     let mut parts: Vec<Vec<u8>> = vec![b"%PDF-1.4\n".to_vec()];
     let mut offs: Vec<(u32, usize)> = Vec::new();
     let mut push = |n: u32, body: &[u8]| {
@@ -298,7 +298,7 @@ fn cli_m28_rot90_image_edit() {
     let dst = dir.join("out.pdf");
     // 90° rotation: [0 10 -6 0 38 60] → pixel (0,0) at x∈[32,35],
     // y∈[60,63.33].
-    fs::write(&src, m28_gray_pdf("0 10 -6 0 38 60 cm")).unwrap();
+    fs::write(&src, grid_ctm_gray_pdf("0 10 -6 0 38 60 cm")).unwrap();
     let out = bin()
         .args(["experimental-remove-image-region"])
         .arg(&src)
@@ -339,7 +339,7 @@ fn cli_m28_hflip_image_edit() {
     let dst = dir.join("out.pdf");
     // Horizontal reflection: [-6 0 0 10 38 60] → pixel (0,0) lands
     // at x∈[36,38], y∈[65,70].
-    fs::write(&src, m28_gray_pdf("-6 0 0 10 38 60 cm")).unwrap();
+    fs::write(&src, grid_ctm_gray_pdf("-6 0 0 10 38 60 cm")).unwrap();
     let out = bin()
         .args(["experimental-remove-image-region"])
         .arg(&src)
@@ -367,7 +367,7 @@ fn cli_m28_arbitrary_rotation_refused() {
     let dst = dir.join("out.pdf");
     // ~30° rotation [34.64 20 -20 34.64 ...] — neither axis-aligned
     // nor axis-swapped.
-    fs::write(&src, m28_gray_pdf("34.64 20 -20 34.64 20 60 cm")).unwrap();
+    fs::write(&src, grid_ctm_gray_pdf("34.64 20 -20 34.64 20 60 cm")).unwrap();
     let original = fs::read(&src).unwrap();
     fs::write(&dst, b"SENTINEL").unwrap();
     let out = bin()
@@ -404,7 +404,7 @@ fn cli_m28_shear_refused() {
     let src = dir.join("in.pdf");
     let dst = dir.join("out.pdf");
     // Shear [1 0 0.5 1 ...] — c != 0 breaks both classes.
-    fs::write(&src, m28_gray_pdf("1 0 0.5 1 20 60 cm")).unwrap();
+    fs::write(&src, grid_ctm_gray_pdf("1 0 0.5 1 20 60 cm")).unwrap();
     fs::write(&dst, b"SENTINEL").unwrap();
     let out = bin()
         .args(["experimental-remove-image-region"])
