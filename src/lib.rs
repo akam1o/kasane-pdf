@@ -24,19 +24,19 @@
 //!   `diagnose_redaction`/`audit_residuals`.
 //!
 //! Explicitly **not** supported (typed `Error::Unsupported` or
-//! `Error::Encrypted`, never a partial result): `/JPXDecode` and
-//! `/Crypt` filters, encrypted files, function-based and mesh shadings
-//! (types 1, 4–7), knockout transparency groups and ExtGState soft
-//! masks, `/Matte` soft-mask images, predefined non-Identity CMaps,
-//! `/UserUnit` ≠ 1, singular CTMs, annotations without an appearance
-//! stream other than form widgets and the geometric markup subtypes.
-//! Colour spaces, image masks, inline images, every byte filter
-//! (Flate, LZW, ASCII85, ASCIIHex, RunLength) and the JPEG, JBIG2 and
-//! CCITT image filters, axial/radial shadings, tiling patterns, every
-//! simple-font encoding, CID-keyed CFF and OpenType CID fonts, embedded
-//! CMaps, vertical writing, optional content (default configuration),
-//! `/ActualText`, synthesised AcroForm widget and markup annotation
-//! appearances and non-knockout transparency groups render; an
+//! `Error::Encrypted`, never a partial result): the `/Crypt` filter, encrypted files, function-based and mesh shadings
+//! (types 1, 4–7), knockout transparency groups, `/Matte` soft-mask
+//! images, predefined non-Identity CMaps, singular CTMs, annotations
+//! without an appearance stream other than form widgets and the
+//! geometric markup subtypes. Colour spaces, image masks, inline
+//! images, every byte filter (Flate, LZW, ASCII85, ASCIIHex,
+//! RunLength) and the JPEG, JBIG2, CCITT and JPX image filters,
+//! axial/radial shadings, tiling patterns, every simple-font encoding,
+//! CID-keyed CFF and OpenType CID fonts, embedded CMaps, vertical
+//! writing, optional content (default configuration), `/ActualText`,
+//! synthesised AcroForm widget and markup annotation appearances,
+//! isolated and non-isolated transparency groups, ExtGState soft masks
+//! and every standard blend mode, and `/UserUnit` render; an
 //! `ICCBased` profile the engine cannot evaluate exactly falls back to
 //! `/Alternate` and is reported on
 //! [`RenderedPage::color_approximations`].
