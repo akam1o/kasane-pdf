@@ -1,6 +1,6 @@
 # Third-party components and licences
 
-kasane-pdf itself is Copyright 2026 Akira Kamio and licensed under
+kasane-pdf itself is Copyright 2026 akam1o and licensed under
 the Apache License, Version 2.0 (`LICENSE`, `NOTICE`). This file lists
 everything else that ships with or is
 linked into it, with the licence each component is used under.
