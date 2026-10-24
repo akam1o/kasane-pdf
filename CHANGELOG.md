@@ -6,6 +6,11 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-24
+
+Additive release: no public item was removed or changed in signature
+(`cargo semver-checks` against 0.1.0: no semver update required).
+
 ### Added
 - `Warning` (`#[non_exhaustive]`) and the per-document warning
   channel: `Document::take_warnings`, `warnings`, `warnings_dropped`,
@@ -104,5 +109,6 @@ are possible between minor versions and are recorded here.
   1.1 and Adobe CMap resources under BSD-3-Clause (`NOTICE`,
   `docs/third-party.md`).
 
-[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.1.1
 [0.1.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.1.0
