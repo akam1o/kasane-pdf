@@ -368,7 +368,7 @@ pub(crate) fn pick(
 
 /// What the engine would do for a non-embedded simple font with this
 /// `/BaseFont` and `/FontDescriptor` — the public, data-only view of
-/// [`pick`] for tooling (the compat probe mirrors the renderer's
+/// `pick` for tooling (the compat probe mirrors the renderer's
 /// refusal rules with it). `Ok(Some(_))` = would substitute,
 /// `Ok(None)` = would refuse (unknowable glyph set),
 /// `Err(Unsupported)` = would refuse (Symbol / ZapfDingbats).
