@@ -45,6 +45,9 @@ use std::time::Instant;
 pub enum RtClass {
     Pass,
     Fail,
+    /// Every page compared agreed, but the per-file budget left pages
+    /// uncompared — neither a pass nor a failure.
+    Partial,
     /// The engine refused (profile limit) — not a round-trip failure.
     Unsupported,
     /// The document has nothing of this kind to preserve.
@@ -58,6 +61,7 @@ impl RtClass {
         match self {
             RtClass::Pass => "PASS",
             RtClass::Fail => "FAIL",
+            RtClass::Partial => "PARTIAL",
             RtClass::Unsupported => "UNSUPPORTED",
             RtClass::NotApplicable => "N/A",
             RtClass::NotAttempted => "-",
@@ -122,6 +126,63 @@ pub struct RtRenderPage {
     pub diff_px_ratio: f64,
 }
 
+/// Page coverage of the render comparison.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RtPageStats {
+    pub total_pages: usize,
+    pub compared_pages: usize,
+    /// Not compared because the per-file budget ran out.
+    pub skipped_pages: usize,
+    /// Our renderer refuses the original page: nothing to compare.
+    pub unsupported_pages: usize,
+    pub failed_pages: usize,
+    pub worst_ssim: Option<f64>,
+    pub mean_ssim: Option<f64>,
+    pub first_divergent_page: Option<usize>,
+}
+
+/// Poppler-vs-Poppler comparison of original and rewritten pages.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RtPoppler {
+    pub pages_compared: usize,
+    pub size_mismatch_pages: usize,
+    pub mean_ssim: Option<f64>,
+    pub worst_ssim: Option<f64>,
+    pub mean_mae: Option<f64>,
+    pub worst_diff_px: Option<f64>,
+    pub first_divergent_page: Option<usize>,
+    /// `Syntax Error`/`Syntax Warning` lines pdftoppm printed for the
+    /// original and for the rewritten file.
+    pub diagnostics_original: usize,
+    pub diagnostics_rewritten: usize,
+}
+
+/// Knobs of a run (smoke vs full).
+#[derive(Debug, Clone, Copy)]
+pub struct RtOptions {
+    /// Pages to compare with our renderer (`None` = all).
+    pub max_pages: Option<usize>,
+    pub dpi: f64,
+    /// Run Poppler on both files.
+    pub poppler: bool,
+    /// Pages Poppler compares (`None` = all).
+    pub poppler_pages: Option<usize>,
+    /// Wall-clock budget for the render comparisons of one file.
+    pub budget_ms: u128,
+}
+
+impl Default for RtOptions {
+    fn default() -> Self {
+        RtOptions {
+            max_pages: None,
+            dpi: 48.0,
+            poppler: false,
+            poppler_pages: None,
+            budget_ms: 120_000,
+        }
+    }
+}
+
 /// `qpdf --check` on the rewritten file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QpdfCheck {
@@ -144,6 +205,24 @@ pub struct RoundTrip {
     /// Poppler-vs-Poppler SSIM on page 1 (independent witness).
     #[serde(default)]
     pub poppler_ssim: Option<f64>,
+    /// Poppler-vs-Poppler over the compared pages.
+    #[serde(default)]
+    pub poppler: Option<RtPoppler>,
+    /// Per-page coverage of the kasane render comparison.
+    #[serde(default)]
+    pub pages: RtPageStats,
+    /// External parser (qpdf) on the *original*, for the "newly
+    /// introduced" judgement.
+    #[serde(default)]
+    pub qpdf_original: Option<QpdfCheck>,
+    /// The rewritten file is valid for qpdf (exit 0, no warnings).
+    #[serde(default)]
+    pub external_valid: RtCheck,
+    /// The rewritten file has no qpdf warning/error the original did
+    /// not already have, and no Poppler syntax error the original did
+    /// not already produce.
+    #[serde(default)]
+    pub external_no_new: RtCheck,
     pub text: RtCheck,
     /// Normalised (white-space-collapsed) text match ratio per file,
     /// reported next to the exact comparison.
@@ -379,8 +458,6 @@ pub fn run_bounded(cmd: &mut Command) -> Option<std::process::Output> {
 const MAX_DIFFS: usize = 40;
 const MAX_GRAPH_NODES: usize = 400_000;
 const MAX_GRAPH_DEPTH: usize = 96;
-const RENDER_PAGES: usize = 8;
-const RENDER_DPI: f64 = 48.0;
 
 /// The round trip of a document whose rewrite was refused: nothing
 /// else runs; a refusal is *unsupported* (a profile limit), any other
@@ -410,7 +487,7 @@ pub fn run(
     orig: &[u8],
     out: &[u8],
     rewrite_ms: u128,
-    with_poppler: bool,
+    opts: &RtOptions,
     tag: &str,
 ) -> RoundTrip {
     let start = Instant::now();
@@ -430,6 +507,8 @@ pub fn run(
         Err(e) => {
             rt.reparse = RtCheck::fail(vec![format!("{e}")], t.elapsed().as_millis());
             rt.qpdf = qpdf(out, tag);
+            rt.qpdf_original = qpdf(orig, &format!("{tag}-orig"));
+            external_checks(&mut rt);
             rt.total_ms = start.elapsed().as_millis();
             return rt;
         }
@@ -444,14 +523,16 @@ pub fn run(
     };
 
     let t = Instant::now();
-    let (render, pages) = compare_render(doc, &doc2);
+    let (render, pages, stats) = compare_render(doc, &doc2, opts);
     rt.render = RtCheck {
         ms: t.elapsed().as_millis(),
         ..render
     };
     rt.render_pages = pages;
-    if with_poppler {
-        rt.poppler_ssim = poppler_witness(orig, out, tag);
+    rt.pages = stats;
+    if opts.poppler {
+        rt.poppler = poppler_witness(orig, out, tag, opts);
+        rt.poppler_ssim = rt.poppler.as_ref().and_then(|p| p.mean_ssim);
     }
 
     let t = Instant::now();
@@ -469,6 +550,8 @@ pub fn run(
     };
 
     rt.qpdf = qpdf(out, tag);
+    rt.qpdf_original = qpdf(orig, &format!("{tag}-orig"));
+    external_checks(&mut rt);
     rt.full = [
         &rt.rewrite,
         &rt.reparse,
@@ -479,7 +562,14 @@ pub fn run(
     ]
     .iter()
     .all(|c| matches!(c.class, RtClass::Pass | RtClass::NotApplicable))
-        && rt.rewrite.class == RtClass::Pass;
+        && rt.rewrite.class == RtClass::Pass
+        && rt.pages.skipped_pages == 0
+        && rt.external_no_new.class != RtClass::Fail
+        && rt
+            .poppler
+            .as_ref()
+            .map(|p| p.first_divergent_page.is_none() && p.size_mismatch_pages == 0)
+            .unwrap_or(true);
     rt.total_ms = start.elapsed().as_millis();
     rt
 }
@@ -701,28 +791,53 @@ fn describe(o: &Object) -> String {
 // render comparison (kasane vs kasane)
 // ------------------------------------------------------------------
 
-fn compare_render(a: &Document, b: &Document) -> (RtCheck, Vec<RtRenderPage>) {
-    let opts = RenderOptions {
-        dpi: RENDER_DPI,
+fn compare_render(
+    a: &Document,
+    b: &Document,
+    opts: &RtOptions,
+) -> (RtCheck, Vec<RtRenderPage>, RtPageStats) {
+    let ropts = RenderOptions {
+        dpi: opts.dpi,
         ..RenderOptions::default()
     };
-    let n = a.pages().len().min(b.pages().len()).min(RENDER_PAGES);
+    let total = a.pages().len().min(b.pages().len());
+    let n = opts.max_pages.map(|m| m.min(total)).unwrap_or(total);
     let mut pages = Vec::new();
     let mut notes = Vec::new();
-    let mut attempted = 0;
+    let mut stats = RtPageStats {
+        total_pages: a.pages().len(),
+        ..Default::default()
+    };
+    let start = Instant::now();
+    let mut ssims = Vec::new();
     for i in 0..n {
-        let ra = match render_page(a, &a.pages()[i], &opts) {
+        if start.elapsed().as_millis() > opts.budget_ms {
+            stats.skipped_pages = n - i;
+            notes.push(format!(
+                "pages {}..{} not compared: {} ms budget exhausted",
+                i + 1,
+                n,
+                opts.budget_ms
+            ));
+            break;
+        }
+        let ra = match render_page(a, &a.pages()[i], &ropts) {
             Ok(r) => r,
-            Err(_) => continue, // our rendering of the original fails: nothing to compare
+            Err(_) => {
+                stats.unsupported_pages += 1;
+                continue; // our rendering of the original fails: nothing to compare
+            }
         };
-        attempted += 1;
-        let rb = match render_page(b, &b.pages()[i], &opts) {
+        stats.compared_pages += 1;
+        let rb = match render_page(b, &b.pages()[i], &ropts) {
             Ok(r) => r,
             Err(e) => {
                 notes.push(format!(
                     "page {}: rewritten file does not render: {e}",
                     i + 1
                 ));
+                stats.failed_pages += 1;
+                stats.first_divergent_page.get_or_insert(i + 1);
                 pages.push(RtRenderPage {
                     page: i + 1,
                     size_equal: false,
@@ -730,6 +845,7 @@ fn compare_render(a: &Document, b: &Document) -> (RtCheck, Vec<RtRenderPage>) {
                     ssim: 0.0,
                     diff_px_ratio: 1.0,
                 });
+                ssims.push(0.0);
                 continue;
             }
         };
@@ -744,6 +860,8 @@ fn compare_render(a: &Document, b: &Document) -> (RtCheck, Vec<RtRenderPage>) {
                 rb.pixmap.width(),
                 rb.pixmap.height()
             ));
+            stats.failed_pages += 1;
+            stats.first_divergent_page.get_or_insert(i + 1);
             pages.push(RtRenderPage {
                 page: i + 1,
                 size_equal,
@@ -751,6 +869,7 @@ fn compare_render(a: &Document, b: &Document) -> (RtCheck, Vec<RtRenderPage>) {
                 ssim: 0.0,
                 diff_px_ratio: 1.0,
             });
+            ssims.push(0.0);
             continue;
         }
         let la = crate::pixmap_luma(&ra);
@@ -764,11 +883,14 @@ fn compare_render(a: &Document, b: &Document) -> (RtCheck, Vec<RtRenderPage>) {
             / (la.len().max(1) as f64 * 255.0);
         let ssim = crate::ssim_gray(&la, &lb, w, h);
         let diff = crate::diff_px_tolerant(&la, &lb, w, h);
+        ssims.push(ssim);
         if diff > 0.0005 || ssim < 0.995 {
             notes.push(format!(
                 "page {}: diff-px {diff:.4}, SSIM {ssim:.4}, MAE {mae:.4}",
                 i + 1
             ));
+            stats.failed_pages += 1;
+            stats.first_divergent_page.get_or_insert(i + 1);
         }
         pages.push(RtRenderPage {
             page: i + 1,
@@ -778,63 +900,192 @@ fn compare_render(a: &Document, b: &Document) -> (RtCheck, Vec<RtRenderPage>) {
             diff_px_ratio: diff,
         });
     }
-    if attempted == 0 {
-        return (
-            RtCheck::na("the original does not render (nothing to compare)"),
-            pages,
-        );
+    if !ssims.is_empty() {
+        stats.worst_ssim = ssims.iter().cloned().reduce(f64::min);
+        stats.mean_ssim = Some(ssims.iter().sum::<f64>() / ssims.len() as f64);
     }
-    let check = if notes.is_empty() {
-        RtCheck::pass(0)
-    } else {
-        RtCheck::fail(notes, 0)
+    let partial = |notes: Vec<String>| RtCheck {
+        class: RtClass::Partial,
+        notes,
+        ms: 0,
     };
-    (check, pages)
+    if stats.compared_pages == 0 {
+        let check = if stats.skipped_pages > 0 {
+            partial(notes)
+        } else {
+            RtCheck::na("the original does not render (nothing to compare)")
+        };
+        return (check, pages, stats);
+    }
+    let check = if stats.failed_pages > 0 {
+        RtCheck::fail(notes, 0)
+    } else if stats.skipped_pages > 0 {
+        partial(notes)
+    } else {
+        RtCheck::pass(0)
+    };
+    (check, pages, stats)
 }
 
-/// Poppler renders page 1 of both files; the SSIM between the two is
-/// the independent witness (`None` when Poppler is unavailable).
-fn poppler_witness(orig: &[u8], out: &[u8], tag: &str) -> Option<f64> {
+/// `(width, height, luma)` of one page rendered by pdftoppm.
+type GrayPage = (usize, usize, Vec<u8>);
+
+/// Poppler renders the compared pages of both files; per-page SSIM /
+/// MAE / diff-px between the two is the independent witness, and the
+/// `Syntax Error`/`Syntax Warning` lines it prints are counted for
+/// each file (`None` when Poppler is unavailable).
+fn poppler_witness(orig: &[u8], out: &[u8], tag: &str, opts: &RtOptions) -> Option<RtPoppler> {
     let dir = std::env::temp_dir().join(format!("kasane-rt-{}", std::process::id()));
     std::fs::create_dir_all(&dir).ok()?;
     let pa = dir.join(format!("{tag}-a.pdf"));
     let pb = dir.join(format!("{tag}-b.pdf"));
     std::fs::write(&pa, orig).ok()?;
     std::fs::write(&pb, out).ok()?;
-    let render = |p: &Path, prefix: &Path| -> Option<(usize, usize, Vec<u8>)> {
-        let st = run_bounded(
-            Command::new("pdftoppm")
-                .args([
-                    "-f",
-                    "1",
-                    "-l",
-                    "1",
-                    "-r",
-                    "48",
-                    "-gray",
-                    "-singlefile",
-                    "-cropbox",
-                ])
-                .arg(p)
-                .arg(prefix),
-        )?;
-        if !st.status.success() {
-            return None;
+    let dpi = opts.dpi.clamp(12.0, 48.0) as u32;
+    let render = |p: &Path, stem: &str| -> Option<(Vec<GrayPage>, usize)> {
+        let prefix = dir.join(stem);
+        let mut cmd = Command::new("pdftoppm");
+        if let Some(n) = opts.poppler_pages {
+            cmd.args(["-f", "1", "-l", &n.to_string()]);
         }
-        let pgm = std::fs::read(prefix.with_extension("pgm")).ok()?;
-        let _ = std::fs::remove_file(prefix.with_extension("pgm"));
-        crate::parse_pgm(&pgm)
+        cmd.args(["-r", &dpi.to_string(), "-gray", "-cropbox"])
+            .arg(p)
+            .arg(&prefix);
+        let st = run_bounded(&mut cmd)?;
+        let diag = String::from_utf8_lossy(&st.stderr)
+            .lines()
+            .filter(|l| l.contains("Syntax Error") || l.contains("Syntax Warning"))
+            .count();
+        let needle = format!("{stem}-");
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+            .ok()?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|f| {
+                f.extension().map(|x| x == "pgm").unwrap_or(false)
+                    && f.file_name()
+                        .map(|n| n.to_string_lossy().starts_with(&needle))
+                        .unwrap_or(false)
+            })
+            .collect();
+        files.sort();
+        let mut pages = Vec::new();
+        for f in files {
+            if let Some(p) = std::fs::read(&f).ok().and_then(|b| crate::parse_pgm(&b)) {
+                pages.push(p);
+            }
+            let _ = std::fs::remove_file(&f);
+        }
+        Some((pages, diag))
     };
-    let ra = render(&pa, &dir.join(format!("{tag}-a")));
-    let rb = render(&pb, &dir.join(format!("{tag}-b")));
+    let ra = render(&pa, &format!("{tag}-a"));
+    let rb = render(&pb, &format!("{tag}-b"));
     let _ = std::fs::remove_file(&pa);
     let _ = std::fs::remove_file(&pb);
-    let (wa, ha, la) = ra?;
-    let (wb, hb, lb) = rb?;
-    if wa != wb || ha != hb {
-        return Some(0.0);
+    let (pages_a, diag_a) = ra?;
+    let (pages_b, diag_b) = rb?;
+    let mut res = RtPoppler {
+        diagnostics_original: diag_a,
+        diagnostics_rewritten: diag_b,
+        ..Default::default()
+    };
+    if pages_a.len() != pages_b.len() {
+        res.size_mismatch_pages = pages_a.len().abs_diff(pages_b.len());
+        res.first_divergent_page = Some(pages_a.len().min(pages_b.len()) + 1);
     }
-    Some(crate::ssim_gray(&la, &lb, wa, ha))
+    let mut ssims = Vec::new();
+    let mut maes = Vec::new();
+    for (i, ((wa, ha, la), (wb, hb, lb))) in pages_a.iter().zip(&pages_b).enumerate() {
+        res.pages_compared += 1;
+        if wa != wb || ha != hb {
+            res.size_mismatch_pages += 1;
+            res.first_divergent_page.get_or_insert(i + 1);
+            ssims.push(0.0);
+            continue;
+        }
+        let ssim = crate::ssim_gray(la, lb, *wa, *ha);
+        let mae = la
+            .iter()
+            .zip(lb)
+            .map(|(x, y)| (*x as f64 - *y as f64).abs())
+            .sum::<f64>()
+            / (la.len().max(1) as f64 * 255.0);
+        let diff = crate::diff_px_tolerant(la, lb, *wa, *ha);
+        ssims.push(ssim);
+        maes.push(mae);
+        res.worst_diff_px = Some(res.worst_diff_px.unwrap_or(0.0).max(diff));
+        if ssim < 0.99 || diff > 0.001 {
+            res.first_divergent_page.get_or_insert(i + 1);
+        }
+    }
+    if !ssims.is_empty() {
+        res.worst_ssim = ssims.iter().cloned().reduce(f64::min);
+        res.mean_ssim = Some(ssims.iter().sum::<f64>() / ssims.len() as f64);
+    }
+    if !maes.is_empty() {
+        res.mean_mae = Some(maes.iter().sum::<f64>() / maes.len() as f64);
+    }
+    Some(res)
+}
+
+/// Derive the two external judgements from the qpdf results on both
+/// files and the Poppler diagnostics: *valid* = the rewritten file is
+/// clean for qpdf; *no new* = it has no warning/error the original did
+/// not have (counts compared), nor more Poppler syntax diagnostics.
+fn external_checks(rt: &mut RoundTrip) {
+    let Some(q) = &rt.qpdf else {
+        rt.external_valid = RtCheck::na("qpdf unavailable");
+        rt.external_no_new = RtCheck::na("qpdf unavailable");
+        return;
+    };
+    rt.external_valid = if q.exit_code == 0 && q.warnings == 0 && q.errors == 0 {
+        RtCheck::pass(0)
+    } else {
+        RtCheck::fail(
+            std::iter::once(format!(
+                "qpdf exit {}, {} warning(s), {} error(s)",
+                q.exit_code, q.warnings, q.errors
+            ))
+            .chain(q.lines.iter().cloned())
+            .collect(),
+            0,
+        )
+    };
+    let mut notes = Vec::new();
+    let mut new_errors = false;
+    if let Some(o) = &rt.qpdf_original {
+        if q.errors > o.errors {
+            notes.push(format!("qpdf errors {} → {}", o.errors, q.errors));
+            new_errors = true;
+        }
+        if q.warnings > o.warnings {
+            notes.push(format!("qpdf warnings {} → {}", o.warnings, q.warnings));
+            new_errors = true;
+        }
+        if !new_errors && (o.errors > 0 || o.warnings > 0) {
+            notes.push(format!(
+                "inherited from the input: {} warning(s), {} error(s)",
+                o.warnings, o.errors
+            ));
+        }
+    }
+    if let Some(p) = &rt.poppler {
+        if p.diagnostics_rewritten > p.diagnostics_original {
+            notes.push(format!(
+                "Poppler syntax diagnostics {} → {}",
+                p.diagnostics_original, p.diagnostics_rewritten
+            ));
+            new_errors = true;
+        }
+    }
+    rt.external_no_new = if new_errors {
+        RtCheck::fail(notes, 0)
+    } else {
+        RtCheck {
+            class: RtClass::Pass,
+            notes,
+            ms: 0,
+        }
+    };
 }
 
 // ------------------------------------------------------------------
@@ -1238,6 +1489,8 @@ pub struct RtCounts {
     pub fail: usize,
     pub unsupported: usize,
     pub not_applicable: usize,
+    #[serde(default)]
+    pub partial: usize,
 }
 
 impl RtCounts {
@@ -1250,6 +1503,10 @@ impl RtCounts {
             RtClass::Fail => {
                 self.attempted += 1;
                 self.fail += 1;
+            }
+            RtClass::Partial => {
+                self.attempted += 1;
+                self.partial += 1;
             }
             RtClass::Unsupported => self.unsupported += 1,
             RtClass::NotApplicable => self.not_applicable += 1,
@@ -1271,6 +1528,19 @@ pub struct RtTally {
     pub render: RtCounts,
     pub text: RtCounts,
     pub annotations: RtCounts,
+    #[serde(default)]
+    pub external_valid: RtCounts,
+    #[serde(default)]
+    pub external_no_new: RtCounts,
+    /// Files whose render comparison left pages uncompared (budget).
+    #[serde(default)]
+    pub pages_skipped_files: usize,
+    #[serde(default)]
+    pub pages_compared: usize,
+    #[serde(default)]
+    pub poppler_files: usize,
+    #[serde(default)]
+    pub poppler_divergent: usize,
     pub qpdf_clean: usize,
     pub qpdf_warnings: usize,
     pub qpdf_errors: usize,
@@ -1294,6 +1564,18 @@ impl RtTally {
             t.render.add(&rt.render);
             t.text.add(&rt.text);
             t.annotations.add(&rt.annotations);
+            t.external_valid.add(&rt.external_valid);
+            t.external_no_new.add(&rt.external_no_new);
+            if rt.pages.skipped_pages > 0 {
+                t.pages_skipped_files += 1;
+            }
+            t.pages_compared += rt.pages.compared_pages;
+            if let Some(p) = &rt.poppler {
+                t.poppler_files += 1;
+                if p.first_divergent_page.is_some() {
+                    t.poppler_divergent += 1;
+                }
+            }
             if let Some(q) = &rt.qpdf {
                 if q.errors > 0 || q.exit_code == 2 {
                     t.qpdf_errors += 1;

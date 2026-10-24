@@ -1251,7 +1251,7 @@ def text_render_modes():
 
 
 def text_mode4_refused():
-    """Tr 4 — clip-fill mode is out of M5 scope."""
+    """Tr 4 — fill + clip mode (§9.3.6); renders since text clipping landed (name kept for the fixture)."""
     stream = b"BT /F1 20 Tf 10 50 Td 4 Tr (X) Tj ET"
     objs = [
         (1, b"<< /Type /Catalog /Pages 2 0 R >>"),

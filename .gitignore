@@ -17,3 +17,6 @@ compat/reports/
 # Python bytecode from the corpus tooling
 __pycache__/
 *.pyc
+
+# CJK fallback assets (fetched by scripts/fetch-cjk-assets.sh, never committed)
+assets/cjk/

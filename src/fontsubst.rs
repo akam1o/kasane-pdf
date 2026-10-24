@@ -57,6 +57,11 @@ pub enum SubstKind {
     /// An unknown Latin font — family picked from the descriptor
     /// flags / name hints; metrics come from the PDF `/Widths`.
     Generic,
+    /// A non-embedded CID-keyed CJK font drawn with the bundled
+    /// fallback face (`cjk-fallback` feature) through CID → Unicode;
+    /// glyph shapes differ from the intended font, metrics come from
+    /// the PDF `/W`/`/DW`.
+    CjkFallback,
 }
 
 /// One substitution the renderer performed on a page — surfaced in

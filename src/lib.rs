@@ -19,19 +19,25 @@
 //! - Extract positioned Unicode text via [`extract_text`]
 //!   (`/ToUnicode` CMap + WinAnsi/AGL fallback).
 //! - Full single-revision rewrite via [`rewrite`].
+//! - Incremental save via `Edit::save_incremental()` (original bytes
+//!   kept, a revision appended) for metadata, annotation and form-field
+//!   edits, gated by the signed-document policy in [`signature`].
 //! - `Document::edit()` sessions: `/Square` annotations plus the
 //!   experimental scoped `remove_*` editing family and
 //!   `diagnose_redaction`/`audit_residuals`.
 //!
 //! Explicitly **not** supported (typed `Error::Unsupported` or
-//! `Error::Encrypted`, never a partial result): the `/Crypt` filter, encrypted files, function-based and mesh shadings
-//! (types 1, 4–7), knockout transparency groups, `/Matte` soft-mask
-//! images, predefined non-Identity CMaps, singular CTMs, annotations
+//! `Error::Encrypted`, never a partial result): the `/Crypt` filter,
+//! encrypted files, knockout transparency groups, `/Matte` soft-mask
+//! images, predefined non-Identity CMaps and non-embedded CID fonts
+//! (unless the `cjk-fallback` feature bundles the Adobe-Japan1 set
+//! and a fallback face), singular CTMs, annotations
 //! without an appearance stream other than form widgets and the
 //! geometric markup subtypes. Colour spaces, image masks, inline
 //! images, every byte filter (Flate, LZW, ASCII85, ASCIIHex,
 //! RunLength) and the JPEG, JBIG2, CCITT and JPX image filters,
-//! axial/radial shadings, tiling patterns, every simple-font encoding,
+//! every shading type (axial, radial, function-based, triangle and
+//! patch meshes), tiling patterns, every simple-font encoding,
 //! CID-keyed CFF and OpenType CID fonts, embedded CMaps, vertical
 //! writing, optional content (default configuration), `/ActualText`,
 //! synthesised AcroForm widget and markup annotation appearances,
@@ -72,6 +78,7 @@ mod acroform;
 mod annot_appearance;
 pub mod audit;
 mod bilevel;
+mod cjk;
 mod cmap;
 mod colorspace;
 mod content;
@@ -85,6 +92,7 @@ mod font;
 mod fontsubst;
 mod function;
 mod icc;
+mod incremental;
 mod jpx;
 mod lexer;
 mod limits;
@@ -103,6 +111,7 @@ mod render;
 mod rewrite;
 mod serialize;
 mod shading;
+pub mod signature;
 pub mod text_extract;
 mod tounicode;
 mod type1;
@@ -120,6 +129,7 @@ pub use audit::{
     audit_residuals, AuditFinding, AuditIncomplete, FindingKind, HistoryReport, PathStep,
     ReachClass, ReachabilityReport, ResidualAudit,
 };
+pub use cjk::{cjk_fallback_enabled, predefined_cmap_known, predefined_cmap_names};
 pub use document::Document;
 pub use edit::Edit;
 pub use error::Error;
@@ -135,3 +145,4 @@ pub use remove_region::{
 };
 pub use remove_text::{remove_text, Removal};
 pub use rewrite::{rewrite, rewrite_with_limits};
+pub use signature::{signatures, ChangeKind, SignatureInfo};

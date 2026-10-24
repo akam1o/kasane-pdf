@@ -43,23 +43,96 @@ impl CMap {
         use_cmap: Option<&[u8]>,
         limits: &Limits,
     ) -> Result<CMap, Error> {
-        let mut cm = CMap::default();
-        match use_cmap {
-            None => {}
-            Some(b"Identity-H") => cm.identity_base = true,
-            Some(b"Identity-V") => {
+        Self::parse_depth(data, use_cmap, limits, 0)
+    }
+
+    /// A predefined CMap by name (§9.7.5.2): the Identity CMaps always;
+    /// the Adobe-Japan1 set when the `cjk-fallback` feature bundles
+    /// them. `Ok(None)` when the name is not available.
+    pub(crate) fn predefined(name: &[u8], limits: &Limits) -> Result<Option<CMap>, Error> {
+        match name {
+            b"Identity-H" => {
+                return Ok(Some(CMap {
+                    identity_base: true,
+                    ..Default::default()
+                }))
+            }
+            b"Identity-V" => {
+                return Ok(Some(CMap {
+                    identity_base: true,
+                    vertical: true,
+                    ..Default::default()
+                }))
+            }
+            _ => {}
+        }
+        let Some(data) = crate::cjk::predefined_cmap(name) else {
+            return Ok(None);
+        };
+        // Parsed once per process; the 300 KB UniJIS files lex slowly.
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock};
+        static CACHE: OnceLock<Mutex<HashMap<Vec<u8>, CMap>>> = OnceLock::new();
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Ok(c) = cache.lock() {
+            if let Some(cm) = c.get(name) {
+                return Ok(Some(cm.clone()));
+            }
+        }
+        let cm = Self::parse_depth(data, None, limits, 1)?;
+        if let Ok(mut c) = cache.lock() {
+            c.insert(name.to_vec(), cm.clone());
+        }
+        Ok(Some(cm))
+    }
+
+    /// Resolve a `usecmap` / `/UseCMap` base into `cm`: Identity sets
+    /// the fall-through; a bundled predefined CMap is parsed (depth
+    /// bounded) and its mappings become the base of `cm`'s.
+    fn use_base(cm: &mut CMap, name: &[u8], limits: &Limits, depth: usize) -> Result<(), Error> {
+        match name {
+            b"Identity-H" => cm.identity_base = true,
+            b"Identity-V" => {
                 cm.identity_base = true;
                 cm.vertical = true;
             }
-            Some(other) => {
-                return Err(Error::Unsupported {
-                    feature: "Type 0 font encoding",
-                    detail: format!(
-                        "/UseCMap /{} — predefined CMaps other than Identity are not bundled",
-                        String::from_utf8_lossy(other)
-                    ),
-                })
+            other => {
+                if depth > 4 {
+                    return Err(Error::Structure("usecmap chain deeper than 4 CMaps".into()));
+                }
+                let Some(data) = crate::cjk::predefined_cmap(other) else {
+                    return Err(Error::Unsupported {
+                        feature: "Type 0 font encoding",
+                        detail: format!(
+                            "usecmap /{} — predefined CMaps other than Identity are not bundled \
+                             (build with the `cjk-fallback` feature for the Adobe-Japan1 set)",
+                            String::from_utf8_lossy(other)
+                        ),
+                    });
+                };
+                let base = Self::parse_depth(data, None, limits, depth + 1)?;
+                // Base mappings go first: later entries override.
+                let mut merged = base;
+                merged.codespaces.extend(std::mem::take(&mut cm.codespaces));
+                merged.ranges.extend(std::mem::take(&mut cm.ranges));
+                merged.single.extend(std::mem::take(&mut cm.single));
+                merged.vertical |= cm.vertical;
+                merged.identity_base |= cm.identity_base;
+                *cm = merged;
             }
+        }
+        Ok(())
+    }
+
+    fn parse_depth(
+        data: &[u8],
+        use_cmap: Option<&[u8]>,
+        limits: &Limits,
+        depth: usize,
+    ) -> Result<CMap, Error> {
+        let mut cm = CMap::default();
+        if let Some(name) = use_cmap {
+            Self::use_base(&mut cm, name, limits, depth)?;
         }
         let mut lx = Lexer::new(data, limits);
         // Operand stack of the few token kinds a CMap body uses.
@@ -173,23 +246,13 @@ impl CMap {
                     b"usecmap" => {
                         // `/Name usecmap`
                         match stack.last() {
-                            Some(Token::Name { value, .. }) if value == b"Identity-H" => {
-                                cm.identity_base = true
-                            }
-                            Some(Token::Name { value, .. }) if value == b"Identity-V" => {
-                                cm.identity_base = true;
-                                cm.vertical = true;
-                            }
                             Some(Token::Name { value, .. }) => {
-                                return Err(Error::Unsupported {
-                                    feature: "Type 0 font encoding",
-                                    detail: format!(
-                                        "usecmap /{} — predefined CMaps other than Identity are not bundled",
-                                        String::from_utf8_lossy(value)
-                                    ),
-                                })
+                                let name = value.clone();
+                                Self::use_base(&mut cm, &name, limits, depth)?;
                             }
-                            _ => return Err(Error::Structure("usecmap without a CMap name".into())),
+                            _ => {
+                                return Err(Error::Structure("usecmap without a CMap name".into()))
+                            }
                         }
                         stack.clear();
                     }
@@ -363,10 +426,16 @@ mod tests {
         assert_eq!(cm.cid(5, 2), 9);
         assert_eq!(cm.cid(7, 2), 7);
         assert_eq!(cm.next_code(b"\x00\x07", 0), (7, 2));
-        assert!(matches!(
-            CMap::parse(b"/90ms-RKSJ-H usecmap", None, &Limits::default()),
-            Err(Error::Unsupported { .. })
-        ));
+        // A non-Identity predefined base: bundled with `cjk-fallback`,
+        // refused otherwise.
+        let r = CMap::parse(b"/90ms-RKSJ-H usecmap", None, &Limits::default());
+        if cfg!(feature = "cjk-fallback") {
+            let cm = r.unwrap();
+            assert_eq!(cm.cid(0x8140, 2), 633, "U+3000 through 90ms-RKSJ-H");
+            assert!(!cm.vertical);
+        } else {
+            assert!(matches!(r, Err(Error::Unsupported { .. })));
+        }
         assert!(matches!(
             CMap::parse(
                 b"1 begincidchar <41> 1 endcidchar",

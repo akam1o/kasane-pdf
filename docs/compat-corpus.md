@@ -124,6 +124,14 @@ $ compat/runner/target/debug/kasane-compat run \
   Requires `pdfinfo`, `pdftoppm`, `pdftotext`, `qpdf` on PATH.
 - `--dpi N` (default 96), `--max-pages N` (default 3),
   `--only <id>` for a single file.
+- `--mode smoke|full` — presets for the round-trip stage. `smoke`
+  (pull requests): 2 pages per file, 24 dpi, Poppler on page 1, a
+  10 s per-file render budget and a 10 s stage timeout. `full`
+  (nightly / release): every page of every file with our renderer
+  *and* with Poppler, 48 dpi, a 120 s per-file render budget. The
+  individual knobs are `--rt-pages N`, `--rt-dpi N`, `--poppler-pages
+  N`, `--rt-budget-secs N`. A file whose budget runs out before every
+  page was compared is classified PARTIAL — attempted, not passed.
 
 Re-render a saved result without re-running:
 
@@ -785,6 +793,19 @@ Per-category rows (annotations 42/42, forms 13/13 of 38 — 25 signed
 —, browser 19/19, graphics 59/59, japanese 15/15, scan 13/13, papers
 9/9, office 13/13, images 15/15, latex 12/12 full) are in the report.
 
+## External verification findings (this phase)
+
+What the independent parsers said about the rewrites, file by file,
+and what was done about it:
+
+| finding | files | origin | action |
+|---|---|---|---|
+| `qpdf --check` **error** on the rewritten file | `bomb_giant`, `pdfium-many_rectangles_brotli` | **input-derived**: the original fails identically (`/JBIG2Decode` on a page content stream; `/BrotliDecode`, a filter outside ISO 32000). Both are `expect: pass` for the strict parser (the syntax is fine) and refused at render with a typed error | recorded; `external_no_new` passes for both (no *new* diagnostic), `external_valid` fails — the two judgements are reported separately for exactly this case |
+| `qpdf --check` **warning** on the rewritten file only (`input stream is complete but output may still be valid` at one image stream) | `images`, `issue12337`, `issue18911`, `issue19239` | **rewrite-introduced**: the stream's `/Length` is *indirect*; the parser trusted only direct lengths and otherwise scanned for `endstream`, backing off the EOL before it — which also removed the stream's genuine last byte when that byte was `\r`. The rewritten file therefore carried a Flate stream one byte short; the same bug made page 11 of the three `issue*` files fail to render | **fixed** — indirect `/Length` values are resolved (re-entrancy-guarded) and trusted when `endstream` follows; `tests/parse_stream_length.rs`. The four files are clean for qpdf afterwards |
+| Poppler renders the rewritten file but not the original | `mut-truncate-tail-chrome-article-columns-1`, `mut-truncate-tail-scan-issue10301` | `expect: reject` mutations with the tail cut off: Poppler finds no page in the original (3 syntax errors) while our recovery parse plus rewrite produces a readable file. Reported as a Poppler divergence (page-count mismatch) because the comparison cannot tell a repair from a change | recorded; both stay outside the compatibility rate (`reject`) |
+| Flate streams ending in a sync flush (`00 00 ff ff`) with no final block | `comments`, `highlights` and the three `issue*` files above (Apple annotation appearance streams) | **input-derived**: qpdf warns on the originals too; the decoded output is complete but the stream is not terminated. Our decoder refuses an unterminated stream (`FlateDecode failed: incomplete deflate stream`), other viewers use what was decoded | left strict in this phase: accepting it silently would be error suppression, and the engine has no per-render diagnostics channel yet to report it; proposed for the next phase as "accept + report" |
+| rendering every page exhausted `max_total_decoded_bytes` | `arxiv-2610.24216`, `chrome-wiki-ko-hangul`, `chrome-wiki-zh-hanzi` (pages 4–13) | an engine limitation surfaced by the all-page run: the budget was per `Document` lifetime, so page after page of decoded images drained it | **fixed** — the budget is per operation (render / extract / rewrite) plus the retained ObjStm cache; `tests/limits_decoded_budget.rs` |
+
 ## Round-trip verification (rewrite → reparse → compare)
 
 A rewrite that *succeeds* says nothing about whether the document
@@ -800,17 +821,41 @@ original ──strict parse──▶ Document A
           ┌───────────────────┼─────────────────────┬────────────────────┐
           ▼                   ▼                     ▼                    ▼
    object graph          render A vs B         text A vs B      annotations/forms/dests
-   (/Root, /Info)       kasane, ≤ 8 pages,    chars, Unicode,    per-annotation summary,
-   renumbering-          48 dpi: size, MAE,    origin/advance,    field tree (name, FT, V,
-   independent walk      SSIM, diff-px; plus   code/ActualText    Ff, DA, Opt), named
-   with an old→new       Poppler on page 1     resolution         destinations → page
-   reference map         of both as witness
+   (/Root, /Info)       kasane, every page    chars, Unicode,    per-annotation summary,
+   renumbering-          (budgeted), 48 dpi:   origin/advance,    field tree (name, FT, V,
+   independent walk      size, MAE, SSIM,      code/ActualText    Ff, DA, Opt), named
+   with an old→new       diff-px per page;     resolution         destinations → page
+   reference map         Poppler on every page
+                         of both as witness
           └───────────────────┴─────────────────────┴────────────────────┘
                               ▼
-                 qpdf --check on B (warnings and errors counted separately)
+         qpdf --check on A *and* B (warnings and errors counted separately);
+         Poppler `Syntax Error`/`Syntax Warning` lines counted for A and B
                               ▼
-                 full = rewrite PASS ∧ every attempted comparison PASS
+   full = rewrite PASS ∧ every attempted comparison PASS ∧ no page skipped
+          ∧ no new external diagnostic ∧ no Poppler-divergent page
 ```
+
+Eight judgements are recorded and tallied separately, so "matched
+inside kasane" is never confused with "valid for an independent
+implementation":
+
+| # | judgement | field | PASS means |
+|---|---|---|---|
+| 1 | rewrite execution | `rewrite` | `rewrite()` returned bytes (UNSUPPORTED = a documented refusal such as a signature) |
+| 2 | reparse | `reparse` | the strict parser reads B |
+| 3 | structural equivalence | `structure` | object-graph walk finds no difference |
+| 4 | render equivalence | `render` + `pages` | every compared page agrees (SSIM ≥ 0.995, diff-px ≤ 0.05 %, same size); `pages` records total / compared / skipped (budget) / unsupported (our render of A fails) / failed pages, worst and mean SSIM, first divergent page |
+| 5 | text equivalence | `text` | characters, Unicode and positions agree |
+| 6 | annotation / form / destination equivalence | `annotations` | derived summaries agree |
+| 7 | external parser validity | `external_valid` | `qpdf --check` on B exits 0 with **no warning** |
+| 8 | no newly introduced external error | `external_no_new` | B has no more qpdf warnings/errors than A and no more Poppler syntax diagnostics than A (inherited diagnostics are listed in the notes, never hidden) |
+
+The Poppler witness (`poppler`) renders every compared page of A and
+B with `pdftoppm` and records pages compared, size mismatches, mean /
+worst SSIM, mean MAE, worst diff-px ratio and the first divergent
+page (SSIM < 0.99 or diff-px > 0.1 %). A kasane-vs-kasane match with
+a Poppler divergence is a file to investigate, and it fails `full`.
 
 Outcomes per check are PASS / FAIL / UNSUPPORTED (the engine refused
 the rewrite — a profile limit such as a signature, not damage) / N/A
@@ -853,9 +898,14 @@ What the comparisons can and cannot show:
   refuses before writing (`/Perms /DocMDP`/`/UR`/`/UR3`, and any
   `/FT /Sig` field with a `/V` dictionary under `/Fields` → `/Kids`
   or as a page widget). Safe handling = read-only: render, extract,
-  audit. Preserving a signature means an *incremental save* that
-  appends a new revision after the signed bytes (and even then
-  `/DocMDP /P 1` forbids every change) — a separate phase.
+  audit — plus, since this phase, `Edit::save_incremental()`, which
+  appends a revision after the signed bytes and is allowed only for
+  the changes the signer permitted (`/DocMDP /P 2` form filling,
+  `/P 3` and approval signatures also annotations; `/P 1`, a
+  `/FieldMDP` lock, a `/ByteRange` that does not cover the file
+  intact, or any metadata change → refused). No cryptographic
+  verification is performed and no signature is ever reported valid;
+  see `docs/features/editing-incremental.md`.
 * **Incremental updates** (`/Prev` chains, `/XRefStm`): the parser
   merges them newest-first; the rewrite emits one flat revision with
   the *current* objects. The history (superseded objects, earlier
@@ -868,7 +918,15 @@ What the comparisons can and cannot show:
   Decryption is not implemented; when it is, the rewriter must
   re-encrypt or refuse, never write the decrypted objects as-is.
 
-## Non-embedded CJK CID fonts: options (decision: not in this phase)
+## Non-embedded CJK CID fonts: options (decision: implemented behind `cjk-fallback`)
+
+*Outcome:* the second row below was implemented in this phase —
+`src/cjk.rs`, feature `cjk-fallback`, assets fetched by
+`scripts/fetch-cjk-assets.sh` (Adobe-Japan1 CMaps + `Adobe-Japan1-UCS2`
+from Adobe's BSD-3 resources, Noto Sans JP Regular under the OFL),
+`usecmap` chains in `src/cmap.rs`, `SubstKind::CjkFallback` in
+`font_substitutions`. The default build is unchanged (refusal). The
+analysis that led there is kept for the record:
 
 Three `expect: pass` files (`issue11578_reduced`, `issue11740_reduced`,
 `issue12418_reduced`) and two more with non-embedded TrueType fonts
@@ -919,6 +977,42 @@ crates deep and contains no `unsafe`. Expected effect: JBIG2 45 +
 CCITT 4 render blockers removed, text/rewrite unaffected (they do not
 decode images). Estimated 2 person-days including corpus
 verification against Poppler's `jbig2dec` output.
+
+## Remaining render features: investigation notes
+
+Investigated in this phase alongside the shading work; what was found
+and why each stays where it is:
+
+| feature | corpus impact (run-1792806451) | finding | decision |
+|---|---|---|---|
+| knockout transparency groups (`/K true`, §11.6.6) | 1 file | needs per-object backdrop replacement inside the group: every object composites against the group's *initial* backdrop, not against what earlier objects painted. tiny-skia composites against the current pixmap only, so a correct implementation renders each object into its own layer and merges with the group's initial backdrop (cost: one page-sized layer per object, bounded by `max_render_buffer_bytes`). Approximating with a normal group would silently change overlapping semi-transparent strokes | still `Error::Unsupported`; ≈ 2 days |
+| text clipping modes `Tr 4`–`7` (§9.3.6) | 1 file | implemented: outlines accumulated in device space, intersected at `ET`, released by `Q`; Type 3 in a clipping mode refused | **done** (`tests/render_text_clip.rs`) |
+| shading pattern `/ExtGState` (§8.7.3.3, Table 76) | 0 files blocked by it alone | the override applies the dictionary's `ca`/`CA`/`BM`/`SMask` while the pattern paints. Feasible through the existing `apply_extgstate` under a save/restore around the shading paint; not done because no corpus file needs it and a soft mask inside a pattern interacts with the pattern-space clip in a way that needs its own tests | still `Error::Unsupported`; ≈ 0.5 day |
+| `/UserUnit` vs external renderers | 0 files | the engine draws a `UserUnit` page at `UserUnit × dpi / 72` pixels per unit (§14.11.5); Poppler/pdftoppm ignore `/UserUnit`, so a fidelity comparison on such a page sees a size mismatch. The runner resamples to the smaller raster before comparing and records the size mismatch; the engine's behaviour follows the specification | no change; documented in the fidelity section |
+| `/ExtGState /Font [ref size]` (§8.4.5) | 1 `expect: pass` file (+1 `any`) | the font object is referenced directly instead of through `/Resources /Font`; implemented by splitting the loader into a dictionary-level entry point (`font::load_font_dict`) | **done** (`tests/render_text_clip.rs::extgstate_font_selects_the_font_like_tf`) |
+| function-based and mesh shadings (types 1, 4–7) | 3 files | implemented — see `docs/features/rendering.md` (`sh` row) for the sampling/subdivision trade-offs and bounds | **done** |
+
+## Continuous integration
+
+Two workflows under `.github/workflows/`:
+
+| workflow | trigger | what runs | needs |
+|---|---|---|---|
+| `pr.yml` | pull requests, pushes to `main` | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (engine and `compat/runner`); then the runner in `--mode smoke --with-poppler` over `tests/fixtures` (66 committed, licence-clean fixtures) and `scripts/ci-regression.py check` against `compat/baselines/fixtures-smoke.json` | qpdf + poppler-utils from apt; **no credentials, no corpus** |
+| `nightly.yml` | daily cron, manual dispatch | `scripts/fetch-cjk-assets.sh`, runner built with `cjk-fallback`, corpus fetched from the private store, `--mode full --with-poppler` over the 511 files, regression check against `compat/baselines/corpus-full.json`; a second job runs clippy + tests with the `cjk-fallback` feature | repository secrets `KASANE_R2_*` and the variable `KASANE_CORPUS_ENABLED=true`; the job is skipped when they are absent (forks, public mirrors) |
+
+Rules the workflows follow: the store credentials are only read by
+the nightly job and never by pull-request runs (secrets are not
+exposed to PRs from forks in any case); the corpus is fetched into
+the runner's scratch space and never uploaded; artifacts are the
+markdown and json reports only — no PDFs, no rendered or diff images.
+`scripts/ci-regression.py summarize` reduces a run report to
+aggregates plus per-file verdicts, stage classes, round-trip classes
+and cause ids, which is the only form of result committed under
+`compat/baselines/`. `check` fails the gate when a file present in
+both got worse (a stage that was `pass`, a round-trip check that was
+PASS and is now FAIL, any crash or timeout); improvements and
+newly added files are reported, not failed.
 
 ## Pre-publication audit (repository and history)
 

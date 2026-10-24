@@ -13,3 +13,6 @@ serde_json = "1"
 sha2 = "0.10"
 # max-RSS sampling on Unix via getrusage.
 libc = "0.2"
+
+[features]
+cjk-fallback = ["kasane-pdf/cjk-fallback"]

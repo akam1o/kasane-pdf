@@ -208,9 +208,11 @@ fn flate(data: &[u8]) -> Vec<u8> {
 }
 
 #[test]
-fn mode4_is_refused() {
-    let err = render("text_mode4_refused.pdf").unwrap_err();
-    assert!(matches!(err, Error::Unsupported { .. }), "{err:?}");
+fn mode4_fills_and_clips() {
+    // Tr 4 (fill + add to clip, §9.3.6) paints the glyph like mode 0;
+    // the clipping side is covered by tests/render_text_clip.rs.
+    let r = render("text_mode4_refused.pdf").unwrap();
+    assert!(ink_bbox(&r).is_some());
 }
 
 // --------------------------------------------------------------------

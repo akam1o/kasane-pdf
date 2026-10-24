@@ -325,6 +325,11 @@ fn identity_v_advances_downward() {
 
 #[test]
 fn non_identity_encoding_refused() {
+    // With `cjk-fallback` the Adobe-Japan1 CMaps are bundled and these
+    // encodings load (see tests/render_cjk_fallback.rs).
+    if kasane_pdf::cjk_fallback_enabled() {
+        return;
+    }
     for enc in ["UniJIS-UCS2-H", "90ms-RKSJ-H"] {
         let bytes = pdf_type0(
             b"BT /F1 24 Tf 20 60 Td <0041> Tj ET",

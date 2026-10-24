@@ -34,6 +34,7 @@ way).
 | [`matrices.md`](features/matrices.md) | `Matrix` CTM semantics, singular/non-finite handling |
 | [`rewriting.md`](features/rewriting.md) | full single-revision rewrite — what is carried, refused, and *not* a sanitizer |
 | [`editing-annotations.md`](features/editing-annotations.md) | `/Square` annotation editing |
+| [`editing-incremental.md`](features/editing-incremental.md) | incremental save (append a revision, original bytes kept) and the signed-document policy |
 | [`inspect.md`](features/inspect.md) | `inspect` page/document structure dump |
 | [`diagnosis.md`](features/diagnosis.md) | `diagnose_redaction` / `preflight-redaction` (read-only) |
 | [`editing-text.md`](features/editing-text.md) | experimental scoped text removal |

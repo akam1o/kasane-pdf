@@ -122,6 +122,7 @@ pub(crate) fn rewrite_overlay_with(
     limits: &Limits,
     overrides: &RewriteOverrides,
 ) -> Result<Vec<u8>, Error> {
+    let _budget = doc.decoded_budget_scope();
     check_refusals(doc)?;
 
     // The catalog's `/Metadata` is removed by overlaying the catalog

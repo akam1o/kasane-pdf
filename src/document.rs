@@ -45,9 +45,20 @@ pub struct Document {
     header_version: Option<(u8, u8)>,
     /// Remaining indirect-reference resolution budget.
     ref_budget: std::cell::Cell<u64>,
-    /// Remaining cumulative decoded-bytes budget (shared across all
-    /// streams decoded via this document).
+    /// Remaining decoded-bytes budget: `max_total_decoded_bytes` minus
+    /// what the cached object streams retain, refreshed at the start
+    /// and end of every top-level operation (see
+    /// [`Document::decoded_budget_scope`]); between operations it
+    /// bounds the document-level decodes (xref streams, lookups).
     decoded_budget: std::cell::Cell<u64>,
+    /// Decoded bytes the object-stream cache holds on to.
+    objstm_cached_bytes: std::cell::Cell<u64>,
+    /// Nesting depth of [`Document::decoded_budget_scope`] guards.
+    budget_scope_depth: std::cell::Cell<u32>,
+    /// Re-entrancy guard for resolving an indirect stream `/Length`
+    /// while parsing a stream (a `/Length` that points at another
+    /// stream whose `/Length` points back must not recurse).
+    length_resolve_depth: std::cell::Cell<u8>,
     /// Cache of decoded object streams, keyed by object-stream number.
     /// Bounded implicitly by the decoded-bytes budget.
     objstm_cache: std::cell::RefCell<HashMap<u32, ObjectStream>>,
@@ -106,6 +117,9 @@ impl Document {
             header_version,
             ref_budget: std::cell::Cell::new(limits.max_reference_depth),
             decoded_budget: std::cell::Cell::new(limits.max_total_decoded_bytes),
+            objstm_cached_bytes: std::cell::Cell::new(0),
+            budget_scope_depth: std::cell::Cell::new(0),
+            length_resolve_depth: std::cell::Cell::new(0),
             objstm_cache: std::cell::RefCell::new(HashMap::new()),
             recovery: None,
             lenient: false,
@@ -161,6 +175,9 @@ impl Document {
             header_version,
             ref_budget: std::cell::Cell::new(limits.max_reference_depth),
             decoded_budget: std::cell::Cell::new(limits.max_total_decoded_bytes),
+            objstm_cached_bytes: std::cell::Cell::new(0),
+            budget_scope_depth: std::cell::Cell::new(0),
+            length_resolve_depth: std::cell::Cell::new(0),
             objstm_cache: std::cell::RefCell::new(HashMap::new()),
             recovery: Some(report),
             lenient: true,
@@ -217,7 +234,9 @@ impl Document {
                 })
             })?;
 
+            let length_of = |r: IndirectRef| self.indirect_stream_length(r);
             let mut parser = Parser::new(&self.data, &self.limits);
+            parser.with_length_resolver(&length_of);
             if self.lenient {
                 parser.tolerate_missing_endobj();
             }
@@ -246,6 +265,48 @@ impl Document {
         }
     }
 
+    /// An indirect stream `/Length` as a byte count, for the parser's
+    /// stream capture. `None` when it cannot be resolved to a
+    /// non-negative integer or when resolving would recurse (depth > 1);
+    /// the parser then scans for `endstream` instead.
+    fn indirect_stream_length(&self, r: IndirectRef) -> Option<usize> {
+        let depth = self.length_resolve_depth.get();
+        if depth > 1 {
+            return None;
+        }
+        self.length_resolve_depth.set(depth + 1);
+        let v = self.resolve(r).ok().and_then(|o| o.as_i64());
+        self.length_resolve_depth.set(depth);
+        v.filter(|n| *n >= 0).map(|n| n as usize)
+    }
+
+    /// Give the operation that is starting (a page render, a text
+    /// extraction, a rewrite) the whole `max_total_decoded_bytes`
+    /// budget, less what the object-stream cache retains; restore the
+    /// same fresh value when it ends. Nested scopes do not reset the
+    /// outer one, so a single operation is still bounded as a whole.
+    /// Decoded buffers are owned by the operation and freed with it,
+    /// which is why the budget is per operation and not per document
+    /// lifetime — rendering every page of a long document must not
+    /// run out of budget on page 40.
+    pub(crate) fn decoded_budget_scope(&self) -> DecodedBudgetScope<'_> {
+        let depth = self.budget_scope_depth.get();
+        self.budget_scope_depth.set(depth + 1);
+        if depth == 0 {
+            self.decoded_budget.set(self.fresh_decoded_budget());
+        }
+        DecodedBudgetScope {
+            doc: self,
+            outer: depth == 0,
+        }
+    }
+
+    fn fresh_decoded_budget(&self) -> u64 {
+        self.limits
+            .max_total_decoded_bytes
+            .saturating_sub(self.objstm_cached_bytes.get())
+    }
+
     /// Resolve an object stored inside an object stream (xref type 2).
     fn resolve_compressed(
         &self,
@@ -266,6 +327,8 @@ impl Document {
             }
             let decoded = self.decode_stream(dict, raw)?;
             let parsed = ObjectStream::parse(&decoded, dict, (want.number, index), &self.limits)?;
+            self.objstm_cached_bytes
+                .set(self.objstm_cached_bytes.get() + decoded.len() as u64);
             self.objstm_cache.borrow_mut().insert(objstm_num, parsed);
         }
         let cache = self.objstm_cache.borrow();
@@ -287,7 +350,9 @@ impl Document {
                 context: "object stream",
             })
         })?;
+        let length_of = |r: IndirectRef| self.indirect_stream_length(r);
         let mut parser = Parser::new(&self.data, &self.limits);
+        parser.with_length_resolver(&length_of);
         if self.lenient {
             parser.tolerate_missing_endobj();
         }
@@ -477,6 +542,16 @@ impl Document {
     /// identifies an object, so allocating `(num, 0)` while the file
     /// knows `(num, g)` would let a malformed `(num, 0)` reference
     /// silently resolve to the synthetic instead of failing.
+    /// The file bytes the document was loaded from.
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Offset of the newest cross-reference section (`startxref`).
+    pub(crate) fn startxref(&self) -> Option<u64> {
+        self.xref.section_offsets.first().copied()
+    }
+
     pub(crate) fn number_reserved(&self, num: u32) -> bool {
         self.xref.number_used(num)
     }
@@ -866,5 +941,21 @@ impl Document {
             contents,
         ));
         Ok(())
+    }
+}
+
+/// Guard returned by [`Document::decoded_budget_scope`].
+pub(crate) struct DecodedBudgetScope<'a> {
+    doc: &'a Document,
+    outer: bool,
+}
+
+impl Drop for DecodedBudgetScope<'_> {
+    fn drop(&mut self) {
+        let depth = self.doc.budget_scope_depth.get();
+        self.doc.budget_scope_depth.set(depth.saturating_sub(1));
+        if self.outer {
+            self.doc.decoded_budget.set(self.doc.fresh_decoded_budget());
+        }
     }
 }

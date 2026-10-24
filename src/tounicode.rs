@@ -65,6 +65,12 @@ impl ToUnicode {
     }
 
     /// Look up `code`; `None` if the CMap has no entry for it.
+    /// Every explicit mapping `(code, UTF-16BE units)`.
+    #[cfg_attr(not(feature = "cjk-fallback"), allow(dead_code))]
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (u32, &[u16])> {
+        self.entries.iter().map(|m| (m.code, m.utf16be.as_slice()))
+    }
+
     pub(crate) fn lookup(&self, code: u32) -> Option<&[u16]> {
         self.entries
             .iter()

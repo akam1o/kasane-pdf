@@ -178,6 +178,19 @@ pub(crate) fn load_font(
             String::from_utf8_lossy(name)
         ))
     })?;
+    load_font_dict(doc, dict, name, limits)
+}
+
+/// Load a font from its dictionary — the resource lookup already
+/// done (`Tf`) or not applicable (`/ExtGState /Font [ref size]`,
+/// §8.4.5, which names the font object directly). `name` labels
+/// errors only.
+pub(crate) fn load_font_dict(
+    doc: &Document,
+    dict: &Dict,
+    name: &[u8],
+    limits: &Limits,
+) -> Result<Font, Error> {
     // A simple font whose program is an OpenType wrapper (`/FontFile3
     // /Subtype /OpenType`, §9.9 Table 126) is loaded through the
     // TrueType path whatever its declared subtype: `ttf-parser` reads
@@ -202,11 +215,11 @@ pub(crate) fn load_font(
         })
         .unwrap_or(false);
     match dict.get(b"Subtype".as_slice()).and_then(|o| o.as_name()) {
-        Some(b"TrueType") => Ok(Font::Simple(load_simple_font(
-            doc, resources, name, limits,
+        Some(b"TrueType") => Ok(Font::Simple(load_simple_font_dict(
+            doc, dict, name, limits,
         )?)),
         Some(b"Type1") | Some(b"MMType1") if opentype_ff3 => Ok(Font::Simple(
-            load_simple_font(doc, resources, name, limits)?,
+            load_simple_font_dict(doc, dict, name, limits)?,
         )),
         Some(b"Type1") | Some(b"MMType1") => Ok(Font::Type1(load_type1_font(doc, dict, limits)?)),
         Some(b"Type3") => Ok(Font::Type3(load_type3_font(doc, dict, limits)?)),
@@ -225,34 +238,14 @@ pub(crate) fn load_font(
     }
 }
 
-/// Resolve `name` in `/Resources /Font`, load it as a simple
-/// TrueType font, and return a ready-to-use [`SimpleFont`].
-///
-/// Errors:
-/// - missing name → `Error::Structure`
-/// - not a `/Font` dict or unsupported subtype → `Unsupported`
-/// - not embedded / no `/FontFile2` → `Unsupported`
-/// - bad widths/descriptor → `Structure`
-pub(crate) fn load_simple_font(
+/// [`load_simple_font`] on an already resolved dictionary; `name`
+/// labels errors only.
+pub(crate) fn load_simple_font_dict(
     doc: &Document,
-    resources: &Object,
+    dict: &Dict,
     name: &[u8],
     limits: &Limits,
 ) -> Result<Rc<SimpleFont>, Error> {
-    let obj = doc
-        .resolve_resource(resources, "Font", name)?
-        .ok_or_else(|| {
-            Error::Structure(format!(
-                "/Font /{} is not defined in the current resources",
-                String::from_utf8_lossy(name)
-            ))
-        })?;
-    let dict = obj.as_dict().ok_or_else(|| {
-        Error::Structure(format!(
-            "/Font /{} is not a dictionary",
-            String::from_utf8_lossy(name)
-        ))
-    })?;
     match dict.get(b"Subtype".as_slice()).and_then(|o| o.as_name()) {
         // /Type1 lands here only with an OpenType /FontFile3 (see
         // `load_font`).
@@ -1337,9 +1330,17 @@ enum CidProgram {
 /// (vertical: `/DW2`/`/W2`), Unicode from `/ToUnicode`. Codes, CIDs
 /// and GIDs are three different numbers and are never conflated.
 pub(crate) struct CompositeFont {
-    /// Decoded font program of the descendant CIDFont.
-    program: Vec<u8>,
+    /// Decoded font program of the descendant CIDFont (borrowed for
+    /// the bundled fallback face).
+    program: std::borrow::Cow<'static, [u8]>,
     kind: CidProgram,
+    /// Non-embedded font drawn with the bundled fallback: CID →
+    /// Unicode map (glyphs are found through the fallback's cmap) and
+    /// the substitution record.
+    fallback: Option<(
+        &'static std::collections::HashMap<u32, char>,
+        crate::fontsubst::FontSubstitution,
+    )>,
     /// `/CIDToGIDMap` (CIDFontType2 only): `None` = Identity, `Some`
     /// = big-endian 2-byte-per-CID lookup.
     cid_to_gid: Option<Vec<u8>>,
@@ -1382,15 +1383,22 @@ fn load_composite_font(
     let (cmap, mut vertical) = match dict.get(b"Encoding".as_slice()) {
         Some(Object::Name(n)) if n.as_slice() == b"Identity-H" => (None, false),
         Some(Object::Name(n)) if n.as_slice() == b"Identity-V" => (None, true),
-        Some(Object::Name(other)) => {
-            return Err(Error::Unsupported {
-                feature: "Type 0 font encoding",
-                detail: format!(
-                    "/{} — predefined CMaps other than Identity-H/V are not bundled",
-                    String::from_utf8_lossy(other)
-                ),
-            })
-        }
+        Some(Object::Name(other)) => match crate::cmap::CMap::predefined(other, limits)? {
+            Some(cm) => {
+                let v = cm.vertical;
+                (Some(cm), v)
+            }
+            None => {
+                return Err(Error::Unsupported {
+                    feature: "Type 0 font encoding",
+                    detail: format!(
+                        "/{} — predefined CMaps other than Identity-H/V are not bundled \
+                         (build with the `cjk-fallback` feature for the Adobe-Japan1 set)",
+                        String::from_utf8_lossy(other)
+                    ),
+                })
+            }
+        },
         Some(o @ Object::Ref(_)) | Some(o @ Object::Stream { .. }) => {
             let s = doc.deref(o)?;
             let Some((sd, raw)) = s.as_stream() else {
@@ -1451,6 +1459,7 @@ fn load_composite_font(
             ))
         }
     };
+    let mut ordering: Vec<u8> = Vec::new();
     match cid_dict.get(b"CIDSystemInfo".as_slice()) {
         Some(o) => {
             let info = doc.deref(o)?;
@@ -1459,7 +1468,12 @@ fn load_composite_font(
                 .ok_or_else(|| Error::Structure("/CIDSystemInfo is not a dictionary".into()))?;
             for key in [&b"Registry"[..], &b"Ordering"[..]] {
                 match d.get(key).map(|o| doc.deref(o)).transpose()? {
-                    Some(Object::String(_)) | None => {}
+                    Some(Object::String(s)) => {
+                        if key == b"Ordering" {
+                            ordering = s.clone();
+                        }
+                    }
+                    None => {}
                     _ => {
                         return Err(Error::Structure(format!(
                             "/CIDSystemInfo /{} must be a string",
@@ -1481,41 +1495,91 @@ fn load_composite_font(
         .ok_or_else(|| Error::Structure("/FontDescriptor is not a dictionary".into()))?;
 
     // ---- the program ---------------------------------------------
-    let (kind, program) = if let Some(ff3) = fd_dict.get(b"FontFile3".as_slice()) {
-        let ff3 = doc.deref(ff3)?;
-        let (ff3_dict, ff3_raw) = ff3
-            .as_stream()
-            .ok_or_else(|| Error::Structure("/FontFile3 is not a stream".into()))?;
-        let program = doc.decode_stream(ff3_dict, ff3_raw)?;
-        let kind = match ff3_dict
-            .get(b"Subtype".as_slice())
-            .and_then(|o| o.as_name())
-        {
-            // The bytes decide: an sfnt wrapper labelled /CIDFontType0C
-            // is still OpenType (common in arXiv/LaTeX output).
-            _ if is_sfnt(&program) => CidProgram::OpenType,
-            Some(b"OpenType") => CidProgram::OpenType,
-            Some(b"CIDFontType0C") | Some(b"Type1C") | None => CidProgram::Cff,
-            Some(other) => {
-                return Err(Error::Unsupported {
-                    feature: "CIDFont /FontFile3 subtype",
-                    detail: format!("/{}", String::from_utf8_lossy(other)),
-                })
+    let mut fallback: Option<(
+        &'static std::collections::HashMap<u32, char>,
+        crate::fontsubst::FontSubstitution,
+    )> = None;
+    let (kind, program): (CidProgram, std::borrow::Cow<'static, [u8]>) =
+        if let Some(ff3) = fd_dict.get(b"FontFile3".as_slice()) {
+            let ff3 = doc.deref(ff3)?;
+            let (ff3_dict, ff3_raw) = ff3
+                .as_stream()
+                .ok_or_else(|| Error::Structure("/FontFile3 is not a stream".into()))?;
+            let program = doc.decode_stream(ff3_dict, ff3_raw)?;
+            let kind = match ff3_dict
+                .get(b"Subtype".as_slice())
+                .and_then(|o| o.as_name())
+            {
+                // The bytes decide: an sfnt wrapper labelled /CIDFontType0C
+                // is still OpenType (common in arXiv/LaTeX output).
+                _ if is_sfnt(&program) => CidProgram::OpenType,
+                Some(b"OpenType") => CidProgram::OpenType,
+                Some(b"CIDFontType0C") | Some(b"Type1C") | None => CidProgram::Cff,
+                Some(other) => {
+                    return Err(Error::Unsupported {
+                        feature: "CIDFont /FontFile3 subtype",
+                        detail: format!("/{}", String::from_utf8_lossy(other)),
+                    })
+                }
+            };
+            (kind, std::borrow::Cow::Owned(program))
+        } else if let Some(ff2) = fd_dict.get(b"FontFile2".as_slice()) {
+            let ff2 = doc.deref(ff2)?;
+            let (ff2_dict, ff2_raw) = ff2
+                .as_stream()
+                .ok_or_else(|| Error::Structure("/FontFile2 is not a stream".into()))?;
+            (
+                CidProgram::TrueType,
+                std::borrow::Cow::Owned(doc.decode_stream(ff2_dict, ff2_raw)?),
+            )
+        } else {
+            // Non-embedded: the bundled CJK fallback for a known ordering
+            // (feature `cjk-fallback`), drawn through CID → Unicode →
+            // the fallback face's cmap; never a host font.
+            match (
+                crate::cjk::fallback_font(&ordering),
+                crate::cjk::cid_to_unicode(&ordering),
+            ) {
+                (Some((name, data)), Some(map)) => {
+                    let base = dict
+                        .get(b"BaseFont".as_slice())
+                        .and_then(|o| o.as_name())
+                        .map(|n| {
+                            let n = String::from_utf8_lossy(n).into_owned();
+                            // Strip a subset tag (`ABCDEF+Name`).
+                            match n.split_once('+') {
+                                Some((tag, rest))
+                                    if tag.len() == 6
+                                        && tag.bytes().all(|b| b.is_ascii_uppercase()) =>
+                                {
+                                    rest.to_string()
+                                }
+                                _ => n,
+                            }
+                        })
+                        .unwrap_or_default();
+                    fallback = Some((
+                        map,
+                        crate::fontsubst::FontSubstitution {
+                            base_font: base,
+                            substitute: name,
+                            kind: crate::fontsubst::SubstKind::CjkFallback,
+                        },
+                    ));
+                    (CidProgram::OpenType, std::borrow::Cow::Borrowed(data))
+                }
+                _ => {
+                    return Err(Error::Unsupported {
+                        feature: "non-embedded CIDFont",
+                        detail: format!(
+                        "/FontFile2 or /FontFile3 is required; OS substitution is not performed \
+                         (ordering {:?}; the `cjk-fallback` feature bundles a fallback for Japan1)",
+                        String::from_utf8_lossy(&ordering)
+                    ),
+                    });
+                }
             }
         };
-        (kind, program)
-    } else if let Some(ff2) = fd_dict.get(b"FontFile2".as_slice()) {
-        let ff2 = doc.deref(ff2)?;
-        let (ff2_dict, ff2_raw) = ff2
-            .as_stream()
-            .ok_or_else(|| Error::Structure("/FontFile2 is not a stream".into()))?;
-        (CidProgram::TrueType, doc.decode_stream(ff2_dict, ff2_raw)?)
-    } else {
-        return Err(Error::Unsupported {
-            feature: "non-embedded CIDFont",
-            detail: "/FontFile2 or /FontFile3 is required; OS substitution is not performed".into(),
-        });
-    };
     if program.len() as u64 > limits.max_stream_bytes {
         return Err(Error::LimitExceeded {
             limit: "max_stream_bytes (embedded CID font)",
@@ -1685,6 +1749,7 @@ fn load_composite_font(
     Ok(Rc::new(CompositeFont {
         program,
         kind,
+        fallback: fallback.take(),
         cid_to_gid,
         cmap,
         vertical,
@@ -1867,6 +1932,13 @@ impl CompositeFont {
     /// read with (needed to disambiguate CMap ranges).
     pub(crate) fn glyph_id_len(&self, code: u32, len: usize) -> Result<GlyphId, Error> {
         let cid = self.cid(code, len);
+        if let Some((map, _)) = &self.fallback {
+            let face = self.face()?;
+            return Ok(map
+                .get(&cid)
+                .and_then(|ch| face.glyph_index(*ch))
+                .unwrap_or(GlyphId(0)));
+        }
         match self.kind {
             CidProgram::Cff => {
                 let t = self.cff()?;
@@ -2138,7 +2210,8 @@ impl Font {
         match self {
             Font::Simple(f) => f.substitution(),
             Font::Type1(f) => f.substitution(),
-            Font::Composite(_) | Font::Type3(_) => None,
+            Font::Composite(f) => f.fallback.as_ref().map(|(_, s)| s.clone()),
+            Font::Type3(_) => None,
         }
     }
 
