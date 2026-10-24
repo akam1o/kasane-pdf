@@ -510,7 +510,7 @@ fn parse_u32_word(bytes: &[u8]) -> Option<u32> {
 // Recovery: rebuild the table by scanning for object definitions
 // --------------------------------------------------------------------
 
-/// What [`reconstruct`] did to a damaged file — surfaced through
+/// What the recovery scan (`reconstruct`) did to a damaged file — surfaced through
 /// [`crate::Document::recovery`] so a caller can tell a recovered
 /// document from a well-formed one and see every assumption made.
 #[derive(Debug, Clone, PartialEq, Eq)]
