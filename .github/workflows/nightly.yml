@@ -1,0 +1,82 @@
+# Nightly / on-demand: the full real-world corpus (511 files) — strict
+# and recovery parse, render, text, rewrite, every-page round-trip with
+# Poppler and qpdf verification, visual fidelity, performance and the
+# robustness set — plus the CJK-fallback build.
+#
+# The corpus lives in a private object store. Its credentials are
+# repository secrets that are only exposed to this workflow, never to
+# pull-request runs, and the job is skipped entirely when they are not
+# configured (forks). Files that cannot be redistributed never leave the
+# store; only aggregate reports (markdown + json) are uploaded as
+# artifacts — no PDFs, no rendered images, no diff images.
+name: nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  full-corpus:
+    name: full compatibility + round-trip (511)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    # Secrets are not available to expressions in `if`; gate on a
+    # repository variable the maintainers set alongside the secrets.
+    if: ${{ vars.KASANE_CORPUS_ENABLED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: external verifiers (qpdf, poppler)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qpdf poppler-utils python3-pip
+      - name: CJK fallback assets (pinned upstream, licence-clean)
+        run: ./scripts/fetch-cjk-assets.sh
+      - name: build runner (with cjk-fallback)
+        working-directory: compat/runner
+        run: cargo build --release --features cjk-fallback
+      - name: fetch corpus from the private store
+        env:
+          R2_ENDPOINT: ${{ secrets.KASANE_R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.KASANE_R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.KASANE_R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.KASANE_R2_SECRET_ACCESS_KEY }}
+        run: |
+          pip3 install --quiet boto3 pyyaml
+          python3 compat/fetch-corpus.py --dest compat/corpus
+      - name: full run (all pages, Poppler witness, external checks)
+        run: |
+          mkdir -p /tmp/full
+          ./compat/runner/target/release/kasane-compat run \
+            --corpus compat/corpus --out /tmp/full \
+            --with-poppler --dpi 96 --timeout-secs 20 --mode full
+      - name: regression check vs committed 511 baseline
+        run: python3 scripts/ci-regression.py check /tmp/full/latest.json compat/baselines/corpus-full.json
+      - name: upload aggregate report (no PDFs, no images)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-full-report
+          path: |
+            /tmp/full/latest.md
+            /tmp/full/latest.json
+          retention-days: 30
+
+  cjk-feature:
+    name: engine tests with cjk-fallback
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: ./scripts/fetch-cjk-assets.sh
+      - run: cargo clippy --all-targets --features cjk-fallback -- -D warnings
+      - run: cargo test --features cjk-fallback

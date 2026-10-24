@@ -1,0 +1,66 @@
+# Pull-request gate: engine tests, formatting, lints, and a smoke-sized
+# compatibility + round-trip run over the committed fixtures with a
+# regression check against the committed baseline. Nothing here needs
+# credentials or the real-world corpus; nothing generated is committed.
+name: pr
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  engine:
+    name: test / fmt / clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      - name: clippy + test (compat runner)
+        working-directory: compat/runner
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test
+
+  compat-smoke:
+    name: compat + round-trip smoke (fixtures)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: external verifiers (qpdf, poppler)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qpdf poppler-utils
+      - name: build runner
+        working-directory: compat/runner
+        run: cargo build --release
+      - name: smoke run over tests/fixtures
+        run: |
+          mkdir -p /tmp/smoke
+          ./compat/runner/target/release/kasane-compat run \
+            --corpus tests/fixtures --out /tmp/smoke \
+            --with-poppler --mode smoke
+      - name: regression check vs committed baseline
+        run: python3 scripts/ci-regression.py check /tmp/smoke/latest.json compat/baselines/fixtures-smoke.json
+      - name: upload report (markdown + json, no images)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compat-smoke-report
+          path: |
+            /tmp/smoke/latest.md
+            /tmp/smoke/latest.json
+          retention-days: 14

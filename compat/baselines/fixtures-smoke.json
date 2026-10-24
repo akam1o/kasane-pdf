@@ -1,0 +1,1364 @@
+{
+ "aggregate": {
+  "crash": 0,
+  "files": 66,
+  "parse_pass": 59,
+  "render_pass": 47,
+  "rewrite_pass": 61,
+  "roundtrip_full": 60,
+  "text_pass": 48,
+  "timeout": 0
+ },
+ "files": {
+  "bad_offset": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {},
+   "roundtrip_full": null,
+   "stages": {
+    "parse": "error",
+    "render": "skip",
+    "rewrite": "skip",
+    "text": "skip"
+   },
+   "verdict": "error"
+  },
+  "content_ops": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "NotApplicable",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "NotApplicable"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "error",
+    "rewrite": "pass",
+    "text": "error"
+   },
+   "verdict": "error"
+  },
+  "contents_array": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "NotApplicable",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "NotApplicable"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "error",
+    "rewrite": "pass",
+    "text": "error"
+   },
+   "verdict": "error"
+  },
+  "contents_none": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Fail",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "cyclic_pages": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {},
+   "roundtrip_full": null,
+   "stages": {
+    "parse": "error",
+    "render": "skip",
+    "rewrite": "skip",
+    "text": "skip"
+   },
+   "verdict": "error"
+  },
+  "encrypted": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {},
+   "roundtrip_full": null,
+   "stages": {
+    "parse": "unsupported",
+    "render": "skip",
+    "rewrite": "skip",
+    "text": "skip"
+   },
+   "verdict": "unsupported"
+  },
+  "flate_bad_data": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Fail",
+    "render": "NotApplicable",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "NotApplicable"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "error",
+    "rewrite": "pass",
+    "text": "error"
+   },
+   "verdict": "error"
+  },
+  "flate_contents": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Fail",
+    "render": "NotApplicable",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "NotApplicable"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "error",
+    "rewrite": "pass",
+    "text": "error"
+   },
+   "verdict": "error"
+  },
+  "flate_predictor": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Fail",
+    "render": "NotApplicable",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "NotApplicable"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "error",
+    "rewrite": "pass",
+    "text": "error"
+   },
+   "verdict": "error"
+  },
+  "flate_predictor_bad": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Fail",
+    "render": "NotApplicable",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "NotApplicable"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "unsupported",
+    "rewrite": "pass",
+    "text": "unsupported"
+   },
+   "verdict": "unsupported"
+  },
+  "hello": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "hybrid": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Fail",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "error",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "error"
+  },
+  "hybrid_compressed": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "hybrid_gap": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "incremental": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "missing_ref": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {},
+   "roundtrip_full": null,
+   "stages": {
+    "parse": "error",
+    "render": "skip",
+    "rewrite": "skip",
+    "text": "skip"
+   },
+   "verdict": "error"
+  },
+  "objstm": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "pages": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "prev_chain": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Fail",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "render_annot": {
+   "causes": [
+    "render.annotation.unsupported"
+   ],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "Pass",
+    "external_no_new": "Pass",
+    "external_valid": "Fail",
+    "render": "NotApplicable",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "unsupported",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "unsupported"
+  },
+  "render_rects": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "render_text": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_basic": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_clip": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_composite_glyph": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_differences_encoding": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_empty_string": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_extended_chars": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_in_form": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_missing_font_ref": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "NotApplicable",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "NotApplicable"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "error",
+    "rewrite": "pass",
+    "text": "error"
+   },
+   "verdict": "error"
+  },
+  "text_mode4_refused": {
+   "causes": [
+    "render.textmode.unsupported"
+   ],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "NotApplicable",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "NotApplicable"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "unsupported",
+    "rewrite": "pass",
+    "text": "unsupported"
+   },
+   "verdict": "unsupported"
+  },
+  "text_no_font_tj": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "NotApplicable",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "NotApplicable"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "error",
+    "rewrite": "pass",
+    "text": "error"
+   },
+   "verdict": "error"
+  },
+  "text_notdef": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_quote_ops": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_render_modes": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_rotated": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_same_name_two_resources": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_scaled": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_symbolic_refused": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_tc_tw_tz_ts": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_tj": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_tj_consecutive_numbers": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_tj_split": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_unsupported_encoding": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_unsupported_type1": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "text_widths_override": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "truncated": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {},
+   "roundtrip_full": null,
+   "stages": {
+    "parse": "error",
+    "render": "skip",
+    "rewrite": "skip",
+    "text": "skip"
+   },
+   "verdict": "error"
+  },
+  "unsupported_filter": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Fail",
+    "render": "NotApplicable",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "NotApplicable"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "unsupported",
+    "rewrite": "pass",
+    "text": "unsupported"
+   },
+   "verdict": "unsupported"
+  },
+  "xobject_form_basic": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "xobject_form_bbox_clip": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "xobject_form_group": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "xobject_form_matrix": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "xobject_form_nested": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "xobject_form_own_resources": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "xobject_form_self_recursive": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "NotApplicable",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "NotApplicable"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "error",
+    "rewrite": "pass",
+    "text": "error"
+   },
+   "verdict": "error"
+  },
+  "xobject_image_dct": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "xobject_image_decode_invert": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "xobject_image_gray_raw": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "xobject_image_mask": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "xobject_image_rgb_flate": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "xobject_image_smask": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "xobject_missing": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "NotApplicable",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "NotApplicable"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "error",
+    "rewrite": "pass",
+    "text": "error"
+   },
+   "verdict": "error"
+  },
+  "xobject_unknown_subtype": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "NotApplicable",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "NotApplicable"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "unsupported",
+    "rewrite": "pass",
+    "text": "unsupported"
+   },
+   "verdict": "unsupported"
+  },
+  "xobject_unused_bad": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "xref_stream": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": true,
+   "stages": {
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "pass"
+  },
+  "xref_stream_bad_type": {
+   "causes": [],
+   "expect": "",
+   "roundtrip": {
+    "annotations": "NotApplicable",
+    "external_no_new": "Fail",
+    "external_valid": "Fail",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
+   },
+   "roundtrip_full": false,
+   "stages": {
+    "parse": "error",
+    "render": "pass",
+    "rewrite": "pass",
+    "text": "pass"
+   },
+   "verdict": "error"
+  }
+ }
+}
