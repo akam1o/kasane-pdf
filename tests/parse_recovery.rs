@@ -181,9 +181,14 @@ fn recovery_does_not_apply_to_encryption_or_non_pdf() {
         "/Root 1 0 R /Encrypt << /Filter /Standard >>",
     );
     pdf = s.into_bytes();
+    // A damaged encrypted file is not rebuilt: the scan would read
+    // ciphertext as plaintext.
     assert!(matches!(
         Document::from_bytes_recovering(&pdf),
-        Err(Error::Encrypted)
+        Err(Error::Unsupported {
+            feature: "encryption",
+            ..
+        })
     ));
     assert!(matches!(
         Document::from_bytes_recovering(b"not a pdf at all, 1 0 obj << >> endobj"),

@@ -68,6 +68,17 @@ hayro-jbig2 = { version = "0.3", default-features = false }
 hayro-ccitt = { version = "0.4", default-features = false }
 hayro-jpeg2000 = { version = "0.4", default-features = false }
 
+# Standard security handler (encrypted documents, decryption only).
+# RustCrypto, pure Rust, MIT OR Apache-2.0, WASM-clean; kasane-pdf
+# implements only the PDF key derivation on top. `cbc` keeps its
+# default `block-padding` feature for PKCS#5 unpadding.
+aes = "0.9"
+cbc = "0.2"
+md-5 = "0.11"
+sha2 = "0.11"
+rc4 = "0.2"
+zeroize = "1"
+
 [[example]]
 name = "cjk_fallback"
 required-features = ["cjk-fallback"]

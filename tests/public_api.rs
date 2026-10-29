@@ -83,7 +83,8 @@ fn errors_are_classified_by_kind() {
     assert!(matches!(e, Error::NotPdf));
     assert_eq!(e.kind(), ErrorKind::NotPdf);
     assert_eq!(e.kind().as_str(), "not a PDF");
-    let e = Document::from_bytes(&std::fs::read(fixture("encrypted.pdf")).unwrap()).unwrap_err();
+    let e = Document::from_bytes(&std::fs::read(fixture("encrypted/enc_r6_aes256.pdf")).unwrap())
+        .unwrap_err();
     assert!(matches!(e, Error::Encrypted));
     let e = Document::from_bytes(&std::fs::read(fixture("truncated.pdf")).unwrap()).unwrap_err();
     assert!(matches!(

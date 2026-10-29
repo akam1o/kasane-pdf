@@ -82,6 +82,7 @@ mod cjk;
 mod cmap;
 mod colorspace;
 mod content;
+mod crypt;
 pub mod dests;
 mod document;
 pub mod edit;
@@ -141,7 +142,8 @@ pub use audit::{
     ReachClass, ReachabilityReport, ResidualAudit,
 };
 pub use cjk::{cjk_fallback_enabled, predefined_cmap_known, predefined_cmap_names};
-pub use document::Document;
+pub use crypt::{Authentication, CryptMethod, EncryptionInfo};
+pub use document::{Document, OpenOptions};
 pub use edit::Edit;
 pub use error::{Error, ErrorKind, MissingReference, SignatureRule};
 pub use limits::Limits;

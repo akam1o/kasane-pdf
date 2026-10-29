@@ -54,8 +54,8 @@ pub(crate) fn write(
     }
     let trailer = doc.latest_trailer();
     let merged = doc.trailer();
-    if merged.contains_key(b"Encrypt".as_slice()) {
-        return Err(Error::Encrypted);
+    if merged.contains_key(b"Encrypt".as_slice()) || doc.is_encrypted() {
+        return Err(encrypted_write_refused());
     }
     let prev = doc.startxref().ok_or_else(|| {
         Error::Structure("document has no startxref to chain the new revision to".into())
@@ -298,5 +298,15 @@ fn check_generations(obj: &Object, synth: &HashSet<(u32, u16)>, depth: usize) ->
             .values()
             .try_for_each(|o| check_generations(o, synth, depth + 1)),
         _ => Ok(()),
+    }
+}
+
+/// The writers do not produce encrypted output: an appended revision
+/// would have to be encrypted with the document's key, and a rewrite
+/// would silently drop the encryption.
+pub(crate) fn encrypted_write_refused() -> Error {
+    Error::Unsupported {
+        feature: "writing an encrypted document",
+        detail: "the writers do not encrypt; saving would drop or break the encryption".into(),
     }
 }

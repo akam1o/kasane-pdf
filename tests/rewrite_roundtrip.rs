@@ -530,11 +530,17 @@ fn goto_dest_page_ref_remapped() {
 
 #[test]
 fn encrypted_refused() {
-    let data = std::fs::read("tests/fixtures/encrypted.pdf").unwrap();
-    match Document::from_bytes(&data) {
-        Err(Error::Encrypted) => {}
-        _ => panic!("encrypted.pdf did not fail at load"),
-    }
+    // An encrypted document that opens is refused by the writer (the
+    // rewrite would drop the encryption); one that does not open never
+    // reaches it.
+    let data = std::fs::read("tests/fixtures/encrypted/enc_r6_aes256_empty.pdf").unwrap();
+    let doc = Document::from_bytes(&data).unwrap();
+    assert!(matches!(
+        kasane_pdf::rewrite(&doc),
+        Err(Error::Unsupported { .. })
+    ));
+    let data = std::fs::read("tests/fixtures/encrypted/enc_r6_aes256.pdf").unwrap();
+    assert!(matches!(Document::from_bytes(&data), Err(Error::Encrypted)));
 }
 
 #[test]

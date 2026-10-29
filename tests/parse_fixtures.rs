@@ -93,8 +93,13 @@ fn xref_stream_parses_as_supported() {
 
 #[test]
 fn encrypted_file_is_refused() {
-    let err = Document::from_bytes(&fixture("encrypted.pdf")).unwrap_err();
+    // A password-protected file opened without its password.
+    let err = Document::from_bytes(&fixture("encrypted/enc_r6_aes256.pdf")).unwrap_err();
     assert!(matches!(err, Error::Encrypted), "got: {err:?}");
+    // `encrypted.pdf` declares /O and /U of one byte: a malformed
+    // /Encrypt dictionary, not a wrong password.
+    let err = Document::from_bytes(&fixture("encrypted.pdf")).unwrap_err();
+    assert!(matches!(err, Error::Structure(_)), "got: {err:?}");
 }
 
 #[test]

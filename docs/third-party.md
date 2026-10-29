@@ -18,27 +18,45 @@ is used under the Apache-2.0 or MIT option.
 | crate | version | licence | source |
 |---|---|---|---|
 | `adler2` | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | <https://github.com/oyvindln/adler2> |
+| `aes` | 0.9.3 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/block-ciphers> |
 | `arrayref` | 0.3.9 | BSD-2-Clause | <https://github.com/droundy/arrayref> |
 | `arrayvec` | 0.7.8 | MIT OR Apache-2.0 | <https://github.com/bluss/arrayvec> |
 | `bitflags` | 2.13.2 | MIT OR Apache-2.0 | <https://github.com/bitflags/bitflags> |
+| `block-buffer` | 0.12.1 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/utils> |
+| `block-padding` | 0.4.2 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/utils> |
 | `bytemuck` | 1.25.2 | Zlib OR Apache-2.0 OR MIT | <https://github.com/Lokathor/bytemuck> |
+| `cbc` | 0.2.1 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/block-modes> |
 | `cfg-if` | 1.0.5 | MIT OR Apache-2.0 | <https://github.com/rust-lang/cfg-if> |
+| `cipher` | 0.5.2 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/traits> |
+| `const-oid` | 0.10.2 | Apache-2.0 OR MIT | <https://github.com/RustCrypto/formats> |
+| `cpubits` | 0.1.1 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/utils> |
+| `cpufeatures` | 0.3.1 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/utils> |
 | `crc32fast` | 1.5.2 | MIT OR Apache-2.0 | <https://github.com/srijs/rust-crc32fast> |
+| `crypto-common` | 0.2.2 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/traits> |
+| `digest` | 0.11.3 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/traits> |
 | `fdeflate` | 0.3.7 | MIT OR Apache-2.0 | <https://github.com/image-rs/fdeflate> |
 | `flate2` | 1.1.10 | MIT OR Apache-2.0 | <https://github.com/rust-lang/flate2-rs> |
 | `hayro-ccitt` | 0.4.0 | Apache-2.0 OR MIT | <https://github.com/LaurenzV/hayro> |
 | `hayro-jbig2` | 0.3.1 | Apache-2.0 OR MIT | <https://github.com/LaurenzV/hayro> |
 | `hayro-jpeg2000` | 0.4.1 | Apache-2.0 OR MIT | <https://github.com/LaurenzV/hayro> |
+| `hybrid-array` | 0.4.15 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/hybrid-array> |
+| `inout` | 0.2.5 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/utils> |
 | `jpeg-decoder` | 0.3.2 | MIT OR Apache-2.0 | <https://github.com/image-rs/jpeg-decoder> |
+| `libc` | 0.2.191 | MIT OR Apache-2.0 | <https://github.com/rust-lang/libc> |
 | `log` | 0.4.34 | MIT OR Apache-2.0 | <https://github.com/rust-lang/log> |
+| `md-5` | 0.11.0 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/hashes> |
 | `miniz_oxide` | 0.8.9 | MIT OR Zlib OR Apache-2.0 | <https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide> |
 | `miniz_oxide` | 0.9.1 | MIT OR Zlib OR Apache-2.0 | <https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide> |
 | `png` | 0.18.1 | MIT OR Apache-2.0 | <https://github.com/image-rs/image-png> |
+| `rc4` | 0.2.0 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/stream-ciphers> |
+| `sha2` | 0.11.1 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/hashes> |
 | `simd-adler32` | 0.3.10 | MIT | <https://github.com/mcountryman/simd-adler32> |
 | `strict-num` | 0.1.1 | MIT | <https://github.com/RazrFalcon/strict-num> |
 | `tiny-skia` | 0.12.0 | BSD-3-Clause | <https://github.com/linebender/tiny-skia> |
 | `tiny-skia-path` | 0.12.0 | BSD-3-Clause | <https://github.com/linebender/tiny-skia/tree/master/path> |
 | `ttf-parser` | 0.25.1 | MIT OR Apache-2.0 | <https://github.com/harfbuzz/ttf-parser> — unmaintained notice RUSTSEC-2026-0192 (not a vulnerability); kept deliberately, see [`decisions/ttf-parser.md`](decisions/ttf-parser.md) |
+| `typenum` | 1.20.1 | MIT OR Apache-2.0 | <https://github.com/paholg/typenum> |
+| `zeroize` | 1.9.1 | Apache-2.0 OR MIT | <https://github.com/RustCrypto/utils> |
 | `zlib-rs` | 0.6.8 | Zlib | <https://github.com/trifectatechfoundation/zlib-rs> |
 
 `tiny-skia` / `tiny-skia-path` (BSD-3-Clause) and `arrayref`
@@ -49,6 +67,12 @@ them (the crate sources include the texts).
 The compatibility runner `compat/runner` (`kasane-compat`, a
 development tool that is not part of the engine) additionally uses
 `serde`, `serde_json`, `sha2` and `libc`, all MIT OR Apache-2.0.
+
+The RustCrypto crates (`aes`, `cbc`, `rc4`, `md-5`, `sha2` and their
+support crates) implement the ciphers and hashes behind the Standard
+security handler (`src/crypt.rs`); kasane-pdf implements only the PDF
+key-derivation and authentication algorithms on top of them. `libc` is
+pulled in by `cpufeatures` for CPU feature detection on native targets.
 
 ## Bundled font data (not Apache-licensed)
 

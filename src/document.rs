@@ -72,6 +72,68 @@ pub struct Document {
     /// Non-fatal findings of every operation on this document (see
     /// [`crate::Warning`]), read with [`Document::take_warnings`].
     warnings: std::cell::RefCell<crate::warning::WarningSink>,
+    /// The authenticated security handler of an encrypted document;
+    /// every object read from the file is decrypted through it.
+    crypt: Option<crate::crypt::Crypt>,
+}
+
+/// Options for [`Document::open`].
+///
+/// Construct with [`OpenOptions::new`] and the `with_*` methods; the
+/// struct is `#[non_exhaustive]` so options can be added. `Debug` never
+/// shows the password.
+#[non_exhaustive]
+#[derive(Clone, Default)]
+pub struct OpenOptions {
+    /// Resource bounds for the document and everything done with it.
+    pub limits: Limits,
+    /// Password for an encrypted document, tried as the user password
+    /// and then as the owner password. `None` tries the empty user
+    /// password, as every reader does. Raw bytes: for revisions 2–4 the
+    /// specification uses PDFDocEncoding, for revision 6 UTF-8 (SASLprep
+    /// normalisation is not applied — pass normalised text).
+    password: Option<zeroize::Zeroizing<Vec<u8>>>,
+    /// Use [`Document::from_bytes_recovering`]'s recovery mode.
+    pub recovery: bool,
+}
+
+impl std::fmt::Debug for OpenOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenOptions")
+            .field("limits", &self.limits)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .field("recovery", &self.recovery)
+            .finish()
+    }
+}
+
+impl OpenOptions {
+    /// The defaults: default limits, no password, strict mode.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Replace the resource bounds.
+    #[must_use]
+    pub fn with_limits(mut self, limits: Limits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// The password to open an encrypted document with (user or owner).
+    /// Held in a buffer that is zeroed when the options are dropped.
+    #[must_use]
+    pub fn with_password(mut self, password: impl AsRef<[u8]>) -> Self {
+        self.password = Some(zeroize::Zeroizing::new(password.as_ref().to_vec()));
+        self
+    }
+
+    /// Open in recovery mode (see [`Document::from_bytes_recovering`]).
+    #[must_use]
+    pub fn with_recovery(mut self, recovery: bool) -> Self {
+        self.recovery = recovery;
+        self
+    }
 }
 
 impl Document {
@@ -86,21 +148,88 @@ impl Document {
     /// * [`Error::NotPdf`] — no `%PDF-` header in the first 1024 bytes.
     /// * [`Error::Parse`]/[`Error::UnexpectedEof`]/[`Error::Structure`] —
     ///   malformed or truncated input.
-    /// * [`Error::Encrypted`] — trailer has `/Encrypt`.
+    /// * [`Error::Encrypted`] — the document is encrypted and the empty
+    ///   user password does not open it (use [`Document::open`] with a
+    ///   password). An encrypted document that opens with the empty
+    ///   user password is read; see [`Document::encryption`].
     /// * [`Error::Unsupported`] — a valid feature the parser does not
-    ///   implement (e.g. the `/Crypt` filter).
+    ///   implement (e.g. a non-Standard security handler).
     /// * [`Error::MissingReference`] — a required indirect object is
     ///   absent from the xref table.
     /// * [`Error::CycleDetected`]/[`Error::LimitExceeded`] — hostile
     ///   structure (reference loops, `/Prev` loops, oversized trees).
     pub fn from_bytes_with_limits(data: &[u8], limits: Limits) -> Result<Document, Error> {
-        Self::from_bytes_inner(data, limits, false)
+        Self::from_bytes_inner(data, limits, false, None)
+    }
+
+    /// Parse `data` with [`OpenOptions`]: limits, a password for an
+    /// encrypted document, strict or recovery mode.
+    ///
+    /// Authentication happens before anything else is read; a password
+    /// that opens neither as user nor as owner password is
+    /// [`Error::Encrypted`] and no document is returned. The password
+    /// appears in no error or warning.
+    pub fn open(data: &[u8], options: &OpenOptions) -> Result<Document, Error> {
+        let pw = options.password.as_deref().map(|p| p.as_slice());
+        if options.recovery {
+            Self::recovering_inner(data, options.limits.clone(), pw)
+        } else {
+            Self::from_bytes_inner(data, options.limits.clone(), false, pw)
+        }
+    }
+
+    /// How the document is encrypted and which password opened it;
+    /// `None` for an unencrypted document. Permissions in it are
+    /// advisory — see [`crate::EncryptionInfo`].
+    pub fn encryption(&self) -> Option<crate::EncryptionInfo> {
+        self.crypt.as_ref().map(|c| c.info().clone())
+    }
+
+    /// Whether the document is encrypted (the writers refuse such
+    /// documents).
+    pub(crate) fn is_encrypted(&self) -> bool {
+        self.crypt.is_some()
+    }
+
+    /// Drop the object-stream cache filled while the `/Encrypt`
+    /// dictionary was resolved: an object stream read before the key
+    /// existed was not decrypted (§7.6 forbids `/Encrypt` in an object
+    /// stream, so this only matters for hostile files).
+    fn forget_pre_key_objects(&self) {
+        if self.crypt.is_some() {
+            self.objstm_cache.borrow_mut().clear();
+            self.objstm_cached_bytes.set(0);
+        }
+    }
+
+    /// Authenticate against the trailer's `/Encrypt` dictionary, if
+    /// any, before anything else is read.
+    fn install_crypt(&mut self, password: Option<&[u8]>) -> Result<(), Error> {
+        let Some(e) = self.xref.trailer.get(b"Encrypt".as_slice()).cloned() else {
+            return Ok(());
+        };
+        let enc = self.deref(&e)?;
+        let d = enc
+            .as_dict()
+            .ok_or_else(|| Error::Structure("/Encrypt is not a dictionary".into()))?;
+        self.crypt = Some(crate::crypt::Crypt::open(
+            d,
+            e.as_ref(),
+            &self.xref.trailer,
+            password,
+        )?);
+        Ok(())
     }
 
     /// The load pipeline over the file's own cross-reference table;
     /// `lenient` switches the recovery rules on (page attributes,
     /// content streams, objects without `endobj`).
-    fn from_bytes_inner(data: &[u8], limits: Limits, lenient: bool) -> Result<Document, Error> {
+    fn from_bytes_inner(
+        data: &[u8],
+        limits: Limits,
+        lenient: bool,
+        password: Option<&[u8]>,
+    ) -> Result<Document, Error> {
         limits.validate()?;
         if data.len() > limits.max_input_bytes {
             return Err(Error::LimitExceeded {
@@ -115,11 +244,6 @@ impl Document {
 
         let mut xref = xref::read_xref_chain(data, &limits, startxref)?;
         let xref_warnings = std::mem::take(&mut xref.warnings);
-
-        // Refuse encrypted files entirely.
-        if xref.trailer.contains_key(b"Encrypt".as_slice()) {
-            return Err(Error::Encrypted);
-        }
 
         let mut doc = Document {
             data: data.to_vec(),
@@ -137,9 +261,12 @@ impl Document {
             recovery: None,
             lenient,
             limits,
+            crypt: None,
         };
 
         doc.warnings.borrow_mut().extend(xref_warnings);
+        doc.install_crypt(password)?;
+        doc.forget_pre_key_objects();
         doc.load_catalog()?;
         doc.load_pages()?;
         Ok(doc)
@@ -165,12 +292,20 @@ impl Document {
         data: &[u8],
         limits: Limits,
     ) -> Result<Document, Error> {
+        Self::recovering_inner(data, limits, None)
+    }
+
+    fn recovering_inner(
+        data: &[u8],
+        limits: Limits,
+        password: Option<&[u8]>,
+    ) -> Result<Document, Error> {
         limits.validate()?;
         // First over the file's own cross-reference table with the
         // recovery rules on (identical to a strict parse on conforming
         // input — the rules only fire on malformed constructs, each
         // recorded); the table is rebuilt only when that fails.
-        let strict_error = match Self::from_bytes_inner(data, limits.clone(), true) {
+        let strict_error = match Self::from_bytes_inner(data, limits.clone(), true, password) {
             Ok(doc) => return Ok(doc),
             Err(e @ (Error::NotPdf | Error::Encrypted | Error::LimitExceeded { .. })) => {
                 return Err(e)
@@ -180,9 +315,6 @@ impl Document {
         let mut parser = Parser::new(data, &limits);
         let header_version = parser.check_header()?;
         let (xref, report) = xref::reconstruct(data, &limits, &strict_error)?;
-        if xref.trailer.contains_key(b"Encrypt".as_slice()) {
-            return Err(Error::Encrypted);
-        }
         let mut doc = Document {
             data: data.to_vec(),
             xref,
@@ -199,7 +331,11 @@ impl Document {
             recovery: Some(report),
             lenient: true,
             limits,
+            crypt: None,
         };
+        // A rebuilt table never bypasses authentication.
+        doc.install_crypt(password)?;
+        doc.forget_pre_key_objects();
         doc.load_catalog()?;
         doc.load_pages()?;
         Ok(doc)
@@ -345,7 +481,11 @@ impl Document {
                     )));
                 }
             }
-            match obj.object {
+            let object = match &self.crypt {
+                Some(c) => c.decrypt_object(obj.object_ref, obj.object)?,
+                None => obj.object,
+            };
+            match object {
                 Object::Ref(next) => current = next,
                 other => return Ok(other),
             }
@@ -444,14 +584,17 @@ impl Document {
             parser.tolerate_missing_endobj();
         }
         parser.seek(offset as usize);
-        parser
-            .parse_indirect_object()?
-            .map(|io| io.object)
-            .ok_or_else(|| {
-                Error::Parse(format!(
-                    "no indirect object at xref offset {offset} (for {r})"
-                ))
-            })
+        let io = parser.parse_indirect_object()?.ok_or_else(|| {
+            Error::Parse(format!(
+                "no indirect object at xref offset {offset} (for {r})"
+            ))
+        })?;
+        // An object stream is decrypted as a whole; its members are not
+        // decrypted again (§7.5.7).
+        match &self.crypt {
+            Some(c) => c.decrypt_object(io.object_ref, io.object),
+            None => Ok(io.object),
+        }
     }
 
     /// `true` when `/Filter` or `/DecodeParms` is, or contains, a

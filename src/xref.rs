@@ -689,7 +689,16 @@ pub(crate) fn reconstruct(
         }
     }
     if trailer.contains_key(b"Encrypt".as_slice()) {
-        return Err(Error::Encrypted);
+        // The scan reads object streams before any key exists, so it
+        // would interpret ciphertext as plaintext: refused, whatever the
+        // password. An encrypted file with an intact table opens in
+        // recovery mode through `Document::open`.
+        return Err(Error::Unsupported {
+            feature: "encryption",
+            detail:
+                "rebuilding the cross-reference table of an encrypted document is not implemented"
+                    .into(),
+        });
     }
 
     // ---- 3. object streams: members fill gaps -------------------------

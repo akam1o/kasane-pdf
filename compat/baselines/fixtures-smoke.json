@@ -105,12 +105,12 @@
    "roundtrip": {},
    "roundtrip_full": null,
    "stages": {
-    "parse": "unsupported",
+    "parse": "error",
     "render": "skip",
     "rewrite": "skip",
     "text": "skip"
    },
-   "verdict": "unsupported"
+   "verdict": "error"
   },
   "flate_bad_data": {
    "causes": [],

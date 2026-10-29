@@ -124,6 +124,9 @@ pub(crate) fn rewrite_overlay_with(
     overrides: &RewriteOverrides,
 ) -> Result<Vec<u8>, Error> {
     let _budget = doc.decoded_budget_scope();
+    if doc.is_encrypted() {
+        return Err(crate::incremental::encrypted_write_refused());
+    }
     check_refusals(doc)?;
 
     // The catalog's `/Metadata` is removed by overlaying the catalog

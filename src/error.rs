@@ -173,8 +173,11 @@ pub enum Error {
     /// (e.g. `/Type /Pages` with `/Count 0` and non-empty Kids, catalog
     /// without `/Pages`, kids count mismatch).
     Structure(String),
-    /// The document declares encryption (`/Encrypt` in the trailer).
-    /// Encrypted files are refused entirely.
+    /// The document is encrypted and the supplied password (none: the
+    /// empty user password) authenticates neither as user nor as owner
+    /// password. No part of the document is returned. A malformed
+    /// `/Encrypt` dictionary is [`Error::Structure`]; an unimplemented
+    /// security handler or method is [`Error::Unsupported`].
     Encrypted,
     /// The document uses a valid PDF feature that the engine does not
     /// implement. The operation that needed it fails as a whole; no
@@ -271,10 +274,9 @@ impl fmt::Display for Error {
                 )
             }
             Error::Structure(msg) => write!(f, "invalid document structure: {msg}"),
-            Error::Encrypted => write!(
-                f,
-                "document is encrypted (/Encrypt in trailer); encryption is not supported"
-            ),
+            Error::Encrypted => {
+                write!(f, "document is encrypted and the password does not open it")
+            }
             Error::Unsupported { feature, detail } => {
                 write!(f, "unsupported PDF feature: {feature} ({detail})")
             }
