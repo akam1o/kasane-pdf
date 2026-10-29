@@ -58,6 +58,21 @@ versions follow [Semantic Versioning](https://semver.org/).
   give). The limits are unchanged; anything else still fails with
   `LimitExceeded`.
 
+### Fixed
+- Knockout groups: opacity set inside a nested form (`ca`/`CA`, an
+  ExtGState soft mask, an image's `/SMask`) reduced the object's shape
+  and so under-knocked earlier objects; opacity is now kept out of the
+  shape pass at any depth, and `/AIS` (previously ignored) decides
+  whether those values are shape (§11.6.4.4). `/AIS` must be a boolean.
+- DCT images: the JPEG frame size is checked against the image
+  dictionary *before* decoding, and a progressive frame's coefficient
+  memory (held at full resolution whatever the output scale) is bounded
+  by `max_image_bytes` up front. Previously a frame header larger than
+  the dictionary, or a large progressive frame, could allocate beyond
+  `max_image_bytes` before the post-decode size check.
+- A colour-keyed (`/Mask` array) JPEG is never decoded at reduced size:
+  the key matches exact sample values.
+
 ### Changed
 - An image's `/SMask` finer than the image is composited at the mask's
   resolution (capped at the drawn size and the image limits), with the
