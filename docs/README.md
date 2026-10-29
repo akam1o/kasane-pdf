@@ -69,6 +69,7 @@ PDFium / MuPDF / Poppler. The documentation is split into
 |---|---|
 | [`limitations.md`](limitations.md) | everything the engine does not do, collected in one place, with pointers to the roadmap |
 | [`plans/render-90.md`](plans/render-90.md) | the plan for 90 % render on the corpus: the 59 blockers re-aggregated, candidates ranked by effort, gain, spec position, risk, WASM and licence |
+| [`plans/redaction-api.md`](plans/redaction-api.md) | memo: what a distribution-safe redaction API would have to guarantee, from an external evaluation of the region editor; not scheduled |
 
 ## Development
 
