@@ -412,10 +412,26 @@ fn smask_matte_is_unsupported() {
 
 #[test]
 fn smask_oversize_hits_limit() {
-    let pdf = smask_case(gray_mask(5000, 5000, &[0], ""));
+    // A soft mask over the dimension limit is sampled directly at its
+    // compositing grid; what still bounds it is the packed sample data
+    // (`max_image_bytes`) — exceeding that is refused.
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+    std::io::Write::write_all(&mut z, &vec![0u8; 5000 * 5000]).unwrap();
+    let pdf = smask_case(gray_mask(
+        5000,
+        5000,
+        &z.finish().unwrap(),
+        "/Filter /FlateDecode",
+    ));
     let doc = Document::from_bytes(&pdf).unwrap();
     let opts =
         RenderOptions::default().with_limits(Limits::default().with_max_image_dimension(1024));
+    render_page(&doc, &doc.pages()[0], &opts).unwrap();
+    let opts = RenderOptions::default().with_limits(
+        Limits::default()
+            .with_max_image_dimension(1024)
+            .with_max_image_bytes(1 << 20),
+    );
     let err = render_page(&doc, &doc.pages()[0], &opts).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
 }

@@ -97,3 +97,5 @@ the ambiguous/malformed-marker refusals:
 APP14 segments were injected by hand: `FF EE 00 0E "Adobe" 00 64
 00 00 00 00 <tf>` — a 12-byte payload whose last byte is the
 transform flag (the layout the decoder's `parse_app` reads).
+
+`dct_64x64_red_blue.jpg` — 64×64 baseline JPEG, left half red, right half blue, written by Pillow (quality 95, no chroma subsampling); used by `tests/render_image_limits.rs` to exercise the reduced-DCT decode of an image larger than `max_image_dimension`. Generated; no licence.

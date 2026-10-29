@@ -342,6 +342,7 @@ pub struct RenderedPage {
     page_size_pts: (f64, f64),
     font_substitutions: Vec<crate::fontsubst::FontSubstitution>,
     color_approximations: Vec<String>,
+    image_approximations: Vec<String>,
 }
 
 /// Layout of the pixel buffer a [`RenderedPage`] holds.
@@ -431,6 +432,18 @@ impl RenderedPage {
     /// a faithful render of those colours.
     pub fn color_approximations(&self) -> &[String] {
         &self.color_approximations
+    }
+
+    /// Images decoded at less than their full resolution because their
+    /// stored size exceeds `max_image_dimension` / the sample limits
+    /// while the size they are drawn at does not: a JPEG decoded with a
+    /// reduced inverse DCT (1/2, 1/4 or 1/8), a soft mask sampled
+    /// directly at the size of its image. Both keep at least the
+    /// resolution the page raster needs, but the samples differ from a
+    /// full decode followed by resampling, so a non-empty list marks the
+    /// render as an approximation of those images.
+    pub fn image_approximations(&self) -> &[String] {
+        &self.image_approximations
     }
 
     /// The underlying `tiny-skia` pixmap, for interoperation with that
@@ -553,6 +566,8 @@ pub fn render_page(
         extraction_only: false,
         substitutions: Vec::new(),
         color_approximations: Vec::new(),
+        image_approximations: Vec::new(),
+        dct_target: std::cell::Cell::new(None),
         default_spaces: None,
         layer_bytes: 0,
         pattern_base: Matrix::IDENTITY,
@@ -572,6 +587,7 @@ pub fn render_page(
     renderer.draw_annotations(page, &page_resources)?;
     let font_substitutions = std::mem::take(&mut renderer.substitutions);
     let color_approximations = std::mem::take(&mut renderer.color_approximations);
+    let image_approximations = std::mem::take(&mut renderer.image_approximations);
 
     Ok(RenderedPage {
         pixmap,
@@ -581,6 +597,7 @@ pub fn render_page(
         page_size_pts: (w_pts, h_pts),
         font_substitutions,
         color_approximations,
+        image_approximations,
     })
 }
 
@@ -753,6 +770,12 @@ pub(crate) struct Renderer<'a> {
     /// Colour-space approximations recorded this page (deduplicated)
     /// — surfaced on [`RenderedPage::color_approximations`].
     color_approximations: Vec<String>,
+    /// Images decoded below full resolution (see
+    /// `RenderedPage::image_approximations`).
+    image_approximations: Vec<String>,
+    /// Requested JPEG output size for the next DCT decode (scaled
+    /// decode of an oversized image), consumed by `dct_decode`.
+    dct_target: std::cell::Cell<Option<(u16, u16)>>,
     /// `/DefaultGray`, `/DefaultRGB`, `/DefaultCMYK` of the current
     /// resources (§8.6.5.6), resolved lazily and dropped whenever
     /// `resources` changes — see [`Self::device_space`].
@@ -920,6 +943,8 @@ impl<'a> Renderer<'a> {
             extraction_only: true,
             substitutions: Vec::new(),
             color_approximations: Vec::new(),
+            image_approximations: Vec::new(),
+            dct_target: std::cell::Cell::new(None),
             default_spaces: None,
             layer_bytes: 0,
             pattern_base: Matrix::IDENTITY,
@@ -3238,6 +3263,69 @@ impl<'a> Renderer<'a> {
         self.paint_image(&full, data, b"inline image")
     }
 
+    /// The reduced size to decode an oversized JPEG image at: the
+    /// image's stored `/Width` × `/Height` exceed the image limits. Of
+    /// the inverse-DCT scales 1/2, 1/4, 1/8 the coarsest that still gives
+    /// at least one sample per device pixel along *both* axes is chosen
+    /// when it fits every image limit; otherwise the finest scale that
+    /// fits. `None` when the image is not a plain DCT colour image
+    /// (masks, other filters), when no scale fits, or outside a raster
+    /// (extraction).
+    fn dct_reduced_dims(
+        &self,
+        dict: &Dict,
+        as_stencil: bool,
+    ) -> Result<Option<ReducedDims>, Error> {
+        if self.extraction_only || as_stencil {
+            return Ok(None);
+        }
+        let filters = crate::filter::normalize_filters(dict.get(b"Filter".as_slice()))?;
+        let is_dct = filters
+            .last()
+            .map(|f| f == b"DCTDecode" || f == b"DCT")
+            .unwrap_or(false);
+        if !is_dct || dict.get(b"ImageMask".as_slice()).and_then(|o| o.as_bool()) == Some(true) {
+            return Ok(None);
+        }
+        let (Some(fw), Some(fh)) = (
+            dict.get(b"Width".as_slice()).and_then(|o| o.as_i64()),
+            dict.get(b"Height".as_slice()).and_then(|o| o.as_i64()),
+        ) else {
+            return Ok(None);
+        };
+        if !(1..=u16::MAX as i64).contains(&fw) || !(1..=u16::MAX as i64).contains(&fh) {
+            return Ok(None); // a JPEG frame is at most 65535 × 65535
+        }
+        let (fw, fh) = (fw as u32, fh as u32);
+        // Device extent of the image's unit square along each axis.
+        let ts = self.paint_ts()?;
+        let dev_w = (ts.sx as f64).hypot(ts.ky as f64).ceil().max(1.0) as u32;
+        let dev_h = (ts.kx as f64).hypot(ts.sy as f64).ceil().max(1.0) as u32;
+        let scaled = |len: u32, k: u32| (len * k - 1) / 8 + 1;
+        let fits = |w: u32, h: u32| {
+            w <= self.limits.max_image_dimension
+                && h <= self.limits.max_image_dimension
+                && (w as u64 * h as u64) <= self.limits.max_image_total_samples
+        };
+        // The coarsest scale that still gives one sample per device pixel
+        // on both axes; if even that exceeds the limits, the finest scale
+        // that fits (the image is then drawn below its device resolution
+        // along one axis — reported by the caller).
+        for k in [1u32, 2, 4] {
+            let (w, h) = (scaled(fw, k), scaled(fh, k));
+            if w >= dev_w.min(fw) && h >= dev_h.min(fh) && fits(w, h) {
+                return Ok(Some((w, h, (fw, fh))));
+            }
+        }
+        for k in [4u32, 2, 1] {
+            let (w, h) = (scaled(fw, k), scaled(fh, k));
+            if fits(w, h) {
+                return Ok(Some((w, h, (fw, fh))));
+            }
+        }
+        Ok(None)
+    }
+
     /// `/Width` × `/Height` with the image limits applied.
     fn image_dims(&self, dict: &Dict, name: &[u8]) -> Result<(u32, u32), Error> {
         let width = dict
@@ -3295,7 +3383,16 @@ impl<'a> Renderer<'a> {
         name: &[u8],
         as_stencil: bool,
     ) -> Result<ImageSource, Error> {
-        let (width, height) = self.image_dims(dict, name)?;
+        let (width, height, reduced) = match self.image_dims(dict, name) {
+            Ok((w, h)) => (w, h, None),
+            Err(e @ Error::LimitExceeded { .. }) => {
+                match self.dct_reduced_dims(dict, as_stencil)? {
+                    Some((w, h, full)) => (w, h, Some(full)),
+                    None => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        };
         let (w, h) = (width as usize, height as usize);
         let is_mask = dict.get(b"ImageMask".as_slice()).and_then(|o| o.as_bool()) == Some(true);
         if as_stencil && !is_mask {
@@ -3473,8 +3570,30 @@ impl<'a> Renderer<'a> {
         }
         let data = match &jpx {
             Some(j) => j.samples.clone(),
-            None => self.decode_image_data(dict, raw)?,
+            None => {
+                if reduced.is_some() {
+                    self.dct_target.set(Some((width as u16, height as u16)));
+                }
+                let r = self.decode_image_data(dict, raw);
+                self.dct_target.set(None);
+                r?
+            }
         };
+        if let Some((fw, fh)) = reduced {
+            let ts = self.paint_ts()?;
+            let dev_w = (ts.sx as f64).hypot(ts.ky as f64).ceil() as u32;
+            let dev_h = (ts.kx as f64).hypot(ts.sy as f64).ceil() as u32;
+            let below = width < dev_w.min(fw) || height < dev_h.min(fh);
+            let note = format!(
+                "image /{} ({fw}x{fh}) exceeds the image limits; JPEG decoded at {width}x{height} \
+                 (reduced inverse DCT), {} the drawn resolution ({dev_w}x{dev_h} px)",
+                show_name(name),
+                if below { "below" } else { "at least" }
+            );
+            if !self.image_approximations.contains(&note) {
+                self.image_approximations.push(note);
+            }
+        }
         if is_dct {
             // JPEG always yields 8-bit interleaved samples; the dict's
             // declared depth and component count must agree.
@@ -3626,6 +3745,34 @@ impl<'a> Renderer<'a> {
                 p[3] = mul255(p[3], *a);
             }
         } else if let Some(sm) = dict.get(b"SMask".as_slice()) {
+            // §11.6.5.3: the image and its soft mask are each mapped to
+            // the unit square; their sample grids are independent. A
+            // mask finer than the image is therefore composited at the
+            // mask's resolution — capped at what the page raster shows
+            // and at the image limits — with the image's colour samples
+            // repeated (nearest) onto that grid.
+            let (tw, th) = self.soft_mask_grid(sm, w, h)?;
+            if (tw, th) != (w, h) {
+                let mut up = vec![0u8; tw * th * 4];
+                for y in 0..th {
+                    let sy = y * h / th;
+                    for x in 0..tw {
+                        let sx = x * w / tw;
+                        let src = (sy * w + sx) * 4;
+                        up[(y * tw + x) * 4..(y * tw + x) * 4 + 4]
+                            .copy_from_slice(&rgba[src..src + 4]);
+                    }
+                }
+                let alpha = self.decode_soft_mask(sm, tw, th)?;
+                for (i, a) in alpha.iter().enumerate() {
+                    up[i * 4 + 3] = mul255(up[i * 4 + 3], *a);
+                }
+                return Ok(ImageSource {
+                    w: tw as u32,
+                    h: th as u32,
+                    rgba: up,
+                });
+            }
             let alpha = self.decode_soft_mask(sm, w, h)?;
             for (i, a) in alpha.iter().enumerate() {
                 rgba[i * 4 + 3] = mul255(rgba[i * 4 + 3], *a);
@@ -3693,6 +3840,41 @@ impl<'a> Renderer<'a> {
         crate::jpx::decode(&bytes, self.limits)
     }
 
+    /// The grid an image of `w × h` samples is composited on with its
+    /// soft mask: `w × h` unless the mask is finer, in which case the
+    /// mask's own size per axis, capped at the device extent of the
+    /// image (no more samples than pixels drawn — never fewer than the
+    /// image's own) and falling back to `w × h` when the larger grid
+    /// would exceed the image limits.
+    fn soft_mask_grid(&self, sm: &Object, w: usize, h: usize) -> Result<(usize, usize), Error> {
+        let sm = self.doc.deref(sm)?;
+        let Some((sd, _)) = sm.as_stream() else {
+            return Ok((w, h));
+        };
+        let dim = |k: &[u8]| {
+            sd.get(k)
+                .and_then(|o| o.as_i64())
+                .filter(|v| *v > 0)
+                .map(|v| v as usize)
+        };
+        let (Some(sw), Some(sh)) = (dim(b"Width"), dim(b"Height")) else {
+            return Ok((w, h));
+        };
+        if (sw <= w && sh <= h) || self.extraction_only {
+            return Ok((w, h));
+        }
+        let ts = self.paint_ts()?;
+        let dev_w = (ts.sx as f64).hypot(ts.ky as f64).ceil().max(1.0) as usize;
+        let dev_h = (ts.kx as f64).hypot(ts.sy as f64).ceil().max(1.0) as usize;
+        let tw = sw.min(dev_w).max(w);
+        let th = sh.min(dev_h).max(h);
+        let fits = tw <= self.limits.max_image_dimension as usize
+            && th <= self.limits.max_image_dimension as usize
+            && (tw as u64 * th as u64) <= self.limits.max_image_total_samples
+            && (tw as u64 * th as u64 * 4) <= self.limits.max_image_bytes;
+        Ok(if fits { (tw, th) } else { (w, h) })
+    }
+
     /// Decode an image `/SMask` (§11.6.5.3) into a `w × h` alpha
     /// plane (0–255), nearest-resampled when the mask's own size
     /// differs. The mask must be a one-component image; `/Matte`
@@ -3728,10 +3910,38 @@ impl<'a> Renderer<'a> {
                 detail: "un-premultiplying against /Matte is not implemented".into(),
             });
         }
-        let (sw, sh) = self.image_dims(sd, b"SMask")?;
-        let (sw, sh) = (sw as usize, sh as usize);
         // A JPX-encoded soft mask: one 8-bit channel from the codestream.
         let sm_filters = crate::filter::normalize_filters(sd.get(b"Filter".as_slice()))?;
+        // An oversized soft mask whose samples are plain bytes (no image
+        // filter) is sampled directly at the image's size below — the
+        // same nearest-neighbour samples a full decode followed by the
+        // resampling would pick — so only the packed data (bounded by
+        // `max_image_bytes`) and the `w × h` result are held. Any other
+        // oversized mask is refused as before.
+        let (sw, sh, direct) = match self.image_dims(sd, b"SMask") {
+            Ok((a, b)) => (a as usize, b as usize, false),
+            Err(e @ Error::LimitExceeded { .. }) => {
+                let plain = sm_filters
+                    .iter()
+                    .all(|f| !crate::filter::is_image_filter(f));
+                match (
+                    plain,
+                    sd.get(b"Width".as_slice()).and_then(|o| o.as_i64()),
+                    sd.get(b"Height".as_slice()).and_then(|o| o.as_i64()),
+                ) {
+                    (true, Some(a), Some(b))
+                        if a > 0
+                            && b > 0
+                            && w <= self.limits.max_image_dimension as usize
+                            && h <= self.limits.max_image_dimension as usize =>
+                    {
+                        (a as usize, b as usize, true)
+                    }
+                    _ => return Err(e),
+                }
+            }
+            Err(e) => return Err(e),
+        };
         let jpx = if sm_filters
             .last()
             .map(|f| f == b"JPXDecode")
@@ -3796,7 +4006,13 @@ impl<'a> Renderer<'a> {
             None => self.decode_image_data(sd, sraw)?,
         };
         let row_bytes = (sw as u64 * bpc as u64).div_ceil(8);
-        if (data.len() as u64) < row_bytes * sh as u64 {
+        let need = row_bytes
+            .checked_mul(sh as u64)
+            .ok_or(Error::LimitExceeded {
+                limit: "max_image_bytes",
+                max: self.limits.max_image_bytes,
+            })?;
+        if (data.len() as u64) < need {
             return Err(Error::Structure(format!(
                 "image /SMask data length {} is shorter than {sw}x{sh}@{bpc}bpc",
                 data.len()
@@ -3804,6 +4020,19 @@ impl<'a> Renderer<'a> {
         }
         let maxv = ((1u64 << bpc) - 1) as f64;
         let (dmin, dmax) = decode[0];
+        if direct {
+            let mut out = vec![0u8; w * h];
+            for y in 0..h {
+                let sy = y as u64 * sh as u64 / h as u64;
+                let row_bit = sy * row_bytes * 8;
+                for x in 0..w {
+                    let sx = x as u64 * sw as u64 / w as u64;
+                    let s = read_bits(&data, row_bit + sx * bpc as u64, bpc) as f64;
+                    out[y * w + x] = to_u8(dmin + s / maxv * (dmax - dmin));
+                }
+            }
+            return Ok(out);
+        }
         let mut plane = vec![0u8; sw * sh];
         for y in 0..sh {
             let row_bit = y as u64 * row_bytes * 8;
@@ -3948,6 +4177,10 @@ impl<'a> Renderer<'a> {
         // the decoder allocates its frame buffers.
         dec.read_info()
             .map_err(|e| Error::Parse(format!("DCTDecode (JPEG) header: {e}")))?;
+        if let Some((tw, th)) = self.dct_target.get() {
+            dec.scale(tw, th)
+                .map_err(|e| Error::Parse(format!("DCTDecode (JPEG) scaling: {e}")))?;
+        }
         let mut pixels = dec
             .decode()
             .map_err(|e| Error::Parse(format!("DCTDecode (JPEG) failed: {e}")))?;
@@ -5660,6 +5893,9 @@ fn color_in(cs: &ColorSpace, comps: &[f64]) -> Result<Color, Error> {
 }
 
 /// A decoded image: straight (non-premultiplied) RGBA8, `w × h`.
+/// Reduced decode size `(w, h)` and the stored `(width, height)`.
+type ReducedDims = (u32, u32, (u32, u32));
+
 struct ImageSource {
     w: u32,
     h: u32,
