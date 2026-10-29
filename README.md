@@ -324,8 +324,11 @@ and the remaining blockers are in
 
 ## Limitations
 
-- **Encrypted documents** are refused (`Error::Encrypted`); no
-  security handler is implemented.
+- **Encrypted documents** are read through the Standard security
+  handler (R2–R6) with the empty user password or a password passed to
+  `Document::open`; they are never written (the writers refuse them).
+  Permissions are reported, not enforced, and an empty user password
+  means the file has no confidentiality.
 - **Digital signatures are detected, not verified.** The engine reads
   `/ByteRange`, `/DocMDP` and `/FieldMDP` to decide which incremental
   edits a signer permitted and refuses the rest; it never checks the

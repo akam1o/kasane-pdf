@@ -1083,6 +1083,46 @@ render total rose because the run shared the machine with the gate
 suite — the affected files time identically on an idle machine against
 the previous build.
 
+### Results after the Standard security handler (run-1793311936)
+
+Same 511 files, `--mode full`, default features, against run-1793287891
+(the v0.2.1 audit run). Encrypted documents are read through the
+Standard security handler (R2–R6; `plans/encryption.md`) with the empty
+user password — the runner supplies no password. **Observable behaviour
+change:** files refused with `Error::Encrypted` before now open when the
+empty user password authenticates; the writers refuse them
+(`Error::Unsupported`), so they cannot reach full PASS or round trip.
+
+| expect: pass (427) | before | after |
+|---|---:|---:|
+| strict parse | 406 | **407** |
+| strict render | 378 (88.5%) | **379 (88.8%)** |
+| of which approximate | 69 | 69 |
+| recovered render | 18 | 18 |
+| text | 390 | **391** |
+| rewrite | 350 | 350 |
+| full PASS | 325 | 325 |
+
+All files: strict render 410 → 413, rejected 47 → 44. Round trip 411
+unchanged; Poppler SSIM dropped on no file; 0 crash / 0 timeout;
+robustness 43/43. The six encrypted corpus files, by outcome:
+
+| outcome | files | expect | note |
+|---|---:|---|---|
+| opens with the empty user password, renders and extracts strictly | 3 | pass, any, reject | SSIM against Poppler 0.92–1.0, in the corpus's normal range; extracted codes are text, not ciphertext |
+| `Error::Encrypted` — a non-empty user password is required | 2 | pass, reject | qpdf refuses both without a password too; a correct refusal |
+| authenticates, streams do not decode (`Error::Parse`) | 1 | pass | R4 with an RC4 crypt filter shorter than 128 bits: Acrobat zero-pads the key to 16 bytes, an undocumented reading (pdf.js implements it). Not adopted in strict mode; see `plans/encryption.md` |
+
+One `expect: reject` file now renders strictly (identically to Poppler):
+it was classed reject only because encryption was unsupported. The
+manifest is left as is so that the denominator does not move inside
+this change; reclassifying it as `pass` is recommended separately.
+
+Wall time per file: median 191 ms (183 before). The increase sits in
+the heaviest files' Poppler-inclusive totals; an A/B of the slowest
+files against the previous build renders them in identical time, and
+parse time across the corpus moved by 5 ms in total.
+
 ## External verification findings (this phase)
 
 What the independent parsers said about the rewrites, file by file,

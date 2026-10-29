@@ -6,6 +6,33 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Encrypted documents** (Standard security handler, ISO 32000-2
+  §7.6): revisions 2–6 — RC4 40–128-bit, AES-128 (`/AESV2`), AES-256
+  (`/AESV3`, R5 and R6) — with crypt filters, `/Identity`, the `/Crypt`
+  stream filter, `/EncryptMetadata false` and unencrypted signature
+  `/Contents`. Decryption only; ciphers and hashes from RustCrypto.
+- `Document::open(&[u8], &OpenOptions)` with `OpenOptions`
+  (`with_limits`, `with_password` — tried as user, then owner password —
+  `with_recovery`); `Document::encryption() -> Option<EncryptionInfo>`
+  with `CryptMethod`, `Authentication` and the advisory permission bits.
+  Passwords are held in zeroed buffers and never appear in `Debug`,
+  errors or warnings.
+
+### Changed (observable behaviour)
+- An encrypted document that opens with the empty user password is now
+  read by `Document::from_bytes` instead of being refused with
+  `Error::Encrypted`; check `doc.encryption()` to tell. `Error::Encrypted`
+  now means "the password does not open it". A malformed `/Encrypt`
+  dictionary is `Error::Structure`; an unknown handler, revision or crypt
+  filter method is `Error::Unsupported`.
+- The writers (`rewrite`, `Edit::rewrite`, `Edit::save_incremental`)
+  refuse an encrypted document with `Error::Unsupported` (they would
+  drop or break the encryption).
+- A damaged encrypted file whose cross-reference table would have to be
+  rebuilt is refused with `Error::Unsupported` (the scan would read
+  ciphertext as plaintext); previously `Error::Encrypted`.
+
 ## [0.2.1] - 2026-10-30
 
 Compatible release (`cargo semver-checks` against 0.2.0: no semver

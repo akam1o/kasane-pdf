@@ -60,6 +60,20 @@ guarantee only — kasane-pdf never computes the digest, never checks
 the certificate chain and never reports a signature as valid or
 invalid. Use a signature validator for that question.
 
+## Encrypted documents
+
+Authentication happens before the catalog is read; a password that
+opens neither as user nor as owner password returns `Error::Encrypted`
+and no document. Every object is decrypted as it is read, so all
+`Limits` apply to the plaintext. Passwords and keys are held in zeroed
+buffers and never appear in `Debug`, errors or warnings. `/P`
+permissions are reported on `EncryptionInfo` and are advisory: anyone
+who can open the file can read all of it. Revisions 2–4 rely on RC4
+and MD5; an open document says nothing about how well it was
+protected. Recovery mode never rebuilds the table of an encrypted file
+(it would read ciphertext as plaintext). See
+[`plans/encryption.md`](plans/encryption.md).
+
 ## What the engine is **not**
 
 - **Not a redaction tool.** The `experimental-remove-*` commands and
