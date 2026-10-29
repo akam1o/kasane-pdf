@@ -6,6 +6,12 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-30
+
+Compatible release (`cargo semver-checks` against 0.2.0: no semver
+update required). Several inputs refused by 0.2.0 now succeed; the
+list is in `docs/releases/v0.2.1.md` § Behaviour changes.
+
 ### Added
 - **§7.3.10 undefined references.** An indirect reference to an object
   the file does not define (no cross-reference entry for that number
@@ -240,7 +246,8 @@ are possible between minor versions and are recorded here.
   1.1 and Adobe CMap resources under BSD-3-Clause (`NOTICE`,
   `docs/third-party.md`).
 
-[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.2.1
 [0.2.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.2.0
 [0.1.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.1.1
 [0.1.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.1.0
