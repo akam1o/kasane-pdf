@@ -54,7 +54,11 @@ are on the [roadmap](architecture.md#roadmap).
   glyph shapes and are always reported.
 - **Type 3 fonts in text clipping modes** (`Tr 4`–`7`) — refused.
 - **Images**: `/Matte` (pre-blended soft masks), `/SMaskInData` on a
-  non-JPX image, `/OC` on an image, `/Ref` — refused.
+  non-JPX image, `/OC` on an image, `/Ref` — refused. An image larger
+  than `max_image_dimension` renders only when it is a JPEG drawn small
+  enough for a reduced inverse DCT (reported in `image_approximations`)
+  or a plain soft mask sampled at its compositing grid; otherwise the
+  limit is a `LimitExceeded`.
 - **Colour**: no colour management beyond exact matrix/TRC ICC
   profiles; LUT, CMYK and Lab-PCS ICC profiles fall back to the
   `/Alternate` space and are reported in `color_approximations`.

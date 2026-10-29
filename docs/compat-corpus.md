@@ -1053,6 +1053,36 @@ the corpus (173 s before — the knockout per-object passes cost nothing
 measurable on this corpus). The plan to 385 is in
 [`plans/render-90.md`](plans/render-90.md).
 
+### Results after oversized-image decoding (run-1793285439)
+
+Same 511 files, `--mode full`, default features, against
+run-1792865059. Two image paths changed (`features/rendering.md` §
+`Do`): a JPEG stored larger than `max_image_dimension` is decoded with a
+reduced inverse DCT when drawn smaller, reported in
+`RenderedPage::image_approximations()`; a soft mask finer than its
+image is composited at the mask's resolution (capped at the drawn
+size), and an oversized plain soft mask is sampled directly. The limits
+themselves are unchanged.
+
+| expect: pass (427) | before | after |
+|---|---:|---:|
+| strict render | 376 (88.1%) | **378 (88.5%)** |
+| of which approximate | 67 | 69 |
+| recovered render | 18 | 18 |
+| text | 390 | 390 |
+| rewrite | 350 | 350 |
+| full PASS | 323 | **325** |
+
+All files: strict render 408 → 410, full PASS 353 → 355. Both new
+strict renders are the two files previously blocked by
+`max_image_dimension` (one JPEG, one soft mask); the JPEG is counted
+approximate. No file or stage that passed strictly before fails now;
+round trip 411 unchanged; Poppler SSIM did not drop on any file; 0 crash
+/ 0 timeout; robustness 43/43. Wall time per file: median 178 ms; the
+render total rose because the run shared the machine with the gate
+suite — the affected files time identically on an idle machine against
+the previous build.
+
 ## External verification findings (this phase)
 
 What the independent parsers said about the rewrites, file by file,

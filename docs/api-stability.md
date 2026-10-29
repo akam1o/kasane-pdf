@@ -65,7 +65,7 @@ patch release.
   UnknownRenderingIntent, IgnoredFilterFragment, RecoveryApplied}`,
   `RecoveryRule` (`#[non_exhaustive]`), `Document::recovery_mode()`,
   `SubstKind::SymbolFallback`, `Limits::max_knockout_objects` +
-  `with_max_knockout_objects`. Behaviour changes on previously refused
+  `with_max_knockout_objects`, `RenderedPage::image_approximations()`. Behaviour changes on previously refused
   input (undefined references → null, open blocks closed, knockout
   groups rendered, Symbol / ZapfDingbats substituted) are recorded in
   `CHANGELOG.md`; no signature or default changed.

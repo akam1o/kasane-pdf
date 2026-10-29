@@ -9,11 +9,11 @@ category counts and the generalised plan.
 
 | metric (expect: pass, 427 files) | 0.2.0 | now | 90 % line | still needed |
 |---|---:|---:|---:|---:|
-| strict render | 368 (86.2 %) | **376 (88.1 %)** | 385 | **+9** |
-| of which approximate (reported substitution or colour approximation) | 65 | 67 | — | — |
+| strict render | 368 (86.2 %) | **378 (88.5 %)** | 385 | **+7** |
+| of which approximate (reported substitution, colour or image approximation) | 65 | 69 | — | — |
 | recovered render (recovery mode only, never counted as strict) | 8 | 18 | — | — |
 | text, strict | 384 | 390 | — | — |
-| full PASS | 318 | 323 | — | — |
+| full PASS | 318 | 325 | — | — |
 
 "Strict" counts a file only when it parsed strictly and rendered every
 page with constructs the specification allows; a warning the standard
@@ -61,14 +61,18 @@ structure).
 
 | # | item | effort | expected strict gain | what it needs |
 |---|---|---:|---:|---|
-| 1 | DCT scaled decode when `/Width`×`/Height` exceeds `max_image_dimension` but the page raster does not (the limit stays; exact at the output resolution) | 2 d | +2 | `jpeg-decoder` scale request; a reported note that the image was decoded at reduced size |
-| 2 | Identity-ordering CID fonts through a *complete* `/ToUnicode` → Unicode → bundled face (refused when any code is unmapped) | 2–3 d | +2 | `SubstKind` variant; approximation reported |
+| 1 | ~~DCT scaled decode~~ — **done**: oversized JPEGs drawn small decode with a reduced inverse DCT, oversized plain soft masks are sampled at their grid | — | +2 (realised) | `RenderedPage::image_approximations()` |
+| 2 | ~~Identity-ordering CID fonts via `/ToUnicode`~~ — **dropped after inspection**: of the three files, one has no `/ToUnicode` and uses the real font's glyph indices, one maps its glyphs to unrelated Latin-1 code points, one uses codes that merely coincide with Unicode; none can be drawn soundly | — | 0 | — |
 | 3 | encryption: RC4 and AES-128/256 with the empty user password; owner-password-only files refused | 5–8 d | +3 | RustCrypto `aes`, `sha2`, `md-5` (pure Rust, WASM-clean); `Error::Encrypted` stays for anything else |
-| 4 | transfer functions (`/TR` with a function) and `max_xobject_depth` review for the one deep-nesting file | 2–3 d | +1 | per-channel sampled/exponential transfer applied to colours, images and shadings |
+| 4 | ~~transfer functions~~ — **no corpus need**: the one file's `/TR` is `/Identity` (handled); it is blocked by form nesting of 33–48 levels against `max_xobject_depth` 32, which stays (a caller may raise it through `Limits`) | — | 0 | — |
 | 5 | shading function output replication (1 → n), reported as an approximation | 1 d | +1 (approximate) | `color_approximations` entry |
 
-Items 1–4 give **+8 to +9**, reaching 384–385 of 427 in roughly
-**11–16 working days**; items 1, 2 and 5 are additive under the 0.2
+Items 1, 2 and 4 are resolved (+2 realised, the rest unsound or
+limit-bound). From 378, the realistic remaining short path is
+encryption (+3) and shading output replication (+1, approximate),
+reaching **382 of 427 (89.5 %)**; the last three files to 385 need
+either the corpus to grow or a feature exercised once each (Brotli, a
+Unicode field font, a decision on the nesting limit). Originally: items 1, 2 and 5 are additive under the 0.2
 contract, item 3 adds a document-options builder (additive) and turns
 some `Error::Encrypted` refusals into successes. The remaining 42
 blockers after that are files the standard does not define a result

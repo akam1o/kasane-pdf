@@ -46,7 +46,24 @@ versions follow [Semantic Versioning](https://semver.org/).
   one), a recovery-mode render attempt after a strict render error,
   warning and recovery-note totals.
 
+- **Oversized images drawn small.** A JPEG whose `/Width` or `/Height`
+  exceeds `max_image_dimension` (or the sample limits) while the size it
+  is drawn at does not is decoded with a reduced inverse DCT (1/2, 1/4
+  or 1/8: the coarsest that keeps one sample per device pixel on both
+  axes, else the finest that fits the limits) and reported on the new
+  `RenderedPage::image_approximations()`, which says whether the decode
+  is below the drawn resolution.
+  An oversized soft mask without an image filter is sampled directly
+  at its compositing grid (exactly the samples a full decode would
+  give). The limits are unchanged; anything else still fails with
+  `LimitExceeded`.
+
 ### Changed
+- An image's `/SMask` finer than the image is composited at the mask's
+  resolution (capped at the drawn size and the image limits), with the
+  image's samples repeated onto that grid — §11.6.5.3 maps the two
+  independently. Previously the mask was resampled down to the image's
+  grid.
 - A `/SMask`, `/Contents` element, appearance state or `/AP /N` that
   is null (including through an undefined reference) is treated as
   absent rather than as a type error.
