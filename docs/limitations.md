@@ -38,9 +38,11 @@ are on the [roadmap](architecture.md#roadmap).
 ## Rendering
 
 - **Knockout transparency groups** (`/K true`) are rendered per
-  §11.4.8 (each object against the group's initial backdrop); the one
-  inexactness is a nested form whose own ExtGState changes its opacity
-  — its shape is taken with those changes. Bounded by
+  §11.4.8 (each object against the group's initial backdrop), with
+  opacity kept out of each object's shape — also inside nested forms —
+  and `AIS` honoured. Shape is taken from the rasterised coverage of
+  one painting operator (anti-aliased edges are fractional shape); a
+  nested non-knockout group counts as one object. Bounded by
   `max_knockout_objects`.
 - **Shading pattern `/ExtGState`** override — refused.
 - **Non-embedded fonts**: Symbol and ZapfDingbats draw with a bundled

@@ -141,3 +141,71 @@ fn knockout_object_count_is_bounded() {
     );
     render_page(&doc, &doc.pages()[0], &RenderOptions::default()).unwrap();
 }
+
+/// A knockout group whose second object is a nested form that sets its
+/// own opacity: the form's `ca` is opacity, not shape (AIS false), so it
+/// must knock out the red square within its whole area exactly like the
+/// same square drawn directly.
+#[test]
+fn opacity_set_inside_a_nested_form_is_not_shape() {
+    let nested = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+               /Resources << /XObject << /F 5 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"/F Do")),
+        (
+            5,
+            stream_obj(
+                "/Type /XObject /Subtype /Form /BBox [0 0 100 100] \
+                 /Group << /S /Transparency /CS /DeviceRGB /I true /K true >> \
+                 /Resources << /ExtGState << /H << /ca 0.5 /CA 0.5 >> >> \
+                 /XObject << /B 6 0 R >> >>",
+                b"/H gs 1 0 0 rg 10 10 50 80 re f /B Do",
+            ),
+        ),
+        (
+            6,
+            stream_obj(
+                "/Type /XObject /Subtype /Form /BBox [0 0 100 100] \
+                 /Resources << /ExtGState << /H << /ca 0.5 /CA 0.5 >> >> >>",
+                b"/H gs 0 0 1 rg 40 10 50 80 re f",
+            ),
+        ),
+    ]);
+    let r = render(&nested).unwrap();
+    let flat = render(&page_with_group("/I true /K true", 0.5, TWO_SQUARES)).unwrap();
+    for (x, y) in [(50, 50), (20, 50), (80, 50)] {
+        assert!(
+            near(px(&r, x, y), px(&flat, x, y), 3),
+            "({x},{y}) nested {:?} vs flat {:?}",
+            px(&r, x, y),
+            px(&flat, x, y)
+        );
+    }
+    assert!(
+        near(px(&r, 50, 50), (128, 128, 255), 3),
+        "{:?}",
+        px(&r, 50, 50)
+    );
+}
+
+#[test]
+fn ais_must_be_a_boolean() {
+    let bad = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+               /Resources << /ExtGState << /H << /AIS 3 >> >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"/H gs")),
+    ]);
+    assert!(matches!(render(&bad), Err(Error::Structure(_))));
+}

@@ -95,6 +95,11 @@ struct GraphicsState {
     /// The clip without the soft mask, kept while `soft_mask` is set
     /// so a later `/SMask /None` can drop the mask and nothing else.
     hard_clip: Option<Mask>,
+    /// `AIS` (§11.6.4.4): `ca`/`CA` and the soft mask are *shape*
+    /// rather than opacity. The two multiply identically in ordinary
+    /// compositing; they differ inside knockout groups (§11.4.8), where
+    /// only shape decides how much of earlier objects is replaced.
+    alpha_is_shape: bool,
     /// Text state (§9.3) — per-object, not part of `q`/`Q` save.
     text: TextState,
 }
@@ -207,6 +212,7 @@ impl GraphicsState {
             clip: None,
             soft_mask: None,
             hard_clip: None,
+            alpha_is_shape: false,
             text: TextState::default(),
         }
     }
@@ -567,6 +573,7 @@ pub fn render_page(
         substitutions: Vec::new(),
         color_approximations: Vec::new(),
         image_approximations: Vec::new(),
+        knockout_shape: 0,
         dct_target: std::cell::Cell::new(None),
         default_spaces: None,
         layer_bytes: 0,
@@ -772,6 +779,9 @@ pub(crate) struct Renderer<'a> {
     color_approximations: Vec<String>,
     /// Images decoded below full resolution (see
     /// `RenderedPage::image_approximations`).
+    /// Depth of knockout *shape* passes in progress (see
+    /// `knockout_pass`): opacity is not applied while > 0.
+    knockout_shape: u32,
     image_approximations: Vec<String>,
     /// Requested JPEG output size for the next DCT decode (scaled
     /// decode of an oversized image), consumed by `dct_decode`.
@@ -944,6 +954,7 @@ impl<'a> Renderer<'a> {
             substitutions: Vec::new(),
             color_approximations: Vec::new(),
             image_approximations: Vec::new(),
+            knockout_shape: 0,
             dct_target: std::cell::Cell::new(None),
             default_spaces: None,
             layer_bytes: 0,
@@ -1871,11 +1882,20 @@ impl<'a> Renderer<'a> {
                 }
 
                 // ---- transparency (implemented) --------------------
+                // In a knockout shape pass (`knockout_shape > 0`) opacity
+                // must not reduce an object's shape: `ca`/`CA`/`SMask`
+                // are applied only when `AIS` makes them shape.
                 b"ca" => {
-                    self.gs.fill_alpha = alpha_param(v, "ca")?;
+                    let a = alpha_param(v, "ca")?;
+                    if self.knockout_shape == 0 || self.gs.alpha_is_shape {
+                        self.gs.fill_alpha = a;
+                    }
                 }
                 b"CA" => {
-                    self.gs.stroke_alpha = alpha_param(v, "CA")?;
+                    let a = alpha_param(v, "CA")?;
+                    if self.knockout_shape == 0 || self.gs.alpha_is_shape {
+                        self.gs.stroke_alpha = a;
+                    }
                 }
                 b"BM" => {
                     self.gs.blend_mode = parse_blend_mode(v)?;
@@ -1890,10 +1910,14 @@ impl<'a> Renderer<'a> {
                 // hint, not a correctness parameter. Ignoring it is a
                 // spec-permitted approximation (§11.7).
                 b"SA" => {}
-                // AIS = alpha-is-shape flag; only meaningful inside a
-                // transparency group / soft mask, which we refuse when
-                // actually required. `false` is the default.
-                b"AIS" => {}
+                // AIS = alpha-is-shape flag (§11.6.4.4): decides whether
+                // ca/CA/SMask are shape or opacity — which matters only
+                // in knockout groups (see `knockout_shape`).
+                b"AIS" => {
+                    self.gs.alpha_is_shape = v
+                        .as_bool()
+                        .ok_or_else(|| Error::Structure("/AIS must be a boolean".into()))?;
+                }
                 // TK = text knockout; only relevant with multiple
                 // glyphs in one showing op under advanced blending.
                 // `true` is the default and the common corpus value.
@@ -1906,6 +1930,9 @@ impl<'a> Renderer<'a> {
                     match &v {
                         Object::Name(n) if n == b"None" => self.clear_soft_mask(),
                         Object::Null => self.clear_soft_mask(),
+                        Object::Dict(_) if self.knockout_shape > 0 && !self.gs.alpha_is_shape => {
+                            // Opacity in a knockout shape pass: no effect.
+                        }
                         Object::Dict(sm) => {
                             let mask = self.render_soft_mask(sm)?;
                             if !self.extraction_only {
@@ -2535,15 +2562,21 @@ impl<'a> Renderer<'a> {
             let snap_path = self.path.clone();
             let (snap_tm, snap_tlm) = (self.text_tm, self.text_tlm);
 
-            // Shape: the object at opacity 1, Normal, unmasked.
+            // Shape: the object without its opacity (constant alpha,
+            // soft mask — unless AIS makes them shape), Normal blend.
+            // `knockout_shape` keeps opacity out of nested forms too.
             shape.fill(tiny_skia::Color::TRANSPARENT);
-            self.clear_soft_mask();
-            self.gs.fill_alpha = 1.0;
-            self.gs.stroke_alpha = 1.0;
+            if !self.gs.alpha_is_shape {
+                self.clear_soft_mask();
+                self.gs.fill_alpha = 1.0;
+                self.gs.stroke_alpha = 1.0;
+            }
             self.gs.blend_mode = tiny_skia::BlendMode::SourceOver;
             std::mem::swap(&mut *self.pixmap, &mut shape);
             self.layer_bytes += bytes;
+            self.knockout_shape += 1;
             let r = self.execute(op);
+            self.knockout_shape -= 1;
             self.layer_bytes -= bytes;
             std::mem::swap(&mut *self.pixmap, &mut shape);
             r?;
@@ -3287,6 +3320,12 @@ impl<'a> Renderer<'a> {
         if !is_dct || dict.get(b"ImageMask".as_slice()).and_then(|o| o.as_bool()) == Some(true) {
             return Ok(None);
         }
+        // A colour-key /Mask compares exact sample values; a reduced
+        // inverse DCT changes them, so the key would no longer select
+        // the same pixels.
+        if matches!(dict.get(b"Mask".as_slice()), Some(Object::Array(_))) {
+            return Ok(None);
+        }
         let (Some(fw), Some(fh)) = (
             dict.get(b"Width".as_slice()).and_then(|o| o.as_i64()),
             dict.get(b"Height".as_slice()).and_then(|o| o.as_i64()),
@@ -3744,6 +3783,12 @@ impl<'a> Renderer<'a> {
                 }
                 p[3] = mul255(p[3], *a);
             }
+        } else if self.knockout_shape > 0
+            && !self.gs.alpha_is_shape
+            && dict.contains_key(b"SMask".as_slice())
+        {
+            // §11.6.5.3: without AIS an image's soft mask is opacity,
+            // which a knockout shape pass leaves out.
         } else if let Some(sm) = dict.get(b"SMask".as_slice()) {
             // §11.6.5.3: the image and its soft mask are each mapped to
             // the unit square; their sample grids are independent. A
@@ -4092,7 +4137,7 @@ impl<'a> Renderer<'a> {
                 )));
             }
             buf = match name {
-                b"DCTDecode" | b"DCT" => self.dct_decode(&buf, parm)?,
+                b"DCTDecode" | b"DCT" => self.dct_decode(&buf, parm, image_dims_u32(dict)?)?,
                 b"JBIG2Decode" => {
                     let (w, h) = image_dims_u32(dict)?;
                     let globals = match parm.and_then(|p| p.get(b"JBIG2Globals".as_slice())) {
@@ -4153,7 +4198,12 @@ impl<'a> Renderer<'a> {
     /// decide whether YCbCr→RGB conversion is applied — we trust the
     /// decoder's output format and verify it against `/ColorSpace`
     /// afterwards.
-    fn dct_decode(&self, data: &[u8], parms: Option<&Dict>) -> Result<Vec<u8>, Error> {
+    fn dct_decode(
+        &self,
+        data: &[u8],
+        parms: Option<&Dict>,
+        dict_dims: (u32, u32),
+    ) -> Result<Vec<u8>, Error> {
         // DecodeParms for DCTDecode: only /ColorTransform is defined.
         if let Some(p) = parms {
             match p.get(b"ColorTransform".as_slice()) {
@@ -4177,6 +4227,39 @@ impl<'a> Renderer<'a> {
         // the decoder allocates its frame buffers.
         dec.read_info()
             .map_err(|e| Error::Parse(format!("DCTDecode (JPEG) header: {e}")))?;
+        // Before anything is allocated: the frame must be the image the
+        // dictionary describes (its size was checked against the limits,
+        // or chosen for a reduced decode), and what the decoder holds
+        // while decoding must fit `max_image_bytes` — a progressive frame
+        // keeps every DCT coefficient of the *full* image (2 bytes each)
+        // until the end, whatever the output scale.
+        let info = dec
+            .info()
+            .ok_or_else(|| Error::Parse("DCTDecode (JPEG) header: no frame".into()))?;
+        if (info.width as u32, info.height as u32) != dict_dims {
+            return Err(Error::Structure(format!(
+                "JPEG frame is {}x{} but the image dictionary says {}x{}",
+                info.width, info.height, dict_dims.0, dict_dims.1
+            )));
+        }
+        let comps: u64 = match info.pixel_format {
+            jpeg_decoder::PixelFormat::L8 => 1,
+            jpeg_decoder::PixelFormat::L16 => 2,
+            jpeg_decoder::PixelFormat::RGB24 => 3,
+            jpeg_decoder::PixelFormat::CMYK32 => 4,
+        };
+        let blocks = (info.width as u64).div_ceil(8) * (info.height as u64).div_ceil(8);
+        let held = if info.coding_process == jpeg_decoder::CodingProcess::DctProgressive {
+            blocks * 64 * 2 * comps
+        } else {
+            0
+        };
+        if held > self.limits.max_image_bytes {
+            return Err(Error::LimitExceeded {
+                limit: "max_image_bytes",
+                max: self.limits.max_image_bytes,
+            });
+        }
         if let Some((tw, th)) = self.dct_target.get() {
             dec.scale(tw, th)
                 .map_err(|e| Error::Parse(format!("DCTDecode (JPEG) scaling: {e}")))?;

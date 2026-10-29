@@ -168,3 +168,73 @@ fn oversized_plain_soft_mask_is_sampled_directly() {
     let full = render(&pdf, Limits::default()).unwrap();
     assert_eq!(limited.pixels(), full.pixels());
 }
+
+#[test]
+fn jpeg_frame_must_match_the_dictionary_before_decoding() {
+    // The dictionary claims 8 × 8, the frame is 64 × 64: refused before
+    // the decoder allocates anything for the larger frame.
+    let jpg = std::fs::read(fixture("dct_64x64_red_blue.jpg")).unwrap();
+    let image = stream_obj(
+        "/Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceRGB \
+         /BitsPerComponent 8 /Filter /DCTDecode",
+        &jpg,
+    );
+    let pdf = page("q 10 0 0 10 20 20 cm /Im Do Q", image, &[]);
+    let e = render(&pdf, Limits::default()).unwrap_err();
+    assert!(
+        matches!(&e, Error::Structure(m) if m.contains("JPEG frame is 64x64")),
+        "{e:?}"
+    );
+}
+
+#[test]
+fn progressive_jpeg_coefficients_are_bounded_by_max_image_bytes() {
+    // A progressive frame holds 2 bytes per DCT coefficient of the full
+    // image: 64 blocks × 64 × 2 × 3 = 24 576 bytes here, whatever the
+    // output size. Under a smaller max_image_bytes it is refused before
+    // decoding; with room it renders.
+    let jpg = std::fs::read(fixture("dct_64x64_red_blue_progressive.jpg")).unwrap();
+    let image = stream_obj(
+        "/Type /XObject /Subtype /Image /Width 64 /Height 64 /ColorSpace /DeviceRGB \
+         /BitsPerComponent 8 /Filter /DCTDecode",
+        &jpg,
+    );
+    let pdf = page("q 10 0 0 10 20 20 cm /Im Do Q", image, &[]);
+    let e = render(&pdf, Limits::default().with_max_image_bytes(20_000)).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            Error::LimitExceeded {
+                limit: "max_image_bytes",
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+    let r = render(&pdf, Limits::default()).unwrap();
+    assert!(near(px(&r, 22, 75), (255, 0, 0)), "{:?}", px(&r, 22, 75));
+}
+
+#[test]
+fn colour_key_masked_jpeg_is_not_decoded_at_reduced_size() {
+    // A colour key matches exact sample values, which a reduced inverse
+    // DCT does not preserve: the oversized image stays refused.
+    let jpg = std::fs::read(fixture("dct_64x64_red_blue.jpg")).unwrap();
+    let image = stream_obj(
+        "/Type /XObject /Subtype /Image /Width 64 /Height 64 /ColorSpace /DeviceRGB \
+         /BitsPerComponent 8 /Filter /DCTDecode /Mask [250 255 0 5 0 5]",
+        &jpg,
+    );
+    let pdf = page("q 10 0 0 10 20 20 cm /Im Do Q", image, &[]);
+    let e = render(&pdf, Limits::default().with_max_image_dimension(16)).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            Error::LimitExceeded {
+                limit: "max_image_dimension",
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+}
