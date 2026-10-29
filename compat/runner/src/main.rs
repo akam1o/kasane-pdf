@@ -251,6 +251,10 @@ struct Metrics {
     /// Non-empty means hues may differ from a CMS-backed viewer.
     #[serde(default)]
     render_color_approximations: Vec<String>,
+    /// Images decoded below full resolution because they exceed the
+    /// image limits (`RenderedPage::image_approximations`), deduplicated.
+    #[serde(default)]
+    render_image_approximations: Vec<String>,
     /// Non-fatal findings the engine recorded on the document while
     /// the stages ran (`Document::take_warnings`), deduplicated: the
     /// input deviated from the specification in a way the engine
@@ -810,6 +814,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         render_pages: Vec::new(),
         render_font_substitutions: Vec::new(),
         render_color_approximations: Vec::new(),
+        render_image_approximations: Vec::new(),
         warnings: Vec::new(),
         text_match_ratio: None,
         rewrite_qpdf_ok: None,
@@ -937,6 +942,11 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                         metrics.render_color_approximations.push(a.clone());
                     }
                 }
+                for a in r.image_approximations() {
+                    if !metrics.render_image_approximations.contains(a) {
+                        metrics.render_image_approximations.push(a.clone());
+                    }
+                }
                 collect_warnings(&doc, &mut metrics.warnings);
                 // Visual fidelity vs poppler on every rendered page.
                 if args.with_poppler {
@@ -981,7 +991,8 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     metrics.render_pages_ok = rendered as u32;
     metrics.render_pages_total = attempted as u32;
     let render_approximate = !metrics.render_font_substitutions.is_empty()
-        || !metrics.render_color_approximations.is_empty();
+        || !metrics.render_color_approximations.is_empty()
+        || !metrics.render_image_approximations.is_empty();
     // Recovered render: the render above already ran on a recovery-mode
     // document when the strict parse failed; otherwise, a strict render
     // *error* (not an unsupported feature, not a limit) is retried on a

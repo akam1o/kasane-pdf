@@ -1057,6 +1057,7 @@ mod tests {
                 render_pages: Vec::new(),
                 render_font_substitutions: Vec::new(),
                 render_color_approximations: Vec::new(),
+                render_image_approximations: Vec::new(),
                 warnings: Vec::new(),
                 text_match_ratio: None,
                 rewrite_qpdf_ok: None,
