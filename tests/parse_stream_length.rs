@@ -79,3 +79,29 @@ fn self_referential_length_does_not_recurse() {
     assert_eq!(data_of(&pdf, 4), b"ABCD");
     assert_eq!(data_of(&pdf, 6), b"WXYZ");
 }
+
+#[test]
+fn empty_stream_without_length_is_empty_not_a_panic() {
+    // Found by fuzzing: with no usable /Length the scan finds
+    // `endstream` right at the start of the data, and backing off "the
+    // EOL before endstream" stepped onto the EOL of the `stream` line —
+    // an end before the start, which panicked (0.1.0 – 0.2.1).
+    for (body, want) in [
+        (&b"<< >>\nstream\nendstream"[..], &b""[..]),
+        (b"<< >>\nstream\r\nendstream", b""),
+        (b"<< /Length 99 >>\nstream\nendstream", b""),
+        (b"<< >>\nstream\n\nendstream", b""),
+        (b"<< >>\nstream\r\n\r\nendstream", b""),
+        (b"<< >>\nstream\nq Q\nendstream", b"q Q"),
+    ] {
+        let pdf = page(body, &[]);
+        assert_eq!(
+            data_of(&pdf, 4),
+            want,
+            "{:?}",
+            String::from_utf8_lossy(body)
+        );
+        let doc = Document::from_bytes(&pdf).unwrap();
+        doc.page_operations(&doc.pages()[0]).unwrap();
+    }
+}

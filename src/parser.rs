@@ -418,11 +418,14 @@ impl<'a> Parser<'a> {
             Some(rel) => {
                 let abs = data_start + rel;
                 // The EOL immediately preceding endstream belongs to
-                // the stream terminator, not to the data (§7.3.8.1).
+                // the stream terminator, not to the data (§7.3.8.1) —
+                // but only an EOL inside the data: in an empty stream
+                // (`stream⏎endstream`) the EOL before `endstream` is
+                // the one that ends the `stream` keyword line.
                 let mut end = abs;
-                if end >= 2 && input[end - 2] == 0x0D && input[end - 1] == 0x0A {
+                if end >= data_start + 2 && input[end - 2] == 0x0D && input[end - 1] == 0x0A {
                     end -= 2;
-                } else if end >= 1 && (input[end - 1] == 0x0A || input[end - 1] == 0x0D) {
+                } else if end > data_start && (input[end - 1] == 0x0A || input[end - 1] == 0x0D) {
                     end -= 1;
                 }
                 Ok(end)
