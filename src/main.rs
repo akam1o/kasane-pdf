@@ -7,12 +7,62 @@
 //! operations — kept behind subcommands so normal inspection doesn't
 //! dump file data. Exit code 0 on success, 1 on any error (the error
 //! is printed with its category).
+//!
+//! `--password-file <path>` (anywhere on the command line; `-` reads
+//! standard input) opens an encrypted document with the first line of
+//! that file as user or owner password. There is deliberately no
+//! `--password <text>`: arguments are visible to other local users.
 
-use kasane_pdf::{render_page, Dict, Document, Error, Limits, Object, RenderOptions};
+use kasane_pdf::{render_page, Dict, Document, Error, Limits, Object, OpenOptions, RenderOptions};
 use std::process::ExitCode;
+use std::sync::OnceLock;
+use zeroize::Zeroizing;
+
+/// The password read from `--password-file`, if any.
+static PASSWORD: OnceLock<Zeroizing<Vec<u8>>> = OnceLock::new();
+
+/// Open `data` with the `--password-file` password (none: the empty
+/// user password, as `Document::from_bytes`).
+fn open_document(data: &[u8]) -> Result<Document, Error> {
+    match PASSWORD.get() {
+        Some(pw) => Document::open(data, &OpenOptions::new().with_password(&pw[..])),
+        None => Document::from_bytes(data),
+    }
+}
+
+/// The first line of `path` (`-`: standard input) without its line
+/// end. The contents are never printed.
+fn read_password(path: &str) -> Result<Zeroizing<Vec<u8>>, Error> {
+    let raw = Zeroizing::new(if path == "-" {
+        let mut b = Vec::new();
+        std::io::Read::read_to_end(&mut std::io::stdin(), &mut b)?;
+        b
+    } else {
+        std::fs::read(path)?
+    });
+    let line = raw.split(|&c| c == b'\n').next().unwrap_or(&[]);
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    Ok(Zeroizing::new(line.to_vec()))
+}
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().collect();
+    let mut args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--password-file") {
+        let Some(path) = args.get(i + 1).cloned() else {
+            eprintln!("error: --password-file needs a path (or - for standard input)");
+            return ExitCode::from(2);
+        };
+        match read_password(&path) {
+            Ok(pw) => {
+                let _ = PASSWORD.set(pw);
+            }
+            Err(e) => {
+                eprintln!("error [{}]: {e}", e.kind());
+                return ExitCode::FAILURE;
+            }
+        }
+        args.drain(i..i + 2);
+    }
     let prog = args.first().map(String::as_str).unwrap_or("kasane-pdf");
 
     match args.get(1).map(String::as_str) {
@@ -225,6 +275,7 @@ fn main() -> ExitCode {
             );
             eprintln!("       {prog} audit-residuals <file.pdf> [--format text|json]");
             eprintln!("       {prog} remove-document-metadata <file.pdf> --output <out.pdf>");
+            eprintln!("options: --password-file <path|->  password for an encrypted document (first line)");
             ExitCode::from(2)
         }
     }
@@ -232,9 +283,23 @@ fn main() -> ExitCode {
 
 fn run(path: &str) -> Result<(), Error> {
     let data = std::fs::read(path)?;
-    let doc = Document::from_bytes(&data)?;
+    let doc = open_document(&data)?;
 
     println!("file: {path}");
+    if let Some(e) = doc.encryption() {
+        println!(
+            "encryption: Standard R{} {:?}, {}-bit key, opened as {:?}{}",
+            e.revision,
+            e.stream_method,
+            e.key_bits,
+            e.authenticated_as,
+            if e.empty_user_password {
+                " (empty user password: no confidentiality)"
+            } else {
+                ""
+            }
+        );
+    }
     println!("pages: {}", doc.page_count());
     for page in doc.pages() {
         let mb = page.media_box();
@@ -277,7 +342,7 @@ fn run(path: &str) -> Result<(), Error> {
 
 fn run_contents(path: &str, page_no: usize) -> Result<(), Error> {
     let data = std::fs::read(path)?;
-    let doc = Document::from_bytes(&data)?;
+    let doc = open_document(&data)?;
     let page = doc
         .pages()
         .get(page_no - 1)
@@ -306,7 +371,7 @@ fn run_contents(path: &str, page_no: usize) -> Result<(), Error> {
 fn run_rewrite(input: &str, output: &str) -> Result<(), Error> {
     refuse_same_file(input, output)?;
     let data = std::fs::read(input)?;
-    let doc = Document::from_bytes(&data)?;
+    let doc = open_document(&data)?;
     let bytes = kasane_pdf::rewrite(&doc)?;
     write_atomic(
         &bytes,
@@ -398,7 +463,7 @@ fn run_annotate_rect(args: &[String]) -> Result<(), Error> {
 
     refuse_same_file(input, output)?;
     let data = std::fs::read(input)?;
-    let doc = Document::from_bytes(&data)?;
+    let doc = open_document(&data)?;
     let mut e = doc.edit()?;
     e.add_square(
         page - 1,
@@ -467,7 +532,7 @@ fn annotate_usage() -> String {
 /// `\xNN`).
 fn run_inspect(path: &str, page_no: usize) -> Result<(), Error> {
     let data = std::fs::read(path)?;
-    let doc = Document::from_bytes(&data)?;
+    let doc = open_document(&data)?;
     if doc.page_count() != 1 {
         return Err(Error::Structure(format!(
             "inspect expects a 1-page PDF, found {} pages",
@@ -1055,7 +1120,7 @@ const MAX_PRINTED_OPERATIONS: usize = 10_000;
 
 fn run_operations(path: &str, page_no: usize) -> Result<(), Error> {
     let data = std::fs::read(path)?;
-    let doc = Document::from_bytes(&data)?;
+    let doc = open_document(&data)?;
     let page = doc
         .pages()
         .get(page_no - 1)
@@ -1107,7 +1172,7 @@ fn run_render(path: &str, page_no: usize, args: &[String]) -> Result<(), Error> 
         output.ok_or_else(|| Error::Structure("render requires --output <file.png>".into()))?;
 
     let data = std::fs::read(path)?;
-    let doc = Document::from_bytes(&data)?;
+    let doc = open_document(&data)?;
     let page = doc
         .pages()
         .get(page_no - 1)
@@ -1170,7 +1235,7 @@ fn run_text(path: &str, page_no: usize, args: &[String]) -> Result<(), Error> {
     }
 
     let data = std::fs::read(path)?;
-    let doc = Document::from_bytes(&data)?;
+    let doc = open_document(&data)?;
     let page = doc
         .pages()
         .get(page_no - 1)
@@ -1322,7 +1387,7 @@ fn run_preflight(args: &[String]) -> Result<(), Error> {
         )));
     }
     let data = std::fs::read(input)?;
-    let doc = Document::from_bytes(&data)?;
+    let doc = open_document(&data)?;
     let diag = kasane_pdf::diagnose_redaction(
         &doc,
         page - 1,
@@ -1420,7 +1485,7 @@ fn run_remove_text(args: &[String]) -> Result<(), Error> {
     let output = output.ok_or_else(|| Error::Structure(remove_text_usage()))?;
     refuse_same_file(input, output)?;
     let data = std::fs::read(input)?;
-    let doc = Document::from_bytes(&data)?;
+    let doc = open_document(&data)?;
     let r = kasane_pdf::remove_text(
         &doc,
         page - 1,
@@ -1542,7 +1607,7 @@ fn run_remove_image_region(args: &[String]) -> Result<(), Error> {
     let output = output.ok_or_else(|| Error::Structure(remove_image_region_usage()))?;
     refuse_same_file(input, output)?;
     let data = std::fs::read(input)?;
-    let doc = Document::from_bytes(&data)?;
+    let doc = open_document(&data)?;
     let r = kasane_pdf::remove_image_region(
         &doc,
         page - 1,
@@ -1654,7 +1719,7 @@ fn run_remove_region(args: &[String]) -> Result<(), Error> {
     let output = output.ok_or_else(|| Error::Structure(remove_region_usage().to_string()))?;
     refuse_same_file(input, output)?;
     let data = std::fs::read(input)?;
-    let doc = Document::from_bytes(&data)?;
+    let doc = open_document(&data)?;
     let r = kasane_pdf::remove_region(
         &doc,
         page - 1,
@@ -1795,7 +1860,7 @@ fn run_remove_regions(args: &[String]) -> Result<(), Error> {
     let output = output.ok_or_else(|| Error::Structure(remove_regions_usage().to_string()))?;
     refuse_same_file(input, output)?;
     let data = std::fs::read(input)?;
-    let doc = Document::from_bytes(&data)?;
+    let doc = open_document(&data)?;
     let api_specs: Vec<kasane_pdf::PageSpec> = specs
         .iter()
         .map(|(p, rs)| {
@@ -1889,7 +1954,7 @@ fn run_remove_document_metadata(args: &[String]) -> Result<(), Error> {
         output.ok_or_else(|| Error::Structure(remove_document_metadata_usage().to_string()))?;
     refuse_same_file(input, output)?;
     let data = std::fs::read(input)?;
-    let doc = Document::from_bytes(&data)?;
+    let doc = open_document(&data)?;
     let r = kasane_pdf::remove_document_metadata(&doc, &Limits::default())?;
     write_atomic(
         &r.output,
@@ -2403,7 +2468,7 @@ fn run_audit(args: &[String]) -> Result<(), Error> {
         }
     }
     let data = std::fs::read(input)?;
-    let doc = Document::from_bytes(&data)?;
+    let doc = open_document(&data)?;
     let audit = kasane_pdf::audit_residuals(&doc, &Limits::default())?;
     match format {
         "json" => print_audit_json(&audit),
