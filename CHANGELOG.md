@@ -6,6 +6,15 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-31
+
+Reading of encrypted documents (Standard security handler). No public
+item was removed or changed in signature (`cargo semver-checks`
+against 0.2.2: no semver update required); the minor version is for
+the observable behaviour changes below. Upgrade notes:
+`docs/migration-0.3.md`; user guide: `docs/encryption.md`; release
+notes: `docs/releases/v0.3.0.md`.
+
 ### Added
 - **Encrypted documents** (Standard security handler, ISO 32000-2
   §7.6): revisions 2–6 — RC4 40–128-bit, AES-128 (`/AESV2`), AES-256
@@ -34,6 +43,12 @@ versions follow [Semantic Versioning](https://semver.org/).
   string longer than its revision specifies (the leading bytes are
   used, as by every reader).
 
+- CLI: `--password-file <path>` (`-`: standard input) on every
+  subcommand; the document summary prints an `encryption:` line. No
+  `--password <text>` option — arguments are visible to other users.
+- `examples/open_encrypted.rs`; `docs/encryption.md` (user guide) and
+  `docs/migration-0.3.md`, both compiled as doctests.
+
 ### Fixed
 - Text extraction from a non-embedded Standard 14 font without
   `/Encoding` (drawn with a bundled substitute) now resolves codes
@@ -58,6 +73,13 @@ versions follow [Semantic Versioning](https://semver.org/).
   `/Encrypt` entry or an encryption dictionary, also inside an object
   stream — not only a surviving trailer: 0.2.1 rebuilt such a file
   with a lost trailer as an unencrypted document of ciphertext.
+- A malformed `/Encrypt` dictionary never falls back to a default: a
+  `/StmF` `/StrF` `/EFF` or `/Crypt` `/Name` that is present but not a
+  name, an undefined crypt filter, RC4 crypt filters that disagree on
+  the key length (or a short one beside `/AESV2`), a `/Length` that is
+  not an integer, and an R6 dictionary without `/Perms` are
+  `Error::Structure` — also with a wrong password, since no password
+  could open them.
 
 ## [0.2.2] - 2026-10-31
 
@@ -313,7 +335,8 @@ are possible between minor versions and are recorded here.
   1.1 and Adobe CMap resources under BSD-3-Clause (`NOTICE`,
   `docs/third-party.md`).
 
-[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.3.0
 [0.2.2]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.2.2
 [0.2.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.2.1
 [0.2.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.2.0
