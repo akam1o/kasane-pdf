@@ -6,6 +6,15 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Panic on an empty stream without a usable `/Length`** (found by
+  fuzzing; present since 0.1.0). With no direct or resolvable
+  `/Length`, the parser scans for `endstream` and backs off the EOL
+  before it; in `stream⏎endstream` that EOL ends the `stream` line, so
+  the data end fell one byte before its start and slicing panicked —
+  reachable from any input, in strict and recovery mode. The back-off
+  now never passes the start of the data; such a stream is empty.
+
 ## [0.2.1] - 2026-10-30
 
 Compatible release (`cargo semver-checks` against 0.2.0: no semver
