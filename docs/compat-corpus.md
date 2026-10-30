@@ -1123,6 +1123,37 @@ the heaviest files' Poppler-inclusive totals; an A/B of the slowest
 files against the previous build renders them in identical time, and
 parse time across the corpus moved by 5 ms in total.
 
+### Results after the encryption review fixes (run-1793344091)
+
+Same 511 files, `--mode full`, default features, against
+run-1793311936. Changes since: the independent-review fixes (recovery
+detects encryption from every scanned object), SASLprep / PDFDocEncoding
+passwords, the short-key decision, the empty-stream parser fix and the
+built-in-encoding text fix (`plans/encryption.md` § Review, § Short
+keys, § Fuzzing).
+
+| expect: pass (427) | before | after |
+|---|---:|---:|
+| strict parse | 407 | 407 |
+| strict render | 379 (88.8%) | 379 (88.8%) |
+| of which approximate | 69 | 69 |
+| recovered render | 18 | **19** |
+| text | 391 | 391 |
+| rewrite | 350 | 350 |
+| full PASS | 325 | 325 |
+
+One file changed class: the revision-4 file with a 40-bit RC4 key that
+needs Acrobat's zero-padding. Before, it authenticated and then failed
+on a corrupt Flate stream (`Error::Parse`) — the specified key decrypts
+it to garbage. Now strict mode refuses it up front
+(`Error::Unsupported`, the data does not decrypt as ISO 32000
+specifies) and recovery mode renders it, recorded as
+`RecoveryRule::PaddedShortEncryptionKey`; it counts as recovered, not
+strict (SSIM against Poppler 0.81, within the corpus's spread). No
+other file changed in any stage or warning count. Round trip 411
+unchanged; Poppler SSIM dropped on no file; 0 crash / 0 timeout;
+robustness 43/43. Wall time per file: median 190 ms.
+
 ## External verification findings (this phase)
 
 What the independent parsers said about the rewrites, file by file,

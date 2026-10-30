@@ -18,6 +18,32 @@ versions follow [Semantic Versioning](https://semver.org/).
   with `CryptMethod`, `Authentication` and the advisory permission bits.
   Passwords are held in zeroed buffers and never appear in `Debug`,
   errors or warnings.
+- Passwords as text: revision 5/6 passwords are normalised with
+  SASLprep (RFC 4013, `stringprep` crate) and truncated to 127 bytes as
+  Algorithm 2.A requires; a non-ASCII UTF-8 password for revisions 2–4
+  is also tried in PDFDocEncoding. Every candidate is derived from the
+  caller's password.
+- `RecoveryRule::PaddedShortEncryptionKey`: a revision-4 key shorter
+  than 128 bits whose data decrypts only when the key is zero-padded to
+  16 bytes (Acrobat's undocumented reading) is read in recovery mode and
+  recorded; strict mode refuses such a file (`Error::Unsupported`)
+  instead of returning undecryptable data. Decided from the file's own
+  data, so a file written as ISO 32000 specifies reads identically in
+  both modes.
+- `Warning::OverlongEncryptionEntry`: an `/O` `/U` `/OE` `/UE` `/Perms`
+  string longer than its revision specifies (the leading bytes are
+  used, as by every reader).
+
+### Fixed
+- Panic on an empty stream without a usable `/Length`
+  (`stream⏎endstream`), found by fuzzing; present since 0.1.0 and in
+  0.2.1. The scan's back-off of the EOL before `endstream` no longer
+  passes the start of the data. (Also prepared as 0.2.2.)
+- Text extraction from a non-embedded Standard 14 font without
+  `/Encoding` (drawn with a bundled substitute) now resolves codes
+  through the font's built-in encoding (Table 114: StandardEncoding,
+  or Symbol's / ZapfDingbats'), the same table rendering uses; they
+  were reported `ResolveKind::Unresolved` before (since 0.1).
 
 ### Changed (observable behaviour)
 - An encrypted document that opens with the empty user password is now
@@ -31,7 +57,11 @@ versions follow [Semantic Versioning](https://semver.org/).
   drop or break the encryption).
 - A damaged encrypted file whose cross-reference table would have to be
   rebuilt is refused with `Error::Unsupported` (the scan would read
-  ciphertext as plaintext); previously `Error::Encrypted`.
+  ciphertext as plaintext); previously `Error::Encrypted`. The file
+  counts as encrypted when *any* object the scan finds says so — an
+  `/Encrypt` entry or an encryption dictionary, also inside an object
+  stream — not only a surviving trailer: 0.2.1 rebuilt such a file
+  with a lost trailer as an unencrypted document of ciphertext.
 
 ## [0.2.1] - 2026-10-30
 

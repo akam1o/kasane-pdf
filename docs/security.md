@@ -71,7 +71,10 @@ permissions are reported on `EncryptionInfo` and are advisory: anyone
 who can open the file can read all of it. Revisions 2–4 rely on RC4
 and MD5; an open document says nothing about how well it was
 protected. Recovery mode never rebuilds the table of an encrypted file
-(it would read ciphertext as plaintext). See
+(it would read ciphertext as plaintext) — judged from every object the
+scan finds, not only a surviving trailer. The one encryption recovery
+rule (Acrobat's padding of short revision-4 keys) applies only when the
+file's own data shows that the specified key does not decrypt it. See
 [`plans/encryption.md`](plans/encryption.md).
 
 ## What the engine is **not**

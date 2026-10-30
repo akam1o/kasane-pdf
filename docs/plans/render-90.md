@@ -10,7 +10,7 @@ category counts and the generalised plan.
 |---|---:|---:|---:|---:|
 | strict render | 368 (86.2 %) | **379 (88.8 %)** | 385 | **+6** |
 | of which approximate (reported substitution, colour or image approximation) | 65 | 69 | — | — |
-| recovered render (recovery mode only, never counted as strict) | 8 | 18 | — | — |
+| recovered render (recovery mode only, never counted as strict) | 8 | 19 | — | — |
 | text, strict | 384 | 391 | — | — |
 | full PASS | 318 | 325 | — | — |
 
@@ -68,18 +68,19 @@ structure).
 |---|---|---:|---:|---|
 | 1 | ~~DCT scaled decode~~ — **done**: oversized JPEGs drawn small decode with a reduced inverse DCT, oversized plain soft masks are sampled at their grid | — | +2 (realised) | `RenderedPage::image_approximations()` |
 | 2 | ~~Identity-ordering CID fonts via `/ToUnicode`~~ — **dropped after inspection**: of the three files, one has no `/ToUnicode` and uses the real font's glyph indices, one maps its glyphs to unrelated Latin-1 code points, one uses codes that merely coincide with Unicode; none can be drawn soundly | — | 0 | — |
-| 3 | ~~encryption~~ — **done**: Standard security handler R2–R6, read only | — | +1 (realised; +3 expected) | of the three files one needs a user password (correctly refused) and one Acrobat's undocumented short-key padding (decision pending, see `plans/encryption.md`) |
+| 3 | ~~encryption~~ — **done**: Standard security handler R2–R6, read only | — | +1 strict, +1 recovered (realised; +3 expected) | of the three files one needs a user password (correctly refused); one needs Acrobat's undocumented short-key padding — decided as a recovery rule applied only on evidence from the file's own data, so it counts as recovered, not strict (`plans/encryption.md` § Short keys) |
 | 4 | ~~transfer functions~~ — **no corpus need**: the one file's `/TR` is `/Identity` (handled); it is blocked by form nesting of 33–48 levels against `max_xobject_depth` 32, which stays (a caller may raise it through `Limits`) | — | 0 | — |
 | 5 | shading function output replication (1 → n), reported as an approximation | 1 d | +1 (approximate) | `color_approximations` entry |
 
 Items 1–4 are resolved (+3 realised, the rest unsound, limit-bound or
 password-bound). From 379, the realistic remaining short path is
-shading output replication (+1, approximate) and — if it is accepted as
-a documented compatibility reading — the short-key RC4 padding (+1),
-reaching **381 of 427 (89.2 %)**. Separately, one `expect: reject`
+shading output replication (+1, approximate), reaching **380 of 427
+(89.0 %)**. The short-key RC4 padding was decided against strict mode
+(undocumented, and mutually exclusive with the specified reading), so
+that file stays a recovered render. Separately, one `expect: reject`
 file was classed reject only because encryption was unsupported and
-now renders identically to Poppler; reclassifying it would give 380 of
-428; the last three files to 385 need
+now renders identically to Poppler; reclassifying it would add one
+strict file to a 428-file denominator. The remaining files to 385 need
 either the corpus to grow or a feature exercised once each (Brotli, a
 Unicode field font, a decision on the nesting limit). Originally: items 1, 2 and 5 are additive under the 0.2
 contract, item 3 adds a document-options builder (additive) and turns
@@ -90,14 +91,15 @@ exercises once each; past 385 the corpus itself has to grow.
 
 ## Recommended order
 
-1. **0.2.1** — this phase (release the recovery rules, knockout groups,
-   the symbol fallback, the runner's three render outcomes).
-2. **0.2.2** — DCT scaled decode (item 1), transfer functions (item 4).
-3. **0.2.3** — Identity-CID via `/ToUnicode` (item 2), shading output
+1. **0.2.1** — released 2026-10-30 (recovery rules, knockout groups,
+   the symbol fallback, oversized-image decoding, the runner's three
+   render outcomes).
+2. **0.2.2** — the empty-stream parser panic found by fuzzing (prepared
+   locally on `release/v0.2.2`, not published), then shading output
    replication (item 5).
-4. **0.3.0** — encryption (item 3; read support implemented,
-   SASLprep, the short-key padding decision and a CLI `--password`
-   remain), the CJK asset crate for
+3. **0.3.0** — encryption (item 3; read support, review fixes,
+   SASLprep and the short-key decision done; a CLI `--password`
+   remains), the CJK asset crate for
    GB1 / CNS1 / Korea1 (no gain on this corpus; needed for Chinese and
    Korean documents in general), and corpus expansion with
    licence-cleared real-world documents, which will reset the target.

@@ -9,12 +9,13 @@ are on the [roadmap](architecture.md#roadmap).
 
 - **Encryption**: the Standard security handler is read (R2–R6, RC4,
   AES-128, AES-256, crypt filters) with the empty user password or a
-  password given through `Document::open`. Not implemented: public-key
-  and third-party handlers, SASLprep normalisation of R6 passwords,
-  writing encrypted output (the writers refuse encrypted documents),
-  rebuilding the cross-reference table of a damaged encrypted file, and
-  the undocumented Acrobat key padding of R4 RC4 keys shorter than
-  128 bits (such files open but their streams do not decode). See
+  password given through `Document::open` (SASLprep for R5/R6,
+  PDFDocEncoding for R2–R4). Not implemented: public-key and
+  third-party handlers, writing encrypted output (the writers refuse
+  encrypted documents), rebuilding the cross-reference table of a
+  damaged encrypted file. The undocumented Acrobat padding of R4 keys
+  shorter than 128 bits is a recovery rule: strict mode refuses a file
+  that needs it. See
   [`plans/encryption.md`](plans/encryption.md).
 - **Strict parsing**: `Document::from_bytes` follows ISO 32000-1.
   Dangling references, a wrong `startxref`, a damaged cross-reference
