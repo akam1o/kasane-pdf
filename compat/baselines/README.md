@@ -42,6 +42,19 @@ the strict parser then refuses the CIDFont for lacking the required
 `/FontDescriptor` — the correct outcome for that sample, recorded
 here so it does not read as a regression.
 
+Regenerated for 0.2.1 from the nightly run on the release candidate.
+The previous baseline predated the recovery work; against it the
+nightly reported 16 stage changes as regressions, none of which lost a
+pass: five files whose strict parse fails are now also taken through
+render, text and rewrite on the recovered document, so those stages
+moved from `skip` to `error` (with the reason recorded); an appearance
+state that is not a stream is now a structural error rather than an
+unsupported feature (the file renders in recovery mode); a form
+nesting deeper than `max_xobject_depth` is now reported as the limit
+error. In the same run 29 stages improved (parse 444 → 446, render
+423 → 440, text 446 → 458; rewrite 413 and round trip 410 unchanged,
+no crash or timeout).
+
 Numbers above refer to the baseline committed alongside this file;
 update both when the fixtures or the engine change
 (`python3 scripts/ci-regression.py summarize /tmp/smoke/latest.json > compat/baselines/fixtures-smoke.json`).
