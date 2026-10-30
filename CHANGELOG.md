@@ -6,6 +6,11 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-31
+
+Patch release (`cargo semver-checks` against 0.2.1: no semver update
+required). Release notes: `docs/releases/v0.2.2.md`.
+
 ### Fixed
 - **Panic on an empty stream without a usable `/Length`** (found by
   fuzzing; present since 0.1.0). With no direct or resolvable
@@ -255,7 +260,8 @@ are possible between minor versions and are recorded here.
   1.1 and Adobe CMap resources under BSD-3-Clause (`NOTICE`,
   `docs/third-party.md`).
 
-[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.2.2
 [0.2.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.2.1
 [0.2.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.2.0
 [0.1.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.1.1
