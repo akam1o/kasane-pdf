@@ -1322,13 +1322,18 @@ impl Type1Font {
 
     /// Code → Unicode via `/ToUnicode`, else glyph name → AGL →
     /// Unicode (only meaningful for named glyphs, not subset `/Gxx`).
+    /// A substituted (non-embedded) font without an `/Encoding` name
+    /// for the code uses the same built-in encoding the renderer draws
+    /// with (Table 114: StandardEncoding, or Symbol's / ZapfDingbats').
     pub(crate) fn unicode(&self, code: u8) -> Option<String> {
         if let Some(tu) = &self.tounicode {
             return tu.decode(code as u32);
         }
-        let name = self.glyph_name_bytes(code)?;
-        let s = std::str::from_utf8(name).ok()?;
-        let u = name_to_unicode(s)?;
+        let name = match self.glyph_name_bytes(code) {
+            Some(n) => std::str::from_utf8(n).ok()?.to_string(),
+            None => self.subst_glyph_name(code)?,
+        };
+        let u = name_to_unicode(&name)?;
         char::from_u32(u).map(|c| c.to_string())
     }
 
