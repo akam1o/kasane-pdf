@@ -1,0 +1,40 @@
+[package]
+name = "kasane-pdf-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+kasane-pdf = { path = ".." }
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "open_any"
+path = "fuzz_targets/open_any.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "encrypt_dict"
+path = "fuzz_targets/encrypt_dict.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ciphertext"
+path = "fuzz_targets/ciphertext.rs"
+test = false
+doc = false
+bench = false
+
+# Not part of the kasane-pdf workspace or the published crate.
+[workspace]
+members = ["."]
