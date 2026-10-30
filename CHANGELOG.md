@@ -35,10 +35,6 @@ versions follow [Semantic Versioning](https://semver.org/).
   used, as by every reader).
 
 ### Fixed
-- Panic on an empty stream without a usable `/Length`
-  (`stream⏎endstream`), found by fuzzing; present since 0.1.0 and in
-  0.2.1. The scan's back-off of the EOL before `endstream` no longer
-  passes the start of the data. (Also prepared as 0.2.2.)
 - Text extraction from a non-embedded Standard 14 font without
   `/Encoding` (drawn with a bundled substitute) now resolves codes
   through the font's built-in encoding (Table 114: StandardEncoding,
@@ -62,6 +58,20 @@ versions follow [Semantic Versioning](https://semver.org/).
   `/Encrypt` entry or an encryption dictionary, also inside an object
   stream — not only a surviving trailer: 0.2.1 rebuilt such a file
   with a lost trailer as an unencrypted document of ciphertext.
+
+## [0.2.2] - 2026-10-31
+
+Patch release (`cargo semver-checks` against 0.2.1: no semver update
+required). Release notes: `docs/releases/v0.2.2.md`.
+
+### Fixed
+- **Panic on an empty stream without a usable `/Length`** (found by
+  fuzzing; present since 0.1.0). With no direct or resolvable
+  `/Length`, the parser scans for `endstream` and backs off the EOL
+  before it; in `stream⏎endstream` that EOL ends the `stream` line, so
+  the data end fell one byte before its start and slicing panicked —
+  reachable from any input, in strict and recovery mode. The back-off
+  now never passes the start of the data; such a stream is empty.
 
 ## [0.2.1] - 2026-10-30
 
@@ -303,7 +313,8 @@ are possible between minor versions and are recorded here.
   1.1 and Adobe CMap resources under BSD-3-Clause (`NOTICE`,
   `docs/third-party.md`).
 
-[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.2.2
 [0.2.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.2.1
 [0.2.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.2.0
 [0.1.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.1.1
