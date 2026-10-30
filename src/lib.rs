@@ -166,3 +166,13 @@ pub use warning::{RecoveryRule, Warning};
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
+
+/// The encryption guide's code blocks run as doctests against the
+/// encrypted fixtures.
+#[cfg(doctest)]
+#[doc = include_str!("../docs/encryption.md")]
+struct EncryptionGuideDoctests;
+
+#[cfg(doctest)]
+#[doc = include_str!("../docs/migration-0.3.md")]
+struct Migration03Doctests;

@@ -52,6 +52,12 @@ predictors; DCT, JBIG2, CCITT and JPX for images), page tree with
 inherited attributes, lazy indirect resolution with cycle detection,
 named destinations, an explicit recovery mode.
 
+**Encrypted documents** (read only) — the Standard security handler,
+revisions 2–6: RC4, AES-128 and AES-256, crypt filters, the empty,
+user or owner password (`Document::open` with `OpenOptions`), Unicode
+passwords. Permissions are reported, not enforced; the writers refuse
+encrypted documents. See [`docs/encryption.md`](docs/encryption.md).
+
 **Rendering** (`render_page` → premultiplied RGBA8 buffer, `to_png`) — paths,
 clipping, every colour-space family of §8.6 (Device, Cal, Lab,
 ICC-based with exact matrix/TRC profiles, Indexed, Separation,
@@ -94,14 +100,14 @@ experimental scoped content editors (`remove_text`,
 
 ```toml
 [dependencies]
-kasane-pdf = "0.2"
+kasane-pdf = "0.3"
 ```
 
 Or track the repository directly:
 
 ```toml
 [dependencies]
-kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.2.2" }
+kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.3.0" }
 ```
 
 Supported Rust versions: 1.92 or newer (`rust-version` in
@@ -242,6 +248,7 @@ All examples, runnable against the fixtures in `tests/fixtures/`:
 | [`rewrite.rs`](examples/rewrite.rs) | full rewrite and the typed refusals (signed, PDF 2.0, …) |
 | [`incremental_save.rs`](examples/incremental_save.rs) | `Edit` session saved as an appended revision |
 | [`recovery.rs`](examples/recovery.rs) | strict parse first, explicit recovery parse with its report |
+| [`open_encrypted.rs`](examples/open_encrypted.rs) | encrypted document: empty password, then a password from a file; what `/Encrypt` declares |
 | [`cjk_fallback.rs`](examples/cjk_fallback.rs) | non-embedded Japanese CID fonts (`--features cjk-fallback`) |
 
 ```console
@@ -251,6 +258,7 @@ cargo run --example extract_text -- tests/fixtures/text_basic.pdf
 cargo run --example rewrite -- tests/fixtures/hello.pdf /tmp/rewritten.pdf
 cargo run --example incremental_save -- tests/fixtures/hello.pdf /tmp/annotated.pdf
 cargo run --example recovery -- tests/fixtures/hello.pdf
+cargo run --example open_encrypted -- tests/fixtures/encrypted/enc_r6_aes256_empty.pdf
 cargo run --example cjk_fallback --features cjk-fallback -- path/to/japanese.pdf /tmp/cjk.png
 ```
 
@@ -276,6 +284,10 @@ kasane-pdf experimental-remove-region <in> <page> --rect … --output <out>
 kasane-pdf experimental-remove-regions <in> --rect … [--page N …] --output <out>
 kasane-pdf remove-document-metadata <in> --output <out>
 ```
+
+Every subcommand accepts `--password-file <path>` (`-`: standard
+input) for an encrypted document; the first line is the password. A
+password is never taken from the command line itself.
 
 Errors are printed with their stable category, e.g.
 `error [unsupported feature]: …`.
@@ -327,8 +339,9 @@ and the remaining blockers are in
 - **Encrypted documents** are read through the Standard security
   handler (R2–R6) with the empty user password or a password passed to
   `Document::open`; they are never written (the writers refuse them).
-  Permissions are reported, not enforced, and an empty user password
-  means the file has no confidentiality.
+  Public-key and third-party handlers are refused. Permissions are
+  reported, not enforced, and an empty user password means the file has
+  no confidentiality ([`docs/encryption.md`](docs/encryption.md)).
 - **Digital signatures are detected, not verified.** The engine reads
   `/ByteRange`, `/DocMDP` and `/FieldMDP` to decide which incremental
   edits a signer permitted and refuses the rest; it never checks the
@@ -404,6 +417,11 @@ matters. [`docs/security.md`](docs/security.md) has the full posture.
   `Limits::default().with_<field>(value)`. Exceeding one is
   `Error::LimitExceeded { limit, max }`, distinct from a malformed
   file; a zero structural bound is `Error::InvalidArgument`.
+- **Encryption is not a security property of the output.** Opening an
+  encrypted file only means the password matched; RC4/MD5 revisions
+  and empty user passwords protect nothing, and `/P` permissions are a
+  request to the reader, not access control. kasane-pdf reports them
+  and never writes encrypted output.
 - **Not a redaction tool.** The `remove_*` editors and
   `diagnose_redaction` report what they changed or found; they do not
   prove data is gone.
@@ -420,8 +438,11 @@ matters. [`docs/security.md`](docs/security.md) has the full posture.
 - [`docs/compat-corpus.md`](docs/compat-corpus.md) — the compatibility
   corpus, the runner, round-trip verification, results.
 - [`docs/security.md`](docs/security.md) — safety posture.
-- [`docs/api-stability.md`](docs/api-stability.md) — what the 0.1
-  API promises, what may change in 0.2.
+- [`docs/encryption.md`](docs/encryption.md) — reading encrypted
+  documents: passwords, errors, what encryption does not mean.
+- [`docs/migration-0.3.md`](docs/migration-0.3.md) — upgrading from 0.2.
+- [`docs/api-stability.md`](docs/api-stability.md) — what the public
+  API promises and how it evolves.
 - [`docs/decisions/`](docs/decisions/) — decision records, including
   the `ttf-parser` maintenance notice.
 - [`docs/third-party.md`](docs/third-party.md) — dependencies and

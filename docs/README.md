@@ -22,6 +22,8 @@ PDFium / MuPDF / Poppler. The documentation is split into
 | [`security.md`](security.md) | the safety posture: resource bounds, typed refusals, strict pass vs accepted-with-warnings vs recovery, signatures, what the engine is *not* |
 | [`api-stability.md`](api-stability.md) | the public API contract: what is stable, how additions are made without breaking, what the 0.2 line promises |
 | [`migration-0.2.md`](migration-0.2.md) | migrating from 0.1 to 0.2: every breaking change with its one-line replacement |
+| [`migration-0.3.md`](migration-0.3.md) | migrating from 0.2 to 0.3: no API break; how encrypted input is now classified and opened |
+| [`encryption.md`](encryption.md) | reading encrypted documents: what is supported, passwords, errors, what encryption and permissions do *not* mean |
 | [`third-party.md`](third-party.md) | every dependency and bundled asset with its licence |
 
 ## Rendering

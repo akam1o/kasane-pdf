@@ -1154,6 +1154,21 @@ other file changed in any stage or warning count. Round trip 411
 unchanged; Poppler SSIM dropped on no file; 0 crash / 0 timeout;
 robustness 43/43. Wall time per file: median 190 ms.
 
+### Results for the 0.3.0 release candidate (run-1793402300)
+
+Same 511 files, `--mode full`, default features, against
+run-1793344091, after the final encryption audit (malformed
+crypt-filter entries are errors instead of defaults; `/Perms` shape
+before authentication) and the CLI password option. Every stage of
+every file, the approximation flag, the warning count and the recovery
+notes are identical to the previous run: strict parse 407, strict
+render 379 of 427 (88.8 %), of which approximate 69, recovered 19,
+text 391, rewrite 350, full PASS 325, round trip 411, Poppler SSIM
+dropped on no file (median 0.986 over the 369 strict renders with a
+reference), 0 crash / 0 timeout, robustness 43/43. Against 0.2.2 (the
+published release): strict render +1, recovered +1, text +1, all from
+the encrypted files. Wall time per file: median 176 ms.
+
 ## External verification findings (this phase)
 
 What the independent parsers said about the rewrites, file by file,

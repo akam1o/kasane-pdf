@@ -74,7 +74,13 @@ protected. Recovery mode never rebuilds the table of an encrypted file
 (it would read ciphertext as plaintext) — judged from every object the
 scan finds, not only a surviving trailer. The one encryption recovery
 rule (Acrobat's padding of short revision-4 keys) applies only when the
-file's own data shows that the specified key does not decrypt it. See
+file's own data shows that the specified key does not decrypt it.
+A malformed encryption dictionary never falls back to a default that
+would skip decryption: a crypt-filter name that is not a name, an
+undefined filter or inconsistent key lengths are `Error::Structure`,
+an unimplemented method `Error::Unsupported`. The CLI reads a password
+only from a file or standard input (`--password-file`), never from its
+arguments. See [`encryption.md`](encryption.md) and
 [`plans/encryption.md`](plans/encryption.md).
 
 ## What the engine is **not**

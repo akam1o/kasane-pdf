@@ -12,7 +12,7 @@ patch release.
 
 | area | items | notes |
 |---|---|---|
-| loading | `Document::from_bytes`, `from_bytes_with_limits`, `from_bytes_recovering`, `from_bytes_recovering_with_limits` | `&[u8]` in, owned `Document` out (copies once; the writers and the audit re-read the original bytes) |
+| loading | `Document::from_bytes`, `from_bytes_with_limits`, `from_bytes_recovering`, `from_bytes_recovering_with_limits`; since 0.3 `Document::open(&[u8], &OpenOptions)` | `&[u8]` in, owned `Document` out (copies once; the writers and the audit re-read the original bytes) |
 | inspection | `pages()`, `page_count()`, `catalog()`, `trailer()`, `resolve()`, `deref()`, `header_version()`, `catalog_version()`, `page_contents()`, `page_operations*()`, `page_resource()`, `resolve_resource*()`; `Page` accessors; `Object` / `Dict` / `IndirectRef` | the object model is the engine's own |
 | recovery | `Document::recovery() -> Option<&RecoveryReport>` | `None` for a strict parse, always |
 | warnings | `Warning` (`#[non_exhaustive]`), `Document::take_warnings` / `warnings` / `warnings_dropped`, `warning::MAX_WARNINGS` | |
@@ -31,8 +31,9 @@ patch release.
    `#[non_exhaustive]`; new fields go in with a `with_*` method (and a
    getter for result types) and a default that keeps old behaviour.
    Every classification enum (`Error`, `ErrorKind`, `Warning`,
-   `SignatureRule`, `ChangeKind`, `ResolveKind`, `SubstKind`,
-   `DestSource`, `TargetKind`, `PixelFormat`) is `#[non_exhaustive]`;
+   `RecoveryRule`, `SignatureRule`, `ChangeKind`, `ResolveKind`,
+   `SubstKind`, `DestSource`, `TargetKind`, `PixelFormat`,
+   `CryptMethod`, `Authentication`) is `#[non_exhaustive]`;
    new variants are additive.
 2. **`ErrorKind::as_str()` strings never change.** They are the CLI's
    `error [<kind>]:` output and the compatibility runner's cause ids.
@@ -70,7 +71,24 @@ patch release.
   groups rendered, Symbol / ZapfDingbats substituted) are recorded in
   `CHANGELOG.md`; no signature or default changed.
 
-## Open items (additive, any 0.2.x)
+## Added in 0.3.0 (additive; behaviour changes)
+
+- `Document::open(&[u8], &OpenOptions)`, `Document::encryption()`,
+  `OpenOptions` (`#[non_exhaustive]`: `new`, `with_limits`,
+  `with_password`, `with_recovery`), `EncryptionInfo`
+  (`#[non_exhaustive]`, `permission(bit)`), `CryptMethod` and
+  `Authentication` (both `#[non_exhaustive]`),
+  `Warning::OverlongEncryptionEntry`,
+  `RecoveryRule::PaddedShortEncryptionKey`.
+- `cargo semver-checks` against 0.2.2: no update required. The minor
+  bump is for observable behaviour: encrypted files that open with the
+  empty user password are returned instead of `Error::Encrypted`, and
+  malformed or unsupported encryption is classified `Structure` /
+  `Unsupported` ([`migration-0.3.md`](migration-0.3.md)).
+- `Document::open` is the constructor that grows: new open-time options
+  go on `OpenOptions`, not into new `from_bytes_*` variants.
+
+## Open items (additive)
 
 - `Document::from_vec(Vec<u8>)` to hand ownership over without a copy.
 - Typed `RecoveryReport` notes and typed `color_approximations`

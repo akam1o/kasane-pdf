@@ -1,8 +1,9 @@
 # Design — encrypted documents (0.3.0)
 
-Status: implemented for reading (milestones 1 and 2 below), reviewed
-independently (§ Review), fuzzed (§ Fuzzing). Writing encrypted output
-is not implemented.
+Status: released in 0.3.0 for reading (milestones 1–3 below), reviewed
+independently (§ Review), audited again for the release (§ Final
+audit), fuzzed (§ Fuzzing). Writing encrypted output is not
+implemented. User guide: [`../encryption.md`](../encryption.md).
 References are to ISO 32000-2:2020 §7.6 (which incorporates the
 ISO 32000-1 Standard security handler and adds revision 6).
 
@@ -156,7 +157,7 @@ outcome:
 | M7 | `/O` `/U` `/OE` `/UE` `/Perms` longer than specified accepted silently | info | now recorded as `Warning::OverlongEncryptionEntry` (writers do pad them; every reader uses the leading bytes) |
 | M8 | missing `/V` reported as "/V 0" | trivia | message clarified (`/V` 0 is the default and is the undocumented algorithm, so `Unsupported` is right) |
 | M1 | strings of a *direct* `/Info` (or `/Root`) dictionary in the trailer are not decrypted | low | kept: Table 15 requires both to be indirect references, and Algorithm 1 needs the containing object's number — a direct one has none. Such a file is non-conforming; its strings read as stored |
-| M3 | `/V 4` ignores the dictionary-level `/Length` | low | kept: Table 20 limits `/Length` to `/V` 2 and 3; `/V 4` key length comes from the crypt filter. An `/AESV2` filter with a short key cannot decrypt as specified (the object key would be 10 bytes): strict refuses it, recovery may pad it (§ Short keys) |
+| M3 | `/V 4` ignores the dictionary-level `/Length` | low | kept: Table 20 limits `/Length` to `/V` 2 and 3; `/V 4` key length comes from the crypt filters: 128 bits for `/AESV2`, the RC4 filters' `/Length` otherwise (all of them must agree, and a short one beside `/AESV2` is `Error::Structure` — § Final audit) |
 | M4 | R5 `/Perms` checked whenever present | low | kept: stricter, and a mismatch means the dictionary was altered |
 | M5 | an indirect `/Filter` naming `/Crypt` is not recognised before decryption | low | kept, fails closed: the filter chain then refuses `/Crypt` with `Error::Unsupported`; no plaintext is invented |
 
@@ -164,6 +165,31 @@ Everything else the review checked matched the specification and qpdf:
 Algorithms 2, 3–7, 2.A, 2.B (re-implemented by the reviewer), 1, 13,
 the crypt-filter defaults, the exemptions, the user-before-owner order,
 secret handling and the Algorithm 2.B bounds.
+
+## Final audit (0.3.0)
+
+A second pass over the implementation before the release, against the
+same sections, looking for paths where a malformed dictionary is given
+a default instead of an error.
+
+| priority | finding | outcome |
+|---|---|---|
+| P1 | `/StmF`, `/StrF`, `/EFF` and a `/Crypt` filter's `/DecodeParms /Name` that were present but not names were treated as absent — `/Identity` — so those streams or strings were read without decryption | fixed: `Error::Structure`; tests (one malformed dictionary opened on the previous code) |
+| P1 | the file key length came from whichever RC4 crypt filter was iterated last | fixed: RC4 filters must agree; a short one beside `/AESV2` is `Error::Structure` |
+| P1 | no CLI way to give a password | fixed: `--password-file` (file or standard input; never an argument) |
+| P2 | a `/Length` present but not an integer fell back to 40 bits or was ignored | fixed: `Error::Structure` |
+| P2 | an R6 dictionary without `/Perms` reported `Encrypted` with a wrong password | fixed: shape checked before authentication |
+| P2 | the short-key probe could parse one large stream 256 times through duplicate table entries | fixed: distinct offsets only |
+| P2 | `stringprep` returns a plain `String` (the normalised password), dropped without zeroing; some hash intermediates likewise | kept, documented: zeroing is best effort |
+| P2 | a stream marked `/Type /XRef` (or `/Type /Metadata` under `/EncryptMetadata false`) is not decrypted whatever it is used for | kept: that is §7.6.2's rule; it only lets a file's author store data in the clear, never exposes another file's plaintext |
+| P2 | a generation number that differs between the cross-reference entry and the object header is tolerated; the key uses the header's (Algorithm 1: the object's own numbers) | kept |
+
+Checked and found correct, without change: Algorithms 1, 2, 2.A, 2.B,
+3–7, 13 (known answers against qpdf for all twelve file keys, and
+Poppler's text on every fixture); AES IV and PKCS#5 checks; object
+streams decrypted once; the exemptions; user before owner; recovery
+refusing every encrypted rebuild; Limits applied to the plaintext;
+Algorithm 2.B bounded (at most 287 rounds, < 15 KB per round).
 
 ## Fuzzing
 
@@ -177,12 +203,19 @@ limits; the encrypted templates are the qpdf fixtures.
 | 1 — 20 min per target | before the review fixes | 1.17 M | 3.05 M | 1.44 M | no crash, hang or OOM; but the oracle did not yet cover the C1 shape (a rebuilt document reporting no encryption) |
 | 2 — 40 min per target | after the fixes, stronger oracle | ≈ 0.55 M, then a crash | stopped at once | 1.99 M | **panic** in the stream parser: an empty stream without a usable `/Length` (`stream⏎endstream`) — present since 0.1.0, also in the published 0.2.1; fixed, regression test. The `encrypt_dict` stop was the oracle's fault: all fixtures share one `/ID` and `/P`, so another fixture's empty-password dictionary legitimately authenticated (its key decrypts this file to garbage) |
 | 3 — 40 min per target | parser fixed, confidentiality oracle | 0.52 M | 0.95 M | 0.72 M | no crash, hang or OOM; peak RSS 1.2 GB (libFuzzer + ASan, corpus in memory; `-rss_limit_mb=2048`) |
+| 4 — 40 min wall per target (0.3.0 release candidate) | final-audit fixes; eleven templates (adds Unicode / PDFDocEncoding passwords, the encrypted incremental update, the spec and Acrobat short-key pair) | 0.65 M | 1.18 M | 0.70 M | no crash, timeout or OOM; coverage 8717 / 5210 / 5819 (campaign 3: 8556 / 4762 / 3100); peak RSS 1.0 GB. libFuzzer flagged one "slow unit" per target at 901 s — the machine was asleep (system log); the three inputs replay in 125 ms, 1 ms and 50 ms |
 
 The confidentiality oracle: a fixture whose user password is not empty
 never reveals its plaintext (the content text, the `/Info` title)
 without the password — whatever replaces its `/Encrypt` dictionary,
-strict or recovery, with or without its trailer. About 10 million
-executions in total over about 4 hours of CPU time.
+strict or recovery, with or without its trailer. About 12.5 million
+executions in total over the four campaigns.
+
+Not reached by a dedicated target: an object stream whose *contents*
+are fuzzed under encryption (a target would have to re-encrypt the
+mutated stream and rebuild a cross-reference stream). The encrypted
+object-stream fixtures are in `open_any`'s seed corpus, so their bytes
+are mutated there, and `tests/encryption.rs` covers a damaged one.
 
 ## Milestones
 
@@ -194,6 +227,9 @@ executions in total over about 4 hours of CPU time.
 2. **Done:** SASLprep and PDFDocEncoding of passwords; the short-key
    decision (evidence-based, recovery only); the review fixes; known-
    answer tests of every file key against qpdf; fuzzing.
-3. Writing encrypted output (incremental save that keeps the
-   encryption; rewrite with re-encryption) — needs an RNG for IVs, so
-   a `getrandom` dependency and a WASM story.
+3. **Done (0.3.0):** the final audit, `--password-file`, the user
+   guide and migration notes, the fourth fuzz campaign.
+4. Not scheduled: writing encrypted output (incremental save that keeps
+   the encryption; rewrite with re-encryption) — needs an RNG for IVs,
+   so a `getrandom` dependency and a WASM story; public-key and
+   third-party handlers.
