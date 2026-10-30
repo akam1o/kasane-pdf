@@ -55,6 +55,13 @@ error. In the same run 29 stages improved (parse 444 → 446, render
 423 → 440, text 446 → 458; rewrite 413 and round trip 410 unchanged,
 no crash or timeout).
 
+Regenerated for 0.3.0 from the nightly run on the release candidate
+(894a2eb). Four encrypted files now parse; the writers refuse
+encrypted documents, so their rewrite stage moved from `skip` to
+`unsupported` — reported by the check as a change, not a lost pass.
+Aggregates: parse 446 → 449, render 440 → 444, text 458 → 462;
+rewrite 413 and round trip 410 unchanged; no crash or timeout.
+
 Numbers above refer to the baseline committed alongside this file;
 update both when the fixtures or the engine change
 (`python3 scripts/ci-regression.py summarize /tmp/smoke/latest.json > compat/baselines/fixtures-smoke.json`).

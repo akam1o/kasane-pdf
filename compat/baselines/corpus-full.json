@@ -2,11 +2,11 @@
  "aggregate": {
   "crash": 0,
   "files": 511,
-  "parse_pass": 446,
-  "render_pass": 440,
+  "parse_pass": 449,
+  "render_pass": 444,
   "rewrite_pass": 413,
   "roundtrip_full": 410,
-  "text_pass": 458,
+  "text_pass": 462,
   "timeout": 0
  },
  "files": {
@@ -61,18 +61,28 @@
    "warnings": 0
   },
   "adobe-explain": {
-   "causes": [],
+   "causes": [
+    "render.transfer.unsupported"
+   ],
    "expect": "any",
    "recovery_notes": 0,
-   "render_approximate": false,
+   "render_approximate": true,
    "render_recovered": "skip",
-   "roundtrip": {},
-   "roundtrip_full": null,
+   "roundtrip": {
+    "annotations": "NotAttempted",
+    "external_no_new": "NotAttempted",
+    "external_valid": "NotAttempted",
+    "render": "NotAttempted",
+    "reparse": "NotAttempted",
+    "structure": "NotAttempted",
+    "text": "NotAttempted"
+   },
+   "roundtrip_full": false,
    "stages": {
-    "parse": "unsupported",
-    "render": "skip",
-    "rewrite": "skip",
-    "text": "skip"
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "unsupported",
+    "text": "pass"
    },
    "verdict": "unsupported",
    "warnings": 0
@@ -3487,13 +3497,21 @@
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
-   "roundtrip": {},
-   "roundtrip_full": null,
+   "roundtrip": {
+    "annotations": "NotAttempted",
+    "external_no_new": "NotAttempted",
+    "external_valid": "NotAttempted",
+    "render": "NotAttempted",
+    "reparse": "NotAttempted",
+    "structure": "NotAttempted",
+    "text": "NotAttempted"
+   },
+   "roundtrip_full": false,
    "stages": {
-    "parse": "unsupported",
-    "render": "skip",
-    "rewrite": "skip",
-    "text": "skip"
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "unsupported",
+    "text": "pass"
    },
    "verdict": "unsupported",
    "warnings": 0
@@ -4904,16 +4922,24 @@
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
-   "roundtrip": {},
-   "roundtrip_full": null,
+   "roundtrip": {
+    "annotations": "NotAttempted",
+    "external_no_new": "NotAttempted",
+    "external_valid": "NotAttempted",
+    "render": "NotAttempted",
+    "reparse": "NotAttempted",
+    "structure": "NotAttempted",
+    "text": "NotAttempted"
+   },
+   "roundtrip_full": false,
    "stages": {
-    "parse": "unsupported",
-    "render": "skip",
-    "rewrite": "skip",
-    "text": "skip"
+    "parse": "pass",
+    "render": "pass",
+    "rewrite": "unsupported",
+    "text": "pass"
    },
    "verdict": "unsupported",
-   "warnings": 0
+   "warnings": 2
   },
   "encrypted-attachment": {
    "causes": [],
@@ -7543,19 +7569,27 @@
   "issue19484_1": {
    "causes": [],
    "expect": "pass",
-   "recovery_notes": 0,
+   "recovery_notes": 1,
    "render_approximate": false,
-   "render_recovered": "skip",
-   "roundtrip": {},
-   "roundtrip_full": null,
+   "render_recovered": "pass",
+   "roundtrip": {
+    "annotations": "NotAttempted",
+    "external_no_new": "NotAttempted",
+    "external_valid": "NotAttempted",
+    "render": "NotAttempted",
+    "reparse": "NotAttempted",
+    "structure": "NotAttempted",
+    "text": "NotAttempted"
+   },
+   "roundtrip_full": false,
    "stages": {
     "parse": "unsupported",
-    "render": "skip",
-    "rewrite": "skip",
-    "text": "skip"
+    "render": "pass",
+    "rewrite": "unsupported",
+    "text": "pass"
    },
    "verdict": "unsupported",
-   "warnings": 0
+   "warnings": 1
   },
   "issue19532": {
    "causes": [],
