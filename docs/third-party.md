@@ -52,10 +52,15 @@ is used under the Apache-2.0 or MIT option.
 | `sha2` | 0.11.1 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/hashes> |
 | `simd-adler32` | 0.3.10 | MIT | <https://github.com/mcountryman/simd-adler32> |
 | `strict-num` | 0.1.1 | MIT | <https://github.com/RazrFalcon/strict-num> |
+| `stringprep` | 0.1.5 | MIT/Apache-2.0 | <https://github.com/sfackler/rust-stringprep> |
 | `tiny-skia` | 0.12.0 | BSD-3-Clause | <https://github.com/linebender/tiny-skia> |
 | `tiny-skia-path` | 0.12.0 | BSD-3-Clause | <https://github.com/linebender/tiny-skia/tree/master/path> |
+| `tinyvec` | 1.13.3 | Zlib OR Apache-2.0 OR MIT | <https://github.com/Lokathor/tinyvec> |
 | `ttf-parser` | 0.25.1 | MIT OR Apache-2.0 | <https://github.com/harfbuzz/ttf-parser> — unmaintained notice RUSTSEC-2026-0192 (not a vulnerability); kept deliberately, see [`decisions/ttf-parser.md`](decisions/ttf-parser.md) |
 | `typenum` | 1.20.1 | MIT OR Apache-2.0 | <https://github.com/paholg/typenum> |
+| `unicode-bidi` | 0.3.18 | MIT OR Apache-2.0 | <https://github.com/servo/unicode-bidi> |
+| `unicode-normalization` | 0.1.26 | (MIT OR Apache-2.0) AND Unicode-3.0 | <https://github.com/unicode-rs/unicode-normalization> |
+| `unicode-properties` | 0.1.4 | MIT/Apache-2.0 | <https://github.com/unicode-rs/unicode-properties> |
 | `zeroize` | 1.9.1 | Apache-2.0 OR MIT | <https://github.com/RustCrypto/utils> |
 | `zlib-rs` | 0.6.8 | Zlib | <https://github.com/trifectatechfoundation/zlib-rs> |
 
@@ -73,6 +78,12 @@ support crates) implement the ciphers and hashes behind the Standard
 security handler (`src/crypt.rs`); kasane-pdf implements only the PDF
 key-derivation and authentication algorithms on top of them. `libc` is
 pulled in by `cpufeatures` for CPU feature detection on native targets.
+`stringprep` applies SASLprep (RFC 4013) to revision 5/6 passwords;
+its Unicode tables come from `unicode-normalization`, `unicode-bidi`
+and `unicode-properties`. `unicode-normalization` is additionally under
+the Unicode License v3 (`Unicode-3.0`) for the Unicode Character
+Database tables it embeds — a permissive licence whose notice must
+accompany distributions of the data; it is reproduced by that crate.
 
 ## Bundled font data (not Apache-licensed)
 

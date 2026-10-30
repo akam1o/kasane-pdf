@@ -89,9 +89,10 @@ pub struct OpenOptions {
     pub limits: Limits,
     /// Password for an encrypted document, tried as the user password
     /// and then as the owner password. `None` tries the empty user
-    /// password, as every reader does. Raw bytes: for revisions 2–4 the
-    /// specification uses PDFDocEncoding, for revision 6 UTF-8 (SASLprep
-    /// normalisation is not applied — pass normalised text).
+    /// password, as every reader does. Bytes, normally UTF-8 text: for
+    /// revisions 5–6 the SASLprep (RFC 4013) form is tried first, for
+    /// revisions 2–4 the PDFDocEncoding form after the bytes as given
+    /// (see `docs/plans/encryption.md` § Passwords).
     password: Option<zeroize::Zeroizing<Vec<u8>>>,
     /// Use [`Document::from_bytes_recovering`]'s recovery mode.
     pub recovery: bool,
@@ -185,6 +186,11 @@ impl Document {
         self.crypt.as_ref().map(|c| c.info().clone())
     }
 
+    #[cfg(test)]
+    pub(crate) fn file_key_for_test(&self) -> Option<Vec<u8>> {
+        self.crypt.as_ref().map(|c| c.key_for_test())
+    }
+
     /// Whether the document is encrypted (the writers refuse such
     /// documents).
     pub(crate) fn is_encrypted(&self) -> bool {
@@ -205,20 +211,107 @@ impl Document {
     /// Authenticate against the trailer's `/Encrypt` dictionary, if
     /// any, before anything else is read.
     fn install_crypt(&mut self, password: Option<&[u8]>) -> Result<(), Error> {
-        let Some(e) = self.xref.trailer.get(b"Encrypt".as_slice()).cloned() else {
+        let Some(mut enc) = self.xref.trailer.get(b"Encrypt".as_slice()).cloned() else {
             return Ok(());
         };
-        let enc = self.deref(&e)?;
+        // Follow a reference chain by hand: the object the dictionary
+        // is finally read from is the one exempt from decryption.
+        let mut encrypt_ref = None;
+        let mut hops = 0;
+        while let Object::Ref(r) = enc {
+            hops += 1;
+            if hops > 32 {
+                return Err(Error::Structure("/Encrypt reference chain too long".into()));
+            }
+            encrypt_ref = Some(r);
+            enc = self
+                .resolve_indirect_no_ref_follow(r)
+                .map_err(|e| match e {
+                    Error::MissingReference(_) => Error::Structure(
+                        "/Encrypt must be a direct object or an uncompressed object (§7.5.7)"
+                            .into(),
+                    ),
+                    e => e,
+                })?;
+        }
         let d = enc
             .as_dict()
             .ok_or_else(|| Error::Structure("/Encrypt is not a dictionary".into()))?;
-        self.crypt = Some(crate::crypt::Crypt::open(
-            d,
-            e.as_ref(),
-            &self.xref.trailer,
-            password,
-        )?);
+        let (crypt, warnings) =
+            crate::crypt::Crypt::open(d, encrypt_ref, &self.xref.trailer, password)?;
+        self.warnings.borrow_mut().extend(warnings);
+        self.crypt = Some(crypt);
+        if self.crypt.as_ref().is_some_and(|c| c.has_short_key()) {
+            self.settle_short_key()?;
+        }
         Ok(())
+    }
+
+    /// A revision-4 key shorter than 128 bits has two readings (see
+    /// `RecoveryRule::PaddedShortEncryptionKey`). The first uncompressed
+    /// `/FlateDecode` stream decides: if it inflates under the key as
+    /// specified — or no stream gives evidence — the specified reading
+    /// stands. If only the zero-padded key yields valid data, strict
+    /// mode refuses the file (its data does not decrypt as ISO 32000
+    /// specifies) and recovery mode switches to the padded key, recorded.
+    fn settle_short_key(&mut self) -> Result<(), Error> {
+        let offsets: Vec<(IndirectRef, u64)> = self
+            .xref
+            .iter_entries()
+            .filter_map(|(r, e)| match e {
+                crate::xref::XrefEntry::InUse { offset } => Some((r, offset)),
+                _ => None,
+            })
+            .take(256)
+            .collect();
+        let mut verdict = None;
+        for (r, offset) in offsets {
+            let Ok(io) = self.parse_raw_at(r, offset) else {
+                continue;
+            };
+            if let Object::Stream { dict, data } = &io.object {
+                let crypt = self.crypt.as_ref().expect("installed");
+                if let Some(v) = crypt.probe_short_key(io.object_ref, dict, data) {
+                    verdict = Some(v);
+                    break;
+                }
+            }
+        }
+        if verdict != Some((false, true)) {
+            return Ok(());
+        }
+        if !self.lenient {
+            return Err(Error::Unsupported {
+                feature: "encryption",
+                detail: "revision-4 key shorter than 128 bits whose data decrypts only with \
+                         the key zero-padded (Acrobat's reading, not ISO 32000's); \
+                         recovery mode reads it"
+                    .into(),
+            });
+        }
+        let w = self.crypt.as_mut().expect("installed").pad_short_key();
+        self.warnings.borrow_mut().push(w);
+        Ok(())
+    }
+
+    /// The indirect object at `offset` as stored (not decrypted).
+    fn parse_raw_at(
+        &self,
+        r: IndirectRef,
+        offset: u64,
+    ) -> Result<crate::parser::IndirectObject, Error> {
+        let length_of = |r: IndirectRef| self.indirect_stream_length(r);
+        let mut parser = Parser::new(&self.data, &self.limits);
+        parser.with_length_resolver(&length_of);
+        if self.lenient {
+            parser.tolerate_missing_endobj();
+        }
+        parser.seek(offset as usize);
+        parser.parse_indirect_object()?.ok_or_else(|| {
+            Error::Parse(format!(
+                "no indirect object at xref offset {offset} (for {r})"
+            ))
+        })
     }
 
     /// The load pipeline over the file's own cross-reference table;
@@ -577,18 +670,7 @@ impl Document {
                 context: "object stream",
             })
         })?;
-        let length_of = |r: IndirectRef| self.indirect_stream_length(r);
-        let mut parser = Parser::new(&self.data, &self.limits);
-        parser.with_length_resolver(&length_of);
-        if self.lenient {
-            parser.tolerate_missing_endobj();
-        }
-        parser.seek(offset as usize);
-        let io = parser.parse_indirect_object()?.ok_or_else(|| {
-            Error::Parse(format!(
-                "no indirect object at xref offset {offset} (for {r})"
-            ))
-        })?;
+        let io = self.parse_raw_at(r, offset)?;
         // An object stream is decrypted as a whole; its members are not
         // decrypted again (§7.5.7).
         match &self.crypt {

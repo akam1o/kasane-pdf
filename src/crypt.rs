@@ -23,6 +23,7 @@ use zeroize::Zeroizing;
 
 use crate::error::Error;
 use crate::object::{Dict, IndirectRef, Object};
+use crate::warning::{RecoveryRule, Warning};
 
 /// The 32-byte padding string of Algorithm 2 step (a).
 const PAD: [u8; 32] = [
@@ -141,6 +142,120 @@ fn bytes<'a>(d: &'a Dict, k: &[u8]) -> Option<&'a [u8]> {
         Some(Object::String(s)) => Some(s),
         _ => None,
     }
+}
+
+/// `/key` if it is a string of at least `specified` bytes; a longer
+/// one is recorded (only the leading `specified` bytes are ever used).
+fn sized<'a>(
+    d: &'a Dict,
+    key: &'static str,
+    specified: usize,
+    warnings: &mut Vec<Warning>,
+) -> Option<&'a [u8]> {
+    let s = bytes(d, key.as_bytes()).filter(|s| s.len() >= specified)?;
+    if s.len() > specified {
+        warnings.push(Warning::OverlongEncryptionEntry {
+            key,
+            length: s.len(),
+            specified,
+        });
+    }
+    Some(s)
+}
+
+/// The characters PDFDocEncoding (Annex D, Table D.2) places outside
+/// the Latin-1 positions.
+const PDFDOC_SPECIALS: [(char, u8); 40] = [
+    ('\u{02D8}', 0x18),
+    ('\u{02C7}', 0x19),
+    ('\u{02C6}', 0x1A),
+    ('\u{02D9}', 0x1B),
+    ('\u{02DD}', 0x1C),
+    ('\u{02DB}', 0x1D),
+    ('\u{02DA}', 0x1E),
+    ('\u{02DC}', 0x1F),
+    ('\u{2022}', 0x80),
+    ('\u{2020}', 0x81),
+    ('\u{2021}', 0x82),
+    ('\u{2026}', 0x83),
+    ('\u{2014}', 0x84),
+    ('\u{2013}', 0x85),
+    ('\u{0192}', 0x86),
+    ('\u{2044}', 0x87),
+    ('\u{2039}', 0x88),
+    ('\u{203A}', 0x89),
+    ('\u{2212}', 0x8A),
+    ('\u{2030}', 0x8B),
+    ('\u{201E}', 0x8C),
+    ('\u{201C}', 0x8D),
+    ('\u{201D}', 0x8E),
+    ('\u{2018}', 0x8F),
+    ('\u{2019}', 0x90),
+    ('\u{201A}', 0x91),
+    ('\u{2122}', 0x92),
+    ('\u{FB01}', 0x93),
+    ('\u{FB02}', 0x94),
+    ('\u{0141}', 0x95),
+    ('\u{0152}', 0x96),
+    ('\u{0160}', 0x97),
+    ('\u{0178}', 0x98),
+    ('\u{017D}', 0x99),
+    ('\u{0131}', 0x9A),
+    ('\u{0142}', 0x9B),
+    ('\u{0153}', 0x9C),
+    ('\u{0161}', 0x9D),
+    ('\u{017E}', 0x9E),
+    ('\u{20AC}', 0xA0),
+];
+
+/// `s` in PDFDocEncoding, or `None` if a character has no code there.
+fn to_pdfdoc(s: &str) -> Option<Zeroizing<Vec<u8>>> {
+    let mut out = Zeroizing::new(Vec::with_capacity(s.len()));
+    for c in s.chars() {
+        let b = match c {
+            '\u{00A0}' | '\u{00AD}' | '\u{007F}' | '\u{0080}'..='\u{009F}' => return None,
+            '\t' | '\n' | '\r' | ' '..='\u{00FF}' => c as u8,
+            _ => PDFDOC_SPECIALS
+                .iter()
+                .find(|(u, _)| *u == c)
+                .map(|(_, b)| *b)?,
+        };
+        out.push(b);
+    }
+    Some(out)
+}
+
+/// The byte strings a supplied password is tried as, in order. The
+/// caller passes bytes; the specification defines the password as
+/// PDFDocEncoding text for revisions 2–4 and as UTF-8 after SASLprep
+/// (RFC 4013) for revisions 5–6 (§7.6.4.3.3 Algorithm 2.A). So:
+/// R5/R6 — the SASLprep form of a UTF-8 password first (when it
+/// differs), then the bytes as given; R2–R4 — the bytes as given, then
+/// a non-ASCII UTF-8 password converted to PDFDocEncoding. Every
+/// candidate comes from the caller's own password; none weakens the
+/// check. A password SASLprep refuses (prohibited or unassigned code
+/// points) is tried as given only.
+fn candidates(revision: u8, pw: &[u8]) -> Vec<Zeroizing<Vec<u8>>> {
+    let raw = Zeroizing::new(pw.to_vec());
+    let text = std::str::from_utf8(pw).ok();
+    let mut out = Vec::with_capacity(2);
+    if revision >= 5 {
+        // The error value names the offending character: discarded.
+        if let Some(prepped) = text.and_then(|t| stringprep::saslprep(t).ok()) {
+            if prepped.as_bytes() != pw {
+                out.push(Zeroizing::new(prepped.as_bytes().to_vec()));
+            }
+        }
+        out.push(raw);
+    } else {
+        out.push(raw);
+        if let Some(t) = text.filter(|t| !t.is_ascii()) {
+            if let Some(doc) = to_pdfdoc(t) {
+                out.push(doc);
+            }
+        }
+    }
+    out
 }
 
 /// Constant-time equality (no early exit on the first mismatch).
@@ -297,6 +412,74 @@ fn unwrap_key(kek: &[u8], wrapped: &[u8]) -> Zeroizing<Vec<u8>> {
     buf
 }
 
+/// Algorithm 1: the key for objects of `r` under `method`; the file key
+/// itself for AES-256 (version 5).
+fn object_key_from(
+    key: &[u8],
+    version: u8,
+    r: IndirectRef,
+    method: CryptMethod,
+) -> Zeroizing<Vec<u8>> {
+    if version == 5 {
+        return Zeroizing::new(key.to_vec());
+    }
+    let n = r.number.to_le_bytes();
+    let g = r.generation.to_le_bytes();
+    let salt: &[u8] = if method == CryptMethod::Aes128 {
+        b"sAlT"
+    } else {
+        b""
+    };
+    let d = Zeroizing::new(md5(&[key, &n[..3], &g[..2], salt]));
+    Zeroizing::new(d[..(key.len() + 5).min(16)].to_vec())
+}
+
+/// The first bytes (at most about 1 KiB) of `data` decrypted, without
+/// padding checks; `None` if the key does not fit the cipher or there
+/// is no whole AES block.
+fn decrypt_prefix(method: CryptMethod, key: &[u8], data: &[u8]) -> Option<Vec<u8>> {
+    const PREFIX: usize = 1024;
+    match method {
+        CryptMethod::Identity => Some(data[..data.len().min(PREFIX)].to_vec()),
+        CryptMethod::Rc4 => {
+            let mut out = data[..data.len().min(PREFIX)].to_vec();
+            rc4(key, &mut out);
+            Some(out)
+        }
+        CryptMethod::Aes128 | CryptMethod::Aes256 => {
+            let blocks = (data.len().min(PREFIX + 16) / 16).checked_sub(1)?;
+            if blocks == 0 {
+                return None;
+            }
+            let (iv, body) = data.split_at(16);
+            let mut buf = body[..blocks * 16].to_vec();
+            let ok = if method == CryptMethod::Aes128 {
+                cbc::Decryptor::<aes::Aes128>::new_from_slices(key, iv)
+                    .ok()?
+                    .decrypt_padded::<NoPadding>(&mut buf)
+                    .is_ok()
+            } else {
+                cbc::Decryptor::<aes::Aes256>::new_from_slices(key, iv)
+                    .ok()?
+                    .decrypt_padded::<NoPadding>(&mut buf)
+                    .is_ok()
+            };
+            ok.then_some(buf)
+        }
+    }
+}
+
+/// Whether `prefix` begins a zlib stream that inflates without error
+/// as far as it goes (a random prefix fails the header check or the
+/// first block almost always).
+fn inflate_starts(prefix: &[u8]) -> bool {
+    let mut z = flate2::Decompress::new(true);
+    let mut out = vec![0u8; 4096];
+    z.decompress(prefix, &mut out, flate2::FlushDecompress::None)
+        .is_ok()
+        && z.total_out() > 0
+}
+
 /// Decrypt `data` with `method` under `key` (the object key, or the
 /// file key for AES-256). Output is never longer than the input.
 fn decrypt_bytes(method: CryptMethod, key: &[u8], data: &[u8]) -> Result<Vec<u8>, Error> {
@@ -344,12 +527,14 @@ impl Crypt {
     /// Authenticate `password` (user, then owner; `None` = the empty
     /// user password) against the `/Encrypt` dictionary `enc`.
     /// `Error::Encrypted` when it does not authenticate.
+    /// The returned warnings belong to the document.
     pub(crate) fn open(
         enc: &Dict,
         encrypt_ref: Option<IndirectRef>,
         trailer: &Dict,
         password: Option<&[u8]>,
-    ) -> Result<Crypt, Error> {
+    ) -> Result<(Crypt, Vec<Warning>), Error> {
+        let mut warnings = Vec::new();
         match enc.get(b"Filter".as_slice()).and_then(|o| o.as_name()) {
             Some(b"Standard") => {}
             Some(other) => {
@@ -364,6 +549,13 @@ impl Crypt {
         let r = int(enc, b"R").ok_or_else(|| structure("no /R"))?;
         let version: u8 = match v {
             1 | 2 | 4 | 5 => v as u8,
+            // /V 0 (also the default when absent) is "an algorithm that
+            // is undocumented and no longer supported" (Table 20).
+            0 => {
+                return Err(unsupported(
+                    "/V 0 or absent (undocumented algorithm)".into(),
+                ))
+            }
             _ => return Err(unsupported(format!("/V {v}"))),
         };
         let revision: u8 = match r {
@@ -469,10 +661,10 @@ impl Crypt {
         }
         let n = (key_bits / 8) as usize;
 
-        let pw: &[u8] = password.unwrap_or(b"");
+        let pws = candidates(revision, password.unwrap_or(b""));
         let (key, auth, empty_user) = if revision <= 4 {
-            let o = bytes(enc, b"O").filter(|s| s.len() >= 32);
-            let u = bytes(enc, b"U").filter(|s| s.len() >= 32);
+            let o = sized(enc, "O", 32, &mut warnings);
+            let u = sized(enc, "U", 32, &mut warnings);
             let (Some(o), Some(u)) = (o, u) else {
                 return Err(structure("/O and /U must be strings of at least 32 bytes"));
             };
@@ -496,34 +688,43 @@ impl Crypt {
                 let k = l.file_key(b"");
                 l.check_user(&k)
             };
-            let k = l.file_key(pw);
-            if l.check_user(&k) {
-                (k, Authentication::User, empty)
-            } else {
-                let user = l.user_from_owner(pw);
-                let k = l.file_key(&user);
-                if !l.check_user(&k) {
-                    return Err(Error::Encrypted);
+            let as_user = pws.iter().find_map(|pw| {
+                let k = l.file_key(pw);
+                l.check_user(&k).then_some(k)
+            });
+            let (k, auth) = match as_user {
+                Some(k) => (k, Authentication::User),
+                None => {
+                    let as_owner = pws.iter().find_map(|pw| {
+                        let k = l.file_key(&l.user_from_owner(pw));
+                        l.check_user(&k).then_some(k)
+                    });
+                    (as_owner.ok_or(Error::Encrypted)?, Authentication::Owner)
                 }
-                (k, Authentication::Owner, empty)
-            }
+            };
+            (k, auth, empty)
         } else {
-            let o = bytes(enc, b"O").filter(|s| s.len() >= 48);
-            let u = bytes(enc, b"U").filter(|s| s.len() >= 48);
-            let oe = bytes(enc, b"OE").filter(|s| s.len() >= 32);
-            let ue = bytes(enc, b"UE").filter(|s| s.len() >= 32);
+            let o = sized(enc, "O", 48, &mut warnings);
+            let u = sized(enc, "U", 48, &mut warnings);
+            let oe = sized(enc, "OE", 32, &mut warnings);
+            let ue = sized(enc, "UE", 32, &mut warnings);
             let (Some(o), Some(u), Some(oe), Some(ue)) = (o, u, oe, ue) else {
                 return Err(structure(
                     "/O and /U must be at least 48 bytes, /OE and /UE at least 32",
                 ));
             };
-            let pw = &pw[..pw.len().min(127)];
+            // Algorithm 2.A step (a): at most 127 bytes are used.
+            let trunc = |pw: &[u8]| pw[..pw.len().min(127)].to_vec();
             let user_ok = |pw: &[u8]| ct_eq(&hash_v5(revision, pw, &u[32..40], b"")[..], &u[..32]);
+            let owner_ok =
+                |pw: &[u8]| ct_eq(&hash_v5(revision, pw, &o[32..40], &u[..48])[..], &o[..32]);
             let empty = user_ok(b"");
-            let (key, auth) = if user_ok(pw) {
+            let pws: Vec<Zeroizing<Vec<u8>>> =
+                pws.iter().map(|p| Zeroizing::new(trunc(p))).collect();
+            let (key, auth) = if let Some(pw) = pws.iter().find(|p| user_ok(p)) {
                 let kek = hash_v5(revision, pw, &u[40..48], b"");
                 (unwrap_key(&kek[..], ue), Authentication::User)
-            } else if ct_eq(&hash_v5(revision, pw, &o[32..40], &u[..48])[..], &o[..32]) {
+            } else if let Some(pw) = pws.iter().find(|p| owner_ok(p)) {
                 let kek = hash_v5(revision, pw, &o[40..48], &u[..48]);
                 (unwrap_key(&kek[..], oe), Authentication::Owner)
             } else {
@@ -533,6 +734,13 @@ impl Crypt {
             // repeat /P and /EncryptMetadata (required for R 6).
             match bytes(enc, b"Perms") {
                 Some(perms) if perms.len() >= 16 => {
+                    if perms.len() > 16 {
+                        warnings.push(Warning::OverlongEncryptionEntry {
+                            key: "Perms",
+                            length: perms.len(),
+                            specified: 16,
+                        });
+                    }
                     let mut block = Array::try_from(&perms[..16]).expect("16 bytes");
                     aes::Aes256::new_from_slice(&key)
                         .expect("AES-256 key is 32 bytes")
@@ -557,48 +765,105 @@ impl Crypt {
             stmf = CryptMethod::Rc4;
             eff = CryptMethod::Rc4;
         }
-        Ok(Crypt {
-            key,
-            version,
-            strf,
-            stmf,
-            eff,
-            filters,
-            encrypt_metadata,
-            encrypt_ref,
-            info: EncryptionInfo {
+        Ok((
+            Crypt {
+                key,
                 version,
-                revision,
-                key_bits,
-                string_method: strf,
-                stream_method: stmf,
-                permissions: p,
+                strf,
+                stmf,
+                eff,
+                filters,
                 encrypt_metadata,
-                authenticated_as: auth,
-                empty_user_password: empty_user,
+                encrypt_ref,
+                info: EncryptionInfo {
+                    version,
+                    revision,
+                    key_bits,
+                    string_method: strf,
+                    stream_method: stmf,
+                    permissions: p,
+                    encrypt_metadata,
+                    authenticated_as: auth,
+                    empty_user_password: empty_user,
+                },
             },
-        })
+            warnings,
+        ))
     }
 
     pub(crate) fn info(&self) -> &EncryptionInfo {
         &self.info
     }
 
+    #[cfg(test)]
+    pub(crate) fn key_for_test(&self) -> Vec<u8> {
+        self.key.to_vec()
+    }
+
+    /// Revision 4 with a file key shorter than 16 bytes: Algorithm 1
+    /// derives object keys from the key as it is, Acrobat from the key
+    /// zero-padded to 16 bytes (see
+    /// [`RecoveryRule::PaddedShortEncryptionKey`]); the two readings
+    /// decrypt the same file differently.
+    pub(crate) fn has_short_key(&self) -> bool {
+        self.info.revision == 4 && self.key.len() < 16
+    }
+
+    /// Switch to the zero-padded key (recovery mode only, after
+    /// [`Crypt::probe_short_key`] showed that only it decrypts).
+    pub(crate) fn pad_short_key(&mut self) -> Warning {
+        let bits = self.key.len() * 8;
+        self.key.resize(16, 0);
+        Warning::RecoveryApplied {
+            rule: RecoveryRule::PaddedShortEncryptionKey,
+            detail: format!("{bits}-bit key; only the padded key decrypts the data"),
+        }
+    }
+
+    /// Evidence for the key reading: whether the start of the raw
+    /// stream `(r, dict, data)`, decrypted under the key as specified
+    /// and under the zero-padded key, begins a valid zlib stream.
+    /// `None` when the stream cannot serve as evidence (not
+    /// `/FlateDecode` first, exempt from encryption, `/Identity`).
+    pub(crate) fn probe_short_key(
+        &self,
+        r: IndirectRef,
+        dict: &Dict,
+        data: &[u8],
+    ) -> Option<(bool, bool)> {
+        if self.encrypt_ref == Some(r) {
+            return None;
+        }
+        let first = match dict.get(b"Filter".as_slice()) {
+            Some(Object::Name(n)) => n.as_slice(),
+            Some(Object::Array(a)) => a.first()?.as_name()?,
+            _ => return None,
+        };
+        let ty = dict.get(b"Type".as_slice()).and_then(|o| o.as_name());
+        if first != b"FlateDecode" || ty == Some(b"XRef") {
+            return None;
+        }
+        let method = match ty {
+            Some(b"Metadata") if !self.encrypt_metadata => return None,
+            Some(b"EmbeddedFile") => self.eff,
+            _ => self.stmf,
+        };
+        if method == CryptMethod::Identity {
+            return None;
+        }
+        let mut padded = Zeroizing::new(self.key.to_vec());
+        padded.resize(16, 0);
+        let inflates = |key: &[u8]| {
+            let k = object_key_from(key, self.version, r, method);
+            decrypt_prefix(method, &k, data).is_some_and(|p| inflate_starts(&p))
+        };
+        Some((inflates(&self.key), inflates(&padded)))
+    }
+
     /// The key for objects of `r` under `method` (Algorithm 1); the file
     /// key itself for AES-256.
     fn object_key(&self, r: IndirectRef, method: CryptMethod) -> Zeroizing<Vec<u8>> {
-        if self.version == 5 {
-            return self.key.clone();
-        }
-        let n = r.number.to_le_bytes();
-        let g = r.generation.to_le_bytes();
-        let salt: &[u8] = if method == CryptMethod::Aes128 {
-            b"sAlT"
-        } else {
-            b""
-        };
-        let d = Zeroizing::new(md5(&[&self.key, &n[..3], &g[..2], salt]));
-        Zeroizing::new(d[..(self.key.len() + 5).min(16)].to_vec())
+        object_key_from(&self.key, self.version, r, method)
     }
 
     /// Decrypt the strings and stream data of the indirect object `r`
@@ -749,6 +1014,129 @@ mod tests {
         // Random block: padding almost surely invalid.
         let r = decrypt_bytes(CryptMethod::Aes128, &key, &[0x5Au8; 32]);
         assert!(r.is_err() || r.unwrap().len() < 16);
+    }
+
+    /// Known answers: the file key qpdf 12.4.2 reports
+    /// (`--show-encryption-key`) for each fixture, under the password
+    /// given — an independent implementation of Algorithms 2, 2.A, 2.B.
+    #[test]
+    fn file_keys_match_qpdf() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("enc_r2_rc4_40.pdf", "", "91a6add96f"),
+            (
+                "enc_r3_rc4_128.pdf",
+                "usr",
+                "e35963280366c0544f05a2d6628f7188",
+            ),
+            (
+                "enc_r4_aes128.pdf",
+                "usr",
+                "e35963280366c0544f05a2d6628f7188",
+            ),
+            (
+                "enc_r4_aes128_objstm.pdf",
+                "",
+                "6b4d22e555248b75ff6669b5c0d25f17",
+            ),
+            (
+                "enc_r4_rc4_objstm.pdf",
+                "",
+                "6b4d22e555248b75ff6669b5c0d25f17",
+            ),
+            (
+                "enc_r5_aes256.pdf",
+                "",
+                "f39b2f36abefd52d86bef16c3517aac9e4e00efc0755c396d18381e4444e555d",
+            ),
+            (
+                "enc_r6_aes256.pdf",
+                "usr",
+                "20950be7a4a0865e3ee6409cdf36f58f15bc20b3a045ac518b2011c798a40ad6",
+            ),
+            (
+                "enc_r6_aes256_empty.pdf",
+                "",
+                "92ea67e7933c8308d39f527307b50cd05276e1404aec7fd56b47c3860a889c9c",
+            ),
+            (
+                "enc_r6_unicode.pdf",
+                "own",
+                "0dca8259c1640c7ce365f93cd2fc263b86c3ba74fe7aa81aaa7b44bba6e20523",
+            ),
+            (
+                "enc_r6_emoji.pdf",
+                "own",
+                "2b7776adcd9ec3acbb9d37a5e32531a862d7f0900fdef217f21546816d6b22cd",
+            ),
+            (
+                "enc_r4_pdfdoc.pdf",
+                "own",
+                "827531c8651c6c28d85d4a1d395089f6",
+            ),
+            ("enc_r4_euro.pdf", "own", "56d1eefb6ae7b424989dc2a34dc02294"),
+        ];
+        for (name, pw, key) in cases {
+            let path = format!(
+                "{}/tests/fixtures/encrypted/{name}",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let data = std::fs::read(path).unwrap();
+            let doc = crate::Document::open(&data, &crate::OpenOptions::new().with_password(pw))
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
+            let hex: String = doc
+                .file_key_for_test()
+                .unwrap()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            assert_eq!(&hex, key, "{name}");
+        }
+    }
+
+    #[test]
+    fn pdfdoc_conversion_follows_annex_d() {
+        assert_eq!(&to_pdfdoc("caf\u{e9}").unwrap()[..], b"caf\xE9");
+        assert_eq!(
+            &to_pdfdoc("\u{20AC}\u{2022}\u{FB01}\u{02D8}").unwrap()[..],
+            b"\xA0\x80\x93\x18"
+        );
+        // No code in PDFDocEncoding: U+00A0, soft hyphen, C1 controls, CJK.
+        for s in ["a\u{00A0}", "a\u{00AD}", "\u{0085}", "\u{65E5}"] {
+            assert!(to_pdfdoc(s).is_none(), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn password_candidates_per_revision() {
+        let v = |r, p: &str| -> Vec<Vec<u8>> {
+            candidates(r, p.as_bytes())
+                .iter()
+                .map(|c| c.to_vec())
+                .collect()
+        };
+        // ASCII: one candidate everywhere.
+        assert_eq!(v(6, "usr"), vec![b"usr".to_vec()]);
+        assert_eq!(v(4, "usr"), vec![b"usr".to_vec()]);
+        // R6: SASLprep (NFKC, non-ASCII space -> space) first, then raw.
+        assert_eq!(
+            v(6, "cafe\u{301}"),
+            vec![
+                "caf\u{e9}".as_bytes().to_vec(),
+                "cafe\u{301}".as_bytes().to_vec()
+            ]
+        );
+        assert_eq!(v(6, "a\u{3000}b")[0], b"a b".to_vec());
+        // Already normalised: SASLprep is a no-op, one candidate.
+        assert_eq!(v(6, "caf\u{e9}"), vec!["caf\u{e9}".as_bytes().to_vec()]);
+        // Refused by SASLprep (unassigned in Unicode 3.2): raw only.
+        assert_eq!(v(6, "\u{1F600}"), vec!["\u{1F600}".as_bytes().to_vec()]);
+        // R2-R4: raw first, then PDFDocEncoding.
+        assert_eq!(
+            v(4, "caf\u{e9}"),
+            vec!["caf\u{e9}".as_bytes().to_vec(), b"caf\xE9".to_vec()]
+        );
+        // Not UTF-8: raw only.
+        assert_eq!(candidates(6, b"\xff\xfe").len(), 1);
     }
 
     #[test]

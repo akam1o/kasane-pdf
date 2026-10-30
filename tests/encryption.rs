@@ -9,7 +9,7 @@ mod common;
 use common::fixture;
 use kasane_pdf::{
     extract_text, render_page, Authentication, CryptMethod, Document, Error, Limits, Object,
-    OpenOptions, RenderOptions, TextOptions,
+    OpenOptions, RecoveryRule, RenderOptions, TextOptions, Warning,
 };
 
 fn bytes(name: &str) -> Vec<u8> {
@@ -243,4 +243,292 @@ fn malformed_or_unsupported_encrypt_dictionaries_are_typed() {
     altered[end - 1] = if altered[end - 1] == b'4' { b'8' } else { b'4' };
     let e = Document::from_bytes(&altered).unwrap_err();
     assert!(matches!(e, Error::Structure(_) | Error::Encrypted), "{e:?}");
+}
+
+/// The table of a damaged encrypted file is never rebuilt — not only
+/// when a trailer still names `/Encrypt`, but also when the trailer is
+/// lost or no longer names it while the encryption dictionary survives
+/// (the rebuild would read ciphertext object streams as plaintext, and
+/// the writers would then emit the result without its encryption).
+#[test]
+fn damaged_encrypted_file_is_not_rebuilt_without_its_trailer() {
+    let refused = |pdf: &[u8], what: &str| {
+        for r in [
+            Document::from_bytes_recovering(pdf).map(|_| ()),
+            Document::open(pdf, &OpenOptions::new().with_recovery(true)).map(|_| ()),
+        ] {
+            assert!(
+                matches!(
+                    &r,
+                    Err(Error::Unsupported {
+                        feature: "encryption",
+                        ..
+                    })
+                ),
+                "{what}: {r:?}"
+            );
+        }
+    };
+    let data = bytes("enc_r6_aes256_empty.pdf");
+    let t = data
+        .windows(8)
+        .position(|w| w == b"trailer ")
+        .expect("trailer");
+    // Trailer and startxref cut off: only the objects remain.
+    refused(&data[..t], "no trailer");
+    // Trailer kept but `/Encrypt` renamed, startxref broken.
+    let mut renamed = data.clone();
+    let e = t + renamed[t..]
+        .windows(8)
+        .position(|w| w == b"/Encrypt")
+        .unwrap();
+    renamed[e + 1..e + 8].copy_from_slice(b"Xncrypt");
+    let s = renamed.windows(9).rposition(|w| w == b"startxref").unwrap();
+    renamed[s + 10] = b'9';
+    refused(&renamed, "trailer without /Encrypt");
+    // Same for an R4 file whose catalog sits in an object stream.
+    let data = bytes("enc_r4_aes128_objstm.pdf");
+    let s = data.windows(9).rposition(|w| w == b"startxref").unwrap();
+    refused(&data[..s], "objstm file without startxref");
+}
+
+/// An encryption dictionary hidden in an unencrypted object stream of a
+/// file without a trailer still marks the file as encrypted.
+#[test]
+fn encryption_dictionary_inside_an_object_stream_refuses_the_rebuild() {
+    let members = b"<< /Type /Catalog /Pages 2 0 R >> << /Type /Pages /Kids [] /Count 0 >> \
+                    << /Filter /Standard /V 5 /R 6 /O <00> /U <00> /P -4 >>";
+    let first = "1 0 2 34 3 71 ".to_string();
+    let mut body = first.clone().into_bytes();
+    body.extend_from_slice(members);
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    pdf.extend_from_slice(
+        format!(
+            "4 0 obj\n<< /Type /ObjStm /N 3 /First {} /Length {} >>\nstream\n",
+            first.len(),
+            body.len()
+        )
+        .as_bytes(),
+    );
+    pdf.extend_from_slice(&body);
+    pdf.extend_from_slice(b"\nendstream\nendobj\n%%EOF\n");
+    let r = Document::from_bytes_recovering(&pdf).map(|_| ());
+    assert!(
+        matches!(
+            &r,
+            Err(Error::Unsupported {
+                feature: "encryption",
+                ..
+            })
+        ),
+        "{r:?}"
+    );
+}
+
+fn opens(name: &str, pw: impl AsRef<[u8]>) -> Result<Document, Error> {
+    Document::open(&bytes(name), &OpenOptions::new().with_password(pw))
+}
+
+#[test]
+fn unicode_passwords_follow_the_revision_encoding() {
+    let plain = fingerprint(&Document::from_bytes(&bytes("base.pdf")).unwrap());
+    // R6: UTF-8 after SASLprep. The file was written with the NFC form;
+    // the decomposed form normalises to it.
+    for pw in ["caf\u{e9}", "cafe\u{301}"] {
+        let doc = opens("enc_r6_unicode.pdf", pw).unwrap_or_else(|e| panic!("{pw:?}: {e}"));
+        assert_eq!(fingerprint(&doc), plain);
+        assert_eq!(
+            doc.encryption().unwrap().authenticated_as,
+            Authentication::User
+        );
+    }
+    assert!(matches!(
+        opens("enc_r6_unicode.pdf", "CAF\u{c9}"),
+        Err(Error::Encrypted)
+    ));
+    // A password SASLprep refuses (unassigned in Unicode 3.2) is used
+    // as given.
+    assert!(opens("enc_r6_emoji.pdf", "\u{1F600}").is_ok());
+    // R2-R4: PDFDocEncoding. UTF-8 input is converted; the encoded
+    // bytes themselves work too.
+    for pw in ["caf\u{e9}".as_bytes(), b"caf\xe9".as_slice()] {
+        assert!(opens("enc_r4_pdfdoc.pdf", pw).is_ok(), "{pw:?}");
+    }
+    assert!(opens("enc_r4_euro.pdf", "\u{20AC}").is_ok());
+    assert!(matches!(
+        opens("enc_r4_euro.pdf", "E"),
+        Err(Error::Encrypted)
+    ));
+}
+
+#[test]
+fn r6_password_is_truncated_to_127_bytes() {
+    // Algorithm 2.A step (a): only the first 127 bytes count.
+    let p127 = "p".repeat(127);
+    assert!(opens("enc_r6_long.pdf", &p127).is_ok());
+    assert!(opens("enc_r6_long.pdf", "p".repeat(130)).is_ok());
+    assert!(matches!(
+        opens("enc_r6_long.pdf", "p".repeat(126)),
+        Err(Error::Encrypted)
+    ));
+}
+
+#[test]
+fn short_rc4_key_follows_the_specification_and_pads_only_in_recovery() {
+    let plain = fingerprint(&Document::from_bytes(&bytes("base.pdf")).unwrap());
+    let padded = |doc: &Document| {
+        doc.take_warnings().iter().any(|w| {
+            matches!(
+                w,
+                Warning::RecoveryApplied {
+                    rule: RecoveryRule::PaddedShortEncryptionKey,
+                    ..
+                }
+            )
+        })
+    };
+    let rec = OpenOptions::new().with_recovery(true);
+    // Written as ISO 32000 specifies: read the same way in both modes.
+    for opts in [OpenOptions::new(), rec.clone()] {
+        let doc = Document::open(&bytes("enc_r4_rc4_40_spec.pdf"), &opts).unwrap();
+        assert_eq!(doc.encryption().unwrap().key_bits, 40);
+        assert_eq!(fingerprint(&doc).1, plain.1);
+        assert_eq!(fingerprint(&doc).2, plain.2);
+        assert!(!padded(&doc));
+    }
+    // Written as Acrobat does (key zero-padded): strict refuses instead
+    // of returning undecryptable data; recovery reads it, recorded.
+    let acrobat = bytes("enc_r4_rc4_40_acrobat.pdf");
+    let e = Document::from_bytes(&acrobat).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            Error::Unsupported {
+                feature: "encryption",
+                ..
+            }
+        ),
+        "{e:?}"
+    );
+    let doc = Document::open(&acrobat, &rec).unwrap();
+    assert_eq!(fingerprint(&doc).1, plain.1);
+    assert_eq!(fingerprint(&doc).2, plain.2);
+    assert!(padded(&doc));
+}
+
+#[test]
+fn incremental_update_of_an_encrypted_file() {
+    // An appended revision replaces the content stream and the /Info
+    // title, both encrypted with the same key (written independently).
+    let doc = Document::from_bytes(&bytes("enc_r2_incremental.pdf")).unwrap();
+    let (_, codes, title) = fingerprint(&doc);
+    let text: String = codes.iter().map(|c| char::from(*c as u8)).collect();
+    assert_eq!(text.replace(' ', ""), "Updatedrevision");
+    assert_eq!(title.as_deref(), Some(&b"Updated title"[..]));
+    assert!(doc.encryption().is_some());
+}
+
+#[test]
+fn overlong_encryption_strings_are_recorded() {
+    // /U padded beyond its 32 bytes: the leading bytes are used, the
+    // deviation is recorded.
+    let data = bytes("enc_r2_rc4_40.pdf");
+    let (mut objs, trailer) = split(&data);
+    for o in objs.iter_mut() {
+        if o.0 == 8 {
+            let s = String::from_utf8_lossy(&o.1).into_owned();
+            let i = s.find("/U <").unwrap() + 4;
+            let j = i + s[i..].find('>').unwrap();
+            o.1 = format!("{}{}{}", &s[..j], "00".repeat(95), &s[j..]).into_bytes();
+        }
+    }
+    let doc = Document::from_bytes(&build(&objs, &trailer)).unwrap();
+    let w = doc.take_warnings();
+    assert!(
+        w.iter().any(|w| matches!(
+            w,
+            Warning::OverlongEncryptionEntry {
+                key: "U",
+                length: 127,
+                specified: 32
+            }
+        )),
+        "{w:?}"
+    );
+}
+
+/// `(number, body)` of each `N 0 obj … endobj` and the trailer text.
+fn split(pdf: &[u8]) -> (Vec<(u32, Vec<u8>)>, Vec<u8>) {
+    let find = |h: &[u8], n: &[u8]| h.windows(n.len()).position(|w| w == n);
+    let mut objs = Vec::new();
+    let mut i = 0;
+    while let Some(p) = find(&pdf[i..], b" 0 obj\n") {
+        let at = i + p;
+        let mut s = at;
+        while s > 0 && pdf[s - 1].is_ascii_digit() {
+            s -= 1;
+        }
+        let num = std::str::from_utf8(&pdf[s..at]).unwrap().parse().unwrap();
+        let start = at + 7;
+        let end = start + find(&pdf[start..], b"\nendobj").unwrap();
+        objs.push((num, pdf[start..end].to_vec()));
+        i = end;
+    }
+    let t = find(pdf, b"trailer ").unwrap() + 8;
+    let e = t + find(&pdf[t..], b"\nstartxref").unwrap();
+    (objs, pdf[t..e].to_vec())
+}
+
+/// A file with these objects, a correct cross-reference table and
+/// `trailer`.
+fn build(objs: &[(u32, Vec<u8>)], trailer: &[u8]) -> Vec<u8> {
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let size = objs.iter().map(|o| o.0).max().unwrap() + 1;
+    let mut offs = vec![None; size as usize];
+    for (n, body) in objs {
+        offs[*n as usize] = Some(out.len());
+        out.extend_from_slice(format!("{n} 0 obj\n").as_bytes());
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    }
+    let x = out.len();
+    out.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f \n").as_bytes());
+    for o in &offs[1..] {
+        let line = match o {
+            Some(o) => format!("{o:010} 00000 n \n"),
+            None => "0000000000 00000 f \n".into(),
+        };
+        out.extend_from_slice(line.as_bytes());
+    }
+    out.extend_from_slice(b"trailer ");
+    out.extend_from_slice(trailer);
+    out.extend_from_slice(format!("\nstartxref\n{x}\n%%EOF\n").as_bytes());
+    out
+}
+
+#[test]
+fn encrypt_dictionary_behind_a_reference_chain_is_never_decrypted() {
+    // /Encrypt 9 0 R, and object 9 is `8 0 R`: the dictionary read is
+    // object 8, which stays exempt from decryption afterwards.
+    let data = bytes("enc_r2_rc4_40.pdf");
+    let (mut objs, trailer) = split(&data);
+    let o_before = objs.iter().find(|o| o.0 == 8).unwrap().1.clone();
+    objs.push((9, b"8 0 R".to_vec()));
+    let trailer = String::from_utf8(trailer)
+        .unwrap()
+        .replace("/Encrypt 8 0 R", "/Encrypt 9 0 R")
+        .replace("/Size 9", "/Size 10");
+    let doc = Document::from_bytes(&build(&objs, trailer.as_bytes())).unwrap();
+    let enc = doc
+        .deref(&Object::Ref(kasane_pdf::IndirectRef {
+            number: 8,
+            generation: 0,
+        }))
+        .unwrap();
+    let o = match enc.as_dict().unwrap().get(b"O".as_slice()) {
+        Some(Object::String(s)) => s.clone(),
+        other => panic!("{other:?}"),
+    };
+    let hex: String = o.iter().map(|b| format!("{b:02x}")).collect();
+    assert!(String::from_utf8_lossy(&o_before).contains(&hex));
 }

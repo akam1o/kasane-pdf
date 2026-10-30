@@ -688,17 +688,26 @@ pub(crate) fn reconstruct(
             }
         }
     }
+    // The scan reads object streams before any key exists, so for an
+    // encrypted file it would interpret ciphertext as plaintext: refused,
+    // whatever the password. Not only an `/Encrypt` entry in a surviving
+    // trailer counts — a damaged file may have lost its trailer while
+    // its encryption dictionary (or an xref-stream dictionary naming it)
+    // is still there. An encrypted file with an intact table opens in
+    // recovery mode through `Document::open`.
     if trailer.contains_key(b"Encrypt".as_slice()) {
-        // The scan reads object streams before any key exists, so it
-        // would interpret ciphertext as plaintext: refused, whatever the
-        // password. An encrypted file with an intact table opens in
-        // recovery mode through `Document::open`.
-        return Err(Error::Unsupported {
-            feature: "encryption",
-            detail:
-                "rebuilding the cross-reference table of an encrypted document is not implemented"
-                    .into(),
-        });
+        return Err(encrypted_rebuild_refused());
+    }
+    for (_, start) in found.values() {
+        let body = region(*start);
+        if !(contains(body, b"/Encrypt") || contains(body, b"/Filter")) {
+            continue;
+        }
+        if let Some(ind) = parse_at(*start) {
+            if declares_encryption(&ind.object) {
+                return Err(encrypted_rebuild_refused());
+            }
+        }
     }
 
     // ---- 3. object streams: members fill gaps -------------------------
@@ -745,6 +754,11 @@ pub(crate) fn reconstruct(
         };
         match crate::objstm::members(&decoded, dict, limits) {
             Ok(members) => {
+                // An encryption dictionary may not be in an object stream
+                // (§7.5.7); one that is still marks the file as encrypted.
+                if members.iter().any(|(_, obj)| declares_encryption(obj)) {
+                    return Err(encrypted_rebuild_refused());
+                }
                 for (idx, (m, obj)) in members.into_iter().enumerate() {
                     if found.contains_key(&m) {
                         continue;
@@ -915,6 +929,34 @@ fn find_from(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
 
 fn contains(hay: &[u8], needle: &[u8]) -> bool {
     find_from(hay, needle, 0).is_some()
+}
+
+fn encrypted_rebuild_refused() -> Error {
+    Error::Unsupported {
+        feature: "encryption",
+        detail: "rebuilding the cross-reference table of an encrypted document is not implemented"
+            .into(),
+    }
+}
+
+/// An object that marks the file as encrypted: a dictionary (or an
+/// xref-stream dictionary) with an `/Encrypt` entry, or an encryption
+/// dictionary itself — a non-stream dictionary whose `/Filter` names a
+/// security handler and that carries the Standard handler's `/O` and
+/// `/U` or the public-key handler's `/Recipients` (§7.6.2, Tables 20–23).
+fn declares_encryption(obj: &Object) -> bool {
+    if let Some(d) = obj.as_dict_like() {
+        if d.contains_key(b"Encrypt".as_slice()) {
+            return true;
+        }
+    }
+    let Some(d) = obj.as_dict() else {
+        return false;
+    };
+    matches!(d.get(b"Filter".as_slice()), Some(Object::Name(_)))
+        && ((d.contains_key(b"O".as_slice()) && d.contains_key(b"U".as_slice()))
+            || d.contains_key(b"Recipients".as_slice())
+            || d.get(b"CF".as_slice()).is_some())
 }
 
 #[cfg(test)]

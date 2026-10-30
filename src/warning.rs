@@ -111,6 +111,19 @@ pub enum Warning {
         /// What was found.
         detail: String,
     },
+    /// A string of the encryption dictionary is longer than its
+    /// revision specifies (`/O` `/U`: 32 bytes for revisions 2–4, 48 for
+    /// 5–6; `/OE` `/UE`: 32; `/Perms`: 16 — ISO 32000-2 Tables 21–22).
+    /// Some writers pad them; the specified leading bytes are used and
+    /// the rest is ignored, as every reader does.
+    OverlongEncryptionEntry {
+        /// The entry (`O`, `U`, `OE`, `UE` or `Perms`).
+        key: &'static str,
+        /// Its length in bytes.
+        length: usize,
+        /// The length the revision specifies.
+        specified: usize,
+    },
 }
 
 /// The recovery-mode reinterpretations (see
@@ -151,6 +164,12 @@ pub enum RecoveryRule {
     /// `/None`, which only an ExtGState may carry) is treated as no
     /// soft mask.
     IgnoredInvalidSoftMask,
+    /// A revision-4 file encryption key shorter than 128 bits is
+    /// extended to 16 bytes with zeros before the object keys are
+    /// derived (Algorithm 1). Acrobat does this and pdf.js follows it;
+    /// ISO 32000 uses the key as is, so a strict document derives the
+    /// specified object keys and such a file's data does not decrypt.
+    PaddedShortEncryptionKey,
 }
 
 impl fmt::Display for RecoveryRule {
@@ -169,6 +188,9 @@ impl fmt::Display for RecoveryRule {
             }
             RecoveryRule::IgnoredInvalidEncodingEntry => "invalid /Differences entry skipped",
             RecoveryRule::IgnoredInvalidSoftMask => "image /SMask that is not a stream ignored",
+            RecoveryRule::PaddedShortEncryptionKey => {
+                "revision-4 encryption key shorter than 128 bits zero-padded to 16 bytes"
+            }
         })
     }
 }
@@ -204,6 +226,14 @@ impl fmt::Display for Warning {
                     "{filter}: trailing fragment that encodes no data ignored ({detail})"
                 )
             }
+            Warning::OverlongEncryptionEntry {
+                key,
+                length,
+                specified,
+            } => write!(
+                f,
+                "/Encrypt /{key} is {length} bytes; the first {specified} are used"
+            ),
             Warning::RecoveryApplied { rule, detail } => {
                 write!(f, "recovery: {rule} ({detail})")
             }

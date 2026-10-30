@@ -118,5 +118,28 @@ user password `usr` or empty, owner password `own`:
 | `enc_r5_aes256.pdf` | R5, AESV3 | empty |
 | `enc_r6_aes256.pdf` | R6, AESV3 | `usr` |
 | `enc_r6_aes256_empty.pdf` | R6, AESV3 | empty |
+| `enc_r6_unicode.pdf` | R6, AESV3 | `café` (NFC UTF-8, as qpdf writes it) |
+| `enc_r6_emoji.pdf` | R6, AESV3 | U+1F600 (refused by SASLprep, so used as given) |
+| `enc_r6_long.pdf` | R6, AESV3 | 127 × `p` (Algorithm 2.A truncates longer passwords to this) |
+| `enc_r4_pdfdoc.pdf` | R4, AESV2 | `café`, stored in PDFDocEncoding (`63 61 66 E9`) |
+| `enc_r4_euro.pdf` | R4, AESV2 | `€`, PDFDocEncoding `A0` |
+
+The non-ASCII ones use qpdf's default `--password-mode=auto`, which
+transcodes as the specification says; each was checked with qpdf in
+`hex-bytes` mode. qpdf's reported file keys (`--show-encryption-key`)
+are the known answers in `src/crypt.rs`.
+
+`make_extra.py` writes three more with an implementation independent
+of kasane-pdf (Python, hashlib, textbook RC4) — qpdf cannot produce
+them:
+
+| file | content | user password |
+|---|---|---|
+| `enc_r4_rc4_40_spec.pdf` | R4, `/V2` crypt filter, 40-bit key, object keys as ISO 32000 Algorithm 1 specifies; Flate content | empty |
+| `enc_r4_rc4_40_acrobat.pdf` | the same encrypted the Acrobat way (key zero-padded to 16 bytes) | empty |
+| `enc_r2_incremental.pdf` | `enc_r2_rc4_40.pdf` plus an incremental update replacing the content stream and the `/Info` title, encrypted with qpdf's key for that file | empty |
+
+pypdf reads the spec and incremental files and fails on the Acrobat
+one, as a reader following the specification should.
 
 Generated; no licence. Used by `tests/encryption.rs`.
