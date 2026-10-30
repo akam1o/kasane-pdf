@@ -255,6 +255,10 @@ impl Document {
     /// mode refuses the file (its data does not decrypt as ISO 32000
     /// specifies) and recovery mode switches to the padded key, recorded.
     fn settle_short_key(&mut self) -> Result<(), Error> {
+        // At most 256 distinct objects: entries sharing an offset are
+        // parsed once (a hostile table may point them all at one large
+        // stream).
+        let mut seen = std::collections::HashSet::new();
         let offsets: Vec<(IndirectRef, u64)> = self
             .xref
             .iter_entries()
@@ -262,6 +266,7 @@ impl Document {
                 crate::xref::XrefEntry::InUse { offset } => Some((r, offset)),
                 _ => None,
             })
+            .filter(|(_, offset)| seen.insert(*offset))
             .take(256)
             .collect();
         let mut verdict = None;

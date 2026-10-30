@@ -137,6 +137,30 @@ fn int(d: &Dict, k: &[u8]) -> Option<i64> {
     d.get(k).and_then(|o| o.as_i64())
 }
 
+/// An optional integer entry: `Ok(None)` when absent, an error when
+/// present with another type (a malformed value is not a default).
+fn opt_int(d: &Dict, k: &str) -> Result<Option<i64>, Error> {
+    match d.get(k.as_bytes()) {
+        None => Ok(None),
+        Some(o) => o
+            .as_i64()
+            .map(Some)
+            .ok_or_else(|| structure(&format!("/{k} is not an integer"))),
+    }
+}
+
+/// An optional name entry: `Ok(None)` when absent, an error when
+/// present with another type. A crypt-filter name that is not a name
+/// must not fall back to `/Identity`: that would read ciphertext as
+/// plaintext.
+fn opt_name<'a>(d: &'a Dict, k: &str) -> Result<Option<&'a [u8]>, Error> {
+    match d.get(k.as_bytes()) {
+        None => Ok(None),
+        Some(Object::Name(n)) => Ok(Some(n.as_slice())),
+        Some(_) => Err(structure(&format!("/{k} is not a name"))),
+    }
+}
+
 fn bytes<'a>(d: &'a Dict, k: &[u8]) -> Option<&'a [u8]> {
     match d.get(k) {
         Some(Object::String(s)) => Some(s),
@@ -589,7 +613,7 @@ impl Crypt {
         let mut key_bits: u32 = match version {
             1 => 40,
             2 => {
-                let l = int(enc, b"Length").unwrap_or(40);
+                let l = opt_int(enc, "Length")?.unwrap_or(40);
                 if !(40..=128).contains(&l) || l % 8 != 0 {
                     return Err(structure(&format!("/Length {l}")));
                 }
@@ -600,6 +624,10 @@ impl Crypt {
         };
         let (mut strf, mut stmf, mut eff) = (CryptMethod::Rc4, CryptMethod::Rc4, CryptMethod::Rc4);
         if version >= 4 {
+            // Algorithm 2 derives one file key: every RC4 filter must
+            // agree on its length, and AES-128 needs 128 bits.
+            let mut rc4_bits: Option<u32> = None;
+            let mut has_aes128 = false;
             if let Some(cf) = enc.get(b"CF".as_slice()) {
                 let cf = cf
                     .as_dict()
@@ -626,35 +654,48 @@ impl Crypt {
                     };
                     if m == CryptMethod::Rc4 {
                         // /Length in bytes or bits, as writers differ.
-                        if let Some(l) = int(f, b"Length") {
-                            let bits = if l <= 16 { l * 8 } else { l };
-                            if !(40..=128).contains(&bits) || bits % 8 != 0 {
-                                return Err(structure(&format!("crypt filter /Length {l}")));
+                        let bits = match opt_int(f, "Length")? {
+                            Some(l) => {
+                                let bits = if l <= 16 { l * 8 } else { l };
+                                if !(40..=128).contains(&bits) || bits % 8 != 0 {
+                                    return Err(structure(&format!("crypt filter /Length {l}")));
+                                }
+                                bits as u32
                             }
-                            key_bits = bits as u32;
+                            None => 128,
+                        };
+                        if rc4_bits.is_some_and(|b| b != bits) {
+                            return Err(structure("RC4 crypt filters disagree on the key length"));
                         }
+                        rc4_bits = Some(bits);
                     }
+                    has_aes128 |= m == CryptMethod::Aes128;
                     filters.insert(name.clone(), m);
                 }
             }
-            let pick = |k: &[u8], default: CryptMethod| -> Result<CryptMethod, Error> {
-                match enc.get(k).and_then(|o| o.as_name()) {
-                    None | Some(b"Identity") => Ok(default),
-                    Some(n) => filters.get(n).copied().ok_or_else(|| {
+            if let Some(bits) = rc4_bits {
+                if has_aes128 && bits != 128 {
+                    return Err(structure(
+                        "an RC4 crypt filter shorter than 128 bits beside an AESV2 filter",
+                    ));
+                }
+                key_bits = bits;
+            }
+            let pick = |k: &str| -> Result<Option<CryptMethod>, Error> {
+                match opt_name(enc, k)? {
+                    None => Ok(None),
+                    Some(b"Identity") => Ok(Some(CryptMethod::Identity)),
+                    Some(n) => filters.get(n).copied().map(Some).ok_or_else(|| {
                         structure(&format!(
-                            "/{} names an undefined crypt filter /{}",
-                            String::from_utf8_lossy(k),
+                            "/{k} names an undefined crypt filter /{}",
                             String::from_utf8_lossy(n)
                         ))
                     }),
                 }
             };
-            strf = pick(b"StrF", CryptMethod::Identity)?;
-            stmf = pick(b"StmF", CryptMethod::Identity)?;
-            eff = match enc.get(b"EFF".as_slice()) {
-                None => stmf,
-                Some(_) => pick(b"EFF", CryptMethod::Identity)?,
-            };
+            strf = pick("StrF")?.unwrap_or(CryptMethod::Identity);
+            stmf = pick("StmF")?.unwrap_or(CryptMethod::Identity);
+            eff = pick("EFF")?.unwrap_or(stmf);
             if version == 5 && [strf, stmf, eff].contains(&CryptMethod::Rc4) {
                 return Err(structure("RC4 crypt filter with /V 5"));
             }
@@ -713,6 +754,15 @@ impl Crypt {
                     "/O and /U must be at least 48 bytes, /OE and /UE at least 32",
                 ));
             };
+            // Shape of /Perms before authenticating: a dictionary no
+            // password can open is malformed, not a wrong password.
+            match bytes(enc, b"Perms") {
+                Some(p) if p.len() < 16 => {
+                    return Err(structure("/Perms is shorter than 16 bytes"))
+                }
+                None if revision == 6 => return Err(structure("no /Perms (required with /R 6)")),
+                _ => {}
+            }
             // Algorithm 2.A step (a): at most 127 bytes are used.
             let trunc = |pw: &[u8]| pw[..pw.len().min(127)].to_vec();
             let user_ok = |pw: &[u8]| ct_eq(&hash_v5(revision, pw, &u[32..40], b"")[..], &u[..32]);
@@ -953,12 +1003,11 @@ impl Crypt {
             Some(Object::Array(a)) => a.first().and_then(|o| o.as_dict()).cloned(),
             _ => None,
         };
-        let name = parms
-            .as_ref()
-            .and_then(|p| p.get(b"Name".as_slice()))
-            .and_then(|o| o.as_name())
-            .map(|n| n.to_vec())
-            .unwrap_or_else(|| b"Identity".to_vec());
+        let name = match &parms {
+            Some(p) => opt_name(p, "Name")?.map(<[u8]>::to_vec),
+            None => None,
+        }
+        .unwrap_or_else(|| b"Identity".to_vec());
         let method = if name == b"Identity" {
             CryptMethod::Identity
         } else {

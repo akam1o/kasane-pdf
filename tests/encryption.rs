@@ -532,3 +532,218 @@ fn encrypt_dictionary_behind_a_reference_chain_is_never_decrypted() {
     let hex: String = o.iter().map(|b| format!("{b:02x}")).collect();
     assert!(String::from_utf8_lossy(&o_before).contains(&hex));
 }
+
+/// `name` rebuilt with `from` replaced by `to` in object `num` (and the
+/// trailer when `num` is 0); offsets stay correct.
+fn edited(name: &str, num: u32, from: &str, to: &str) -> Vec<u8> {
+    let (mut objs, mut trailer) = split(&bytes(name));
+    // Bytes, not text: stream bodies are binary.
+    let swap = |b: &mut Vec<u8>| {
+        let at = b
+            .windows(from.len())
+            .position(|w| w == from.as_bytes())
+            .unwrap_or_else(|| panic!("{name} {num}: {from:?} not found"));
+        b.splice(at..at + from.len(), to.bytes());
+    };
+    if num == 0 {
+        swap(&mut trailer);
+    } else {
+        swap(&mut objs.iter_mut().find(|o| o.0 == num).unwrap().1);
+    }
+    build(&objs, &trailer)
+}
+
+/// Replace the raw data of stream object `num` (a qpdf fixture, whose
+/// data runs from `stream\n` to `endstream`) and fix its `/Length`.
+fn with_stream_data(name: &str, num: u32, f: impl Fn(&[u8]) -> Vec<u8>) -> Vec<u8> {
+    let (mut objs, trailer) = split(&bytes(name));
+    let o = &mut objs.iter_mut().find(|o| o.0 == num).unwrap().1;
+    let find = |h: &[u8], n: &[u8]| h.windows(n.len()).position(|w| w == n).unwrap();
+    let s = find(o, b"stream\n") + 7;
+    let head = String::from_utf8_lossy(&o[..s]).into_owned();
+    let len: usize = head
+        .split("/Length ")
+        .nth(1)
+        .unwrap()
+        .split(' ')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let data = f(&o[s..s + len]);
+    let head = head.replacen(
+        &format!("/Length {len}"),
+        &format!("/Length {}", data.len()),
+        1,
+    );
+    let mut body = head.into_bytes();
+    body.extend_from_slice(&data);
+    body.extend_from_slice(b"endstream");
+    *o = body;
+    build(&objs, &trailer)
+}
+
+fn err_of(pdf: &[u8], pw: &str) -> Error {
+    match Document::open(pdf, &OpenOptions::new().with_password(pw)) {
+        Ok(_) => panic!("opened"),
+        Err(e) => e,
+    }
+}
+
+#[test]
+fn malformed_encrypt_dictionaries_are_structure_errors() {
+    // Each is a required entry missing, a wrong type or an inconsistent
+    // value (ISO 32000-2 Tables 20-22, 25): Error::Structure, never a
+    // guessed default and never Error::Encrypted (no password could
+    // open it).
+    let cases: &[(&str, u32, &str, &str)] = &[
+        ("enc_r4_aes128.pdf", 8, "/P -4 ", ""),
+        ("enc_r4_aes128.pdf", 8, "/R 4 ", ""),
+        ("enc_r4_aes128.pdf", 8, "/R 4 ", "/R 3 "),
+        ("enc_r4_aes128.pdf", 8, "/StmF /StdCF", "/StmF /Nope"),
+        // Not a name: must not fall back to /Identity (unencrypted).
+        ("enc_r4_aes128.pdf", 8, "/StmF /StdCF", "/StmF (StdCF)"),
+        ("enc_r4_aes128.pdf", 8, "/StrF /StdCF", "/StrF 1"),
+        (
+            "enc_r4_aes128.pdf",
+            8,
+            "/CF << /StdCF << /AuthEvent /DocOpen /CFM /AESV2 /Length 16 >> >>",
+            "/CF /StdCF",
+        ),
+        // Two RC4 filters with different key lengths: one file key.
+        (
+            "enc_r4_aes128.pdf",
+            8,
+            "/CF << /StdCF << /AuthEvent /DocOpen /CFM /AESV2 /Length 16 >> >>",
+            "/CF << /StdCF << /CFM /V2 /Length 16 >> /X << /CFM /V2 /Length 5 >> >>",
+        ),
+        // AES-128 needs 128 bits; a 40-bit RC4 filter beside it conflicts.
+        (
+            "enc_r4_aes128.pdf",
+            8,
+            "/CF << /StdCF << /AuthEvent /DocOpen /CFM /AESV2 /Length 16 >> >>",
+            "/CF << /StdCF << /CFM /AESV2 >> /X << /CFM /V2 /Length 5 >> >>",
+        ),
+        ("enc_r4_aes128.pdf", 0, "/ID [", "/XD ["),
+        ("enc_r3_rc4_128.pdf", 8, "/Length 128", "/Length /L"),
+        ("enc_r3_rc4_128.pdf", 8, "/Length 128", "/Length 36"),
+        ("enc_r6_aes256_empty.pdf", 8, "/Perms <", "/Xerms <"),
+        (
+            "enc_r6_aes256_empty.pdf",
+            8,
+            "/StmF /StdCF",
+            "/StmF /StdCF /StrF /StdCF /EFF 7",
+        ),
+    ];
+    for (name, num, from, to) in cases {
+        let pdf = edited(name, *num, from, to);
+        let e = err_of(&pdf, "usr");
+        assert!(
+            matches!(e, Error::Structure(_)),
+            "{name}: {from:?} -> {to:?}: {e:?}"
+        );
+    }
+}
+
+#[test]
+fn unimplemented_methods_are_unsupported() {
+    let cases: &[(&str, &str, &str)] = &[
+        ("enc_r4_aes128.pdf", "/CFM /AESV2", "/CFM /None"),
+        ("enc_r4_aes128.pdf", "/CFM /AESV2", "/CFM /Foo"),
+        ("enc_r4_aes128.pdf", "/CFM /AESV2", "/CFM /AESV3"),
+        ("enc_r4_aes128.pdf", "/V 4 >>", "/V 6 >>"),
+        ("enc_r4_aes128.pdf", "/V 4 >>", ">>"),
+        (
+            "enc_r4_aes128.pdf",
+            "/Filter /Standard",
+            "/Filter /Adobe.PubSec",
+        ),
+    ];
+    for (name, from, to) in cases {
+        let e = err_of(&edited(name, 8, from, to), "usr");
+        assert!(
+            matches!(e, Error::Unsupported { .. }),
+            "{from:?} -> {to:?}: {e:?}"
+        );
+    }
+}
+
+#[test]
+fn crypt_stream_filter_selects_its_crypt_filter() {
+    // §7.4.10: /Crypt first in /Filter names the crypt filter in its
+    // /DecodeParms (default /Identity) and is removed before decoding.
+    let plain = fingerprint(&Document::from_bytes(&bytes("base.pdf")).unwrap());
+    let with = |parms: &str| {
+        edited(
+            "enc_r6_aes256_empty.pdf",
+            6,
+            "/Filter /FlateDecode",
+            &format!("/Filter [ /Crypt /FlateDecode ] /DecodeParms [ {parms} null ]"),
+        )
+    };
+    let doc = Document::from_bytes(&with("<< /Name /StdCF >>")).unwrap();
+    assert_eq!(fingerprint(&doc), plain);
+    // /Identity (explicit or by default): the data is declared clear,
+    // so the ciphertext is handed to Flate, which refuses it.
+    for parms in ["<< /Name /Identity >>", "<< >>"] {
+        let doc = Document::from_bytes(&with(parms)).unwrap();
+        let e = doc.page_contents(&doc.pages()[0]).unwrap_err();
+        assert!(matches!(e, Error::Parse(_)), "{parms}: {e:?}");
+    }
+    // Undefined, or not a name: refused, not taken as /Identity.
+    for parms in ["<< /Name /Nope >>", "<< /Name (StdCF) >>"] {
+        let doc = Document::from_bytes(&with(parms)).unwrap();
+        let e = doc.page_contents(&doc.pages()[0]).unwrap_err();
+        assert!(matches!(e, Error::Structure(_)), "{parms}: {e:?}");
+    }
+}
+
+#[test]
+fn damaged_ciphertext_is_a_parse_error() {
+    for name in ["enc_r4_aes128.pdf", "enc_r6_aes256.pdf"] {
+        // Truncated: no longer a whole number of AES blocks.
+        let cut = with_stream_data(name, 6, |d| d[..d.len() - 1].to_vec());
+        // Last block altered: PKCS#5 padding no longer valid.
+        let flip = with_stream_data(name, 6, |d| {
+            let mut d = d.to_vec();
+            let n = d.len();
+            d[n - 17] ^= 0x55;
+            d
+        });
+        // IV only: empty plaintext, which Flate then refuses.
+        let iv_only = with_stream_data(name, 6, |d| d[..16].to_vec());
+        for pdf in [cut, flip, iv_only] {
+            let doc = Document::open(&pdf, &OpenOptions::new().with_password("usr")).unwrap();
+            let e = doc.page_contents(&doc.pages()[0]).unwrap_err();
+            assert!(matches!(e, Error::Parse(_)), "{name}: {e:?}");
+        }
+        // A truncated encrypted string (the /Info title) likewise.
+        let short = edited(name, 2, "/Title <", "/Title <00");
+        let doc = Document::open(&short, &OpenOptions::new().with_password("usr")).unwrap();
+        let info = doc.trailer().get(b"Info".as_slice()).unwrap().clone();
+        assert!(matches!(doc.deref(&info), Err(Error::Parse(_))), "{name}");
+    }
+}
+
+#[test]
+fn damaged_encrypted_object_stream_is_refused() {
+    // The catalog lives in an AES-encrypted object stream; altering one
+    // ciphertext byte (same length, so every offset stays valid) must
+    // fail the load, in strict and in recovery mode.
+    let data = bytes("enc_r4_aes128_objstm.pdf");
+    let at = data.windows(11).position(|w| w == b"/ObjStm /Le").unwrap();
+    let s = at
+        + data[at..]
+            .windows(7)
+            .position(|w| w == b"stream\n")
+            .unwrap()
+        + 7;
+    for off in [20, 40] {
+        let mut bad = data.clone();
+        bad[s + off] ^= 0xFF;
+        for rec in [false, true] {
+            let r = Document::open(&bad, &OpenOptions::new().with_recovery(rec));
+            assert!(r.is_err(), "offset {off}, recovery {rec}");
+        }
+    }
+}
