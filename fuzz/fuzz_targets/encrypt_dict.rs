@@ -18,7 +18,8 @@ fuzz_target!(|data: &[u8]| {
     let Some((&sel, dict)) = data.split_first() else {
         return;
     };
-    let (tpl, user) = TEMPLATES[(sel & 0x7f) as usize % TEMPLATES.len()];
+    let t = &TEMPLATES[(sel & 0x7f) as usize % TEMPLATES.len()];
+    let (tpl, user) = (t.pdf, t.user);
     let (mut objs, trailer) = split(tpl);
     let cut_trailer = sel & 0x80 != 0;
     if cut_trailer {
@@ -27,7 +28,7 @@ fuzz_target!(|data: &[u8]| {
         objs.push((9, dict.to_vec()));
     } else {
         for o in objs.iter_mut() {
-            if o.0 == 8 {
+            if o.0 == t.encrypt {
                 o.1 = dict.to_vec();
             }
         }

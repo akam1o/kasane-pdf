@@ -13,17 +13,18 @@ fn hex(b: &[u8]) -> String {
 
 fuzz_target!(|data: &[u8]| {
     let Some((&sel, rest)) = data.split_first() else { return };
-    let (tpl, user) = TEMPLATES[sel as usize % TEMPLATES.len()];
+    let t = &TEMPLATES[sel as usize % TEMPLATES.len()];
+    let (tpl, user) = (t.pdf, t.user);
     let (mut objs, trailer) = split(tpl);
     let cut = rest.len() / 2;
     let (stream, title) = rest.split_at(cut);
     for o in objs.iter_mut() {
-        if o.0 == 6 {
+        if o.0 == t.content {
             let mut b = format!("<< /Length {} >>\nstream\n", stream.len()).into_bytes();
             b.extend_from_slice(stream);
             b.extend_from_slice(b"\nendstream");
             o.1 = b;
-        } else if o.0 == 2 {
+        } else if o.0 == t.info {
             o.1 = format!("<< /Title <{}> /Producer ({}) >>", hex(title), "x").into_bytes();
         }
     }

@@ -4,15 +4,41 @@
 
 use kasane_pdf::{extract_text, render_page, Document, Limits, RenderOptions, TextOptions};
 
-/// The encrypted fixtures (classic cross-reference tables) and the user
-/// password each needs (`None`: the empty user password opens it).
-pub const TEMPLATES: &[(&[u8], Option<&str>)] = &[
-    (include_bytes!("../../tests/fixtures/encrypted/enc_r2_rc4_40.pdf"), None),
-    (include_bytes!("../../tests/fixtures/encrypted/enc_r3_rc4_128.pdf"), Some("usr")),
-    (include_bytes!("../../tests/fixtures/encrypted/enc_r4_aes128.pdf"), Some("usr")),
-    (include_bytes!("../../tests/fixtures/encrypted/enc_r5_aes256.pdf"), None),
-    (include_bytes!("../../tests/fixtures/encrypted/enc_r6_aes256.pdf"), Some("usr")),
-    (include_bytes!("../../tests/fixtures/encrypted/enc_r6_aes256_empty.pdf"), None),
+/// An encrypted fixture (classic cross-reference table): its user
+/// password (`None`: empty) and which objects hold the `/Encrypt`
+/// dictionary, the page content stream and the `/Info` dictionary.
+pub struct Template {
+    pub pdf: &'static [u8],
+    pub user: Option<&'static str>,
+    pub encrypt: u32,
+    pub content: u32,
+    pub info: u32,
+}
+
+macro_rules! fx {
+    ($f:literal) => {
+        include_bytes!(concat!("../../tests/fixtures/encrypted/", $f))
+    };
+}
+
+const fn qpdf(pdf: &'static [u8], user: Option<&'static str>) -> Template {
+    Template { pdf, user, encrypt: 8, content: 6, info: 2 }
+}
+
+pub const TEMPLATES: &[Template] = &[
+    qpdf(fx!("enc_r2_rc4_40.pdf"), None),
+    qpdf(fx!("enc_r3_rc4_128.pdf"), Some("usr")),
+    qpdf(fx!("enc_r4_aes128.pdf"), Some("usr")),
+    qpdf(fx!("enc_r5_aes256.pdf"), None),
+    qpdf(fx!("enc_r6_aes256.pdf"), Some("usr")),
+    qpdf(fx!("enc_r6_aes256_empty.pdf"), None),
+    qpdf(fx!("enc_r6_unicode.pdf"), Some("caf\u{e9}")),
+    qpdf(fx!("enc_r4_pdfdoc.pdf"), Some("caf\u{e9}")),
+    qpdf(fx!("enc_r2_incremental.pdf"), None),
+    // Written by make_extra.py: R4, 40-bit RC4, the specified and the
+    // Acrobat (zero-padded) object keys — the short-key probe.
+    Template { pdf: fx!("enc_r4_rc4_40_spec.pdf"), user: None, encrypt: 7, content: 4, info: 6 },
+    Template { pdf: fx!("enc_r4_rc4_40_acrobat.pdf"), user: None, encrypt: 7, content: 4, info: 6 },
 ];
 
 /// `(number, body)` of every `N 0 obj … endobj`, and the trailer
@@ -32,7 +58,7 @@ pub fn split(pdf: &[u8]) -> (Vec<(u32, Vec<u8>)>, Vec<u8>) {
         objs.push((num, pdf[body_start..end].to_vec()));
         i = end;
     }
-    let t = find(pdf, b"trailer ").unwrap() + 8;
+    let t = find(pdf, b"trailer").unwrap() + 8;
     let e = t + find(&pdf[t..], b"\nstartxref").unwrap();
     (objs, pdf[t..e].to_vec())
 }
