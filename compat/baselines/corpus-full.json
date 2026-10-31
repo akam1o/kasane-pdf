@@ -9,8 +9,8 @@
   "quality_pages": 847,
   "quality_report": 6,
   "render_pass": 444,
-  "rewrite_pass": 413,
-  "roundtrip_full": 410,
+  "rewrite_pass": 427,
+  "roundtrip_full": 424,
   "text_pass": 462,
   "timeout": 0
  },
@@ -4146,23 +4146,31 @@
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {
-    "annotations": "NotAttempted",
-    "external_no_new": "NotAttempted",
-    "external_valid": "NotAttempted",
-    "render": "NotAttempted",
-    "reparse": "NotAttempted",
-    "structure": "NotAttempted",
-    "text": "NotAttempted"
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
    },
-   "roundtrip_full": false,
-   "semantic": {},
+   "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "embedded_files": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "pass",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
-    "rewrite": "unsupported",
+    "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "unsupported",
+   "verdict": "pass",
    "warnings": 0
   },
   "bug1151216": {
@@ -4567,23 +4575,31 @@
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {
-    "annotations": "NotAttempted",
-    "external_no_new": "NotAttempted",
-    "external_valid": "NotAttempted",
-    "render": "NotAttempted",
-    "reparse": "NotAttempted",
-    "structure": "NotAttempted",
-    "text": "NotAttempted"
+    "annotations": "Pass",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
    },
-   "roundtrip_full": false,
-   "semantic": {},
+   "roundtrip_full": true,
+   "semantic": {
+    "acroform": "pass",
+    "embedded_files": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "pass",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
-    "rewrite": "unsupported",
+    "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "unsupported",
+   "verdict": "pass",
    "warnings": 0
   },
   "bug1743245": {
@@ -6690,23 +6706,31 @@
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {
-    "annotations": "NotAttempted",
-    "external_no_new": "NotAttempted",
-    "external_valid": "NotAttempted",
-    "render": "NotAttempted",
-    "reparse": "NotAttempted",
-    "structure": "NotAttempted",
-    "text": "NotAttempted"
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
    },
-   "roundtrip_full": false,
-   "semantic": {},
+   "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "embedded_files": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "pass",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
-    "rewrite": "unsupported",
+    "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "unsupported",
+   "verdict": "pass",
    "warnings": 0
   },
   "cidfont_cmap_overflow": {
@@ -6760,23 +6784,31 @@
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {
-    "annotations": "NotAttempted",
-    "external_no_new": "NotAttempted",
-    "external_valid": "NotAttempted",
-    "render": "NotAttempted",
-    "reparse": "NotAttempted",
-    "structure": "NotAttempted",
-    "text": "NotAttempted"
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
    },
-   "roundtrip_full": false,
-   "semantic": {},
+   "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "embedded_files": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "pass",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
-    "rewrite": "unsupported",
+    "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "unsupported",
+   "verdict": "pass",
    "warnings": 0
   },
   "colorkeymask": {
@@ -8695,23 +8727,31 @@
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {
-    "annotations": "NotAttempted",
-    "external_no_new": "NotAttempted",
-    "external_valid": "NotAttempted",
-    "render": "NotAttempted",
-    "reparse": "NotAttempted",
-    "structure": "NotAttempted",
-    "text": "NotAttempted"
+    "annotations": "Pass",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
    },
-   "roundtrip_full": false,
-   "semantic": {},
+   "roundtrip_full": true,
+   "semantic": {
+    "acroform": "pass",
+    "embedded_files": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "pass",
+    "outlines": "pass",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
-    "rewrite": "unsupported",
+    "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "unsupported",
+   "verdict": "pass",
    "warnings": 0
   },
   "inks_basic": {
@@ -10029,23 +10069,31 @@
    "render_approximate": true,
    "render_recovered": "skip",
    "roundtrip": {
-    "annotations": "NotAttempted",
-    "external_no_new": "NotAttempted",
-    "external_valid": "NotAttempted",
-    "render": "NotAttempted",
-    "reparse": "NotAttempted",
-    "structure": "NotAttempted",
-    "text": "NotAttempted"
+    "annotations": "Pass",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
    },
-   "roundtrip_full": false,
-   "semantic": {},
+   "roundtrip_full": true,
+   "semantic": {
+    "acroform": "pass",
+    "embedded_files": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "pass",
+    "outlines": "pass",
+    "page_labels": "pass",
+    "struct_tree": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
-    "rewrite": "unsupported",
+    "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "unsupported",
+   "verdict": "pass",
    "warnings": 0
   },
   "issue12810": {
@@ -10296,23 +10344,31 @@
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {
-    "annotations": "NotAttempted",
-    "external_no_new": "NotAttempted",
-    "external_valid": "NotAttempted",
-    "render": "NotAttempted",
-    "reparse": "NotAttempted",
-    "structure": "NotAttempted",
-    "text": "NotAttempted"
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
    },
-   "roundtrip_full": false,
-   "semantic": {},
+   "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "embedded_files": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "pass",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
-    "rewrite": "unsupported",
+    "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "unsupported",
+   "verdict": "pass",
    "warnings": 0
   },
   "issue14046": {
@@ -11031,20 +11087,28 @@
    "render_approximate": false,
    "render_recovered": "pass",
    "roundtrip": {
-    "annotations": "NotAttempted",
-    "external_no_new": "NotAttempted",
-    "external_valid": "NotAttempted",
-    "render": "NotAttempted",
-    "reparse": "NotAttempted",
-    "structure": "NotAttempted",
-    "text": "NotAttempted"
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "NotApplicable",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "NotApplicable"
    },
-   "roundtrip_full": false,
-   "semantic": {},
+   "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "embedded_files": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "pass",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "error",
-    "rewrite": "unsupported",
+    "rewrite": "pass",
     "text": "error"
    },
    "verdict": "error",
@@ -11179,23 +11243,31 @@
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {
-    "annotations": "NotAttempted",
-    "external_no_new": "NotAttempted",
-    "external_valid": "NotAttempted",
-    "render": "NotAttempted",
-    "reparse": "NotAttempted",
-    "structure": "NotAttempted",
-    "text": "NotAttempted"
+    "annotations": "Pass",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
    },
-   "roundtrip_full": false,
-   "semantic": {},
+   "roundtrip_full": true,
+   "semantic": {
+    "acroform": "pass",
+    "embedded_files": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "pass",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
-    "rewrite": "unsupported",
+    "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "unsupported",
+   "verdict": "pass",
    "warnings": 0
   },
   "issue18911": {
@@ -13889,23 +13961,31 @@
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {
-    "annotations": "NotAttempted",
-    "external_no_new": "NotAttempted",
-    "external_valid": "NotAttempted",
-    "render": "NotAttempted",
-    "reparse": "NotAttempted",
-    "structure": "NotAttempted",
-    "text": "NotAttempted"
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
    },
-   "roundtrip_full": false,
-   "semantic": {},
+   "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "embedded_files": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "pass",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
-    "rewrite": "unsupported",
+    "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "unsupported",
+   "verdict": "pass",
    "warnings": 0
   },
   "pdfium-bug_402562387": {
@@ -15618,23 +15698,31 @@
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {
-    "annotations": "NotAttempted",
-    "external_no_new": "NotAttempted",
-    "external_valid": "NotAttempted",
-    "render": "NotAttempted",
-    "reparse": "NotAttempted",
-    "structure": "NotAttempted",
-    "text": "NotAttempted"
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
    },
-   "roundtrip_full": false,
-   "semantic": {},
+   "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "embedded_files": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "pass",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
-    "rewrite": "unsupported",
+    "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "unsupported",
+   "verdict": "pass",
    "warnings": 0
   },
   "scan-bad": {
@@ -16470,23 +16558,31 @@
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {
-    "annotations": "NotAttempted",
-    "external_no_new": "NotAttempted",
-    "external_valid": "NotAttempted",
-    "render": "NotAttempted",
-    "reparse": "NotAttempted",
-    "structure": "NotAttempted",
-    "text": "NotAttempted"
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
    },
-   "roundtrip_full": false,
-   "semantic": {},
+   "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "embedded_files": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "pass",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
-    "rewrite": "unsupported",
+    "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "unsupported",
+   "verdict": "pass",
    "warnings": 0
   },
   "text_rise_eol_bug": {
@@ -16620,23 +16716,31 @@
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {
-    "annotations": "NotAttempted",
-    "external_no_new": "NotAttempted",
-    "external_valid": "NotAttempted",
-    "render": "NotAttempted",
-    "reparse": "NotAttempted",
-    "structure": "NotAttempted",
-    "text": "NotAttempted"
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
    },
-   "roundtrip_full": false,
-   "semantic": {},
+   "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "embedded_files": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "pass",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
-    "rewrite": "unsupported",
+    "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "unsupported",
+   "verdict": "pass",
    "warnings": 0
   },
   "transparent": {
@@ -16651,23 +16755,31 @@
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {
-    "annotations": "NotAttempted",
-    "external_no_new": "NotAttempted",
-    "external_valid": "NotAttempted",
-    "render": "NotAttempted",
-    "reparse": "NotAttempted",
-    "structure": "NotAttempted",
-    "text": "NotAttempted"
+    "annotations": "NotApplicable",
+    "external_no_new": "Pass",
+    "external_valid": "Pass",
+    "render": "Pass",
+    "reparse": "Pass",
+    "structure": "Pass",
+    "text": "Pass"
    },
-   "roundtrip_full": false,
-   "semantic": {},
+   "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "embedded_files": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "pass",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
-    "rewrite": "unsupported",
+    "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "unsupported",
+   "verdict": "pass",
    "warnings": 0
   },
   "truetype_without_cmap": {
