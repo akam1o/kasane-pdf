@@ -77,6 +77,7 @@
 mod acroform;
 mod agl;
 mod annot_appearance;
+mod annot_text;
 pub mod audit;
 mod bilevel;
 mod cff_matrix;
@@ -132,7 +133,9 @@ pub use matrix::Matrix;
 #[cfg(feature = "tiny-skia-interop")]
 pub use render::pixmap_to_png;
 pub use render::{render_page, Color, PixelFormat, RenderOptions, RenderedPage};
-pub use text_extract::{extract_text, CharInfo, ExtractedText, ResolveKind, TextOptions};
+pub use text_extract::{
+    extract_text, AnnotationText, CharInfo, ExtractedText, FieldText, ResolveKind, TextOptions,
+};
 /// The raster type behind `RenderedPage::pixmap()`, re-exported so it
 /// can be named without depending on `tiny-skia` at a matching
 /// version. `tiny-skia-interop` feature.

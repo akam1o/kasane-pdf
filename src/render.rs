@@ -578,6 +578,8 @@ pub fn render_page(
         text_tlm: Matrix::IDENTITY,
         text_codes: 0,
         extract: None,
+        annot_spans: Vec::new(),
+        annot_hidden: Vec::new(),
         extract_unicode_bytes: 0,
         extraction_only: false,
         substitutions: Vec::new(),
@@ -853,6 +855,15 @@ fn page_dict_entry(doc: &Document, page: &Page, key: &[u8]) -> Result<Option<Obj
     }
 }
 
+/// The page's `/Annots` entries (`None` when absent or null).
+pub(crate) fn page_annots(doc: &Document, page: &Page) -> Result<Option<Vec<Object>>, Error> {
+    match page_dict_entry(doc, page, b"Annots")? {
+        None | Some(Object::Null) => Ok(None),
+        Some(Object::Array(a)) => Ok(Some(a)),
+        Some(_) => Err(Error::Structure("/Annots is not an array".into())),
+    }
+}
+
 fn rect_is_finite(r: &crate::page::Rect) -> bool {
     [r.llx, r.lly, r.urx, r.ury].iter().all(|v| v.is_finite())
 }
@@ -969,6 +980,11 @@ pub(crate) struct Renderer<'a> {
     /// If `Some`, text-showing ops also record an [`ExtractedChar`]
     /// per character code — used by [`crate::text_extract`].
     extract: Option<Vec<crate::text_extract::CharInfo>>,
+    /// Extraction with annotations: per `/Annots` index, the range of
+    /// `extract` its normal appearance produced, and the indices not
+    /// drawn because they are hidden (flags or optional content).
+    annot_spans: Vec<(usize, std::ops::Range<usize>)>,
+    annot_hidden: Vec<usize>,
     /// Cumulative UTF-8 bytes of resolved Unicode stored in `extract`.
     extract_unicode_bytes: u64,
     /// `true` while serving `extract_text`: painting work (path
@@ -1154,6 +1170,8 @@ impl<'a> Renderer<'a> {
             text_tlm: Matrix::IDENTITY,
             text_codes: 0,
             extract: Some(Vec::new()),
+            annot_spans: Vec::new(),
+            annot_hidden: Vec::new(),
             extract_unicode_bytes: 0,
             extraction_only: true,
             substitutions: Vec::new(),
@@ -1184,6 +1202,16 @@ impl<'a> Renderer<'a> {
     }
 
     /// Take the extracted character buffer (extraction mode only).
+    /// Characters extracted so far.
+    pub(crate) fn extracted_len(&self) -> usize {
+        self.extract.as_ref().map_or(0, Vec::len)
+    }
+
+    /// UTF-8 bytes of Unicode text extracted so far (the budget used).
+    pub(crate) fn extracted_unicode_bytes(&self) -> u64 {
+        self.extract_unicode_bytes
+    }
+
     pub(crate) fn take_extracted(&mut self) -> Option<Vec<crate::text_extract::CharInfo>> {
         self.extract.take()
     }
@@ -2850,7 +2878,11 @@ impl<'a> Renderer<'a> {
     /// corner where the rotated page puts it. NoZoom concerns the
     /// viewer's magnification; a render is the page at magnification 1
     /// at the requested resolution, so it changes nothing here.
-    fn draw_annotations(&mut self, page: &Page, page_resources: &Object) -> Result<(), Error> {
+    pub(crate) fn draw_annotations(
+        &mut self,
+        page: &Page,
+        page_resources: &Object,
+    ) -> Result<(), Error> {
         let Some(annots) = page_dict_entry(self.doc, page, b"Annots")? else {
             return Ok(());
         };
@@ -2860,7 +2892,7 @@ impl<'a> Renderer<'a> {
             Object::Null => return Ok(()),
             _ => return Err(Error::Structure("/Annots is not an array".into())),
         };
-        for entry in &entries {
+        for (index, entry) in entries.iter().enumerate() {
             let entry_ref = entry.as_ref();
             let annot = self.doc.deref(entry)?;
             if matches!(annot, Object::Null) {
@@ -2890,6 +2922,7 @@ impl<'a> Renderer<'a> {
                 .and_then(|o| o.as_i64())
                 .unwrap_or(0);
             if flags & 0x02 != 0 || flags & 0x20 != 0 {
+                self.annot_hidden.push(index);
                 continue;
             }
             if subtype == b"Popup" {
@@ -2898,6 +2931,7 @@ impl<'a> Renderer<'a> {
             // §12.5.2 /OC: an annotation in a hidden group is not drawn.
             if let Some(oc) = ad.get(b"OC".as_slice()) {
                 if !self.oc.visible(self.doc, oc)? {
+                    self.annot_hidden.push(index);
                     continue;
                 }
             }
@@ -2954,6 +2988,16 @@ impl<'a> Renderer<'a> {
                     // value, no /MK): the widget is simply blank.
                     None => continue,
                 }
+            } else if !has_ap
+                && subtype != b"Widget"
+                && subtype != b"Link"
+                && self.extraction_only
+                && !crate::annot_appearance::synthesizes(&subtype)
+            {
+                // Extraction: an annotation with no appearance of its
+                // own and none we draw has no appearance text — its
+                // dictionary text is reported on its own.
+                continue;
             } else if !has_ap && subtype != b"Widget" && subtype != b"Link" {
                 // Markup annotations without /AP (§12.5.6,
                 // `crate::annot_appearance`); unhandled subtypes are
@@ -3027,6 +3071,9 @@ impl<'a> Renderer<'a> {
                                     match v {
                                             Some(v) if states.contains_key(v.as_slice()) => v,
                                             Some(_) => b"Off".to_vec(),
+                                            // Extraction: no state is
+                                            // selected, nothing is drawn.
+                                            None if self.extraction_only => continue,
                                             None => {
                                                 return Err(Error::Unsupported {
                                                     feature:
@@ -3177,14 +3224,29 @@ impl<'a> Renderer<'a> {
                 });
             }
             self.xobject_invocations += 1;
+            let start = self.extract.as_ref().map(Vec::len);
             self.do_form(
                 &sdict,
                 &sraw,
                 b"annotation appearance",
                 stream_ref.or(entry_ref),
             )?;
+            if let (Some(start), Some(buf)) = (start, self.extract.as_ref()) {
+                self.annot_spans.push((index, start..buf.len()));
+            }
         }
         Ok(())
+    }
+
+    /// Extraction with annotations: the appearance spans and hidden
+    /// indices recorded by `draw_annotations`.
+    pub(crate) fn take_annotation_spans(
+        &mut self,
+    ) -> (Vec<(usize, std::ops::Range<usize>)>, Vec<usize>) {
+        (
+            std::mem::take(&mut self.annot_spans),
+            std::mem::take(&mut self.annot_hidden),
+        )
     }
 
     /// Intersect the current clip with `rect` (in user space under the

@@ -96,6 +96,12 @@ pub struct TextOptions {
     /// `None` keeps every character. The filter is applied after
     /// extraction, so limits and errors are unaffected by it.
     pub region: Option<crate::page::Rect>,
+    /// Also report the page's annotations and form fields in
+    /// [`ExtractedText::annotations`] (off by default: `chars` and
+    /// everything else are unchanged either way). Each annotation's
+    /// appearance is interpreted like a render would, so an annotation
+    /// the renderer refuses fails the extraction too.
+    pub include_annotations: bool,
 }
 
 impl TextOptions {
@@ -125,7 +131,18 @@ impl TextOptions {
         self.region = Some(region);
         self
     }
+
+    /// Report annotation and form-field text in
+    /// [`ExtractedText::annotations`] (`true`), or not (`false`, the
+    /// default).
+    #[must_use]
+    pub fn with_annotations(mut self, include: bool) -> Self {
+        self.include_annotations = include;
+        self
+    }
 }
+
+pub use crate::annot_text::{AnnotationText, FieldText};
 
 /// One extracted character — a single PDF character code with its
 /// resolved Unicode value and page-space geometry.
@@ -210,6 +227,11 @@ pub struct ExtractedText {
     /// them. Non-zero on a `LimitExceeded` path — the `Err` is
     /// propagated separately, but on success this is always 0.
     pub omitted: u64,
+    /// The page's annotations and form fields, in `/Annots` order —
+    /// only with [`TextOptions::with_annotations`], else empty. Their
+    /// text is never in `chars`. `region` filters their `appearance`
+    /// characters like `chars`.
+    pub annotations: Vec<AnnotationText>,
 }
 
 /// Extract positioned text from `page` in content order.
@@ -237,14 +259,24 @@ pub fn extract_text(
             ));
         }
     }
-    let mut out = extract_text_impl(doc, page, &opts.limits, opts.include_hidden_content)?;
+    let mut out = extract_text_impl(
+        doc,
+        page,
+        &opts.limits,
+        opts.include_hidden_content,
+        opts.include_annotations,
+    )?;
     if let Some(r) = &opts.region {
         let (x0, x1) = (r.llx.min(r.urx), r.llx.max(r.urx));
         let (y0, y1) = (r.lly.min(r.ury), r.lly.max(r.ury));
-        out.chars.retain(|c| {
+        let inside = |c: &CharInfo| {
             let (x, y) = c.origin;
             x >= x0 && x <= x1 && y >= y0 && y <= y1
-        });
+        };
+        out.chars.retain(inside);
+        for a in &mut out.annotations {
+            a.appearance.retain(inside);
+        }
     }
     Ok(out)
 }
@@ -254,6 +286,7 @@ fn extract_text_impl(
     page: &Page,
     limits: &Limits,
     include_hidden: bool,
+    include_annotations: bool,
 ) -> Result<ExtractedText, Error> {
     let _budget = doc.decoded_budget_scope();
     let opts = crate::render::RenderOptions {
@@ -266,8 +299,39 @@ fn extract_text_impl(
         r.include_hidden_content();
     }
     r.run(&ops)?;
-    let chars = r.take_extracted().unwrap_or_default();
-    Ok(ExtractedText { chars, omitted: 0 })
+    let mut annotations = Vec::new();
+    let chars = if include_annotations {
+        let n = r.extracted_len();
+        let page_resources = page
+            .resources()
+            .cloned()
+            .unwrap_or(crate::object::Object::Dict(Default::default()));
+        r.draw_annotations(page, &page_resources)?;
+        let (spans, hidden) = r.take_annotation_spans();
+        let used = r.extracted_unicode_bytes();
+        let mut all = r.take_extracted().unwrap_or_default();
+        let drawn: Vec<(usize, Vec<CharInfo>)> = spans
+            .into_iter()
+            .map(|(i, range)| (i, all[range].to_vec()))
+            .collect();
+        all.truncate(n);
+        annotations = crate::annot_text::collect(
+            doc,
+            page,
+            drawn,
+            &hidden,
+            used,
+            limits.max_extracted_unicode_bytes,
+        )?;
+        all
+    } else {
+        r.take_extracted().unwrap_or_default()
+    };
+    Ok(ExtractedText {
+        chars,
+        omitted: 0,
+        annotations,
+    })
 }
 
 /// Resolve `code` through the font — used by the renderer's

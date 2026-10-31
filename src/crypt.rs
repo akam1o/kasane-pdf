@@ -189,7 +189,7 @@ fn sized<'a>(
 
 /// The characters PDFDocEncoding (Annex D, Table D.2) places outside
 /// the Latin-1 positions.
-const PDFDOC_SPECIALS: [(char, u8); 40] = [
+pub(crate) const PDFDOC_SPECIALS: [(char, u8); 40] = [
     ('\u{02D8}', 0x18),
     ('\u{02C7}', 0x19),
     ('\u{02C6}', 0x1A),
