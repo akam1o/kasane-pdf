@@ -75,6 +75,7 @@
 //! ```
 
 mod acroform;
+mod agl;
 mod annot_appearance;
 pub mod audit;
 mod bilevel;
@@ -118,6 +119,7 @@ mod symbol_fonts;
 pub mod text_extract;
 mod tounicode;
 mod type1;
+mod unicode_fallback;
 pub mod warning;
 mod xref;
 

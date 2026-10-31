@@ -173,9 +173,20 @@ pub struct CharInfo {
 pub enum ResolveKind {
     /// Via `/ToUnicode` CMap (preferred).
     ToUnicode,
-    /// Via the font's `Encoding` → AGL glyph name → Unicode
-    /// (the spec's fallback for non-symbolic simple fonts).
+    /// Via a glyph name of the font's encoding (the PDF `/Encoding` or
+    /// the program's built-in one) and the Adobe glyph-name rules
+    /// (§9.10.2 method 2; also for Type 3 character names).
     EncodingFallback,
+    /// No `/ToUnicode` and no meaningful encoding name: through the
+    /// embedded font program — its Unicode `cmap` read backwards
+    /// (unambiguous glyphs only) or its own glyph name (`post`, CFF
+    /// charset). Not a method of ISO 32000; never used for a
+    /// substituted face.
+    FontProgram,
+    /// No `/ToUnicode`: the CID through the font's Adobe character
+    /// collection, `Adobe-<ordering>-UCS2` (§9.10.2 method 3). Only the
+    /// collections bundled with the `cjk-fallback` feature (Japan1).
+    CharacterCollection,
     /// Not resolvable — `unicode` is `None`.
     Unresolved,
     /// Replaced by the enclosing marked content's `/ActualText`
@@ -263,9 +274,12 @@ fn extract_text_impl(
 /// extraction hook. Public for `render.rs`; not part of the
 /// crate's public API.
 pub(crate) fn resolve_unicode(font: &Font, code: u32) -> (Option<String>, ResolveKind) {
+    use crate::font::UnicodeSource as S;
     match font.unicode(code) {
-        Some(s) if font.has_tounicode() => (Some(s), ResolveKind::ToUnicode),
-        Some(s) => (Some(s), ResolveKind::EncodingFallback),
+        Some((s, S::ToUnicode)) => (Some(s), ResolveKind::ToUnicode),
+        Some((s, S::GlyphName)) => (Some(s), ResolveKind::EncodingFallback),
+        Some((s, S::FontProgram)) => (Some(s), ResolveKind::FontProgram),
+        Some((s, S::CharacterCollection)) => (Some(s), ResolveKind::CharacterCollection),
         None => (None, ResolveKind::Unresolved),
     }
 }

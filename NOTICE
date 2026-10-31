@@ -67,5 +67,10 @@ upstream commits and verified against scripts/cjk-assets.sha256):
 
 Their licence texts must accompany any binary built with that feature.
 
+This product includes the Adobe Glyph List (glyph name → Unicode
+table, src/agl.rs, generated from glyphlist.txt AGL 2.0), Copyright
+2002-2019 Adobe (http://www.adobe.com/), under the BSD-3-Clause licence
+reproduced at the top of src/agl.rs. Used for text extraction only.
+
 Third-party Rust crates and their licences are listed in
 docs/third-party.md.
