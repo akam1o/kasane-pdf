@@ -330,7 +330,8 @@ struct Ctx<'a> {
     /// Annotation reference → (page index, position in `/Annots`).
     annots: HashMap<IndirectRef, (usize, usize)>,
     nodes: usize,
-    named: Option<Res<HashMap<Vec<u8>, Object>>>,
+    /// Named destinations: (`/Dests` dictionary, `/Names` tree).
+    named: Option<Res<Named>>,
 }
 
 impl<'a> Ctx<'a> {
@@ -376,7 +377,12 @@ impl<'a> Ctx<'a> {
             return err(format!("snapshot stopped after {MAX_NODES} objects"));
         }
         match o {
-            Object::Ref(_) => Ok(self.doc.deref(o).unwrap_or(Object::Null)),
+            // An unresolvable reference is not a null: a rewrite that
+            // loses an object body must not compare equal.
+            Object::Ref(_) => Ok(self
+                .doc
+                .deref(o)
+                .unwrap_or_else(|_| Object::Name(b"#unresolved".to_vec()))),
             o => Ok(o.clone()),
         }
     }
@@ -514,7 +520,7 @@ impl<'a> Ctx<'a> {
 
     // ---------------- destinations ----------------
 
-    fn named(&mut self) -> Res<HashMap<Vec<u8>, Object>> {
+    fn named(&mut self) -> Res<Named> {
         if let Some(r) = &self.named {
             return match r {
                 Ok(m) => Ok(m.clone()),
@@ -532,13 +538,14 @@ impl<'a> Ctx<'a> {
         out
     }
 
-    fn collect_named(&mut self) -> Res<HashMap<Vec<u8>, Object>> {
+    fn collect_named(&mut self) -> Res<Named> {
+        let mut dict: HashMap<Vec<u8>, Object> = HashMap::new();
         let mut m: HashMap<Vec<u8>, Object> = HashMap::new();
         let cat = self.doc.catalog().clone();
         if let Some(d) = cat.get(b"Dests".as_slice()) {
             if let Some(d) = self.dict(d)? {
                 for (k, v) in d {
-                    m.insert(k, v);
+                    dict.insert(k, v);
                 }
             }
         }
@@ -553,7 +560,7 @@ impl<'a> Ctx<'a> {
                 }
             }
         }
-        Ok(m)
+        Ok((dict, m))
     }
 
     /// An explicit destination, or a name / string looked up first.
@@ -564,7 +571,17 @@ impl<'a> Ctx<'a> {
                 if hops > 4 {
                     return Ok("named→loop".into());
                 }
-                match self.named()?.get(n).cloned() {
+                // §12.3.2.4: a name looks up `/Dests`, a string the name
+                // tree; the other store is the fallback, so moving a
+                // destination between the two is not a change, while a
+                // key bound in both resolves to the one its type selects.
+                let (dict, tree) = self.named()?;
+                let (first, second) = if matches!(v, Object::Name(_)) {
+                    (&dict, &tree)
+                } else {
+                    (&tree, &dict)
+                };
+                match first.get(n).or_else(|| second.get(n)).cloned() {
                     Some(t) => self.dest(&t, hops + 1),
                     None => Ok("named→unresolved".into()),
                 }
@@ -726,13 +743,15 @@ impl<'a> Ctx<'a> {
         if !cat.contains_key(b"Dests".as_slice()) && !has_tree {
             return Ok(None);
         }
-        let m = self.named()?;
+        let (dict, tree) = self.named()?;
         let mut out = Vec::new();
-        let mut keys: Vec<Vec<u8>> = m.keys().cloned().collect();
-        keys.sort();
-        for k in keys {
-            let target = self.dest(&m[&k], 1)?;
-            out.push(format!("dest\tname={}\ttarget={target}", hex(&k)));
+        // Both stores, untagged: a key bound in each is two lines, so a
+        // rewrite that drops or merges one binding is a difference.
+        for m in [dict, tree] {
+            for (k, v) in m {
+                let target = self.dest(&v, 1)?;
+                out.push(format!("dest\tname={}\ttarget={target}", hex(&k)));
+            }
         }
         Ok(Some(out))
     }
@@ -905,8 +924,15 @@ impl<'a> Ctx<'a> {
                 format!("{path}.{n}")
             };
             if let Some(r) = it.as_ref() {
+                // `seen` holds the ancestors: only a back-edge is a cycle.
                 if seen.contains(&r) {
                     return err("cycle in the structure tree");
+                }
+                // An element reachable from two parents is recorded at
+                // its first path and referenced from the second.
+                if let Some(first) = paths.get(&r) {
+                    out.push(format!("shared\tpath={at}\tof={first}"));
+                    continue;
                 }
             }
             let v = self.get(it)?;
@@ -952,7 +978,6 @@ impl<'a> Ctx<'a> {
                         out.push(format!("objr\tpath={at}\tpage={}\tobj={obj}", pg(pg_here)));
                     } else {
                         if let Some(r) = it.as_ref() {
-                            seen.insert(r);
                             paths.insert(r, at.clone());
                         }
                         let s = d.get(b"S".as_slice()).and_then(name).unwrap_or_default();
@@ -980,7 +1005,24 @@ impl<'a> Ctx<'a> {
                             pg(pg_here)
                         ));
                         if let Some(kk) = d.get(b"K".as_slice()) {
-                            self.struct_kids(kk, &at, pg_here, depth + 1, roles, seen, paths, out)?;
+                            let r = it.as_ref();
+                            if let Some(r) = r {
+                                seen.insert(r);
+                            }
+                            let res = self.struct_kids(
+                                kk,
+                                &at,
+                                pg_here,
+                                depth + 1,
+                                roles,
+                                seen,
+                                paths,
+                                out,
+                            );
+                            if let Some(r) = r {
+                                seen.remove(&r);
+                            }
+                            res?;
                         }
                     }
                 }
@@ -1348,6 +1390,7 @@ impl<'a> Ctx<'a> {
                 Ok(format!("[{}]", v.join(" ")))
             }
             Object::Name(n) => Ok(format!("/{}", String::from_utf8_lossy(&n))),
+            Object::Dict(_) => self.oc_value(o, idx),
             _ => Ok("ocg?".into()),
         }
     }
@@ -1506,7 +1549,14 @@ impl<'a> Ctx<'a> {
         let mut widget_kids = Vec::new();
         for k in &kids {
             let kd = self.dict(k)?.unwrap_or_default();
-            if kd.contains_key(b"T".as_slice()) {
+            // A kid is a field when it has a name of its own, or when it
+            // is not a widget and has kids (an unnamed intermediate
+            // node); widgets have no field kids.
+            let kid_widget =
+                kd.get(b"Subtype".as_slice()).and_then(name).as_deref() == Some("Widget");
+            if kd.contains_key(b"T".as_slice())
+                || (!kid_widget && kd.contains_key(b"Kids".as_slice()))
+            {
                 field_kids.push(k.clone());
             } else {
                 widget_kids.push(k.clone());
@@ -1609,6 +1659,8 @@ impl<'a> Ctx<'a> {
         ))
     }
 }
+
+type Named = (HashMap<Vec<u8>, Object>, HashMap<Vec<u8>, Object>);
 
 #[derive(Clone, Default)]
 struct Inherit {

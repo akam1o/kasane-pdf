@@ -23,12 +23,12 @@ lines; the original and the rewrite are compared line for line.
 | category | what a line records |
 |---|---|
 | outlines | hierarchy path (order), title, open / closed / leaf, destination — resolved through named destinations to page index and view — or action (GoTo by destination, others by dictionary, `/Next` chains), colour and style flags |
-| named destinations | `/Dests` dictionary and `/Names /Dests` name tree merged: key → page index and view |
+| named destinations | every binding of the `/Dests` dictionary and the `/Names /Dests` name tree, untagged: key → page index and view (a key bound in both stores is two lines; a name resolves through `/Dests` first, a string through the tree first) |
 | page labels | the `/PageLabels` number tree expanded to every page: label, style, prefix, start |
-| structure tree | elements by path: `/S`, role through `/RoleMap`, page, `/Alt`, `/ActualText`, `/Lang`, `/E`, `/T`; MCIDs, MCRs (with `/Stm`), OBJRs (annotation by page and position); the `/ParentTree` entry of every page MCID and annotation `/StructParent`, mapped back to an element path (`orphan` when it is not in the tree) |
+| structure tree | elements by path: `/S`, role through `/RoleMap`, page, `/Alt`, `/ActualText`, `/Lang`, `/E`, `/T`; an element reachable from two parents is recorded once and referenced (`shared`); MCIDs, MCRs (with `/Stm`), OBJRs (annotation by page and position); the `/ParentTree` entry of every page MCID and annotation `/StructParent`, mapped back to an element path (`orphan` when it is not in the tree) |
 | embedded files | `/Names /EmbeddedFiles`, catalog `/AF`, FileAttachment annotations: `/F`, `/UF`, `/Desc`, `/AFRelationship`, MIME type, `/Params` `/Size` and `/ModDate`, decoded length and digest |
 | optional content | OCGs by position in `/OCGs` (name, intent, usage); every configuration (base state, ON / OFF / Locked, `/Order`, `/RBGroups`, `/ListMode`, `/AS`, …); every use — page `/Properties`, XObject `/OC`, annotation `/OC` — with OCMDs by members, policy and visibility expression |
-| AcroForm | `/NeedAppearances`, `/SigFlags`, `/DA`, `/Q`; terminal fields by fully qualified name with inherited `/FT`, `/Ff`, `/V`, `/DV`, `/Opt`, `/MaxLen`; their widgets by page and position with `/Rect`, `/AS`, `/MK`, appearance states, flags, `/DA`; the calculation order |
+| AcroForm | `/NeedAppearances`, `/SigFlags`, `/DA`, `/Q`; terminal fields by fully qualified name (unnamed intermediate nodes walked) with inherited `/FT`, `/Ff`, `/V`, `/DV`, `/Opt`, `/MaxLen`; their widgets by page and position with `/Rect`, `/AS`, `/MK`, the names of the appearance states, flags, `/DA`; the calculation order |
 
 Normalisation: object numbers never appear (pages by index, annotations
 by page and position, OCGs by index, structure elements by path);
@@ -45,6 +45,15 @@ depth 12, 64 MiB per decoded embedded file. A cycle in an outline,
 structure tree, field tree or name / number tree, or a limit, makes the
 category `error`.
 
+Not in the snapshot: the content of appearance streams (only their
+state names — the render round trip compares how they draw), the
+marked-content sequences inside page content (the snapshot sees the
+MCIDs the structure tree and ParentTree claim, not which content
+carries them), and annotations other than widgets, file attachments
+and OBJR targets (the existing annotation check covers their summary).
+A reference to an undefined object is null (§7.3.10); a reference the
+engine cannot resolve is a distinct `#unresolved` value.
+
 ## Classes
 
 | class | meaning | success |
@@ -59,6 +68,12 @@ Failure notes carry counts and the *names* of differing fields, never
 their values: the run report can be a CI artifact.
 
 ## Verification
+
+An independent review (another model) found four normalisation gaps
+before the corpus run, all fixed with tests: a key bound in both
+destination stores collapsed to one binding; a structure element shared
+by two parents read as a cycle (`error`); fields under an unnamed
+intermediate node were not walked; resolution failures read as null.
 
 Synthetic documents (`semantic/tests.rs`): renumbered, destinations in
 a name tree, a split number tree, a UTF-16 title and a deflated embedded

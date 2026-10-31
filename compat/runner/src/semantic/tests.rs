@@ -478,3 +478,133 @@ fn text_strings_normalise() {
     assert_eq!(letters(28), "bb");
     assert_eq!(roman(14), "xiv");
 }
+
+/// A one-page document with extra catalog entries and objects.
+fn small(catalog_extra: &str, objs: &[(u32, &str)]) -> Document {
+    let mut o: Vec<(u32, String)> = vec![
+        (
+            1,
+            format!("<< /Type /Catalog /Pages 2 0 R {catalog_extra} >>"),
+        ),
+        (2, "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".into()),
+        (
+            3,
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>".into(),
+        ),
+        (
+            4,
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>".into(),
+        ),
+    ];
+    o.extend(objs.iter().map(|(n, b)| (*n, b.to_string())));
+    doc(&build(&o, 1))
+}
+
+fn lines(d: &Document, cat: &str) -> Vec<String> {
+    let i = CATEGORIES.iter().position(|c| *c == cat).unwrap();
+    match &snapshot(d)[i] {
+        Section::Data(v) => v.clone(),
+        other => panic!("{cat}: {other:?}"),
+    }
+}
+
+#[test]
+fn a_key_bound_in_both_destination_stores_is_two_bindings() {
+    // `/Dests` binds /chap to page 2, the name tree binds (chap) to page
+    // 1. Dropping either binding is a difference.
+    let both = small(
+        "/Dests << /chap [4 0 R /Fit] >> /Names << /Dests 20 0 R >>",
+        &[(20, "<< /Names [(chap) [3 0 R /Fit]] >>")],
+    );
+    let tree_only = small(
+        "/Names << /Dests 20 0 R >>",
+        &[(20, "<< /Names [(chap) [3 0 R /Fit]] >>")],
+    );
+    let dict_only = small("/Dests << /chap [4 0 R /Fit] >>", &[]);
+    assert_eq!(lines(&both, "named_dests").len(), 2);
+    for other in [&tree_only, &dict_only] {
+        assert_eq!(
+            class_of(&compare(&both, other), "named_dests"),
+            SemClass::Fail
+        );
+    }
+    // An outline naming /chap (a name) resolves through /Dests, (chap)
+    // (a string) through the tree.
+    let outl = |dest: &str| {
+        small(
+            "/Dests << /chap [4 0 R /Fit] >> /Names << /Dests 20 0 R >> /Outlines 10 0 R",
+            &[
+                (20, "<< /Names [(chap) [3 0 R /Fit]] >>"),
+                (10, "<< /First 11 0 R >>"),
+                (11, &format!("<< /Title (x) /Dest {dest} >>")),
+            ],
+        )
+    };
+    assert!(lines(&outl("/chap"), "outlines")[0].contains("target=dest p1 /Fit"));
+    assert!(lines(&outl("(chap)"), "outlines")[0].contains("target=dest p0 /Fit"));
+}
+
+#[test]
+fn a_shared_structure_element_is_not_a_cycle() {
+    let d = small(
+        "/StructTreeRoot 40 0 R",
+        &[
+            (40, "<< /Type /StructTreeRoot /K [41 0 R 42 0 R] >>"),
+            (41, "<< /S /Sect /K [43 0 R] >>"),
+            (42, "<< /S /Sect /K [43 0 R] >>"),
+            (43, "<< /S /P /Pg 3 0 R /K 0 >>"),
+        ],
+    );
+    let l = lines(&d, "struct_tree");
+    assert!(l.iter().any(|x| x == "shared\tpath=1.0\tof=0.0"), "{l:?}");
+    assert_eq!(l.iter().filter(|x| x.starts_with("mcid")).count(), 1);
+}
+
+#[test]
+fn unnamed_intermediate_fields_are_walked() {
+    let form = |v: &str| {
+        small(
+            "/AcroForm << /Fields [80 0 R] >>",
+            &[
+                (80, "<< /T (a) /Kids [81 0 R] >>"),
+                (81, "<< /Kids [82 0 R] >>"),
+                (
+                    82,
+                    &format!("<< /T (b) /FT /Tx {v} /Subtype /Widget /Rect [0 0 5 5] /P 3 0 R >>"),
+                ),
+            ],
+        )
+    };
+    let l = lines(&form("/V (x)"), "acroform");
+    assert!(
+        l.iter()
+            .any(|x| x.starts_with("field\tname=a.b\tft=/Tx") && x.contains("v=(x)")),
+        "{l:?}"
+    );
+    assert_eq!(
+        class_of(&compare(&form("/V (x)"), &form("")), "acroform"),
+        SemClass::Fail
+    );
+}
+
+#[test]
+fn a_lost_object_body_is_a_difference() {
+    // §7.3.10: a reference to an undefined object is null, so a value
+    // whose body the rewrite lost reads as null — not as the value.
+    let form = |v: &str, extra: &[(u32, &str)]| {
+        let mut objs = vec![(
+            80,
+            format!("<< /T (a) /FT /Tx /V {v} /Subtype /Widget /Rect [0 0 5 5] >>"),
+        )];
+        objs.extend(extra.iter().map(|(n, b)| (*n, b.to_string())));
+        let refs: Vec<(u32, &str)> = objs.iter().map(|(n, b)| (*n, b.as_str())).collect();
+        small("/AcroForm << /Fields [80 0 R] >>", &refs)
+    };
+    let kept = form("90 0 R", &[(90, "(x)")]);
+    let lost = form("90 0 R", &[]);
+    assert_eq!(class_of(&compare(&kept, &lost), "acroform"), SemClass::Fail);
+    assert_eq!(
+        class_of(&compare(&kept, &form("(x)", &[])), "acroform"),
+        SemClass::Pass
+    );
+}
