@@ -169,10 +169,16 @@ fires on 2 pages (the known grid; the page-edge hairline), and
 The runner computing the metrics reproduces the prototype exactly
 (0.264 / 1.0 / 250 px on the NoRotate page).
 
-Not yet measured on Linux: the nightly runs published code, and these
-changes are local. Promotion to enforced needs at least the Linux
-distribution and a period of nightly runs with the report-only
-findings reviewed.
+Linux (nightly 41230437264, Poppler 26.01, 847 exact pages): the
+runner measured every page; `content_ssim_shift` fires on the same 2
+pages as on macOS; `displaced_ink` on 2 — the macOS page (a glyph
+Poppler drops) and the vertical-CJK page, where Poppler 26.01 draws
+only part of the text (macOS Poppler 26.10 and kasane-pdf agree; our
+render is identical on both platforms). No new kasane-pdf defect.
+The historic misrenders cannot be replayed on Linux (the nightly runs
+the current engine); their detection is pinned by the metric values in
+`scripts/test_ci_regression.py`. Promotion to enforced needs a period
+of nightly runs with the report-only findings reviewed; not now.
 
 ## Blind spots
 

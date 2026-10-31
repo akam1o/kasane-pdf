@@ -55,7 +55,20 @@ differences are in the witness —
 | `roundtrip_full` true → false | 1 | Poppler 26.01 renders a malformed original at another page size |
 
 No enforced flag changed: the one flagged file (reviewed) is the same
-with the same page. The exemptions cost the gate 9 of 848 pages on
+with the same page.
+
+Updated 2026-11-01 from nightly run 41230437264 (commit `41215fe`,
+same environment) to add the semantic round trip per category and the
+report-only rule set per file. Nothing else changed per file except two
+quality classes `ok` → `report:…`, both witness defects reviewed side by
+side: a CJK glyph of an embedded OpenType CFF font that Poppler does
+not draw (Quartz and kasane-pdf do) — `displaced_ink`; and vertical CJK
+text that Poppler 26.01 draws only partly (26.10 locally draws it like
+kasane-pdf, whose render is identical on both platforms) —
+`displaced_ink` and `content_ssim_shift`. Report-only findings never
+fail; recording them lets `check` list *new* ones. Semantic round trip:
+413 compared, 189 pass, 224 not applicable, 0 fail / unsupported /
+error — identical to the macOS run. The exemptions cost the gate 9 of 848 pages on
 Linux; they cannot hide a misrender on another page. Quality-gate
 flags the baseline may hold are capped by `reviewed_known_flags` in
 `compat/quality-gate.json`.
