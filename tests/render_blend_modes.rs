@@ -302,3 +302,22 @@ fn a_blend_mode_reached_through_nested_forms_or_an_appearance_is_found() {
         assert!(close(got, CS), "{what}: got {got:.3?}, want {CS:.3?}");
     }
 }
+
+#[test]
+fn the_blend_scan_adds_no_warning() {
+    // A hidden annotation whose appearance is an undefined object: the
+    // renderer never reaches it, so rendering must not warn about it —
+    // the backdrop scan reads it quietly.
+    let pdf = bare_page_pdf(
+        "/Annots [6 0 R]",
+        "",
+        vec![(
+            6,
+            b"<< /Type /Annot /Subtype /Square /F 2 /Rect [0 0 10 10] /AP << /N 99 0 R >> >>"
+                .to_vec(),
+        )],
+    );
+    let doc = Document::from_bytes(&pdf).unwrap();
+    render_page(&doc, &doc.pages()[0], &RenderOptions::new().with_dpi(72.0)).unwrap();
+    assert!(doc.warnings().is_empty(), "{:?}", doc.warnings());
+}
