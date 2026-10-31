@@ -1280,10 +1280,14 @@ impl Type1Font {
             Ok(c) => c,
             Err(_) => return Ok(Some(GlyphId(0))), // no program → .notdef
         };
+        let n_glyphs = cff.number_of_glyphs();
         if let Some(name) = self.glyph_name_bytes(code) {
             if let Ok(s) = std::str::from_utf8(name) {
                 if let Some(g) = cff.glyph_index_by_name(s) {
                     return Ok(Some(g));
+                }
+                if let Some(g) = self.predefined_charset_gid(s, n_glyphs)? {
+                    return Ok(Some(GlyphId(g)));
                 }
             }
         }
@@ -1292,8 +1296,37 @@ impl Type1Font {
             if let Some(g) = cff.glyph_index(code) {
                 return Ok(Some(g));
             }
+            // StandardEncoding over a predefined charset: through the
+            // glyph name, which ttf-parser cannot resolve there.
+            if self.cff_standard_encoding()? {
+                if let Some(name) = crate::encodings::STANDARD[code as usize] {
+                    if let Some(g) = self.predefined_charset_gid(name, n_glyphs)? {
+                        return Ok(Some(GlyphId(g)));
+                    }
+                }
+            }
         }
         Ok(Some(GlyphId(0)))
+    }
+
+    /// The CFF program's Top DICT facts (matrices, predefined charset),
+    /// read once.
+    fn cff_top(&self) -> Result<std::cell::Ref<'_, crate::cff_matrix::CffMatrices>, Error> {
+        let program = self.program.as_deref().unwrap_or_default();
+        if self.cff_matrices.borrow().is_none() {
+            *self.cff_matrices.borrow_mut() = Some(crate::cff_matrix::CffMatrices::parse(program)?);
+        }
+        Ok(std::cell::Ref::map(self.cff_matrices.borrow(), |m| {
+            m.as_ref().expect("set above")
+        }))
+    }
+
+    fn predefined_charset_gid(&self, name: &str, n_glyphs: u16) -> Result<Option<u16>, Error> {
+        self.cff_top()?.predefined_charset_gid(name, n_glyphs)
+    }
+
+    fn cff_standard_encoding(&self) -> Result<bool, Error> {
+        Ok(self.cff_top()?.standard_encoding())
     }
 
     /// Extract `glyph`'s outline into `builder` in font units.

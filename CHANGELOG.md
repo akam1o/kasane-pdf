@@ -15,6 +15,15 @@ versions follow [Semantic Versioning](https://semver.org/).
   pivot Poppler uses). Pages without `/Rotate` and annotations without
   the flag are unchanged. NoZoom needs no change: a render is the page
   at magnification 1 at the requested resolution.
+- **CFF fonts with a predefined charset drew `.notdef` for their
+  glyphs.** A `/FontFile3 /Type1C` program whose Top DICT selects the
+  ISOAdobe charset (operand 0, also the default) has no charset table;
+  glyph names were not found in it, so each glyph was drawn as
+  `.notdef` — typically a box where a space should be — on pages
+  reported as exact renders. Names now resolve through the predefined
+  charset (glyph *i* = standard string *i*). The Expert and
+  ExpertSubset charsets are refused (`Unsupported`) instead of being
+  drawn as `.notdef`.
 
 ## [0.3.1] - 2026-10-31
 

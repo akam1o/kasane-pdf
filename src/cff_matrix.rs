@@ -5,6 +5,10 @@
 //!
 //! ttf-parser exposes only the Top DICT matrix and ignores Font DICT
 //! matrices, so this module reads the few DICT entries it needs itself.
+//! It also records which predefined charset the Top DICT selects:
+//! ttf-parser cannot look a glyph name up in a predefined charset
+//! (`Charset::sid_to_gid` returns `None` for ISOAdobe), so the
+//! name → glyph mapping of such programs is completed here.
 //! Every read is bounds-checked; a structure it cannot read yields an
 //! error rather than a guessed matrix.
 
@@ -29,6 +33,12 @@ pub(crate) struct CffMatrices {
     /// Per Font DICT (CID-keyed fonts): its own `FontMatrix`, if any.
     fds: Vec<Option<Matrix>>,
     fd_select: FdSelect,
+    /// `Some(0 | 1 | 2)` when the Top DICT selects a predefined charset
+    /// (ISOAdobe — also the default when `charset` is absent — Expert,
+    /// ExpertSubset); `None` for a charset table or a CID-keyed font.
+    predefined_charset: Option<usize>,
+    /// The Top DICT `Encoding` is StandardEncoding (absent or 0).
+    standard_encoding: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -159,6 +169,9 @@ fn dict(d: &[u8]) -> Result<Vec<(u16, Vec<f64>)>, Error> {
 }
 
 const FONT_MATRIX: u16 = 1207;
+const CHARSET: u16 = 15;
+const ENCODING: u16 = 16;
+const ROS: u16 = 1230;
 const FD_ARRAY: u16 = 1236;
 const FD_SELECT: u16 = 1237;
 
@@ -193,9 +206,13 @@ impl CffMatrices {
         let &(s, e) = tops.first().ok_or_else(|| bad("empty Top DICT INDEX"))?;
         let mut top = None;
         let (mut fd_array, mut fd_select_at) = (None, None);
+        let (mut charset, mut encoding, mut cid_keyed) = (0, 0, false);
         for (op, v) in dict(&d[s..e])? {
             match op {
                 FONT_MATRIX => top = Some(checked_matrix(&v)?),
+                CHARSET => charset = offset_operand(&v, "charset")?,
+                ENCODING => encoding = offset_operand(&v, "Encoding")?,
+                ROS => cid_keyed = true,
                 FD_ARRAY => fd_array = Some(offset_operand(&v, "FDArray")?),
                 FD_SELECT => fd_select_at = Some(offset_operand(&v, "FDSelect")?),
                 _ => {}
@@ -238,7 +255,41 @@ impl CffMatrices {
             top,
             fds,
             fd_select,
+            predefined_charset: (!cid_keyed && charset <= 2).then_some(charset),
+            standard_encoding: encoding == 0,
         })
+    }
+
+    /// The glyph `name` names in a program whose charset is the
+    /// predefined ISOAdobe one (TN 5176 Appendix C: glyph *i* is
+    /// standard string *i*, for the program's `n_glyphs` glyphs).
+    /// `Ok(None)`: not such a program, or the name is not among its
+    /// glyphs. Expert / ExpertSubset charsets are refused rather than
+    /// drawn as `.notdef`.
+    pub(crate) fn predefined_charset_gid(
+        &self,
+        name: &str,
+        n_glyphs: u16,
+    ) -> Result<Option<u16>, Error> {
+        match self.predefined_charset {
+            Some(0) => Ok(ISO_ADOBE
+                .iter()
+                .position(|n| *n == name)
+                .filter(|&sid| sid < n_glyphs as usize)
+                .map(|sid| sid as u16)),
+            Some(_) => Err(Error::Unsupported {
+                feature: "CFF predefined Expert charset",
+                detail: format!(
+                    "glyph /{name} in a program with the Expert or ExpertSubset charset"
+                ),
+            }),
+            None => Ok(None),
+        }
+    }
+
+    /// The Top DICT selects StandardEncoding as the built-in encoding.
+    pub(crate) fn standard_encoding(&self) -> bool {
+        self.standard_encoding
     }
 
     fn fd_of(&self, gid: u16) -> Option<usize> {
@@ -281,6 +332,239 @@ impl CffMatrices {
         Matrix::new(p.a * s, p.b * s, p.c * s, p.d * s, p.e * s, p.f * s)
     }
 }
+
+/// The ISOAdobe charset (TN 5176 Appendix C): standard strings 0–228.
+const ISO_ADOBE: [&str; 229] = [
+    ".notdef",
+    "space",
+    "exclam",
+    "quotedbl",
+    "numbersign",
+    "dollar",
+    "percent",
+    "ampersand",
+    "quoteright",
+    "parenleft",
+    "parenright",
+    "asterisk",
+    "plus",
+    "comma",
+    "hyphen",
+    "period",
+    "slash",
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "colon",
+    "semicolon",
+    "less",
+    "equal",
+    "greater",
+    "question",
+    "at",
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "F",
+    "G",
+    "H",
+    "I",
+    "J",
+    "K",
+    "L",
+    "M",
+    "N",
+    "O",
+    "P",
+    "Q",
+    "R",
+    "S",
+    "T",
+    "U",
+    "V",
+    "W",
+    "X",
+    "Y",
+    "Z",
+    "bracketleft",
+    "backslash",
+    "bracketright",
+    "asciicircum",
+    "underscore",
+    "quoteleft",
+    "a",
+    "b",
+    "c",
+    "d",
+    "e",
+    "f",
+    "g",
+    "h",
+    "i",
+    "j",
+    "k",
+    "l",
+    "m",
+    "n",
+    "o",
+    "p",
+    "q",
+    "r",
+    "s",
+    "t",
+    "u",
+    "v",
+    "w",
+    "x",
+    "y",
+    "z",
+    "braceleft",
+    "bar",
+    "braceright",
+    "asciitilde",
+    "exclamdown",
+    "cent",
+    "sterling",
+    "fraction",
+    "yen",
+    "florin",
+    "section",
+    "currency",
+    "quotesingle",
+    "quotedblleft",
+    "guillemotleft",
+    "guilsinglleft",
+    "guilsinglright",
+    "fi",
+    "fl",
+    "endash",
+    "dagger",
+    "daggerdbl",
+    "periodcentered",
+    "paragraph",
+    "bullet",
+    "quotesinglbase",
+    "quotedblbase",
+    "quotedblright",
+    "guillemotright",
+    "ellipsis",
+    "perthousand",
+    "questiondown",
+    "grave",
+    "acute",
+    "circumflex",
+    "tilde",
+    "macron",
+    "breve",
+    "dotaccent",
+    "dieresis",
+    "ring",
+    "cedilla",
+    "hungarumlaut",
+    "ogonek",
+    "caron",
+    "emdash",
+    "AE",
+    "ordfeminine",
+    "Lslash",
+    "Oslash",
+    "OE",
+    "ordmasculine",
+    "ae",
+    "dotlessi",
+    "lslash",
+    "oslash",
+    "oe",
+    "germandbls",
+    "onesuperior",
+    "logicalnot",
+    "mu",
+    "trademark",
+    "Eth",
+    "onehalf",
+    "plusminus",
+    "Thorn",
+    "onequarter",
+    "divide",
+    "brokenbar",
+    "degree",
+    "thorn",
+    "threequarters",
+    "twosuperior",
+    "registered",
+    "minus",
+    "eth",
+    "multiply",
+    "threesuperior",
+    "copyright",
+    "Aacute",
+    "Acircumflex",
+    "Adieresis",
+    "Agrave",
+    "Aring",
+    "Atilde",
+    "Ccedilla",
+    "Eacute",
+    "Ecircumflex",
+    "Edieresis",
+    "Egrave",
+    "Iacute",
+    "Icircumflex",
+    "Idieresis",
+    "Igrave",
+    "Ntilde",
+    "Oacute",
+    "Ocircumflex",
+    "Odieresis",
+    "Ograve",
+    "Otilde",
+    "Scaron",
+    "Uacute",
+    "Ucircumflex",
+    "Udieresis",
+    "Ugrave",
+    "Yacute",
+    "Ydieresis",
+    "Zcaron",
+    "aacute",
+    "acircumflex",
+    "adieresis",
+    "agrave",
+    "aring",
+    "atilde",
+    "ccedilla",
+    "eacute",
+    "ecircumflex",
+    "edieresis",
+    "egrave",
+    "iacute",
+    "icircumflex",
+    "idieresis",
+    "igrave",
+    "ntilde",
+    "oacute",
+    "ocircumflex",
+    "odieresis",
+    "ograve",
+    "otilde",
+    "scaron",
+    "uacute",
+    "ucircumflex",
+    "udieresis",
+    "ugrave",
+    "yacute",
+    "ydieresis",
+    "zcaron",
+];
 
 #[cfg(test)]
 mod tests {
@@ -364,6 +648,43 @@ mod tests {
         for n in [3, 10, cff.len() - 3] {
             assert!(CffMatrices::parse(&cff[..n]).is_err(), "cut at {n}");
         }
+    }
+
+    #[test]
+    fn predefined_charset_is_recorded() {
+        let mk = |top: &[u8]| {
+            let index1 = |item: &[u8]| {
+                let mut o = vec![0, 1, 1, 1, item.len() as u8 + 1];
+                o.extend_from_slice(item);
+                o
+            };
+            let mut cff = vec![1, 0, 4, 1];
+            cff.extend(index1(b"A"));
+            cff.extend(index1(top));
+            CffMatrices::parse(&cff).unwrap()
+        };
+        // No charset operator: ISOAdobe; `space` is glyph 1 when the
+        // program has at least two glyphs.
+        let m = mk(&[]);
+        assert_eq!(m.predefined_charset_gid("space", 2).unwrap(), Some(1));
+        assert_eq!(m.predefined_charset_gid("exclam", 2).unwrap(), None);
+        assert_eq!(m.predefined_charset_gid("zcaron", 229).unwrap(), Some(228));
+        assert_eq!(m.predefined_charset_gid("exclamsmall", 400).unwrap(), None);
+        assert!(m.standard_encoding());
+        // charset 1 (Expert): refused, never .notdef.
+        assert!(mk(&[140, 15]).predefined_charset_gid("space", 9).is_err());
+        // A charset table (offset 30): not predefined.
+        assert_eq!(
+            mk(&[169, 15]).predefined_charset_gid("space", 9).unwrap(),
+            None
+        );
+        // CID-keyed (ROS): not predefined.
+        assert_eq!(
+            mk(&[139, 139, 139, 12, 30])
+                .predefined_charset_gid("space", 9)
+                .unwrap(),
+            None
+        );
     }
 
     #[test]
