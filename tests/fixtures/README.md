@@ -156,3 +156,11 @@ the Private dictionary); `t1_default` has no `/FontMatrix`;
 `t1_singular` has an all-zero matrix. Generated; no licence. Used by
 `tests/render_fontmatrix.rs`.
 
+## CFF predefined-charset fixture (`cff_charset/`)
+
+`isoadobe.bin`, written by `make_cff_charset.py` (fontTools): a bare
+CFF program selecting the predefined ISOAdobe charset (no charset
+table) with glyphs `.notdef` (small square), `space` (empty) and
+`exclam` (rectangle). Generated; no licence. Used by
+`tests/render_cff_charset.rs`.
+

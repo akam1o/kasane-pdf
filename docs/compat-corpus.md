@@ -1287,6 +1287,30 @@ Of the 263, 33 have no text from us where Poppler has some (text only in
 annotations or form fields, codes without a Unicode mapping) and 3 the
 reverse.
 
+### Placement rules, CFF charset fix, semantic round trip (2026-10-31)
+
+Same configuration as above (runner with `cjk-fallback`, full mode,
+macOS), on the v0.4.0 line after the NoRotate merge, against the run
+before it. Engine change: CFF programs with the predefined ISOAdobe
+charset resolve glyph names (they drew `.notdef`). Runner changes:
+placement metrics (`plans/quality-gate.md` § Placement rules) and the
+semantic round trip (`plans/semantic-roundtrip.md`).
+
+| expect: pass (425) | before | after |
+|---|---:|---:|
+| strict parse / render / of which approximate | 408 / 380 / 69 | 408 / 380 / 69 |
+| recovered render, text, rewrite, full PASS | 18, 392, 350, 325 | 18, 392, 350, 325 |
+| robustness / strict refusal / unexpected acceptance (44 reject) | 44 / 44 / 0 | 44 / 44 / 0 |
+
+No stage, approximation flag or verdict changed on any file; round trip
+411 full, graph round trip 413 pass; incremental save 446; 0 crash /
+timeout. Pixels changed on 5 pages of the files with such a font — all
+SSIM up, the `.notdef` boxes gone. Quality gate: 1 enforced flag (the
+known grid), report-only `content_ssim_shift` 2 pages and
+`displaced_ink` 1 page (a glyph Poppler drops). Semantic round trip
+over the 413 reparsed rewrites: pass 189, not applicable 224, fail /
+unsupported / error 0.
+
 ## External verification findings (this phase)
 
 What the independent parsers said about the rewrites, file by file,

@@ -103,6 +103,53 @@ def row(files):
     }
 
 
+SEM_CATS = (
+    "outlines", "named_dests", "page_labels", "struct_tree",
+    "embedded_files", "optional_content", "acroform",
+)
+
+
+def semantic_summary(files):
+    """Semantic round trip per category, over files whose rewrite
+    reparsed (the comparison ran). `n` counts files where the original
+    has the structure (every class but not_applicable)."""
+    rows = []
+    ran = [f for f in files if ((f.get("roundtrip") or {}).get("semantic"))]
+    whole = defaultdict(int)
+    for f in ran:
+        whole[f["roundtrip"]["semantic"]["class"]] += 1
+    out = [
+        f"### semantic round trip ({len(ran)} rewritten files compared; overall: "
+        + ", ".join(f"{k} {v}" for k, v in sorted(whole.items()))
+        + ")\n",
+        "| category | n (has it) | pass | fail | unsupported | error | not applicable | lines (original) |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for cat in SEM_CATS:
+        c = defaultdict(int)
+        lines = 0
+        for f in ran:
+            for chk in f["roundtrip"]["semantic"]["checks"]:
+                if chk["category"] == cat:
+                    c[chk["class"]] += 1
+                    lines += chk.get("items", 0)
+        n = sum(v for k, v in c.items() if k != "not_applicable")
+        out.append(
+            f"| {cat} | {n} | {c['pass']} | {c['fail']} | {c['unsupported']} | {c['error']} | "
+            f"{c['not_applicable']} | {lines} |"
+        )
+    graph = sum(1 for f in ran if (f["roundtrip"].get("structure") or {}).get("class") == "Pass")
+    full = sum(1 for f in ran if f["roundtrip"].get("full"))
+    sem_pass_full_fail = sum(
+        1 for f in ran if f["roundtrip"].get("full") and f["roundtrip"]["semantic"]["class"] in ("fail", "error")
+    )
+    out.append(
+        f"\nGraph round trip (structure) pass: {graph}; full round trip: {full}; "
+        f"full round trip but semantic fail or error: {sem_pass_full_fail}.\n"
+    )
+    return "\n".join(out)
+
+
 def median(v):
     v = sorted(v)
     n = len(v)
@@ -187,6 +234,8 @@ def main(argv):
             print(f"| {c} | " + " | ".join(str(r[k]) for k in COLS) + " |")
         print()
     print(text_summary(files))
+    print()
+    print(semantic_summary(files))
     return 0
 
 

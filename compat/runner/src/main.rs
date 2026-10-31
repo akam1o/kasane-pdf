@@ -20,6 +20,7 @@ mod gsaudit;
 mod probe;
 mod profile;
 mod roundtrip;
+mod semantic;
 
 use analysis::{priorities_table, PrioritiesConfig};
 use cause::classify;
@@ -346,6 +347,29 @@ struct RenderQuality {
     /// reports.
     #[serde(default)]
     sizes: Vec<usize>,
+    /// Content SSIM with our image moved by `best_shift` first, so a
+    /// whole-page ±1–3 px placement difference (rounding, image origin)
+    /// does not count as structure lost. `None` in older reports.
+    #[serde(default)]
+    content_ssim_at_shift: Option<f64>,
+    /// Local placement check, after `best_shift`, in tiles of
+    /// `TILE_PX` pixels: the largest share, over tiles holding at least
+    /// `TILE_MIN_INK` of our ink pixels, of our ink (luma < 200) with no
+    /// reference mark (luma < 245) within `NEAR_PX` pixels — content we
+    /// drew where the reference has nothing (misplaced, rotated or extra
+    /// content). Faint marks count on the other side so a lighter
+    /// anti-aliased stroke is not "nothing". `None` in older reports.
+    #[serde(default)]
+    displaced_ink_tile: Option<f64>,
+    /// Our ink pixels with no reference mark within `NEAR_PX`, whole page.
+    #[serde(default)]
+    displaced_ink_px: Option<usize>,
+    /// The reverse of `displaced_ink_tile`: reference ink with nothing
+    /// of ours near it (content we did not draw, or drew elsewhere).
+    #[serde(default)]
+    missing_ink_tile: Option<f64>,
+    #[serde(default)]
+    missing_ink_px: Option<usize>,
 }
 
 /// One compared page — whole-page metrics plus the content-aware set.
@@ -552,6 +576,85 @@ fn diff_px_shifted(a: &[u8], b: &[u8], w: usize, h: usize, dx: i32, dy: i32) -> 
     }
 }
 
+/// `a` moved by (dx, dy) — pixel (x, y) to (x + dx, y + dy), the pairing
+/// `diff_px_shifted` uses — with white where nothing moved in.
+fn shifted(a: &[u8], w: usize, h: usize, dx: i32, dy: i32) -> Vec<u8> {
+    let mut out = vec![255u8; w * h];
+    for y in 0..h as i32 {
+        let ty = y + dy;
+        if ty < 0 || ty >= h as i32 {
+            continue;
+        }
+        for x in 0..w as i32 {
+            let tx = x + dx;
+            if tx >= 0 && tx < w as i32 {
+                out[ty as usize * w + tx as usize] = a[y as usize * w + x as usize];
+            }
+        }
+    }
+    out
+}
+
+/// Tile edge for the local placement check (24 pt at 96 dpi).
+const TILE_PX: usize = 32;
+/// Tiles with fewer tested ink pixels than this are not judged.
+const TILE_MIN_INK: usize = 20;
+/// Distance within which a mark in the other image counts as "near".
+const NEAR_PX: usize = 2;
+/// Luma below which a pixel is a mark (faint anti-aliasing included).
+const MARK_LUMA: u8 = 245;
+
+/// `(worst tile share, pixels)` of `a`'s ink with no mark of `b` within
+/// `NEAR_PX` (see `RenderQuality::displaced_ink_tile`).
+fn unmatched_ink(a: &[u8], b: &[u8], w: usize, h: usize) -> (f64, usize) {
+    // Distance-limited dilation of b's marks: a row pass then a column
+    // pass of a (2·NEAR_PX + 1) box.
+    let mark: Vec<bool> = b.iter().map(|&v| v < MARK_LUMA).collect();
+    let mut rows = vec![false; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            if mark[y * w + x] {
+                for xx in x.saturating_sub(NEAR_PX)..(x + NEAR_PX + 1).min(w) {
+                    rows[y * w + xx] = true;
+                }
+            }
+        }
+    }
+    let mut near = vec![false; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            if rows[y * w + x] {
+                for yy in y.saturating_sub(NEAR_PX)..(y + NEAR_PX + 1).min(h) {
+                    near[yy * w + x] = true;
+                }
+            }
+        }
+    }
+    let (tw, th) = (w.div_ceil(TILE_PX), h.div_ceil(TILE_PX));
+    let mut ink = vec![0usize; tw * th];
+    let mut lone = vec![0usize; tw * th];
+    let mut total = 0usize;
+    for y in 0..h {
+        for x in 0..w {
+            if a[y * w + x] < INK_LUMA {
+                let t = (y / TILE_PX) * tw + x / TILE_PX;
+                ink[t] += 1;
+                if !near[y * w + x] {
+                    lone[t] += 1;
+                    total += 1;
+                }
+            }
+        }
+    }
+    let worst = ink
+        .iter()
+        .zip(&lone)
+        .filter(|(i, _)| **i >= TILE_MIN_INK)
+        .map(|(i, l)| *l as f64 / *i as f64)
+        .fold(0.0, f64::max);
+    (worst, total)
+}
+
 /// The integer shift within ±`max` that minimises the different-pixel
 /// ratio, with that ratio. Ties prefer the smaller shift.
 fn best_shift(a: &[u8], b: &[u8], w: usize, h: usize, max: i32) -> ((i32, i32), f64) {
@@ -634,6 +737,10 @@ fn compare_render(
     let (content_ssim, ink_windows) = content_ssim_gray(&kpix, &ref_sized, kw, kh);
     let diff_px_tol1 = diff_px_tolerant(&kpix, &ref_sized, kw, kh);
     let (shift, diff_px_at_best_shift) = best_shift(&kpix, &ref_sized, kw, kh, 3);
+    let moved = shifted(&kpix, kw, kh, shift.0, shift.1);
+    let (content_ssim_at_shift, _) = content_ssim_gray(&moved, &ref_sized, kw, kh);
+    let (displaced_ink_tile, displaced_ink_px) = unmatched_ink(&moved, &ref_sized, kw, kh);
+    let (missing_ink_tile, missing_ink_px) = unmatched_ink(&ref_sized, &moved, kw, kh);
     let quality = RenderQuality {
         content_ssim,
         ink_windows,
@@ -644,6 +751,11 @@ fn compare_render(
         diff_px_at_best_shift,
         size_mismatch: rw != kw || rh != kh,
         sizes: vec![kw, kh, rw, rh],
+        content_ssim_at_shift: Some(content_ssim_at_shift),
+        displaced_ink_tile: Some(displaced_ink_tile),
+        displaced_ink_px: Some(displaced_ink_px),
+        missing_ink_tile: Some(missing_ink_tile),
+        missing_ink_px: Some(missing_ink_px),
     };
 
     // Save ours, reference (resized), and diff images for inspection.
@@ -1405,6 +1517,9 @@ struct Args {
     compare: Option<PathBuf>,
     /// Run the ExtGState usage audit instead of a compat run.
     gs_audit: bool,
+    /// `--semantic-probe`: mutate real files through the editing API and
+    /// check the semantic snapshot notices (`semantic::probe`).
+    semantic_probe: bool,
     /// Run the font usage audit instead of a compat run.
     font_audit: bool,
     /// Round-trip knobs (`--mode smoke|full` sets them together).
@@ -1428,6 +1543,7 @@ fn parse_args() -> Args {
         report_format: "md".into(),
         compare: None,
         gs_audit: false,
+        semantic_probe: false,
         font_audit: false,
         rt_pages: usize::MAX,
         rt_dpi: 48.0,
@@ -1460,6 +1576,7 @@ fn parse_args() -> Args {
             "--format" => a.report_format = it.next().unwrap_or_else(|| "md".into()),
             "--compare" => a.compare = it.next().map(PathBuf::from),
             "--gs-audit" => a.gs_audit = true,
+            "--semantic-probe" => a.semantic_probe = true,
             "--rt-pages" => {
                 a.rt_pages = it.next().and_then(|v| v.parse().ok()).unwrap_or(a.rt_pages)
             }
@@ -1532,6 +1649,10 @@ fn main() {
     // ---- ExtGState usage audit (diagnostic, not a compat run) ------
     if args.gs_audit {
         run_gs_audit(&files, &args);
+        return;
+    }
+    if args.semantic_probe {
+        semantic::probe(&files);
         return;
     }
     if args.font_audit {
@@ -3137,5 +3258,50 @@ mod text_metric_tests {
             content_chars("\u{3001}\u{8C48}")
         );
         assert_eq!(multiset(&[], &[]), (1.0, 1.0, 1.0));
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::{shifted, unmatched_ink};
+
+    /// A 64 × 64 white image with a black `s`-px square at (x, y).
+    fn img(x: usize, y: usize, s: usize) -> Vec<u8> {
+        let mut v = vec![255u8; 64 * 64];
+        for yy in y..y + s {
+            for xx in x..x + s {
+                v[yy * 64 + xx] = 0;
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn displaced_and_missing_ink() {
+        let r = img(4, 4, 10);
+        // Same place: nothing unmatched.
+        assert_eq!(unmatched_ink(&r, &r, 64, 64), (0.0, 0));
+        // Within NEAR_PX: still matched (rasteriser placement noise).
+        assert_eq!(unmatched_ink(&img(6, 4, 10), &r, 64, 64).1, 0);
+        // Moved by 40 px: every ink pixel of ours is displaced.
+        let (t, n) = unmatched_ink(&img(44, 44, 10), &r, 64, 64);
+        assert_eq!((t, n), (1.0, 100));
+        // A faint (luma 240) reference stroke counts as a mark.
+        let mut faint = r.clone();
+        faint
+            .iter_mut()
+            .for_each(|v| *v = if *v == 0 { 240 } else { *v });
+        assert_eq!(unmatched_ink(&r, &faint, 64, 64).1, 0);
+        // Too little ink in a tile: not judged, but counted.
+        let (t, n) = unmatched_ink(&img(50, 50, 3), &r, 64, 64);
+        assert_eq!((t, n), (0.0, 9));
+    }
+
+    #[test]
+    fn shift_moves_pixels_the_way_best_shift_pairs_them() {
+        let a = img(4, 4, 2);
+        let m = shifted(&a, 64, 64, 3, -2);
+        assert_eq!(m[2 * 64 + 7], 0);
+        assert_eq!(m[4 * 64 + 4], 255);
     }
 }

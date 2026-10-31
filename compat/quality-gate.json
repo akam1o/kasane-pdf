@@ -29,6 +29,19 @@
       "description": "SSIM over ink-bearing windows below max with a best-shift difference above min — report only (glyph rasteriser differences put 10 % of exact pages below 0.41)",
       "max": 0.3,
       "min_diff_at_best_shift": 0.05
+    },
+    "content_ssim_shift": {
+      "kind": "content_ssim_shift",
+      "enforced": false,
+      "description": "content SSIM after the best ±3 px shift below max on a page where both sides have ink — report only (2026-10-31: catches the NoRotate and FontMatrix misrenders, 0.26 / 0.11 / 0.15; one legitimate exact page below 0.3 — the known hairline grid)",
+      "max": 0.3
+    },
+    "displaced_ink": {
+      "kind": "displaced_ink",
+      "enforced": false,
+      "description": "after the best shift, a 32-px tile where more than min_tile_share of our ink has no reference mark within 2 px, and at least min_px such pixels on the page — content drawn where the reference has none (misplaced, turned, extra). Report only (2026-10-31: all three historic misrenders and a predefined-charset .notdef bug; 1 legitimate exact page — Poppler drops a glyph Quartz draws)",
+      "min_tile_share": 0.5,
+      "min_px": 30
     }
   }
 }

@@ -229,6 +229,14 @@ pub struct RoundTrip {
     #[serde(default)]
     pub text_normalized_ratio: Option<f64>,
     pub annotations: RtCheck,
+    /// Semantic round trip (`semantic.rs`): outlines, named
+    /// destinations, page labels, structure tree, embedded files,
+    /// optional content and AcroForm compared as normalised snapshots.
+    /// Reported next to the graph comparison (`structure`), not part of
+    /// `full`. `None` when the rewrite did not reparse, and in older
+    /// reports.
+    #[serde(default)]
+    pub semantic: Option<crate::semantic::SemanticRoundTrip>,
     #[serde(default)]
     pub qpdf: Option<QpdfCheck>,
     /// rewritten bytes / original bytes.
@@ -516,6 +524,7 @@ pub fn run(
         }
     };
 
+    rt.semantic = Some(crate::semantic::compare(doc, &doc2));
     let t = Instant::now();
     let diffs = graph_diff(doc, &doc2);
     // The render and text comparisons must open the rewrite the way the
