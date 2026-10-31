@@ -2,7 +2,9 @@
  "aggregate": {
   "crash": 0,
   "files": 66,
+  "incremental_pass": 59,
   "parse_pass": 59,
+  "quality_flag": 0,
   "render_pass": 48,
   "rewrite_pass": 61,
   "roundtrip_full": 60,
@@ -13,6 +15,11 @@
   "bad_offset": {
    "causes": [],
    "expect": "",
+   "incremental": "skip",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {},
    "roundtrip_full": null,
    "stages": {
@@ -21,11 +28,17 @@
     "rewrite": "skip",
     "text": "skip"
    },
-   "verdict": "error"
+   "verdict": "error",
+   "warnings": 0
   },
   "content_ops": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "error",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -42,11 +55,17 @@
     "rewrite": "pass",
     "text": "error"
    },
-   "verdict": "error"
+   "verdict": "error",
+   "warnings": 0
   },
   "contents_array": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "n/a",
+   "recovery_notes": 1,
+   "render_approximate": false,
+   "render_recovered": "pass",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -63,11 +82,17 @@
     "rewrite": "pass",
     "text": "error"
    },
-   "verdict": "error"
+   "verdict": "error",
+   "warnings": 2
   },
   "contents_none": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -84,11 +109,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "cyclic_pages": {
    "causes": [],
    "expect": "",
+   "incremental": "skip",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {},
    "roundtrip_full": null,
    "stages": {
@@ -97,11 +128,17 @@
     "rewrite": "skip",
     "text": "skip"
    },
-   "verdict": "error"
+   "verdict": "error",
+   "warnings": 0
   },
   "encrypted": {
    "causes": [],
    "expect": "",
+   "incremental": "skip",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {},
    "roundtrip_full": null,
    "stages": {
@@ -110,11 +147,17 @@
     "rewrite": "skip",
     "text": "skip"
    },
-   "verdict": "error"
+   "verdict": "error",
+   "warnings": 0
   },
   "flate_bad_data": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "error",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -131,11 +174,17 @@
     "rewrite": "pass",
     "text": "error"
    },
-   "verdict": "error"
+   "verdict": "error",
+   "warnings": 0
   },
   "flate_contents": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "n/a",
+   "recovery_notes": 1,
+   "render_approximate": false,
+   "render_recovered": "pass",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -152,11 +201,17 @@
     "rewrite": "pass",
     "text": "error"
    },
-   "verdict": "error"
+   "verdict": "error",
+   "warnings": 1
   },
   "flate_predictor": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "n/a",
+   "recovery_notes": 1,
+   "render_approximate": false,
+   "render_recovered": "pass",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -173,11 +228,17 @@
     "rewrite": "pass",
     "text": "error"
    },
-   "verdict": "error"
+   "verdict": "error",
+   "warnings": 1
   },
   "flate_predictor_bad": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -194,11 +255,17 @@
     "rewrite": "pass",
     "text": "unsupported"
    },
-   "verdict": "unsupported"
+   "verdict": "unsupported",
+   "warnings": 0
   },
   "hello": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": true,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -215,11 +282,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "hybrid": {
    "causes": [],
    "expect": "",
+   "incremental": "skip",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "pass",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -236,11 +309,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "error"
+   "verdict": "error",
+   "warnings": 0
   },
   "hybrid_compressed": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -257,11 +336,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "hybrid_gap": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -278,11 +363,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "incremental": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -299,11 +390,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "missing_ref": {
    "causes": [],
    "expect": "",
+   "incremental": "skip",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {},
    "roundtrip_full": null,
    "stages": {
@@ -312,11 +409,17 @@
     "rewrite": "skip",
     "text": "skip"
    },
-   "verdict": "error"
+   "verdict": "error",
+   "warnings": 0
   },
   "objstm": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -333,11 +436,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "pages": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -354,11 +463,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "prev_chain": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -375,13 +490,19 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "render_annot": {
    "causes": [
     "render.annotation.unsupported"
    ],
    "expect": "",
+   "incremental": "pass",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "Pass",
     "external_no_new": "Pass",
@@ -398,11 +519,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "unsupported"
+   "verdict": "unsupported",
+   "warnings": 0
   },
   "render_rects": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -419,11 +546,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "render_text": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": true,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -440,11 +573,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_basic": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -461,11 +600,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_clip": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -482,11 +627,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_composite_glyph": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -503,11 +654,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_differences_encoding": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -524,11 +681,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_empty_string": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -545,11 +708,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_extended_chars": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -566,11 +735,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_in_form": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -587,11 +762,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_missing_font_ref": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "n/a",
+   "recovery_notes": 1,
+   "render_approximate": false,
+   "render_recovered": "pass",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -608,11 +789,17 @@
     "rewrite": "pass",
     "text": "error"
    },
-   "verdict": "error"
+   "verdict": "error",
+   "warnings": 1
   },
   "text_mode4_refused": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -629,11 +816,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_no_font_tj": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "error",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -650,11 +843,17 @@
     "rewrite": "pass",
     "text": "error"
    },
-   "verdict": "error"
+   "verdict": "error",
+   "warnings": 0
   },
   "text_notdef": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -671,11 +870,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_quote_ops": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -692,11 +897,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_render_modes": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -713,11 +924,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_rotated": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -734,11 +951,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_same_name_two_resources": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -755,11 +978,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_scaled": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -776,11 +1005,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_symbolic_refused": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -797,11 +1032,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_tc_tw_tz_ts": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -818,11 +1059,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_tj": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -839,11 +1086,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_tj_consecutive_numbers": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -860,11 +1113,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_tj_split": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -881,11 +1140,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_unsupported_encoding": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -902,11 +1167,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_unsupported_type1": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": true,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -923,11 +1194,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "text_widths_override": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -944,11 +1221,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "truncated": {
    "causes": [],
    "expect": "",
+   "incremental": "skip",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {},
    "roundtrip_full": null,
    "stages": {
@@ -957,11 +1240,17 @@
     "rewrite": "skip",
     "text": "skip"
    },
-   "verdict": "error"
+   "verdict": "error",
+   "warnings": 0
   },
   "unsupported_filter": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -978,11 +1267,17 @@
     "rewrite": "pass",
     "text": "unsupported"
    },
-   "verdict": "unsupported"
+   "verdict": "unsupported",
+   "warnings": 0
   },
   "xobject_form_basic": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -999,11 +1294,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "xobject_form_bbox_clip": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -1020,11 +1321,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "xobject_form_group": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -1041,11 +1348,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "xobject_form_matrix": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -1062,11 +1375,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "xobject_form_nested": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -1083,11 +1402,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "xobject_form_own_resources": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -1104,11 +1429,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "xobject_form_self_recursive": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "error",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -1125,11 +1456,17 @@
     "rewrite": "pass",
     "text": "error"
    },
-   "verdict": "error"
+   "verdict": "error",
+   "warnings": 0
   },
   "xobject_image_dct": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -1146,11 +1483,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "xobject_image_decode_invert": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -1167,11 +1510,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "xobject_image_gray_raw": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -1188,11 +1537,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "xobject_image_mask": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -1209,11 +1564,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "xobject_image_rgb_flate": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -1230,11 +1591,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "xobject_image_smask": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -1251,11 +1618,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "xobject_missing": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "error",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -1272,11 +1645,17 @@
     "rewrite": "pass",
     "text": "error"
    },
-   "verdict": "error"
+   "verdict": "error",
+   "warnings": 0
   },
   "xobject_unknown_subtype": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -1293,11 +1672,17 @@
     "rewrite": "pass",
     "text": "unsupported"
    },
-   "verdict": "unsupported"
+   "verdict": "unsupported",
+   "warnings": 0
   },
   "xobject_unused_bad": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -1314,11 +1699,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "xref_stream": {
    "causes": [],
    "expect": "",
+   "incremental": "pass",
+   "quality": "ok",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -1335,11 +1726,17 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass"
+   "verdict": "pass",
+   "warnings": 0
   },
   "xref_stream_bad_type": {
    "causes": [],
    "expect": "",
+   "incremental": "skip",
+   "quality": "n/a",
+   "recovery_notes": 0,
+   "render_approximate": false,
+   "render_recovered": "pass",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Fail",
@@ -1356,7 +1753,8 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "error"
+   "verdict": "error",
+   "warnings": 0
   }
  }
 }

@@ -1,0 +1,32 @@
+{
+  "_doc": "Exact-render quality gate; design, measurements and the reason for every threshold in docs/plans/quality-gate.md. Change a threshold only together with the measurement that justifies it.",
+  "version": 1,
+  "evaluate": {
+    "min_ink": 0.001,
+    "blank_reference_ink": 0.0005,
+    "max_size_rel_diff": 0.02
+  },
+  "rules": {
+    "ink_ratio": {
+      "kind": "ink_ratio",
+      "enforced": true,
+      "description": "inked-pixel coverage, ours / Poppler's, outside [low, high] on a page where both have ink — content drawn at the wrong scale, missing or duplicated",
+      "low": 0.4,
+      "high": 2.5
+    },
+    "ink_ratio_band": {
+      "kind": "ink_ratio",
+      "enforced": false,
+      "description": "the same ratio outside the narrower [low, high] — report only (stroke-width and anti-aliasing differences on sparse pages reach 0.5 and 2.0)",
+      "low": 0.5,
+      "high": 2.0
+    },
+    "content_ssim": {
+      "kind": "content_ssim",
+      "enforced": false,
+      "description": "SSIM over ink-bearing windows below max with a best-shift difference above min — report only (glyph rasteriser differences put 10 % of exact pages below 0.41)",
+      "max": 0.3,
+      "min_diff_at_best_shift": 0.05
+    }
+  }
+}
