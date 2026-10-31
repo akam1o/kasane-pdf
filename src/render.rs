@@ -5408,8 +5408,7 @@ impl<'a> Renderer<'a> {
         // but a font that *cannot* produce one (non-embedded Type1,
         // metrics-only) must not fail extraction: it just reports
         // `bounds: None`. In render mode the same refusal propagates.
-        let units = font.units_per_em()?;
-        let mut gp = crate::font::GlyphPath::new(units);
+        let mut gp = crate::font::GlyphPath::new(font.glyph_matrix(gid)?);
         let has_outline = match font.outline(gid, &mut gp) {
             Ok(h) => h,
             Err(e) if self.extraction_only => {

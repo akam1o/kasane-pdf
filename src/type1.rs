@@ -116,8 +116,22 @@ pub(crate) fn parse_type1_program(program: &[u8]) -> Result<Type1Program, Error>
     // Parse fields from a lossy view; CharStrings are located by bytes.
     let priv_txt = String::from_utf8_lossy(private);
     let len_iv = parse_isize(&priv_txt, "/lenIV", DEFAULT_LEN_IV);
-    let font_matrix = parse_matrix(&priv_txt, "/FontMatrix")
-        .unwrap_or(crate::matrix::Matrix::new(0.001, 0.0, 0.0, 0.001, 0.0, 0.0));
+    // `/FontMatrix` belongs to the cleartext font dictionary (Adobe
+    // Type 1 Font Format §2.2, Table 2.1) — not to the eexec-encrypted
+    // Private dictionary, where a few producers also repeat it. Absent
+    // in both: the conventional 0.001 (the specification requires the
+    // key). Present but malformed: a structure error, not a default.
+    let cleartext = String::from_utf8_lossy(&program[..dict_end]);
+    let font_matrix = match parse_matrix(&cleartext, "/FontMatrix")
+        .or_else(|| parse_matrix(&priv_txt, "/FontMatrix"))
+    {
+        Some(v) => crate::cff_matrix::checked_matrix(&v).map_err(|_| {
+            Error::Structure(
+                "Type 1 /FontMatrix must be six numbers forming an invertible matrix".into(),
+            )
+        })?,
+        None => crate::cff_matrix::DEFAULT,
+    };
     // `/FontBBox` is parsed for completeness of the header but the
     // renderer derives bounds from the outlines themselves.
     let _font_bbox = parse_bbox(&priv_txt, "/FontBBox");
@@ -296,24 +310,26 @@ fn parse_bbox(s: &str, key: &str) -> Option<[f64; 4]> {
     }
 }
 
-/// `/FontMatrix [a b c d e f]` — 6 numbers.
-fn parse_matrix(s: &str, key: &str) -> Option<crate::matrix::Matrix> {
+/// The tokens of `key [a b c d e f]` (or `{…}`, an executable array):
+/// `Some` with every token parsed as a number (a non-number becomes
+/// NaN, so the caller rejects it), `None` when the key is absent.
+fn parse_matrix(s: &str, key: &str) -> Option<Vec<f64>> {
     let i = s.find(key)?;
     let rest = &s[i + key.len()..];
-    let l = rest.find('[')?;
-    let r = rest[l..].find(']')?;
-    let inner = &rest[l + 1..l + r];
-    let nums: Vec<f64> = inner
-        .split_whitespace()
-        .filter_map(|t| t.parse().ok())
-        .collect();
-    if nums.len() >= 6 {
-        Some(crate::matrix::Matrix::new(
-            nums[0], nums[1], nums[2], nums[3], nums[4], nums[5],
-        ))
-    } else {
-        None
+    let l = rest.find(['[', '{'])?;
+    let close = if rest.as_bytes()[l] == b'[' { ']' } else { '}' };
+    let r = rest[l..].find(close)?;
+    // Only whitespace may separate the key from its array.
+    if !rest[..l].trim().is_empty() {
+        return None;
     }
+    let inner = &rest[l + 1..l + r];
+    Some(
+        inner
+            .split_whitespace()
+            .map(|t| t.parse().unwrap_or(f64::NAN))
+            .collect(),
+    )
 }
 
 // --------------------------------------------------------------------

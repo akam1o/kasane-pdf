@@ -35,6 +35,7 @@
 
 use crate::error::Error;
 use crate::limits::Limits;
+use crate::matrix::Matrix;
 use crate::object::{Dict, Object};
 use crate::Document;
 use std::cell::RefCell;
@@ -107,6 +108,9 @@ pub(crate) struct Type1Font {
     /// Lazily-built CFF table over `program` (same borrow pattern as
     /// `SimpleFont::face`).
     cff: RefCell<Option<CffTable<'static>>>,
+    /// The program's `FontMatrix` (Top DICT and Font DICTs), read on
+    /// first use — see [`crate::cff_matrix`].
+    cff_matrices: RefCell<Option<crate::cff_matrix::CffMatrices>>,
     /// Bundled substitute for a non-embedded font (see
     /// [`crate::fontsubst`]). `Some` only when both `program` and
     /// `t1_program` are `None` and a sound substitute exists.
@@ -542,6 +546,7 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         tounicode,
         builtin_cff_encoding: builtin,
         cff: RefCell::new(None),
+        cff_matrices: RefCell::new(None),
         subst,
         has_widths,
     }))
@@ -936,12 +941,11 @@ impl SimpleFont {
         code == 0x20
     }
 
-    /// Units per em of the font program (normally 1000 or 2048).
-    /// PDF widths are in 1/1000-em regardless; the glyph-space scale
-    /// factor `1000 / units_per_em` converts font units to the PDF
-    /// glyph coordinate system.
-    pub(crate) fn units_per_em(&self) -> Result<f64, Error> {
-        Ok(self.face()?.units_per_em() as f64)
+    /// Glyph space → text space: TrueType outlines are in units of
+    /// `1 / unitsPerEm` (`head`), normally 1000 or 2048. PDF widths are
+    /// in 1/1000 em regardless.
+    pub(crate) fn glyph_matrix(&self, _glyph: GlyphId) -> Result<Matrix, Error> {
+        Ok(upem_matrix(self.face()?.units_per_em()))
     }
 }
 
@@ -1347,22 +1351,25 @@ impl Type1Font {
         code == 0x20
     }
 
-    /// CFF fonts are nominally 1000 units/em (FontMatrix 0.001). For
-    /// an eexec program the `/FontMatrix` scale maps design space →
-    /// text space, so the effective upem is `1/fm.a` (1/0.001 = 1000
-    /// for the standard matrix) — `GlyphPath` then produces
-    /// text-space coordinates directly.
-    pub(crate) fn units_per_em(&self) -> Result<f64, Error> {
+    /// Glyph space → text space (§9.6.2: a Type 1 font program's own
+    /// `FontMatrix`, which the PDF font dictionary does not repeat).
+    /// eexec programs: the matrix from the cleartext font dictionary;
+    /// CFF programs: the Top DICT (and Font DICT) `FontMatrix`; a
+    /// substitute face: its `unitsPerEm`. The full matrix is used —
+    /// oblique and non-uniform matrices are honoured, not reduced to a
+    /// scale.
+    pub(crate) fn glyph_matrix(&self, glyph: GlyphId) -> Result<Matrix, Error> {
         if let Some(s) = &self.subst {
-            return Ok(f64::from(s.face().units_per_em()));
+            return Ok(upem_matrix(s.face().units_per_em()));
         }
         if let Some(t1) = &self.t1_program {
-            let a = t1.font_matrix().a;
-            if a != 0.0 && a.is_finite() {
-                return Ok(1.0 / a);
-            }
+            return Ok(t1.font_matrix());
         }
-        Ok(1000.0)
+        match &self.program {
+            Some(p) => cff_glyph_matrix(&self.cff_matrices, p, glyph),
+            // No program: `outline` refuses before the matrix matters.
+            None => Ok(crate::cff_matrix::DEFAULT),
+        }
     }
 }
 
@@ -1425,6 +1432,9 @@ pub(crate) struct CompositeFont {
     face: RefCell<Option<Face<'static>>>,
     /// Bare CFF table over `program` (`CidProgram::Cff`) — lazy.
     cff: RefCell<Option<CffTable<'static>>>,
+    /// The program's `FontMatrix` (Top DICT and Font DICTs), read on
+    /// first use — see [`crate::cff_matrix`].
+    cff_matrices: RefCell<Option<crate::cff_matrix::CffMatrices>>,
     /// CID → GID for a CID-keyed CFF charset, built once from the
     /// table's GID → CID mapping. `None` until built; an empty map
     /// means the CFF is not CID-keyed (CID = GID).
@@ -1822,6 +1832,7 @@ fn load_composite_font(
         tounicode,
         face: RefCell::new(None),
         cff: RefCell::new(None),
+        cff_matrices: RefCell::new(None),
         cid_gid: RefCell::new(None),
     }))
 }
@@ -2118,19 +2129,13 @@ impl CompositeFont {
         }
     }
 
-    pub(crate) fn units_per_em(&self) -> Result<f64, Error> {
+    /// Glyph space → text space: for a CFF program the `FontMatrix`
+    /// of the Font DICT `FDSelect` assigns to `glyph`, combined with the
+    /// Top DICT one; for TrueType / OpenType `1 / unitsPerEm`.
+    pub(crate) fn glyph_matrix(&self, glyph: GlyphId) -> Result<Matrix, Error> {
         match self.kind {
-            CidProgram::Cff => {
-                let t = self.cff()?;
-                let m = t.matrix();
-                let sx = m.sx as f64;
-                Ok(if sx.is_finite() && sx > 0.0 {
-                    1.0 / sx
-                } else {
-                    1000.0
-                })
-            }
-            _ => Ok(self.face()?.units_per_em() as f64),
+            CidProgram::Cff => cff_glyph_matrix(&self.cff_matrices, &self.program, glyph),
+            _ => Ok(upem_matrix(self.face()?.units_per_em())),
         }
     }
 }
@@ -2253,16 +2258,16 @@ impl Font {
         }
     }
 
-    /// Units per em.
-    pub(crate) fn units_per_em(&self) -> Result<f64, Error> {
+    /// Glyph space → text space for `glyph`'s outline (see
+    /// [`GlyphPath`]): the font program's own matrix.
+    pub(crate) fn glyph_matrix(&self, glyph: GlyphId) -> Result<Matrix, Error> {
         match self {
-            Font::Simple(f) => f.units_per_em(),
-            Font::Composite(f) => f.units_per_em(),
-            Font::Type1(f) => f.units_per_em(),
-            // Type3 glyph space is scaled by /FontMatrix (default
-            // 0.001) into text space; the nominal em is 1000 units,
-            // matching the 1/1000-em /Widths convention.
-            Font::Type3(_) => Ok(1000.0),
+            Font::Simple(f) => f.glyph_matrix(glyph),
+            Font::Composite(f) => f.glyph_matrix(glyph),
+            Font::Type1(f) => f.glyph_matrix(glyph),
+            // Type 3 glyphs are CharProcs run under the font's own
+            // /FontMatrix by the renderer, never outlined here.
+            Font::Type3(_) => Ok(crate::cff_matrix::DEFAULT),
         }
     }
 
@@ -2315,6 +2320,28 @@ pub(crate) fn pack_code(code: u32, len: usize) -> u32 {
 }
 
 /// The plain character code for reporting: composite codes are
+/// `1 / unitsPerEm` as a glyph matrix (TrueType / OpenType faces).
+fn upem_matrix(units_per_em: u16) -> Matrix {
+    let s = 1.0 / f64::from(units_per_em.max(1));
+    Matrix::new(s, 0.0, 0.0, s, 0.0, 0.0)
+}
+
+/// The CFF program's matrix for `glyph`, the program's DICTs read once.
+fn cff_glyph_matrix(
+    slot: &RefCell<Option<crate::cff_matrix::CffMatrices>>,
+    program: &[u8],
+    glyph: GlyphId,
+) -> Result<Matrix, Error> {
+    if slot.borrow().is_none() {
+        *slot.borrow_mut() = Some(crate::cff_matrix::CffMatrices::parse(program)?);
+    }
+    Ok(slot
+        .borrow()
+        .as_ref()
+        .expect("set above")
+        .glyph_matrix(glyph.0))
+}
+
 /// unpacked, simple-font codes are returned unchanged.
 pub(crate) fn unpack_code_for_font(font: &Font, code: u32) -> u32 {
     match font {
@@ -2333,15 +2360,20 @@ pub(crate) fn unpack_code(packed: u32) -> (u32, usize) {
 
 pub(crate) struct GlyphPath {
     pub(crate) builder: tiny_skia::PathBuilder,
-    scale: f32,
+    /// Glyph space (font units) → text space (1 = one em).
+    m: Matrix,
 }
 
 impl GlyphPath {
-    pub(crate) fn new(units_per_em: f64) -> Self {
+    pub(crate) fn new(glyph_matrix: Matrix) -> Self {
         GlyphPath {
             builder: tiny_skia::PathBuilder::new(),
-            scale: (1.0 / units_per_em) as f32,
+            m: glyph_matrix,
         }
+    }
+    fn pt(&self, x: f32, y: f32) -> (f32, f32) {
+        let (x, y) = self.m.transform(x as f64, y as f64);
+        (x as f32, y as f32)
     }
     pub(crate) fn finish(self) -> Option<tiny_skia::Path> {
         self.builder.finish()
@@ -2476,28 +2508,20 @@ impl OutlineBuilder for ShiftX<'_> {
 
 impl OutlineBuilder for GlyphPath {
     fn move_to(&mut self, x: f32, y: f32) {
-        self.builder.move_to(x * self.scale, y * self.scale);
+        let (x, y) = self.pt(x, y);
+        self.builder.move_to(x, y);
     }
     fn line_to(&mut self, x: f32, y: f32) {
-        self.builder.line_to(x * self.scale, y * self.scale);
+        let (x, y) = self.pt(x, y);
+        self.builder.line_to(x, y);
     }
     fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
-        self.builder.quad_to(
-            x1 * self.scale,
-            y1 * self.scale,
-            x * self.scale,
-            y * self.scale,
-        );
+        let ((x1, y1), (x, y)) = (self.pt(x1, y1), self.pt(x, y));
+        self.builder.quad_to(x1, y1, x, y);
     }
     fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
-        self.builder.cubic_to(
-            x1 * self.scale,
-            y1 * self.scale,
-            x2 * self.scale,
-            y2 * self.scale,
-            x * self.scale,
-            y * self.scale,
-        );
+        let ((x1, y1), (x2, y2), (x, y)) = (self.pt(x1, y1), self.pt(x2, y2), self.pt(x, y));
+        self.builder.cubic_to(x1, y1, x2, y2, x, y);
     }
     fn close(&mut self) {
         self.builder.close();
