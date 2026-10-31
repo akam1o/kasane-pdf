@@ -672,9 +672,9 @@ files:
   category: encrypted
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/empty_protected.pdf
   license: Apache-2.0
-  expect: reject
+  expect: pass
   pages: 1
-  notes: ''
+  notes: 'Retagged reject -> pass (2026-10-31): a well-formed Standard R6 AES-256 file with an empty user password; qpdf --check and Poppler open it, and reading encryption is in scope since 0.3.0. The writers do not encrypt, so rewrite is refused (a compatibility gap, counted).'
   redistribute: 'yes'
   producer: Acrobat
   producer_raw: Adobe Acrobat Pro (64-bit) 23.3.20244
@@ -2885,9 +2885,9 @@ files:
   category: misc
   source: https://github.com/mozilla/pdf.js/tree/master/test/pdfs/issue19484_1.pdf
   license: Apache-2.0
-  expect: pass
+  expect: any
   pages: 1
-  notes: ''
+  notes: 'Retagged pass -> any (2026-10-31): revision-4 key shorter than 128 bits whose data decrypts only with the key zero-padded (Acrobat''s reading, not ISO 32000''s). The strict parse refuses it by design; recovery reads it (RecoveryRule::PaddedShortEncryptionKey). qpdf (invalid password) and Poppler (undecodable streams) do not read it.'
   redistribute: 'yes'
   producer: unknown
   producer_raw: ''
@@ -4604,9 +4604,9 @@ files:
   category: encrypted
   source: https://pdfium.googlesource.com/pdfium/+/refs/heads/main/testing/resources/encrypted_hello_world_r3.pdf
   license: BSD-3-Clause
-  expect: pass
+  expect: reject
   pages: 0
-  notes: ''
+  notes: 'Retagged pass -> reject (2026-10-31): R3 RC4-128 with a non-empty password (pdfium''s embedder test opens it with the owner password; kasane-pdf does too). The runner supplies no password, so refusing it is the correct outcome; qpdf and Poppler also refuse without one.'
   redistribute: 'yes'
   producer: unknown
   producer_raw: ''
@@ -4617,9 +4617,9 @@ files:
   category: misc
   source: https://pdfium.googlesource.com/pdfium/+/refs/heads/main/testing/resources/bug_424613308.pdf
   license: BSD-3-Clause
-  expect: pass
+  expect: reject
   pages: 0
-  notes: ''
+  notes: 'Retagged pass -> reject (2026-10-31): pdfium bug regression input with a broken cross-reference section and no page tree; qpdf (root of pages tree has no /Kids) and Poppler (no valid Pages) refuse it as well.'
   redistribute: 'yes'
   producer: unknown
   producer_raw: ''
