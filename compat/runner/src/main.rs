@@ -18,6 +18,7 @@ mod cause;
 mod fontaudit;
 mod gsaudit;
 mod probe;
+mod profile;
 mod roundtrip;
 
 use analysis::{priorities_table, PrioritiesConfig};
@@ -203,6 +204,14 @@ struct FileResult {
     /// when the strict parse failed (and for reports saved before it).
     #[serde(default)]
     roundtrip: Option<RoundTrip>,
+    /// Incremental save of a one-entry `/Info` edit on the strictly
+    /// parsed document: original bytes kept as a prefix, the result
+    /// reparses strictly with the edit visible and the same page count.
+    #[serde(default = "StageResult::not_run")]
+    incremental: StageResult,
+    /// Measured content profile (`profile.rs`) for per-category tables.
+    #[serde(default)]
+    profile: profile::Profile,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -262,7 +271,21 @@ struct Metrics {
     /// *accepted with warnings*, counted separately from a clean pass.
     #[serde(default)]
     warnings: Vec<String>,
+    /// Reading-order-sensitive agreement with `pdftotext` on page 1:
+    /// longest common subsequence over the longer of the two strings,
+    /// whitespace removed (no other normalisation).
     text_match_ratio: Option<f64>,
+    /// Order-independent agreement on page 1: the two texts as
+    /// character multisets after NFKC (ligatures expanded, compatibility
+    /// and half/full-width forms unified, combining marks composed) with
+    /// white space, controls and default-ignorable characters removed.
+    /// Precision = shared / ours, recall = shared / pdftotext's.
+    #[serde(default)]
+    text_char_precision: Option<f64>,
+    #[serde(default)]
+    text_char_recall: Option<f64>,
+    #[serde(default)]
+    text_char_f1: Option<f64>,
     rewrite_qpdf_ok: Option<bool>,
     rewrite_reparsed: Option<bool>,
 }
@@ -309,6 +332,12 @@ struct RenderQuality {
     /// Reference dimensions differed from ours before resampling
     /// (page-size / DPI rounding) — the comparison is approximate.
     size_mismatch: bool,
+    /// Pixel sizes `[ours_w, ours_h, ref_w, ref_h]` before resampling,
+    /// so the quality gate can tell 1-px rounding from a different page
+    /// size (e.g. `/UserUnit`, which Poppler ignores). Empty for older
+    /// reports.
+    #[serde(default)]
+    sizes: Vec<usize>,
 }
 
 /// One compared page — whole-page metrics plus the content-aware set.
@@ -606,6 +635,7 @@ fn compare_render(
         best_shift: shift,
         diff_px_at_best_shift,
         size_mismatch: rw != kw || rh != kh,
+        sizes: vec![kw, kh, rw, rh],
     };
 
     // Save ours, reference (resized), and diff images for inspection.
@@ -746,7 +776,63 @@ fn write_pgm(p: &Path, w: usize, h: usize, pix: &[u8]) -> std::io::Result<()> {
 
 /// Compare extracted text against `pdftotext` output (Unicode NFC,
 /// whitespace-collapsed). Returns a 0..=1 match ratio.
-fn compare_text(ours: &str, pdf: &Path, page: usize) -> Option<f64> {
+/// Page-text agreement with pdftotext (see the `Metrics` fields).
+struct TextAgreement {
+    order: f64,
+    precision: f64,
+    recall: f64,
+    f1: f64,
+}
+
+/// NFKC, then drop white space, controls and default-ignorables.
+fn content_chars(s: &str) -> Vec<char> {
+    use unicode_normalization::UnicodeNormalization;
+    s.nfkc()
+        .filter(|c| {
+            !c.is_whitespace()
+                && !c.is_control()
+                && !matches!(*c, '\u{AD}' | '\u{200B}'..='\u{200F}' | '\u{2060}'..='\u{2064}' | '\u{FEFF}')
+        })
+        .collect()
+}
+
+/// Multiset precision / recall / F1 of `ours` against `reference`.
+fn multiset(ours: &[char], reference: &[char]) -> (f64, f64, f64) {
+    if ours.is_empty() && reference.is_empty() {
+        return (1.0, 1.0, 1.0);
+    }
+    let mut count = std::collections::HashMap::<char, i64>::new();
+    for c in reference {
+        *count.entry(*c).or_default() += 1;
+    }
+    let mut shared = 0usize;
+    for c in ours {
+        if let Some(n) = count.get_mut(c) {
+            if *n > 0 {
+                *n -= 1;
+                shared += 1;
+            }
+        }
+    }
+    let p = if ours.is_empty() {
+        0.0
+    } else {
+        shared as f64 / ours.len() as f64
+    };
+    let r = if reference.is_empty() {
+        0.0
+    } else {
+        shared as f64 / reference.len() as f64
+    };
+    let f = if p + r == 0.0 {
+        0.0
+    } else {
+        2.0 * p * r / (p + r)
+    };
+    (p, r, f)
+}
+
+fn compare_text(ours: &str, pdf: &Path, page: usize) -> Option<TextAgreement> {
     let out = Command::new("pdftotext")
         .args(["-f", &page.to_string(), "-l", &page.to_string()])
         .arg(pdf)
@@ -759,7 +845,73 @@ fn compare_text(ours: &str, pdf: &Path, page: usize) -> Option<f64> {
     let theirs = String::from_utf8_lossy(&out.stdout);
     let a = normalize(ours);
     let b = normalize(&theirs);
-    Some(text_match(&a, &b))
+    let (precision, recall, f1) = multiset(&content_chars(ours), &content_chars(&theirs));
+    Some(TextAgreement {
+        order: text_match(&a, &b),
+        precision,
+        recall,
+        f1,
+    })
+}
+
+/// Save a one-entry `/Info` edit incrementally and check the result
+/// (see `FileResult::incremental`). Refusals by policy (signatures,
+/// encryption, recovered documents) are `Unsupported`.
+fn incremental_probe(doc: &Document, data: &[u8]) -> StageResult {
+    let t = Instant::now();
+    let fail = |c: Class, d: String| {
+        StageResult::caused(
+            c,
+            d,
+            String::new(),
+            "incremental".into(),
+            t.elapsed().as_millis(),
+        )
+    };
+    let mut ed = match doc.edit() {
+        Ok(e) => e,
+        Err(e) => {
+            let (c, d, f, cid) = classify_err("incremental", &e);
+            return StageResult::caused(c, d, f, cid, t.elapsed().as_millis());
+        }
+    };
+    let mut info = kasane_pdf::Dict::new();
+    info.insert(
+        b"Title".to_vec(),
+        kasane_pdf::Object::String(b"kasane-compat incremental probe".to_vec()),
+    );
+    let out = match ed.set_info(info).and_then(|_| ed.save_incremental()) {
+        Ok(o) => o,
+        Err(e) => {
+            let (c, d, f, cid) = classify_err("incremental", &e);
+            return StageResult::caused(c, d, f, cid, t.elapsed().as_millis());
+        }
+    };
+    if out.len() < data.len() || out[..data.len()] != *data {
+        return fail(
+            Class::Error,
+            "original bytes not preserved as a prefix".into(),
+        );
+    }
+    let re = match Document::from_bytes(&out) {
+        Ok(d) => d,
+        Err(e) => return fail(Class::Error, format!("reparse: {e}")),
+    };
+    if re.page_count() != doc.page_count() {
+        return fail(Class::Error, "page count changed".into());
+    }
+    let title = re
+        .trailer()
+        .get(b"Info".as_slice())
+        .and_then(|i| re.deref(i).ok())
+        .and_then(|i| match i.as_dict()?.get(b"Title".as_slice())? {
+            kasane_pdf::Object::String(s) => Some(s.clone()),
+            _ => None,
+        });
+    if title.as_deref() != Some(b"kasane-compat incremental probe".as_slice()) {
+        return fail(Class::Error, "edit not visible after reparse".into());
+    }
+    StageResult::pass(t.elapsed().as_millis())
 }
 
 fn normalize(s: &str) -> Vec<char> {
@@ -817,6 +969,9 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         render_image_approximations: Vec::new(),
         warnings: Vec::new(),
         text_match_ratio: None,
+        text_char_precision: None,
+        text_char_recall: None,
+        text_char_f1: None,
         rewrite_qpdf_ok: None,
         rewrite_reparsed: None,
     };
@@ -899,6 +1054,8 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                         },
                         features: Vec::new(),
                         roundtrip: None,
+                        incremental: StageResult::not_run(),
+                        profile: profile::Profile::default(),
                     });
                 }
             }
@@ -1058,6 +1215,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     let t = Instant::now();
     let mut text = StageResult::pass(0);
     let mut our_text = String::new();
+    let mut page1_text = String::new();
     let mut extracted = 0usize;
     for (i, page) in pages.iter().take(args.max_pages).enumerate() {
         match extract_text(&doc, page, &TextOptions::default()) {
@@ -1066,6 +1224,9 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                 for ch in &t2.chars {
                     if let Some(u) = &ch.unicode {
                         our_text.push_str(u);
+                        if i == 0 {
+                            page1_text.push_str(u);
+                        }
                     }
                 }
                 extracted += 1;
@@ -1085,8 +1246,16 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     }
     if extracted > 0 && text.class == Class::Pass {
         text.ms = t.elapsed().as_millis();
+        // Page 1 against page 1: the whole document's text against
+        // pdftotext's first page (as before) understated multi-page
+        // files.
         if args.with_poppler {
-            metrics.text_match_ratio = compare_text(&our_text, path, 1);
+            if let Some(t) = compare_text(&page1_text, path, 1) {
+                metrics.text_match_ratio = Some(t.order);
+                metrics.text_char_precision = Some(t.precision);
+                metrics.text_char_recall = Some(t.recall);
+                metrics.text_char_f1 = Some(t.f1);
+            }
         }
     }
 
@@ -1130,6 +1299,18 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     if rewrite_res.class == Class::Pass {
         rewrite_res.ms = rt.rewrite.ms;
     }
+    // Like render / text / rewrite, the probe counts only on a strictly
+    // parsed document (the writer refuses recovered ones that needed a
+    // rebuilt table; one that only needed a recovery rule would save
+    // the invalid input unchanged).
+    let incremental = if recovered {
+        StageResult::skip("strict parse failed; recovered document")
+    } else {
+        incremental_probe(&doc, &data)
+    };
+    let mut prof = profile::structural(&doc, args.max_pages);
+    prof.text_layer_page1 = (extracted > 0).then_some(!page1_text.trim().is_empty());
+    prof.scripts = profile::scripts(&our_text);
 
     let verdict = [parse.class, render.class, text.class, rewrite_res.class]
         .into_iter()
@@ -1172,6 +1353,8 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         metrics,
         features,
         roundtrip: Some(rt),
+        incremental,
+        profile: prof,
     }
 }
 
@@ -2897,5 +3080,30 @@ fn run_font_audit(files: &[PathBuf], args: &Args) {
     rows.sort_by_key(|(_, c)| std::cmp::Reverse(**c));
     for (s, c) in rows {
         println!("| `{s}` | {c} |");
+    }
+}
+
+#[cfg(test)]
+mod text_metric_tests {
+    use super::{content_chars, multiset};
+
+    #[test]
+    fn normalisation_and_multiset() {
+        // Ligature, full-width, combining mark, line breaks, soft hyphen.
+        let ours = content_chars("ﬁne Ａ e\u{301}\nx\u{AD}y");
+        let reference = content_chars("fine A é xy");
+        assert_eq!(ours, reference);
+        // Same characters, different order: multiset F1 is 1.
+        let (p, r, f) = multiset(&content_chars("ab cd"), &content_chars("cd ab"));
+        assert_eq!((p, r, f), (1.0, 1.0, 1.0));
+        // Ours half of the reference: precision 1, recall 0.5.
+        let (p, r, _) = multiset(&content_chars("ab"), &content_chars("abcd"));
+        assert_eq!((p, r), (1.0, 0.5));
+        // Vertical-form punctuation and CJK compatibility forms.
+        assert_eq!(
+            content_chars("\u{FE11}\u{F900}"),
+            content_chars("\u{3001}\u{8C48}")
+        );
+        assert_eq!(multiset(&[], &[]), (1.0, 1.0, 1.0));
     }
 }

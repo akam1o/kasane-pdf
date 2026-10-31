@@ -1060,11 +1060,16 @@ mod tests {
                 render_image_approximations: Vec::new(),
                 warnings: Vec::new(),
                 text_match_ratio: None,
+                text_char_precision: None,
+                text_char_recall: None,
+                text_char_f1: None,
                 rewrite_qpdf_ok: None,
                 rewrite_reparsed: None,
             },
             features: Vec::new(),
             roundtrip: None,
+            incremental: StageResult::not_run(),
+            profile: crate::profile::Profile::default(),
         }
     }
 
