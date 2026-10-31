@@ -30,6 +30,9 @@ only on changes against a reviewed baseline.
 | ink ratio (pixels with luma < 200, ours / Poppler's) | content missing, duplicated or at the wrong scale | sparse pages of hairlines vary with stroke rasterisation (0.5–2.0 seen) | **enforced** outside [0.4, 2.5]; report outside [0.5, 2.0] |
 | pixel difference ratio, MAE | magnitude of change | position noise of ±1 px counts in full | report |
 | difference at best ±3 px shift | shape vs placement | a shift hides real metric errors | report (paired with content SSIM) |
+| content SSIM after the best shift | structure where something is drawn, a whole-page ±1–3 px offset removed | a page-wide mean: a small wrong region on a full page barely moves it | report (`content_ssim_shift` < 0.3) |
+| displaced ink (worst 32-px tile, after the best shift) | our ink with no reference mark within 2 px — content drawn where the witness has none | sees what Poppler fails to draw as well | report (`displaced_ink`: tile share > 0.5, ≥ 30 px) |
+| missing ink (the reverse) | reference ink with nothing of ours near | lighter thin strokes and content only Poppler draws reach 1.0 on legitimate pages | recorded, no rule |
 | text bounding boxes, glyph widths / positions | font metrics directly | needs a per-glyph witness (Poppler's `-bbox` is per word) | not yet — the FontMatrix fixtures check them exactly in unit tests |
 
 ## Rules (`compat/quality-gate.json`)
@@ -113,13 +116,70 @@ fails exactly on the two FontMatrix files with a reference (besides
 four `expect: any` stage differences that come from the `cjk-fallback`
 feature, not the gate); the current run passes with the one known flag.
 
+## Placement rules (report only, 2026-10-31)
+
+The NoRotate misrender passed the gate (ink ratio 0.98, best-shift
+difference 2.4 %, content SSIM 0.26 — the existing `content_ssim` rule
+requires > 5 % difference). Before choosing a rule, the 8 exact pages
+with content SSIM < 0.3 on the Linux nightly were classified (side by
+side, also against Quartz where Poppler was in doubt):
+
+| class | pages |
+|---|---:|
+| kasane-pdf misrender (NoRotate, since fixed) | 1 |
+| thin-stroke rasterisation (hairline grid, thin rectangle, 0.4-pt pattern-filled boxes) | 3 |
+| whole-page 1-px offset (text, a scanned image) — SSIM low at zero shift, fine at the best shift | 2 |
+| image resampling of a dithered 1-bit image | 1 |
+| a hairline on the page edge plus a 1-px page-height rounding | 1 |
+
+Content SSIM alone would list 6 legitimate pages per run. Candidates
+were then measured on the 791 exact macOS pages with ink (the fixed
+engine), on the three historic misrenders (two FontMatrix, one
+NoRotate, rendered by the old engine) and on 1 222 synthetic injections
+into those same pages (a 24–64 px patch of our render moved by 40 px,
+turned by 90°, or deleted):
+
+| rule | historic bugs | moved | turned | deleted | legitimate pages flagged |
+|---|---:|---:|---:|---:|---:|
+| content SSIM < 0.3 | 3/3 | 7/398 | 12/412 | 9/412 | 6 |
+| existing `content_ssim` (< 0.3 and diff > 5 %) | 0/3 | 0 | 0 | 0 | 0 |
+| content SSIM after the best shift < 0.3 | 3/3 | 6/398 | 7/412 | 6/412 | 1 |
+| displaced ink, tile > 0.5, ≥ 30 px | 3/3 | 209/398 | 147/412 | 2/412 | 3 |
+| missing ink, tile > 0.5, ≥ 30 px | 2/3 | 290/398 | 104/412 | 304/412 | 6 |
+
+The page-wide SSIM rules cannot see a small wrong region on a full
+page (≈ 2 % of injections); the tile rule finds half of them (a patch
+moved onto other ink is invisible to it by construction) and all three
+historic bugs. Two rules were adopted, **report only**:
+`content_ssim_shift` and `displaced_ink`. Missing ink stays a recorded
+metric: lighter thin strokes and content only Poppler draws make it fire
+on legitimate pages. Deletions are therefore left to the enforced ink
+ratio (large losses) and remain a blind spot for small ones.
+
+The legitimate pages the tile rule flagged were inspected: one where
+Poppler drops a CJK glyph of an embedded OpenType CFF font that Quartz
+and we draw (a witness defect), and two where we drew `.notdef` boxes
+for spaces — **a real engine bug** (a CFF program with the predefined
+ISOAdobe charset; glyph names were not resolved) fixed in this series
+(`font: resolve glyph names through a CFF predefined charset`; 5 corpus
+files carry such a font, pixels changed on 5 pages, all up). On the
+full macOS run after that fix (848 exact pages): `content_ssim_shift`
+fires on 2 pages (the known grid; the page-edge hairline), and
+`displaced_ink` on 1 (the Poppler-dropped glyph) — 0.2 % and 0.1 %.
+The runner computing the metrics reproduces the prototype exactly
+(0.264 / 1.0 / 250 px on the NoRotate page).
+
+Not yet measured on Linux: the nightly runs published code, and these
+changes are local. Promotion to enforced needs at least the Linux
+distribution and a period of nightly runs with the report-only
+findings reviewed.
+
 ## Blind spots
 
-- Misplaced small content (an annotation drawn rotated with the page
-  instead of upright): ink ratio unchanged, best-shift difference 2.4 %,
-  content SSIM 0.26 — no rule fired. Synthetic regression tests guard
-  that case (`tests/render_annot_norotate.rs`); a report-only rule on
-  content SSIM alone is a candidate (`v0.4.0.md` § 8).
+- Small deletions (a missing glyph or icon on a full page): ink ratio
+  barely moves, the shifted SSIM is a page mean, missing ink is too
+  noisy to rule on.
+- A misplaced element moved onto other content (no unmatched ink).
 - Colour: no rule measures hue (`v0.4.0.md` § 8, colour outliers).
 
 ## Known flags
