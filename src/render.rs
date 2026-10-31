@@ -2638,6 +2638,13 @@ impl<'a> Renderer<'a> {
     /// saved, `/Matrix` applied, clipped to `/BBox`, own `/Resources`,
     /// gs restored) under a *fresh* graphics state — annotation
     /// appearances never inherit the page content's state.
+    ///
+    /// Flags (§12.5.3, Table 167): NoRotate on a page with `/Rotate`
+    /// turns the placed appearance back by the page rotation about the
+    /// upper-left corner of `/Rect`, so it is drawn upright with that
+    /// corner where the rotated page puts it. NoZoom concerns the
+    /// viewer's magnification; a render is the page at magnification 1
+    /// at the requested resolution, so it changes nothing here.
     fn draw_annotations(&mut self, page: &Page, page_resources: &Object) -> Result<(), Error> {
         let Some(annots) = page_dict_entry(self.doc, page, b"Annots")? else {
             return Ok(());
@@ -2701,6 +2708,10 @@ impl<'a> Renderer<'a> {
             }
             let (rx0, rx1) = (r.llx.min(r.urx), r.llx.max(r.urx));
             let (ry0, ry1) = (r.lly.min(r.ury), r.lly.max(r.ury));
+            // The annotation rectangle's upper-left corner — the pivot
+            // of NoRotate (taken from /Rect even when a synthesised
+            // appearance is fitted to a larger box).
+            let upper_left = (rx0, ry1);
 
             // The normal appearance: the file's /AP /N stream, or —
             // for a form widget without one (or under
@@ -2916,7 +2927,18 @@ impl<'a> Renderer<'a> {
             } else {
                 1.0
             };
-            let a = Matrix::new(sx, 0.0, 0.0, sy, rx0 - tx0 * sx, ry0 - ty0 * sy);
+            let mut a = Matrix::new(sx, 0.0, 0.0, sy, rx0 - tx0 * sx, ry0 - ty0 * sy);
+            // NoRotate (bit 5): undo the page's clockwise display
+            // rotation — a counter-clockwise turn by /Rotate in user
+            // space about the upper-left corner, applied after the fit.
+            let rotate = page.rotate().rem_euclid(360);
+            if flags & 0x10 != 0 && rotate != 0 {
+                let (px, py) = upper_left;
+                a = a
+                    .concat(Matrix::translate(-px, -py))
+                    .concat(Matrix::rotate(rotate as f64))
+                    .concat(Matrix::translate(px, py));
+            }
             if !a.is_finite() {
                 return Err(Error::Structure(
                     "annotation placement matrix is not finite".into(),
