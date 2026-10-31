@@ -20,6 +20,7 @@ mod gsaudit;
 mod probe;
 mod profile;
 mod roundtrip;
+mod semantic;
 
 use analysis::{priorities_table, PrioritiesConfig};
 use cause::classify;
@@ -1516,6 +1517,9 @@ struct Args {
     compare: Option<PathBuf>,
     /// Run the ExtGState usage audit instead of a compat run.
     gs_audit: bool,
+    /// `--semantic-probe`: mutate real files through the editing API and
+    /// check the semantic snapshot notices (`semantic::probe`).
+    semantic_probe: bool,
     /// Run the font usage audit instead of a compat run.
     font_audit: bool,
     /// Round-trip knobs (`--mode smoke|full` sets them together).
@@ -1539,6 +1543,7 @@ fn parse_args() -> Args {
         report_format: "md".into(),
         compare: None,
         gs_audit: false,
+        semantic_probe: false,
         font_audit: false,
         rt_pages: usize::MAX,
         rt_dpi: 48.0,
@@ -1571,6 +1576,7 @@ fn parse_args() -> Args {
             "--format" => a.report_format = it.next().unwrap_or_else(|| "md".into()),
             "--compare" => a.compare = it.next().map(PathBuf::from),
             "--gs-audit" => a.gs_audit = true,
+            "--semantic-probe" => a.semantic_probe = true,
             "--rt-pages" => {
                 a.rt_pages = it.next().and_then(|v| v.parse().ok()).unwrap_or(a.rt_pages)
             }
@@ -1643,6 +1649,10 @@ fn main() {
     // ---- ExtGState usage audit (diagnostic, not a compat run) ------
     if args.gs_audit {
         run_gs_audit(&files, &args);
+        return;
+    }
+    if args.semantic_probe {
+        semantic::probe(&files);
         return;
     }
     if args.font_audit {

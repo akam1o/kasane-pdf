@@ -170,6 +170,10 @@ def summarize(run):
             "roundtrip": {c: (rt.get(c) or {}).get("class", "") for c in RT_CHECKS} if rt else {},
             "roundtrip_full": bool(rt.get("full")) if rt else None,
             "incremental": ((f.get("incremental") or {}).get("class") or ""),
+            # Semantic round trip per category (absent: not run).
+            "semantic": {
+                c["category"]: c["class"] for c in ((rt.get("semantic") or {}).get("checks") or [])
+            },
         }
         cls, n_pages, n_flag, _, _ = quality_detail(f, gate)
         files[f["id"]]["quality"] = cls
@@ -204,6 +208,7 @@ def check(run, base, summary_md=None):
     regressions, improvements, known_flags, unrecorded = [], [], [], []
     new_flags = []
     new_reports, known_reports = [], []
+    semantic_changes = []
     for fid, n in cur.items():
         if n["verdict"] in ("crash", "timeout"):
             regressions.append(f"{fid}: verdict {n['verdict']}")
@@ -234,6 +239,12 @@ def check(run, base, summary_md=None):
             oc, nc = o["roundtrip"].get(c, ""), n["roundtrip"].get(c, "")
             if oc == "Pass" and nc == "Fail":
                 regressions.append(f"{fid}: round-trip {c} PASS -> FAIL")
+        # Semantic round trip: reported, not yet enforced (no baseline
+        # from the nightly configuration so far).
+        for cat, was in (o.get("semantic") or {}).items():
+            now = (n.get("semantic") or {}).get(cat)
+            if was == "pass" and now not in ("pass", None):
+                semantic_changes.append(f"{fid}: semantic {cat} pass -> {now}")
         if o.get("incremental") == "pass" and n.get("incremental") not in ("pass", None, ""):
             regressions.append(f"{fid}: incremental pass -> {n['incremental']}")
         oq, nq = o.get("quality", ""), n["quality"]
@@ -284,6 +295,8 @@ def check(run, base, summary_md=None):
         print("quality flag (baseline predates the gate, not enforced):", line)
     for line in new_reports:
         print("new report-only finding (not enforced, review):", line)
+    for line in semantic_changes:
+        print("semantic round-trip change (not enforced, review):", line)
     for line in regressions:
         print("REGRESSION:", line)
     if regressions:

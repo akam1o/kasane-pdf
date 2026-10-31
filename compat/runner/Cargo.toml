@@ -18,6 +18,9 @@ libc = "0.2"
 # NFKC for the order-independent text comparison. MIT OR Apache-2.0
 # (Unicode-3.0 data); already in kasane-pdf's graph through stringprep.
 unicode-normalization = "0.1"
+# Inflate embedded files for the semantic round trip. MIT OR Zlib OR
+# Apache-2.0; already in kasane-pdf's graph.
+miniz_oxide = "0.8"
 
 [features]
 cjk-fallback = ["kasane-pdf/cjk-fallback"]
