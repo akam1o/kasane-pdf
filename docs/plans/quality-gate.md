@@ -33,6 +33,7 @@ only on changes against a reviewed baseline.
 | content SSIM after the best shift | structure where something is drawn, a whole-page ±1–3 px offset removed | a page-wide mean: a small wrong region on a full page barely moves it | report (`content_ssim_shift` < 0.3) |
 | displaced ink (worst 32-px tile, after the best shift) | our ink with no reference mark within 2 px — content drawn where the witness has none | sees what Poppler fails to draw as well | report (`displaced_ink`: tile share > 0.5, ≥ 30 px) |
 | missing ink (the reverse) | reference ink with nothing of ours near | lighter thin strokes and content only Poppler draws reach 1.0 on legitimate pages | recorded, no rule |
+| colour: CIEDE2000 over pixels both renders draw flat (after the best shift) | hue, chroma and lightness of filled regions | blind to colour on edges, hairlines and text thinner than 3 px; needs ≥ 64 comparable pixels | report (`colour_tile`: a 32-px tile mean ΔE00 > 15; `colour_hue`: a tile mostly ΔE00 > 10 at \|ΔL\*\| < 5) |
 | text bounding boxes, glyph widths / positions | font metrics directly | needs a per-glyph witness (Poppler's `-bbox` is per word) | not yet — the FontMatrix fixtures check them exactly in unit tests |
 
 ## Rules (`compat/quality-gate.json`)
@@ -180,13 +181,92 @@ the current engine); their detection is pinned by the metric values in
 `scripts/test_ci_regression.py`. Promotion to enforced needs a period
 of nightly runs with the report-only findings reviewed; not now.
 
+## Colour rules (report only, 2026-11-01)
+
+Every metric above compares luma; a region painted in the wrong hue
+at the right lightness passed them all. The runner now also renders
+Poppler in RGB (`pdftoppm` without `-gray`, same page, resolution and
+crop; the file is deleted after use) and compares colours
+(`compat/runner/src/colour.rs`):
+
+- 8-bit sRGB → linear (IEC 61966-2-1) → XYZ (sRGB matrix, D65) →
+  CIE L\*a\*b\* (white = the matrix row sums, white is exactly L\* 100)
+  → CIEDE2000 (k = 1). All 34 pairs of Sharma, Wu & Dalal (2005) are
+  reproduced to 5 · 10⁻⁵; the conversion matches colour-science 0.4.7
+  to 10⁻³. Our premultiplied RGBA is composited on white first.
+- Pixel selection: both renders *draw* there (a channel < 245) and both
+  are *flat* there (3 × 3 luma range ≤ 24) after the best placement
+  shift — the interiors of shapes, not anti-aliased edges. A pixel more
+  than ΔE00 2 off is compared once more with the reference's 3 × 3
+  neighbourhood (a 1-px boundary offset); a wrongly filled region stays
+  wrong, its neighbours are wrong too. Disjoint shapes share no pixel
+  and give no statistic rather than a false colour error.
+- Per page: compared pixels, median / p95 / p99, share > 5, share > 10,
+  share > 10 at |ΔL\*| < 5, worst 32-px tile mean, hue tiles (more than
+  half the tile's compared pixels > 10 at |ΔL\*| < 5). `None` below 64
+  comparable pixels. Histogram percentiles (0.1 steps); memory is the
+  two RGB buffers of the page.
+
+Population: exact renders, and renders whose only approximations are
+font substitutions (they change glyph shapes, not colours). Colour and
+image approximations (ICC / CMYK fallbacks, reduced JPEG decoding) stay
+out; the existing exemptions (blank reference, page size) apply first.
+
+Calibration (`kasane-compat --colour-probe`, macOS, 96 dpi, page 1 of
+every file that renders strictly): 303 pages, 174 with colour
+statistics, 90 with a 48-px patch colourful in both renders, into which
+one error was injected at a time.
+
+| rule | hue rotation | R↔B swap | CMYK black dropped | desaturated | exact pages hit (154) | font-only pages hit (19) |
+|---|---:|---:|---:|---:|---:|---:|
+| p95 > 10 | 50/90 | 49/90 | 28/90 | 50/90 | 3 | 2 |
+| tile mean > 10 | 89/90 | 80/90 | 39/90 | 86/90 | 3 | 3 |
+| **tile mean > 15 (`colour_tile`)** | 88/90 | 75/90 | 37/90 | 84/90 | 2 | 3 |
+| tile mean > 20 | 88/90 | 72/90 | 16/90 | 75/90 | 2 | 3 |
+| **hue tiles ≥ 1 (`colour_hue`)** | 21/90 | 26/90 | 1/90 | 36/90 | 1 | 0 |
+
+A dropped black is mostly a lightness error at low chroma and is the
+hardest case; `colour_hue` is deliberately narrow (equal lightness) and
+reads as a qualifier on `colour_tile`, not as a detector of its own.
+
+Calibration itself found the page-group / blend-mode bug (two files;
+fixed before the full run). Every hit on the full corpus after that fix
+(macOS, 1 142 compared pages, 564 with colour statistics; 7 files) was
+inspected against Poppler and Quartz and the specification:
+
+| class | files | finding |
+|---|---:|---|
+| kasane-pdf bug, fixed | 1 | a text object inside a Type 3 glyph moved the outer text (now drawn correctly, and refused for `max_pattern_tiles`) |
+| DeviceCMYK conversion | 1 | ours is the §10.3.5 conversion; Poppler and Quartz use colour-managed CMYK. Not a defect (no OutputIntent, no profile) |
+| Poppler defect or choice | 4 | a zero-width function `/Domain` (legal, `min ≤ max`) Poppler rejects and paints black; out-of-range `/Indexed` values Poppler paints black where §8.6.6.3 clamps (the file's own reference row agrees with us); a pattern phase on text Poppler offsets (Quartz agrees with us); an image Poppler smooths for `/Interpolate`, a hint we do not apply |
+| rasterisation | 1 | 0.12-pt dotted strokes without stroke adjustment: Poppler and Quartz widen them to a device pixel; we draw their true coverage |
+
+On exact renders `colour_tile` fires on 4 files (CMYK 1, Poppler 3) and
+`colour_hue` on 1 (CMYK); on font-only renders on 2 (Poppler 1,
+rasterisation 1). None is a kasane-pdf defect.
+
+Cost (macOS, full corpus): colour comparison 63.5 s of 603 s (median
+32 ms, p95 87 ms per page, mostly the second Poppler render; worst
+7.6 s on a page Poppler takes 7.5 s to draw); runner total +12 %
+(537 → 603 s summed per file). Peak RSS of a single heavy page was
+unchanged (2 042 vs 2 065 MB, the engine dominates); the RGB buffers
+are 6 bytes per pixel at 96 dpi (≈ 3 MB for a Letter page).
+
+Not enforced: the Linux nightly must first run the rules (Poppler 26.01
+draws some patterns and images differently) and every finding be
+reviewed for a period, as for the placement rules.
+
 ## Blind spots
 
 - Small deletions (a missing glyph or icon on a full page): ink ratio
   barely moves, the shifted SSIM is a page mean, missing ink is too
   noisy to rule on.
 - A misplaced element moved onto other content (no unmatched ink).
-- Colour: no rule measures hue (`v0.4.0.md` § 8, colour outliers).
+- Colour on thin features (text, hairlines, edges): only flat regions
+  of at least 3 × 3 px are compared. A wrong text colour is invisible
+  to the colour rules.
+- A colour error shared by both engines (both naive, or a witness
+  defect we reproduced) cannot be seen against a witness.
 
 ## Known flags
 

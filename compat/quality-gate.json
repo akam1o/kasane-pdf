@@ -42,6 +42,18 @@
       "description": "after the best shift, a 32-px tile where more than min_tile_share of our ink has no reference mark within 2 px, and at least min_px such pixels on the page — content drawn where the reference has none (misplaced, turned, extra). Report only (2026-10-31: all three historic misrenders and a predefined-charset .notdef bug; 1 legitimate exact page — Poppler drops a glyph Quartz draws)",
       "min_tile_share": 0.5,
       "min_px": 30
+    },
+    "colour_tile": {
+      "kind": "colour_tile",
+      "enforced": false,
+      "description": "CIEDE2000 over pixels both renders draw in a flat colour (after the best shift, 3x3 neighbourhood tolerance): a 32-px tile with mean ΔE00 above max_tile_mean. Report only (2026-11-01: 88/90 hue rotations, 75/90 channel swaps, 37/90 dropped-K and 84/90 desaturations of a 48-px patch; on 154 exact page-1 renders 2 hits — DeviceCMYK conversion and a Poppler pattern-phase difference). Also evaluated on renders whose only approximations are font substitutions.",
+      "max_tile_mean": 15.0
+    },
+    "colour_hue": {
+      "kind": "colour_hue",
+      "enforced": false,
+      "description": "a 32-px tile where most compared pixels differ by ΔE00 > 10 at |ΔL*| < 5 — a hue or chroma change at equal lightness. Report only (detects fewer injections than colour_tile but is blind to lightness; 1 exact hit: DeviceCMYK conversion).",
+      "min_hue_tiles": 1
     }
   }
 }

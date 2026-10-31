@@ -543,7 +543,17 @@ pub fn render_page(
 
     let mut pixmap = Pixmap::new(width, height)
         .ok_or_else(|| Error::Structure(format!("cannot allocate {width}x{height} pixmap")))?;
-    pixmap.fill(ts_color(Color::WHITE));
+    // §11.4.7: the page group is isolated — its objects composite
+    // against a *transparent* backdrop and the result is composited on
+    // white paper at the end. With only the Normal blend mode that is
+    // the same as painting on white (Porter–Duff over is associative),
+    // so pages that cannot blend otherwise keep the direct white
+    // backdrop (no rounding change); a page whose resources name another
+    // blend mode starts transparent.
+    let transparent_page = page_may_blend(doc, page);
+    if !transparent_page {
+        pixmap.fill(ts_color(Color::WHITE));
+    }
 
     let ops = doc.page_operations(page)?;
     let resources = page
@@ -595,6 +605,17 @@ pub fn render_page(
     let font_substitutions = std::mem::take(&mut renderer.substitutions);
     let color_approximations = std::mem::take(&mut renderer.color_approximations);
     let image_approximations = std::mem::take(&mut renderer.image_approximations);
+    drop(renderer);
+    if transparent_page {
+        // C = (1 − αg)·W + αg·Cg on premultiplied pixels: c + (1 − α).
+        for px in pixmap.data_mut().as_chunks_mut::<4>().0 {
+            let white = 255 - px[3];
+            px[0] = px[0].saturating_add(white);
+            px[1] = px[1].saturating_add(white);
+            px[2] = px[2].saturating_add(white);
+            px[3] = 255;
+        }
+    }
 
     Ok(RenderedPage {
         pixmap,
@@ -629,6 +650,190 @@ pub fn pixmap_to_png(pixmap: &Pixmap) -> Result<Vec<u8>, Error> {
 // --------------------------------------------------------------------
 // Page geometry helpers
 // --------------------------------------------------------------------
+
+/// Objects `page_may_blend` may resolve before it gives up and answers
+/// `true` (every dereference is charged, so this bounds the whole scan).
+const BLEND_SCAN_BUDGET: usize = 16_384;
+
+/// Whether anything on `page` can be painted with a blend mode other
+/// than Normal: an `/ExtGState` with such a `/BM` in the page resources
+/// or in the resources of a form XObject, pattern, Type 3 font or
+/// annotation appearance reachable from them. An exhausted budget, an
+/// unparseable `/BM` or an unreadable appearance answers `true` (the
+/// transparent backdrop is correct for every page; white is only the
+/// shortcut). An unreadable resource entry is skipped: drawing it would
+/// fail the render anyway.
+fn page_may_blend(doc: &Document, page: &Page) -> bool {
+    struct Scan<'a> {
+        doc: &'a Document,
+        seen: std::collections::HashSet<IndirectRef>,
+        budget: usize,
+        exhausted: bool,
+    }
+    impl Scan<'_> {
+        /// Resolve `o`, charging the budget; `None` for an object seen
+        /// before, an unreadable one, or an exhausted budget.
+        fn value(&mut self, o: &Object) -> Option<Object> {
+            if let Some(r) = o.as_ref() {
+                if !self.seen.insert(r) {
+                    return None;
+                }
+                if self.budget == 0 {
+                    self.exhausted = true;
+                    return None;
+                }
+                self.budget -= 1;
+            }
+            self.doc.deref(o).ok()
+        }
+        /// An indirect object already scanned (shared resources and
+        /// appearances are scanned once).
+        fn seen_before(&self, o: &Object) -> bool {
+            o.as_ref().is_some_and(|r| self.seen.contains(&r))
+        }
+        /// The values of the dictionary `key` of `rd`.
+        fn entries(&mut self, rd: &Dict, key: &[u8]) -> Vec<Object> {
+            rd.get(key)
+                .and_then(|o| self.value(o))
+                .and_then(|o| o.as_dict().map(|d| d.values().cloned().collect()))
+                .unwrap_or_default()
+        }
+        /// `true` if a non-Normal blend mode is reachable from `res`.
+        fn resources(&mut self, res: &Object) -> bool {
+            let Some(res) = self.value(res) else {
+                return self.exhausted;
+            };
+            let Some(rd) = res.as_dict() else {
+                return false;
+            };
+            for gs in self.entries(rd, b"ExtGState") {
+                let Some(gs) = self.value(&gs) else {
+                    if self.exhausted {
+                        return true;
+                    }
+                    continue;
+                };
+                if let Some(bm) = gs.as_dict().and_then(|d| d.get(b"BM".as_slice())) {
+                    match parse_blend_mode(bm) {
+                        Ok(tiny_skia::BlendMode::SourceOver) => {}
+                        _ => return true,
+                    }
+                }
+            }
+            for key in [&b"XObject"[..], b"Pattern", b"Font"] {
+                for x in self.entries(rd, key) {
+                    let Some(x) = self.value(&x) else {
+                        if self.exhausted {
+                            return true;
+                        }
+                        continue;
+                    };
+                    let d = match &x {
+                        Object::Stream { dict, .. } => dict,
+                        Object::Dict(d) => d,
+                        _ => continue,
+                    };
+                    if let Some(r) = d.get(b"Resources".as_slice()) {
+                        if self.resources(r) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            self.exhausted
+        }
+    }
+    let mut scan = Scan {
+        doc,
+        seen: std::collections::HashSet::new(),
+        budget: BLEND_SCAN_BUDGET,
+        exhausted: false,
+    };
+    if let Some(res) = page.resources() {
+        if scan.resources(res) {
+            return true;
+        }
+    }
+    // Annotation appearances paint on the same page group.
+    let Ok(Some(Object::Array(annots))) = page_dict_entry(doc, page, b"Annots") else {
+        return false;
+    };
+    for a in annots.iter() {
+        let Some(ad) = scan.value(a) else {
+            if scan.exhausted {
+                return true;
+            }
+            continue;
+        };
+        let Some(ap) = ad.as_dict().and_then(|d| d.get(b"AP".as_slice())).cloned() else {
+            continue;
+        };
+        if scan.seen_before(&ap) {
+            continue;
+        }
+        let Some(ap) = scan.value(&ap) else {
+            return true;
+        };
+        let Some(n) = ap.as_dict().and_then(|d| d.get(b"N".as_slice()).cloned()) else {
+            continue;
+        };
+        if scan.seen_before(&n) {
+            continue;
+        }
+        // Resolved appearance streams: `/N` itself, or its states.
+        let streams: Vec<Option<Object>> = match scan.value(&n) {
+            Some(Object::Dict(states)) => states
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+                .iter()
+                .map(|st| scan.value(st))
+                .collect(),
+            Some(st) => vec![Some(st)],
+            None => return true,
+        };
+        for st in streams {
+            match st {
+                Some(Object::Stream { dict, .. }) => {
+                    if let Some(r) = dict.get(b"Resources".as_slice()) {
+                        if scan.resources(r) {
+                            return true;
+                        }
+                    }
+                }
+                Some(_) => {}
+                None if scan.exhausted => return true,
+                None => {}
+            }
+        }
+    }
+    false
+}
+
+/// The stroke parameters of the graphics state (§8.4.3), in user units.
+fn gs_stroke(gs: &GraphicsState) -> Stroke {
+    Stroke {
+        width: if gs.line_width == 0.0 {
+            hairline_width()
+        } else {
+            gs.line_width as f32
+        },
+        miter_limit: gs.miter_limit as f32,
+        line_cap: match gs.line_cap {
+            1 => tiny_skia::LineCap::Round,
+            2 => tiny_skia::LineCap::Square,
+            _ => tiny_skia::LineCap::Butt,
+        },
+        line_join: match gs.line_join {
+            1 => tiny_skia::LineJoin::Round,
+            2 => tiny_skia::LineJoin::Bevel,
+            _ => tiny_skia::LineJoin::Miter,
+        },
+        dash: gs.dash.as_ref().and_then(|(arr, phase)| {
+            StrokeDash::new(arr.iter().map(|v| *v as f32).collect(), *phase as f32)
+        }),
+    }
+}
 
 /// Re-read a single key from the (indirect) page object. `/Annots` and
 /// `/UserUnit` are not part of the inherited attributes stored on
@@ -4809,11 +5014,14 @@ impl<'a> Renderer<'a> {
                 "tiling pattern transform overflows pattern space".into(),
             ));
         }
+        // Cell (i, j) covers [i·xstep + llx, i·xstep + urx] × […]: it
+        // reaches the box iff i·xstep + urx ≥ px0 and i·xstep + llx ≤ px1
+        // (touching counts, so no sliver is dropped to rounding).
         let bb = tp.bbox;
-        let i0 = ((px0 as f64 - bb.urx) / tp.xstep).floor();
-        let i1 = ((px1 as f64 - bb.llx) / tp.xstep).ceil();
-        let j0 = ((py0 as f64 - bb.ury) / tp.ystep).floor();
-        let j1 = ((py1 as f64 - bb.lly) / tp.ystep).ceil();
+        let i0 = ((px0 as f64 - bb.urx) / tp.xstep).ceil();
+        let i1 = ((px1 as f64 - bb.llx) / tp.xstep).floor();
+        let j0 = ((py0 as f64 - bb.ury) / tp.ystep).ceil();
+        let j1 = ((py1 as f64 - bb.lly) / tp.ystep).floor();
         let tiles = (i1 - i0 + 1.0).max(0.0) * (j1 - j0 + 1.0).max(0.0);
         if !tiles.is_finite() || tiles > u64::MAX as f64 / 4.0 {
             return Err(Error::Structure(
@@ -5402,6 +5610,8 @@ impl<'a> Renderer<'a> {
         // `gs` borrow below.
         let mut pattern_fill: Option<(tiny_skia::Path, Transform)> = None;
         let mut pattern_stroke: Option<(tiny_skia::Path, Transform, Stroke)> = None;
+        let text_stroke =
+            matches!(self.gs.text.render_mode, 1 | 2 | 5 | 6).then(|| gs_stroke(&self.gs));
         let gs = &mut self.gs;
         let t = &mut gs.text;
 
@@ -5494,12 +5704,41 @@ impl<'a> Renderer<'a> {
                     }
                     _ => {}
                 }
-                if matches!(t.render_mode, 1 | 2 | 5 | 6) {
-                    // stroke
-                    let stroke = tiny_skia::Stroke {
-                        width: (gs.line_width * t.font_size / 1000.0) as f32,
-                        ..Default::default()
-                    };
+                // §9.3.6, §8.5.3.2: the glyph outline is stroked like a
+                // path in *user space* — line width, caps, joins and
+                // dashes from the graphics state, in user units — so
+                // the outline is first taken through the text part of
+                // Trm (glyph → user) and stroked under CTM × pixmap.
+                let text_part =
+                    Matrix::new(t.font_size * t.h_scale, 0.0, 0.0, t.font_size, 0.0, t.rise)
+                        .concat(self.text_tm);
+                let text_part = if vertical {
+                    vshift.concat(text_part)
+                } else {
+                    text_part
+                };
+                let user_stroke = text_stroke.clone().and_then(|stroke| {
+                    let tp = Transform::from_row(
+                        text_part.a as f32,
+                        text_part.b as f32,
+                        text_part.c as f32,
+                        text_part.d as f32,
+                        text_part.e as f32,
+                        text_part.f as f32,
+                    );
+                    let ctm = Transform::from_row(
+                        gs.ctm.a as f32,
+                        gs.ctm.b as f32,
+                        gs.ctm.c as f32,
+                        gs.ctm.d as f32,
+                        gs.ctm.e as f32,
+                        gs.ctm.f as f32,
+                    )
+                    .post_concat(self.user_to_pix);
+                    path.clone().transform(tp).map(|p| (p, ctm, stroke))
+                });
+                if let Some((path, full, stroke)) = user_stroke {
+                    let path = &path;
                     if gs.stroke_space.is_pattern() {
                         pattern_stroke = Some((path.clone(), full, stroke));
                     } else {
@@ -5739,8 +5978,12 @@ impl<'a> Renderer<'a> {
                 // A CharProc is its own scope: it may legitimately
                 // contain `BT … ET` (nested Type3, Type3-in-Type3), so
                 // the parent's text state must not leak in. Save and
-                // clear `in_text` for the nested run, restore after.
+                // clear `in_text` for the nested run, restore after —
+                // with the text and line matrices, which a nested BT
+                // resets and a nested Tj advances (they are not part of
+                // the graphics state the gs stack restores).
                 let saved_in_text = self.in_text;
+                let saved_tm = (self.text_tm, self.text_tlm);
                 let saved_text_clip = self.text_clip.take();
                 self.in_text = false;
                 let run_result = (|| {
@@ -5764,6 +6007,7 @@ impl<'a> Renderer<'a> {
                     r
                 })();
                 self.in_text = saved_in_text;
+                (self.text_tm, self.text_tlm) = saved_tm;
                 self.text_clip = saved_text_clip;
                 self.pattern_base = saved_pattern_base;
                 self.swap_resources(saved_resources);
@@ -5888,27 +6132,7 @@ impl<'a> Renderer<'a> {
             ..Default::default()
         };
 
-        let stroke = Stroke {
-            width: if self.gs.line_width == 0.0 {
-                hairline_width()
-            } else {
-                self.gs.line_width as f32
-            },
-            miter_limit: self.gs.miter_limit as f32,
-            line_cap: match self.gs.line_cap {
-                1 => tiny_skia::LineCap::Round,
-                2 => tiny_skia::LineCap::Square,
-                _ => tiny_skia::LineCap::Butt,
-            },
-            line_join: match self.gs.line_join {
-                1 => tiny_skia::LineJoin::Round,
-                2 => tiny_skia::LineJoin::Bevel,
-                _ => tiny_skia::LineJoin::Miter,
-            },
-            dash: self.gs.dash.as_ref().and_then(|(arr, phase)| {
-                StrokeDash::new(arr.iter().map(|v| *v as f32).collect(), *phase as f32)
-            }),
-        };
+        let stroke = gs_stroke(&self.gs);
 
         match kind {
             PaintKind::Stroke => {
@@ -6336,10 +6560,13 @@ fn blend_mode_channel(mode: tiny_skia::BlendMode, cs: u8, cb: u8) -> u8 {
             }
         }
         tiny_skia::BlendMode::HardLight => {
+            // §11.3.5: Multiply(b, 2s) below one half, else
+            // Screen(b, 2s − 1).
             if s <= 0.5 {
                 b * 2.0 * s
             } else {
-                1.0 - 2.0 * (1.0 - b) * (1.0 - (2.0 * s - 1.0))
+                let t = 2.0 * s - 1.0;
+                b + t - b * t
             }
         }
         tiny_skia::BlendMode::SoftLight => {

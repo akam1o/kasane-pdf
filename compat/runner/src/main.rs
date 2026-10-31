@@ -15,6 +15,7 @@
 
 mod analysis;
 mod cause;
+mod colour;
 mod fontaudit;
 mod gsaudit;
 mod probe;
@@ -370,6 +371,16 @@ struct RenderQuality {
     missing_ink_tile: Option<f64>,
     #[serde(default)]
     missing_ink_px: Option<usize>,
+    /// Colour agreement (`colour.rs`): CIEDE2000 over the pixels both
+    /// renders draw in a flat colour, after `best_shift`, against an RGB
+    /// Poppler render. `None`: fewer than `colour::MIN_COMPARED`
+    /// comparable pixels, no RGB reference, or an older report.
+    #[serde(default)]
+    colour: Option<colour::ColourStats>,
+    /// Wall time of the colour comparison, the RGB reference render
+    /// included (ms).
+    #[serde(default)]
+    colour_ms: Option<u64>,
 }
 
 /// One compared page — whole-page metrics plus the content-aware set.
@@ -741,6 +752,10 @@ fn compare_render(
     let (content_ssim_at_shift, _) = content_ssim_gray(&moved, &ref_sized, kw, kh);
     let (displaced_ink_tile, displaced_ink_px) = unmatched_ink(&moved, &ref_sized, kw, kh);
     let (missing_ink_tile, missing_ink_px) = unmatched_ink(&ref_sized, &moved, kw, kh);
+    drop(moved);
+    let t_colour = Instant::now();
+    let colour = colour_against_poppler(kasane, pdf, page, dpi, &prefix, (rw, rh), shift);
+    let colour_ms = t_colour.elapsed().as_millis() as u64;
     let quality = RenderQuality {
         content_ssim,
         ink_windows,
@@ -756,6 +771,8 @@ fn compare_render(
         displaced_ink_px: Some(displaced_ink_px),
         missing_ink_tile: Some(missing_ink_tile),
         missing_ink_px: Some(missing_ink_px),
+        colour,
+        colour_ms: Some(colour_ms),
     };
 
     // Save ours, reference (resized), and diff images for inspection.
@@ -827,13 +844,130 @@ fn pixmap_luma(p: &kasane_pdf::RenderedPage) -> Vec<u8> {
     let mut out = Vec::with_capacity((p.width() * p.height()) as usize);
     #[allow(clippy::chunks_exact_to_as_chunks)]
     for px in d.chunks_exact(4) {
-        // unpremultiply on white: c' = c*a + 255*(1-a)
-        let a = px[3] as u32;
-        let l = |c: u8| (u32::from(c) * a + 255 * (255 - a)) / 255;
-        let (r, g, b) = (l(px[0]), l(px[1]), l(px[2]));
+        // Premultiplied, composited on white like `pixmap_rgb` (pages
+        // are opaque; this only matters if one ever is not).
+        let [r, g, b] = on_white([px[0], px[1], px[2], px[3]]).map(u32::from);
         out.push(((r * 299 + g * 587 + b * 114) / 1000) as u8);
     }
     out
+}
+
+/// Our page as opaque RGB: premultiplied RGBA composited on white.
+fn pixmap_rgb(p: &kasane_pdf::RenderedPage) -> Vec<u8> {
+    let d = p.pixmap().data();
+    let mut out = Vec::with_capacity((p.width() * p.height()) as usize * 3);
+    #[allow(clippy::chunks_exact_to_as_chunks)]
+    for px in d.chunks_exact(4) {
+        out.extend_from_slice(&on_white([px[0], px[1], px[2], px[3]]));
+    }
+    out
+}
+
+/// A premultiplied RGBA pixel composited on white: c + (255 − α).
+fn on_white(px: [u8; 4]) -> [u8; 3] {
+    let white = 255 - px[3];
+    [
+        px[0].saturating_add(white),
+        px[1].saturating_add(white),
+        px[2].saturating_add(white),
+    ]
+}
+
+/// The colour statistics of one page: an RGB Poppler render of the same
+/// page, size and crop as the grey one (`gray_size`), resampled like it
+/// when the sizes differ, compared with our render moved by `shift`.
+/// The RGB reference is read and deleted; it is never kept.
+fn colour_against_poppler(
+    kasane: &kasane_pdf::RenderedPage,
+    pdf: &Path,
+    page: usize,
+    dpi: u32,
+    prefix: &Path,
+    gray_size: (usize, usize),
+    shift: (i32, i32),
+) -> Option<colour::ColourStats> {
+    let rgb_prefix =
+        prefix.with_file_name(format!("{}-rgb", prefix.file_name()?.to_string_lossy()));
+    let out = roundtrip::run_bounded(
+        Command::new("pdftoppm")
+            .args(["-f", &page.to_string(), "-l", &page.to_string()])
+            .args(["-r", &dpi.to_string(), "-singlefile", "-cropbox"])
+            .arg(pdf)
+            .arg(&rgb_prefix),
+    )?;
+    let ppm = rgb_prefix.with_extension("ppm");
+    let bytes = fs::read(&ppm).ok();
+    let _ = fs::remove_file(&ppm);
+    if !out.status.success() {
+        return None;
+    }
+    let (rw, rh, rgb) = parse_ppm(&bytes?)?;
+    // The RGB render must describe the same raster as the grey one.
+    if (rw, rh) != gray_size {
+        return None;
+    }
+    let kw = kasane.width() as usize;
+    let kh = kasane.height() as usize;
+    let reference = if rw == kw && rh == kh {
+        rgb
+    } else {
+        resample_rgb(&rgb, rw, rh, kw, kh)
+    };
+    let ours = shifted_rgb(kasane, shift.0, shift.1);
+    colour::compare(&ours, &reference, kw, kh)
+}
+
+/// Our page as opaque RGB (`pixmap_rgb`) moved by (dx, dy) like
+/// `shifted`, built straight from the pixmap (no intermediate copy).
+fn shifted_rgb(p: &kasane_pdf::RenderedPage, dx: i32, dy: i32) -> Vec<u8> {
+    let (w, h) = (p.width() as usize, p.height() as usize);
+    let d = p.pixmap().data();
+    let mut out = vec![255u8; w * h * 3];
+    for y in 0..h as i32 {
+        let ty = y + dy;
+        if ty < 0 || ty >= h as i32 {
+            continue;
+        }
+        for x in 0..w as i32 {
+            let tx = x + dx;
+            if tx >= 0 && tx < w as i32 {
+                let s = (y as usize * w + x as usize) * 4;
+                let t = (ty as usize * w + tx as usize) * 3;
+                out[t..t + 3].copy_from_slice(&on_white([d[s], d[s + 1], d[s + 2], d[s + 3]]));
+            }
+        }
+    }
+    out
+}
+
+fn resample_rgb(src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec<u8> {
+    let mut out = vec![0u8; dw * dh * 3];
+    for y in 0..dh {
+        for x in 0..dw {
+            let s = (y * sh / dh * sw + x * sw / dw) * 3;
+            out[(y * dw + x) * 3..(y * dw + x) * 3 + 3].copy_from_slice(&src[s..s + 3]);
+        }
+    }
+    out
+}
+
+/// Parse a binary PPM (P6, maxval 255) — returns (w, h, rgb).
+fn parse_ppm(b: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
+    let mut i = 0;
+    if next_tok(b, &mut i)? != b"P6" {
+        return None;
+    }
+    let w = atoi(next_tok(b, &mut i)?);
+    let h = atoi(next_tok(b, &mut i)?);
+    if atoi(next_tok(b, &mut i)?) != 255 {
+        return None;
+    }
+    i += 1;
+    let n = w.checked_mul(h)?.checked_mul(3)?;
+    if b.len() < i.checked_add(n)? {
+        return None;
+    }
+    Some((w, h, b[i..i + n].to_vec()))
 }
 
 fn resample_gray(src: &[u8], sw: usize, sh: usize, dw: usize, dh: usize) -> Vec<u8> {
@@ -1520,6 +1654,9 @@ struct Args {
     /// `--semantic-probe`: mutate real files through the editing API and
     /// check the semantic snapshot notices (`semantic::probe`).
     semantic_probe: bool,
+    /// `--colour-probe`: inject colour errors into real renders and
+    /// record the colour statistics (`run_colour_probe`).
+    colour_probe: bool,
     /// Run the font usage audit instead of a compat run.
     font_audit: bool,
     /// Round-trip knobs (`--mode smoke|full` sets them together).
@@ -1544,6 +1681,7 @@ fn parse_args() -> Args {
         compare: None,
         gs_audit: false,
         semantic_probe: false,
+        colour_probe: false,
         font_audit: false,
         rt_pages: usize::MAX,
         rt_dpi: 48.0,
@@ -1577,6 +1715,7 @@ fn parse_args() -> Args {
             "--compare" => a.compare = it.next().map(PathBuf::from),
             "--gs-audit" => a.gs_audit = true,
             "--semantic-probe" => a.semantic_probe = true,
+            "--colour-probe" => a.colour_probe = true,
             "--rt-pages" => {
                 a.rt_pages = it.next().and_then(|v| v.parse().ok()).unwrap_or(a.rt_pages)
             }
@@ -1649,6 +1788,10 @@ fn main() {
     // ---- ExtGState usage audit (diagnostic, not a compat run) ------
     if args.gs_audit {
         run_gs_audit(&files, &args);
+        return;
+    }
+    if args.colour_probe {
+        run_colour_probe(&files, &args);
         return;
     }
     if args.semantic_probe {
@@ -3083,6 +3226,136 @@ fn render_html(r: &RunReport) -> String {
 /// Walk every corpus PDF, audit its `/ExtGState` resources, and print
 /// a per-key usage table. Which keys appear, on how many files/pages,
 /// and whether the gs was actually `gs`-invoked (vs merely defined).
+/// Colour-metric calibration on real pages: for page 1 of every file
+/// that parses and renders strictly, the colour statistics of our render
+/// against Poppler's as is (`none`), and with one injected colour error
+/// in a colourful 48-px patch of our render — channels rotated (a hue
+/// change), red and blue swapped, the CMYK black dropped (each colour
+/// through naive CMYK and back without K), the patch desaturated to the
+/// grey of the same luma (a chroma change). Writes
+/// `colour-probe.json` (per page: id, kind, statistics) into `--out`;
+/// the analysis is done outside the runner.
+fn run_colour_probe(files: &[PathBuf], args: &Args) {
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    for path in files {
+        let id = path.file_stem().unwrap().to_string_lossy().into_owned();
+        let Ok(data) = fs::read(path) else { continue };
+        let Ok(doc) = Document::from_bytes(&data) else {
+            continue;
+        };
+        let Some(page) = doc.pages().first() else {
+            continue;
+        };
+        let opts = RenderOptions::new().with_dpi(args.dpi);
+        let Ok(r) = render_page(&doc, page, &opts) else {
+            continue;
+        };
+        let prefix = args.out.join(format!("probe-{id}"));
+        let out = roundtrip::run_bounded(
+            Command::new("pdftoppm")
+                .args([
+                    "-f",
+                    "1",
+                    "-l",
+                    "1",
+                    "-r",
+                    &args.dpi.to_string(),
+                    "-singlefile",
+                    "-cropbox",
+                ])
+                .arg(path)
+                .arg(&prefix),
+        );
+        let ppm = prefix.with_extension("ppm");
+        let bytes = fs::read(&ppm).ok();
+        let _ = fs::remove_file(&ppm);
+        let (Some(out), Some(bytes)) = (out, bytes) else {
+            continue;
+        };
+        if !out.status.success() {
+            continue;
+        }
+        let Some((rw, rh, reference)) = parse_ppm(&bytes) else {
+            continue;
+        };
+        let (kw, kh) = (r.width() as usize, r.height() as usize);
+        if (rw, rh) != (kw, kh) {
+            continue;
+        }
+        let ours = pixmap_rgb(&r);
+        let mut push = |kind: &str, img: &[u8]| {
+            rows.push(serde_json::json!({
+                "id": id, "kind": kind,
+                "stats": colour::compare(img, &reference, kw, kh),
+            }));
+        };
+        push("none", &ours);
+        // A colourful patch: >= 30 % of its pixels with a channel range
+        // >= 40 in *both* renders (so the colour is shared, not a shape).
+        let colourful = |img: &[u8], i: usize| {
+            let (a, b, c) = (img[i], img[i + 1], img[i + 2]);
+            a.max(b).max(c) - a.min(b).min(c) >= 40
+        };
+        let mut found = None;
+        'scan: for y in (0..kh.saturating_sub(48)).step_by(16) {
+            for x in (0..kw.saturating_sub(48)).step_by(16) {
+                let mut n = 0;
+                for yy in y..y + 48 {
+                    for xx in x..x + 48 {
+                        let i = (yy * kw + xx) * 3;
+                        n += (colourful(&ours, i) && colourful(&reference, i)) as usize;
+                    }
+                }
+                if n * 10 >= 48 * 48 * 3 {
+                    found = Some((x, y));
+                    break 'scan;
+                }
+            }
+        }
+        let Some((x0, y0)) = found else { continue };
+        let inject = |f: &dyn Fn([u8; 3]) -> [u8; 3]| {
+            let mut img = ours.clone();
+            for yy in y0..y0 + 48 {
+                for xx in x0..x0 + 48 {
+                    let i = (yy * kw + xx) * 3;
+                    let p = f([img[i], img[i + 1], img[i + 2]]);
+                    img[i..i + 3].copy_from_slice(&p);
+                }
+            }
+            img
+        };
+        push("rotate", &inject(&|p| [p[1], p[2], p[0]]));
+        push("swap_rb", &inject(&|p| [p[2], p[1], p[0]]));
+        push(
+            "cmyk_no_k",
+            &inject(&|p| {
+                // Naive RGB -> CMYK with black generation, back without K.
+                let (c, m, y) = (255 - p[0] as i32, 255 - p[1] as i32, 255 - p[2] as i32);
+                let k = c.min(m).min(y);
+                [
+                    (255 - (c - k)) as u8,
+                    (255 - (m - k)) as u8,
+                    (255 - (y - k)) as u8,
+                ]
+            }),
+        );
+        push(
+            "desaturate",
+            &inject(&|p| {
+                let l = ((p[0] as u32 * 299 + p[1] as u32 * 587 + p[2] as u32 * 114) / 1000) as u8;
+                [l, l, l]
+            }),
+        );
+    }
+    let path = args.out.join("colour-probe.json");
+    fs::write(&path, serde_json::to_vec(&rows).unwrap_or_default()).ok();
+    println!(
+        "colour probe: {} rows written to {}",
+        rows.len(),
+        path.display()
+    );
+}
+
 fn run_gs_audit(files: &[PathBuf], args: &Args) {
     // key → (files_using, pages_using, sample_values)
     let mut key_files: BTreeMap<String, usize> = BTreeMap::new();
@@ -3298,10 +3571,70 @@ mod placement_tests {
     }
 
     #[test]
+    fn transparent_pixels_composite_on_white() {
+        use super::on_white;
+        assert_eq!(on_white([0, 0, 0, 0]), [255, 255, 255]);
+        assert_eq!(on_white([200, 0, 0, 255]), [200, 0, 0]);
+        // Half-transparent pure red, premultiplied: (128, 0, 0, 128).
+        assert_eq!(on_white([128, 0, 0, 128]), [255, 127, 127]);
+    }
+
+    #[test]
     fn shift_moves_pixels_the_way_best_shift_pairs_them() {
         let a = img(4, 4, 2);
         let m = shifted(&a, 64, 64, 3, -2);
         assert_eq!(m[2 * 64 + 7], 0);
         assert_eq!(m[4 * 64 + 4], 255);
+    }
+
+    #[test]
+    fn the_rgb_shift_moves_pixels_like_the_luma_shift() {
+        use super::{pixmap_luma, shifted_rgb};
+        // A red square on a 20 × 20 pt page, rendered at 72 dpi.
+        let content = b"1 0 0 rg 4 4 6 6 re f";
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let objs = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 20 20] /Contents 4 0 R >>".into(),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                std::str::from_utf8(content).unwrap()
+            ),
+        ];
+        let mut offs = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offs.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 5\n0000000000 65535 f \n");
+        for o in offs {
+            pdf.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+        );
+        let doc = kasane_pdf::Document::from_bytes(&pdf).unwrap();
+        let r = kasane_pdf::render_page(
+            &doc,
+            &doc.pages()[0],
+            &kasane_pdf::RenderOptions::new().with_dpi(72.0),
+        )
+        .unwrap();
+        let (w, h) = (r.width() as usize, r.height() as usize);
+        for (dx, dy) in [(0, 0), (3, -2), (-1, 4)] {
+            let luma = shifted(&pixmap_luma(&r), w, h, dx, dy);
+            let rgb = shifted_rgb(&r, dx, dy);
+            for i in 0..w * h {
+                let [cr, cg, cb] = [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]].map(u32::from);
+                assert_eq!(
+                    luma[i],
+                    ((cr * 299 + cg * 587 + cb * 114) / 1000) as u8,
+                    "({dx}, {dy}) px {i}"
+                );
+            }
+        }
     }
 }

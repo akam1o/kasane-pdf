@@ -331,3 +331,29 @@ fn type3_glyph_lands_at_text_position() {
     assert!((69..=71).contains(&miny), "miny {miny}");
     assert!((99..=101).contains(&maxy), "maxy {maxy}");
 }
+
+#[test]
+fn a_text_object_inside_a_charproc_keeps_the_outer_text_position() {
+    // Glyph 'a' paints a 500-unit square and then shows glyph 'b' (paints
+    // nothing) in its own BT … ET. The inner BT resets Tm and the inner
+    // Tj advances it; neither may move the outer text: the second 'a'
+    // lands one advance (600/1000 × 40 = 24) right of the first — page
+    // x 50..70 and 74..94, y 100..120.
+    let pdf = pdf_type3(
+        b"BT /F0 40 Tf 50 100 Td (aa) Tj ET",
+        &[
+            ("a", "600 0 d0 0 0 500 500 re f BT /F0 1 Tf (b) Tj ET"),
+            ("b", "600 0 d0"),
+        ],
+        &[],
+    );
+    let r = render(&pdf).unwrap();
+    let dark = |x: u32, y: u32| {
+        let p = r.pixmap().pixel(x, 200 - y).unwrap();
+        p.red() < 128
+    };
+    assert!(dark(60, 110), "first glyph");
+    assert!(dark(84, 110), "second glyph not at the advanced position");
+    assert!(!dark(72, 110), "gap between the glyphs");
+    assert_eq!(inked(&r), 2 * 20 * 20, "nothing painted elsewhere");
+}

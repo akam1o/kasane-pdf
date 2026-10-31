@@ -6,6 +6,38 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Stroked text had the wrong line width.** Glyph outlines in the
+  stroking text modes (`Tr` 1, 2, 5, 6) were stroked with
+  `line width × font size / 1000` in glyph space — about 7× too thin at
+  12 pt, far too thick at large sizes or under a scaling text matrix —
+  and without the caps, joins and dashes of the graphics state. They are
+  now stroked like any path in user space (§9.3.6, §8.5.3.2).
+- **Tiling patterns counted cells that cannot reach the painted area.**
+  The cell range of an overlapping (`/BBox` larger than the step)
+  pattern was widened by up to two cells per side; those cells were run
+  and counted against `max_pattern_tiles`. The range is now exact
+  (no pixel changes; fewer cells executed).
+- **Blend modes against the page were computed over white.** §11.4.7
+  makes the page group isolated: objects composite against a
+  *transparent* backdrop and the result is put on white paper at the
+  end. Painting directly on white made every non-Normal blend mode
+  wrong where nothing had been painted before (a group drawn with
+  `/Difference` over the bare page came out in the complementary
+  colour; `/Screen`, `/Lighten`, `/ColorDodge`, the non-separable modes
+  … came out white). A page whose resources (forms, patterns, Type 3
+  fonts, annotation appearances included) name a blend mode other than
+  Normal is now rendered on a transparent backdrop and composited on
+  white; other pages are painted exactly as before.
+- **A text object inside a Type 3 glyph moved the outer text.** A
+  CharProc may hold its own `BT … ET`; its `BT` reset and its `Tj`
+  advanced the text and line matrices of the text being shown, so the
+  following glyphs of the outer string were drawn at the wrong place.
+  Both matrices are now restored after the CharProc.
+- **`/HardLight` on images, shadings and groups used a wrong formula**
+  (the Screen half doubled the backdrop term). It is now
+  Screen(b, 2s − 1) as §11.3.5 defines.
+
 ### Changed
 - **`rewrite` carries optional content.** A catalog `/OCProperties` was
   refused as outside the rewrite profile; a well-formed one is now

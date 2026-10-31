@@ -73,8 +73,10 @@ are on the [roadmap](architecture.md#roadmap).
   `/Alternate` space and are reported in `color_approximations`.
   Non-`/Default` transfer functions, black generation and undercolour
   removal are refused; halftones and smoothness are accepted and
-  ignored (no effect on this rasteriser). DeviceCMYK uses the naive
-  §10.4.3 formula.
+  ignored (no effect on this rasteriser). DeviceCMYK uses the
+  §10.3.5 conversion (no colour management: Poppler and Quartz, which
+  manage CMYK, differ from it by ΔE00 ≈ 5–25 on saturated colours; the
+  compat runner reports such pages, they are not defects).
 - **Text**: no hinting, no shaping (ligature substitution, kerning
   from GPOS); glyphs are placed exactly where the content stream
   puts them.
