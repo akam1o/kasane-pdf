@@ -102,9 +102,13 @@ are on the [roadmap](architecture.md#roadmap).
 
 - **Rewrite** produces one flat revision: superseded objects, earlier
   trailers and the incremental-update history are not carried; a
-  signed document is refused; XFA, `/OCProperties`, RichMedia and
-  document-level actions are refused rather than carried. Preserved
-  objects are carried verbatim — the rewriter is **not a sanitizer**.
+  signed document is refused; XFA, RichMedia and document-level
+  actions are refused rather than carried. Optional content
+  (`/OCProperties`) is carried when well formed and refused otherwise
+  (missing `/OCGs` or `/D`, a group that is not an OCG dictionary, a
+  wrong type, a cyclic or over-deep `/Order`); a document carrying it
+  is declared at least PDF 1.5. Preserved objects are
+  carried verbatim — the rewriter is **not a sanitizer**.
 - **Incremental save** cannot delete bytes (a removed annotation's
   object stays in the file), refuses recovered documents, encrypted
   documents and non-zero-generation references, and only appends the

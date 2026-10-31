@@ -111,9 +111,13 @@ the editing API and saved incrementally:
 
 The writer carries these structures verbatim, so equality is expected;
 the graph check agrees (413 pass). Coverage is thin for page labels (8),
-embedded files (1) and optional content (0 — the rewriter refuses
-`/OCProperties`, so no rewrite with optional content exists yet); the
-synthetic tests carry those categories until the corpus grows.
+embedded files (1) and optional content (0 — the rewriter refused
+`/OCProperties`); the synthetic tests carry those categories until the
+corpus grows. The Linux nightly (2026-11-01) gives the same table.
+
+Since the rewriter carries `/OCProperties` (2026-11-01): 427 compared,
+pass 203, not applicable 224, fail / unsupported / error 0; optional
+content 14 / 14 pass (58 lines: groups, configurations, uses).
 
 ## Roll-out
 
