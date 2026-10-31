@@ -694,6 +694,8 @@ mod tests {
             top,
             fds: vec![sub],
             fd_select: FdSelect::Format0(vec![0]),
+            predefined_charset: None,
+            standard_encoding: true,
         };
         let a = |c: CffMatrices| (c.glyph_matrix(0).a * 1e6).round() / 1e6;
         assert_eq!(a(base(None, None)), 0.001);
