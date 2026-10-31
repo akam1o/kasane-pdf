@@ -1,5 +1,9 @@
 # Plan — Render 90 % on the compatibility corpus
 
+> Superseded for planning by [`v0.4.0.md`](v0.4.0.md): correctness of
+> exact renders comes before the 90 % line, which needs the corpus,
+> not the engine, to change.
+
 Status after the Standard security handler (the run recorded in
 `compat-corpus.md` § *Results after the Standard security handler*).
 Per-file details live in the gitignored runner reports and in
