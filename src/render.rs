@@ -5873,8 +5873,12 @@ impl<'a> Renderer<'a> {
                 // A CharProc is its own scope: it may legitimately
                 // contain `BT … ET` (nested Type3, Type3-in-Type3), so
                 // the parent's text state must not leak in. Save and
-                // clear `in_text` for the nested run, restore after.
+                // clear `in_text` for the nested run, restore after —
+                // with the text and line matrices, which a nested BT
+                // resets and a nested Tj advances (they are not part of
+                // the graphics state the gs stack restores).
                 let saved_in_text = self.in_text;
+                let saved_tm = (self.text_tm, self.text_tlm);
                 let saved_text_clip = self.text_clip.take();
                 self.in_text = false;
                 let run_result = (|| {
@@ -5898,6 +5902,7 @@ impl<'a> Renderer<'a> {
                     r
                 })();
                 self.in_text = saved_in_text;
+                (self.text_tm, self.text_tlm) = saved_tm;
                 self.text_clip = saved_text_clip;
                 self.pattern_base = saved_pattern_base;
                 self.swap_resources(saved_resources);
