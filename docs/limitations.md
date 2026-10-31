@@ -106,8 +106,11 @@ are on the [roadmap](architecture.md#roadmap).
   actions are refused rather than carried. Optional content
   (`/OCProperties`) is carried when well formed and refused otherwise
   (missing `/OCGs` or `/D`, a group that is not an OCG dictionary, a
-  wrong type, a cyclic or over-deep `/Order`); a document carrying it
-  is declared at least PDF 1.5. Preserved objects are
+  wrong type, a cyclic or over-deep `/Order`); unknown keys are kept. A
+  rewrite carrying it declares at least PDF 1.5 in the header (the
+  effective version is the larger of header and catalog `/Version`; 2.0
+  stays refused); an incremental save never changes the header.
+  Preserved objects are
   carried verbatim — the rewriter is **not a sanitizer**.
 - **Incremental save** cannot delete bytes (a removed annotation's
   object stays in the file), refuses recovered documents, encrypted

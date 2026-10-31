@@ -462,6 +462,11 @@ fn indirect_values_and_null_entries_are_accepted() {
         ("null in /OCGs and /ON", "<< /OCGs [10 0 R null 11 0 R] /D << /ON [null 10 0 R] >> >>", vec![]),
         ("indirect /Order label", "<< /OCGs [10 0 R 11 0 R] /D << /Order [[50 0 R 10 0 R] 11 0 R] >> >>", vec![(50, "(Layer set)")]),
         (
+            "/AS without /OCGs (optional), unknown keys kept",
+            "<< /OCGs [10 0 R] /D << /AS [<< /Event /View /Category [/Zoom] >>] /XYZ_Vendor (kept) >> /XYZ_Ext 3 >>",
+            vec![],
+        ),
+        (
             "indirect names",
             "<< /OCGs [10 0 R] /D << /Intent [51 0 R] /AS [<< /Event 52 0 R /OCGs [10 0 R] /Category [51 0 R] >>] >> >>",
             vec![(51, "/View"), (52, "/View")],
@@ -484,5 +489,27 @@ fn optional_content_is_declared_at_least_pdf_1_5() {
         v[..8].copy_from_slice(header);
         let out = rewrite(&Document::from_bytes(&v).unwrap()).unwrap();
         assert_eq!(&out[..8], want, "{}", String::from_utf8_lossy(header));
+    }
+}
+
+#[test]
+fn the_version_floor_combines_with_the_catalog_version() {
+    // Effective version = max(header, catalog /Version), then at least
+    // 1.5 for optional content; 2.0 stays refused.
+    let ocp = "<< /OCGs [10 0 R] /D << >> >>";
+    for (cat_version, want) in [
+        ("/1.4", Some(&b"%PDF-1.5"[..])),
+        ("/1.6", Some(b"%PDF-1.6")),
+        ("/2.0", None),
+    ] {
+        let catalog =
+            format!("<< /Type /Catalog /Pages 2 0 R /Version {cat_version} /OCProperties {ocp} >>");
+        let mut v = pdf(ocp, &[(1, &catalog)]);
+        v[..8].copy_from_slice(b"%PDF-1.4");
+        let r = rewrite(&Document::from_bytes(&v).unwrap());
+        match want {
+            Some(h) => assert_eq!(&r.unwrap()[..8], h, "catalog {cat_version}"),
+            None => assert!(r.is_err(), "catalog {cat_version} must be refused"),
+        }
     }
 }

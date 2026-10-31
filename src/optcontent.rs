@@ -589,13 +589,14 @@ impl Validator<'_> {
                         "{what} /AS /Event is not View, Print or Export"
                     )));
                 }
-                let groups = ad
-                    .get(b"OCGs".as_slice())
-                    .ok_or_else(|| Error::Structure(format!("{what} /AS entry has no /OCGs")))?;
-                let label = format!("{what} /AS /OCGs");
-                for r in self.ref_list(groups, &label)? {
-                    self.count()?;
-                    self.group(r, &label)?;
+                // /OCGs is optional (an absent list names no group);
+                // /Event and /Category are required.
+                if let Some(groups) = ad.get(b"OCGs".as_slice()) {
+                    let label = format!("{what} /AS /OCGs");
+                    for r in self.ref_list(groups, &label)? {
+                        self.count()?;
+                        self.group(r, &label)?;
+                    }
                 }
                 let cat_ok = match ad.get(b"Category".as_slice()) {
                     Some(c) => self.names(c)?,
