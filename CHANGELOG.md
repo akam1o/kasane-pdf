@@ -6,6 +6,11 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-31
+
+Patch release (`cargo semver-checks` against 0.3.0: no semver update
+required). Release notes: `docs/releases/v0.3.1.md`.
+
 ### Fixed
 - **Type 1 fonts with a `/FontMatrix` other than `[0.001 0 0 0.001 0 0]`
   were drawn at the wrong scale and reported as exact renders** (since
@@ -351,7 +356,8 @@ are possible between minor versions and are recorded here.
   1.1 and Adobe CMap resources under BSD-3-Clause (`NOTICE`,
   `docs/third-party.md`).
 
-[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.3.1
 [0.3.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.3.0
 [0.2.2]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.2.2
 [0.2.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.2.1
