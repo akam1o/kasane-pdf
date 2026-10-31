@@ -133,21 +133,29 @@ enforced flag set is the same on both. This is why the enforced band is
 wide and why the full-corpus baseline is taken from the nightly
 configuration.
 
+The first nightly on this code (ubuntu-26.04, poppler-utils 26.01.0 vs
+26.10.0 locally) confirmed it on the v0.4.0 runner: 847 pages compared
+(848 locally), the same single enforced flag, 4 report-only files (3),
+10 exempt files on 16 pages (7 on 7) — the extra exemptions are pages
+Poppler 26.01 leaves blank, and one JPX page it does not render
+(`compat/baselines/README.md`). Linux ink-ratio distribution over 780
+pages with ink on both sides: p1 0.79, median 1.02, p99 1.39, extremes
+0.25 (the known grid) and 2.05 — the closest legitimate page to the
+enforced 2.5. Pinning Poppler would need a source build in CI; the
+witness version is recorded in the baseline notes instead, and the
+baseline is regenerated when the runner image changes it.
+
 ## Roll-out
 
 1. (done) measure the distribution on v0.3.0 and after the fix; confirm
    the FontMatrix pages are flagged before and pass after;
 2. (done) the fixtures-smoke baseline regenerated with the new fields —
    the gate is armed for pull requests (no fixture is flagged);
-3. (done locally) `compat/baselines/corpus-full.json` regenerated with
-   the gate fields from a full run in the nightly configuration
-   (`cjk-fallback`, `--mode full`) of the v0.3.1 engine and this runner,
-   and checked against the Linux v0.3.1 nightly artifact (no regression,
-   same enforced flag; one round-trip `full` differs because Linux
-   Poppler sizes one malformed original differently — not a gated
-   check). Once this code is on `main`, the first nightly's artifact
-   replaces it (`ci-regression.py summarize latest.json`), keeping
-   `reviewed_known_flags` unless a new flag is reviewed.
+3. (done) `compat/baselines/corpus-full.json` from the first Linux
+   nightly on this code, after a file-by-file comparison with the
+   provisional local baseline (all differences in the witness, none in
+   an enforced rule); `reviewed_known_flags` unchanged at 1; the
+   nightly re-run against it enforces the gate.
 
 ## Text agreement
 
