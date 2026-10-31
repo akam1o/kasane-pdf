@@ -190,6 +190,33 @@ class Gate(unittest.TestCase):
         self.assertIn("| new report-only findings (review, not enforced) | 1 |", text)
         self.assertIn("| pages: `displaced_ink` (report only) | 1 |", text)
 
+    def test_colour_rules(self):
+        def coloured(tile, hue_tiles, **kw):
+            p = page(0.1, 0.1, shift_cssim=0.9, displaced=(0.0, 0), **kw)
+            p["quality"]["colour"] = {"worst_tile_mean": tile, "hue_tiles": hue_tiles}
+            return p
+        # A hue error in a flat region: both rules; a large lightness-only
+        # difference: the tile rule only; small differences: nothing.
+        self.assertEqual(self.q(coloured(40.0, 2)), "report:colour_hue,colour_tile")
+        self.assertEqual(self.q(coloured(20.0, 0)), "report:colour_tile")
+        self.assertEqual(self.q(coloured(3.0, 0)), "ok")
+        # Not comparable (no colour statistics): not evaluated.
+        self.assertEqual(self.q(page(0.1, 0.1, shift_cssim=0.9, displaced=(0.0, 0))), "ok")
+        # Poppler blank: exempt before any colour rule.
+        blank = coloured(80.0, 5)
+        blank["quality"]["ink_ref"] = 0.0
+        self.assertEqual(self.q(blank), "exempt:reference-blank")
+        # A font-substituted page: colour rules only (its glyph shapes
+        # are a reported approximation, its colours are not).
+        f = file("x", [coloured(40.0, 0)], approximate=True)
+        f["metrics"]["render_font_substitutions"] = ["Helvetica -> Liberation Sans"]
+        f["metrics"]["render_pages"][0]["quality"]["content_ssim_at_shift"] = 0.1
+        self.assertEqual(cr.report_rules(f, self.gate), ["colour_tile"])
+        self.assertEqual(cr.quality(f, self.gate), "n/a")
+        # A colour approximation (ICC / CMYK fallback): never judged.
+        f["metrics"]["render_color_approximations"] = ["ICCBased Lab PCS -> /Alternate"]
+        self.assertEqual(cr.report_rules(f, self.gate), [])
+
     def test_only_exact_renders_are_judged(self):
         self.assertEqual(self.q(GARBLED, approximate=True), "n/a")
         recovered = file("r", [GARBLED])

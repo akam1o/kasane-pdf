@@ -83,6 +83,13 @@ def page_findings(q, gate):
         elif r["kind"] == "displaced_ink":
             t, n = q.get("displaced_ink_tile"), q.get("displaced_ink_px")
             hit = t is not None and n is not None and t > r["min_tile_share"] and n >= r["min_px"]
+        elif r["kind"] == "colour_tile":
+            # ΔE00 statistics (runner colour.rs); None: not comparable.
+            c = q.get("colour")
+            hit = c is not None and c["worst_tile_mean"] > r["max_tile_mean"]
+        elif r["kind"] == "colour_hue":
+            c = q.get("colour")
+            hit = c is not None and c["hue_tiles"] >= r["min_hue_tiles"]
         else:
             raise ValueError(f"unknown rule kind {r['kind']!r}")
         if hit:
@@ -134,9 +141,29 @@ def quality_detail(f, gate):
     return cls, len(pages), n_flag, n_report, n_exempt
 
 
+COLOUR_KINDS = ("colour_tile", "colour_hue")
+
+
+def colour_comparable(f):
+    """A strict render whose only reported approximations (if any) are
+    font substitutions — they change glyph shapes, never colours — so
+    the colour rules apply even though the page is not exact. Colour
+    and image approximations (ICC / CMYK fallbacks, reduced JPEG
+    decoding) keep it out."""
+    m = f.get("metrics") or {}
+    return (
+        (f.get("render") or {}).get("class") == "pass"
+        and not f.get("recovered")
+        and not m.get("render_color_approximations")
+        and not m.get("render_image_approximations")
+    )
+
+
 def report_rules(f, gate):
-    """Report-only rules fired on any compared page of an exact render."""
-    if not is_exact(f):
+    """Report-only rules fired on any compared page: every rule on an
+    exact render; the colour rules alone on a colour-comparable one."""
+    exact = is_exact(f)
+    if not exact and not colour_comparable(f):
         return []
     m = f.get("metrics") or {}
     fired = set()
@@ -144,7 +171,12 @@ def report_rules(f, gate):
         q = p.get("quality")
         if q:
             rules, _ = page_findings(q, gate)
-            fired.update(r for r in rules if not gate["rules"][r]["enforced"])
+            fired.update(
+                r
+                for r in rules
+                if not gate["rules"][r]["enforced"]
+                and (exact or gate["rules"][r]["kind"] in COLOUR_KINDS)
+            )
     return sorted(fired)
 
 
