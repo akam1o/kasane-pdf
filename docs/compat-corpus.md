@@ -1340,6 +1340,41 @@ PASS rises by the 13; one file (`expect: pass`, render refused for an
 unrelated reason) now rewrites but is not a full PASS. No pixel of any
 page changed; the quality gate classes are unchanged.
 
+### Colour comparison, page-group blending, Type 3 text state (2026-11-01)
+
+Same configuration (macOS, `cjk-fallback`, full mode, 96 dpi), on top
+of the `/OCProperties` run; compared with that run and with the Linux
+baseline.
+
+| expect: pass (425) | before | after |
+|---|---:|---:|
+| strict parse / render / approximate / recovered | 408 / 380 / 69 / 18 | unchanged |
+| text / rewrite / full PASS | 392 / 364 / 338 | unchanged |
+| graph / full / semantic round trip | 427 / 425 / 203 pass | unchanged |
+| incremental save, robustness, unexpected acceptance, crash / timeout | 446, 44/44, 0, 0 | unchanged |
+
+- One `expect: any` file changes: render `pass` → `error`
+  (`max_pattern_tiles`). It is a Type 3 glyph showing text with another
+  Type 3 font; before the fix the nested text moved the outer text and
+  the page was silently wrong; drawn correctly, its glyph-space tiling
+  pattern needs more tiles than the limit. `ci-regression.py check`
+  reports it as a regression against the Linux baseline: an intended
+  change, to be recorded when the baseline is next taken.
+- Pixels changed on 18 pages of 15 files, all on pages naming a blend
+  mode other than Normal: content SSIM 0.71 → 0.97, 0.79 → 0.81 and
+  0.91 → 0.93 on the three with a visible blend; on the others at most
+  2 luma levels on fewer than 8 000 pixels (the transparent backdrop
+  rounds differently). Text, quality classes and every other page are
+  identical.
+- Colour statistics on 563 of 1 141 compared pages (the others have
+  fewer than 64 flat drawn pixels on both sides). Exact pages: median
+  of the per-page p95 ΔE00 0.0, 95th percentile 2.5; 14 pages above 5.
+- Report-only colour findings: `colour_tile` on 6 files (4 exact, 2
+  font-only), `colour_hue` on 1 — all classified in
+  `plans/quality-gate.md` § Colour rules; none is a kasane-pdf defect.
+- Cost: 64 s of colour comparison (median 36 ms per page), runner
+  +12 % (537 → 602 s summed per file).
+
 ## External verification findings (this phase)
 
 What the independent parsers said about the rewrites, file by file,
