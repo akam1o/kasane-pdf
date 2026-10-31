@@ -23,16 +23,19 @@ cr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cr)
 
 
-def page(ours, ref, cssim=0.8, diff=0.01, sizes=(612, 792, 612, 792)):
-    return {
-        "quality": {
-            "ink_ours": ours,
-            "ink_ref": ref,
-            "content_ssim": cssim,
-            "diff_px_at_best_shift": diff,
-            "sizes": list(sizes),
-        }
+def page(ours, ref, cssim=0.8, diff=0.01, sizes=(612, 792, 612, 792), shift_cssim=None, displaced=None):
+    q = {
+        "ink_ours": ours,
+        "ink_ref": ref,
+        "content_ssim": cssim,
+        "diff_px_at_best_shift": diff,
+        "sizes": list(sizes),
     }
+    if shift_cssim is not None:
+        q["content_ssim_at_shift"] = shift_cssim
+    if displaced is not None:
+        q["displaced_ink_tile"], q["displaced_ink_px"] = displaced
+    return {"quality": q}
 
 
 def file(fid, pages, approximate=False, verdict="pass"):
@@ -51,6 +54,14 @@ def file(fid, pages, approximate=False, verdict="pass"):
 
 
 GARBLED = page(0.038, 0.012, cssim=0.07, diff=0.04)  # ratio 3.18
+# Measured on the corpus (2026-10-31, runner with the placement
+# metrics): the FontMatrix page before the fix, the NoRotate page
+# before and after its fix, a 1-px offset scan page (legitimate).
+FONTMATRIX_OLD = page(0.038, 0.012, cssim=0.07, diff=0.04, shift_cssim=0.108, displaced=(1.0, 16677))
+NOROTATE_OLD = page(0.0158, 0.0161, cssim=0.264, diff=0.024, shift_cssim=0.264, displaced=(1.0, 250))
+NOROTATE_FIXED = page(0.0162, 0.0161, cssim=0.975, diff=0.007, shift_cssim=0.975, displaced=(0.0, 0))
+OFFSET_SCAN = page(0.05, 0.049, cssim=0.20, diff=0.005, shift_cssim=0.9, displaced=(0.0, 0))
+THIN_GRID = page(0.028, 0.112, cssim=0.293, diff=0.18, shift_cssim=0.293, displaced=(0.0, 0))
 FIXED = page(0.0122, 0.012, cssim=0.88)  # ratio 1.02
 GRID = page(0.028, 0.112, cssim=0.5)  # ratio 0.25, Poppler darker
 USERUNIT = page(0.02, 0.08, sizes=(1588, 2246, 794, 1123))  # Poppler ignores /UserUnit
@@ -134,6 +145,50 @@ class Gate(unittest.TestCase):
         self.assertEqual(self.q(low_ssim), "report:content_ssim")
         base = cr.summarize(run(file("a", [NORMAL])))
         self.assertEqual(check(run(file("a", [soft, low_ssim])), base)[0], 0)
+
+    def test_placement_rules_catch_the_norotate_misrender(self):
+        # The old gate missed it: ink ratio 0.98, best-shift diff 2.4 %.
+        old = cr.quality(file("x", [NOROTATE_OLD]), self.gate)
+        self.assertEqual(old, "report:content_ssim_shift,displaced_ink")
+        self.assertEqual(self.q(NOROTATE_FIXED), "ok")
+
+    def test_fontmatrix_still_enforced_and_also_reported(self):
+        f = file("x", [FONTMATRIX_OLD])
+        self.assertEqual(cr.quality(f, self.gate), "flag:ink_ratio")
+        self.assertEqual(cr.report_rules(f, self.gate), ["content_ssim_shift", "displaced_ink", "ink_ratio_band"])
+
+    def test_placement_rules_tolerate_offsets_and_thin_strokes(self):
+        # A whole-page 1-px offset: low SSIM before the shift only.
+        self.assertEqual(self.q(OFFSET_SCAN), "ok")
+        # The known grid: report-only under the shifted SSIM, still the
+        # known enforced flag, never a new failure.
+        self.assertEqual(self.q(THIN_GRID), "flag:ink_ratio")
+        base = cr.summarize(run(file("grid", [THIN_GRID])))
+        self.assertEqual(check(run(file("grid", [THIN_GRID])), base)[0], 0)
+
+    def test_placement_rules_respect_exemptions_and_old_reports(self):
+        # Poppler left the page blank: exempt, whatever the placement says.
+        blank = page(0.05, 0.0001, shift_cssim=0.0, displaced=(1.0, 5000))
+        self.assertEqual(self.q(blank), "exempt:reference-blank")
+        # /UserUnit page size: exempt.
+        uu = page(0.02, 0.08, sizes=(1588, 2246, 794, 1123), shift_cssim=0.0, displaced=(1.0, 5000))
+        self.assertEqual(self.q(uu), "exempt:page-size")
+        # A report from before the placement metrics: not evaluated.
+        self.assertEqual(self.q(page(0.0158, 0.0161, cssim=0.264, diff=0.024)), "ok")
+        # A few stray pixels are not a finding.
+        self.assertEqual(self.q(page(0.1, 0.1, shift_cssim=0.9, displaced=(1.0, 12))), "ok")
+
+    def test_new_report_findings_are_listed_but_never_fail(self):
+        base = cr.summarize(run(file("a", [NOROTATE_FIXED])))
+        rc, out = check(run(file("a", [NOROTATE_OLD])), base)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("new report-only finding (not enforced, review): a: content_ssim_shift,displaced_ink", out)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "s.md")
+            check(run(file("a", [NOROTATE_OLD])), base, path)
+            text = open(path).read()
+        self.assertIn("| new report-only findings (review, not enforced) | 1 |", text)
+        self.assertIn("| pages: `displaced_ink` (report only) | 1 |", text)
 
     def test_only_exact_renders_are_judged(self):
         self.assertEqual(self.q(GARBLED, approximate=True), "n/a")

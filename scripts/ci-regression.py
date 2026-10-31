@@ -76,6 +76,13 @@ def page_findings(q, gate):
             hit = io >= ev["min_ink"] and ir >= ev["min_ink"] and not (r["low"] <= io / ir <= r["high"])
         elif r["kind"] == "content_ssim":
             hit = q.get("content_ssim", 1.0) < r["max"] and q.get("diff_px_at_best_shift", 0.0) > r["min_diff_at_best_shift"]
+        elif r["kind"] == "content_ssim_shift":
+            # Measured only by newer runners (None: not evaluated).
+            v = q.get("content_ssim_at_shift")
+            hit = v is not None and io >= ev["min_ink"] and ir >= ev["min_ink"] and v < r["max"]
+        elif r["kind"] == "displaced_ink":
+            t, n = q.get("displaced_ink_tile"), q.get("displaced_ink_px")
+            hit = t is not None and n is not None and t > r["min_tile_share"] and n >= r["min_px"]
         else:
             raise ValueError(f"unknown rule kind {r['kind']!r}")
         if hit:
@@ -127,6 +134,20 @@ def quality_detail(f, gate):
     return cls, len(pages), n_flag, n_report, n_exempt
 
 
+def report_rules(f, gate):
+    """Report-only rules fired on any compared page of an exact render."""
+    if not is_exact(f):
+        return []
+    m = f.get("metrics") or {}
+    fired = set()
+    for p in m.get("render_pages") or []:
+        q = p.get("quality")
+        if q:
+            rules, _ = page_findings(q, gate)
+            fired.update(r for r in rules if not gate["rules"][r]["enforced"])
+    return sorted(fired)
+
+
 def quality(f, gate):
     """The file's gate class (see the module docstring)."""
     return quality_detail(f, gate)[0]
@@ -154,6 +175,7 @@ def summarize(run):
         files[f["id"]]["quality"] = cls
         files[f["id"]]["quality_pages"] = n_pages
         files[f["id"]]["quality_pages_flagged"] = n_flag
+        files[f["id"]]["quality_report_rules"] = report_rules(f, gate)
     agg = {
         "files": len(files),
         "crash": sum(1 for v in files.values() if v["verdict"] == "crash"),
@@ -181,6 +203,7 @@ def check(run, base, summary_md=None):
     armed = any("quality" in o for o in old.values())
     regressions, improvements, known_flags, unrecorded = [], [], [], []
     new_flags = []
+    new_reports, known_reports = [], []
     for fid, n in cur.items():
         if n["verdict"] in ("crash", "timeout"):
             regressions.append(f"{fid}: verdict {n['verdict']}")
@@ -230,6 +253,14 @@ def check(run, base, summary_md=None):
                 regressions.append(f"{fid}: exact render {nq} (quality gate; was {oq or 'unrecorded'})")
         elif oq.startswith("flag:"):
             improvements.append(f"{fid}: quality {oq} -> {nq}")
+        # Report-only findings never fail; new ones (a rule the baseline
+        # does not record for this file) are listed for review.
+        if "quality_report_rules" in o:
+            fresh = sorted(set(n["quality_report_rules"]) - set(o["quality_report_rules"]))
+            if fresh:
+                new_reports.append(f"{fid}: {','.join(fresh)}")
+            elif n["quality_report_rules"]:
+                known_reports.append(fid)
     reviewed = gate.get("reviewed_known_flags", 0)
     in_baseline = sum(1 for o in old.values() if o.get("quality", "").startswith("flag:"))
     if armed and in_baseline > reviewed:
@@ -238,7 +269,10 @@ def check(run, base, summary_md=None):
             f"{reviewed} reviewed in compat/quality-gate.json (reviewed_known_flags)"
         )
     if summary_md:
-        write_gate_summary(summary_md, run, gate, armed, known_flags, new_flags, unrecorded, in_baseline, reviewed)
+        write_gate_summary(
+            summary_md, run, gate, armed, known_flags, new_flags, unrecorded, in_baseline, reviewed,
+            new_reports, known_reports,
+        )
     missing = sorted(set(old) - set(cur))
     added = sorted(set(cur) - set(old))
     print(f"files: {len(cur)} now, {len(old)} in baseline, {len(missing)} missing, {len(added)} new")
@@ -248,6 +282,8 @@ def check(run, base, summary_md=None):
         print("known quality flag (in baseline):", line)
     for line in unrecorded:
         print("quality flag (baseline predates the gate, not enforced):", line)
+    for line in new_reports:
+        print("new report-only finding (not enforced, review):", line)
     for line in regressions:
         print("REGRESSION:", line)
     if regressions:
@@ -257,7 +293,9 @@ def check(run, base, summary_md=None):
     return 0
 
 
-def write_gate_summary(path, run, gate, armed, known, new, unrecorded, in_baseline, reviewed):
+def write_gate_summary(
+    path, run, gate, armed, known, new, unrecorded, in_baseline, reviewed, new_reports=(), known_reports=()
+):
     """Counts-only markdown for the CI job summary."""
     import collections
 
@@ -268,6 +306,13 @@ def write_gate_summary(path, run, gate, armed, known, new, unrecorded, in_baseli
         c[cls.split(":")[0]] += 1
         exact += is_exact(f)
         pages, flagged, reported, exempt = pages + n, flagged + nf, reported + nr, exempt + ne
+    per_rule = collections.Counter()
+    for f in run["files"]:
+        if not is_exact(f):
+            continue
+        for p in (f.get("metrics") or {}).get("render_pages") or []:
+            if p.get("quality"):
+                per_rule.update(page_findings(p["quality"], gate)[0])
     if not armed:
         result = "not enforced (baseline predates the gate)"
     elif new or in_baseline > reviewed:
@@ -286,9 +331,14 @@ def write_gate_summary(path, run, gate, armed, known, new, unrecorded, in_baseli
         ("files exempt (blank reference / page size)", c["exempt"]),
         ("pages exempt", exempt),
         ("new flags (fail)", len(new)),
+        ("new report-only findings (review, not enforced)", len(new_reports)),
+        ("report-only findings already in the baseline", len(known_reports)),
         ("known flags (in the baseline)", len(known)),
-        (f"known flags reviewed in quality-gate.json", reviewed),
+        ("known flags reviewed in quality-gate.json", reviewed),
         ("flags not enforced (baseline predates the gate)", len(unrecorded)),
+    ] + [
+        (f"pages: `{name}` ({'enforced' if r['enforced'] else 'report only'})", per_rule[name])
+        for name, r in gate["rules"].items()
     ]
     with open(path, "a") as fh:
         fh.write(f"## Exact-render quality gate: {result}\n\n| | count |\n|---|---:|\n")
