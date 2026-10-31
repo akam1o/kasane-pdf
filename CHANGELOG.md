@@ -6,6 +6,16 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Annotations with the NoRotate flag were turned with the page.** On a
+  page with `/Rotate`, an annotation whose `/F` sets NoRotate (bit 5,
+  ISO 32000-2 Table 167) is now drawn upright: its placed appearance is
+  turned back by the page rotation about the upper-left corner of
+  `/Rect`, which stays where the rotated page displays it (the same
+  pivot Poppler uses). Pages without `/Rotate` and annotations without
+  the flag are unchanged. NoZoom needs no change: a render is the page
+  at magnification 1 at the requested resolution.
+
 ## [0.3.1] - 2026-10-31
 
 Patch release (`cargo semver-checks` against 0.3.0: no semver update

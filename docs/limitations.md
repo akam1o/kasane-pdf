@@ -78,6 +78,12 @@ are on the [roadmap](architecture.md#roadmap).
 - **Text**: no hinting, no shaping (ligature substitution, kerning
   from GPOS); glyphs are placed exactly where the content stream
   puts them.
+- **Annotation flags**: Hidden, NoView and NoRotate are honoured. NoZoom
+  has no effect: a render at a resolution is the page at magnification
+  1, and `RenderOptions` carries no viewer zoom separate from `dpi`. An
+  `/F` that is not an integer is read as 0 (no flags), as before.
+  Poppler additionally treats every `/Text` annotation as NoRotate and
+  NoZoom; kasane-pdf follows the annotation's own `/F`.
 - Mesh shadings interpolate colours in sRGB after conversion, not in
   the source space; function-based shadings are sampled on a 128×128
   grid. Both are recorded as approximations in the feature file.
