@@ -86,10 +86,10 @@ def page_findings(q, gate):
         elif r["kind"] == "colour_tile":
             # ΔE00 statistics (runner colour.rs); None: not comparable.
             c = q.get("colour")
-            hit = c is not None and c["worst_tile_mean"] > r["max_tile_mean"]
+            hit = c is not None and (c.get("worst_tile_mean") or 0.0) > r["max_tile_mean"]
         elif r["kind"] == "colour_hue":
             c = q.get("colour")
-            hit = c is not None and c["hue_tiles"] >= r["min_hue_tiles"]
+            hit = c is not None and (c.get("hue_tiles") or 0) >= r["min_hue_tiles"]
         else:
             raise ValueError(f"unknown rule kind {r['kind']!r}")
         if hit:
@@ -161,7 +161,9 @@ def colour_comparable(f):
 
 def report_rules(f, gate):
     """Report-only rules fired on any compared page: every rule on an
-    exact render; the colour rules alone on a colour-comparable one."""
+    exact render; the colour rules alone on a colour-comparable one.
+    (An enforced colour rule would be evaluated by `quality`, on exact
+    renders only — widen that too before enforcing one.)"""
     exact = is_exact(f)
     if not exact and not colour_comparable(f):
         return []

@@ -234,3 +234,71 @@ fn the_page_group_backdrop_is_transparent() {
     }
     assert!(bad.is_empty(), "\n{}", bad.join("\n"));
 }
+
+/// A 10 × 10 page with nothing painted but a 6-pt square of `CS` drawn
+/// with `/Difference` from a resource reached only through `objects`.
+fn bare_page_pdf(page_extra: &str, content: &str, objects: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Contents 4 0 R {page_extra} >>")
+                .into_bytes(),
+        ),
+        (4, stream_obj("", content.as_bytes())),
+        (5, b"<< /Type /ExtGState /BM /Difference >>".to_vec()),
+    ];
+    objs.extend(objects);
+    build_pdf(&objs)
+}
+
+fn square() -> String {
+    format!("/D gs {} {} {} rg 2 2 6 6 re f", CS[0], CS[1], CS[2])
+}
+
+#[test]
+fn a_blend_mode_reached_through_nested_forms_or_an_appearance_is_found() {
+    let form = |n: u32, body: String, res: &str| {
+        (
+            n,
+            stream_obj(
+                &format!("/Type /XObject /Subtype /Form /BBox [0 0 10 10] /Resources {res}"),
+                body.as_bytes(),
+            ),
+        )
+    };
+    let cases = [
+        (
+            "form in a form",
+            bare_page_pdf(
+                "/Resources << /XObject << /A 6 0 R >> >>",
+                "/A Do",
+                vec![
+                    form(6, "/B Do".into(), "<< /XObject << /B 7 0 R >> >>"),
+                    form(7, square(), "<< /ExtGState << /D 5 0 R >> >>"),
+                ],
+            ),
+        ),
+        (
+            "annotation appearance state",
+            bare_page_pdf(
+                "/Annots [6 0 R]",
+                "",
+                vec![
+                    (
+                        6,
+                        b"<< /Type /Annot /Subtype /Square /Rect [0 0 10 10] /AS /On /AP << /N << /On 7 0 R >> >> >>"
+                            .to_vec(),
+                    ),
+                    form(7, square(), "<< /ExtGState << /D 5 0 R >> >>"),
+                ],
+            ),
+        ),
+    ];
+    for (what, pdf) in cases {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let got = rgb_at(&doc, 5, 5);
+        assert!(close(got, CS), "{what}: got {got:.3?}, want {CS:.3?}");
+    }
+}

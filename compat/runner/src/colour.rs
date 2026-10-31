@@ -16,7 +16,10 @@
 //! compared once more against the reference's 3 × 3 neighbourhood
 //! (the smallest ΔE wins), so a 1-px placement difference at a colour
 //! boundary does not read as a colour change; a region filled with the
-//! wrong colour stays wrong, because every neighbour is wrong too.
+//! wrong colour stays wrong, because every neighbour is wrong too. The
+//! price: a wrong colour within 1 px of a region of the right colour,
+//! and a wrongly coloured stripe at most 2 px wide, can be absorbed —
+//! colour on thin features is not measured here.
 
 use serde::{Deserialize, Serialize};
 
@@ -75,7 +78,8 @@ fn linear_lut() -> [f64; 256] {
 
 const WHITE: [f64; 3] = [0.950_47, 1.0, 1.088_83];
 
-/// CIE L\*a\*b\* of an sRGB pixel.
+/// CIE L\*a\*b\* of an sRGB pixel. `WHITE` is the matrix row sums to
+/// the 4th decimal (Y sums to 1.000 000 1): white is L\* 100 to 10⁻⁶.
 pub fn lab(rgb: [u8; 3], lut: &[f64; 256]) -> [f64; 3] {
     let (r, g, b) = (
         lut[rgb[0] as usize],

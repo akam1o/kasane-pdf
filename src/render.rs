@@ -651,52 +651,68 @@ pub fn pixmap_to_png(pixmap: &Pixmap) -> Result<Vec<u8>, Error> {
 // Page geometry helpers
 // --------------------------------------------------------------------
 
-/// Resource dictionaries walked by `page_may_blend` before it gives up
-/// and answers `true`.
-const BLEND_SCAN_BUDGET: usize = 4096;
+/// Objects `page_may_blend` may resolve before it gives up and answers
+/// `true` (every dereference is charged, so this bounds the whole scan).
+const BLEND_SCAN_BUDGET: usize = 16_384;
 
 /// Whether anything on `page` can be painted with a blend mode other
 /// than Normal: an `/ExtGState` with such a `/BM` in the page resources
 /// or in the resources of a form XObject, pattern, Type 3 font or
-/// annotation appearance reachable from them. Conservative: an
-/// unreadable structure or an exhausted budget answers `true` (the
+/// annotation appearance reachable from them. An exhausted budget, an
+/// unparseable `/BM` or an unreadable appearance answers `true` (the
 /// transparent backdrop is correct for every page; white is only the
-/// shortcut).
+/// shortcut). An unreadable resource entry is skipped: drawing it would
+/// fail the render anyway.
 fn page_may_blend(doc: &Document, page: &Page) -> bool {
     struct Scan<'a> {
         doc: &'a Document,
         seen: std::collections::HashSet<IndirectRef>,
         budget: usize,
+        exhausted: bool,
     }
     impl Scan<'_> {
+        /// Resolve `o`, charging the budget; `None` for an object seen
+        /// before, an unreadable one, or an exhausted budget.
         fn value(&mut self, o: &Object) -> Option<Object> {
             if let Some(r) = o.as_ref() {
                 if !self.seen.insert(r) {
                     return None;
                 }
+                if self.budget == 0 {
+                    self.exhausted = true;
+                    return None;
+                }
+                self.budget -= 1;
             }
             self.doc.deref(o).ok()
         }
+        /// An indirect object already scanned (shared resources and
+        /// appearances are scanned once).
+        fn seen_before(&self, o: &Object) -> bool {
+            o.as_ref().is_some_and(|r| self.seen.contains(&r))
+        }
+        /// The values of the dictionary `key` of `rd`.
+        fn entries(&mut self, rd: &Dict, key: &[u8]) -> Vec<Object> {
+            rd.get(key)
+                .and_then(|o| self.value(o))
+                .and_then(|o| o.as_dict().map(|d| d.values().cloned().collect()))
+                .unwrap_or_default()
+        }
         /// `true` if a non-Normal blend mode is reachable from `res`.
         fn resources(&mut self, res: &Object) -> bool {
-            if self.budget == 0 {
-                return true;
-            }
-            self.budget -= 1;
             let Some(res) = self.value(res) else {
-                return false;
+                return self.exhausted;
             };
             let Some(rd) = res.as_dict() else {
                 return false;
             };
-            let entries = |s: &mut Self, key: &[u8]| -> Vec<Object> {
-                rd.get(key)
-                    .and_then(|o| s.doc.deref(o).ok())
-                    .and_then(|o| o.as_dict().map(|d| d.values().cloned().collect()))
-                    .unwrap_or_default()
-            };
-            for gs in entries(self, b"ExtGState") {
-                let Some(gs) = self.value(&gs) else { continue };
+            for gs in self.entries(rd, b"ExtGState") {
+                let Some(gs) = self.value(&gs) else {
+                    if self.exhausted {
+                        return true;
+                    }
+                    continue;
+                };
                 if let Some(bm) = gs.as_dict().and_then(|d| d.get(b"BM".as_slice())) {
                     match parse_blend_mode(bm) {
                         Ok(tiny_skia::BlendMode::SourceOver) => {}
@@ -705,8 +721,13 @@ fn page_may_blend(doc: &Document, page: &Page) -> bool {
                 }
             }
             for key in [&b"XObject"[..], b"Pattern", b"Font"] {
-                for x in entries(self, key) {
-                    let Some(x) = self.value(&x) else { continue };
+                for x in self.entries(rd, key) {
+                    let Some(x) = self.value(&x) else {
+                        if self.exhausted {
+                            return true;
+                        }
+                        continue;
+                    };
                     let d = match &x {
                         Object::Stream { dict, .. } => dict,
                         Object::Dict(d) => d,
@@ -719,13 +740,14 @@ fn page_may_blend(doc: &Document, page: &Page) -> bool {
                     }
                 }
             }
-            false
+            self.exhausted
         }
     }
     let mut scan = Scan {
         doc,
         seen: std::collections::HashSet::new(),
         budget: BLEND_SCAN_BUDGET,
+        exhausted: false,
     };
     if let Some(res) = page.resources() {
         if scan.resources(res) {
@@ -736,28 +758,52 @@ fn page_may_blend(doc: &Document, page: &Page) -> bool {
     let Ok(Some(Object::Array(annots))) = page_dict_entry(doc, page, b"Annots") else {
         return false;
     };
-    for a in annots.iter().take(BLEND_SCAN_BUDGET) {
-        let Some(ad) = doc.deref(a).ok().and_then(|o| o.as_dict().cloned()) else {
+    for a in annots.iter() {
+        let Some(ad) = scan.value(a) else {
+            if scan.exhausted {
+                return true;
+            }
             continue;
         };
-        let Some(ap) = ad.get(b"AP".as_slice()).and_then(|o| doc.deref(o).ok()) else {
+        let Some(ap) = ad.as_dict().and_then(|d| d.get(b"AP".as_slice())).cloned() else {
             continue;
+        };
+        if scan.seen_before(&ap) {
+            continue;
+        }
+        let Some(ap) = scan.value(&ap) else {
+            return true;
         };
         let Some(n) = ap.as_dict().and_then(|d| d.get(b"N".as_slice()).cloned()) else {
             continue;
         };
-        let streams: Vec<Object> = match doc.deref(&n) {
-            Ok(Object::Dict(states)) => states.values().cloned().collect(),
-            Ok(_) => vec![n],
-            Err(_) => return true,
+        if scan.seen_before(&n) {
+            continue;
+        }
+        // Resolved appearance streams: `/N` itself, or its states.
+        let streams: Vec<Option<Object>> = match scan.value(&n) {
+            Some(Object::Dict(states)) => states
+                .values()
+                .cloned()
+                .collect::<Vec<_>>()
+                .iter()
+                .map(|st| scan.value(st))
+                .collect(),
+            Some(st) => vec![Some(st)],
+            None => return true,
         };
         for st in streams {
-            if let Ok(Object::Stream { dict, .. }) = doc.deref(&st) {
-                if let Some(r) = dict.get(b"Resources".as_slice()) {
-                    if scan.resources(r) {
-                        return true;
+            match st {
+                Some(Object::Stream { dict, .. }) => {
+                    if let Some(r) = dict.get(b"Resources".as_slice()) {
+                        if scan.resources(r) {
+                            return true;
+                        }
                     }
                 }
+                Some(_) => {}
+                None if scan.exhausted => return true,
+                None => {}
             }
         }
     }

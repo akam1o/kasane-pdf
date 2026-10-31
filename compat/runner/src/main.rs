@@ -844,10 +844,9 @@ fn pixmap_luma(p: &kasane_pdf::RenderedPage) -> Vec<u8> {
     let mut out = Vec::with_capacity((p.width() * p.height()) as usize);
     #[allow(clippy::chunks_exact_to_as_chunks)]
     for px in d.chunks_exact(4) {
-        // unpremultiply on white: c' = c*a + 255*(1-a)
-        let a = px[3] as u32;
-        let l = |c: u8| (u32::from(c) * a + 255 * (255 - a)) / 255;
-        let (r, g, b) = (l(px[0]), l(px[1]), l(px[2]));
+        // Premultiplied, composited on white like `pixmap_rgb` (pages
+        // are opaque; this only matters if one ever is not).
+        let [r, g, b] = on_white([px[0], px[1], px[2], px[3]]).map(u32::from);
         out.push(((r * 299 + g * 587 + b * 114) / 1000) as u8);
     }
     out
@@ -914,12 +913,15 @@ fn colour_against_poppler(
     } else {
         resample_rgb(&rgb, rw, rh, kw, kh)
     };
-    let ours = shifted_rgb(&pixmap_rgb(kasane), kw, kh, shift.0, shift.1);
+    let ours = shifted_rgb(kasane, shift.0, shift.1);
     colour::compare(&ours, &reference, kw, kh)
 }
 
-/// `shifted` for 3-byte pixels.
-fn shifted_rgb(a: &[u8], w: usize, h: usize, dx: i32, dy: i32) -> Vec<u8> {
+/// Our page as opaque RGB (`pixmap_rgb`) moved by (dx, dy) like
+/// `shifted`, built straight from the pixmap (no intermediate copy).
+fn shifted_rgb(p: &kasane_pdf::RenderedPage, dx: i32, dy: i32) -> Vec<u8> {
+    let (w, h) = (p.width() as usize, p.height() as usize);
+    let d = p.pixmap().data();
     let mut out = vec![255u8; w * h * 3];
     for y in 0..h as i32 {
         let ty = y + dy;
@@ -929,11 +931,9 @@ fn shifted_rgb(a: &[u8], w: usize, h: usize, dx: i32, dy: i32) -> Vec<u8> {
         for x in 0..w as i32 {
             let tx = x + dx;
             if tx >= 0 && tx < w as i32 {
-                let (s, t) = (
-                    (y as usize * w + x as usize) * 3,
-                    (ty as usize * w + tx as usize) * 3,
-                );
-                out[t..t + 3].copy_from_slice(&a[s..s + 3]);
+                let s = (y as usize * w + x as usize) * 4;
+                let t = (ty as usize * w + tx as usize) * 3;
+                out[t..t + 3].copy_from_slice(&on_white([d[s], d[s + 1], d[s + 2], d[s + 3]]));
             }
         }
     }
@@ -3585,5 +3585,56 @@ mod placement_tests {
         let m = shifted(&a, 64, 64, 3, -2);
         assert_eq!(m[2 * 64 + 7], 0);
         assert_eq!(m[4 * 64 + 4], 255);
+    }
+
+    #[test]
+    fn the_rgb_shift_moves_pixels_like_the_luma_shift() {
+        use super::{pixmap_luma, shifted_rgb};
+        // A red square on a 20 × 20 pt page, rendered at 72 dpi.
+        let content = b"1 0 0 rg 4 4 6 6 re f";
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let objs = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 20 20] /Contents 4 0 R >>".into(),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                std::str::from_utf8(content).unwrap()
+            ),
+        ];
+        let mut offs = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offs.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+        }
+        let xref = pdf.len();
+        pdf.extend_from_slice(b"xref\n0 5\n0000000000 65535 f \n");
+        for o in offs {
+            pdf.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes(),
+        );
+        let doc = kasane_pdf::Document::from_bytes(&pdf).unwrap();
+        let r = kasane_pdf::render_page(
+            &doc,
+            &doc.pages()[0],
+            &kasane_pdf::RenderOptions::new().with_dpi(72.0),
+        )
+        .unwrap();
+        let (w, h) = (r.width() as usize, r.height() as usize);
+        for (dx, dy) in [(0, 0), (3, -2), (-1, 4)] {
+            let luma = shifted(&pixmap_luma(&r), w, h, dx, dy);
+            let rgb = shifted_rgb(&r, dx, dy);
+            for i in 0..w * h {
+                let [cr, cg, cb] = [rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]].map(u32::from);
+                assert_eq!(
+                    luma[i],
+                    ((cr * 299 + cg * 587 + cb * 114) / 1000) as u8,
+                    "({dx}, {dy}) px {i}"
+                );
+            }
+        }
     }
 }
