@@ -101,3 +101,13 @@ rewrite 413 and round trip 410 unchanged; no crash or timeout.
 Numbers above refer to the baseline committed alongside this file;
 update both when the fixtures or the engine change
 (`python3 scripts/ci-regression.py summarize /tmp/smoke/latest.json > compat/baselines/fixtures-smoke.json`).
+
+Updated 2026-11-01 from nightly run 41241175195 (commit `eb1a4a9`,
+`/OCProperties` carried by the rewriter). Per file, exactly the 14
+documents that were refused for `/OCProperties` changed: rewrite
+`unsupported` → `pass`, round trip full, semantic round trip `pass`
+(optional content included); 13 of them change verdict to `pass`
+(full PASS 325 → 338), one keeps its verdict for an unrelated render
+error. No page's pixels, text, quality class or report-only finding
+changed; robustness 44/44, 0 crash / timeout.
+
