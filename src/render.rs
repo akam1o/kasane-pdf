@@ -1133,21 +1133,18 @@ impl<'a> Renderer<'a> {
         doc: &'a Document,
         page: &Page,
         opts: &'a RenderOptions,
+        pixmap: &'a mut Pixmap,
     ) -> Result<Renderer<'a>, Error> {
         let limits = &opts.limits;
-        // `/Annots` is deliberately *not* a blocker here. Extraction
-        // reports the page's content-stream text (plus Form XObjects);
-        // annotation appearance streams are a separate layer that is
-        // never part of that text — `pdftotext` makes the same cut.
-        // Rendering still refuses annotated pages (see `render_page`)
-        // because there the appearance streams *would* change the
-        // picture.
+        // Annotation appearances are not part of the page content's
+        // text; extraction runs them only on request
+        // (`TextOptions::with_annotations`, through `draw_annotations`)
+        // and reports them apart.
         // Extraction reports PDF user-space (CropBox) coordinates, so
         // no page→pixmap transform and no page-sized pixel buffer are
-        // needed. The struct still requires a live pixmap; 1×1 is a
-        // placeholder only — nothing is painted in extraction mode.
-        let pixmap = Pixmap::new(1, 1)
-            .ok_or_else(|| Error::Structure("cannot allocate extraction pixmap".into()))?;
+        // needed. The struct still requires a live pixmap: the
+        // caller's 1×1 placeholder — nothing is painted in extraction
+        // mode.
         let resources = page
             .resources()
             .cloned()
@@ -1155,7 +1152,7 @@ impl<'a> Renderer<'a> {
         Ok(Renderer {
             limits,
             doc,
-            pixmap: Box::leak(Box::new(pixmap)),
+            pixmap,
             user_to_pix: Transform::default(),
             gs: GraphicsState::new(),
             gs_stack: Vec::new(),

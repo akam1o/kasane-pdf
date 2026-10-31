@@ -294,7 +294,11 @@ fn extract_text_impl(
         limits: limits.clone(),
     };
     let ops = doc.page_operations(page)?;
-    let mut r = Renderer::for_extraction(doc, page, &opts)?;
+    // The renderer's placeholder pixmap (nothing is painted), owned
+    // here so it is freed with the call.
+    let mut pixmap = tiny_skia::Pixmap::new(1, 1)
+        .ok_or_else(|| Error::Structure("cannot allocate extraction pixmap".into()))?;
+    let mut r = Renderer::for_extraction(doc, page, &opts, &mut pixmap)?;
     if include_hidden {
         r.include_hidden_content();
     }
