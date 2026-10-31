@@ -1,6 +1,8 @@
 {
   "_doc": "Exact-render quality gate; design, measurements and the reason for every threshold in docs/plans/quality-gate.md. Change a threshold only together with the measurement that justifies it.",
   "version": 1,
+  "_reviewed_known_flags": "How many files the committed full-corpus baseline may record as flagged by an enforced rule. Each one is a reviewed, documented fidelity difference (docs/plans/quality-gate.md, Known flags); check fails when a baseline holds more.",
+  "reviewed_known_flags": 1,
   "evaluate": {
     "min_ink": 0.001,
     "blank_reference_ink": 0.0005,

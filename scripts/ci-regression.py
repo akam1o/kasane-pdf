@@ -25,9 +25,19 @@ passed without a reported approximation is compared with Poppler by
 the rules in the config. A file is `ok`, `flag:<rule>` (an enforced
 rule fired), `report:<rule>` (a report-only rule fired), `exempt:<why>`
 (the comparison is not meaningful — Poppler drew nothing, the page
-sizes differ) or `n/a` (no reference). `check` fails when a file is
-flagged by an enforced rule and was not flagged in the baseline — a new
-silent misrender; flags already in the baseline are listed, not failed.
+sizes differ) or `n/a` (not an exact render, or no reference). `check`
+fails on a new silent misrender: a file flagged by an enforced rule
+that the baseline records as not flagged (or does not contain), or a
+known flagged file with more flagged pages than the baseline records.
+Flags already in the baseline are listed as known, not failed — but
+their number may not exceed `reviewed_known_flags` in the gate config,
+so regenerating a baseline cannot quietly absorb a new flag: raising
+the number is a reviewed change with its reason in
+docs/plans/quality-gate.md.
+
+  ci-regression.py check RUN.json baseline.json --summary-md FILE
+      Also append a markdown summary of the quality gate to FILE (the
+      nightly passes $GITHUB_STEP_SUMMARY). Counts only, no file names.
 
 Only aggregates and cause ids are ever written; the corpus itself and
 rendered images stay out of git.
@@ -73,34 +83,53 @@ def page_findings(q, gate):
     return fired, None
 
 
-def quality(f, gate):
-    """The file's gate class (see the module docstring)."""
-    if not (
+def is_exact(f):
+    """Strict render passed with no reported approximation."""
+    return (
         (f.get("render") or {}).get("class") == "pass"
         and not f.get("recovered")
         and not f.get("render_approximate")
-    ):
-        return "n/a"
+    )
+
+
+def quality_detail(f, gate):
+    """`(class, pages compared, pages flagged by an enforced rule,
+    pages with a report-only finding, pages exempt)` for one file."""
+    if not is_exact(f):
+        return "n/a", 0, 0, 0, 0
     m = f.get("metrics") or {}
     pages = [p.get("quality") for p in (m.get("render_pages") or []) if p.get("quality")]
     if not pages and m.get("render_quality"):
         pages = [m["render_quality"]]
     if not pages:
-        return "n/a"
+        return "n/a", 0, 0, 0, 0
     enforced, reported, exempt = set(), set(), set()
+    n_flag = n_report = n_exempt = 0
     for q in pages:
         fired, ex = page_findings(q, gate)
         if ex:
             exempt.add(ex)
-        for rule in fired:
-            (enforced if gate["rules"][rule]["enforced"] else reported).add(rule)
+            n_exempt += 1
+        hard = [r for r in fired if gate["rules"][r]["enforced"]]
+        soft = [r for r in fired if not gate["rules"][r]["enforced"]]
+        enforced.update(hard)
+        reported.update(soft)
+        n_flag += bool(hard)
+        n_report += bool(soft) and not hard
     if enforced:
-        return "flag:" + ",".join(sorted(enforced))
-    if reported:
-        return "report:" + ",".join(sorted(reported))
-    if exempt:
-        return "exempt:" + ",".join(sorted(exempt))
-    return "ok"
+        cls = "flag:" + ",".join(sorted(enforced))
+    elif reported:
+        cls = "report:" + ",".join(sorted(reported))
+    elif exempt:
+        cls = "exempt:" + ",".join(sorted(exempt))
+    else:
+        cls = "ok"
+    return cls, len(pages), n_flag, n_report, n_exempt
+
+
+def quality(f, gate):
+    """The file's gate class (see the module docstring)."""
+    return quality_detail(f, gate)[0]
 
 
 def summarize(run):
@@ -120,8 +149,11 @@ def summarize(run):
             "roundtrip": {c: (rt.get(c) or {}).get("class", "") for c in RT_CHECKS} if rt else {},
             "roundtrip_full": bool(rt.get("full")) if rt else None,
             "incremental": ((f.get("incremental") or {}).get("class") or ""),
-            "quality": quality(f, gate),
         }
+        cls, n_pages, n_flag, _, _ = quality_detail(f, gate)
+        files[f["id"]]["quality"] = cls
+        files[f["id"]]["quality_pages"] = n_pages
+        files[f["id"]]["quality_pages_flagged"] = n_flag
     agg = {
         "files": len(files),
         "crash": sum(1 for v in files.values() if v["verdict"] == "crash"),
@@ -132,6 +164,9 @@ def summarize(run):
     agg["roundtrip_full"] = sum(1 for v in files.values() if v["roundtrip_full"])
     agg["incremental_pass"] = sum(1 for v in files.values() if v["incremental"] == "pass")
     agg["quality_flag"] = sum(1 for v in files.values() if v["quality"].startswith("flag:"))
+    agg["quality_report"] = sum(1 for v in files.values() if v["quality"].startswith("report:"))
+    agg["quality_exempt"] = sum(1 for v in files.values() if v["quality"].startswith("exempt:"))
+    agg["quality_pages"] = sum(v["quality_pages"] for v in files.values())
     return {"aggregate": agg, "files": files}
 
 
@@ -139,15 +174,21 @@ def worse(new, old):
     return RANK.get(new, 9) > RANK.get(old, 9)
 
 
-def check(run, base):
+def check(run, base, summary_md=None):
+    gate = load_gate()
     cur = summarize(run)["files"]
     old = base["files"]
+    armed = any("quality" in o for o in old.values())
     regressions, improvements, known_flags, unrecorded = [], [], [], []
+    new_flags = []
     for fid, n in cur.items():
         if n["verdict"] in ("crash", "timeout"):
             regressions.append(f"{fid}: verdict {n['verdict']}")
         o = old.get(fid)
         if o is None:
+            if armed and n["quality"].startswith("flag:"):
+                new_flags.append(fid)
+                regressions.append(f"{fid}: exact render {n['quality']} (quality gate; file not in the baseline)")
             continue
         for s in STAGES:
             if o["stages"][s] == "pass" and n["stages"][s] != "pass":
@@ -180,10 +221,24 @@ def check(run, base):
         elif nq.startswith("flag:"):
             if oq.startswith("flag:"):
                 known_flags.append(f"{fid}: {nq}")
+                was, now = o.get("quality_pages_flagged", 0), n["quality_pages_flagged"]
+                if was and now > was:
+                    new_flags.append(fid)
+                    regressions.append(f"{fid}: {now} flagged pages, {was} in the baseline (quality gate)")
             else:
+                new_flags.append(fid)
                 regressions.append(f"{fid}: exact render {nq} (quality gate; was {oq or 'unrecorded'})")
         elif oq.startswith("flag:"):
             improvements.append(f"{fid}: quality {oq} -> {nq}")
+    reviewed = gate.get("reviewed_known_flags", 0)
+    in_baseline = sum(1 for o in old.values() if o.get("quality", "").startswith("flag:"))
+    if armed and in_baseline > reviewed:
+        regressions.append(
+            f"baseline records {in_baseline} quality-flagged files, more than the "
+            f"{reviewed} reviewed in compat/quality-gate.json (reviewed_known_flags)"
+        )
+    if summary_md:
+        write_gate_summary(summary_md, run, gate, armed, known_flags, new_flags, unrecorded, in_baseline, reviewed)
     missing = sorted(set(old) - set(cur))
     added = sorted(set(cur) - set(old))
     print(f"files: {len(cur)} now, {len(old)} in baseline, {len(missing)} missing, {len(added)} new")
@@ -202,6 +257,46 @@ def check(run, base):
     return 0
 
 
+def write_gate_summary(path, run, gate, armed, known, new, unrecorded, in_baseline, reviewed):
+    """Counts-only markdown for the CI job summary."""
+    import collections
+
+    c = collections.Counter()
+    pages = flagged = reported = exempt = exact = 0
+    for f in run["files"]:
+        cls, n, nf, nr, ne = quality_detail(f, gate)
+        c[cls.split(":")[0]] += 1
+        exact += is_exact(f)
+        pages, flagged, reported, exempt = pages + n, flagged + nf, reported + nr, exempt + ne
+    if not armed:
+        result = "not enforced (baseline predates the gate)"
+    elif new or in_baseline > reviewed:
+        result = "**FAIL**"
+    else:
+        result = "pass"
+    lo, hi = gate["rules"]["ink_ratio"]["low"], gate["rules"]["ink_ratio"]["high"]
+    rows = [
+        ("exact renders (files)", exact),
+        ("exact files compared with Poppler", c["ok"] + c["flag"] + c["report"] + c["exempt"]),
+        ("pages compared", pages),
+        (f"files flagged by an enforced rule (ink ratio outside [{lo}, {hi}])", c["flag"]),
+        ("pages flagged by an enforced rule", flagged),
+        ("files with report-only findings", c["report"]),
+        ("pages with report-only findings", reported),
+        ("files exempt (blank reference / page size)", c["exempt"]),
+        ("pages exempt", exempt),
+        ("new flags (fail)", len(new)),
+        ("known flags (in the baseline)", len(known)),
+        (f"known flags reviewed in quality-gate.json", reviewed),
+        ("flags not enforced (baseline predates the gate)", len(unrecorded)),
+    ]
+    with open(path, "a") as fh:
+        fh.write(f"## Exact-render quality gate: {result}\n\n| | count |\n|---|---:|\n")
+        for k, v in rows:
+            fh.write(f"| {k} | {v} |\n")
+        fh.write("\nRules and thresholds: `compat/quality-gate.json`, `docs/plans/quality-gate.md`.\n\n")
+
+
 def main(argv):
     if len(argv) >= 3 and argv[1] == "summarize":
         with open(argv[2]) as fh:
@@ -213,7 +308,10 @@ def main(argv):
             run = json.load(fh)
         with open(argv[3]) as fh:
             base = json.load(fh)
-        return check(run, base)
+        summary_md = None
+        if len(argv) >= 6 and argv[4] == "--summary-md":
+            summary_md = argv[5]
+        return check(run, base, summary_md)
     if len(argv) >= 3 and argv[1] == "quality":
         with open(argv[2]) as fh:
             run = json.load(fh)

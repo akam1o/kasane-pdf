@@ -14,9 +14,13 @@ the rows of a table can sum to more than the corpus.
 Columns, for the `expect: pass` files of each category (n): strict
 parse, strict render, of which exact (no reported approximation) and
 approximate, recovered render (recovery mode only), strict text,
-rewrite, incremental save, full PASS. `robust` is over the category's
-`expect: reject` files: refused in strict mode without crash or
-timeout. Aggregates only; `--files` is not implemented on purpose.
+rewrite, incremental save, full PASS. Over the category's
+`expect: reject` files (same definitions as the runner's
+`analysis::split_summary`, `docs/compat-corpus.md` § Compatibility vs
+Robustness): `robust` = handled without a crash or timeout (the
+robustness score); `refused` = the strict parse or strict render
+refused it — the rest are unexpected acceptances. Aggregates only;
+`--files` is not implemented on purpose.
 """
 import json
 import sys
@@ -27,11 +31,14 @@ def strict(f, stage):
     return (f.get(stage) or {}).get("class") == "pass" and (stage == "parse" or not f.get("recovered"))
 
 
+def safe(f):
+    """Handled without a crash or timeout (the robustness criterion)."""
+    return f.get("verdict") not in ("crash", "timeout")
+
+
 def refused(f):
-    """An expect:reject file refused in strict mode, cleanly."""
-    if f.get("verdict") in ("crash", "timeout"):
-        return False
-    return not (strict(f, "parse") and strict(f, "render"))
+    """The strict parse or strict render refused it, cleanly."""
+    return safe(f) and not (strict(f, "parse") and strict(f, "render"))
 
 
 def size_bucket(b):
@@ -91,11 +98,61 @@ def row(files):
         "rewrite": r(lambda f: strict(f, "rewrite")),
         "incr": r(lambda f: (f.get("incremental") or {}).get("class") == "pass"),
         "full": r(lambda f: all(strict(f, s) for s in ("parse", "render", "text", "rewrite"))),
-        "robust": f"{sum(1 for f in rj if refused(f))}/{len(rj)}" if rj else "–",
+        "robust": f"{sum(1 for f in rj if safe(f))}/{len(rj)}" if rj else "–",
+        "refused": f"{sum(1 for f in rj if refused(f))}/{len(rj)}" if rj else "–",
     }
 
 
-COLS = ("n", "parse", "render", "exact", "approx", "recovered", "text", "rewrite", "incr", "full", "robust")
+def median(v):
+    v = sorted(v)
+    n = len(v)
+    return (v[n // 2] + v[(n - 1) // 2]) / 2 if v else float("nan")
+
+
+def text_summary(files):
+    """Page-1 text agreement with pdftotext, one value per document.
+
+    Population: files whose strict text stage passed and were compared
+    (`text_char_f1` present). Pages where both sides have no content
+    character score 1 on every metric trivially; they are counted and
+    left out of the distribution when the report records the character
+    counts (`text_chars_ours` / `text_chars_ref`, newer reports).
+    """
+    rows = []
+    for f in files:
+        m = f.get("metrics") or {}
+        if m.get("text_char_f1") is None or not strict(f, "text"):
+            continue
+        rows.append(f)
+    has_counts = any((f["metrics"].get("text_chars_ref") is not None) for f in rows)
+    empty = [f for f in rows if f["metrics"].get("text_chars_ref") == 0 and f["metrics"].get("text_chars_ours") == 0]
+    out = ["### text agreement (page 1 vs pdftotext page 1, one value per document)\n"]
+    out.append("| population | n | F1 median | F1 ≥ 0.9 | precision median | recall median | order median | order ≥ 0.9 |")
+    out.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+
+    def line(name, fs):
+        g = lambda k: [f["metrics"][k] for f in fs]
+        f1, od = g("text_char_f1"), g("text_match_ratio")
+        out.append(
+            f"| {name} | {len(fs)} | {median(f1):.2f} | {sum(x >= 0.9 for x in f1)} | "
+            f"{median(g('text_char_precision')):.2f} | {median(g('text_char_recall')):.2f} | "
+            f"{median(od):.2f} | {sum(x >= 0.9 for x in od)} |"
+        )
+
+    line("all compared (every expect tag)", rows)
+    if has_counts:
+        line("text on page 1 (either side)", [f for f in rows if f not in empty])
+        exp = [f for f in rows if f not in empty and f.get("expect") == "pass"]
+        line("text on page 1, expect: pass", exp)
+        cjk = [f for f in exp if set((f.get("profile") or {}).get("scripts") or []) & {"Han", "Kana", "Hangul"}]
+        line("text on page 1, expect: pass, CJK", cjk)
+        out.append(f"\n{len(empty)} compared documents have no text on page 1 on either side (all scores 1 by definition).\n")
+    else:
+        out.append("\n(report without character counts: pages without text are not separated)\n")
+    return "\n".join(out)
+
+
+COLS = ("n", "parse", "render", "exact", "approx", "recovered", "text", "rewrite", "incr", "full", "robust", "refused")
 
 
 def main(argv):
@@ -109,7 +166,11 @@ def main(argv):
         for dim, cats in dims(f).items():
             for c in cats:
                 groups[dim][c].append(f)
-    print(f"Population: {len(files)} files; columns over each category's expect:pass files (n), robust over its expect:reject files.\n")
+    print(
+        f"Population: {len(files)} files; columns over each category's expect:pass files (n); "
+        "robust (no crash / timeout) and refused (strict parse or render refused) over its "
+        "expect:reject files.\n"
+    )
     for dim, cats in groups.items():
         # Generators with fewer than three files are pooled: a row per
         # single file says nothing and points at the file.
@@ -125,6 +186,7 @@ def main(argv):
             r = row(fs)
             print(f"| {c} | " + " | ".join(str(r[k]) for k in COLS) + " |")
         print()
+    print(text_summary(files))
     return 0
 
 

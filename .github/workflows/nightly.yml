@@ -62,8 +62,13 @@ jobs:
           ./compat/runner/target/release/kasane-compat run \
             --corpus compat/corpus --out /tmp/full \
             --with-poppler --dpi 96 --timeout-secs 20 --mode full
-      - name: regression check vs committed 511 baseline
-        run: python3 scripts/ci-regression.py check /tmp/full/latest.json compat/baselines/corpus-full.json
+      - name: regression check and exact-render quality gate vs committed 511 baseline
+        # Fails on any stage / round-trip regression and on a new
+        # quality-gate flag (compat/quality-gate.json); the gate's counts
+        # go to the job summary.
+        run: |
+          python3 scripts/ci-regression.py check /tmp/full/latest.json compat/baselines/corpus-full.json \
+            --summary-md "$GITHUB_STEP_SUMMARY"
       - name: per-category quality tables (aggregates only)
         if: always()
         run: python3 scripts/quality-by-category.py /tmp/full/latest.json >> "$GITHUB_STEP_SUMMARY"

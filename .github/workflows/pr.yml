@@ -144,8 +144,12 @@ jobs:
           ./compat/runner/target/release/kasane-compat run \
             --corpus tests/fixtures --out /tmp/smoke \
             --with-poppler --mode smoke
+      - name: quality-gate unit tests
+        run: python3 scripts/test_ci_regression.py
       - name: regression check vs committed baseline
-        run: python3 scripts/ci-regression.py check /tmp/smoke/latest.json compat/baselines/fixtures-smoke.json
+        run: |
+          python3 scripts/ci-regression.py check /tmp/smoke/latest.json compat/baselines/fixtures-smoke.json \
+            --summary-md "$GITHUB_STEP_SUMMARY"
       - name: upload report (markdown + json, no images)
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
