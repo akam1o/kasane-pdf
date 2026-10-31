@@ -371,3 +371,73 @@ fn overlapping_annotations_keep_their_order_and_own_flags() {
         "union of both",
     );
 }
+
+/// A one-annotation page: `page_extra` goes into the page dictionary
+/// (e.g. a `/CropBox`), `annot` is the whole annotation dictionary.
+fn raw_pdf(rotate: i64, page_extra: &str, annot: &str, extra: &[(u32, Vec<u8>)]) -> Vec<u8> {
+    let mut objs: Vec<(u32, Vec<u8>)> = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {W} {H}] {page_extra} /Rotate {rotate} \
+                 /Resources << >> /Contents 4 0 R /Annots [10 0 R] >>"
+            )
+            .into_bytes(),
+        ),
+        (4, common::stream_obj("", b"")),
+        (10, annot.as_bytes().to_vec()),
+    ];
+    objs.extend(extra.iter().cloned());
+    objs.sort_by_key(|o| o.0);
+    common::build_pdf(&objs)
+}
+
+#[test]
+fn crop_box_offset_moves_the_pivot_with_the_page() {
+    // CropBox [20 10 260 190] shown at /Rotate 90 is 180 × 240 px. The
+    // corner (40, 130) of /Rect is (20, 120) from the CropBox origin, so
+    // it is displayed at (120, 20); the 60 × 30 appearance hangs from it.
+    let ap = common::stream_obj(
+        "/Type /XObject /Subtype /Form /BBox [0 0 60 30]",
+        b"0 g 0 0 60 30 re f",
+    );
+    let data = raw_pdf(
+        90,
+        "/CropBox [20 10 260 190]",
+        "<< /Type /Annot /Subtype /Square /Rect [40 100 100 130] /F 16 /AP << /N 11 0 R >> >>",
+        &[(11, ap)],
+    );
+    let (any, _) = ink(&data, 72.0);
+    assert_close(any, [120.0, 20.0, 180.0, 50.0], "NoRotate under a CropBox");
+}
+
+#[test]
+fn synthesised_appearance_pivots_on_rect_not_on_its_drawn_box() {
+    // A Square without /AP is drawn inside /Rect shrunk by /RD 5; the
+    // NoRotate pivot is still /Rect's corner (40, 90) → pixel (90, 40)
+    // at /Rotate 90, so the 50 × 20 fill spans (95, 45)–(145, 65).
+    let data = raw_pdf(
+        90,
+        "",
+        "<< /Type /Annot /Subtype /Square /Rect [40 60 100 90] /F 16 /RD [5 5 5 5] \
+         /IC [0 0 0] /Border [0 0 0] >>",
+        &[],
+    );
+    let (any, _) = ink(&data, 72.0);
+    assert_close(any, [95.0, 45.0, 145.0, 65.0], "pivot on /Rect");
+}
+
+#[test]
+fn rotate_values_are_normalised_before_the_flag_applies() {
+    // /Rotate -90 is 270 and 450 is 90 (§7.7.3.3: multiples of 90).
+    let a = Annot::new(RECT, Some(NO_ROTATE));
+    for (odd, same) in [(-90, 270), (450, 90), (-180, 180)] {
+        assert_eq!(
+            ink(&pdf(odd, std::slice::from_ref(&a)), 72.0),
+            ink(&pdf(same, std::slice::from_ref(&a)), 72.0),
+            "/Rotate {odd} behaves as {same}"
+        );
+    }
+}
