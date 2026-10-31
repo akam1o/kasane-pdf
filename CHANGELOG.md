@@ -7,6 +7,17 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- **Stroked text had the wrong line width.** Glyph outlines in the
+  stroking text modes (`Tr` 1, 2, 5, 6) were stroked with
+  `line width × font size / 1000` in glyph space — about 7× too thin at
+  12 pt, far too thick at large sizes or under a scaling text matrix —
+  and without the caps, joins and dashes of the graphics state. They are
+  now stroked like any path in user space (§9.3.6, §8.5.3.2).
+- **Tiling patterns counted cells that cannot reach the painted area.**
+  The cell range of an overlapping (`/BBox` larger than the step)
+  pattern was widened by up to two cells per side; those cells were run
+  and counted against `max_pattern_tiles`. The range is now exact
+  (no pixel changes; fewer cells executed).
 - **Blend modes against the page were computed over white.** §11.4.7
   makes the page group isolated: objects composite against a
   *transparent* backdrop and the result is put on white paper at the
