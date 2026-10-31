@@ -1541,11 +1541,11 @@ impl<'a> DiagWalker<'a> {
         // error is never silently swapped for a cell estimate.
         let (bounds, bounds_kind) = match font.glyph_id(code) {
             Ok(gid) => {
-                let units = match font.units_per_em() {
-                    Ok(u) => u,
+                let m = match font.glyph_matrix(gid) {
+                    Ok(m) => m,
                     Err(e) => return self.glyph_error(code, e),
                 };
-                let mut gp = crate::font::GlyphPath::new(units);
+                let mut gp = crate::font::GlyphPath::new(m);
                 match font.outline(gid, &mut gp) {
                     Ok(true) => match gp.finish() {
                         Some(path) => {

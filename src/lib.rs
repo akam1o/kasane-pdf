@@ -78,6 +78,7 @@ mod acroform;
 mod annot_appearance;
 pub mod audit;
 mod bilevel;
+mod cff_matrix;
 mod cjk;
 mod cmap;
 mod colorspace;

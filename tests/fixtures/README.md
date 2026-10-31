@@ -143,3 +143,16 @@ pypdf reads the spec and incremental files and fails on the Acrobat
 one, as a reader following the specification should.
 
 Generated; no licence. Used by `tests/encryption.rs`.
+
+## FontMatrix fixtures (`fontmatrix/`)
+
+Bare font programs written by `make_fontmatrix.py` (Type 1 eexec
+programs from scratch; CFF programs with fontTools). Each draws glyph
+`A` as the rectangle 0..500 × 0..700 of a 1000-unit em, advance 600:
+`t1_1000` / `cff_1000` in 1000 units; `t1_2048` / `cff_2048` in 2048
+units with a 1/2048 `FontMatrix` (`t1_2048_private` states it only in
+the Private dictionary); `t1_default` has no `/FontMatrix`;
+`t1_oblique` / `cff_oblique` shear by 0.5, `t1_wide` doubles the width;
+`t1_singular` has an all-zero matrix. Generated; no licence. Used by
+`tests/render_fontmatrix.rs`.
+

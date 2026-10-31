@@ -6,6 +6,22 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Type 1 fonts with a `/FontMatrix` other than `[0.001 0 0 0.001 0 0]`
+  were drawn at the wrong scale and reported as exact renders** (since
+  0.1). eexec (`/FontFile`) programs: the matrix was looked up in the
+  encrypted Private dictionary, where it does not belong, instead of the
+  cleartext font dictionary; CFF (`/FontFile3 /Type1C`) programs: the
+  matrix was not read at all (1000 units/em assumed). A 2048-unit font
+  came out about twice too large, glyphs overlapping. Glyph outlines now
+  go through the program's full `FontMatrix` (scale, shear, non-uniform
+  scale), for CID-keyed CFF including the Font DICT matrix `FDSelect`
+  assigns (combined with the Top DICT matrix as FreeType does).
+  Advances still come from `/Widths`. Text-extraction glyph bounds and
+  the redaction diagnosis use the same matrix. A `FontMatrix` that is
+  present but not six finite numbers forming an invertible matrix is
+  `Error::Structure`; an absent one is still the conventional 0.001.
+
 ## [0.3.0] - 2026-10-31
 
 Reading of encrypted documents (Standard security handler). No public
