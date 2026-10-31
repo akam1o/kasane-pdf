@@ -1,9 +1,10 @@
 # Exact-render quality gate and quality metrics
 
 Status: implemented in the compatibility runner and
-`scripts/ci-regression.py` (2026-10-31); armed in CI once the committed
-baselines carry the new fields (§ Roll-out). Aggregates only; per-file
-evidence stays in the gitignored `compat/reports/`.
+`scripts/ci-regression.py`; enforced in the pull-request smoke run and
+in the nightly against baselines that carry the gate fields (§ Roll-out,
+2026-10-31). Aggregates only; per-file evidence stays in the gitignored
+`compat/reports/`.
 
 ## Why
 
@@ -80,13 +81,57 @@ and thin strokes are drawn lighter than Poppler draws them, see
 
 ## CI semantics
 
-`ci-regression.py check` fails when a file is flagged by an enforced
-rule and the baseline records it as not flagged — a new silent
-misrender, or a known one coming back. Flags already in the baseline are
-listed as known, not failed; a file that stops being flagged is an
-improvement. Report-only rules never fail. Replaying the v0.3.0 run
-against a baseline taken after the fix fails exactly on the two
-FontMatrix files.
+`ci-regression.py check` fails on a new silent misrender:
+
+- a file flagged by an enforced rule that the baseline records as not
+  flagged, or does not contain at all;
+- a known flagged file with more flagged pages than the baseline
+  records;
+- a baseline holding more flagged files than `reviewed_known_flags` in
+  `compat/quality-gate.json` — regenerating a baseline cannot absorb a
+  new flag; raising the number is a reviewed change with its reason in
+  § Known flags.
+
+Flags already in the baseline are listed as known, not failed; a file
+that stops being flagged is an improvement. Report-only rules never
+fail. A baseline without the gate fields prints flags as *not enforced*.
+`--summary-md` appends the counts (pages compared, exact renders,
+enforced / report-only / exempt files and pages, new and known flags,
+result) to the GitHub job summary — never file names.
+
+`scripts/test_ci_regression.py` (run by the PR workflow) covers each
+case with synthetic records: the FontMatrix page before (flagged) and
+after (passes) the fix, the known grid and a second flagged page on it,
+the reviewed-flags cap, `/UserUnit` page size and a 1-px rounding, a
+blank JBIG2 reference, a near-empty page, a new misrender (changed file
+and file absent from the baseline), report-only findings, approximate
+and recovered renders (not judged), a pre-gate baseline, and the
+summary carrying no names.
+
+On the corpus: replaying the v0.3.0 run against the current baseline
+fails exactly on the two FontMatrix files with a reference (besides
+four `expect: any` stage differences that come from the `cjk-fallback`
+feature, not the gate); the current run passes with the one known flag.
+
+## Known flags
+
+| flag | files | reason |
+|---|---:|---|
+| ink ratio 0.25 | 1 | a grid of hairlines Poppler draws darker; hairline / thin-stroke fidelity (`v0.4.0.md` § 2, P2). The page is otherwise right. |
+
+`reviewed_known_flags` = 1.
+
+## Environment
+
+Poppler is the witness and its version differs between the nightly
+(Ubuntu) and a developer machine (Homebrew). Measured on the same engine
+and runner (v0.3.1) on both: our renders are identical (ink ratio of
+ours Linux / macOS = 1.00 on every page), while Poppler's ink differs —
+|log ratio| p99 0.09, one page by a factor 2.1 (ratio 2.05 on Linux,
+1.23 on macOS); Poppler leaves three more pages blank on Linux. The
+enforced flag set is the same on both. This is why the enforced band is
+wide and why the full-corpus baseline is taken from the nightly
+configuration.
 
 ## Roll-out
 
@@ -94,10 +139,15 @@ FontMatrix files.
    the FontMatrix pages are flagged before and pass after;
 2. (done) the fixtures-smoke baseline regenerated with the new fields —
    the gate is armed for pull requests (no fixture is flagged);
-3. (next, needs a push) the first nightly on this code regenerates
-   `compat/baselines/corpus-full.json` from its artifact; until then the
-   nightly prints flags as *not enforced* because the committed baseline
-   predates the gate.
+3. (done locally) `compat/baselines/corpus-full.json` regenerated with
+   the gate fields from a full run in the nightly configuration
+   (`cjk-fallback`, `--mode full`) of the v0.3.1 engine and this runner,
+   and checked against the Linux v0.3.1 nightly artifact (no regression,
+   same enforced flag; one round-trip `full` differs because Linux
+   Poppler sizes one malformed original differently — not a gated
+   check). Once this code is on `main`, the first nightly's artifact
+   replaces it (`ci-regression.py summarize latest.json`), keeping
+   `reviewed_known_flags` unless a new flag is reviewed.
 
 ## Text agreement
 
@@ -115,6 +165,15 @@ multi-page file. New, order-independent, also page 1:
 - compared as character multisets: precision = shared / ours, recall =
   shared / Poppler's, F1.
 
+Denominators: one value per document (page 1), over files whose
+strict text stage passed and that `pdftotext` read. A page with no
+content character on either side scores 1 on every metric by
+definition; the runner records both character counts
+(`text_chars_ours`, `text_chars_ref`) and the tables report such pages
+separately (164 of 427 compared documents) — quoting the share of
+F1 ≥ 0.9 over all compared documents overstated it (88.7 % → 82.8 %
+over `expect: pass` documents with text).
+
 Character agreement says the right characters came out; the order score
 says they came out in the same order. Neither judges which reading order
 is correct — for multi-column and vertical text Poppler's order is one
@@ -130,7 +189,9 @@ transparency, shading, image compression, file size, page count — with
 strict parse, strict render, exact, approximate, recovered, text,
 rewrite, incremental save and full PASS over each category's
 `expect: pass` files (the denominator `n` is printed), and robustness
-over its `expect: reject` files. Every category comes from a measurement
+(no crash / timeout) and strict refusal over its `expect: reject` files
+(definitions in `compat-corpus.md` § Compatibility vs Robustness), then
+the text-agreement table. Every category comes from a measurement
 (the runner's content profile, its features, the file's `/Producer`);
 what could not be measured is `unknown`. The nightly writes the tables
 to the job summary.

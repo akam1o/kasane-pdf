@@ -36,6 +36,18 @@ support changes: download `compat-full-report`, then
 `python3 scripts/ci-regression.py summarize latest.json > compat/baselines/corpus-full.json`.
 Linux and macOS results are identical for every file except the
 effect of the feature flag (the first nightly run confirmed this).
+
+The current `corpus-full.json` (2026-10-31) was produced locally in
+the nightly configuration, because the nightly runs only published
+code: runner built with `--features cjk-fallback`, same flags, on the
+v0.3.1 engine and the v0.4.0 runner (it carries the quality-gate and
+incremental fields). Checked against the Linux v0.3.1 nightly artifact:
+no regression and the same quality-gate flag; Poppler is the only
+difference (one malformed original it sizes differently on Linux, so
+`roundtrip_full` is 411 here and 410 there — per-check classes match).
+Replace it with the first nightly artifact after this code reaches
+`main`. Quality-gate flags it may hold are capped by
+`reviewed_known_flags` in `compat/quality-gate.json`.
 With the feature, `90ms_rksj_h_sample` (`expect: any`) is classified
 `error` instead of `unsupported`: its predefined CMap now loads and
 the strict parser then refuses the CIDFont for lacking the required

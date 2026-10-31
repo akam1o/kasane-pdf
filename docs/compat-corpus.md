@@ -155,19 +155,32 @@ per-file `expect:` tag in `manifest.yaml`:
 | `expect` | meaning | feeds |
 |---|---|---|
 | `pass` | well-formed document the engine should handle | **Compatibility** rate |
-| `reject` | adversarial / malformed / fuzzed / encrypted — must be *refused safely* | **Robustness** score |
+| `reject` | adversarial / malformed / fuzzed, or encrypted with a password the run does not supply — must be *refused safely* | **Robustness** score |
 | `any` | valid doc using out-of-scope features, or a file whose only fault is one the strict parse reports and recovery reads (named in `notes`) | neither rate |
 
-- **Compatibility** = per-stage pass rate over the `pass` files.
-- **Robustness** = a `reject` file is OK when the engine refuses it
-  *without crashing or hanging* (a classified `Error`/`Unsupported`);
-  only `CRASH`/`TIMEOUT` fail the robustness check. A `reject` file
-  that happens to render is still "safe" — refusal is the goal, not
-  mandatory failure.
+The terms, used identically by the runner (`analysis::split_summary`)
+and the per-category tables (`scripts/quality-by-category.py`):
+
+| term | population | definition |
+|---|---|---|
+| parse success | any | `Document::from_bytes` (strict) succeeded |
+| render success | any | strict parse and strict render of every compared page succeeded (a recovered document never counts) |
+| **compatibility** | `pass` | per-stage strict pass rate |
+| unexpected rejection | `pass` | strict parse or strict render failed |
+| **robustness** | `reject` | handled without a crash or timeout — the only robustness failures are CRASH / TIMEOUT |
+| strict refusal | `reject` | the strict parse or strict render refused the file with a classified error |
+| unexpected acceptance | `reject` | parsed *and* rendered strictly — investigated every time: a stale tag (retag with evidence) or invalid input accepted (an engine bug) |
+| legacy "cleanly refused" | `reject` | overall verdict `error`/`unsupported` — kept for comparison with reports before 2026-10-31; it counted a file that rendered strictly but failed at rewrite as refused |
+
+Robustness therefore means *safe handling*, not refusal; refusal is
+reported next to it, and an unexpected acceptance is never folded into
+either.
 
 Tag files by *document intent*, never by the engine's current result —
 a well-formed PDF our parser can't read yet is `expect: pass` (a
-compatibility gap), not `reject`.
+compatibility gap), not `reject`. Retagging needs evidence (the
+specification and at least one independent implementation, recorded in
+the manifest `notes`) and its effect on every denominator is reported.
 
 ### Strict parse vs recovery parse
 
@@ -1208,11 +1221,71 @@ order-sensitive score ≥ 0.9 on 328. On the 16 files whose text is
 Chinese, Japanese or Korean: F1 median 1.00, order score median 0.93
 (vertical writing and column order). Low recall (< 0.5, 46 files) is
 mostly text only in annotations / form fields or codes without a
-Unicode mapping (`plans/v0.4.0.md` § 4).
+Unicode mapping (`plans/v0.4.0.md` § 4). *Correction (next section):
+those 425 include every expect tag and 164 documents without text on
+page 1, which score 1 by definition; over `expect: pass` documents with
+text the F1 ≥ 0.9 share is 82.8 %.*
 
 Incremental save of a one-entry `/Info` edit on every strictly parsed
 file: 446 pass, 3 refused (encrypted — the writers do not encrypt);
 none produced a file that failed to reparse or lost the edit.
+
+### Expect retagging, robustness definitions and corrected text denominators (2026-10-31)
+
+Run in the nightly configuration (runner with `cjk-fallback`, full
+mode) on the v0.3.1 engine and the v0.4.0 runner. Four files of the
+`encrypted` category were retagged by document intent, with the
+evidence in `manifest.yaml` (qpdf and Poppler checked on each): a
+well-formed AES-256 file with an empty user password `reject → pass`; a
+well-formed RC4 file that needs a non-empty password `pass → reject`
+(the run supplies none; the engine opens it with the password its
+upstream test uses); a short-key file only Acrobat's zero-padding
+decrypts `pass → any` (non-conforming; recovery reads it); a pdfium bug
+input without a page tree `pass → reject`.
+
+| | v0.3.0 | now, old tags | now, new tags |
+|---|---:|---:|---:|
+| `expect: pass` (denominator) | 427 | 427 | **425** |
+| strict parse | 407 (95.3 %) | 407 (95.3 %) | 408 (96.0 %) |
+| strict render | 379 (88.8 %) | 379 (88.8 %) | 380 (89.4 %) |
+| of which approximate | 69 | 69 | 69 |
+| recovered render | 19 | 19 | 18 |
+| text | 391 (91.6 %) | 391 (91.6 %) | 392 (92.2 %) |
+| rewrite | 350 (82.0 %) | 350 (82.0 %) | 350 (82.4 %) |
+| full PASS | 325 (76.1 %) | 325 (76.1 %) | 325 (76.5 %) |
+| `expect: reject` (denominator) | 43 | 43 | **44** |
+| robustness (no crash / timeout) | 43 | 43 | 44 (100 %) |
+| strict refusal | 42 | 42 | 44 |
+| unexpected acceptance | 1 | 1 | 0 |
+| legacy "cleanly refused" | 43 | 43 | 44 |
+| `expect: any` | 41 | 41 | 42 |
+
+The engine changed nothing in these counts (old tags, same numbers as
+v0.3.0); the rate changes come from the denominators. The one
+unexpected acceptance before was the empty-password AES-256 file — the
+legacy count had reported it as "refused" because its rewrite failed.
+Under the nightly configuration three `expect: any` CJK files change
+class with `cjk-fallback` (as documented in `compat/baselines`); no
+`pass` or `reject` file does. Round trip 411 full; incremental save 446
+of 449 strictly parsed files (3 refused: encrypted); 0 crash / timeout;
+rendered pixels changed only on the three FontMatrix files; median wall
+time per file 182 ms.
+
+Text agreement (page 1 against `pdftotext` page 1, one value per
+document) had a denominator problem: a page with no text on either side
+scores 1 on every metric, and 164 of the 427 compared documents are such
+pages. Reported with the population stated:
+
+| population | n | multiset F1 median | F1 ≥ 0.9 | order score ≥ 0.9 |
+|---|---:|---:|---:|---:|
+| all compared (as reported before) | 427 | 1.00 | 377 | 328 |
+| text on page 1 on either side | 263 | 1.00 | 213 (81.0 %) | 164 |
+| … and `expect: pass` | 250 | 1.00 | **207 (82.8 %)** | 158 |
+| … and Chinese / Japanese / Korean text | 15 | 1.00 | 15 | 8 |
+
+Of the 263, 33 have no text from us where Poppler has some (text only in
+annotations or form fields, codes without a Unicode mapping) and 3 the
+reverse.
 
 ## External verification findings (this phase)
 
