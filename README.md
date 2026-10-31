@@ -107,7 +107,7 @@ Or track the repository directly:
 
 ```toml
 [dependencies]
-kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.3.0" }
+kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.3.1" }
 ```
 
 Supported Rust versions: 1.92 or newer (`rust-version` in
