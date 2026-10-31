@@ -673,12 +673,25 @@ pub struct StageCounts {
 /// Each file's `expect` tag (from the manifest) decides which rate it
 /// feeds. `pass` files are *well-formed* documents the engine should
 /// handle → the Compatibility rate (per-stage pass / count).
-/// `reject` files are adversarial/malformed/encrypted — the Robustness
-/// score counts a file OK when the engine *refuses it safely* (any
-/// non-crash non-timeout result; a clean `Unsupported`/`Error` is a
-/// pass, but actually rendering a hostile file to completion is also
-/// acceptable behaviour — only CRASH/TIMEOUT fail). `any` files are
-/// excluded from both rates.
+/// `reject` files are adversarial/malformed/encrypted-without-a-usable-
+/// password. Three distinct counts over them (`docs/compat-corpus.md`
+/// § Compatibility vs Robustness):
+/// - **robustness** (`robust_safe`): handled without a crash or a
+///   timeout — the robustness score; the only failures are CRASH/TIMEOUT;
+/// - **strict refusal** (`robust_strict_refused`): the strict pipeline
+///   did not accept the file — strict parse or strict render failed with
+///   a classified error. The complement, a `reject` file that parses
+///   *and* renders strictly, is an **unexpected acceptance**
+///   (`robust_unexpected_accept`): either a stale `expect` tag or the
+///   engine accepting invalid input — each one is investigated;
+/// - `robust_refused` (legacy, kept for comparison with older reports):
+///   the file's overall verdict was `error`/`unsupported`, which counts
+///   a file that parsed and rendered but failed a later stage as
+///   "refused".
+///
+/// On `pass` files, an **unexpected rejection** is a strict parse or
+/// strict render failure (`compat_total - compat_render_pass`). `any`
+/// files are excluded from both rates.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SplitSummary {
     /// well-formed files (expect=pass): stage pass-rates.
@@ -691,8 +704,14 @@ pub struct SplitSummary {
     pub robust_total: usize,
     /// safely handled (no crash/hang) — the robustness criterion.
     pub robust_safe: usize,
-    /// rejected with a classified error (not just crashed on).
+    /// legacy: overall verdict `error`/`unsupported`.
     pub robust_refused: usize,
+    /// strict parse or strict render refused it (no crash/timeout).
+    #[serde(default)]
+    pub robust_strict_refused: usize,
+    /// parsed and rendered strictly although tagged `reject`.
+    #[serde(default)]
+    pub robust_unexpected_accept: Vec<String>,
     /// crash/timeout on adversarial input — robustness failures.
     pub robust_failures: Vec<String>,
     /// expect=any files, excluded from both rates.
@@ -709,6 +728,8 @@ pub fn split_summary(files: &[FileResult]) -> SplitSummary {
         robust_total: 0,
         robust_safe: 0,
         robust_refused: 0,
+        robust_strict_refused: 0,
+        robust_unexpected_accept: Vec::new(),
         robust_failures: Vec::new(),
         other_total: 0,
     };
@@ -742,6 +763,13 @@ pub fn split_summary(files: &[FileResult]) -> SplitSummary {
                         s.robust_safe += 1;
                         if f.verdict == Class::Error || f.verdict == Class::Unsupported {
                             s.robust_refused += 1;
+                        }
+                        let accepted = f.parse.class == Class::Pass
+                            && rated_class(f, &f.render) == Class::Pass;
+                        if accepted {
+                            s.robust_unexpected_accept.push(f.id.clone());
+                        } else {
+                            s.robust_strict_refused += 1;
                         }
                     }
                 }
@@ -1063,6 +1091,8 @@ mod tests {
                 text_char_precision: None,
                 text_char_recall: None,
                 text_char_f1: None,
+                text_chars_ours: None,
+                text_chars_ref: None,
                 rewrite_qpdf_ok: None,
                 rewrite_reparsed: None,
             },
@@ -1189,18 +1219,42 @@ mod tests {
         let mut hostile_safe = file("hostile", &[]);
         hostile_safe.expect = "reject".into();
         hostile_safe.verdict = Class::Error; // refused safely
+        hostile_safe.render.class = Class::Error;
         let mut hostile_crash = file("boom", &[]);
         hostile_crash.expect = "reject".into();
         hostile_crash.verdict = Class::Crash;
         let mut other = file("edge", &[]);
         other.expect = "any".into();
 
-        let s = split_summary(&[compat_ok, hostile_safe, hostile_crash, other]);
+        // Parses and renders strictly, fails only at rewrite: safe and
+        // (legacy) "refused", but an unexpected acceptance.
+        let mut accepted = file("accepted", &[]);
+        accepted.expect = "reject".into();
+        accepted.verdict = Class::Unsupported;
+        accepted.parse.class = Class::Pass;
+        accepted.render.class = Class::Pass;
+        accepted.rewrite.class = Class::Unsupported;
+        let mut refused_parse = file("refused", &[]);
+        refused_parse.expect = "reject".into();
+        refused_parse.verdict = Class::Error;
+        refused_parse.parse.class = Class::Error;
+
+        let s = split_summary(&[
+            compat_ok,
+            hostile_safe,
+            hostile_crash,
+            other,
+            accepted,
+            refused_parse,
+        ]);
         assert_eq!(s.compat_total, 1);
         assert_eq!(s.compat_parse_pass, 1);
-        assert_eq!(s.robust_total, 2);
-        assert_eq!(s.robust_safe, 1);
+        assert_eq!(s.robust_total, 4);
+        assert_eq!(s.robust_safe, 3);
         assert_eq!(s.robust_failures, vec!["boom"]);
+        assert_eq!(s.robust_refused, 3);
+        assert_eq!(s.robust_unexpected_accept, vec!["accepted"]);
+        assert_eq!(s.robust_strict_refused, 2);
         assert_eq!(s.other_total, 1);
     }
 

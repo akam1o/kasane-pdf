@@ -286,6 +286,14 @@ struct Metrics {
     text_char_recall: Option<f64>,
     #[serde(default)]
     text_char_f1: Option<f64>,
+    /// Content characters (after the normalisation above) on page 1:
+    /// ours and pdftotext's. Both 0 is a page without text, where every
+    /// score is trivially 1 — the analysis leaves those out of the
+    /// text-agreement denominators.
+    #[serde(default)]
+    text_chars_ours: Option<usize>,
+    #[serde(default)]
+    text_chars_ref: Option<usize>,
     rewrite_qpdf_ok: Option<bool>,
     rewrite_reparsed: Option<bool>,
 }
@@ -782,6 +790,8 @@ struct TextAgreement {
     precision: f64,
     recall: f64,
     f1: f64,
+    ours_chars: usize,
+    ref_chars: usize,
 }
 
 /// NFKC, then drop white space, controls and default-ignorables.
@@ -845,12 +855,15 @@ fn compare_text(ours: &str, pdf: &Path, page: usize) -> Option<TextAgreement> {
     let theirs = String::from_utf8_lossy(&out.stdout);
     let a = normalize(ours);
     let b = normalize(&theirs);
-    let (precision, recall, f1) = multiset(&content_chars(ours), &content_chars(&theirs));
+    let (oc, rc) = (content_chars(ours), content_chars(&theirs));
+    let (precision, recall, f1) = multiset(&oc, &rc);
     Some(TextAgreement {
         order: text_match(&a, &b),
         precision,
         recall,
         f1,
+        ours_chars: oc.len(),
+        ref_chars: rc.len(),
     })
 }
 
@@ -972,6 +985,8 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         text_char_precision: None,
         text_char_recall: None,
         text_char_f1: None,
+        text_chars_ours: None,
+        text_chars_ref: None,
         rewrite_qpdf_ok: None,
         rewrite_reparsed: None,
     };
@@ -1255,6 +1270,8 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                 metrics.text_char_precision = Some(t.precision);
                 metrics.text_char_recall = Some(t.recall);
                 metrics.text_char_f1 = Some(t.f1);
+                metrics.text_chars_ours = Some(t.ours_chars);
+                metrics.text_chars_ref = Some(t.ref_chars);
             }
         }
     }
@@ -2621,15 +2638,30 @@ fn render_markdown(r: &RunReport) -> String {
                 ));
             }
             s.push_str(&format!(
+                "\nUnexpected rejections (strict parse or render refused an \
+                 `expect: pass` file): {}.\n",
+                sp.compat_total - sp.compat_render_pass
+            ));
+            s.push_str(&format!(
                 "\n**Robustness** — {} adversarial files (`expect: reject`):\n\
-                 safely handled {} ({:.0}%), cleanly refused {} — \
-                 **{} crash/hang failure(s)**.\n\n",
+                 safely handled (no crash / timeout) {} ({:.0}%), refused by the \
+                 strict parse or render {}, unexpected acceptances (parsed and \
+                 rendered strictly) {} — **{} crash/hang failure(s)**. \
+                 Legacy \"cleanly refused\" (verdict error/unsupported): {}.\n\n",
                 sp.robust_total,
                 sp.robust_safe,
                 sp.robust_safe as f64 / sp.robust_total.max(1) as f64 * 100.0,
-                sp.robust_refused,
-                sp.robust_failures.len()
+                sp.robust_strict_refused,
+                sp.robust_unexpected_accept.len(),
+                sp.robust_failures.len(),
+                sp.robust_refused
             ));
+            for id in &sp.robust_unexpected_accept {
+                s.push_str(&format!("- `{id}` — tagged `reject`, accepted strictly\n"));
+            }
+            if !sp.robust_unexpected_accept.is_empty() {
+                s.push('\n');
+            }
             if !sp.robust_failures.is_empty() {
                 for id in &sp.robust_failures {
                     s.push_str(&format!("- `{id}` — crashed or hung on hostile input\n"));
