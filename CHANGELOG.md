@@ -6,6 +6,22 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Blend modes against the page were computed over white.** §11.4.7
+  makes the page group isolated: objects composite against a
+  *transparent* backdrop and the result is put on white paper at the
+  end. Painting directly on white made every non-Normal blend mode
+  wrong where nothing had been painted before (a group drawn with
+  `/Difference` over the bare page came out in the complementary
+  colour; `/Screen`, `/Lighten`, `/ColorDodge`, the non-separable modes
+  … came out white). A page whose resources (forms, patterns, Type 3
+  fonts, annotation appearances included) name a blend mode other than
+  Normal is now rendered on a transparent backdrop and composited on
+  white; other pages are painted exactly as before.
+- **`/HardLight` on images, shadings and groups used a wrong formula**
+  (the Screen half doubled the backdrop term). It is now
+  Screen(b, 2s − 1) as §11.3.5 defines.
+
 ### Changed
 - **`rewrite` carries optional content.** A catalog `/OCProperties` was
   refused as outside the rewrite profile; a well-formed one is now

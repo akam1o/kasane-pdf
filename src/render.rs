@@ -543,7 +543,17 @@ pub fn render_page(
 
     let mut pixmap = Pixmap::new(width, height)
         .ok_or_else(|| Error::Structure(format!("cannot allocate {width}x{height} pixmap")))?;
-    pixmap.fill(ts_color(Color::WHITE));
+    // §11.4.7: the page group is isolated — its objects composite
+    // against a *transparent* backdrop and the result is composited on
+    // white paper at the end. With only the Normal blend mode that is
+    // the same as painting on white (Porter–Duff over is associative),
+    // so pages that cannot blend otherwise keep the direct white
+    // backdrop (no rounding change); a page whose resources name another
+    // blend mode starts transparent.
+    let transparent_page = page_may_blend(doc, page);
+    if !transparent_page {
+        pixmap.fill(ts_color(Color::WHITE));
+    }
 
     let ops = doc.page_operations(page)?;
     let resources = page
@@ -595,6 +605,17 @@ pub fn render_page(
     let font_substitutions = std::mem::take(&mut renderer.substitutions);
     let color_approximations = std::mem::take(&mut renderer.color_approximations);
     let image_approximations = std::mem::take(&mut renderer.image_approximations);
+    drop(renderer);
+    if transparent_page {
+        // C = (1 − αg)·W + αg·Cg on premultiplied pixels: c + (1 − α).
+        for px in pixmap.data_mut().as_chunks_mut::<4>().0 {
+            let white = 255 - px[3];
+            px[0] = px[0].saturating_add(white);
+            px[1] = px[1].saturating_add(white);
+            px[2] = px[2].saturating_add(white);
+            px[3] = 255;
+        }
+    }
 
     Ok(RenderedPage {
         pixmap,
@@ -629,6 +650,119 @@ pub fn pixmap_to_png(pixmap: &Pixmap) -> Result<Vec<u8>, Error> {
 // --------------------------------------------------------------------
 // Page geometry helpers
 // --------------------------------------------------------------------
+
+/// Resource dictionaries walked by `page_may_blend` before it gives up
+/// and answers `true`.
+const BLEND_SCAN_BUDGET: usize = 4096;
+
+/// Whether anything on `page` can be painted with a blend mode other
+/// than Normal: an `/ExtGState` with such a `/BM` in the page resources
+/// or in the resources of a form XObject, pattern, Type 3 font or
+/// annotation appearance reachable from them. Conservative: an
+/// unreadable structure or an exhausted budget answers `true` (the
+/// transparent backdrop is correct for every page; white is only the
+/// shortcut).
+fn page_may_blend(doc: &Document, page: &Page) -> bool {
+    struct Scan<'a> {
+        doc: &'a Document,
+        seen: std::collections::HashSet<IndirectRef>,
+        budget: usize,
+    }
+    impl Scan<'_> {
+        fn value(&mut self, o: &Object) -> Option<Object> {
+            if let Some(r) = o.as_ref() {
+                if !self.seen.insert(r) {
+                    return None;
+                }
+            }
+            self.doc.deref(o).ok()
+        }
+        /// `true` if a non-Normal blend mode is reachable from `res`.
+        fn resources(&mut self, res: &Object) -> bool {
+            if self.budget == 0 {
+                return true;
+            }
+            self.budget -= 1;
+            let Some(res) = self.value(res) else {
+                return false;
+            };
+            let Some(rd) = res.as_dict() else {
+                return false;
+            };
+            let entries = |s: &mut Self, key: &[u8]| -> Vec<Object> {
+                rd.get(key)
+                    .and_then(|o| s.doc.deref(o).ok())
+                    .and_then(|o| o.as_dict().map(|d| d.values().cloned().collect()))
+                    .unwrap_or_default()
+            };
+            for gs in entries(self, b"ExtGState") {
+                let Some(gs) = self.value(&gs) else { continue };
+                if let Some(bm) = gs.as_dict().and_then(|d| d.get(b"BM".as_slice())) {
+                    match parse_blend_mode(bm) {
+                        Ok(tiny_skia::BlendMode::SourceOver) => {}
+                        _ => return true,
+                    }
+                }
+            }
+            for key in [&b"XObject"[..], b"Pattern", b"Font"] {
+                for x in entries(self, key) {
+                    let Some(x) = self.value(&x) else { continue };
+                    let d = match &x {
+                        Object::Stream { dict, .. } => dict,
+                        Object::Dict(d) => d,
+                        _ => continue,
+                    };
+                    if let Some(r) = d.get(b"Resources".as_slice()) {
+                        if self.resources(r) {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        }
+    }
+    let mut scan = Scan {
+        doc,
+        seen: std::collections::HashSet::new(),
+        budget: BLEND_SCAN_BUDGET,
+    };
+    if let Some(res) = page.resources() {
+        if scan.resources(res) {
+            return true;
+        }
+    }
+    // Annotation appearances paint on the same page group.
+    let Ok(Some(Object::Array(annots))) = page_dict_entry(doc, page, b"Annots") else {
+        return false;
+    };
+    for a in annots.iter().take(BLEND_SCAN_BUDGET) {
+        let Some(ad) = doc.deref(a).ok().and_then(|o| o.as_dict().cloned()) else {
+            continue;
+        };
+        let Some(ap) = ad.get(b"AP".as_slice()).and_then(|o| doc.deref(o).ok()) else {
+            continue;
+        };
+        let Some(n) = ap.as_dict().and_then(|d| d.get(b"N".as_slice()).cloned()) else {
+            continue;
+        };
+        let streams: Vec<Object> = match doc.deref(&n) {
+            Ok(Object::Dict(states)) => states.values().cloned().collect(),
+            Ok(_) => vec![n],
+            Err(_) => return true,
+        };
+        for st in streams {
+            if let Ok(Object::Stream { dict, .. }) = doc.deref(&st) {
+                if let Some(r) = dict.get(b"Resources".as_slice()) {
+                    if scan.resources(r) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
 
 /// Re-read a single key from the (indirect) page object. `/Annots` and
 /// `/UserUnit` are not part of the inherited attributes stored on
@@ -6336,10 +6470,13 @@ fn blend_mode_channel(mode: tiny_skia::BlendMode, cs: u8, cb: u8) -> u8 {
             }
         }
         tiny_skia::BlendMode::HardLight => {
+            // §11.3.5: Multiply(b, 2s) below one half, else
+            // Screen(b, 2s − 1).
             if s <= 0.5 {
                 b * 2.0 * s
             } else {
-                1.0 - 2.0 * (1.0 - b) * (1.0 - (2.0 * s - 1.0))
+                let t = 2.0 * s - 1.0;
+                b + t - b * t
             }
         }
         tiny_skia::BlendMode::SoftLight => {
