@@ -453,3 +453,36 @@ fn cycles_and_limits_end_in_a_refusal() {
     let e = refused(&format!("<< /OCGs [10 0 R] /D << /Order {deep} >> >>"), &[]);
     assert!(matches!(e, Error::LimitExceeded { .. }), "{e:?}");
 }
+
+#[test]
+fn indirect_values_and_null_entries_are_accepted() {
+    // §7.3.10: any value may be indirect, and a null array entry is the
+    // null object — the renderer skips it, the rewriter carries it.
+    for (what, ocp, extra) in [
+        ("null in /OCGs and /ON", "<< /OCGs [10 0 R null 11 0 R] /D << /ON [null 10 0 R] >> >>", vec![]),
+        ("indirect /Order label", "<< /OCGs [10 0 R 11 0 R] /D << /Order [[50 0 R 10 0 R] 11 0 R] >> >>", vec![(50, "(Layer set)")]),
+        (
+            "indirect names",
+            "<< /OCGs [10 0 R] /D << /Intent [51 0 R] /AS [<< /Event 52 0 R /OCGs [10 0 R] /Category [51 0 R] >>] >> >>",
+            vec![(51, "/View"), (52, "/View")],
+        ),
+    ] {
+        round_trip(&pdf(ocp, &extra), what);
+    }
+}
+
+#[test]
+fn optional_content_is_declared_at_least_pdf_1_5() {
+    // A 1.4 header with /OCProperties: the rewrite declares 1.5, the
+    // first version that defines optional content; 1.6 stays 1.6.
+    let src = pdf("<< /OCGs [10 0 R] /D << >> >>", &[]);
+    for (header, want) in [
+        (&b"%PDF-1.4"[..], &b"%PDF-1.5"[..]),
+        (b"%PDF-1.6", b"%PDF-1.6"),
+    ] {
+        let mut v = src.clone();
+        v[..8].copy_from_slice(header);
+        let out = rewrite(&Document::from_bytes(&v).unwrap()).unwrap();
+        assert_eq!(&out[..8], want, "{}", String::from_utf8_lossy(header));
+    }
+}

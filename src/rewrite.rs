@@ -424,10 +424,16 @@ fn effective_version(doc: &Document) -> Result<String, Error> {
     // Catalog /Version: absent → use header; present but not a valid
     // name token → refuse (a malformed version is not "no version").
     let cat = doc.catalog_version()?;
-    let effective = match cat {
+    let mut effective = match cat {
         Some(c) if c > hdr => c,
         _ => hdr,
     };
+    // Optional content is a PDF 1.5 feature (§8.11): a file that
+    // carries `/OCProperties` declares at least 1.5, whatever the input
+    // claimed, so the output never declares less than it contains.
+    if doc.catalog().contains_key(b"OCProperties".as_slice()) && effective < (1, 5) {
+        effective = (1, 5);
+    }
     // Guaranteed-write ceiling: 1.7. Anything above is Unsupported.
     if effective > BASE_VERSION {
         return Err(Error::Unsupported {
