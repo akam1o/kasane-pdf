@@ -1311,6 +1311,35 @@ known grid), report-only `content_ssim_shift` 2 pages and
 over the 413 reparsed rewrites: pass 189, not applicable 224, fail /
 unsupported / error 0.
 
+### Optional content in rewrite (2026-11-01)
+
+Same configuration (macOS, runner with `cjk-fallback`, full mode),
+the `/OCProperties` change on top of the integrated main.
+
+| expect: pass (425) | before | after |
+|---|---:|---:|
+| strict parse / render / approximate / recovered | 408 / 380 / 69 / 18 | 408 / 380 / 69 / 18 |
+| text | 392 | 392 |
+| rewrite | 350 | **364** |
+| full PASS | 325 (76.5 %) | **338 (79.5 %)** |
+| graph round trip pass / full round trip | 413 / 411 | 427 / 425 |
+| semantic round trip pass / not applicable / fail+unsupported+error | 189 / 224 / 0 | 203 / 224 / 0 |
+| incremental save, robustness, unexpected acceptance, crash / timeout | 446, 44/44, 0, 0 | 446, 44/44, 0, 0 |
+
+The 14 files refused only for `/OCProperties` before (13 of them
+`expect: pass` whose other stages already passed): all 14 rewrite,
+reparse strictly, pass the graph and the semantic round trip
+(optional content included: 14/14), render identically (kasane-pdf
+and Poppler), and qpdf reports nothing on any rewrite (two originals
+draw qpdf warnings, their rewrites none). With every group switched ON
+and every group switched OFF (the default configuration edited on both
+the original and the rewrite), Poppler draws the original and the
+rewrite identically on all 14; on 13 the switch visibly changes the
+page. Two originals declare PDF 1.4; their rewrites declare 1.5. Full
+PASS rises by the 13; one file (`expect: pass`, render refused for an
+unrelated reason) now rewrites but is not a full PASS. No pixel of any
+page changed; the quality gate classes are unchanged.
+
 ## External verification findings (this phase)
 
 What the independent parsers said about the rewrites, file by file,

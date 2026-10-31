@@ -21,7 +21,13 @@
 //!   still *claims* one is refused outright (blank unsigned fields
 //!   pass through like any other object).
 //! * `/AcroForm` `/XFA` — outside the rewrite preservation profile.
-//! * catalog `/OCProperties`, `/RichMedia`, `/AA` — outside profile.
+//! * catalog `/RichMedia`, `/AA` — outside profile.
+//! * a catalog `/OCProperties` that is not well formed (types, required
+//!   entries, `/Order` cycles — `crate::optcontent::validate_for_rewrite`).
+//!   A well-formed one is carried verbatim, like every other reachable
+//!   structure: OCGs, configurations and every content-level reference
+//!   (`/Properties`, XObject and annotation `/OC`, OCMDs) keep their
+//!   targets through the renumbering.
 //!
 //! Everything else reachable is copied verbatim — unknown dictionary
 //! keys are preserved, never silently dropped. That includes named
@@ -418,10 +424,16 @@ fn effective_version(doc: &Document) -> Result<String, Error> {
     // Catalog /Version: absent → use header; present but not a valid
     // name token → refuse (a malformed version is not "no version").
     let cat = doc.catalog_version()?;
-    let effective = match cat {
+    let mut effective = match cat {
         Some(c) if c > hdr => c,
         _ => hdr,
     };
+    // Optional content is a PDF 1.5 feature (§8.11): a file that
+    // carries `/OCProperties` declares at least 1.5, whatever the input
+    // claimed, so the output never declares less than it contains.
+    if doc.catalog().contains_key(b"OCProperties".as_slice()) && effective < (1, 5) {
+        effective = (1, 5);
+    }
     // Guaranteed-write ceiling: 1.7. Anything above is Unsupported.
     if effective > BASE_VERSION {
         return Err(Error::Unsupported {
@@ -606,8 +618,12 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
     // before any output rather than looping in the collector.
     crate::dests::named_destinations(doc, &Limits::default())?;
 
+    // Optional content: carried verbatim once its structure is known to
+    // be well formed.
+    crate::optcontent::validate_for_rewrite(doc)?;
+
     // Active/executable structures outside the rewrite profile.
-    for key in [&b"OCProperties"[..], &b"RichMedia"[..], &b"AA"[..]] {
+    for key in [&b"RichMedia"[..], &b"AA"[..]] {
         if catalog.contains_key(key) {
             return Err(Error::Unsupported {
                 feature: "catalog entry outside profile",

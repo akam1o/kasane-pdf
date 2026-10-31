@@ -6,6 +6,22 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **`rewrite` carries optional content.** A catalog `/OCProperties` was
+  refused as outside the rewrite profile; a well-formed one is now
+  carried verbatim with renumbered references — every group, the
+  default and alternate configurations (`/BaseState`, `/ON`, `/OFF`,
+  `/Order`, `/RBGroups`, `/Locked`, `/ListMode`, `/AS`, `/Intent`) and
+  every content-level reference (page `/Properties`, XObject and
+  annotation `/OC`, OCMDs with `/P` and `/VE`). A malformed one —
+  missing `/OCGs` or `/D`, a group that is not an `/OCG` dictionary with
+  a `/Name`, a wrong type, an `/Order` that contains itself — is refused
+  with `Error::Structure`; an `/Order` nested deeper than 32 levels or
+  more than 262 144 configuration entries with `LimitExceeded`. Indirect
+  values and `null` array entries are accepted (§7.3.10). A document
+  that carries optional content is written with a header of at least
+  `%PDF-1.5`, the first version that defines it.
+
 ### Fixed
 - **Annotations with the NoRotate flag were turned with the page.** On a
   page with `/Rotate`, an annotation whose `/F` sets NoRotate (bit 5,

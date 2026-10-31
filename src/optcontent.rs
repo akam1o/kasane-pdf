@@ -348,3 +348,319 @@ fn ref_list(doc: &Document, o: &Object, what: &str) -> Result<Vec<IndirectRef>, 
     }
     Ok(out)
 }
+
+/// Nesting depth of a configuration's `/Order` accepted by the rewriter.
+const MAX_ORDER_DEPTH: usize = 32;
+/// Entries walked across every `/Order`, `/RBGroups` and `/AS` array.
+const MAX_CONFIG_NODES: usize = 262_144;
+
+/// Check `/OCProperties` before the rewriter carries it (§8.11.4). The
+/// rewriter copies the structure verbatim with renumbered references,
+/// so what has to hold is that the structure means exactly one thing:
+/// every type is the one the specification requires, every group a
+/// configuration names is an OCG dictionary, `/Order` is a finite tree.
+/// A violation is `Error::Structure` (or `LimitExceeded`): the rewrite
+/// is refused rather than writing a structure whose meaning is unclear.
+/// `null` array entries are skipped (§7.3.10), as the renderer skips
+/// them. Content-level references (`/Properties`, XObject and annotation
+/// `/OC`, OCMDs) are ordinary objects of the graph and are copied with
+/// it.
+pub(crate) fn validate_for_rewrite(doc: &Document) -> Result<(), Error> {
+    let Some(ocp) = doc.catalog().get(b"OCProperties".as_slice()) else {
+        return Ok(());
+    };
+    let ocp = doc.deref(ocp)?;
+    let ocp = ocp
+        .as_dict()
+        .ok_or_else(|| Error::Structure("/OCProperties is not a dictionary".into()))?;
+    let mut v = Validator {
+        doc,
+        groups: HashSet::new(),
+        nodes: 0,
+    };
+    let ocgs_obj = ocp
+        .get(b"OCGs".as_slice())
+        .ok_or_else(|| Error::Structure("/OCProperties has no /OCGs (required)".into()))?;
+    let ocgs = v.ref_list(ocgs_obj, "/OCProperties /OCGs")?;
+    if ocgs.len() > MAX_OCGS {
+        return Err(Error::LimitExceeded {
+            limit: "optional content groups",
+            max: MAX_OCGS as u64,
+        });
+    }
+    for r in &ocgs {
+        v.group(*r, "/OCProperties /OCGs")?;
+    }
+    let d = ocp
+        .get(b"D".as_slice())
+        .ok_or_else(|| Error::Structure("/OCProperties has no /D (required)".into()))?;
+    v.config(d, "/D")?;
+    if let Some(configs) = ocp.get(b"Configs".as_slice()) {
+        let configs = doc.deref(configs)?;
+        let arr = configs
+            .as_array()
+            .ok_or_else(|| Error::Structure("/OCProperties /Configs is not an array".into()))?;
+        for (i, c) in arr.iter().enumerate() {
+            v.config(c, &format!("/Configs [{i}]"))?;
+        }
+    }
+    Ok(())
+}
+
+/// The `/OCProperties` checks; every value may be stored indirectly
+/// (§7.3.10), so each read goes through `deref`.
+struct Validator<'a> {
+    doc: &'a Document,
+    /// Groups already checked — each resolved once.
+    groups: HashSet<IndirectRef>,
+    nodes: usize,
+}
+
+impl Validator<'_> {
+    fn count(&mut self) -> Result<(), Error> {
+        self.nodes += 1;
+        if self.nodes > MAX_CONFIG_NODES {
+            return Err(Error::LimitExceeded {
+                limit: "optional content configuration entries",
+                max: MAX_CONFIG_NODES as u64,
+            });
+        }
+        Ok(())
+    }
+
+    /// An array of references; `null` entries are skipped, any other
+    /// direct object is refused.
+    fn ref_list(&mut self, o: &Object, what: &str) -> Result<Vec<IndirectRef>, Error> {
+        let o = self.doc.deref(o)?;
+        let arr = o
+            .as_array()
+            .ok_or_else(|| Error::Structure(format!("{what} is not an array")))?;
+        let mut out = Vec::with_capacity(arr.len());
+        for e in arr {
+            match e {
+                Object::Ref(r) => out.push(*r),
+                Object::Null => {}
+                _ => {
+                    return Err(Error::Structure(format!(
+                        "{what} entries must be references to OCGs"
+                    )))
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// `r` is an optional content group dictionary (§8.11.2.1).
+    fn group(&mut self, r: IndirectRef, what: &str) -> Result<(), Error> {
+        if self.groups.contains(&r) {
+            return Ok(());
+        }
+        let o = self.doc.resolve(r)?;
+        let d = o.as_dict().ok_or_else(|| {
+            Error::Structure(format!("{what}: {r} is not an optional content group"))
+        })?;
+        if d.get(b"Type".as_slice()).and_then(|t| t.as_name()) != Some(b"OCG") {
+            return Err(Error::Structure(format!("{what}: {r} is not /Type /OCG")));
+        }
+        match d
+            .get(b"Name".as_slice())
+            .map(|n| self.doc.deref(n))
+            .transpose()?
+        {
+            Some(Object::String(_)) => {
+                self.groups.insert(r);
+                Ok(())
+            }
+            _ => Err(Error::Structure(format!(
+                "{what}: {r} has no /Name text string"
+            ))),
+        }
+    }
+
+    fn name_in(&self, o: &Object, allowed: &[&[u8]]) -> Result<bool, Error> {
+        Ok(self
+            .doc
+            .deref(o)?
+            .as_name()
+            .map(|n| allowed.contains(&n))
+            .unwrap_or(false))
+    }
+
+    /// An array (possibly indirect) of possibly indirect names.
+    fn names(&self, o: &Object) -> Result<bool, Error> {
+        match self.doc.deref(o)? {
+            Object::Array(a) => {
+                for n in &a {
+                    if self.doc.deref(n)?.as_name().is_none() {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
+    /// An optional content configuration dictionary (§8.11.4.3).
+    fn config(&mut self, c: &Object, what: &str) -> Result<(), Error> {
+        let doc = self.doc;
+        let c = doc.deref(c)?;
+        let d = c
+            .as_dict()
+            .ok_or_else(|| Error::Structure(format!("{what} is not a configuration dictionary")))?;
+        for key in [&b"Name"[..], b"Creator"] {
+            if let Some(v) = d.get(key) {
+                if !matches!(doc.deref(v)?, Object::String(_)) {
+                    return Err(Error::Structure(format!(
+                        "{what} /{} is not a text string",
+                        String::from_utf8_lossy(key)
+                    )));
+                }
+            }
+        }
+        if let Some(b) = d.get(b"BaseState".as_slice()) {
+            if !self.name_in(b, &[b"ON", b"OFF", b"Unchanged"])? {
+                return Err(Error::Structure(format!(
+                    "{what} /BaseState is not ON, OFF or Unchanged"
+                )));
+            }
+        }
+        if let Some(l) = d.get(b"ListMode".as_slice()) {
+            if !self.name_in(l, &[b"AllPages", b"VisiblePages"])? {
+                return Err(Error::Structure(format!(
+                    "{what} /ListMode is not AllPages or VisiblePages"
+                )));
+            }
+        }
+        if let Some(i) = d.get(b"Intent".as_slice()) {
+            let ok = doc.deref(i)?.as_name().is_some() || self.names(i)?;
+            if !ok {
+                return Err(Error::Structure(format!(
+                    "{what} /Intent is not a name or an array of names"
+                )));
+            }
+        }
+        for key in [&b"ON"[..], b"OFF", b"Locked"] {
+            if let Some(list) = d.get(key) {
+                let label = format!("{what} /{}", String::from_utf8_lossy(key));
+                for r in self.ref_list(list, &label)? {
+                    self.count()?;
+                    self.group(r, &label)?;
+                }
+            }
+        }
+        if let Some(rb) = d.get(b"RBGroups".as_slice()) {
+            let rb = doc.deref(rb)?;
+            let groups = rb
+                .as_array()
+                .ok_or_else(|| Error::Structure(format!("{what} /RBGroups is not an array")))?;
+            for g in groups {
+                if matches!(g, Object::Null) {
+                    continue;
+                }
+                let label = format!("{what} /RBGroups");
+                for r in self.ref_list(g, &label)? {
+                    self.count()?;
+                    self.group(r, &label)?;
+                }
+            }
+        }
+        if let Some(order) = d.get(b"Order".as_slice()) {
+            let mut stack = Vec::new();
+            self.order(order, what, 0, &mut stack)?;
+        }
+        if let Some(apps) = d.get(b"AS".as_slice()) {
+            let apps = doc.deref(apps)?;
+            let apps = apps
+                .as_array()
+                .ok_or_else(|| Error::Structure(format!("{what} /AS is not an array")))?;
+            for a in apps {
+                self.count()?;
+                let a = doc.deref(a)?;
+                let ad = a.as_dict().ok_or_else(|| {
+                    Error::Structure(format!("{what} /AS entry is not a dictionary"))
+                })?;
+                let event_ok = match ad.get(b"Event".as_slice()) {
+                    Some(e) => self.name_in(e, &[b"View", b"Print", b"Export"])?,
+                    None => false,
+                };
+                if !event_ok {
+                    return Err(Error::Structure(format!(
+                        "{what} /AS /Event is not View, Print or Export"
+                    )));
+                }
+                // /OCGs is optional (an absent list names no group);
+                // /Event and /Category are required.
+                if let Some(groups) = ad.get(b"OCGs".as_slice()) {
+                    let label = format!("{what} /AS /OCGs");
+                    for r in self.ref_list(groups, &label)? {
+                        self.count()?;
+                        self.group(r, &label)?;
+                    }
+                }
+                let cat_ok = match ad.get(b"Category".as_slice()) {
+                    Some(c) => self.names(c)?,
+                    None => false,
+                };
+                if !cat_ok {
+                    return Err(Error::Structure(format!(
+                        "{what} /AS /Category is not an array of names"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// `/Order`: a tree of arrays whose leaves are OCG references; a
+    /// text string (direct or indirect) labels a subarray. Indirect
+    /// arrays are followed; one that contains itself is a cycle.
+    fn order(
+        &mut self,
+        o: &Object,
+        what: &str,
+        depth: usize,
+        stack: &mut Vec<IndirectRef>,
+    ) -> Result<(), Error> {
+        if depth > MAX_ORDER_DEPTH {
+            return Err(Error::LimitExceeded {
+                limit: "optional content /Order depth",
+                max: MAX_ORDER_DEPTH as u64,
+            });
+        }
+        self.count()?;
+        let (reference, value) = match o {
+            Object::Ref(r) => (Some(*r), self.doc.resolve(*r)?),
+            other => (None, other.clone()),
+        };
+        match value {
+            Object::Array(items) => {
+                if let Some(r) = reference {
+                    if stack.contains(&r) {
+                        return Err(Error::Structure(format!(
+                            "{what} /Order contains itself ({r})"
+                        )));
+                    }
+                    stack.push(r);
+                }
+                for it in &items {
+                    self.order(it, what, depth + 1, stack)?;
+                }
+                if reference.is_some() {
+                    stack.pop();
+                }
+                Ok(())
+            }
+            Object::Dict(_) => match reference {
+                Some(r) => self.group(r, &format!("{what} /Order")),
+                None => Err(Error::Structure(format!(
+                    "{what} /Order: a group must be an indirect reference"
+                ))),
+            },
+            Object::String(_) | Object::Null => Ok(()),
+            _ => Err(Error::Structure(format!(
+                "{what} /Order entries must be OCG references, arrays or labels"
+            ))),
+        }
+    }
+}
