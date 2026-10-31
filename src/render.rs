@@ -810,6 +810,31 @@ fn page_may_blend(doc: &Document, page: &Page) -> bool {
     false
 }
 
+/// The stroke parameters of the graphics state (§8.4.3), in user units.
+fn gs_stroke(gs: &GraphicsState) -> Stroke {
+    Stroke {
+        width: if gs.line_width == 0.0 {
+            hairline_width()
+        } else {
+            gs.line_width as f32
+        },
+        miter_limit: gs.miter_limit as f32,
+        line_cap: match gs.line_cap {
+            1 => tiny_skia::LineCap::Round,
+            2 => tiny_skia::LineCap::Square,
+            _ => tiny_skia::LineCap::Butt,
+        },
+        line_join: match gs.line_join {
+            1 => tiny_skia::LineJoin::Round,
+            2 => tiny_skia::LineJoin::Bevel,
+            _ => tiny_skia::LineJoin::Miter,
+        },
+        dash: gs.dash.as_ref().and_then(|(arr, phase)| {
+            StrokeDash::new(arr.iter().map(|v| *v as f32).collect(), *phase as f32)
+        }),
+    }
+}
+
 /// Re-read a single key from the (indirect) page object. `/Annots` and
 /// `/UserUnit` are not part of the inherited attributes stored on
 /// `Page`, so they are fetched lazily here.
@@ -4989,11 +5014,14 @@ impl<'a> Renderer<'a> {
                 "tiling pattern transform overflows pattern space".into(),
             ));
         }
+        // Cell (i, j) covers [i·xstep + llx, i·xstep + urx] × […]: it
+        // reaches the box iff i·xstep + urx ≥ px0 and i·xstep + llx ≤ px1
+        // (touching counts, so no sliver is dropped to rounding).
         let bb = tp.bbox;
-        let i0 = ((px0 as f64 - bb.urx) / tp.xstep).floor();
-        let i1 = ((px1 as f64 - bb.llx) / tp.xstep).ceil();
-        let j0 = ((py0 as f64 - bb.ury) / tp.ystep).floor();
-        let j1 = ((py1 as f64 - bb.lly) / tp.ystep).ceil();
+        let i0 = ((px0 as f64 - bb.urx) / tp.xstep).ceil();
+        let i1 = ((px1 as f64 - bb.llx) / tp.xstep).floor();
+        let j0 = ((py0 as f64 - bb.ury) / tp.ystep).ceil();
+        let j1 = ((py1 as f64 - bb.lly) / tp.ystep).floor();
         let tiles = (i1 - i0 + 1.0).max(0.0) * (j1 - j0 + 1.0).max(0.0);
         if !tiles.is_finite() || tiles > u64::MAX as f64 / 4.0 {
             return Err(Error::Structure(
@@ -5582,6 +5610,8 @@ impl<'a> Renderer<'a> {
         // `gs` borrow below.
         let mut pattern_fill: Option<(tiny_skia::Path, Transform)> = None;
         let mut pattern_stroke: Option<(tiny_skia::Path, Transform, Stroke)> = None;
+        let text_stroke =
+            matches!(self.gs.text.render_mode, 1 | 2 | 5 | 6).then(|| gs_stroke(&self.gs));
         let gs = &mut self.gs;
         let t = &mut gs.text;
 
@@ -5674,12 +5704,41 @@ impl<'a> Renderer<'a> {
                     }
                     _ => {}
                 }
-                if matches!(t.render_mode, 1 | 2 | 5 | 6) {
-                    // stroke
-                    let stroke = tiny_skia::Stroke {
-                        width: (gs.line_width * t.font_size / 1000.0) as f32,
-                        ..Default::default()
-                    };
+                // §9.3.6, §8.5.3.2: the glyph outline is stroked like a
+                // path in *user space* — line width, caps, joins and
+                // dashes from the graphics state, in user units — so
+                // the outline is first taken through the text part of
+                // Trm (glyph → user) and stroked under CTM × pixmap.
+                let text_part =
+                    Matrix::new(t.font_size * t.h_scale, 0.0, 0.0, t.font_size, 0.0, t.rise)
+                        .concat(self.text_tm);
+                let text_part = if vertical {
+                    vshift.concat(text_part)
+                } else {
+                    text_part
+                };
+                let user_stroke = text_stroke.clone().and_then(|stroke| {
+                    let tp = Transform::from_row(
+                        text_part.a as f32,
+                        text_part.b as f32,
+                        text_part.c as f32,
+                        text_part.d as f32,
+                        text_part.e as f32,
+                        text_part.f as f32,
+                    );
+                    let ctm = Transform::from_row(
+                        gs.ctm.a as f32,
+                        gs.ctm.b as f32,
+                        gs.ctm.c as f32,
+                        gs.ctm.d as f32,
+                        gs.ctm.e as f32,
+                        gs.ctm.f as f32,
+                    )
+                    .post_concat(self.user_to_pix);
+                    path.clone().transform(tp).map(|p| (p, ctm, stroke))
+                });
+                if let Some((path, full, stroke)) = user_stroke {
+                    let path = &path;
                     if gs.stroke_space.is_pattern() {
                         pattern_stroke = Some((path.clone(), full, stroke));
                     } else {
@@ -6073,27 +6132,7 @@ impl<'a> Renderer<'a> {
             ..Default::default()
         };
 
-        let stroke = Stroke {
-            width: if self.gs.line_width == 0.0 {
-                hairline_width()
-            } else {
-                self.gs.line_width as f32
-            },
-            miter_limit: self.gs.miter_limit as f32,
-            line_cap: match self.gs.line_cap {
-                1 => tiny_skia::LineCap::Round,
-                2 => tiny_skia::LineCap::Square,
-                _ => tiny_skia::LineCap::Butt,
-            },
-            line_join: match self.gs.line_join {
-                1 => tiny_skia::LineJoin::Round,
-                2 => tiny_skia::LineJoin::Bevel,
-                _ => tiny_skia::LineJoin::Miter,
-            },
-            dash: self.gs.dash.as_ref().and_then(|(arr, phase)| {
-                StrokeDash::new(arr.iter().map(|v| *v as f32).collect(), *phase as f32)
-            }),
-        };
+        let stroke = gs_stroke(&self.gs);
 
         match kind {
             PaintKind::Stroke => {
