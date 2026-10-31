@@ -1169,6 +1169,51 @@ reference), 0 crash / 0 timeout, robustness 43/43. Against 0.2.2 (the
 published release): strict render +1, recovered +1, text +1, all from
 the encrypted files. Wall time per file: median 176 ms.
 
+### Results after the FontMatrix fix, with the quality gate (run-1793419385)
+
+Same 511 files, `--mode full`, default features, against run-1793406122
+(the v0.3.0 release). Engine change: Type 1 glyph outlines go through
+the program's own `FontMatrix` (`plans/v0.4.0.md` § 7). Runner changes:
+the exact-render quality gate, order-independent text scores,
+an incremental-save stage and a content profile
+(`plans/quality-gate.md`).
+
+| expect: pass (427) | v0.3.0 | now |
+|---|---:|---:|
+| strict parse | 407 | 407 |
+| strict render | 379 (88.8 %) | 379 (88.8 %) |
+| of which approximate | 69 | 69 |
+| recovered render | 19 | 19 |
+| text | 391 | 391 |
+| rewrite | 350 | 350 |
+| full PASS | 325 | 325 |
+
+Counts are unchanged — the fix changes *what* is drawn on pages already
+counted as exact. Rendered pixels changed on exactly three files, all
+three intended (the garbled Type 1 pages): content SSIM 0.07 → 0.88 and
+0.04 → 0.71, whole-page SSIM up on both, the third has no Poppler
+reference. No other page's SSIM moved by more than 0.0005; no stage,
+approximation flag or warning count changed on any file; round trip
+411; 0 crash / 0 timeout; robustness 43/43; median wall time per file
+177 ms (176).
+
+Quality gate: 1 exact file flagged by the enforced rule (a hairline grid
+Poppler draws darker — known, fidelity), 3 report-only, 7 exempt
+(5 blank Poppler pages, 2 `/UserUnit` page sizes); on v0.3.0 the same
+rules flag 3 (the two garbled pages with a reference, and the grid).
+
+Text, page 1 against `pdftotext` page 1, 425 strict extractions:
+character-multiset F1 median 1.00, ≥ 0.9 on 377 (88.7 %); the
+order-sensitive score ≥ 0.9 on 328. On the 16 files whose text is
+Chinese, Japanese or Korean: F1 median 1.00, order score median 0.93
+(vertical writing and column order). Low recall (< 0.5, 46 files) is
+mostly text only in annotations / form fields or codes without a
+Unicode mapping (`plans/v0.4.0.md` § 4).
+
+Incremental save of a one-entry `/Info` edit on every strictly parsed
+file: 446 pass, 3 refused (encrypted — the writers do not encrypt);
+none produced a file that failed to reparse or lost the edit.
+
 ## External verification findings (this phase)
 
 What the independent parsers said about the rewrites, file by file,
