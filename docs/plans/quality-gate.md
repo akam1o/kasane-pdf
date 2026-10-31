@@ -113,6 +113,15 @@ fails exactly on the two FontMatrix files with a reference (besides
 four `expect: any` stage differences that come from the `cjk-fallback`
 feature, not the gate); the current run passes with the one known flag.
 
+## Blind spots
+
+- Misplaced small content (an annotation drawn rotated with the page
+  instead of upright): ink ratio unchanged, best-shift difference 2.4 %,
+  content SSIM 0.26 — no rule fired. Synthetic regression tests guard
+  that case (`tests/render_annot_norotate.rs`); a report-only rule on
+  content SSIM alone is a candidate (`v0.4.0.md` § 8).
+- Colour: no rule measures hue (`v0.4.0.md` § 8, colour outliers).
+
 ## Known flags
 
 | flag | files | reason |
