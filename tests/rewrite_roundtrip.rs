@@ -658,14 +658,15 @@ fn goto_d_array_accepted() {
 }
 
 #[test]
-fn ocproperties_refused() {
+fn malformed_ocproperties_refused() {
+    // /OCProperties without the required /D: refused as a structure
+    // error (well-formed optional content is carried — see
+    // tests/rewrite_optional_content.rs).
     let p = pdf_with(1, "/OCProperties << /OCGs [] >>", "");
     let doc = Document::from_bytes(&p).unwrap();
     match rewrite(&doc) {
-        Err(Error::Unsupported { feature, .. }) => {
-            assert_eq!(feature, "catalog entry outside profile")
-        }
-        other => panic!("expected Unsupported, got {other:?}"),
+        Err(Error::Structure(m)) => assert!(m.contains("/D"), "{m}"),
+        other => panic!("expected a structure error, got {other:?}"),
     }
 }
 

@@ -21,7 +21,13 @@
 //!   still *claims* one is refused outright (blank unsigned fields
 //!   pass through like any other object).
 //! * `/AcroForm` `/XFA` — outside the rewrite preservation profile.
-//! * catalog `/OCProperties`, `/RichMedia`, `/AA` — outside profile.
+//! * catalog `/RichMedia`, `/AA` — outside profile.
+//! * a catalog `/OCProperties` that is not well formed (types, required
+//!   entries, `/Order` cycles — `crate::optcontent::validate_for_rewrite`).
+//!   A well-formed one is carried verbatim, like every other reachable
+//!   structure: OCGs, configurations and every content-level reference
+//!   (`/Properties`, XObject and annotation `/OC`, OCMDs) keep their
+//!   targets through the renumbering.
 //!
 //! Everything else reachable is copied verbatim — unknown dictionary
 //! keys are preserved, never silently dropped. That includes named
@@ -606,8 +612,12 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
     // before any output rather than looping in the collector.
     crate::dests::named_destinations(doc, &Limits::default())?;
 
+    // Optional content: carried verbatim once its structure is known to
+    // be well formed.
+    crate::optcontent::validate_for_rewrite(doc)?;
+
     // Active/executable structures outside the rewrite profile.
-    for key in [&b"OCProperties"[..], &b"RichMedia"[..], &b"AA"[..]] {
+    for key in [&b"RichMedia"[..], &b"AA"[..]] {
         if catalog.contains_key(key) {
             return Err(Error::Unsupported {
                 feature: "catalog entry outside profile",
