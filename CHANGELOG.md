@@ -6,6 +6,12 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-02
+
+Patch release: cross-reference fixes only (`cargo semver-checks`
+against 0.4.0: no semver update required). Release notes:
+`docs/releases/v0.4.1.md`.
+
 ### Fixed
 - **Cross-reference precedence across incremental updates** (ISO
   32000-1 §7.5.4, §7.5.6, §7.5.8; ISO 32000-2 §7.5.8.4). Per object
