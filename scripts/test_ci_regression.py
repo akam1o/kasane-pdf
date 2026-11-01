@@ -276,5 +276,27 @@ class Gate(unittest.TestCase):
         self.assertEqual(rc, 0, out)
 
 
+    def test_text_agreement_is_recorded_and_report_only(self):
+        def with_text(f1, f1a):
+            f = file("a", [NORMAL])
+            f["metrics"] = dict(f["metrics"], text_char_f1=f1, text_char_f1_with_annots=f1a)
+            return f
+
+        base = cr.summarize(run(with_text(0.98765, 0.99)))
+        self.assertEqual(base["files"]["a"]["text_f1"], 0.9877)
+        self.assertEqual(base["files"]["a"]["text_f1_annots"], 0.99)
+        # A large drop is listed, never a regression; a small one is quiet.
+        rc, out = check(run(with_text(0.5, 0.99)), base)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("text agreement drop (not enforced, review): a: text_f1 0.9877 -> 0.5", out)
+        rc, out = check(run(with_text(0.97, 0.98)), base)
+        self.assertNotIn("text agreement drop", out)
+        # A baseline without the fields (0.4.0) compares nothing.
+        old = cr.summarize(run(file("a", [NORMAL])))
+        self.assertIsNone(old["files"]["a"]["text_f1"])
+        rc, out = check(run(with_text(0.1, 0.1)), old)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("text agreement drop", out)
+
 if __name__ == "__main__":
     unittest.main()

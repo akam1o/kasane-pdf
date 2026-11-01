@@ -2,11 +2,11 @@
  "aggregate": {
   "crash": 0,
   "files": 66,
-  "incremental_pass": 59,
-  "parse_pass": 59,
+  "incremental_pass": 60,
+  "parse_pass": 60,
   "quality_exempt": 0,
   "quality_flag": 0,
-  "quality_pages": 44,
+  "quality_pages": 45,
   "quality_report": 0,
   "render_pass": 48,
   "rewrite_pass": 61,
@@ -22,17 +22,21 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {},
    "roundtrip_full": null,
+   "semantic": {},
    "stages": {
     "parse": "error",
     "render": "skip",
     "rewrite": "skip",
     "text": "skip"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "error",
    "warnings": 0
   },
@@ -43,6 +47,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "error",
@@ -56,12 +61,28 @@
     "text": "NotApplicable"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "error",
     "rewrite": "pass",
     "text": "error"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "error",
    "warnings": 0
   },
@@ -72,6 +93,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 1,
    "render_approximate": false,
    "render_recovered": "pass",
@@ -85,12 +107,28 @@
     "text": "NotApplicable"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "error",
     "rewrite": "pass",
     "text": "error"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "error",
    "warnings": 2
   },
@@ -101,6 +139,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -114,12 +153,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -130,17 +185,21 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {},
    "roundtrip_full": null,
+   "semantic": {},
    "stages": {
     "parse": "error",
     "render": "skip",
     "rewrite": "skip",
     "text": "skip"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "error",
    "warnings": 0
   },
@@ -151,17 +210,21 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {},
    "roundtrip_full": null,
+   "semantic": {},
    "stages": {
     "parse": "error",
     "render": "skip",
     "rewrite": "skip",
     "text": "skip"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "error",
    "warnings": 0
   },
@@ -172,6 +235,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "error",
@@ -185,12 +249,28 @@
     "text": "NotApplicable"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "error",
     "rewrite": "pass",
     "text": "error"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "error",
    "warnings": 0
   },
@@ -201,6 +281,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 1,
    "render_approximate": false,
    "render_recovered": "pass",
@@ -214,12 +295,28 @@
     "text": "NotApplicable"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "error",
     "rewrite": "pass",
     "text": "error"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "error",
    "warnings": 1
   },
@@ -230,6 +327,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 1,
    "render_approximate": false,
    "render_recovered": "pass",
@@ -243,12 +341,28 @@
     "text": "NotApplicable"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "error",
     "rewrite": "pass",
     "text": "error"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "error",
    "warnings": 1
   },
@@ -259,6 +373,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -272,12 +387,28 @@
     "text": "NotApplicable"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "unsupported",
     "rewrite": "pass",
     "text": "unsupported"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "unsupported",
    "warnings": 0
   },
@@ -288,6 +419,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": true,
    "render_recovered": "skip",
@@ -301,25 +433,42 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
   "hybrid": {
    "causes": [],
    "expect": "",
-   "incremental": "skip",
-   "quality": "n/a",
-   "quality_pages": 0,
+   "incremental": "pass",
+   "quality": "ok",
+   "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
-   "render_recovered": "pass",
+   "render_recovered": "skip",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -330,13 +479,29 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
-    "parse": "error",
+    "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "error",
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
+   "verdict": "pass",
    "warnings": 0
   },
   "hybrid_compressed": {
@@ -346,6 +511,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -359,12 +525,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -375,6 +557,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -388,12 +571,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -404,6 +603,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -417,12 +617,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "pass",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -433,17 +649,21 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {},
    "roundtrip_full": null,
+   "semantic": {},
    "stages": {
     "parse": "error",
     "render": "skip",
     "rewrite": "skip",
     "text": "skip"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "error",
    "warnings": 0
   },
@@ -454,6 +674,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -467,12 +688,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -483,6 +720,7 @@
    "quality": "ok",
    "quality_pages": 2,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -496,12 +734,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -512,6 +766,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -525,12 +780,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -543,6 +814,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -556,12 +828,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "unsupported",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "unsupported",
    "warnings": 0
   },
@@ -572,6 +860,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -585,12 +874,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -601,6 +906,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": true,
    "render_recovered": "skip",
@@ -614,12 +920,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -630,6 +952,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -643,12 +966,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -659,6 +998,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -672,12 +1012,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -688,6 +1044,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -701,12 +1058,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -717,6 +1090,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -730,12 +1104,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -746,6 +1136,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -759,12 +1150,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -775,6 +1182,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -788,12 +1196,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 0.9412,
+   "text_f1_annots": 0.9412,
    "verdict": "pass",
    "warnings": 0
   },
@@ -804,6 +1228,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -817,12 +1242,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -833,6 +1274,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 1,
    "render_approximate": false,
    "render_recovered": "pass",
@@ -846,12 +1288,28 @@
     "text": "NotApplicable"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "error",
     "rewrite": "pass",
     "text": "error"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "error",
    "warnings": 1
   },
@@ -862,6 +1320,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -875,12 +1334,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -891,6 +1366,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "error",
@@ -904,12 +1380,28 @@
     "text": "NotApplicable"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "error",
     "rewrite": "pass",
     "text": "error"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "error",
    "warnings": 0
   },
@@ -920,6 +1412,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -933,12 +1426,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -949,6 +1458,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -962,12 +1472,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -978,6 +1504,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -991,12 +1518,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1007,6 +1550,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1020,12 +1564,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1036,6 +1596,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1049,12 +1610,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1065,6 +1642,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1078,12 +1656,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1094,6 +1688,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1107,12 +1702,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1123,6 +1734,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1136,12 +1748,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1152,6 +1780,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1165,12 +1794,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1181,6 +1826,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1194,12 +1840,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1210,6 +1872,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1223,12 +1886,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1239,6 +1918,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1252,12 +1932,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1268,6 +1964,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": true,
    "render_recovered": "skip",
@@ -1281,12 +1978,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1297,6 +2010,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1310,12 +2024,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1326,17 +2056,21 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
    "roundtrip": {},
    "roundtrip_full": null,
+   "semantic": {},
    "stages": {
     "parse": "error",
     "render": "skip",
     "rewrite": "skip",
     "text": "skip"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "error",
    "warnings": 0
   },
@@ -1347,6 +2081,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1360,12 +2095,28 @@
     "text": "NotApplicable"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "unsupported",
     "rewrite": "pass",
     "text": "unsupported"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "unsupported",
    "warnings": 0
   },
@@ -1376,6 +2127,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1389,12 +2141,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1405,6 +2173,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1418,12 +2187,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1434,6 +2219,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1447,12 +2233,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1463,6 +2265,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1476,12 +2279,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1492,6 +2311,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1505,12 +2325,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1521,6 +2357,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1534,12 +2371,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1550,6 +2403,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "error",
@@ -1563,12 +2417,28 @@
     "text": "NotApplicable"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "error",
     "rewrite": "pass",
     "text": "error"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "error",
    "warnings": 0
   },
@@ -1579,6 +2449,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1592,12 +2463,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1608,6 +2495,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1621,12 +2509,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1637,6 +2541,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1650,12 +2555,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1666,6 +2587,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1679,12 +2601,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1695,6 +2633,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1708,12 +2647,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1724,6 +2679,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1737,12 +2693,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1753,6 +2725,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "error",
@@ -1766,12 +2739,28 @@
     "text": "NotApplicable"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "error",
     "rewrite": "pass",
     "text": "error"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "error",
    "warnings": 0
   },
@@ -1782,6 +2771,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1795,12 +2785,28 @@
     "text": "NotApplicable"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "unsupported",
     "rewrite": "pass",
     "text": "unsupported"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "unsupported",
    "warnings": 0
   },
@@ -1811,6 +2817,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1824,12 +2831,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1840,6 +2863,7 @@
    "quality": "ok",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -1853,12 +2877,28 @@
     "text": "Pass"
    },
    "roundtrip_full": true,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -1869,6 +2909,7 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
+   "quality_report_rules": [],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "pass",
@@ -1882,12 +2923,28 @@
     "text": "Pass"
    },
    "roundtrip_full": false,
+   "semantic": {
+    "acroform": "not_applicable",
+    "doc_actions": "not_applicable",
+    "embedded_files": "not_applicable",
+    "javascript": "not_applicable",
+    "metadata": "not_applicable",
+    "named_dests": "not_applicable",
+    "optional_content": "not_applicable",
+    "outlines": "not_applicable",
+    "page_labels": "not_applicable",
+    "struct_tree": "not_applicable",
+    "viewer_prefs": "not_applicable",
+    "xfa": "not_applicable"
+   },
    "stages": {
     "parse": "error",
     "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
+   "text_f1": null,
+   "text_f1_annots": null,
    "verdict": "error",
    "warnings": 0
   }

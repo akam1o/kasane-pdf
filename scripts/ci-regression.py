@@ -208,6 +208,10 @@ def summarize(run):
             "semantic": {
                 c["category"]: c["class"] for c in ((rt.get("semantic") or {}).get("checks") or [])
             },
+            # Page-1 text agreement with pdftotext (report only; absent:
+            # not compared, or an older runner).
+            "text_f1": text_value(f, "text_char_f1"),
+            "text_f1_annots": text_value(f, "text_char_f1_with_annots"),
         }
         cls, n_pages, n_flag, _, _ = quality_detail(f, gate)
         files[f["id"]]["quality"] = cls
@@ -230,6 +234,16 @@ def summarize(run):
     return {"aggregate": agg, "files": files}
 
 
+def text_value(f, key):
+    v = (f.get("metrics") or {}).get(key)
+    return None if v is None else round(v, 4)
+
+
+# A page-1 F1 drop at least this large is listed by `check` for review
+# (report only: the text gate is not enforced per file).
+TEXT_F1_DROP = 0.05
+
+
 def worse(new, old):
     return RANK.get(new, 9) > RANK.get(old, 9)
 
@@ -243,6 +257,7 @@ def check(run, base, summary_md=None):
     new_flags = []
     new_reports, known_reports = [], []
     semantic_changes = []
+    text_changes = []
     for fid, n in cur.items():
         if n["verdict"] in ("crash", "timeout"):
             regressions.append(f"{fid}: verdict {n['verdict']}")
@@ -279,6 +294,12 @@ def check(run, base, summary_md=None):
             now = (n.get("semantic") or {}).get(cat)
             if was == "pass" and now not in ("pass", None):
                 semantic_changes.append(f"{fid}: semantic {cat} pass -> {now}")
+        # Text agreement: reported, not enforced. Older baselines have no
+        # values (nothing to compare).
+        for key in ("text_f1", "text_f1_annots"):
+            was, now = o.get(key), n.get(key)
+            if was is not None and (now is None or now <= was - TEXT_F1_DROP):
+                text_changes.append(f"{fid}: {key} {was} -> {now}")
         if o.get("incremental") == "pass" and n.get("incremental") not in ("pass", None, ""):
             regressions.append(f"{fid}: incremental pass -> {n['incremental']}")
         oq, nq = o.get("quality", ""), n["quality"]
@@ -331,6 +352,8 @@ def check(run, base, summary_md=None):
         print("new report-only finding (not enforced, review):", line)
     for line in semantic_changes:
         print("semantic round-trip change (not enforced, review):", line)
+    for line in text_changes:
+        print("text agreement drop (not enforced, review):", line)
     for line in regressions:
         print("REGRESSION:", line)
     if regressions:

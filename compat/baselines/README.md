@@ -21,8 +21,8 @@ any crash or timeout). Classification of the current baseline:
 
 | class | files | meaning |
 |---|---|---|
-| PASS | 46 | well-formed fixture; every stage passes |
-| Expected rejection | 15 | the fixture is deliberately malformed or uses a feature outside the contract, and the engine refuses it with the typed error its test asserts: `bad_offset`, `cyclic_pages`, `missing_ref`, `truncated`, `xref_stream_bad_type`, `hybrid` (strict parse), `encrypted`, `content_ops`, `contents_array`, `flate_bad_data`, `flate_contents`, `flate_predictor`, `text_missing_font_ref`, `text_no_font_tj`, `xobject_form_self_recursive`, `xobject_missing` (render) |
+| PASS | 47 | well-formed fixture; every stage passes (`hybrid` since the cross-reference fix: its table and its own `/XRefStm` disagree about the page, and the table — searched first, ISO 32000-2 §7.5.8.4 — names it) |
+| Expected rejection | 14 | the fixture is deliberately malformed or uses a feature outside the contract, and the engine refuses it with the typed error its test asserts: `bad_offset`, `cyclic_pages`, `missing_ref`, `truncated`, `xref_stream_bad_type`, `encrypted`, `content_ops`, `contents_array`, `flate_bad_data`, `flate_contents`, `flate_predictor`, `text_missing_font_ref`, `text_no_font_tj`, `xobject_form_self_recursive`, `xobject_missing` (render) |
 | Unsupported by design | 5 | a valid construct the renderer refuses rather than approximates: `flate_predictor_bad` (`/Predictor 16`), `render_annot` (annotation without appearance, subtype outside the synthesised set), `unsupported_filter` (`/JPXDecode` on a content stream), `xobject_unknown_subtype` (`/PS`) — plus `encrypted` counted above |
 | Known limitation | 1 | `xref_stream_bad_type`: the strict parser refuses the file (expected), the recovery parser reads it, and the *rewrite of the recovered document* draws one qpdf warning (`Resources is missing or invalid; repairing`) that the original does not draw because qpdf cannot read the original's page tree at all. Round-trip `external_no_new` is FAIL for this file in the baseline; it is a property of repairing a broken input, not of the rewriter, and it is tracked here so the regression check keeps flagging any *new* file that behaves this way |
 | Unexpected failure | 0 | — |
@@ -35,7 +35,10 @@ nightly artifact — not from a default-feature local run — whenever
 support changes: download `compat-full-report`, then
 `python3 scripts/ci-regression.py summarize latest.json > compat/baselines/corpus-full.json`.
 Linux and macOS results are identical for every file except the
-effect of the feature flag (the first nightly run confirmed this).
+effect of the feature flag (the first nightly run confirmed this) and
+the witness — and, measured again for 0.5.0, our renders' ink on 47
+pages of 19 files, by at most 0.064 % (anti-aliasing; the same pages in
+0.4.0 and after the cross-reference fix).
 
 The current `corpus-full.json` (2026-10-31) is the summary of the
 first nightly on the quality-gate code (run 41193210017, commit
@@ -144,4 +147,28 @@ data (exempt `reference-blank`) are now drawn and pass the gate
 disappears, `content_ssim_shift` stays. With the same witness data the
 text agreement is now identical on Linux and macOS (page-1 F1 >= 0.9
 on 213 of 250 `expect: pass` documents with text; CJK 17 / 17).
+
+Updated 2026-11-01 from nightly run 41315396310 (commit `984548b`:
+the cross-reference precedence fix X1 and the v0.5.0 phase A runner;
+same environment as the 0.4.0 nightly — ubuntu, Poppler 26.01.0 with
+`poppler-data` 0.4.12, qpdf 12.3.2). Every per-file difference against
+the previous baseline was classified before the update:
+
+| difference | files | cause |
+|---|---:|---|
+| semantic round trip: five document-level categories recorded | 428 | new measurement (phase A); no earlier category changed on any file |
+| `text_f1` / `text_f1_annots` recorded | 455 / 450 | new fields: page-1 F1 and the annotation F1, report only (`check` lists a drop ≥ 0.05, never fails on it) |
+| rewrite `error` → `pass`, verdict → `pass`, round trip full, warning gone | 1 | X1: the objects its xref stream declares at generation 2 now resolve (it was refused as a dangling reference) — verified against qpdf |
+| round trip `annotations` not applicable → pass | 1 | X1: the page and catalog of the newest revision are read (an older hybrid section's `/XRefStm` overrode them); the page's annotations are now visible — verified against qpdf |
+| render approximate, quality `ok` → `n/a` (3 pages leave the exact-render gate), warning gone | 1 | X1: an appearance stream declared at generation 1 resolves; it uses a non-embedded font, drawn with its declared substitute, so the render is a reported approximation and the gate no longer judges it |
+
+Aggregates: rewrite 427 → 428, round trip full 424 → 425, quality
+pages 847 → 844; every other count unchanged; no enforced flag,
+report-only finding, stage, verdict or round-trip check changed
+otherwise. Robustness 44 / 44, crash / timeout 0. The fixtures smoke
+baseline is regenerated from the pull-request run on the same commit
+(41315385267): `hybrid` now passes every stage (parse, incremental
+`error` / `skip` → `pass`; its page enters the exact-render gate,
+`ok`), and the fields added since the smoke baseline was last written
+(report-only rules, semantic categories, text F1) are recorded.
 

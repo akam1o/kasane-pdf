@@ -202,48 +202,54 @@ def text_summary(files):
 
 
 def annot_text_summary(rows):
-    """Report only: page-1 F1 when the text drawn by annotation
-    appearances is added to ours (`text_char_f1_with_annots`), next to
-    the page-only F1 on the same documents. Population: the compared
-    documents of `text_summary` whose report has the field (newer
-    runners) and with content characters on either side after the
-    addition; documents whose extraction with annotations failed are
-    counted, not scored."""
+    """Report only: page-1 F1 with the text drawn by annotation
+    appearances added to ours (`text_char_f1_with_annots`), next to the
+    page-only F1. Population: the documents of `text_summary` with page-1
+    text on either side (the same denominator as its F1 >= 0.9), in
+    reports that carry the field. The annotation F1 is counted over the
+    documents where it was measured; a document whose extraction with
+    annotations failed (a malformed appearance) is counted apart — it
+    stays in the page-F1 column, so neither column changes its
+    denominator silently."""
     have = [f for f in rows if "text_with_annots" in f["metrics"]]
     if not have:
         return "\n(report without the annotation text metric)\n"
-    failed = [f for f in have if f["metrics"].get("text_char_f1_with_annots") is None]
-    scored = [f for f in have if f["metrics"].get("text_char_f1_with_annots") is not None]
     text = [
-        f for f in scored
-        if f["metrics"].get("text_chars_ref") or (f["metrics"]["text_with_annots"] or {}).get("ours_chars")
+        f for f in have
+        if f["metrics"].get("text_chars_ref") or f["metrics"].get("text_chars_ours")
+        or ((f["metrics"].get("text_with_annots") or {}).get("ours_chars"))
     ]
     out = [
         "\n### text agreement with annotation appearances (report only)\n",
-        "| population | n | F1 median (page / with annots) | F1 ≥ 0.9 (page / with annots) | better | worse |",
-        "|---|---:|---:|---:|---:|---:|",
+        "| population | n | page F1 ≥ 0.9 | annotation F1 measured | annotation F1 ≥ 0.9 | not measurable | better | worse |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|",
     ]
 
     def line(name, fs):
-        a = [f["metrics"]["text_char_f1"] for f in fs]
-        b = [f["metrics"]["text_char_f1_with_annots"] for f in fs]
-        better = sum(y > x + 1e-9 for x, y in zip(a, b))
-        worse = sum(y < x - 1e-9 for x, y in zip(a, b))
+        page = [f["metrics"]["text_char_f1"] for f in fs]
+        both = [
+            (f["metrics"]["text_char_f1"], f["metrics"]["text_char_f1_with_annots"])
+            for f in fs
+            if f["metrics"].get("text_char_f1_with_annots") is not None
+        ]
         out.append(
-            f"| {name} | {len(fs)} | {median(a):.2f} / {median(b):.2f} | "
-            f"{sum(x >= 0.9 for x in a)} / {sum(x >= 0.9 for x in b)} | {better} | {worse} |"
+            f"| {name} | {len(fs)} | {sum(x >= 0.9 for x in page)} | {len(both)} | "
+            f"{sum(y >= 0.9 for _, y in both)} | {len(fs) - len(both)} | "
+            f"{sum(y > x + 1e-9 for x, y in both)} | {sum(y < x - 1e-9 for x, y in both)} |"
         )
 
-    line("text on page 1 (either side, with annots)", text)
+    line("text on page 1 (either side)", text)
     exp = [f for f in text if f.get("expect") == "pass"]
     line("… expect: pass", exp)
     cjk = [f for f in exp if set((f.get("profile") or {}).get("scripts") or []) & {"Han", "Kana", "Hangul"}]
     line("… expect: pass, CJK", cjk)
-    with_annot_text = [f for f in exp if (f["metrics"]["text_with_annots"] or {}).get("appearance_chars")]
-    line("… expect: pass, with appearance text", with_annot_text)
+    line(
+        "… expect: pass, with appearance text",
+        [f for f in exp if (f["metrics"]["text_with_annots"] or {}).get("appearance_chars")],
+    )
     out.append(
-        f"\n{len(failed)} compared documents: the extraction with annotations failed "
-        "(not scored; the default extraction is unaffected).\n"
+        "\n`not measurable`: the extraction with annotations failed (a malformed "
+        "appearance); the default extraction and its F1 are unaffected.\n"
     )
     return "\n".join(out)
 

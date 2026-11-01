@@ -231,6 +231,13 @@ doc_actions 15 / 15, metadata 49 / 49, viewer preferences 32 / 32,
 AcroForm 39 / 39 — every one of the 29 XFA forms that were `unsupported`
 before is now verified.
 
+After the cross-reference fix (X1), Linux nightly 41315396310 and the
+macOS run agree: 428 rewrites compared (one more: a document whose
+generation-2 objects now resolve), pass 295, not applicable 133, fail /
+unsupported / error 0; doc_actions 68 (a hybrid-reference file's page
+annotations are now read), metadata 273, viewer preferences 125. The
+baseline records the categories per file (report only).
+
 ## Roll-out
 
 Reported in the run report (`roundtrip.semantic`), the baseline summary
