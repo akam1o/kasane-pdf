@@ -26,6 +26,7 @@ include = [
     "/assets/cjk",
     "/scripts/fetch-cjk-assets.sh",
     "/scripts/cjk-assets.sha256",
+    "/scripts/gen-agl.py",
     "/Cargo.toml",
     "/README.md",
     "/LICENSE",

@@ -335,26 +335,30 @@ fn values(
 pub(crate) fn collect(
     doc: &Document,
     page: &crate::page::Page,
-    mut appearance: Vec<(usize, Vec<CharInfo>)>,
+    appearance: Vec<(usize, Vec<CharInfo>)>,
     hidden: &[usize],
     used: u64,
     max: u64,
 ) -> Result<Vec<AnnotationText>, Error> {
+    use std::collections::{HashMap, HashSet};
     let mut budget = Budget { used, max };
     let annots = match crate::render::page_annots(doc, page)? {
         Some(a) => a,
         None => return Ok(Vec::new()),
     };
+    // Hashed lookups: `/Annots` may hold up to `max_array_elements`
+    // entries, so nothing here may be quadratic in its length.
+    let mut appearance: HashMap<usize, Vec<CharInfo>> = appearance.into_iter().collect();
+    let hidden: HashSet<usize> = hidden.iter().copied().collect();
     let mut out: Vec<AnnotationText> = Vec::new();
-    let mut seen_annots: Vec<IndirectRef> = Vec::new();
-    let mut seen_fields: Vec<IndirectRef> = Vec::new();
+    let mut seen_annots: HashSet<IndirectRef> = HashSet::new();
+    let mut seen_fields: HashSet<IndirectRef> = HashSet::new();
     for (index, entry) in annots.iter().enumerate() {
         let entry_ref = entry.as_ref();
         if let Some(r) = entry_ref {
-            if seen_annots.contains(&r) {
+            if !seen_annots.insert(r) {
                 continue;
             }
-            seen_annots.push(r);
         }
         let Object::Dict(ad) = doc.deref(entry)? else {
             // Null or not a dictionary: the renderer's rules decided
@@ -398,11 +402,7 @@ pub(crate) fn collect(
         let field = if subtype == "Widget" {
             let (field_ref, name) = field_of(doc, &ad, entry_ref, &mut budget)?;
             let first_widget = match field_ref {
-                Some(r) if seen_fields.contains(&r) => false,
-                Some(r) => {
-                    seen_fields.push(r);
-                    true
-                }
+                Some(r) => seen_fields.insert(r),
                 None => true,
             };
             let field_type = match inherited(doc, &ad, b"FT")? {
@@ -431,11 +431,7 @@ pub(crate) fn collect(
         } else {
             None
         };
-        let chars = appearance
-            .iter_mut()
-            .find(|(i, _)| *i == index)
-            .map(|(_, c)| std::mem::take(c))
-            .unwrap_or_default();
+        let chars = appearance.remove(&index).unwrap_or_default();
         out.push(AnnotationText {
             index,
             subtype,

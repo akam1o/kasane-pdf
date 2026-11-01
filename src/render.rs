@@ -655,6 +655,8 @@ pub fn pixmap_to_png(pixmap: &Pixmap) -> Result<Vec<u8>, Error> {
 
 /// Objects `page_may_blend` may resolve before it gives up and answers
 /// `true` (every dereference is charged, so this bounds the whole scan).
+/// The resolutions also count against the document's
+/// `max_reference_depth` budget, like every other read of the page.
 const BLEND_SCAN_BUDGET: usize = 16_384;
 
 /// Whether anything on `page` can be painted with a blend mode other

@@ -100,8 +100,11 @@ pub struct TextOptions {
     /// Also report the page's annotations and form fields in
     /// [`ExtractedText::annotations`] (off by default: `chars` and
     /// everything else are unchanged either way). Each annotation's
-    /// appearance is interpreted like a render would, so an annotation
-    /// the renderer refuses fails the extraction too.
+    /// appearance is interpreted like a render would: a malformed
+    /// appearance stream fails the extraction; an annotation with no
+    /// appearance the renderer can draw (a note without `/AP`, an
+    /// appearance-state dictionary with no state selected) simply has
+    /// no appearance text.
     pub include_annotations: bool,
 }
 

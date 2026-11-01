@@ -110,7 +110,10 @@ are on the [roadmap](architecture.md#roadmap).
   131 072 code points, and Japan1 codes where the embedded program
   disagrees with the collection. A glyph name is trusted as the font
   declares it (a font that names a glyph `A` but draws something else
-  is reported as `A`).
+  is reported as `A`). For simple fonts other than Type 3 the older
+  name table is still consulted first, unchanged, so its readings stay
+  as before: ZapfDingbats names such as `a12` read as dingbats and
+  `uniXXXX` names are read as written, private-use values included.
 - Annotation text (`TextOptions::with_annotations`): `/RC` is reported
   as stored (XHTML, not interpreted); a field's value is read per page
   (a field with widgets on several pages reports it once per page);

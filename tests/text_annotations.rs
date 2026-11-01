@@ -429,3 +429,35 @@ fn an_empty_partial_name_adds_no_component() {
         "top"
     );
 }
+
+#[test]
+fn many_annotations_take_linear_time() {
+    // 120 000 distinct annotations (dictionaries only, no appearance).
+    // The collection was quadratic in /Annots (3.5 s in release at this
+    // size, minutes at the 1M array cap); it must stay linear.
+    let n = 120_000u32;
+    let mut objs = Vec::with_capacity(n as usize);
+    let mut refs = String::with_capacity(n as usize * 10);
+    for i in 0..n {
+        objs.push((
+            100 + i,
+            format!("<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] /Contents (n{i}) >>")
+                .into_bytes(),
+        ));
+        refs.push_str(&format!("{} 0 R ", 100 + i));
+    }
+    let p = pdf(&refs, objs, "");
+    let doc = Document::from_bytes(&p).unwrap();
+    let t = std::time::Instant::now();
+    let got = extract_text(
+        &doc,
+        &doc.pages()[0],
+        &TextOptions::new().with_annotations(true),
+    )
+    .unwrap();
+    let took = t.elapsed();
+    assert_eq!(got.annotations.len(), n as usize);
+    assert_eq!(got.annotations[119_999].text().as_deref(), Some("n119999"));
+    assert!(took.as_secs() < 20, "took {took:?}");
+    eprintln!("120 000 annotations: {took:?}");
+}
