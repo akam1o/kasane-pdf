@@ -122,6 +122,12 @@ changes below. Release notes draft: `docs/releases/v0.4.0.md`.
   through the predefined charset. The **Expert and ExpertSubset
   charsets are refused** (`Unsupported`) instead of being drawn as
   `.notdef`.
+- **A simple font with `/FirstChar` or `/LastChar` outside 0–255
+  panicked** (index out of bounds while reading `/Widths`, since 0.1;
+  found by fuzzing): a malformed font dictionary crashed the caller
+  instead of being handled. Widths for codes a simple font cannot show
+  are now skipped and the count saturates; documents that loaded before
+  load the same.
 - **Every text extraction leaked a small allocation** (a 1 × 1
   placeholder pixmap, ~36 bytes per call, since extraction shared the
   renderer — 0.3.1 included). Freed with the call now.
