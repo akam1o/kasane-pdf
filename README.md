@@ -315,24 +315,23 @@ test suites (pdf.js, PDFium, veraPDF, Poppler, pdfbox) and real-world
 documents (arXiv papers, government forms, browser prints, scans,
 Japanese documents), and cross-checks against Poppler and qpdf. The
 corpus itself is not in the repository; the aggregate baseline is
-(`compat/baselines/corpus-full.json`). Latest run, on the 427 files
-expected to be well-formed:
+(`compat/baselines/corpus-full.json`). Latest Linux nightly
+(2026-11-01), on the 425 files expected to be well-formed:
 
 | stage | pass |
 |---|---|
-| strict parse | 406 (95.1%) |
-| render, every page | 368 (86.2%) |
-| text extraction | 384 (89.9%) |
-| rewrite | 350 (82.0%) |
-| all four | 318 (74.5%) |
+| strict parse | 408 (96.0%) |
+| render, every page | 380 (89.4%) |
+| text extraction | 392 (92.2%) |
+| rewrite | 364 (85.6%) |
+| all four | 338 (79.5%) |
 
-Two of the passing files were *accepted with warnings* (a Flate
-stream missing its final block, processed exactly and recorded); the
-runner counts them apart from a clean pass. Of the 385 files that
-were rewritten, 385 reparse with an identical object graph, 352
-render identically on all their compared pages, and the rewrite
-introduced no new qpdf or Poppler diagnostic in any of them; 43
-adversarial files are refused without crash or timeout.
+Of the 427 files rewritten (every expectation tag), 424 reparse with an
+identical object graph and match on every comparison; 203 also pass
+the semantic catalog comparison (the others carry nothing it
+compares). All 44 adversarial files are refused without crash or
+timeout. Exact renders are checked against Poppler by an enforced
+quality gate and report-only placement and colour rules.
 These numbers describe that corpus and the strict parser; they are
 not a general compatibility claim. Definitions, per-category results
 and the remaining blockers are in

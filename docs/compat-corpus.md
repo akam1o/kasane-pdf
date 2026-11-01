@@ -1375,6 +1375,33 @@ baseline.
 - Cost: 64 s of colour comparison (median 36 ms per page), runner
   +12 % (537 → 602 s summed per file).
 
+### Text without `/ToUnicode` and annotation text (2026-11-01)
+
+Same configuration, on top of the colour series (macOS; text only —
+no stage, verdict, round trip, pixel or quality class changed; the
+annotation option is off in the runner).
+
+| text, page 1 vs pdftotext, `expect: pass` with text | before | after |
+|---|---:|---:|
+| documents | 250 | 250 |
+| multiset F1 ≥ 0.9 | 207 (82.8 %) | **213 (85.2 %)** |
+| order score ≥ 0.9 | 158 | 164 |
+| CJK documents (script of our text) / F1 ≥ 0.9 | 15 / 15 | 17 / 17 |
+
+Every page of every file (first 30 pages), before / after against
+pdftotext: 22 files and 141 pages change; 15 088 characters recovered
+that Poppler also reports and 50 it does not — all inspected: 49
+line-end hyphens pdftotext removes when it joins a hyphenated word, one
+"±" it omits; no character removed or altered; on the changed pages
+precision 0.9979 → 0.9979, recall 0.9588 → 0.9874; unresolved
+characters 21 106 → 7 029. The rest are glyph names without meaning
+(one document's `gNNN` CFF subset alone is 50 000), symbol-only fonts
+and code charts of undefined codes — unresolved on purpose. Two
+documents' page-1 precision drops below 1 for the same two witness
+differences. One review suggestion (Type 3 names through the Symbol /
+ZapfDingbats tables) was reverted after this comparison showed 38
+dingbats in a Type 3 font naming its glyphs `a12`….
+
 ## External verification findings (this phase)
 
 What the independent parsers said about the rewrites, file by file,
