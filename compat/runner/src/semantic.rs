@@ -4,7 +4,9 @@
 //! renumbering, so it sees bytes and keys. This module reduces each
 //! document to a normalised **snapshot** per category — outlines, named
 //! destinations, page labels, structure tree, embedded files, optional
-//! content, AcroForm — that is independent of object numbers, dictionary
+//! content, AcroForm, and the document-level categories of
+//! `doclevel.rs` (XFA, actions, JavaScript, metadata, viewer
+//! preferences) — that is independent of object numbers, dictionary
 //! order, name / number tree layout, string representation (literal vs
 //! hex, PDFDocEncoding vs UTF-16, NFC) and of the storage form of a
 //! destination (direct array, name, `/Dests` entry or name-tree entry).
@@ -30,7 +32,9 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
-pub const CATEGORIES: [&str; 7] = [
+/// The document-level categories come last: they share the node budget,
+/// and the earlier categories' results must not depend on them.
+pub const CATEGORIES: [&str; 12] = [
     "outlines",
     "named_dests",
     "page_labels",
@@ -38,6 +42,11 @@ pub const CATEGORIES: [&str; 7] = [
     "embedded_files",
     "optional_content",
     "acroform",
+    "xfa",
+    "doc_actions",
+    "javascript",
+    "metadata",
+    "viewer_prefs",
 ];
 
 /// Object resolutions one snapshot may perform (all categories).
@@ -48,6 +57,14 @@ const MAX_DEPTH: usize = 64;
 const MAX_VALUE_DEPTH: usize = 12;
 /// Decoded size of an embedded file hashed.
 const MAX_EMBEDDED_BYTES: usize = 64 << 20;
+/// Decoded size of one XFA packet, XMP or script stream hashed.
+const MAX_DECODED_BYTES: usize = 64 << 20;
+/// Decoded bytes one snapshot may hash in the document-level categories.
+const MAX_DECODED_TOTAL: usize = 256 << 20;
+/// Nesting of an action chain (`/Next`).
+const MAX_ACTION_DEPTH: usize = 32;
+/// Length of one snapshot line of the document-level categories.
+const MAX_LINE_BYTES: usize = 1 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -112,6 +129,11 @@ pub fn snapshot(doc: &Document) -> Vec<Section> {
                 "embedded_files" => ctx.embedded_files(),
                 "optional_content" => ctx.optional_content(),
                 "acroform" => ctx.acroform(),
+                "xfa" => ctx.strict(Ctx::xfa),
+                "doc_actions" => ctx.strict(Ctx::doc_actions),
+                "javascript" => ctx.strict(Ctx::javascript),
+                "metadata" => ctx.strict(Ctx::metadata),
+                "viewer_prefs" => ctx.strict(Ctx::viewer_prefs),
                 _ => unreachable!(),
             };
             match r {
@@ -250,7 +272,22 @@ fn diff_notes(x: &[String], y: &[String]) -> Vec<String> {
 /// escaped so they cannot break the line format.
 pub fn text(b: &[u8]) -> String {
     use unicode_normalization::UnicodeNormalization;
-    let s: String = if b.starts_with(&[0xFE, 0xFF]) {
+    decode_text(b)
+        .nfc()
+        .flat_map(|c| match c {
+            '\t' => vec!['\\', 't'],
+            '\n' => vec!['\\', 'n'],
+            '\r' => vec!['\\', 'r'],
+            '\\' => vec!['\\', '\\'],
+            c => vec![c],
+        })
+        .collect()
+}
+
+/// A PDF text string or text stream as Unicode, exactly (no
+/// normalisation): UTF-16 or UTF-8 with a BOM, else PDFDocEncoding.
+fn decode_text(b: &[u8]) -> String {
+    if b.starts_with(&[0xFE, 0xFF]) {
         let u: Vec<u16> = b[2..]
             .chunks(2)
             .map(|c| u16::from_be_bytes([c[0], *c.get(1).unwrap_or(&0)]))
@@ -266,16 +303,7 @@ pub fn text(b: &[u8]) -> String {
         String::from_utf8_lossy(&b[3..]).into_owned()
     } else {
         b.iter().map(|&c| pdfdoc(c)).collect()
-    };
-    s.nfc()
-        .flat_map(|c| match c {
-            '\t' => vec!['\\', 't'],
-            '\n' => vec!['\\', 'n'],
-            '\r' => vec!['\\', 'r'],
-            '\\' => vec!['\\', '\\'],
-            c => vec![c],
-        })
-        .collect()
+    }
 }
 
 fn pdfdoc(c: u8) -> char {
@@ -332,6 +360,18 @@ struct Ctx<'a> {
     nodes: usize,
     /// Named destinations: (`/Dests` dictionary, `/Names` tree).
     named: Option<Res<Named>>,
+    /// `canon` cut a value at `MAX_VALUE_DEPTH` (the document-level
+    /// categories turn that into `error`).
+    truncated: bool,
+    /// Decoded bytes hashed by the document-level categories.
+    decoded: usize,
+    /// Structure elements by path, from `struct_tree` (which runs
+    /// first): the document-level categories name an element a value
+    /// points at (a structure destination `/SD`) by its path instead of
+    /// expanding its subtree.
+    struct_paths: HashMap<IndirectRef, String>,
+    /// A document-level category is being taken.
+    doclevel: bool,
 }
 
 impl<'a> Ctx<'a> {
@@ -348,6 +388,10 @@ impl<'a> Ctx<'a> {
             annots: HashMap::new(),
             nodes: 0,
             named: None,
+            truncated: false,
+            decoded: 0,
+            struct_paths: HashMap::new(),
+            doclevel: false,
         };
         for (i, p) in doc.pages().iter().enumerate() {
             let Some(r) = p.object_ref() else { continue };
@@ -411,6 +455,7 @@ impl<'a> Ctx<'a> {
     /// on the path is a cycle), streams by content hash.
     fn canon(&mut self, o: &Object, depth: usize, path: &mut Vec<IndirectRef>) -> Res<String> {
         if depth > MAX_VALUE_DEPTH {
+            self.truncated = true;
             return Ok("…".into());
         }
         if let Some(r) = o.as_ref() {
@@ -419,6 +464,11 @@ impl<'a> Ctx<'a> {
             }
             if let Some((p, k)) = self.annots.get(&r) {
                 return Ok(format!("annot#{p}.{k}"));
+            }
+            if self.doclevel {
+                if let Some(p) = self.struct_paths.get(&r) {
+                    return Ok(format!("elem#{p}"));
+                }
             }
             if path.contains(&r) {
                 return Ok("<cycle>".into());
@@ -895,6 +945,7 @@ impl<'a> Ctx<'a> {
                 out.push(format!("ptree\tannot={p}.{k}\telem={e}"));
             }
         }
+        self.struct_paths = paths;
         Ok(Some(out))
     }
 
@@ -1431,11 +1482,8 @@ impl<'a> Ctx<'a> {
         let Some(af) = self.dict(&af)? else {
             return err("/AcroForm is not a dictionary");
         };
-        if af.contains_key(b"XFA".as_slice()) {
-            return Err(Snag::Unsupported(
-                "XFA form (only the AcroForm part is snapshot)".into(),
-            ));
-        }
+        // `/XFA` is its own category (`xfa`); this one is the AcroForm
+        // half of a form, compared whether or not XFA is present.
         let mut out = Vec::new();
         let need = af
             .get(b"NeedAppearances".as_slice())
@@ -1779,16 +1827,28 @@ pub fn probe(files: &[std::path::PathBuf]) {
             let out = ed.save_incremental().ok()?;
             Document::from_bytes(&out).ok()
         };
-        // Control: an unrelated edit keeps every category's meaning.
+        // Control: an `/Info` edit keeps every other category's meaning
+        // — and is itself a metadata change.
         if let Some(d2) = save(&|ed| {
             let mut info = Dict::new();
-            info.insert(b"Title".to_vec(), Object::String(b"probe".to_vec()));
+            info.insert(
+                b"Title".to_vec(),
+                Object::String(b"semantic probe".to_vec()),
+            );
             ed.set_info(info)
         }) {
             let r = compare(&doc, &d2);
             bump(
-                "control (/Info edit): no category fails",
-                r.checks.iter().all(|c| c.class != SemClass::Fail),
+                "control (/Info edit): no category but metadata fails",
+                r.checks
+                    .iter()
+                    .all(|c| c.category == "metadata" || c.class != SemClass::Fail),
+            );
+            bump(
+                "metadata: /Info replaced",
+                r.checks
+                    .iter()
+                    .any(|c| c.category == "metadata" && c.class == SemClass::Fail),
             );
         }
         let base = snapshot(&doc);
@@ -1799,6 +1859,7 @@ pub fn probe(files: &[std::path::PathBuf]) {
                 _ => vec![],
             }
         };
+        probe_doclevel::probe_file(&data, &doc, &mut bump);
         // AcroForm: change the value of the first text field.
         let text_field = lines("acroform").iter().find_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
@@ -1865,5 +1926,10 @@ pub fn probe(files: &[std::path::PathBuf]) {
     }
 }
 
+mod doclevel;
+mod probe_doclevel;
+
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_doclevel;
