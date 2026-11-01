@@ -153,6 +153,24 @@ pub(crate) struct Type3Font {
     resources: Option<Object>,
 }
 
+/// `/LastChar − /FirstChar + 1` as an entry count: 0 when reversed,
+/// saturating on hostile values (§9.6.2.1 integers of any size).
+fn widths_span(first_char: i64, last_char: i64) -> usize {
+    last_char
+        .saturating_sub(first_char)
+        .saturating_add(1)
+        .clamp(0, i64::from(u32::MAX)) as usize
+}
+
+/// The `/Widths` slot of entry `i`: code `first_char + i` when it is a
+/// single-byte code (0–255). A simple font shows no other code, so a
+/// width outside that range (a `/LastChar` above 255, a negative
+/// `/FirstChar`) is never used and is skipped, not indexed.
+fn width_slot(first_char: i64, i: usize) -> Option<usize> {
+    let code = first_char.checked_add(i64::try_from(i).ok()?)?;
+    (0..=255).contains(&code).then_some(code as usize)
+}
+
 /// Where a code's Unicode text came from (text extraction).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum UnicodeSource {
@@ -363,7 +381,7 @@ pub(crate) fn load_simple_font_dict(
         let arr = w
             .as_array()
             .ok_or_else(|| Error::Structure("/Widths is not an array".into()))?;
-        let expect = (last_char - first_char + 1) as usize;
+        let expect = widths_span(first_char, last_char);
         if arr.len() < expect {
             return Err(Error::Structure(format!(
                 "/Widths has {} entries, expected at least {}",
@@ -380,7 +398,9 @@ pub(crate) fn load_simple_font_dict(
                     "/Widths[{i}] is not a finite non-negative number"
                 )));
             }
-            widths[first_char as usize + i] = w;
+            if let Some(slot) = width_slot(first_char, i) {
+                widths[slot] = w;
+            }
         }
     } else {
         return Err(Error::Structure(
@@ -500,13 +520,13 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         let arr = w
             .as_array()
             .ok_or_else(|| Error::Structure("/Widths is not an array".into()))?;
-        let expect = (last_char - first_char + 1).max(0) as usize;
+        let expect = widths_span(first_char, last_char);
         for (i, e) in arr.iter().enumerate().take(expect.min(arr.len())) {
             // Entries may themselves be indirect.
             let e = doc.deref(e).unwrap_or_else(|_| e.clone());
             if let Some(v) = e.as_number() {
-                if v.is_finite() && v >= 0.0 {
-                    widths[first_char as usize + i] = v;
+                if let (true, Some(slot)) = (v.is_finite() && v >= 0.0, width_slot(first_char, i)) {
+                    widths[slot] = v;
                 }
             }
         }
@@ -1108,12 +1128,12 @@ fn load_type3_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         let arr = w
             .as_array()
             .ok_or_else(|| Error::Structure("/Widths is not an array".into()))?;
-        let expect = (last_char - first_char + 1).max(0) as usize;
+        let expect = widths_span(first_char, last_char);
         for (i, e) in arr.iter().enumerate().take(expect.min(arr.len())) {
             let e = doc.deref(e).unwrap_or_else(|_| e.clone());
             if let Some(v) = e.as_number() {
-                if v.is_finite() && v >= 0.0 {
-                    widths[first_char as usize + i] = v;
+                if let (true, Some(slot)) = (v.is_finite() && v >= 0.0, width_slot(first_char, i)) {
+                    widths[slot] = v;
                 }
             }
         }
