@@ -235,7 +235,7 @@ After the cross-reference fix (X1), Linux nightly 41315396310 and the
 macOS run agree: 428 rewrites compared (one more: a document whose
 generation-2 objects now resolve), pass 295, not applicable 133, fail /
 unsupported / error 0; doc_actions 68 (a hybrid-reference file's page
-annotations are now read), metadata 273, viewer preferences 125. The
+annotations are now read), metadata 274 (one from the newly compared document), viewer preferences 125. The
 baseline records the categories per file (report only).
 
 ## Roll-out
