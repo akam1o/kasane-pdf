@@ -107,23 +107,33 @@ fn be32(b: &[u8], at: usize) -> Option<u32> {
 /// Code points the Unicode subtables of a raw `cmap` table cover,
 /// counted from their headers (formats 4, 12 and 13 — the ones whose
 /// ranges can be far larger than the table; the others are bounded by
-/// their own size), saturating; `None` when a header is unreadable.
-/// Decides whether enumerating the code points is affordable at all.
+/// their own size), saturating, stopping once past
+/// [`MAX_REVERSE_CMAP`]. `None` when a header is unreadable: an offset
+/// outside the table, or a segment / group count the table does not
+/// hold. Reversed ranges cover nothing; overlapping ones count twice
+/// (they are enumerated twice). All arithmetic is checked, so a
+/// hostile count cannot wrap a 32-bit `usize`.
 pub(crate) fn cmap_coverage(cmap: &[u8]) -> Option<u64> {
     let n = be16(cmap, 2)? as usize;
     let mut total: u64 = 0;
     for i in 0..n {
-        let rec = 4 + i * 8;
-        let (platform, encoding) = (be16(cmap, rec)?, be16(cmap, rec + 2)?);
+        let rec = 4usize.checked_add(i.checked_mul(8)?)?;
+        let (platform, encoding) = (be16(cmap, rec)?, be16(cmap, rec.checked_add(2)?)?);
         if !(platform == 0 || (platform == 3 && (encoding == 1 || encoding == 10))) {
             continue;
         }
-        let off = be32(cmap, rec + 4)? as usize;
+        let off = be32(cmap, rec.checked_add(4)?)? as usize;
         match be16(cmap, off)? {
             4 => {
-                let seg_count = be16(cmap, off + 6)? as usize / 2;
-                let ends = off + 14;
-                let starts = ends + seg_count * 2 + 2;
+                let seg_count = be16(cmap, off.checked_add(6)?)? as usize / 2;
+                let ends = off.checked_add(14)?;
+                // endCode[n], reservedPad, startCode[n] must be present.
+                let starts = ends
+                    .checked_add(seg_count.checked_mul(2)?)?
+                    .checked_add(2)?;
+                if starts.checked_add(seg_count.checked_mul(2)?)? > cmap.len() {
+                    return None;
+                }
                 for k in 0..seg_count {
                     let (end, start) = (be16(cmap, ends + 2 * k)?, be16(cmap, starts + 2 * k)?);
                     if end >= start {
@@ -132,9 +142,14 @@ pub(crate) fn cmap_coverage(cmap: &[u8]) -> Option<u64> {
                 }
             }
             12 | 13 => {
-                let groups = be32(cmap, off + 12)? as usize;
+                let groups = be32(cmap, off.checked_add(12)?)? as usize;
+                let first = off.checked_add(16)?;
+                // Every declared group must be in the table.
+                if first.checked_add(groups.checked_mul(12)?)? > cmap.len() {
+                    return None;
+                }
                 for k in 0..groups {
-                    let g = off + 16 + k * 12;
+                    let g = first + k * 12;
                     let (start, end) = (be32(cmap, g)?, be32(cmap, g + 4)?);
                     if end >= start {
                         total = total.saturating_add((end - start) as u64 + 1);
@@ -151,6 +166,12 @@ pub(crate) fn cmap_coverage(cmap: &[u8]) -> Option<u64> {
         }
     }
     Some(total)
+}
+
+/// Whether a raw `cmap` may be read backwards: readable headers and at
+/// most [`MAX_REVERSE_CMAP`] code points.
+pub(crate) fn reversible(cmap: &[u8]) -> bool {
+    cmap_coverage(cmap).is_some_and(|n| n <= MAX_REVERSE_CMAP as u64)
 }
 
 /// Code points that fonts commonly give one shared glyph and that read
@@ -191,7 +212,7 @@ impl ReverseCmap {
         let raw = face
             .raw_face()
             .table(ttf_parser::Tag::from_bytes(b"cmap"))?;
-        if cmap_coverage(raw)? > MAX_REVERSE_CMAP as u64 {
+        if !reversible(raw) {
             return None;
         }
         let cmap = face.tables().cmap?;
@@ -337,6 +358,86 @@ mod tests {
             let _ = cmap_coverage(&full[..cut]);
         }
         assert_eq!(cmap_coverage(&[]), None);
+    }
+
+    /// A raw `cmap` with one (3,10) format 12 subtable of the given
+    /// `(start, end)` groups.
+    fn cmap12_groups(groups: &[(u32, u32)]) -> Vec<u8> {
+        let mut v = vec![0, 0, 0, 1, 0, 3, 0, 10, 0, 0, 0, 12];
+        v.extend_from_slice(&[0, 12, 0, 0]);
+        v.extend_from_slice(&(16 + 12 * groups.len() as u32).to_be_bytes());
+        v.extend_from_slice(&[0, 0, 0, 0]);
+        v.extend_from_slice(&(groups.len() as u32).to_be_bytes());
+        for (s, e) in groups {
+            v.extend_from_slice(&s.to_be_bytes());
+            v.extend_from_slice(&e.to_be_bytes());
+            v.extend_from_slice(&1u32.to_be_bytes());
+        }
+        v
+    }
+
+    /// A raw `cmap` with one (3,1) format 4 subtable of `(start, end)`
+    /// segments.
+    fn cmap4(segs: &[(u16, u16)]) -> Vec<u8> {
+        let n = segs.len() as u16;
+        let mut v = vec![0, 0, 0, 1, 0, 3, 0, 1, 0, 0, 0, 12];
+        v.extend_from_slice(&[0, 4, 0, 0, 0, 0]);
+        v.extend_from_slice(&(2 * n).to_be_bytes());
+        v.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+        for (_, e) in segs {
+            v.extend_from_slice(&e.to_be_bytes());
+        }
+        v.extend_from_slice(&[0, 0]);
+        for (s, _) in segs {
+            v.extend_from_slice(&s.to_be_bytes());
+        }
+        v.extend(std::iter::repeat_n(0u8, 4 * segs.len()));
+        v
+    }
+
+    #[test]
+    fn cmap_coverage_boundaries() {
+        let max = MAX_REVERSE_CMAP as u32;
+        let c = |g: &[(u32, u32)]| cmap_coverage(&cmap12_groups(g));
+        assert_eq!(c(&[]), Some(0)); // no group
+        assert_eq!(c(&[(0x41, 0x41)]), Some(1)); // one code point
+        assert_eq!(c(&[(0x42, 0x41)]), Some(0)); // reversed: nothing
+        assert_eq!(c(&[(0x41, 0x50), (0x41, 0x50)]), Some(32)); // overlap counts twice
+                                                                // The bound itself is allowed, one more is not.
+        assert!(reversible(&cmap12_groups(&[(0x10000, 0x10000 + max - 1)])));
+        assert!(!reversible(&cmap12_groups(&[(0x10000, 0x10000 + max)])));
+        // Near the top of Unicode and of u32: no overflow.
+        assert_eq!(c(&[(0x10_FFFF, 0x10_FFFF)]), Some(1));
+        assert_eq!(c(&[(u32::MAX, u32::MAX)]), Some(1));
+        assert!(c(&[(0, u32::MAX)]).unwrap() > max as u64);
+        // Format 4: counted per segment, reversed segments empty.
+        assert_eq!(
+            cmap_coverage(&cmap4(&[(0x20, 0x7E), (0x50, 0x40), (0xFFFF, 0xFFFF)])),
+            Some(96)
+        );
+        assert!(!reversible(&cmap4(&[(0, 0xFFFF); 3])));
+    }
+
+    #[test]
+    fn inconsistent_cmap_headers_are_unreadable() {
+        // More groups declared than the table holds.
+        let mut t = cmap12_groups(&[(0x41, 0x41)]);
+        t[24..28].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(cmap_coverage(&t), None);
+        // A subtable offset past the end.
+        let mut t = cmap12_groups(&[(0x41, 0x41)]);
+        t[8..12].copy_from_slice(&u32::MAX.to_be_bytes());
+        assert_eq!(cmap_coverage(&t), None);
+        // A format 4 segment count the table does not hold.
+        let mut t = cmap4(&[(0x20, 0x7E)]);
+        t[18..20].copy_from_slice(&0xFFFEu16.to_be_bytes());
+        assert_eq!(cmap_coverage(&t), None);
+        // An unknown format covers nothing countable (bounded by itself).
+        let mut t = cmap12_groups(&[]);
+        t[12..14].copy_from_slice(&99u16.to_be_bytes());
+        assert_eq!(cmap_coverage(&t), Some(0));
+        // A record table cut short.
+        assert_eq!(cmap_coverage(&[0, 0, 0, 5]), None);
     }
 
     #[test]

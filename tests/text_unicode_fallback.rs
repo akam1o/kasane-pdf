@@ -468,3 +468,76 @@ fn a_hostile_cmap_is_not_enumerated() {
         vec![UNRESOLVED, s("\u{2126}", ResolveKind::FontProgram)]
     );
 }
+
+/// `UNI` with its cmap replaced by one (3,10) format 12 subtable of
+/// sequential groups `(start, end, first glyph)`.
+fn with_cmap12(groups: &[(u32, u32, u32)]) -> Vec<u8> {
+    let mut cmap = vec![0, 0, 0, 1, 0, 3, 0, 10, 0, 0, 0, 12, 0, 12, 0, 0];
+    cmap.extend_from_slice(&(16 + 12 * groups.len() as u32).to_be_bytes());
+    cmap.extend_from_slice(&[0, 0, 0, 0]);
+    cmap.extend_from_slice(&(groups.len() as u32).to_be_bytes());
+    for (s, e, g) in groups {
+        cmap.extend_from_slice(&s.to_be_bytes());
+        cmap.extend_from_slice(&e.to_be_bytes());
+        cmap.extend_from_slice(&g.to_be_bytes());
+    }
+    let mut font = UNI.to_vec();
+    let n = u16::from_be_bytes([font[4], font[5]]) as usize;
+    let rec = (0..n)
+        .map(|i| 12 + 16 * i)
+        .find(|&r| &font[r..r + 4] == b"cmap")
+        .unwrap();
+    let off = font.len() as u32;
+    font[rec + 8..rec + 12].copy_from_slice(&off.to_be_bytes());
+    font[rec + 12..rec + 16].copy_from_slice(&(cmap.len() as u32).to_be_bytes());
+    font.extend_from_slice(&cmap);
+    font
+}
+
+#[test]
+fn the_reverse_cmap_bound_is_exact() {
+    // One sequential group from U+0041: glyph 1 ← "A" only (later code
+    // points map to glyph ids beyond 65 535, which no font has).
+    let max = 131_072u32;
+    let p = ResolveKind::FontProgram;
+    let at_bound = text(&pdf(
+        "<01>",
+        truetype(&with_cmap12(&[(0x41, 0x41 + max - 1, 1)]), true, 32),
+    ));
+    assert_eq!(at_bound, vec![s("A", p)]);
+    let over = text(&pdf(
+        "<01>",
+        truetype(&with_cmap12(&[(0x41, 0x41 + max, 1)]), true, 32),
+    ));
+    assert_eq!(over, vec![UNRESOLVED]);
+}
+
+#[test]
+fn cmap_entries_for_missing_glyphs_and_odd_ranges_are_harmless() {
+    // Glyph ids the font does not have, a reversed group, a group at the
+    // top of Unicode and one beyond it; glyph 7 keeps a valid entry.
+    // Groups in the ascending order the format requires (lookups are
+    // a binary search; an unsorted table is simply not found into).
+    let font = with_cmap12(&[
+        (0x50, 0x60, 60_000),
+        (0x70, 0x60, 1),
+        (0xE9, 0xE9, 7),
+        (0x10_FFFF, 0x10_FFFF, 2),
+        (0x11_0000, 0x11_0005, 3),
+    ]);
+    let got = text(&pdf("<010203070506>", truetype(&font, true, 32)));
+    let p = ResolveKind::FontProgram;
+    // U+10FFFF is a noncharacter and beyond-Unicode values are never
+    // text; glyph 5 still has its post name.
+    assert_eq!(
+        got,
+        vec![
+            UNRESOLVED,
+            UNRESOLVED,
+            UNRESOLVED,
+            s("\u{E9}", p),
+            s("\u{2126}", p),
+            UNRESOLVED
+        ]
+    );
+}
