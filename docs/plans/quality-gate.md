@@ -342,6 +342,29 @@ says they came out in the same order. Neither judges which reading order
 is correct — for multi-column and vertical text Poppler's order is one
 choice among several.
 
+### With annotation text (v0.5.0, report only)
+
+`pdftotext` draws annotation appearances into the page text; the
+default extraction does not report them, so a page whose text lives in
+form fields scores 0 against a reference that has it.
+`text_char_f1_with_annots` is the same F1 with the text drawn by each
+visible annotation's normal appearance added to ours
+(`TextOptions::with_annotations`), counted once per annotation as Poppler
+draws it — Popup, Hidden and NoView annotations draw nothing; each
+widget of a field draws its own appearance. Field values and
+`/Contents` are counted by source (`text_with_annots`:
+`appearance_chars`, `contents_chars`, `field_value_chars`) but never
+added: a field's value is normally also drawn by its appearance, and a
+note's `/Contents` is not drawn, so adding either would count text twice
+or credit text the reference does not contain. `text_char_f1`, its
+denominators and every gate are unchanged. Population: the same
+documents as `text_char_f1`, with content characters on either side
+after the addition; a page whose extraction with annotations fails (a
+malformed appearance) is counted, not scored (`text_with_annots.error`).
+A higher score is agreement with Poppler, not proof of correctness: the
+two engines generate missing appearances differently (a list box without
+`/AP`: Poppler draws every option, kasane the selected values).
+
 ## Per-category tables
 
 `scripts/quality-by-category.py RUN.json` prints a table per dimension —
