@@ -96,8 +96,11 @@ fuzz_target!(|data: &[u8]| {
         let mut packed: Vec<(u32, String)> = Vec::new();
         let mut offs: Vec<(u32, u64)> = Vec::new();
         for n in 4..12u32 {
+            // Kind, generation and placement from separate bytes, so
+            // every combination is reachable.
             let op = inp.byte();
-            let g = (op >> 4) as u16 % 3;
+            let g = inp.byte() as u16 % 3;
+            let placement = inp.byte();
             let ent = match op % 6 {
                 0 | 1 => Ent::Used(g, format!("m{s}x{n}x{g}")),
                 2 => Ent::Free(g),
@@ -112,7 +115,7 @@ fuzz_target!(|data: &[u8]| {
             }
             // Hybrid: the table or the stream, or both (the table first).
             let place = if kind == 2 {
-                (op >> 6) % 3
+                placement % 3
             } else {
                 kind.min(1)
             };
