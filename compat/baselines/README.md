@@ -133,3 +133,15 @@ No other stage, verdict, text, round-trip or warning change; pixels
 changed on 26 pages of 20 documents, all intended (blend-mode pages,
 stroked text, the transparency group).
 
+Updated 2026-11-01 from nightly run 41267856113 (commit `589dc83`:
+text without ToUnicode, annotation text, the security fixes, and the
+witness now installed with `poppler-data`). Per file, only quality
+fields changed, all on the witness side (no page of ours changed):
+three Japanese documents that Poppler 26.01 left blank without the CJK
+data (exempt `reference-blank`) are now drawn and pass the gate
+(content SSIM 0.95-0.99); on the vertical-writing document the
+`displaced_ink` report (Poppler drawing only part of the text)
+disappears, `content_ssim_shift` stays. With the same witness data the
+text agreement is now identical on Linux and macOS (page-1 F1 >= 0.9
+on 213 of 250 `expect: pass` documents with text; CJK 17 / 17).
+
