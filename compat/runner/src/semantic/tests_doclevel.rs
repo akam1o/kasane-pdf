@@ -715,6 +715,9 @@ fn ascii_filters_and_chains_decode() {
     assert_eq!(ascii85(b"9jqo^~>").unwrap(), b"Man ");
     assert_eq!(ascii85(b"z9jqo^~>").unwrap(), b"\0\0\0\0Man ");
     assert_eq!(ascii85(b"9jqo~>").unwrap(), b"Man");
+    // A stray `~` is not an end of data: decoding fails (the stream is
+    // then compared by its raw bytes) instead of stopping early.
+    assert!(ascii85(b"9jqo^~9jqo^~>").is_none());
     assert!(ascii85(b"9~>").is_none() && ascii85(b"s8W-\"~>").is_none() && ascii85(b"{").is_none());
     assert_eq!(asciihex(b"41 41 4>").unwrap(), b"AA@");
     assert!(asciihex(b"4g").is_none());
@@ -1019,4 +1022,56 @@ fn structure_destinations_name_the_element() {
     );
     // The structure tree category itself is unchanged by this.
     assert_eq!(class_of(&r, "struct_tree"), SemClass::Pass);
+}
+
+#[test]
+fn nested_action_keys_are_kept() {
+    // Keys the earlier categories drop as back-pointers (/P, /Next,
+    // /Prev) carry meaning inside action values: a GoToE target's page,
+    // a Launch action's parameters.
+    let goto_e = |p: u32| {
+        plain(
+            &format!(
+                "/OpenAction << /S /GoToE /NewWindow true /T << /R /C /N (a.pdf) /P {p} >> >>"
+            ),
+            vec![],
+            "",
+        )
+    };
+    assert_eq!(
+        class_of(&compare(&goto_e(0), &goto_e(5)), "doc_actions"),
+        SemClass::Fail
+    );
+    let launch = |p: &str| {
+        plain(
+            &format!("/AA << /WC << /S /Launch /Win << /F (app.exe) /P ({p}) >> /Next << /S /Named /N /Quit /Prev 1 >> >> >>"),
+            vec![],
+            "",
+        )
+    };
+    assert_eq!(
+        class_of(&compare(&launch("-a"), &launch("-b")), "doc_actions"),
+        SemClass::Fail
+    );
+}
+
+#[test]
+fn xfa_packet_names_are_exact_unicode() {
+    // The same name in UTF-16 is equal; a canonically equivalent but
+    // different sequence (precomposed vs decomposed é) is not.
+    let xfa = |name: &str| {
+        plain(
+            &format!("/AcroForm << /Fields [] /XFA [{name} 5 0 R] >>"),
+            vec![(5, st("", b"<t/>"))],
+            "",
+        )
+    };
+    let pdfdoc = xfa(r"(t\351)");
+    let utf16 = xfa("<FEFF007400E9>");
+    let decomposed = xfa("<FEFF007400650301>");
+    assert_eq!(class_of(&compare(&pdfdoc, &utf16), "xfa"), SemClass::Pass);
+    assert_eq!(
+        class_of(&compare(&pdfdoc, &decomposed), "xfa"),
+        SemClass::Fail
+    );
 }

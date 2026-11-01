@@ -311,7 +311,7 @@ impl<'a> Ctx<'a> {
                     out.push(format!("xfa\tform=array\tpackets={}", a.len() / 2));
                     for (i, pair) in a.chunks(2).enumerate() {
                         let n = match self.get(&pair[0])? {
-                            Object::String(s) => text(&s),
+                            Object::String(s) => text_exact(&s),
                             _ => return err("XFA packet name is not a string"),
                         };
                         let c = match self.get(&pair[1])? {
@@ -588,7 +588,8 @@ pub(super) fn ascii85(b: &[u8]) -> Option<Vec<u8>> {
         let c = b[i];
         i += 1;
         match c {
-            b'~' => break,
+            b'~' if b.get(i) == Some(&b'>') => break,
+            b'~' => return None,
             b'z' if n == 0 => out.extend_from_slice(&[0; 4]),
             b'!'..=b'u' => {
                 group[n] = c - b'!';

@@ -7,8 +7,9 @@
 
 use super::*;
 
-/// Minimal serialiser for replacement bodies.
-fn ser(o: &Object, out: &mut Vec<u8>) {
+/// Minimal serialiser for replacement bodies; `false` for a stream
+/// nested in a body (not representable — the check is skipped).
+fn ser(o: &Object, out: &mut Vec<u8>) -> bool {
     match o {
         Object::Null => out.extend_from_slice(b"null"),
         Object::Bool(b) => out.extend_from_slice(if *b { b"true" } else { b"false" }),
@@ -28,28 +29,34 @@ fn ser(o: &Object, out: &mut Vec<u8>) {
         Object::Array(a) => {
             out.push(b'[');
             for x in a {
-                ser(x, out);
+                if !ser(x, out) {
+                    return false;
+                }
                 out.push(b' ');
             }
             out.push(b']');
         }
-        Object::Dict(d) => ser_dict(d, out),
-        Object::Stream { .. } => unreachable!("streams are top-level bodies"),
+        Object::Dict(d) => return ser_dict(d, out),
+        Object::Stream { .. } => return false,
         Object::Ref(r) => {
             out.extend_from_slice(format!("{} {} R", r.number, r.generation).as_bytes())
         }
     }
+    true
 }
 
-fn ser_dict(d: &Dict, out: &mut Vec<u8>) {
+fn ser_dict(d: &Dict, out: &mut Vec<u8>) -> bool {
     out.extend_from_slice(b"<<");
     for (k, v) in d {
         ser(&Object::Name(k.clone()), out);
         out.push(b' ');
-        ser(v, out);
+        if !ser(v, out) {
+            return false;
+        }
         out.push(b' ');
     }
     out.extend_from_slice(b">>");
+    true
 }
 
 /// `data` plus a revision replacing `obj` with `body` (classic xref
@@ -73,12 +80,18 @@ fn append(data: &[u8], doc: &Document, obj: IndirectRef, body: &Object) -> Optio
         Object::Stream { dict, data } => {
             let mut d = dict.clone();
             d.insert(b"Length".to_vec(), Object::Integer(data.len() as i64));
-            ser_dict(&d, &mut out);
+            if !ser_dict(&d, &mut out) {
+                return None;
+            }
             out.extend_from_slice(b"\nstream\n");
             out.extend_from_slice(data);
             out.extend_from_slice(b"\nendstream");
         }
-        other => ser(other, &mut out),
+        other => {
+            if !ser(other, &mut out) {
+                return None;
+            }
+        }
     }
     out.extend_from_slice(b"\nendobj\n");
     let x = out.len();
@@ -96,7 +109,9 @@ fn append(data: &[u8], doc: &Document, obj: IndirectRef, body: &Object) -> Optio
         }
     }
     t.insert(b"Prev".to_vec(), Object::Integer(prev as i64));
-    ser_dict(&t, &mut out);
+    if !ser_dict(&t, &mut out) {
+        return None;
+    }
     out.extend_from_slice(format!("\nstartxref\n{x}\n%%EOF\n").as_bytes());
     Some(out)
 }
@@ -200,7 +215,9 @@ pub(super) fn probe_file(data: &[u8], doc: &Document, bump: &mut dyn FnMut(&str,
                 "(precondition) appended revision not read by the engine",
                 false,
             ),
-            None => {}
+            // Not written (a body the probe cannot serialise) or not
+            // reparsed: counted, so a skipped check is never silent.
+            None => bump("(skipped) revision not written or not reparsed", false),
         };
     let cat = doc.catalog().clone();
     let deref = |o: &Object| doc.deref(o).ok();
@@ -356,14 +373,17 @@ pub(super) fn probe_file(data: &[u8], doc: &Document, bump: &mut dyn FnMut(&str,
         }
         // Control: the catalog re-stored with the same entries — no
         // category may fail.
-        if let Some(d2) = append(data, doc, root, &Object::Dict(cat.clone())) {
-            if let Ok(d2) = Document::from_bytes(&d2) {
+        match append(data, doc, root, &Object::Dict(cat.clone()))
+            .and_then(|d2| Document::from_bytes(&d2).ok())
+        {
+            Some(d2) => {
                 let r = compare(doc, &d2);
                 bump(
                     "control: catalog re-stored unchanged, no category fails",
                     r.checks.iter().all(|c| c.class != SemClass::Fail),
                 );
             }
+            None => bump("(skipped) revision not written or not reparsed", false),
         }
     }
 }

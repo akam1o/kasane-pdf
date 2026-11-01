@@ -284,6 +284,21 @@ pub fn text(b: &[u8]) -> String {
         .collect()
 }
 
+/// `text` without the NFC step: the same Unicode in another encoding
+/// compares equal, canonically equivalent sequences do not.
+fn text_exact(b: &[u8]) -> String {
+    decode_text(b)
+        .chars()
+        .flat_map(|c| match c {
+            '\t' => vec!['\\', 't'],
+            '\n' => vec!['\\', 'n'],
+            '\r' => vec!['\\', 'r'],
+            '\\' => vec!['\\', '\\'],
+            c => vec![c],
+        })
+        .collect()
+}
+
 /// A PDF text string or text stream as Unicode, exactly (no
 /// normalisation): UTF-16 or UTF-8 with a BOM, else PDFDocEncoding.
 fn decode_text(b: &[u8]) -> String {
@@ -505,10 +520,19 @@ impl<'a> Ctx<'a> {
         let mut v = Vec::new();
         for (k, x) in d {
             // Back-pointers and bookkeeping carry no meaning of their own.
-            if matches!(
-                k.as_slice(),
-                b"Parent" | b"P" | b"Length" | b"Next" | b"Prev"
-            ) {
+            // In the document-level categories only `/Parent` and a
+            // stream's `/Length` are: inside an action value `/P`,
+            // `/Next` and `/Prev` can be content (a GoToE target's page,
+            // a Launch action's parameters).
+            let skip = if self.doclevel {
+                matches!(k.as_slice(), b"Parent" | b"Length")
+            } else {
+                matches!(
+                    k.as_slice(),
+                    b"Parent" | b"P" | b"Length" | b"Next" | b"Prev"
+                )
+            };
+            if skip {
                 continue;
             }
             v.push(format!(
