@@ -86,6 +86,12 @@ are on the [roadmap](architecture.md#roadmap).
   `/F` that is not an integer is read as 0 (no flags), as before.
   Poppler additionally treats every `/Text` annotation as NoRotate and
   NoZoom; kasane-pdf follows the annotation's own `/F`.
+- **Which limits parse a page**: `render_page` and `extract_text`
+  parse the page's own content streams with the `Limits` the document
+  was opened with (`max_operations` and the parser bounds), and every
+  nested stream (forms, patterns, Type 3 glyphs, appearances) with the
+  limits passed to the call. To bound the page's own parse tighter,
+  open the document with those limits. (Unchanged since 0.1.)
 - **Thin strokes** are drawn at their true coverage (anti-aliased);
   Poppler and Acrobat widen strokes thinner than a device pixel to one
   pixel, so hairline and 0.1-pt drawings look lighter here. Only

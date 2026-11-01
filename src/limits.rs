@@ -65,7 +65,10 @@ pub struct Limits {
     /// 1,048,576.
     pub max_recovery_objects: usize,
     /// Maximum number of parsed content-stream operations per page.
-    /// Default: 1,000,000.
+    /// Default: 1,000,000. The page's own content streams are parsed
+    /// with the limits of the [`crate::Document`] (set when it is
+    /// opened); form XObjects, patterns, Type 3 glyphs and annotation
+    /// appearances with the limits of the render or extraction call.
     pub max_operations: usize,
     /// Maximum operands waiting for an operator in the content-stream
     /// operand stack. Default: 1,000.
