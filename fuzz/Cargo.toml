@@ -45,3 +45,10 @@ path = "fuzz_targets/text_sources.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "xref_updates"
+path = "fuzz_targets/xref_updates.rs"
+test = false
+doc = false
+bench = false
