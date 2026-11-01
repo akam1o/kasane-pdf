@@ -686,7 +686,14 @@ fn page_may_blend(doc: &Document, page: &Page) -> bool {
                 }
                 self.budget -= 1;
             }
-            self.doc.deref(o).ok()
+            // A pre-scan records no warning: an undefined object (null
+            // by §7.3.10) is read quietly; the renderer warns if it
+            // reaches it.
+            match self.doc.deref_defined(o) {
+                Ok(v) => Some(v),
+                Err(Error::MissingReference(_)) => Some(Object::Null),
+                Err(_) => None,
+            }
         }
         /// An indirect object already scanned (shared resources and
         /// appearances are scanned once).
