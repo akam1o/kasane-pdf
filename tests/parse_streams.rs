@@ -105,17 +105,22 @@ fn objstm_resolves_compressed_page() {
 // -------------------------------------------------------------------
 
 #[test]
-fn hybrid_stream_overrides_classic_entry() {
-    // §7.5.8.4 / qpdf implementation notes: within the same update
-    // section the /XRefStm stream replaces entries from the classic
-    // table. The fixture marks object 3 in-use in the table but free in
-    // the stream, so resolution must fail.
-    // Object 3 is the page: the reference is to an undefined object —
-    // null per §7.3.10 — and a page tree with a null kid fails to load.
-    let err = Document::from_bytes(&fixture("hybrid.pdf")).unwrap_err();
-    assert!(
-        matches!(err, Error::Structure(_)),
-        "expected Structure (null page-tree kid), got: {err:?}"
+fn hybrid_table_entry_precedes_its_stream() {
+    // ISO 32000-2 §7.5.8.4 (PDF Association issue #237): within one
+    // update section the classic table is searched first; its /XRefStm
+    // stream is consulted only for numbers the table does not list. The
+    // fixture marks object 3 (the page) in use in the table and free in
+    // the stream: the table's entry decides, as with qpdf, Poppler and
+    // Quartz. (Before v0.5.0 the stream replaced the table entry and the
+    // document failed to load.)
+    let doc = Document::from_bytes(&fixture("hybrid.pdf")).unwrap();
+    assert_eq!(doc.page_count(), 1);
+    assert_eq!(
+        doc.pages()[0].object_ref(),
+        Some(IndirectRef {
+            number: 3,
+            generation: 0
+        })
     );
 }
 

@@ -1992,19 +1992,48 @@ impl<'d> Audit<'d> {
                 continue; // the newest section defines the live view
             }
             let mut sec_entries: Vec<((u32, u16), XrefEntry)> = Vec::new();
-            if let Err(e) = crate::xref::read_one_section(
+            let trailer = match crate::xref::read_one_section(
                 self.doc.raw_bytes(),
                 self.limits,
                 sec_off,
                 &mut |key, entry| sec_entries.push((key, entry)),
                 &mut Vec::new(),
             ) {
-                self.out.incomplete.push(AuditIncomplete {
-                    scope: format!("old xref section at {sec_off}"),
-                    reason: format!("could not re-read: {}", e.kind()),
-                    limit: false,
-                });
-                continue;
+                Ok(t) => t,
+                Err(e) => {
+                    self.out.incomplete.push(AuditIncomplete {
+                        scope: format!("old xref section at {sec_off}"),
+                        reason: format!("could not re-read: {}", e.kind()),
+                        limit: false,
+                    });
+                    continue;
+                }
+            };
+            // A hybrid section's /XRefStm stream lists bodies of that
+            // revision too (the hidden objects of §7.5.8.4).
+            let is_stream =
+                trailer.get(b"Type".as_slice()).and_then(|o| o.as_name()) == Some(b"XRef");
+            if let (false, Some(&Object::Integer(pos))) =
+                (is_stream, trailer.get(b"XRefStm".as_slice()))
+            {
+                if let Err(e) = u64::try_from(pos)
+                    .map_err(|_| Error::Parse("negative /XRefStm".into()))
+                    .and_then(|pos| {
+                        crate::xref::read_one_section(
+                            self.doc.raw_bytes(),
+                            self.limits,
+                            pos,
+                            &mut |key, entry| sec_entries.push((key, entry)),
+                            &mut Vec::new(),
+                        )
+                    })
+                {
+                    self.out.incomplete.push(AuditIncomplete {
+                        scope: format!("old /XRefStm of the xref section at {sec_off}"),
+                        reason: format!("could not re-read: {}", e.kind()),
+                        limit: false,
+                    });
+                }
             }
             for ((num, _gen), entry) in sec_entries {
                 if let XrefEntry::InUse { offset } = entry {

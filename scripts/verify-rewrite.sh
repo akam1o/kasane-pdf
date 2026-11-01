@@ -24,7 +24,9 @@ fi
 
 # Well-formed fixtures that must validate with zero warnings.
 # hybrid.pdf is intentionally excluded — it is an adversarial
-# fixture (the xref stream marks object 3 free) and does not rewrite.
+# fixture: its table and its own /XRefStm disagree about object 3 (the
+# table, searched first, decides); it rewrites, but its page has no
+# /Resources, which qpdf --check reports as a warning.
 CLEAN="hello text_basic pages incremental xref_stream objstm \
 hybrid_compressed hybrid_gap xobject_form_basic xobject_form_nested \
 xobject_image_gray_raw xobject_image_rgb_flate \

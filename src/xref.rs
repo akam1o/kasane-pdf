@@ -6,10 +6,19 @@
 //! `trailer` dictionary, `/Prev` chains of classic sections, xref streams,
 //! and hybrid-reference files (`/XRefStm` in a classic trailer).
 //!
-//! Entries are stored as a map `(obj, gen) -> entry`. Newest section wins;
-//! older `/Prev` sections only fill gaps. In hybrid files the classic
-//! table (and its `/Prev` chain) is primary; `/XRefStm` supplies entries
-//! only for objects not covered by a newer classic section.
+//! Entries are stored per object *number*: the newest update section
+//! that lists a number decides it — in use (at a generation), compressed,
+//! or free — and older sections never override it (§7.5.6: an update's
+//! section lists exactly the objects it changes, added or deleted). A
+//! free entry therefore deletes the object for every older section; a
+//! reference `n g R` resolves only when the deciding entry is in use at
+//! generation `g` (§7.3.10: otherwise it is a reference to null).
+//!
+//! Hybrid-reference files (§7.5.8.4): within one update section the
+//! classic table is searched first; the section's `/XRefStm` stream
+//! supplies entries only for numbers the table does not list; then the
+//! search continues with the `/Prev` section (and its own `/XRefStm`).
+//! An older section's `/XRefStm` never overrides a newer section.
 //!
 //! Object streams: xref-stream entries of type 2 are recorded as
 //! `Compressed` and resolved via the document layer.
@@ -46,9 +55,11 @@ pub(crate) enum XrefEntry {
 /// The merged result of reading a `startxref` chain.
 #[derive(Debug)]
 pub(crate) struct XrefTable {
-    /// `(obj, gen) -> entry` for every subsection line seen. Entries from
-    /// the newest section (at `startxref`) win; `/Prev` sections fill gaps.
-    entries: BTreeMap<(u32, u16), XrefEntry>,
+    /// Object number -> (generation, entry) of the newest section that
+    /// lists the number (see the module documentation). For a free
+    /// entry the generation is the one recorded with it (the generation
+    /// a reused object would get); compressed objects are generation 0.
+    entries: BTreeMap<u32, (u16, XrefEntry)>,
     /// Merged trailer: newest trailer first, older trailers fill missing
     /// keys (e.g. `/Root` and `/Size` surviving across increments).
     pub(crate) trailer: Dict,
@@ -70,8 +81,8 @@ pub(crate) struct XrefTable {
 impl XrefTable {
     /// Byte offset where object `r` is defined, if it is in-use.
     pub(crate) fn offset_of(&self, r: IndirectRef) -> Option<u64> {
-        match self.entries.get(&(r.number, r.generation)) {
-            Some(XrefEntry::InUse { offset }) => Some(*offset),
+        match self.entries.get(&r.number) {
+            Some((g, XrefEntry::InUse { offset })) if *g == r.generation => Some(*offset),
             _ => None,
         }
     }
@@ -79,8 +90,10 @@ impl XrefTable {
     /// Object stream location for a compressed object, if `r` is stored
     /// inside one.
     pub(crate) fn compressed_location(&self, r: IndirectRef) -> Option<(u32, u32)> {
-        match self.entries.get(&(r.number, r.generation)) {
-            Some(XrefEntry::Compressed { objstm, index }) => Some((*objstm, *index)),
+        match self.entries.get(&r.number) {
+            Some((g, XrefEntry::Compressed { objstm, index })) if *g == r.generation => {
+                Some((*objstm, *index))
+            }
             _ => None,
         }
     }
@@ -94,19 +107,19 @@ impl XrefTable {
     /// that number at generation 0 could otherwise silently resolve
     /// to a synthetic object instead of failing.
     ///
-    /// `entries` is keyed `(num, gen)` in a `BTreeMap`, so
-    /// `range((num,0)..=(num,u16::MAX))` finds every entry for `num`
-    /// in one probe without scanning the table.
+    /// A number listed by any section stays in the merged table (the
+    /// newest section's entry for it, free or not), so one lookup
+    /// answers this.
     pub(crate) fn number_used(&self, num: u32) -> bool {
-        self.entries
-            .range((num, 0)..=(num, u16::MAX))
-            .next()
-            .is_some()
+        self.entries.contains_key(&num)
     }
 
     /// One entry's classification, if present in the merged view.
     pub(crate) fn entry_of(&self, r: IndirectRef) -> Option<XrefEntry> {
-        self.entries.get(&(r.number, r.generation)).copied()
+        match self.entries.get(&r.number) {
+            Some((g, e)) if *g == r.generation => Some(*e),
+            _ => None,
+        }
     }
 
     /// Iterate every merged xref entry (newest-wins view), in
@@ -116,7 +129,7 @@ impl XrefTable {
     pub(crate) fn iter_entries(&self) -> impl Iterator<Item = (IndirectRef, XrefEntry)> + '_ {
         self.entries
             .iter()
-            .map(|(&(n, g), &e)| (IndirectRef::new(n, g), e))
+            .map(|(&n, &(g, e))| (IndirectRef::new(n, g), e))
     }
 }
 
@@ -130,11 +143,16 @@ pub(crate) fn read_xref_chain(
     limits: &Limits,
     startxref: u64,
 ) -> Result<XrefTable, Error> {
-    let mut entries: BTreeMap<(u32, u16), XrefEntry> = BTreeMap::new();
+    let mut entries: BTreeMap<u32, (u16, XrefEntry)> = BTreeMap::new();
     let mut trailer = Dict::new();
     let mut latest_trailer: Option<Dict> = None;
     let mut section_offsets = Vec::new();
     let mut visited_offsets: HashSet<u64> = HashSet::new();
+    // `/XRefStm` streams already read: every number one supplied is
+    // decided from its first (newest) reading, so a second reading of
+    // the same stream from an older section changes nothing — and many
+    // sections naming one large stream must not decode it again each time.
+    let mut visited_xrefstm: HashSet<u64> = HashSet::new();
     let mut warnings = Vec::new();
 
     let mut current = Some(startxref);
@@ -150,7 +168,7 @@ pub(crate) fn read_xref_chain(
                 max: limits.max_page_tree_nodes,
             });
         }
-        if offset as usize > input.len() {
+        if offset > input.len() as u64 {
             return Err(Error::Parse(format!(
                 "xref offset {offset} is beyond end of input ({} bytes)",
                 input.len()
@@ -158,13 +176,15 @@ pub(crate) fn read_xref_chain(
         }
         section_offsets.push(offset);
 
+        // This update section's own entries: its table (or xref
+        // stream). Within a section the first line for a number counts.
+        let mut section: BTreeMap<u32, (u16, XrefEntry)> = BTreeMap::new();
         let trailer_dict = read_one_section(
             input,
             limits,
             offset,
-            &mut |key, entry| {
-                // Newest section wins: /Prev sections only fill gaps.
-                entries.entry(key).or_insert(entry);
+            &mut |(n, g), entry| {
+                section.entry(n).or_insert((g, entry));
             },
             &mut warnings,
         )?;
@@ -176,19 +196,19 @@ pub(crate) fn read_xref_chain(
             trailer.entry(k.clone()).or_insert_with(|| v.clone());
         }
 
-        // A classic trailer may point at an additional xref stream with
-        // compressed entries (§7.5.8.4 hybrid-reference files). Within the
-        // same update section, the xref stream *replaces* entries seen in
-        // the classic table: the table is a fallback for pre-1.5 readers,
-        // while the stream carries the authoritative view (including
-        // type-2 compressed objects a table cannot express).
-        // Per the qpdf implementation notes (consistent with §7.5.8.4):
-        //   "read the xref table first; then replace any object that it
-        //    has already seen with any defined in the xref stream".
-        // `/Prev` in the *xref stream* is ignored (the classic trailer's
-        // /Prev drives the chain; a stream's /Prev would only matter for
-        // a non-hybrid chain, which `read_one_section` already handles).
-        if let Some(xrefstm) = trailer_dict.get(b"XRefStm".as_slice()) {
+        // Hybrid-reference section (§7.5.8.4): a classic trailer's
+        // `/XRefStm` names a cross-reference stream searched after this
+        // section's table and before the `/Prev` section — so it only
+        // supplies numbers the table does not list, and it never
+        // overrides a newer section (whose entries are already in
+        // `entries`). The stream's own `/Prev` and `/XRefStm` are not
+        // followed: the classic trailer's `/Prev` drives the chain.
+        let is_stream_section = trailer_dict
+            .get(b"Type".as_slice())
+            .and_then(|o| o.as_name())
+            == Some(b"XRef");
+        if let (false, Some(xrefstm)) = (is_stream_section, trailer_dict.get(b"XRefStm".as_slice()))
+        {
             let pos = match xrefstm {
                 Object::Integer(i) if *i >= 0 => *i as u64,
                 _ => {
@@ -197,21 +217,37 @@ pub(crate) fn read_xref_chain(
                     ))
                 }
             };
-            if pos as usize > input.len() {
+            if pos > input.len() as u64 {
                 return Err(Error::Parse(format!(
                     "/XRefStm offset {pos} is beyond end of input"
                 )));
             }
-            read_one_section(
-                input,
-                limits,
-                pos,
-                &mut |key, entry| {
-                    // XRefStm overrides classic entries from *this* section.
-                    entries.insert(key, entry);
-                },
-                &mut warnings,
-            )?;
+            if visited_xrefstm.insert(pos) {
+                let mut stream: BTreeMap<u32, (u16, XrefEntry)> = BTreeMap::new();
+                let stm_dict = read_one_section(
+                    input,
+                    limits,
+                    pos,
+                    &mut |(n, g), entry| {
+                        stream.entry(n).or_insert((g, entry));
+                    },
+                    &mut warnings,
+                )?;
+                if stm_dict.get(b"Type".as_slice()).and_then(|o| o.as_name()) != Some(b"XRef") {
+                    return Err(Error::Structure(
+                        "trailer /XRefStm does not point at a cross-reference stream".into(),
+                    ));
+                }
+                for (n, v) in stream {
+                    section.entry(n).or_insert(v);
+                }
+            }
+        }
+
+        // Newer sections decided first: this one only fills numbers no
+        // newer section lists.
+        for (n, v) in section {
+            entries.entry(n).or_insert(v);
         }
 
         current = next_prev(&trailer_dict)?;
@@ -237,8 +273,12 @@ pub(crate) fn read_one_section(
     on_entry: &mut dyn FnMut((u32, u16), XrefEntry),
     warnings: &mut Vec<crate::warning::Warning>,
 ) -> Result<Dict, Error> {
+    let start = usize::try_from(offset)
+        .ok()
+        .filter(|&o| o <= input.len())
+        .ok_or_else(|| Error::Parse(format!("xref offset {offset} is beyond end of input")))?;
     let mut parser = Parser::new(input, limits);
-    parser.seek(offset as usize);
+    parser.seek(start);
 
     // Distinguish "xref" keyword from an xref-stream object.
     match parser.read_word_token()? {
@@ -247,7 +287,7 @@ pub(crate) fn read_one_section(
         }
         Some(_) | None => {
             // Not the classic keyword: maybe an xref-stream object.
-            parser.seek(offset as usize);
+            parser.seek(start);
         }
     }
 
@@ -375,7 +415,15 @@ fn read_xref_stream_section(
             max: limits.max_array_elements as u64,
         });
     }
-    let needed = total_entries as usize * entry_len;
+    // Checked: with a raised entry limit the product could wrap on a
+    // 32-bit target and let the length check pass.
+    let needed = usize::try_from(total_entries)
+        .ok()
+        .and_then(|t| t.checked_mul(entry_len))
+        .ok_or(Error::LimitExceeded {
+            limit: "xref stream entry count",
+            max: limits.max_array_elements as u64,
+        })?;
     if data.len() < needed {
         return Err(Error::UnexpectedEof {
             offset: data.len(),
@@ -389,11 +437,10 @@ fn read_xref_stream_section(
             let obj_num = first
                 .checked_add(i)
                 .ok_or_else(|| Error::Structure("xref stream object number overflow".into()))?;
-            let entry = parse_xref_stream_entry(&data[cursor..cursor + entry_len], w)?;
+            let (generation, entry) =
+                parse_xref_stream_entry(&data[cursor..cursor + entry_len], w)?;
             cursor += entry_len;
-            // Compressed objects are always generation 0 in the key;
-            // their /ObjStm index is stored in the entry itself.
-            on_entry((obj_num, 0), entry);
+            on_entry((obj_num, generation), entry);
         }
     }
 
@@ -401,23 +448,44 @@ fn read_xref_stream_section(
     Ok(dict.clone())
 }
 
-/// Decode one xref stream entry of `entry_len` bytes with field widths `w`.
-fn parse_xref_stream_entry(buf: &[u8], w: [usize; 3]) -> Result<XrefEntry, Error> {
+/// Decode one xref stream entry of `entry_len` bytes with field widths
+/// `w` (§7.5.8.3 Table 18): the generation it records, and the entry.
+/// Type 1 carries the object's generation in field 3; a type 0 (free)
+/// entry the generation for the number's next use; a compressed object
+/// is generation 0. Values that do not fit their PDF range are refused
+/// rather than truncated (a truncated number would name another object).
+fn parse_xref_stream_entry(buf: &[u8], w: [usize; 3]) -> Result<(u16, XrefEntry), Error> {
     let f1 = read_field(&buf[0..w[0]]);
     let f2 = read_field(&buf[w[0]..w[0] + w[1]]);
     let f3 = read_field(&buf[w[0] + w[1]..]);
+    let gen = |v: u64| {
+        u16::try_from(v)
+            .map_err(|_| Error::Parse(format!("xref stream generation {v} is out of range")))
+    };
+    let num = |v: u64, what: &str| {
+        u32::try_from(v)
+            .map_err(|_| Error::Parse(format!("xref stream {what} {v} is out of range")))
+    };
 
     // Field widths of 0 imply the default value (§7.5.8.2 Table 17).
     let entry_type = if w[0] == 0 { 1 } else { f1 };
     match entry_type {
-        0 => Ok(XrefEntry::Free {
-            next_free: f2 as u32,
-        }),
-        1 => Ok(XrefEntry::InUse { offset: f2 }),
-        2 => Ok(XrefEntry::Compressed {
-            objstm: f2 as u32,
-            index: f3 as u32,
-        }),
+        0 => Ok((
+            // A free entry's generation may be 65535 ("never reuse");
+            // larger values mean the same.
+            u16::try_from(f3).unwrap_or(u16::MAX),
+            XrefEntry::Free {
+                next_free: u32::try_from(f2).unwrap_or(u32::MAX),
+            },
+        )),
+        1 => Ok((gen(f3)?, XrefEntry::InUse { offset: f2 })),
+        2 => Ok((
+            0,
+            XrefEntry::Compressed {
+                objstm: num(f2, "object stream number")?,
+                index: num(f3, "object stream index")?,
+            },
+        )),
         other => Err(Error::Parse(format!("bad xref stream entry type {other}"))),
     }
 }
@@ -488,13 +556,30 @@ fn read_classic_section(
                             "xref subsection overflows object number near byte {offset}"
                         ))
                     })?;
-                    let entry = match line.kind {
-                        b'n' => XrefEntry::InUse {
-                            offset: line.offset,
-                        },
-                        b'f' => XrefEntry::Free {
-                            next_free: line.offset as u32,
-                        },
+                    // Generations are 0..=65535 (§7.5.4). Some writers
+                    // write 65536 on free entries: a free entry above the
+                    // range means "never reuse" (65535); an in-use entry
+                    // above it names no object a reference can reach and
+                    // is refused rather than truncated onto another one.
+                    let (generation, entry) = match line.kind {
+                        b'n' => (
+                            u16::try_from(line.generation).map_err(|_| {
+                                Error::Parse(format!(
+                                    "xref entry generation {} is out of range near byte {}",
+                                    line.generation,
+                                    parser.pos()
+                                ))
+                            })?,
+                            XrefEntry::InUse {
+                                offset: line.offset,
+                            },
+                        ),
+                        b'f' => (
+                            u16::try_from(line.generation).unwrap_or(u16::MAX),
+                            XrefEntry::Free {
+                                next_free: u32::try_from(line.offset).unwrap_or(u32::MAX),
+                            },
+                        ),
                         other => {
                             return Err(Error::Parse(format!(
                                 "bad xref entry type '{}' near byte {}",
@@ -503,7 +588,7 @@ fn read_classic_section(
                             )))
                         }
                     };
-                    on_entry((obj_num, line.generation as u16), entry);
+                    on_entry((obj_num, generation), entry);
                 }
             }
         }
@@ -711,9 +796,9 @@ pub(crate) fn reconstruct(
     }
 
     // ---- 3. object streams: members fill gaps -------------------------
-    let mut entries: BTreeMap<(u32, u16), XrefEntry> = BTreeMap::new();
+    let mut entries: BTreeMap<u32, (u16, XrefEntry)> = BTreeMap::new();
     for (num, (gen, start)) in &found {
-        entries.insert((*num, *gen), XrefEntry::InUse { offset: *start });
+        entries.insert(*num, (*gen, XrefEntry::InUse { offset: *start }));
     }
     let mut from_streams = 0usize;
     let mut objstms = 0usize;
@@ -763,12 +848,14 @@ pub(crate) fn reconstruct(
                     if found.contains_key(&m) {
                         continue;
                     }
-                    let key = (m, 0u16);
-                    if let std::collections::btree_map::Entry::Vacant(v) = entries.entry(key) {
-                        v.insert(XrefEntry::Compressed {
-                            objstm: *num,
-                            index: idx as u32,
-                        });
+                    if let std::collections::btree_map::Entry::Vacant(v) = entries.entry(m) {
+                        v.insert((
+                            0,
+                            XrefEntry::Compressed {
+                                objstm: *num,
+                                index: u32::try_from(idx).unwrap_or(u32::MAX),
+                            },
+                        ));
                         from_streams += 1;
                         if obj
                             .as_dict()

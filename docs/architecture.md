@@ -139,21 +139,41 @@ pipeline rather than duplicating them. `object`, `error`, `limits`,
   parsed at their recorded offset; a missing or wrong `endobj` is
   tolerated only because the offset already identifies the object.
 
-- **Newest-section-wins merge for `/Prev`.** Entries are keyed by
-  `(obj, gen)`; the chain is walked newest→oldest and earlier sections
-  only fill gaps. Trailer dicts merge the same way, which is how `/Info`
-  and `/Root` survive an incremental update.
+- **Newest-section-wins merge per object number.** The chain is walked
+  newest→oldest; the first section that lists a *number* decides it —
+  in use at a generation, compressed, or free — and older sections never
+  override it (§7.5.6: an update lists the objects it adds, changes or
+  deletes). A free entry therefore deletes the object for every older
+  section, whatever generation it records (§7.5.4 frees with the next
+  generation); `n g R` resolves only when the deciding entry is in use
+  at generation `g`, otherwise it is null (§7.3.10). Until v0.5.0 the
+  merge was keyed by `(number, generation)`, so a free entry at the next
+  generation left the older in-use entry visible — a deleted object
+  came back — and xref-stream entries lost their generation. Trailer
+  dicts merge newest-first too, which is how `/Root` survives an update
+  whose trailer omits it (§7.5.6 asks every update's trailer to repeat
+  the earlier keys; filling a missing one from an older trailer is the
+  lenient reading).
 
-- **Hybrid-reference (`/XRefStm`) precedence.** Within a *single* update
-  section the `/XRefStm` stream *replaces* entries seen in the classic
-  table. This matches both the intent of §7.5.8.4 (the classic table is
-  a fallback for pre-1.5 readers) and the qpdf implementation note:
-  "read the xref table first; then replace any object that it has
-  already seen with any defined in the xref stream". Across update
-  sections the normal newest-first `/Prev` merge applies, so a newer
-  section still overrides an older one regardless of format. A `/Prev`
-  key inside an `/XRefStm` dictionary is ignored — the classic
-  trailer's `/Prev` drives the chain.
+- **Hybrid-reference (`/XRefStm`) precedence.** ISO 32000-2 §7.5.8.4,
+  as clarified by PDF Association issue #237: a reader searches an
+  update section's classic table, then — only for a number the table
+  does not list — that section's `/XRefStm` stream, then the `/Prev`
+  section (its table, then its stream). So the hidden objects of the
+  §7.5.8.4 pattern (free in an older section, in use in the newer
+  section's stream) are found in the stream, and an older section's
+  `/XRefStm` never overrides a newer section (v0.4.0 let it: an update
+  appended to a hybrid file was ignored for every object the old stream
+  listed — X1 in the v0.5.0 plan). Measured on synthetic files: when a
+  table and its own stream both list a number in use, qpdf, Poppler and
+  Quartz all take the table's entry, as kasane now does (it used to
+  follow the qpdf documentation's "the stream replaces the table"); when
+  the table lists it *free* and the stream in use, kasane and qpdf read
+  null, Poppler and Quartz the stream's object — the spec's search order
+  finds the free entry first, and no corpus file has the pattern. An
+  `/XRefStm` is honoured only in a classic trailer and must point at a
+  cross-reference stream; that stream's own `/Prev` and `/XRefStm` are
+  not followed.
 
 - **The page tree is walked eagerly at load time.** It is small,
   security-sensitive (cycles, depth), and needed by every later
