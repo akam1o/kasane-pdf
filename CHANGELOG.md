@@ -6,6 +6,32 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Cross-reference precedence across incremental updates** (ISO
+  32000-1 §7.5.4, §7.5.6, §7.5.8; ISO 32000-2 §7.5.8.4). Per object
+  number, the newest update section that lists it now decides — in use
+  at a generation, compressed, or free — and older sections never
+  override it. Before:
+  - an update appended to a hybrid-reference file was ignored for every
+    object the older section's `/XRefStm` stream listed (kasane read the
+    old object while qpdf, Poppler and Quartz read the new one) — also
+    after kasane's own `Edit::save_incremental`, and in `rewrite`;
+  - an object freed by a newer section with the next generation (the
+    §7.5.4 way to delete it) was still resolved from the older section;
+  - xref-stream entries lost their generation (field 3), so `n g R` with
+    `g > 0` did not resolve;
+  - within one hybrid section the `/XRefStm` stream replaced the table's
+    entries; the table is now searched first and the stream supplies
+    only numbers the table does not list (qpdf, Poppler and Quartz agree
+    when both list a number in use).
+- Generations above 65535 on in-use entries, and xref-stream
+  object-stream numbers or indices above 2³²−1, are refused instead of
+  truncated onto another object; xref and object offsets are checked
+  before conversion, so a 32-bit (wasm32) build cannot wrap an offset
+  past 4 GiB onto an unrelated position. `/XRefStm` must point at a
+  cross-reference stream and is honoured only in classic trailers.
+- No public API change.
+
 ## [0.4.0] - 2026-11-01
 
 Every public API change is additive on `#[non_exhaustive]` types
