@@ -404,3 +404,73 @@ fn an_undefined_packet_is_null_and_the_rest_is_kept() {
     };
     assert_eq!(unzlib(&data), TEMPLATE);
 }
+
+/// A one-packet XFA form whose `datasets` packet holds `content`.
+fn one_packet(content: &[u8]) -> Document {
+    let extra = format!(
+        "/AcroForm << /Fields [] /XFA {} >>",
+        xfa_array(&[("template", 11), ("datasets", 10)])
+    );
+    Document::from_bytes(&pdf(
+        &extra,
+        vec![(10, flate("", content)), (11, flate("", TEMPLATE))],
+    ))
+    .unwrap()
+}
+
+fn utf16(s: &str, le: bool, bom: bool) -> Vec<u8> {
+    let mut v = Vec::new();
+    if bom {
+        v.extend_from_slice(if le { &[0xFF, 0xFE] } else { &[0xFE, 0xFF] });
+    }
+    for u in s.encode_utf16() {
+        v.extend_from_slice(&if le { u.to_le_bytes() } else { u.to_be_bytes() });
+    }
+    v
+}
+
+#[test]
+fn an_xml_signature_in_any_encoding_or_spelling_is_refused() {
+    let sig = "<xfa:datasets><ds:Signature xmlns:ds=\"http://www.w3.org/2000/09/xmldsig#\"/></xfa:datasets>";
+    let mut cases: Vec<Vec<u8>> = Vec::new();
+    for (le, bom) in [(true, true), (false, true), (true, false), (false, false)] {
+        cases.push(utf16(sig, le, bom));
+    }
+    // The namespace spelt with character references: the element name
+    // still gives it away.
+    cases.push(
+        b"<d><ds:Signature xmlns:ds=\"http&#x3A;//www.w3.org/2000/09/xmldsig#\"><ds:SignedInfo/></ds:Signature></d>"
+            .to_vec(),
+    );
+    cases.push(b"<d><Signature\n Id=\"s\"></Signature></d>".to_vec());
+    for (i, c) in cases.iter().enumerate() {
+        match rewrite(&one_packet(c)) {
+            Err(Error::SignaturePolicy { .. }) => {}
+            other => panic!("case {i}: {other:?}"),
+        }
+    }
+    // UTF-32 cannot be checked: refused, not treated as unsigned.
+    let mut u32le = vec![0xFF, 0xFE, 0, 0];
+    for c in "<d/>".chars() {
+        u32le.extend_from_slice(&(c as u32).to_le_bytes());
+    }
+    match rewrite(&one_packet(&u32le)) {
+        Err(Error::Unsupported { feature, .. }) => assert_eq!(feature, "XFA packet"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn signature_fields_and_names_are_not_xml_signatures() {
+    // XFA's own signature *field* UI (`<signature>`), a field named
+    // Signature, and longer element names are carried.
+    for c in [
+        &b"<template><field name=\"Signature\"><ui><signature/></ui></field></template>"[..],
+        b"<d><SignatureField>x</SignatureField><Signatures/></d>",
+        b"<d>Signature: </d>",
+    ] {
+        let doc = one_packet(c);
+        let out = Document::from_bytes(&rewrite(&doc).unwrap()).unwrap();
+        assert_eq!(packets(&doc), packets(&out));
+    }
+}

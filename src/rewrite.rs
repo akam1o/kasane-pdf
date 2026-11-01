@@ -21,9 +21,10 @@
 //!   still *claims* one is refused outright (blank unsigned fields
 //!   pass through like any other object).
 //! * an `/AcroForm` `/XFA` packet that holds an XML signature (the
-//!   XML-DSig namespace in its decoded content), or that cannot be
-//!   decoded to check — the signature policy applied to XFA. An XFA form
-//!   without one is carried verbatim (below).
+//!   XML-DSig namespace or a `Signature` element in its decoded
+//!   content, UTF-8 or UTF-16), or that cannot be decoded to check —
+//!   the signature policy applied to XFA. An XFA form without one is
+//!   carried verbatim (below).
 //! * catalog `/RichMedia`, `/AA` — outside profile.
 //! * a catalog `/OCProperties` that is not well formed (types, required
 //!   entries, `/Order` cycles — `crate::optcontent::validate_for_rewrite`).
@@ -49,9 +50,9 @@
 //! (§12.7.8): the `/XFA` stream or packet array — packet names, order,
 //! duplicates, every packet's stream bytes — and the catalog's
 //! `/NeedsRendering` are ordinary reachable objects, copied with
-//! renumbered references; nothing is parsed, regenerated or reordered. That includes named
-//! destinations: the `/Names` → `/Dests` name tree, the legacy
-//! catalog `/Dests` dictionary and every `/Dest`, `/GoTo` `/D` or
+//! renumbered references; nothing is parsed, regenerated or reordered.
+//! Named destinations travel the same way: the `/Names` → `/Dests`
+//! name tree, the legacy catalog `/Dests` dictionary and every `/Dest`, `/GoTo` `/D` or
 //! `/OpenAction` operand that names into them travel as ordinary
 //! objects with renumbered references, so the name → page binding
 //! is identical before and after (see [`crate::dests`]).
@@ -544,24 +545,84 @@ fn signed_field_in(
 /// any XML signature element carries it.
 const XMLDSIG_NS: &[u8] = b"http://www.w3.org/2000/09/xmldsig#";
 
+/// Whether decoded XML holds an XML signature: the XML-DSig namespace,
+/// or a `Signature` element under any prefix (the namespace can be
+/// written with character references). UTF-16 is read through its
+/// code units; UTF-32 cannot be checked and is an error.
+fn holds_xml_signature(xml: &[u8]) -> Result<bool, &'static str> {
+    if xml.starts_with(&[0, 0, 0xFE, 0xFF]) || xml.starts_with(&[0xFF, 0xFE, 0, 0]) {
+        return Err("UTF-32");
+    }
+    // UTF-16 (BOM, or `<` as the first code unit): keep the low byte of
+    // each ASCII code unit, map the rest to a byte that is not a name
+    // character.
+    let utf16_le = xml.starts_with(&[0xFF, 0xFE]) || xml.starts_with(b"<\0");
+    let utf16_be = xml.starts_with(&[0xFE, 0xFF]) || xml.starts_with(b"\0<");
+    let narrowed: Vec<u8>;
+    let text = if utf16_le || utf16_be {
+        narrowed = xml
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&[a, b]| {
+                let (lo, hi) = if utf16_le { (a, b) } else { (b, a) };
+                if hi == 0 && lo < 0x80 {
+                    lo
+                } else {
+                    0xFF
+                }
+            })
+            .collect();
+        &narrowed[..]
+    } else {
+        xml
+    };
+    if text.windows(XMLDSIG_NS.len()).any(|w| w == XMLDSIG_NS) {
+        return Ok(true);
+    }
+    const LOCAL: &[u8] = b"Signature";
+    let name_char = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.');
+    for (i, _) in text
+        .windows(LOCAL.len())
+        .enumerate()
+        .filter(|(_, w)| *w == LOCAL)
+    {
+        let after = text.get(i + LOCAL.len()).copied();
+        if !matches!(after, Some(b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/')) {
+            continue;
+        }
+        // `<Signature` or `<prefix:Signature`.
+        let mut j = i;
+        if j > 0 && text[j - 1] == b':' {
+            j -= 1;
+            while j > 0 && name_char(text[j - 1]) {
+                j -= 1;
+            }
+        }
+        if j > 0 && text[j - 1] == b'<' {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// An XFA packet (or the single XFA stream) whose decoded content holds
 /// an XML signature: a description of the first one. A packet that
-/// cannot be decoded cannot be checked, so it is an error rather than
-/// silently treated as unsigned.
+/// cannot be decoded or read cannot be checked, so it is an error
+/// rather than silently treated as unsigned.
 fn xfa_xml_signature(doc: &Document, xfa: &Object) -> Result<Option<String>, Error> {
     let signed = |o: &Object, what: &str| -> Result<bool, Error> {
-        let Object::Stream { dict, data } = doc.deref(o)? else {
+        let Object::Stream { dict, data } = o else {
             return Ok(false);
         };
+        let unsupported = |why: String| Error::Unsupported {
+            feature: "XFA packet",
+            detail: format!("{what} could not be checked for an XML signature ({why})"),
+        };
         let decoded = doc
-            .decode_stream(&dict, &data)
-            .map_err(|e| Error::Unsupported {
-                feature: "XFA packet",
-                detail: format!(
-                    "{what} could not be decoded to check it for an XML signature ({e})"
-                ),
-            })?;
-        Ok(decoded.windows(XMLDSIG_NS.len()).any(|w| w == XMLDSIG_NS))
+            .decode_stream(dict, data)
+            .map_err(|e| unsupported(e.to_string()))?;
+        holds_xml_signature(&decoded).map_err(|enc| unsupported(format!("{enc} content")))
     };
     match doc.deref(xfa)? {
         Object::Array(items) => {
@@ -569,9 +630,9 @@ fn xfa_xml_signature(doc: &Document, xfa: &Object) -> Result<Option<String>, Err
             for it in &items {
                 match doc.deref(it)? {
                     Object::String(s) => name = String::from_utf8_lossy(&s).into_owned(),
-                    Object::Stream { .. } => {
+                    stream @ Object::Stream { .. } => {
                         let what = format!("packet {name:?}");
-                        if signed(it, &what)? {
+                        if signed(&stream, &what)? {
                             return Ok(Some(what));
                         }
                     }
@@ -580,7 +641,9 @@ fn xfa_xml_signature(doc: &Document, xfa: &Object) -> Result<Option<String>, Err
             }
             Ok(None)
         }
-        Object::Stream { .. } => Ok(signed(xfa, "stream")?.then(|| "stream".to_string())),
+        stream @ Object::Stream { .. } => {
+            Ok(signed(&stream, "stream")?.then(|| "stream".to_string()))
+        }
         _ => Ok(None),
     }
 }
@@ -622,8 +685,9 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
                     return Err(Error::SignaturePolicy {
                         rule: crate::error::SignatureRule::RewriteOfSignedDocument,
                         detail: format!(
-                            "XFA {what} holds an XML signature (XML-DSig) — what it signs is \
-                             not evaluated, so the document is treated as signed"
+                            "XFA {what} holds an XML signature (XML-DSig namespace or a \
+                             Signature element) — what it signs is not evaluated, so the \
+                             document is treated as signed"
                         ),
                     });
                 }
