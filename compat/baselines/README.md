@@ -111,3 +111,25 @@ documents that were refused for `/OCProperties` changed: rewrite
 error. No page's pixels, text, quality class or report-only finding
 changed; robustness 44/44, 0 crash / timeout.
 
+Updated 2026-11-01 from nightly run 41254250037 (commit `b6f8aef`:
+blend-mode page group, HardLight, Type 3 text state, stroked text,
+exact tiling cell range, the CIEDE2000 colour rules). Per file:
+
+- one `expect: any` document is now refused with `max_pattern_tiles`
+  (render `pass` → `error`) — an intended refusal: it was drawn wrongly
+  before (a Type 3 glyph's nested text moved the outer text; the
+  stroke width was wrong); drawn correctly its glyph-space tiling
+  pattern needs 4 866 cell executions (counted exactly) against the
+  default 4 096. Verified independently (pattern space §8.7.2, cell
+  range, the limit's unit = cell executions);
+- six documents carry new report-only colour findings (a new
+  measurement, not a change of output): DeviceCMYK conversion 1,
+  Poppler differences 4 (zero-width function domain, out-of-range
+  Indexed values, pattern phase on text, `/Interpolate`),
+  rasterisation of 0.12-pt dotted strokes 1 — classified in
+  `docs/plans/quality-gate.md` § Colour rules.
+
+No other stage, verdict, text, round-trip or warning change; pixels
+changed on 26 pages of 20 documents, all intended (blend-mode pages,
+stroked text, the transparency group).
+

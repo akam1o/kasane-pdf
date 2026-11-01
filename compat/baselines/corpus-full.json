@@ -7,8 +7,8 @@
   "quality_exempt": 10,
   "quality_flag": 1,
   "quality_pages": 847,
-  "quality_report": 6,
-  "render_pass": 444,
+  "quality_report": 10,
+  "render_pass": 443,
   "rewrite_pass": 427,
   "roundtrip_full": 424,
   "text_pass": 462,
@@ -7124,13 +7124,13 @@
    "quality_pages_flagged": 0,
    "quality_report_rules": [],
    "recovery_notes": 0,
-   "render_approximate": true,
-   "render_recovered": "skip",
+   "render_approximate": false,
+   "render_recovered": "error",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
     "external_valid": "Pass",
-    "render": "Pass",
+    "render": "NotApplicable",
     "reparse": "Pass",
     "structure": "Pass",
     "text": "Pass"
@@ -7147,11 +7147,11 @@
    },
    "stages": {
     "parse": "pass",
-    "render": "pass",
+    "render": "error",
     "rewrite": "pass",
     "text": "pass"
    },
-   "verdict": "pass",
+   "verdict": "error",
    "warnings": 0
   },
   "copy_paste_ligatures": {
@@ -7392,10 +7392,12 @@
    "causes": [],
    "expect": "pass",
    "incremental": "pass",
-   "quality": "ok",
+   "quality": "report:colour_tile",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
-   "quality_report_rules": [],
+   "quality_report_rules": [
+    "colour_tile"
+   ],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -8173,10 +8175,13 @@
    "causes": [],
    "expect": "pass",
    "incremental": "pass",
-   "quality": "ok",
+   "quality": "report:colour_hue,colour_tile",
    "quality_pages": 2,
    "quality_pages_flagged": 0,
-   "quality_report_rules": [],
+   "quality_report_rules": [
+    "colour_hue",
+    "colour_tile"
+   ],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -8680,10 +8685,12 @@
    "causes": [],
    "expect": "any",
    "incremental": "pass",
-   "quality": "ok",
+   "quality": "report:colour_tile",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
-   "quality_report_rules": [],
+   "quality_report_rules": [
+    "colour_tile"
+   ],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
@@ -10103,7 +10110,9 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
-   "quality_report_rules": [],
+   "quality_report_rules": [
+    "colour_tile"
+   ],
    "recovery_notes": 0,
    "render_approximate": true,
    "render_recovered": "skip",
@@ -10456,7 +10465,9 @@
    "quality": "n/a",
    "quality_pages": 0,
    "quality_pages_flagged": 0,
-   "quality_report_rules": [],
+   "quality_report_rules": [
+    "colour_tile"
+   ],
    "recovery_notes": 0,
    "render_approximate": true,
    "render_recovered": "skip",
@@ -13308,10 +13319,12 @@
    "causes": [],
    "expect": "pass",
    "incremental": "pass",
-   "quality": "ok",
+   "quality": "report:colour_tile",
    "quality_pages": 1,
    "quality_pages_flagged": 0,
-   "quality_report_rules": [],
+   "quality_report_rules": [
+    "colour_tile"
+   ],
    "recovery_notes": 0,
    "render_approximate": false,
    "render_recovered": "skip",
