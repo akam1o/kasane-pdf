@@ -1,0 +1,63 @@
+# CodeQL on release branches. The repository's CodeQL default setup
+# analyses the default branch and pull requests; a patch release cut
+# from an older tag (release/v0.4.1 from v0.4.0) is neither, and an
+# advanced-setup upload is rejected while default setup is enabled. So
+# this job runs the same analysis (languages actions, python, rust; the
+# default query suite) on the exact release commit without uploading,
+# and fails if any result is not one of the repository's reviewed
+# (dismissed) alerts — the same condition under which the default
+# setup's check is green on the default branch.
+name: codeql-release
+
+on:
+  push:
+    branches: ["release/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: read
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, python, rust]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: /language:${{ matrix.language }}
+          upload: never
+          output: sarif
+      - name: every result is a reviewed alert
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=dismissed&per_page=100" \
+            --jq '.[] | [.rule.id, .most_recent_instance.location.path, (.most_recent_instance.location.start_line | tostring)] | @tsv' \
+            > dismissed.tsv
+          python3 - <<'EOF'
+          import glob, json
+          dismissed = {tuple(line.rstrip("\n").split("\t")) for line in open("dismissed.tsv") if line.strip()}
+          new, total = [], 0
+          for path in glob.glob("sarif/*.sarif"):
+              for run in json.load(open(path))["runs"]:
+                  for r in run.get("results", []):
+                      total += 1
+                      loc = r["locations"][0]["physicalLocation"]
+                      key = (r["ruleId"], loc["artifactLocation"]["uri"], str(loc["region"]["startLine"]))
+                      if key not in dismissed:
+                          new.append(key)
+          print(f"{total} result(s); {len(new)} not among the {len(dismissed)} reviewed alerts")
+          for k in new:
+              print("UNREVIEWED:", *k)
+          raise SystemExit(1 if new else 0)
+          EOF

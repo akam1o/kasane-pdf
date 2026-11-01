@@ -25,6 +25,29 @@ matrix + docs, wasm32 build, dependency audit, compat + round-trip
 smoke, crate package check) and CodeQL must pass; the latest nightly
 must be green on the same code.
 
+### Patch releases from a release branch
+
+A patch for an earlier version (0.4.1 from `v0.4.0` while `main` had
+moved on) is cut as `release/v<version>` from that tag, with only the
+fix commits and the preparation commit — never `main` — and verified on
+its own commit:
+
+- `pr.yml` runs on pushes to `release/**` too (a pull request would
+  test a merge with `main`, not the release commit);
+- `codeql-release.yml` runs the CodeQL analysis of the repository's
+  default setup (actions, python, rust; default suite) on pushes to
+  `release/**`, without uploading, and fails on any result that is not
+  a reviewed (dismissed) alert. Default setup analyses `main` and pull
+  requests only and rejects advanced uploads while enabled, so no ref is
+  analysed twice;
+- the nightly: `gh workflow run nightly.yml --ref release/v<version>`
+  — it checks against the baseline committed on that branch (the one of
+  the version being patched), not `main`'s.
+
+The tag goes on the release branch's verified commit; the branch's
+CHANGELOG section and release notes are then brought to `main` as a
+separate commit (the fix commits are already there).
+
 ## 3. Package verification (local, from the clean tree)
 
 ```console
