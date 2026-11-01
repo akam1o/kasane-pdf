@@ -420,3 +420,43 @@ fn the_japan1_collection_maps_cids_and_conflicts_stay_unresolved() {
         vec![s("A", ResolveKind::CharacterCollection), UNRESOLVED]
     );
 }
+
+/// `UNI` with its `cmap` replaced by one (3,10) format 12 subtable of
+/// `groups` groups, each mapping all of U+0000..U+10FFFF to glyph 1.
+fn hostile_cmap(groups: u32) -> Vec<u8> {
+    let mut cmap = vec![0, 0, 0, 1, 0, 3, 0, 10, 0, 0, 0, 12, 0, 12, 0, 0];
+    cmap.extend_from_slice(&(16 + 12 * groups).to_be_bytes());
+    cmap.extend_from_slice(&[0, 0, 0, 0]);
+    cmap.extend_from_slice(&groups.to_be_bytes());
+    for _ in 0..groups {
+        cmap.extend_from_slice(&0u32.to_be_bytes());
+        cmap.extend_from_slice(&0x10_FFFFu32.to_be_bytes());
+        cmap.extend_from_slice(&1u32.to_be_bytes());
+    }
+    let mut font = UNI.to_vec();
+    let n = u16::from_be_bytes([font[4], font[5]]) as usize;
+    let rec = (0..n)
+        .map(|i| 12 + 16 * i)
+        .find(|&r| &font[r..r + 4] == b"cmap")
+        .unwrap();
+    let off = font.len() as u32;
+    font[rec + 8..rec + 12].copy_from_slice(&off.to_be_bytes());
+    font[rec + 12..rec + 16].copy_from_slice(&(cmap.len() as u32).to_be_bytes());
+    font.extend_from_slice(&cmap);
+    font
+}
+
+#[test]
+fn a_hostile_cmap_is_not_enumerated() {
+    // 20 000 groups over all of Unicode: enumerating it would take
+    // 2 · 10^10 callbacks; its coverage is counted from the headers
+    // and the cmap is not read backwards.
+    let t = std::time::Instant::now();
+    let got = text(&pdf("<0105>", truetype(&hostile_cmap(20_000), true, 32)));
+    assert!(t.elapsed().as_secs() < 5, "took {:?}", t.elapsed());
+    // g1 is meaningless; g5 still has its post name "Omega".
+    assert_eq!(
+        got,
+        vec![UNRESOLVED, s("\u{2126}", ResolveKind::FontProgram)]
+    );
+}

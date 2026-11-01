@@ -89,6 +89,65 @@ pub(crate) fn agl_unicode(name: &str) -> Option<String> {
     (!out.is_empty()).then_some(out)
 }
 
+fn be16(b: &[u8], at: usize) -> Option<u32> {
+    Some(u16::from_be_bytes(b.get(at..at.checked_add(2)?)?.try_into().ok()?) as u32)
+}
+
+fn be32(b: &[u8], at: usize) -> Option<u32> {
+    Some(u32::from_be_bytes(
+        b.get(at..at.checked_add(4)?)?.try_into().ok()?,
+    ))
+}
+
+/// Code points the Unicode subtables of a raw `cmap` table cover,
+/// counted from their headers (formats 4, 12 and 13 — the ones whose
+/// ranges can be far larger than the table; the others are bounded by
+/// their own size), saturating; `None` when a header is unreadable.
+/// Decides whether enumerating the code points is affordable at all.
+pub(crate) fn cmap_coverage(cmap: &[u8]) -> Option<u64> {
+    let n = be16(cmap, 2)? as usize;
+    let mut total: u64 = 0;
+    for i in 0..n {
+        let rec = 4 + i * 8;
+        let (platform, encoding) = (be16(cmap, rec)?, be16(cmap, rec + 2)?);
+        if !(platform == 0 || (platform == 3 && (encoding == 1 || encoding == 10))) {
+            continue;
+        }
+        let off = be32(cmap, rec + 4)? as usize;
+        match be16(cmap, off)? {
+            4 => {
+                let seg_count = be16(cmap, off + 6)? as usize / 2;
+                let ends = off + 14;
+                let starts = ends + seg_count * 2 + 2;
+                for k in 0..seg_count {
+                    let (end, start) = (be16(cmap, ends + 2 * k)?, be16(cmap, starts + 2 * k)?);
+                    if end >= start {
+                        total = total.saturating_add((end - start + 1) as u64);
+                    }
+                }
+            }
+            12 | 13 => {
+                let groups = be32(cmap, off + 12)? as usize;
+                for k in 0..groups {
+                    let g = off + 16 + k * 12;
+                    let (start, end) = (be32(cmap, g)?, be32(cmap, g + 4)?);
+                    if end >= start {
+                        total = total.saturating_add((end - start) as u64 + 1);
+                    }
+                    if total > MAX_REVERSE_CMAP as u64 {
+                        return Some(total);
+                    }
+                }
+            }
+            _ => {}
+        }
+        if total > MAX_REVERSE_CMAP as u64 {
+            return Some(total);
+        }
+    }
+    Some(total)
+}
+
 /// Code points that fonts commonly give one shared glyph and that read
 /// as the same text; the first of each group is the answer.
 const EQUIVALENT: &[&[u32]] = &[
@@ -122,6 +181,14 @@ impl ReverseCmap {
     /// `None` when the font has no Unicode subtable or more than
     /// [`MAX_REVERSE_CMAP`] mapped code points.
     pub(crate) fn build(face: &ttf_parser::Face<'_>) -> Option<ReverseCmap> {
+        // Enumerating a subtable visits every code point of every range
+        // (ttf-parser's `codepoints`): count them from the headers first.
+        let raw = face
+            .raw_face()
+            .table(ttf_parser::Tag::from_bytes(b"cmap"))?;
+        if cmap_coverage(raw)? > MAX_REVERSE_CMAP as u64 {
+            return None;
+        }
         let cmap = face.tables().cmap?;
         let mut by_gid: HashMap<u16, Vec<u32>> = HashMap::new();
         let mut seen = 0usize;
@@ -231,6 +298,38 @@ mod tests {
         assert!(crate::agl::AGL
             .windows(2)
             .all(|w| w[0].0.as_bytes() < w[1].0.as_bytes()));
+    }
+
+    /// A raw `cmap` with one (3,10) format 12 subtable of `groups`
+    /// groups, each covering `per` code points.
+    fn cmap12(groups: u32, per: u32) -> Vec<u8> {
+        let mut v = vec![0, 0, 0, 1, 0, 3, 0, 10, 0, 0, 0, 12];
+        v.extend_from_slice(&[0, 12, 0, 0]);
+        v.extend_from_slice(&(16 + 12 * groups).to_be_bytes());
+        v.extend_from_slice(&[0, 0, 0, 0]);
+        v.extend_from_slice(&groups.to_be_bytes());
+        for g in 0..groups {
+            v.extend_from_slice(&0u32.to_be_bytes());
+            v.extend_from_slice(&(per - 1).to_be_bytes());
+            v.extend_from_slice(&g.to_be_bytes());
+        }
+        v
+    }
+
+    #[test]
+    fn cmap_coverage_is_counted_without_enumerating() {
+        assert_eq!(cmap_coverage(&cmap12(3, 10)), Some(30));
+        // 100 000 groups over all of Unicode: decided from the first
+        // group, in no time, not by 10^11 callbacks.
+        let t = std::time::Instant::now();
+        assert!(cmap_coverage(&cmap12(100_000, 0x11_0000)).unwrap() > MAX_REVERSE_CMAP as u64);
+        assert!(t.elapsed().as_millis() < 100);
+        // Truncated headers are unreadable, not a panic.
+        let full = cmap12(2, 5);
+        for cut in 0..full.len() {
+            let _ = cmap_coverage(&full[..cut]);
+        }
+        assert_eq!(cmap_coverage(&[]), None);
     }
 
     #[test]
