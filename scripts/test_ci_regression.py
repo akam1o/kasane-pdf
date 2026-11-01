@@ -245,6 +245,36 @@ class Gate(unittest.TestCase):
         self.assertIn("| known flags (in the baseline) | 1 |", text)
         self.assertNotIn("grid", text)
 
+    def with_semantic(self, f, classes, f1_annots=None):
+        f = dict(f)
+        f["roundtrip"] = {
+            "full": True,
+            "semantic": {"class": "pass", "checks": [{"category": c, "class": k} for c, k in classes.items()]},
+        }
+        if f1_annots is not None:
+            f["metrics"] = dict(f["metrics"], text_char_f1_with_annots=f1_annots)
+        return f
+
+    def test_semantic_categories_are_report_only(self):
+        # v0.4.0 baseline: seven categories, no annotation F1. A run with
+        # the document-level categories and the new metric reads, and a
+        # pass -> fail in any category is listed, never a regression.
+        old = self.with_semantic(file("a", [NORMAL]), {"acroform": "pass", "outlines": "pass"})
+        base = cr.summarize(run(old))
+        new = self.with_semantic(
+            file("a", [NORMAL]),
+            {"acroform": "fail", "outlines": "pass", "xfa": "fail", "metadata": "pass"},
+            f1_annots=0.5,
+        )
+        rc, out = check(run(new), base)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("semantic acroform pass -> fail", out)
+        # The new categories are summarised for the next baseline.
+        self.assertEqual(cr.summarize(run(new))["files"]["a"]["semantic"]["xfa"], "fail")
+        # And a baseline with them, against a run without (older runner).
+        rc, out = check(run(old), cr.summarize(run(new)))
+        self.assertEqual(rc, 0, out)
+
 
 if __name__ == "__main__":
     unittest.main()
