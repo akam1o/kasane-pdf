@@ -20,7 +20,10 @@
 //!   signatures cannot survive a rewrite, so writing a file that
 //!   still *claims* one is refused outright (blank unsigned fields
 //!   pass through like any other object).
-//! * `/AcroForm` `/XFA` — outside the rewrite preservation profile.
+//! * an `/AcroForm` `/XFA` packet that holds an XML signature (the
+//!   XML-DSig namespace in its decoded content), or that cannot be
+//!   decoded to check — the signature policy applied to XFA. An XFA form
+//!   without one is carried verbatim (below).
 //! * catalog `/RichMedia`, `/AA` — outside profile.
 //! * a catalog `/OCProperties` that is not well formed (types, required
 //!   entries, `/Order` cycles — `crate::optcontent::validate_for_rewrite`).
@@ -42,7 +45,11 @@
 //! null: the rewrite fails with that error.
 //!
 //! Everything else reachable is copied verbatim — unknown dictionary
-//! keys are preserved, never silently dropped. That includes named
+//! keys are preserved, never silently dropped. That includes XFA
+//! (§12.7.8): the `/XFA` stream or packet array — packet names, order,
+//! duplicates, every packet's stream bytes — and the catalog's
+//! `/NeedsRendering` are ordinary reachable objects, copied with
+//! renumbered references; nothing is parsed, regenerated or reordered. That includes named
 //! destinations: the `/Names` → `/Dests` name tree, the legacy
 //! catalog `/Dests` dictionary and every `/Dest`, `/GoTo` `/D` or
 //! `/OpenAction` operand that names into them travel as ordinary
@@ -533,6 +540,51 @@ fn signed_field_in(
     Ok(None)
 }
 
+/// The XML-DSig namespace (W3C XML Signature, used by XFA signatures):
+/// any XML signature element carries it.
+const XMLDSIG_NS: &[u8] = b"http://www.w3.org/2000/09/xmldsig#";
+
+/// An XFA packet (or the single XFA stream) whose decoded content holds
+/// an XML signature: a description of the first one. A packet that
+/// cannot be decoded cannot be checked, so it is an error rather than
+/// silently treated as unsigned.
+fn xfa_xml_signature(doc: &Document, xfa: &Object) -> Result<Option<String>, Error> {
+    let signed = |o: &Object, what: &str| -> Result<bool, Error> {
+        let Object::Stream { dict, data } = doc.deref(o)? else {
+            return Ok(false);
+        };
+        let decoded = doc
+            .decode_stream(&dict, &data)
+            .map_err(|e| Error::Unsupported {
+                feature: "XFA packet",
+                detail: format!(
+                    "{what} could not be decoded to check it for an XML signature ({e})"
+                ),
+            })?;
+        Ok(decoded.windows(XMLDSIG_NS.len()).any(|w| w == XMLDSIG_NS))
+    };
+    match doc.deref(xfa)? {
+        Object::Array(items) => {
+            let mut name = String::from("(unnamed)");
+            for it in &items {
+                match doc.deref(it)? {
+                    Object::String(s) => name = String::from_utf8_lossy(&s).into_owned(),
+                    Object::Stream { .. } => {
+                        let what = format!("packet {name:?}");
+                        if signed(it, &what)? {
+                            return Ok(Some(what));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(None)
+        }
+        Object::Stream { .. } => Ok(signed(xfa, "stream")?.then(|| "stream".to_string())),
+        _ => Ok(None),
+    }
+}
+
 /// Every reference is followed with the §7.3.10 rule (an undefined
 /// object reads as null, i.e. as absent); an object that is defined but
 /// unreadable fails the check rather than being skipped.
@@ -558,17 +610,23 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
         }
     }
 
-    // AcroForm: /XFA is outside the profile; a filled /Sig field
-    // (FT=/Sig with a /V entry) means "actually signed" — refuse.
-    // Blank unsigned fields are ordinary widgets and pass through.
+    // AcroForm: a filled /Sig field (FT=/Sig with a /V entry) means
+    // "actually signed" — refuse. Blank unsigned fields are ordinary
+    // widgets and pass through. XFA is carried verbatim unless a packet
+    // holds an XML signature.
     if let Some(af_obj) = catalog.get(b"AcroForm".as_slice()) {
         let af = doc.deref(af_obj)?;
         if let Some(d) = af.as_dict() {
-            if d.contains_key(b"XFA".as_slice()) {
-                return Err(Error::Unsupported {
-                    feature: "XFA form",
-                    detail: "/AcroForm /XFA is outside the rewrite profile".into(),
-                });
+            if let Some(xfa) = d.get(b"XFA".as_slice()) {
+                if let Some(what) = xfa_xml_signature(doc, xfa)? {
+                    return Err(Error::SignaturePolicy {
+                        rule: crate::error::SignatureRule::RewriteOfSignedDocument,
+                        detail: format!(
+                            "XFA {what} holds an XML signature (XML-DSig) — what it signs is \
+                             not evaluated, so the document is treated as signed"
+                        ),
+                    });
+                }
             }
             if let Some(fields_obj) = d.get(b"Fields".as_slice()) {
                 let fields = doc.deref(fields_obj)?;
