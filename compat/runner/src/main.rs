@@ -296,12 +296,49 @@ struct Metrics {
     text_chars_ours: Option<usize>,
     #[serde(default)]
     text_chars_ref: Option<usize>,
+    /// `text_char_f1` with the page's annotation and form-field
+    /// appearance text added to ours (report only; `text_char_f1` and
+    /// its gate are unchanged). `pdftotext` draws annotation appearances,
+    /// so the appearance is the comparable source; see
+    /// [`AnnotTextAgreement`].
+    #[serde(default)]
+    text_char_f1_with_annots: Option<f64>,
+    #[serde(default)]
+    text_with_annots: Option<AnnotTextAgreement>,
     rewrite_qpdf_ok: Option<bool>,
     rewrite_reparsed: Option<bool>,
 }
 
 /// Drain the document's warnings into the per-file list (deduplicated
 /// by text, bounded so a pathological file cannot bloat the report).
+/// Page-1 text agreement with annotations (report only). Ours is the
+/// page text plus the text drawn by each visible annotation's normal
+/// appearance — once per annotation, as `pdftotext` draws it: Popup,
+/// Hidden and NoView annotations draw nothing, and each widget of a
+/// field draws its own appearance. `/Contents` and field values are
+/// counted by source but never added: a field's value is normally also
+/// drawn by its appearance, and a note's `/Contents` is not drawn, so
+/// adding either would credit text the reference does not contain or
+/// count it twice.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct AnnotTextAgreement {
+    precision: f64,
+    recall: f64,
+    /// Content characters of ours with the appearance text.
+    ours_chars: usize,
+    /// Annotations reported on page 1, and those shown.
+    annotations: usize,
+    visible: usize,
+    /// Content characters by source (same normalisation as the F1).
+    appearance_chars: usize,
+    contents_chars: usize,
+    field_value_chars: usize,
+    /// The extraction with annotations failed (a malformed appearance
+    /// stream); no F1 is reported. The default extraction is unaffected.
+    #[serde(default)]
+    error: Option<String>,
+}
+
 fn collect_warnings(doc: &Document, into: &mut Vec<String>) {
     for w in doc.take_warnings() {
         let s = w.to_string();
@@ -1088,7 +1125,7 @@ fn multiset(ours: &[char], reference: &[char]) -> (f64, f64, f64) {
     (p, r, f)
 }
 
-fn compare_text(ours: &str, pdf: &Path, page: usize) -> Option<TextAgreement> {
+fn pdftotext_page(pdf: &Path, page: usize) -> Option<String> {
     let out = Command::new("pdftotext")
         .args(["-f", &page.to_string(), "-l", &page.to_string()])
         .arg(pdf)
@@ -1098,19 +1135,76 @@ fn compare_text(ours: &str, pdf: &Path, page: usize) -> Option<TextAgreement> {
     if !out.status.success() {
         return None;
     }
-    let theirs = String::from_utf8_lossy(&out.stdout);
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+fn compare_text(ours: &str, theirs: &str) -> TextAgreement {
     let a = normalize(ours);
-    let b = normalize(&theirs);
-    let (oc, rc) = (content_chars(ours), content_chars(&theirs));
+    let b = normalize(theirs);
+    let (oc, rc) = (content_chars(ours), content_chars(theirs));
     let (precision, recall, f1) = multiset(&oc, &rc);
-    Some(TextAgreement {
+    TextAgreement {
         order: text_match(&a, &b),
         precision,
         recall,
         f1,
         ours_chars: oc.len(),
         ref_chars: rc.len(),
-    })
+    }
+}
+
+/// Page 1 with its annotations against `pdftotext` (see
+/// [`AnnotTextAgreement`]). The extraction's warnings are discarded:
+/// the text stage's warnings stay those of the default extraction.
+fn compare_text_with_annots(
+    doc: &Document,
+    page: &kasane_pdf::Page,
+    page_text: &str,
+    theirs: &str,
+) -> (Option<f64>, AnnotTextAgreement) {
+    let x = extract_text(doc, page, &TextOptions::default().with_annotations(true));
+    let _ = doc.take_warnings();
+    let x = match x {
+        Ok(x) => x,
+        Err(e) => {
+            let a = AnnotTextAgreement {
+                error: Some(e.to_string()),
+                ..Default::default()
+            };
+            return (None, a);
+        }
+    };
+    let mut ours = page_text.to_string();
+    let mut a = AnnotTextAgreement {
+        annotations: x.annotations.len(),
+        ..Default::default()
+    };
+    for an in &x.annotations {
+        let drawn: String = an
+            .appearance
+            .iter()
+            .filter_map(|c| c.unicode.as_deref())
+            .collect();
+        if !an.hidden {
+            a.visible += 1;
+            ours.push_str(&drawn);
+            a.appearance_chars += content_chars(&drawn).len();
+        }
+        a.contents_chars += an.contents.as_deref().map_or(0, |s| content_chars(s).len());
+        if let Some(f) = &an.field {
+            a.field_value_chars += f
+                .value
+                .iter()
+                .map(|v| content_chars(v).len())
+                .sum::<usize>();
+        }
+    }
+    let oc = content_chars(&ours);
+    let (p, r, f1) = multiset(&oc, &content_chars(theirs));
+    a.precision = p;
+    a.recall = r;
+    a.ours_chars = oc.len();
+    (Some(f1), a)
 }
 
 /// Save a one-entry `/Info` edit incrementally and check the result
@@ -1233,6 +1327,8 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         text_char_f1: None,
         text_chars_ours: None,
         text_chars_ref: None,
+        text_char_f1_with_annots: None,
+        text_with_annots: None,
         rewrite_qpdf_ok: None,
         rewrite_reparsed: None,
     };
@@ -1511,13 +1607,17 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         // pdftotext's first page (as before) understated multi-page
         // files.
         if args.with_poppler {
-            if let Some(t) = compare_text(&page1_text, path, 1) {
+            if let Some(theirs) = pdftotext_page(path, 1) {
+                let t = compare_text(&page1_text, &theirs);
                 metrics.text_match_ratio = Some(t.order);
                 metrics.text_char_precision = Some(t.precision);
                 metrics.text_char_recall = Some(t.recall);
                 metrics.text_char_f1 = Some(t.f1);
                 metrics.text_chars_ours = Some(t.ours_chars);
                 metrics.text_chars_ref = Some(t.ref_chars);
+                let (f1, a) = compare_text_with_annots(&doc, &pages[0], &page1_text, &theirs);
+                metrics.text_char_f1_with_annots = f1;
+                metrics.text_with_annots = Some(a);
             }
         }
     }
@@ -3531,6 +3631,85 @@ mod text_metric_tests {
             content_chars("\u{3001}\u{8C48}")
         );
         assert_eq!(multiset(&[], &[]), (1.0, 1.0, 1.0));
+    }
+
+    /// Page text "Body"; a field with value "Alice" shown by two widgets
+    /// whose appearances draw "Alice"; a hidden widget drawing "Secret";
+    /// a note with `/Contents` "Note" and no appearance, and its Popup.
+    fn annotated_page() -> kasane_pdf::Document {
+        let ap = |s: &str| {
+            let c = format!("BT /Helv 10 Tf 2 2 Td ({s}) Tj ET");
+            format!(
+                "<< /Type /XObject /Subtype /Form /BBox [0 0 50 20] /Resources << /Font << /Helv 9 0 R >> >> /Length {} >>\nstream\n{c}\nendstream",
+                c.len()
+            )
+        };
+        let content = "BT /Helv 10 Tf 10 100 Td (Body) Tj ET";
+        let objs: Vec<(u32, String)> = vec![
+            (1, "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R 8 0 R] >> >>".into()),
+            (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into()),
+            (
+                3,
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R \
+                 /Resources << /Font << /Helv 9 0 R >> >> /Annots [6 0 R 7 0 R 8 0 R 10 0 R 11 0 R] >>"
+                    .into(),
+            ),
+            (4, format!("<< /Length {} >>\nstream\n{content}\nendstream", content.len())),
+            (5, "<< /T (name) /FT /Tx /V (Alice) /Kids [6 0 R 7 0 R] >>".into()),
+            (6, "<< /Type /Annot /Subtype /Widget /Parent 5 0 R /Rect [10 10 60 30] /P 3 0 R /AP << /N 12 0 R >> >>".into()),
+            (7, "<< /Type /Annot /Subtype /Widget /Parent 5 0 R /Rect [10 40 60 60] /P 3 0 R /AP << /N 13 0 R >> >>".into()),
+            (8, "<< /Type /Annot /Subtype /Widget /T (hidden) /FT /Tx /V (Secret) /F 2 /Rect [10 70 60 90] /P 3 0 R /AP << /N 14 0 R >> >>".into()),
+            (9, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into()),
+            (10, "<< /Type /Annot /Subtype /Text /Rect [100 100 120 120] /Contents (Note) /Popup 11 0 R >>".into()),
+            (11, "<< /Type /Annot /Subtype /Popup /Rect [120 100 180 140] /Parent 10 0 R >>".into()),
+            (12, ap("Alice")),
+            (13, ap("Alice")),
+            (14, ap("Secret")),
+        ];
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offs = Vec::new();
+        for (n, b) in &objs {
+            offs.push(out.len());
+            out.extend_from_slice(format!("{n} 0 obj\n{b}\nendobj\n").as_bytes());
+        }
+        let x = out.len();
+        out.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes(),
+        );
+        for o in offs {
+            out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n",
+                objs.len() + 1
+            )
+            .as_bytes(),
+        );
+        kasane_pdf::Document::from_bytes(&out).unwrap()
+    }
+
+    #[test]
+    fn annotation_text_counts_each_drawn_appearance_once() {
+        use super::compare_text_with_annots;
+        let doc = annotated_page();
+        let page = &doc.pages()[0];
+        // The reference draws the page and both visible widgets.
+        let (f1, a) = compare_text_with_annots(&doc, page, "Body", "Body\nAlice\nAlice\n");
+        assert_eq!(f1, Some(1.0), "{a:?}");
+        assert_eq!(a.ours_chars, 14);
+        // Appearances of the two visible widgets only; the field value
+        // (once, on the first widget) and /Contents are counted by source
+        // and not added; the hidden widget and the Popup add nothing.
+        assert_eq!(a.appearance_chars, 10);
+        assert_eq!(a.field_value_chars, 5 + 6);
+        assert_eq!(a.contents_chars, 4);
+        assert_eq!(a.visible, a.annotations - 1, "{a:?}");
+        assert!(a.error.is_none());
+        // Against a reference without annotation text, adding them costs
+        // precision instead of inflating the score.
+        let (f1, a) = compare_text_with_annots(&doc, page, "Body", "Body");
+        assert!(f1.unwrap() < 0.5 && a.recall == 1.0, "{f1:?} {a:?}");
     }
 }
 
