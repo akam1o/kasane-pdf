@@ -359,3 +359,73 @@ fn a_note_without_appearance_reports_its_contents() {
         kasane_pdf::render_page(&doc, &doc.pages()[0], &kasane_pdf::RenderOptions::new()).is_err()
     );
 }
+
+#[test]
+fn opt_entries_count_and_resolve_indirectly() {
+    // An indirect [export display] pair resolves to its display text.
+    let p = pdf(
+        "10 0 R",
+        vec![
+            widget(
+                10,
+                "/FT /Ch /T (c) /Opt [[15 0 R 16 0 R]] /V (e1)",
+                Some(11),
+            ),
+            (11, ap("x")),
+            (15, b"(e1)".to_vec()),
+            (16, b"(Display one)".to_vec()),
+        ],
+        "",
+    );
+    assert_eq!(
+        extract(&p, true).unwrap().annotations[0]
+            .field
+            .as_ref()
+            .unwrap()
+            .value,
+        vec!["Display one"]
+    );
+    // Display strings are charged to the page's text budget.
+    let long = "D".repeat(5000);
+    let p = pdf(
+        "10 0 R",
+        vec![
+            widget(
+                10,
+                &format!("/FT /Ch /T (c) /Opt [[(e1) ({long})]] /V (e1)"),
+                Some(11),
+            ),
+            (11, ap("x")),
+        ],
+        "",
+    );
+    let doc = Document::from_bytes(&p).unwrap();
+    let opts = TextOptions::new()
+        .with_annotations(true)
+        .with_limits(Limits::default().with_max_extracted_unicode_bytes(1000));
+    assert!(matches!(
+        extract_text(&doc, &doc.pages()[0], &opts),
+        Err(Error::LimitExceeded { .. })
+    ));
+}
+
+#[test]
+fn an_empty_partial_name_adds_no_component() {
+    let p = pdf(
+        "10 0 R",
+        vec![
+            (12, b"<< /T (top) /Kids [10 0 R] >>".to_vec()),
+            widget(10, "/FT /Tx /T () /V (v) /Parent 12 0 R", Some(11)),
+            (11, ap("v")),
+        ],
+        "",
+    );
+    assert_eq!(
+        extract(&p, true).unwrap().annotations[0]
+            .field
+            .as_ref()
+            .unwrap()
+            .name,
+        "top"
+    );
+}

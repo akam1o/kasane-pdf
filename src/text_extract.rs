@@ -45,12 +45,13 @@
 //! # Resolution
 //!
 //! `unicode` is `Some` when the character resolved via the font's
-//! `/ToUnicode` CMap or, failing that and only for simple fonts, via
-//! the font's `WinAnsiEncoding` glyph name → AGL → Unicode fallback
-//! (§9.10.2). It is `None` when neither path produces a value —
-//! including *every* code on a composite font without `/ToUnicode`
-//! (Identity-H carries no Unicode guess). A mapped-to-U+FFFD produces
-//! `Some("\u{FFFD}")` — distinct from unresolved `None`.
+//! `/ToUnicode` CMap or, without one, via an encoding glyph name and
+//! the Adobe glyph-name rules, the embedded program's Unicode `cmap`,
+//! or the Adobe-Japan1 collection (§9.10.2; `resolved_via` names the
+//! source — see [`ResolveKind`]). It is `None` when no source answers
+//! unambiguously; a `.notdef` glyph (CID 0, GID 0) has no text. A
+//! `/ToUnicode` mapping to U+FFFD produces `Some("\u{FFFD}")` —
+//! distinct from unresolved `None`.
 //!
 //! # Scoping
 //!

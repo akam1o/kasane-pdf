@@ -49,7 +49,12 @@ fn upper_hex(s: &str) -> bool {
 /// One underscore-separated component of a glyph name.
 fn component(c: &str) -> Option<String> {
     if let Ok(i) = crate::agl::AGL.binary_search_by(|(n, _)| n.as_bytes().cmp(c.as_bytes())) {
-        return Some(crate::agl::AGL[i].1.to_string());
+        // The list also names controls (`controlCR`): not text.
+        let t = crate::agl::AGL[i].1;
+        return t
+            .chars()
+            .all(|ch| textual(ch as u32))
+            .then(|| t.to_string());
     }
     if let Some(h) = c.strip_prefix("uni") {
         if h.len() >= 4 && h.len() % 4 == 0 && upper_hex(h) {
@@ -273,7 +278,9 @@ mod tests {
             (".notdef", None),
             ("g12", None),
             ("glyph7", None),
-            ("f_xyz", None), // one component means nothing
+            ("f_xyz", None),     // one component means nothing
+            ("controlCR", None), // a control, not text
+            ("controlESC", None),
             ("", None),
         ] {
             assert_eq!(agl_unicode(name).as_deref(), want, "{name}");

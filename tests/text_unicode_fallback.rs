@@ -419,6 +419,9 @@ fn the_japan1_collection_maps_cids_and_conflicts_stay_unresolved() {
         got,
         vec![s("A", ResolveKind::CharacterCollection), UNRESOLVED]
     );
+    // CID 0 is .notdef: no text (the UCS2 resource maps it to U+FFFD).
+    let got = text(&pdf("<0000>", type0(UNI, "Identity-H", "Japan1", None)));
+    assert_eq!(got, vec![UNRESOLVED]);
 }
 
 /// `UNI` with its `cmap` replaced by one (3,10) format 12 subtable of

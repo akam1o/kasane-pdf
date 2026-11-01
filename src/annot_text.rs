@@ -145,7 +145,10 @@ pub(crate) fn text_string(b: &[u8]) -> String {
         .map(|&c| {
             if let Some((u, _)) = crate::crypt::PDFDOC_SPECIALS.iter().find(|(_, x)| *x == c) {
                 *u
-            } else if matches!(c, 0x7F | 0x9F | 0xAD) || (0x80..=0x9E).contains(&c) {
+            } else if matches!(c, 0x7F | 0x9F | 0xAD)
+                || (0x80..=0x9E).contains(&c)
+                || (c < 0x18 && !matches!(c, 0x09 | 0x0A | 0x0D))
+            {
                 '\u{FFFD}'
             } else {
                 c as char
@@ -187,8 +190,11 @@ impl Budget {
 }
 
 /// The field dictionary of a widget (itself when it carries `/T`, else
-/// its `/Parent`), its reference when indirect, and its fully
-/// qualified name.
+/// its nearest ancestor that does), its reference when indirect, and
+/// its fully qualified name. Fields are identified by the dictionary
+/// that names them: kids without a `/T` of their own share their named
+/// ancestor's name and are one field (§12.7.3.2), so its value is
+/// reported once.
 fn field_of(
     doc: &Document,
     widget: &Dict,
@@ -208,7 +214,8 @@ fn field_of(
             });
         }
         if let Some(t) = cur.get(b"T".as_slice()) {
-            if let Some(t) = text_value(doc, t, budget)? {
+            // An empty partial name contributes no component.
+            if let Some(t) = text_value(doc, t, budget)?.filter(|t| !t.is_empty()) {
                 parts.push(t);
             }
             found_field = true;
@@ -284,29 +291,32 @@ fn values(
         return Ok(raw);
     }
     // §12.7.4.4: /Opt entries are display strings or [export display].
-    let opts: Vec<(String, String)> = match inherited(doc, widget, b"Opt")? {
-        Some(Object::Array(a)) => a
-            .iter()
-            .take(MAX_OPTIONS)
-            .filter_map(|o| match doc.deref(o).ok()? {
+    let mut opts: Vec<(String, String)> = Vec::new();
+    if let Some(Object::Array(a)) = inherited(doc, widget, b"Opt")? {
+        for o in a.iter().take(MAX_OPTIONS) {
+            let pair = match doc.deref(o)? {
                 Object::String(s) => {
                     let t = text_string(&s);
-                    Some((t.clone(), t))
+                    (t.clone(), t)
                 }
                 Object::Array(pair) => {
-                    let e = pair.first().and_then(|o| o.as_string()).map(text_string)?;
-                    let d = pair
-                        .get(1)
-                        .and_then(|o| o.as_string())
-                        .map(text_string)
-                        .unwrap_or_else(|| e.clone());
-                    Some((e, d))
+                    let text = |i: usize| -> Result<Option<String>, Error> {
+                        Ok(match pair.get(i).map(|o| doc.deref(o)).transpose()? {
+                            Some(Object::String(s)) => Some(text_string(&s)),
+                            _ => None,
+                        })
+                    };
+                    let Some(e) = text(0)? else { continue };
+                    let d = text(1)?.unwrap_or_else(|| e.clone());
+                    (e, d)
                 }
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    };
+                _ => continue,
+            };
+            // The display text may become the value: it counts.
+            budget.charge(pair.1.len())?;
+            opts.push(pair);
+        }
+    }
     Ok(raw
         .into_iter()
         .map(|v| {
@@ -449,6 +459,8 @@ mod tests {
         assert_eq!(text_string(b"Caf\xe9"), "Café");
         assert_eq!(text_string(b"\x84 \x92 \xa0"), "\u{2014} \u{2122} \u{20AC}");
         assert_eq!(text_string(b"\xad\x7f"), "\u{FFFD}\u{FFFD}");
+        // Annex D leaves 0x00-0x17 undefined except tab, LF and CR.
+        assert_eq!(text_string(b"a\x01b\x0bc\td"), "a\u{FFFD}b\u{FFFD}c\td");
         assert_eq!(text_string(b"\xfe\xff\x00A\x30\x42"), "Aあ");
         // A language escape inside UTF-16 is not text.
         assert_eq!(text_string(b"\xfe\xff\x00\x1bja\x00\x1b\x30\x42"), "あ");

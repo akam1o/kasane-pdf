@@ -150,6 +150,10 @@ pub(crate) fn cid_to_unicode_text(
                 let mut map = HashMap::new();
                 if let Ok(tu) = crate::tounicode::ToUnicode::parse(data, &limits) {
                     for (cid, units) in tu.entries() {
+                        // CID 0 is .notdef in every collection: no text.
+                        if cid == 0 {
+                            continue;
+                        }
                         let text: Option<String> = char::decode_utf16(units.iter().copied())
                             .map(|r| r.ok())
                             .collect();

@@ -1194,7 +1194,7 @@ impl Type3Font {
                 .map(|s| (s, UnicodeSource::ToUnicode));
         }
         let name = std::str::from_utf8(self.encoding[code as usize].as_deref()?).ok()?;
-        crate::unicode_fallback::agl_unicode(name).map(|t| (t, UnicodeSource::GlyphName))
+        glyph_name_text(name).map(|t| (t, UnicodeSource::GlyphName))
     }
 
     /// `true` when `code` is the space char (§9.3.3, single-byte 32).
