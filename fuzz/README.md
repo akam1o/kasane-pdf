@@ -20,5 +20,14 @@ mkdir -p fuzz/corpus/open_any && cp tests/fixtures/encrypted/*.pdf fuzz/corpus/o
 cargo +nightly fuzz run -O open_any fuzz/corpus/open_any -- -max_total_time=600 -rss_limit_mb=2048 -timeout=10
 ```
 
+`text_sources` starts from `fuzz/seeds/text_sources/` (byte 0: how
+the PDF uses the font; `hostile-cmap12-full-range` hung extraction
+before 0.4.0 — 2 000 format 12 groups over all of Unicode):
+
+```console
+mkdir -p fuzz/corpus/text_sources && cp fuzz/seeds/text_sources/* fuzz/corpus/text_sources/
+cargo +nightly fuzz run -O text_sources fuzz/corpus/text_sources -- -max_total_time=600 -rss_limit_mb=2048 -timeout=10
+```
+
 `encrypt_dict` and `ciphertext` start from an empty corpus or from the
 fixtures' own dictionaries and streams (first byte: template index).
