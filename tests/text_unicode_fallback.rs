@@ -144,16 +144,21 @@ fn type3_character_names() {
     let font = |extra: &str| {
         format!(
             "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1 1] /FontMatrix [0.001 0 0 0.001 0 0] \
-             /CharProcs << /a 7 0 R /zero 7 0 R /g12 7 0 R /space 7 0 R >> \
-             /Encoding << /Differences [97 /a /zero /g12 /space] >> \
-             /FirstChar 97 /LastChar 100 /Widths [500 500 500 500] {extra} >>"
+             /CharProcs << /a 7 0 R /zero 7 0 R /g12 7 0 R /space 7 0 R /a12 7 0 R >> \
+             /Encoding << /Differences [97 /a /zero /g12 /space /a12] >> \
+             /FirstChar 97 /LastChar 101 /Widths [500 500 500 500 500] {extra} >>"
         )
         .into_bytes()
     };
     let cp = (7, stream_obj("", b"500 0 d0"));
     let e = ResolveKind::EncodingFallback;
-    let got = text(&pdf("(abcd)", vec![(5, font("")), cp.clone()]));
-    assert_eq!(got, vec![s("a", e), s("0", e), UNRESOLVED, s(" ", e)]);
+    // `a12` is a ZapfDingbats name, but a Type 3 character name is
+    // arbitrary: no dingbat.
+    let got = text(&pdf("(abcde)", vec![(5, font("")), cp.clone()]));
+    assert_eq!(
+        got,
+        vec![s("a", e), s("0", e), UNRESOLVED, s(" ", e), UNRESOLVED]
+    );
     // With a /ToUnicode, it alone decides.
     let got = text(&pdf(
         "(ab)",
