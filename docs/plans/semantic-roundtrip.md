@@ -56,7 +56,14 @@ a script (`/JS`) is a text string or a text stream (§12.6.4.17), decoded
 to Unicode without normalisation before its digest, so the two storage
 forms of one script are equal; an XML document is compared as bytes (no
 XML canonicalisation: two serialisations of the same XML are a
-difference — conservative, and what a verbatim carry must keep). An
+difference — conservative, and what a verbatim carry must keep). XFA
+packet names are text strings compared as exact Unicode (another
+encoding of the same name is equal, a canonically equivalent sequence
+is not). Inside these categories only `/Parent` and a stream's
+`/Length` are skipped as bookkeeping — not `/P`, `/Next`, `/Prev`, which
+the earlier categories skip as back-pointers but which are content
+inside an action value (a GoToE target's page, a Launch action's
+parameters). An
 entry whose value is null or a reference to an undefined object is
 absent (§7.3.7, §7.3.10); an object the engine cannot read is
 `#unresolved`, never null. A `/Next` reference back onto its own chain
@@ -169,8 +176,10 @@ the JavaScript tree and the field tree are `error`; an action chain past
 its depth, a value past the value depth, a line past 1 MiB and a packet
 decoding past 64 MiB are `error`; a dangling `/Next` equals no `/Next`,
 a lost body is a difference and an unreadable object is not null; a
-structure destination names its element by path; ASCII85 / ASCIIHex
-chains decode; notes carry no value or digest; kasane's rewrite of the
+structure destination names its element by path; a GoToE target's `/P`
+and a Launch action's `/Win /P` are compared; XFA packet names are exact
+Unicode; ASCII85 / ASCIIHex chains decode (a stray `~` is an error, not
+an end); notes carry no value or digest; kasane's rewrite of the
 base document (without the entries the 0.4.0 rewriter refuses) passes.
 Five deliberate breakages of the implementation (packet position,
 `/Next`, `/NeedsRendering`, content digest, unknown preference keys
@@ -194,8 +203,9 @@ writers), compared with the original:
 | control: the catalog re-stored unchanged — no category fails | 446 | 446 |
 | control: the `/Info` edit — no category but metadata fails | 446 | 446 |
 
-In 9 further files the appended revision was not what the engine read
-back (the probe checks this before comparing): files with a
+The probe counts a revision it could not write or reparse as skipped
+(none on the corpus). In 9 further files the appended revision was not
+what the engine read back (the probe checks this before comparing): files with a
 hybrid-reference section, whose `/XRefStm` entries override the newer
 section — an engine defect (v0.5.0 plan, X1), counted apart rather than
 as misses.
