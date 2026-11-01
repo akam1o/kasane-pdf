@@ -35,7 +35,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: external verifiers (qpdf, poppler)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qpdf poppler-utils python3-pip
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qpdf poppler-utils poppler-data python3-pip
       - name: CJK fallback assets (committed; verified against the lock)
         run: ./scripts/fetch-cjk-assets.sh --check
       - name: build runner (with cjk-fallback)
