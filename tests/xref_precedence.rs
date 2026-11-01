@@ -888,3 +888,44 @@ fn many_sections_naming_one_xrefstm_read_it_once() {
     assert_eq!(width(&doc, 5, 0), Some(100.0));
     assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
 }
+
+#[test]
+fn the_audit_sees_bodies_an_old_xrefstm_listed() {
+    // Object 5 is listed only by the old hybrid section's /XRefStm and
+    // redefined by a newer classic section: its old body is reported as
+    // superseded (the audit re-reads old sections' streams too).
+    let doc = Document::from_bytes(&two_revisions(Kind::Hybrid, Kind::Classic, false)).unwrap();
+    let audit = kasane_pdf::audit_residuals(&doc, &kasane_pdf::Limits::default()).unwrap();
+    assert!(
+        audit
+            .findings
+            .iter()
+            .any(|f| f.kind == kasane_pdf::FindingKind::SupersededObject
+                && f.object.map(|r| r.number) == Some(5)),
+        "{:?}",
+        audit
+            .findings
+            .iter()
+            .map(|f| (f.kind, f.object))
+            .collect::<Vec<_>>()
+    );
+    // A freed object's old body is superseded too, not live.
+    let mut p = Pdf::new();
+    let mut rows = base(&mut p, 0);
+    rows.push((4, 0, b'n', contents_at(&mut p)));
+    rows.push((5, 0, b'n', p.obj(5, 0, "[0 0 100 100]")));
+    let x1 = p.classic(&rows, "<< /Size 6 /Root 1 0 R >>");
+    p.end(x1);
+    let x2 = p.classic(
+        &[(4, 1, b'f', 0)],
+        &format!("<< /Size 6 /Root 1 0 R /Prev {x1} >>"),
+    );
+    p.end(x2);
+    let doc = Document::from_bytes(&p.b).unwrap();
+    let audit = kasane_pdf::audit_residuals(&doc, &kasane_pdf::Limits::default()).unwrap();
+    assert!(audit
+        .findings
+        .iter()
+        .any(|f| f.kind == kasane_pdf::FindingKind::SupersededObject
+            && f.object.map(|r| r.number) == Some(4)));
+}
