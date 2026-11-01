@@ -17,6 +17,16 @@ operand-stack counts, render pixel/buffer size, path-element count,
 xref section/entry counts, the diagnostic `max_diag_*` budgets, and
 the edit `max_edit_*` budgets.
 
+Text extraction adds its own bounds: annotation and field text shares
+the page's `max_extracted_unicode_bytes`; form-field `/Parent` chains
+are followed at most 32 levels and a cycle is refused; a font's
+Unicode `cmap` is read backwards only when its subtable headers cover
+at most 131 072 code points (counted from the headers, never by
+enumeration — a few kilobytes of `cmap` can describe 10^10 code
+points); reverse tables are built once per font. Every
+`extract_text` call frees what it allocates (0.4.0 removed a
+per-call leak of a placeholder pixmap).
+
 Additionally: cycle detection on reference chains, `/Prev` chains,
 and page-tree node revisits; object-stream bodies decoded once per
 Document; `unsafe` is confined to four documented lifetime transmutes

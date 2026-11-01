@@ -74,8 +74,12 @@ Standard 14-style fonts draw with bundled Liberation substitutes
 
 **Text extraction** (`extract_text`) — one positioned `CharInfo` per
 character code: origin, advance, glyph bounds, font size, rendering
-mode and Unicode through `/ToUnicode`, the font encoding or
-`/ActualText`. Unresolved codes are `None`, never a guess.
+mode and Unicode through `/ToUnicode`, the font encoding's glyph names
+(Adobe Glyph List), the embedded font program's own Unicode `cmap`,
+the Adobe-Japan1 collection (`cjk-fallback`) or `/ActualText` —
+`ResolveKind` says which. Unresolved codes are `None`, never a guess.
+Optionally (`TextOptions::with_annotations`) the text of annotations
+and form fields, reported apart from the page content.
 
 **Writing and editing** — `rewrite` produces a fresh single-revision
 file from the reachable object graph (streams verbatim). An `Edit`
