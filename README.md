@@ -104,14 +104,14 @@ experimental scoped content editors (`remove_text`,
 
 ```toml
 [dependencies]
-kasane-pdf = "0.3"
+kasane-pdf = "0.4"
 ```
 
 Or track the repository directly:
 
 ```toml
 [dependencies]
-kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.3.1" }
+kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.4.0" }
 ```
 
 Supported Rust versions: 1.92 or newer (`rust-version` in

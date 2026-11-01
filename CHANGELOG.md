@@ -6,10 +6,12 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Draft for 0.4.0 — not released. Every public API change is additive on
-`#[non_exhaustive]` types (`cargo semver-checks` against 0.3.1: no
-semver update required); the minor version is for the behaviour
-changes below. Release notes draft: `docs/releases/v0.4.0.md`.
+## [0.4.0] - unreleased (the date is set when it is published)
+
+Every public API change is additive on `#[non_exhaustive]` types
+(`cargo semver-checks` against 0.3.1: no semver update required); the
+minor version is for the behaviour changes below. Release notes:
+`docs/releases/v0.4.0.md`.
 
 ### Added
 - **Text without `/ToUnicode`** (text extraction only; glyph selection
@@ -146,6 +148,12 @@ changes below. Release notes draft: `docs/releases/v0.4.0.md`.
 - NoZoom has no effect (a render has no separate viewer zoom).
 - The compat runner's colour comparison (CIEDE2000) is report-only and
   not part of the library.
+- Thin strokes are drawn at their true coverage; Poppler and Acrobat
+  widen them to a device pixel, so hairline drawings look lighter.
+- Overlapping tiling patterns are executed cell by cell, bounded by
+  `max_pattern_tiles` (one corpus document now refused; raise the
+  limit to render it).
+- Encrypted documents are read only; writers refuse them.
 
 ## [0.3.1] - 2026-10-31
 

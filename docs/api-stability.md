@@ -88,7 +88,7 @@ patch release.
 - `Document::open` is the constructor that grows: new open-time options
   go on `OpenOptions`, not into new `from_bytes_*` variants.
 
-## Added in 0.4.0 (additive; behaviour changes) — draft
+## Added in 0.4.0 (additive; behaviour changes)
 
 - `TextOptions::include_annotations` / `with_annotations`,
   `ExtractedText::annotations`, and the new `AnnotationText` and

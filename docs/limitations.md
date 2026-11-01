@@ -86,6 +86,10 @@ are on the [roadmap](architecture.md#roadmap).
   `/F` that is not an integer is read as 0 (no flags), as before.
   Poppler additionally treats every `/Text` annotation as NoRotate and
   NoZoom; kasane-pdf follows the annotation's own `/F`.
+- **Thin strokes** are drawn at their true coverage (anti-aliased);
+  Poppler and Acrobat widen strokes thinner than a device pixel to one
+  pixel, so hairline and 0.1-pt drawings look lighter here. Only
+  `0 w` gets the one-pixel width (§8.4.3.2).
 - Mesh shadings interpolate colours in sRGB after conversion, not in
   the source space; function-based shadings are sampled on a 128×128
   grid. Both are recorded as approximations in the feature file.

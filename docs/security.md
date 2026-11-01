@@ -25,7 +25,10 @@ at most 131 072 code points (counted from the headers, never by
 enumeration — a few kilobytes of `cmap` can describe 10^10 code
 points); reverse tables are built once per font. Every
 `extract_text` call frees what it allocates (0.4.0 removed a
-per-call leak of a placeholder pixmap).
+per-call leak of a placeholder pixmap present since 0.1), annotation
+collection is linear in `/Annots`, and a simple font's `/FirstChar` /
+`/LastChar` outside 0–255 is handled instead of panicking (also since
+0.1; found by fuzzing).
 
 Additionally: cycle detection on reference chains, `/Prev` chains,
 and page-tree node revisits; object-stream bodies decoded once per
