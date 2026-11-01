@@ -7,7 +7,10 @@ name: pr
 on:
   pull_request:
   push:
-    branches: [main]
+    # release/** : a patch release cut from an older tag is verified on
+    # its own exact commit (the pull-request path would test a merge
+    # with main).
+    branches: [main, "release/**"]
 
 permissions:
   contents: read
