@@ -455,7 +455,7 @@ def hybrid():
         (0, 0, 0, 65535),
         (1, 1, offsets[1], 0),
         (2, 1, offsets[2], 0),
-        (3, 0, 0, 0),                  # free: overrides classic InUse
+        (3, 0, 0, 0),                  # free here; the table's InUse entry is searched first (7.5.8.4)
         (4, 1, xrefstm_obj_pos, 0),
     ]
     for (_num, t, f2, f3) in entries:

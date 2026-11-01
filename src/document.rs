@@ -311,7 +311,7 @@ impl Document {
         if self.lenient {
             parser.tolerate_missing_endobj();
         }
-        parser.seek(offset as usize);
+        parser.seek(Self::object_offset(offset, self.data.len(), r)?);
         parser.parse_indirect_object()?.ok_or_else(|| {
             Error::Parse(format!(
                 "no indirect object at xref offset {offset} (for {r})"
@@ -561,7 +561,7 @@ impl Document {
             if self.lenient {
                 parser.tolerate_missing_endobj();
             }
-            parser.seek(offset as usize);
+            parser.seek(Self::object_offset(offset, self.data.len(), current)?);
             let obj = parser.parse_indirect_object()?.ok_or_else(|| {
                 Error::Parse(format!(
                     "no indirect object at xref offset {offset} (for {})",
@@ -682,6 +682,20 @@ impl Document {
             Some(c) => c.decrypt_object(io.object_ref, io.object),
             None => Ok(io.object),
         }
+    }
+
+    /// An xref offset as a position in the input, refused when it lies
+    /// beyond the input (checked in `u64`: on 32-bit targets a cast
+    /// would wrap a large offset onto an unrelated position).
+    fn object_offset(offset: u64, len: usize, r: IndirectRef) -> Result<usize, Error> {
+        usize::try_from(offset)
+            .ok()
+            .filter(|&o| o <= len)
+            .ok_or_else(|| {
+                Error::Parse(format!(
+                    "xref offset {offset} for {r} is beyond end of input ({len} bytes)"
+                ))
+            })
     }
 
     /// `true` when `/Filter` or `/DecodeParms` is, or contains, a
