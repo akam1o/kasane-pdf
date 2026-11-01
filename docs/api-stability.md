@@ -88,6 +88,21 @@ patch release.
 - `Document::open` is the constructor that grows: new open-time options
   go on `OpenOptions`, not into new `from_bytes_*` variants.
 
+## Added in 0.4.0 (additive; behaviour changes) — draft
+
+- `TextOptions::include_annotations` / `with_annotations`,
+  `ExtractedText::annotations`, and the new `AnnotationText` and
+  `FieldText` (both `#[non_exhaustive]`, re-exported at the crate root
+  and from `text_extract`); `AnnotationText::text()`.
+- `ResolveKind::FontProgram` and `ResolveKind::CharacterCollection`
+  (the enum is `#[non_exhaustive]`; match with a wildcard arm).
+- `cargo semver-checks` against 0.3.1: no update required. The minor
+  bump is for observable behaviour: codes that were unresolved now
+  resolve (never a code that already resolved), pages with a non-Normal
+  blend mode and stroked text render differently (corrected), one more
+  class of input is refused with `max_pattern_tiles`, and `rewrite`
+  carries `/OCProperties`.
+
 ## Open items (additive)
 
 - `Document::from_vec(Vec<u8>)` to hand ownership over without a copy.

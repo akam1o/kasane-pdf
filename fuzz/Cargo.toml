@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-kasane-pdf = { path = ".." }
+kasane-pdf = { path = "..", features = ["cjk-fallback"] }
 
 [lib]
 path = "src/lib.rs"
@@ -38,3 +38,10 @@ bench = false
 # Not part of the kasane-pdf workspace or the published crate.
 [workspace]
 members = ["."]
+
+[[bin]]
+name = "text_sources"
+path = "fuzz_targets/text_sources.rs"
+test = false
+doc = false
+bench = false

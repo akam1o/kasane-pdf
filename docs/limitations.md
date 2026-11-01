@@ -99,6 +99,26 @@ are on the [roadmap](architecture.md#roadmap).
   and skipped (recorded as `Warning::MalformedToUnicodeEntry`). Text
   drawn through optional content that is OFF is excluded;
   `/ActualText` replaces the drawn codes.
+- Without `/ToUnicode` (`ResolveKind` tells which source answered):
+  glyph names through the Adobe Glyph List, the embedded program's
+  Unicode `cmap` read backwards, and Adobe-Japan1 CIDs (with
+  `cjk-fallback`). Unresolved on purpose: names without glyph-list
+  meaning (`g12`, `glyph7`), symbol-only (3,0) `cmap`s, glyphs reached
+  from several unrelated code points, private-use mappings, CID-keyed
+  CFF fonts of the Identity ordering, the GB1 / CNS1 / Korea1
+  collections (no bundled UCS2 mapping), `cmap`s covering more than
+  131 072 code points, and Japan1 codes where the embedded program
+  disagrees with the collection. A glyph name is trusted as the font
+  declares it (a font that names a glyph `A` but draws something else
+  is reported as `A`). For simple fonts other than Type 3 the older
+  name table is still consulted first, unchanged, so its readings stay
+  as before: ZapfDingbats names such as `a12` read as dingbats and
+  `uniXXXX` names are read as written, private-use values included.
+- Annotation text (`TextOptions::with_annotations`): `/RC` is reported
+  as stored (XHTML, not interpreted); a field's value is read per page
+  (a field with widgets on several pages reports it once per page);
+  buttons and signatures have no text value; appearance text exists
+  only when the annotation has an appearance the renderer draws.
 
 ## Writing and editing
 

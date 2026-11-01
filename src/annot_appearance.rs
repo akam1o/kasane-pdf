@@ -52,6 +52,25 @@ pub(crate) struct Markup {
     pub(crate) multiply: bool,
 }
 
+/// Whether [`synthesize`] draws `subtype` (other subtypes are refused).
+pub(crate) fn synthesizes(subtype: &[u8]) -> bool {
+    matches!(
+        subtype,
+        b"Square"
+            | b"Circle"
+            | b"Line"
+            | b"Polygon"
+            | b"PolyLine"
+            | b"Ink"
+            | b"Highlight"
+            | b"Underline"
+            | b"StrikeOut"
+            | b"Squiggly"
+            | b"FreeText"
+            | b"Redact"
+    )
+}
+
 /// Build the appearance of `annot` (`/Subtype` `subtype`, no `/AP`)
 /// inside `rect` (normalised `/Rect`). `Ok(None)` means the subtype is
 /// handled and draws nothing; an unhandled subtype is `Unsupported`.

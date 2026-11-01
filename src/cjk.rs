@@ -129,3 +129,47 @@ pub(crate) fn cid_to_unicode(
     let _ = ordering;
     None
 }
+
+/// CID → Unicode text for an Adobe character collection (the whole
+/// mapped string, unlike [`cid_to_unicode`]'s first character), parsed
+/// once per process. `None` without the bundled `Adobe-<ordering>-UCS2`
+/// resource. Mappings to private-use or control characters are left
+/// out.
+pub(crate) fn cid_to_unicode_text(
+    ordering: &[u8],
+) -> Option<&'static std::collections::HashMap<u32, String>> {
+    #[cfg(feature = "cjk-fallback")]
+    {
+        use std::collections::HashMap;
+        use std::sync::OnceLock;
+        static JAPAN1: OnceLock<HashMap<u32, String>> = OnceLock::new();
+        if ordering == b"Japan1" {
+            return Some(JAPAN1.get_or_init(|| {
+                let data: &[u8] = include_bytes!("../assets/cjk/cmap/Adobe-Japan1-UCS2");
+                let limits = crate::limits::Limits::default();
+                let mut map = HashMap::new();
+                if let Ok(tu) = crate::tounicode::ToUnicode::parse(data, &limits) {
+                    for (cid, units) in tu.entries() {
+                        // CID 0 is .notdef in every collection: no text.
+                        if cid == 0 {
+                            continue;
+                        }
+                        let text: Option<String> = char::decode_utf16(units.iter().copied())
+                            .map(|r| r.ok())
+                            .collect();
+                        if let Some(t) = text.filter(|t| {
+                            !t.is_empty()
+                                && t.chars()
+                                    .all(|c| crate::unicode_fallback::textual(c as u32))
+                        }) {
+                            map.insert(cid, t);
+                        }
+                    }
+                }
+                map
+            }));
+        }
+    }
+    let _ = ordering;
+    None
+}

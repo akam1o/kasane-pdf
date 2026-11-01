@@ -6,18 +6,76 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Draft for 0.4.0 — not released. Every public API change is additive on
+`#[non_exhaustive]` types (`cargo semver-checks` against 0.3.1: no
+semver update required); the minor version is for the behaviour
+changes below. Release notes draft: `docs/releases/v0.4.0.md`.
+
+### Added
+- **Text without `/ToUnicode`** (text extraction only; glyph selection
+  never uses it). Codes a font's `/ToUnicode` does not cover used to
+  resolve only through a 216-name glyph table for simple fonts. Now:
+  - every simple font, Type 3 included, maps encoding glyph names
+    through the full Adobe Glyph List and Adobe's glyph-name rules
+    (suffixes, ligature components, `uniXXXX…`, `uXXXX[XX]`; a name
+    maps only when every part does; never private-use, controls or
+    noncharacters) after the old table, which still decides for the
+    names it knows — no earlier result changes;
+  - a CFF program used through its built-in encoding names the glyph in
+    its charset;
+  - `ResolveKind::FontProgram`: the embedded program's Unicode `cmap`
+    read backwards for the selected glyph (unambiguous glyphs only; a
+    few equivalents such as space / no-break space decide), else its
+    own glyph name (`post`, name-keyed CFF); never for a substituted
+    face; bounded (`cmap`s covering more than 131 072 code points, or
+    with unreadable headers, are not read backwards);
+  - `ResolveKind::CharacterCollection`: Type 0 fonts of the Adobe
+    registry map CIDs through `Adobe-<ordering>-UCS2` (§9.10.2 method
+    3) — Adobe-Japan1 with the `cjk-fallback` feature; when the
+    embedded program disagrees the code stays unresolved.
+  `/ToUnicode`, when present, still decides alone. The Adobe Glyph List
+  (BSD-3-Clause) is bundled as `src/agl.rs` (see NOTICE).
+- **Annotation and form-field text, opt-in**:
+  `TextOptions::with_annotations(true)` fills `ExtractedText::
+  annotations` with one `AnnotationText` per annotation (`/Annots`
+  order, each object once, popups with their parent): `/Contents`,
+  `/RC` as stored, for widgets a `FieldText` (fully qualified name,
+  `/FT`, `/V` and `/DV` as text — choices through `/Opt` to their
+  display text — the value on the field's first widget only), and the
+  characters the normal appearance draws, placed on the page.
+  `AnnotationText::text()` picks one string by priority (field value,
+  else `/Contents`, else the appearance) so nothing is counted twice.
+  Default off: `chars` and everything else are unchanged.
+
+### Changed
+- **`rewrite` carries optional content.** A catalog `/OCProperties` was
+  refused as outside the rewrite profile; a well-formed one is now
+  carried verbatim with renumbered references — every group, the
+  default and alternate configurations (`/BaseState`, `/ON`, `/OFF`,
+  `/Order`, `/RBGroups`, `/Locked`, `/ListMode`, `/AS`, `/Intent`) and
+  every content-level reference (page `/Properties`, XObject and
+  annotation `/OC`, OCMDs with `/P` and `/VE`). Unknown keys are kept.
+  A malformed one — missing `/OCGs` or `/D`, a group that is not an
+  `/OCG` dictionary with a `/Name`, a wrong type, an `/Order` that
+  contains itself, a usage application without `/Event` or
+  `/Category` — is refused with `Error::Structure`; an `/Order` nested
+  deeper than 32 levels or more than 262 144 configuration entries
+  with `LimitExceeded`. Indirect values and `null` array entries are
+  accepted (§7.3.10). A document that carries optional content is
+  written with a header of at least `%PDF-1.5` (the larger of header
+  and catalog `/Version`, then that floor; 2.0 is still refused); an
+  incremental save never changes the header.
+- **A new refusal: `max_pattern_tiles` on overlapping tiling patterns
+  in Type 3 glyphs.** One corpus document (a Type 3 glyph showing text
+  in a glyph-space tiling pattern) that rendered *wrongly* before now
+  renders correctly only with 4 866 cell executions and is refused with
+  `LimitExceeded { limit: "max_pattern_tiles" }` at the default 4 096;
+  raise the limit to render it.
+- **Pages that name a non-Normal blend mode** are composited on a
+  transparent page group (below): their pixels may differ by ±1–2 levels
+  where nothing blends.
+
 ### Fixed
-- **Stroked text had the wrong line width.** Glyph outlines in the
-  stroking text modes (`Tr` 1, 2, 5, 6) were stroked with
-  `line width × font size / 1000` in glyph space — about 7× too thin at
-  12 pt, far too thick at large sizes or under a scaling text matrix —
-  and without the caps, joins and dashes of the graphics state. They are
-  now stroked like any path in user space (§9.3.6, §8.5.3.2).
-- **Tiling patterns counted cells that cannot reach the painted area.**
-  The cell range of an overlapping (`/BBox` larger than the step)
-  pattern was widened by up to two cells per side; those cells were run
-  and counted against `max_pattern_tiles`. The range is now exact
-  (no pixel changes; fewer cells executed).
 - **Blend modes against the page were computed over white.** §11.4.7
   makes the page group isolated: objects composite against a
   *transparent* backdrop and the result is put on white paper at the
@@ -29,49 +87,65 @@ versions follow [Semantic Versioning](https://semver.org/).
   fonts, annotation appearances included) name a blend mode other than
   Normal is now rendered on a transparent backdrop and composited on
   white; other pages are painted exactly as before.
+- **`/HardLight` on images, shadings and groups used a wrong formula**
+  (the Screen half doubled the backdrop term). It is now
+  Screen(b, 2s − 1) as §11.3.5 defines.
+- **Stroked text had the wrong line width.** Glyph outlines in the
+  stroking text modes (`Tr` 1, 2, 5, 6) were stroked with
+  `line width × font size / 1000` in glyph space — about 7× too thin at
+  12 pt, far too thick at large sizes or under a scaling text matrix —
+  and without the caps, joins and dashes of the graphics state. They are
+  now stroked like any path in user space (§9.3.6, §8.5.3.2).
 - **A text object inside a Type 3 glyph moved the outer text.** A
   CharProc may hold its own `BT … ET`; its `BT` reset and its `Tj`
   advanced the text and line matrices of the text being shown, so the
   following glyphs of the outer string were drawn at the wrong place.
   Both matrices are now restored after the CharProc.
-- **`/HardLight` on images, shadings and groups used a wrong formula**
-  (the Screen half doubled the backdrop term). It is now
-  Screen(b, 2s − 1) as §11.3.5 defines.
-
-### Changed
-- **`rewrite` carries optional content.** A catalog `/OCProperties` was
-  refused as outside the rewrite profile; a well-formed one is now
-  carried verbatim with renumbered references — every group, the
-  default and alternate configurations (`/BaseState`, `/ON`, `/OFF`,
-  `/Order`, `/RBGroups`, `/Locked`, `/ListMode`, `/AS`, `/Intent`) and
-  every content-level reference (page `/Properties`, XObject and
-  annotation `/OC`, OCMDs with `/P` and `/VE`). A malformed one —
-  missing `/OCGs` or `/D`, a group that is not an `/OCG` dictionary with
-  a `/Name`, a wrong type, an `/Order` that contains itself — is refused
-  with `Error::Structure`; an `/Order` nested deeper than 32 levels or
-  more than 262 144 configuration entries with `LimitExceeded`. Indirect
-  values and `null` array entries are accepted (§7.3.10). A document
-  that carries optional content is written with a header of at least
-  `%PDF-1.5`, the first version that defines it.
-
-### Fixed
+- **Tiling patterns counted cells that cannot reach the painted area.**
+  The cell range of an overlapping (`/BBox` larger than the step)
+  pattern was widened by up to two cells per side; those cells were run
+  and counted against `max_pattern_tiles`. The range is now exact
+  (no pixel changes; fewer cells executed).
 - **Annotations with the NoRotate flag were turned with the page.** On a
-  page with `/Rotate`, an annotation whose `/F` sets NoRotate (bit 5,
-  ISO 32000-2 Table 167) is now drawn upright: its placed appearance is
-  turned back by the page rotation about the upper-left corner of
-  `/Rect`, which stays where the rotated page displays it (the same
-  pivot Poppler uses). Pages without `/Rotate` and annotations without
-  the flag are unchanged. NoZoom needs no change: a render is the page
-  at magnification 1 at the requested resolution.
+  page with `/Rotate`, an annotation whose `/F` sets NoRotate (bit 5)
+  is now drawn upright: its placed appearance is turned back by the page
+  rotation about the upper-left corner of `/Rect` (Poppler's pivot).
+  Pages without `/Rotate` and annotations without the flag are
+  unchanged. NoZoom needs no change: a render is the page at
+  magnification 1 at the requested resolution; there is no separate
+  viewer zoom to compensate.
 - **CFF fonts with a predefined charset drew `.notdef` for their
   glyphs.** A `/FontFile3 /Type1C` program whose Top DICT selects the
   ISOAdobe charset (operand 0, also the default) has no charset table;
   glyph names were not found in it, so each glyph was drawn as
-  `.notdef` — typically a box where a space should be — on pages
-  reported as exact renders. Names now resolve through the predefined
-  charset (glyph *i* = standard string *i*). The Expert and
-  ExpertSubset charsets are refused (`Unsupported`) instead of being
-  drawn as `.notdef`.
+  `.notdef` on pages reported as exact renders. Names now resolve
+  through the predefined charset. The **Expert and ExpertSubset
+  charsets are refused** (`Unsupported`) instead of being drawn as
+  `.notdef`.
+- **A simple font with `/FirstChar` or `/LastChar` outside 0–255
+  panicked** (index out of bounds while reading `/Widths`, since 0.1;
+  found by fuzzing): a malformed font dictionary crashed the caller
+  instead of being handled. Widths for codes a simple font cannot show
+  are now skipped and the count saturates; documents that loaded before
+  load the same.
+- **Every text extraction leaked a small allocation** (a 1 × 1
+  placeholder pixmap, ~36 bytes per call, since extraction shared the
+  renderer — 0.3.1 included). Freed with the call now.
+
+### Known limitations
+- DeviceCMYK is converted with the §10.3.5 formula, without colour
+  management: CMYK pages differ from Poppler / Acrobat by ΔE00 ≈ 5–25
+  on saturated colours (`docs/limitations.md`).
+- Text without `/ToUnicode`: names without glyph-list meaning (`g12`),
+  symbol-only `cmap`s, ambiguous glyphs and CID-keyed fonts outside the
+  bundled Adobe-Japan1 collection stay unresolved — on purpose; GB1,
+  CNS1 and Korea1 have no bundled UCS2 mapping.
+- Annotation text: `/RC` is not interpreted; a field's value is read
+  per page (a field on several pages reports it on each); appearance
+  text requires the annotation's appearance to be interpretable.
+- NoZoom has no effect (a render has no separate viewer zoom).
+- The compat runner's colour comparison (CIEDE2000) is report-only and
+  not part of the library.
 
 ## [0.3.1] - 2026-10-31
 

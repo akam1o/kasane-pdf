@@ -45,12 +45,13 @@
 //! # Resolution
 //!
 //! `unicode` is `Some` when the character resolved via the font's
-//! `/ToUnicode` CMap or, failing that and only for simple fonts, via
-//! the font's `WinAnsiEncoding` glyph name → AGL → Unicode fallback
-//! (§9.10.2). It is `None` when neither path produces a value —
-//! including *every* code on a composite font without `/ToUnicode`
-//! (Identity-H carries no Unicode guess). A mapped-to-U+FFFD produces
-//! `Some("\u{FFFD}")` — distinct from unresolved `None`.
+//! `/ToUnicode` CMap or, without one, via an encoding glyph name and
+//! the Adobe glyph-name rules, the embedded program's Unicode `cmap`,
+//! or the Adobe-Japan1 collection (§9.10.2; `resolved_via` names the
+//! source — see [`ResolveKind`]). It is `None` when no source answers
+//! unambiguously; a `.notdef` glyph (CID 0, GID 0) has no text. A
+//! `/ToUnicode` mapping to U+FFFD produces `Some("\u{FFFD}")` —
+//! distinct from unresolved `None`.
 //!
 //! # Scoping
 //!
@@ -96,6 +97,15 @@ pub struct TextOptions {
     /// `None` keeps every character. The filter is applied after
     /// extraction, so limits and errors are unaffected by it.
     pub region: Option<crate::page::Rect>,
+    /// Also report the page's annotations and form fields in
+    /// [`ExtractedText::annotations`] (off by default: `chars` and
+    /// everything else are unchanged either way). Each annotation's
+    /// appearance is interpreted like a render would: a malformed
+    /// appearance stream fails the extraction; an annotation with no
+    /// appearance the renderer can draw (a note without `/AP`, an
+    /// appearance-state dictionary with no state selected) simply has
+    /// no appearance text.
+    pub include_annotations: bool,
 }
 
 impl TextOptions {
@@ -125,7 +135,18 @@ impl TextOptions {
         self.region = Some(region);
         self
     }
+
+    /// Report annotation and form-field text in
+    /// [`ExtractedText::annotations`] (`true`), or not (`false`, the
+    /// default).
+    #[must_use]
+    pub fn with_annotations(mut self, include: bool) -> Self {
+        self.include_annotations = include;
+        self
+    }
 }
+
+pub use crate::annot_text::{AnnotationText, FieldText};
 
 /// One extracted character — a single PDF character code with its
 /// resolved Unicode value and page-space geometry.
@@ -173,8 +194,9 @@ pub struct CharInfo {
 pub enum ResolveKind {
     /// Via `/ToUnicode` CMap (preferred).
     ToUnicode,
-    /// Via the font's `Encoding` → AGL glyph name → Unicode
-    /// (the spec's fallback for non-symbolic simple fonts).
+    /// Via a glyph name of the font's encoding (the PDF `/Encoding` or
+    /// the program's built-in one) and the Adobe glyph-name rules
+    /// (§9.10.2 method 2; also for Type 3 character names).
     EncodingFallback,
     /// Not resolvable — `unicode` is `None`.
     Unresolved,
@@ -184,6 +206,18 @@ pub enum ResolveKind {
     /// shows no glyph at all yields one synthetic entry (`code` 0,
     /// zero advance, no bounds) so the text is not lost.
     ActualText,
+    // New variants go last: the implicit discriminants of the earlier
+    // ones are part of the public contract.
+    /// No `/ToUnicode` and no meaningful encoding name: through the
+    /// embedded font program — its Unicode `cmap` read backwards
+    /// (unambiguous glyphs only) or its own glyph name (`post`, CFF
+    /// charset). Not a method of ISO 32000; never used for a
+    /// substituted face.
+    FontProgram,
+    /// No `/ToUnicode`: the CID through the font's Adobe character
+    /// collection, `Adobe-<ordering>-UCS2` (§9.10.2 method 3). Only the
+    /// collections bundled with the `cjk-fallback` feature (Japan1).
+    CharacterCollection,
 }
 
 /// The extracted text for one page.
@@ -199,6 +233,11 @@ pub struct ExtractedText {
     /// them. Non-zero on a `LimitExceeded` path — the `Err` is
     /// propagated separately, but on success this is always 0.
     pub omitted: u64,
+    /// The page's annotations and form fields, in `/Annots` order —
+    /// only with [`TextOptions::with_annotations`], else empty. Their
+    /// text is never in `chars`. `region` filters their `appearance`
+    /// characters like `chars`.
+    pub annotations: Vec<AnnotationText>,
 }
 
 /// Extract positioned text from `page` in content order.
@@ -226,14 +265,24 @@ pub fn extract_text(
             ));
         }
     }
-    let mut out = extract_text_impl(doc, page, &opts.limits, opts.include_hidden_content)?;
+    let mut out = extract_text_impl(
+        doc,
+        page,
+        &opts.limits,
+        opts.include_hidden_content,
+        opts.include_annotations,
+    )?;
     if let Some(r) = &opts.region {
         let (x0, x1) = (r.llx.min(r.urx), r.llx.max(r.urx));
         let (y0, y1) = (r.lly.min(r.ury), r.lly.max(r.ury));
-        out.chars.retain(|c| {
+        let inside = |c: &CharInfo| {
             let (x, y) = c.origin;
             x >= x0 && x <= x1 && y >= y0 && y <= y1
-        });
+        };
+        out.chars.retain(inside);
+        for a in &mut out.annotations {
+            a.appearance.retain(inside);
+        }
     }
     Ok(out)
 }
@@ -243,6 +292,7 @@ fn extract_text_impl(
     page: &Page,
     limits: &Limits,
     include_hidden: bool,
+    include_annotations: bool,
 ) -> Result<ExtractedText, Error> {
     let _budget = doc.decoded_budget_scope();
     let opts = crate::render::RenderOptions {
@@ -250,22 +300,60 @@ fn extract_text_impl(
         limits: limits.clone(),
     };
     let ops = doc.page_operations(page)?;
-    let mut r = Renderer::for_extraction(doc, page, &opts)?;
+    // The renderer's placeholder pixmap (nothing is painted), owned
+    // here so it is freed with the call.
+    let mut pixmap = tiny_skia::Pixmap::new(1, 1)
+        .ok_or_else(|| Error::Structure("cannot allocate extraction pixmap".into()))?;
+    let mut r = Renderer::for_extraction(doc, page, &opts, &mut pixmap)?;
     if include_hidden {
         r.include_hidden_content();
     }
     r.run(&ops)?;
-    let chars = r.take_extracted().unwrap_or_default();
-    Ok(ExtractedText { chars, omitted: 0 })
+    let mut annotations = Vec::new();
+    let chars = if include_annotations {
+        let n = r.extracted_len();
+        let page_resources = page
+            .resources()
+            .cloned()
+            .unwrap_or(crate::object::Object::Dict(Default::default()));
+        r.draw_annotations(page, &page_resources)?;
+        let (spans, hidden) = r.take_annotation_spans();
+        let used = r.extracted_unicode_bytes();
+        let mut all = r.take_extracted().unwrap_or_default();
+        let drawn: Vec<(usize, Vec<CharInfo>)> = spans
+            .into_iter()
+            .map(|(i, range)| (i, all[range].to_vec()))
+            .collect();
+        all.truncate(n);
+        annotations = crate::annot_text::collect(
+            doc,
+            page,
+            drawn,
+            &hidden,
+            used,
+            limits.max_extracted_unicode_bytes,
+        )?;
+        all
+    } else {
+        r.take_extracted().unwrap_or_default()
+    };
+    Ok(ExtractedText {
+        chars,
+        omitted: 0,
+        annotations,
+    })
 }
 
 /// Resolve `code` through the font — used by the renderer's
 /// extraction hook. Public for `render.rs`; not part of the
 /// crate's public API.
 pub(crate) fn resolve_unicode(font: &Font, code: u32) -> (Option<String>, ResolveKind) {
+    use crate::font::UnicodeSource as S;
     match font.unicode(code) {
-        Some(s) if font.has_tounicode() => (Some(s), ResolveKind::ToUnicode),
-        Some(s) => (Some(s), ResolveKind::EncodingFallback),
+        Some((s, S::ToUnicode)) => (Some(s), ResolveKind::ToUnicode),
+        Some((s, S::GlyphName)) => (Some(s), ResolveKind::EncodingFallback),
+        Some((s, S::FontProgram)) => (Some(s), ResolveKind::FontProgram),
+        Some((s, S::CharacterCollection)) => (Some(s), ResolveKind::CharacterCollection),
         None => (None, ResolveKind::Unresolved),
     }
 }

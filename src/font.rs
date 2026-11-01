@@ -72,6 +72,9 @@ pub(crate) struct SimpleFont {
     /// `Face` built over `program`. `Face<'a>` borrows, so we keep
     /// it behind `Rc<RefCell>` built lazily per page render.
     face: RefCell<Option<Face<'static>>>,
+    /// The program's Unicode `cmap` read backwards, for extraction;
+    /// built on first use (`Some(None)`: not available).
+    reverse_cmap: RefCell<Option<Option<crate::unicode_fallback::ReverseCmap>>>,
 }
 
 /// A resolved `/Type1` (or `/MMType1`) font backed by an embedded
@@ -148,6 +151,77 @@ pub(crate) struct Type3Font {
     /// `/Resources` the CharProcs resolve against (`None` → inherit
     /// the page's). Stored unresolved; the renderer derefs per use.
     resources: Option<Object>,
+}
+
+/// `/LastChar − /FirstChar + 1` as an entry count: 0 when reversed,
+/// saturating on hostile values (§9.6.2.1 integers of any size).
+fn widths_span(first_char: i64, last_char: i64) -> usize {
+    last_char
+        .saturating_sub(first_char)
+        .saturating_add(1)
+        .clamp(0, i64::from(u32::MAX)) as usize
+}
+
+/// The `/Widths` slot of entry `i`: code `first_char + i` when it is a
+/// single-byte code (0–255). A simple font shows no other code, so a
+/// width outside that range (a `/LastChar` above 255, a negative
+/// `/FirstChar`) is never used and is skipped, not indexed.
+fn width_slot(first_char: i64, i: usize) -> Option<usize> {
+    let code = first_char.checked_add(i64::try_from(i).ok()?)?;
+    (0..=255).contains(&code).then_some(code as usize)
+}
+
+/// Where a code's Unicode text came from (text extraction).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UnicodeSource {
+    /// The font's `/ToUnicode` CMap.
+    ToUnicode,
+    /// A glyph name of the encoding (PDF `/Encoding` or the program's
+    /// built-in one) through the Adobe glyph-name rules.
+    GlyphName,
+    /// The embedded font program: its Unicode `cmap` read backwards, or
+    /// its own glyph name for the glyph (`post`, CFF charset).
+    FontProgram,
+    /// A predefined Adobe character collection: CID → Unicode through
+    /// `Adobe-<ordering>-UCS2` (§9.10.2 method 3).
+    CharacterCollection,
+}
+
+/// A glyph name as Unicode: the table extraction has always used
+/// (WinAnsi-range names, Symbol / ZapfDingbats names, `uniXXXX`) — so no
+/// earlier result changes — and, for the names it does not know, the
+/// Adobe glyph-name algorithm over the full glyph list.
+fn glyph_name_text(name: &str) -> Option<String> {
+    name_to_unicode(name)
+        .and_then(char::from_u32)
+        .map(String::from)
+        .or_else(|| crate::unicode_fallback::agl_unicode(name))
+}
+
+/// Unicode for glyph `gid` from the embedded program `face`: its
+/// Unicode `cmap` read backwards (cached in `cache`), else the
+/// program's own glyph name when that name means something.
+fn program_text(
+    face: &Face<'_>,
+    cache: &RefCell<Option<Option<crate::unicode_fallback::ReverseCmap>>>,
+    gid: GlyphId,
+) -> Option<String> {
+    if gid.0 == 0 {
+        return None;
+    }
+    if cache.borrow().is_none() {
+        *cache.borrow_mut() = Some(crate::unicode_fallback::ReverseCmap::build(face));
+    }
+    let from_cmap = cache
+        .borrow()
+        .as_ref()
+        .and_then(|r| r.as_ref())
+        .and_then(|r| r.get(gid.0));
+    if let Some(c) = from_cmap {
+        return Some(c.to_string());
+    }
+    face.glyph_name(gid)
+        .and_then(crate::unicode_fallback::agl_unicode)
 }
 
 #[derive(Clone)]
@@ -307,7 +381,7 @@ pub(crate) fn load_simple_font_dict(
         let arr = w
             .as_array()
             .ok_or_else(|| Error::Structure("/Widths is not an array".into()))?;
-        let expect = (last_char - first_char + 1) as usize;
+        let expect = widths_span(first_char, last_char);
         if arr.len() < expect {
             return Err(Error::Structure(format!(
                 "/Widths has {} entries, expected at least {}",
@@ -324,7 +398,9 @@ pub(crate) fn load_simple_font_dict(
                     "/Widths[{i}] is not a finite non-negative number"
                 )));
             }
-            widths[first_char as usize + i] = w;
+            if let Some(slot) = width_slot(first_char, i) {
+                widths[slot] = w;
+            }
         }
     } else {
         return Err(Error::Structure(
@@ -412,6 +488,7 @@ pub(crate) fn load_simple_font_dict(
         widths,
         tounicode,
         face: RefCell::new(None),
+        reverse_cmap: RefCell::new(None),
     }))
 }
 
@@ -443,13 +520,13 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         let arr = w
             .as_array()
             .ok_or_else(|| Error::Structure("/Widths is not an array".into()))?;
-        let expect = (last_char - first_char + 1).max(0) as usize;
+        let expect = widths_span(first_char, last_char);
         for (i, e) in arr.iter().enumerate().take(expect.min(arr.len())) {
             // Entries may themselves be indirect.
             let e = doc.deref(e).unwrap_or_else(|_| e.clone());
             if let Some(v) = e.as_number() {
-                if v.is_finite() && v >= 0.0 {
-                    widths[first_char as usize + i] = v;
+                if let (true, Some(slot)) = (v.is_finite() && v >= 0.0, width_slot(first_char, i)) {
+                    widths[slot] = v;
                 }
             }
         }
@@ -907,31 +984,31 @@ impl SimpleFont {
 
     /// Resolve `code` to a Unicode string, in the priority order of
     /// §9.10.2:
-    /// 1. `/ToUnicode` CMap — if present and the code maps.
-    /// 2. WinAnsi glyph name → AGL → Unicode — the encoding fallback
-    ///    for our non-symbolic TrueType fonts.
+    /// 1. `/ToUnicode` CMap — if present (a code it does not map has
+    ///    no text: "if these methods fail, there is no way to
+    ///    determine").
+    /// 2. The encoding's glyph name through the Adobe glyph-name rules.
+    /// 3. An embedded program only: the glyph the code selects, through
+    ///    the program's Unicode `cmap` read backwards or its `post`
+    ///    name (`unicode_fallback`). Never for a substitute face.
     ///
-    /// Returns `None` when *neither* path resolves — the caller
-    /// distinguishes this from a mapped empty string or U+FFFD.
-    pub(crate) fn unicode(&self, code: u8) -> Option<String> {
+    /// Returns `None` when nothing resolves — the caller distinguishes
+    /// this from a mapped empty string or U+FFFD.
+    pub(crate) fn unicode(&self, code: u8) -> Option<(String, UnicodeSource)> {
         if let Some(tu) = &self.tounicode {
-            if let Some(s) = tu.decode(code as u32) {
-                return Some(s);
-            }
-            // ToUnicode present but no entry → no fallback per spec
-            // ("If these methods fail, there is no way to determine").
+            return tu
+                .decode(code as u32)
+                .map(|s| (s, UnicodeSource::ToUnicode));
+        }
+        if let Some(t) = self.glyph_name(code).and_then(glyph_name_text) {
+            return Some((t, UnicodeSource::GlyphName));
+        }
+        if self.subst.is_some() {
             return None;
         }
-        // Fallback: encoding glyph name → AGL → Unicode.
-        let name = self.glyph_name(code)?;
-        let u = name_to_unicode(name)?;
-        char::from_u32(u).map(|c| c.to_string())
-    }
-
-    /// `true` when the font carries a `/ToUnicode` CMap — used by
-    /// the extractor to report how a code was resolved.
-    pub(crate) fn has_tounicode(&self) -> bool {
-        self.tounicode.is_some()
+        let gid = self.glyph_id(code).ok().flatten()?;
+        let face = self.face().ok()?;
+        program_text(&face, &self.reverse_cmap, gid).map(|t| (t, UnicodeSource::FontProgram))
     }
 
     /// `true` when `code` is the font's word-space code for `Tw`
@@ -1051,12 +1128,12 @@ fn load_type3_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         let arr = w
             .as_array()
             .ok_or_else(|| Error::Structure("/Widths is not an array".into()))?;
-        let expect = (last_char - first_char + 1).max(0) as usize;
+        let expect = widths_span(first_char, last_char);
         for (i, e) in arr.iter().enumerate().take(expect.min(arr.len())) {
             let e = doc.deref(e).unwrap_or_else(|_| e.clone());
             if let Some(v) = e.as_number() {
-                if v.is_finite() && v >= 0.0 {
-                    widths[first_char as usize + i] = v;
+                if let (true, Some(slot)) = (v.is_finite() && v >= 0.0, width_slot(first_char, i)) {
+                    widths[slot] = v;
                 }
             }
         }
@@ -1126,15 +1203,21 @@ impl Type3Font {
         self.font_matrix.a * w * 1000.0
     }
 
-    /// Code → Unicode via `/ToUnicode` (else `.notdef` — no AGL for
-    /// Type3 char names, which are arbitrary).
-    pub(crate) fn unicode(&self, code: u8) -> Option<String> {
-        self.tounicode.as_ref()?.decode(code as u32)
-    }
-
-    /// `true` when the font carries a `/ToUnicode` CMap.
-    pub(crate) fn has_tounicode(&self) -> bool {
-        self.tounicode.is_some()
+    /// Code → Unicode via `/ToUnicode`; without one, the encoding's
+    /// character name through the Adobe glyph-name rules (§9.10.2
+    /// method 2 applies to every simple font). Names outside the glyph
+    /// list (`g12`, `a65`, `rect`) mean nothing and stay unresolved.
+    pub(crate) fn unicode(&self, code: u8) -> Option<(String, UnicodeSource)> {
+        if let Some(tu) = &self.tounicode {
+            return tu
+                .decode(code as u32)
+                .map(|s| (s, UnicodeSource::ToUnicode));
+        }
+        let name = std::str::from_utf8(self.encoding[code as usize].as_deref()?).ok()?;
+        // The glyph list only: the Symbol / ZapfDingbats name tables
+        // describe those fonts, and Type 3 character names such as `a12`
+        // are arbitrary (they would read as dingbats).
+        crate::unicode_fallback::agl_unicode(name).map(|t| (t, UnicodeSource::GlyphName))
     }
 
     /// `true` when `code` is the space char (§9.3.3, single-byte 32).
@@ -1362,21 +1445,36 @@ impl Type1Font {
     /// A substituted (non-embedded) font without an `/Encoding` name
     /// for the code uses the same built-in encoding the renderer draws
     /// with (Table 114: StandardEncoding, or Symbol's / ZapfDingbats').
-    pub(crate) fn unicode(&self, code: u8) -> Option<String> {
+    ///
+    /// A CFF program used through its built-in encoding (no name from
+    /// the PDF) names the glyph in its charset; that name is used the
+    /// same way.
+    pub(crate) fn unicode(&self, code: u8) -> Option<(String, UnicodeSource)> {
         if let Some(tu) = &self.tounicode {
-            return tu.decode(code as u32);
+            return tu
+                .decode(code as u32)
+                .map(|s| (s, UnicodeSource::ToUnicode));
         }
         let name = match self.glyph_name_bytes(code) {
-            Some(n) => std::str::from_utf8(n).ok()?.to_string(),
-            None => self.subst_glyph_name(code)?,
+            Some(n) => Some(std::str::from_utf8(n).ok()?.to_string()),
+            None => self.subst_glyph_name(code),
         };
-        let u = name_to_unicode(&name)?;
-        char::from_u32(u).map(|c| c.to_string())
-    }
-
-    /// `true` when the font carries a `/ToUnicode` CMap.
-    pub(crate) fn has_tounicode(&self) -> bool {
-        self.tounicode.is_some()
+        let name = match name {
+            Some(n) => n,
+            None if self.t1_program.is_none()
+                && self.program.is_some()
+                && self.builtin_cff_encoding =>
+            {
+                let cff = self.cff().ok()?;
+                let gid = cff.glyph_index(code)?;
+                if gid.0 == 0 {
+                    return None;
+                }
+                cff.glyph_name(gid)?.to_string()
+            }
+            None => return None,
+        };
+        glyph_name_text(&name).map(|t| (t, UnicodeSource::GlyphName))
     }
 
     /// `true` when `code` is the space char (§9.3.3, single-byte 32).
@@ -1472,6 +1570,11 @@ pub(crate) struct CompositeFont {
     /// table's GID → CID mapping. `None` until built; an empty map
     /// means the CFF is not CID-keyed (CID = GID).
     cid_gid: RefCell<Option<std::collections::HashMap<u16, u16>>>,
+    /// CID → Unicode of the font's Adobe character collection
+    /// (`Adobe-<ordering>-UCS2`, §9.10.2 method 3), when bundled.
+    collection: Option<&'static std::collections::HashMap<u32, String>>,
+    /// The program's Unicode `cmap` read backwards, for extraction.
+    reverse_cmap: RefCell<Option<Option<crate::unicode_fallback::ReverseCmap>>>,
 }
 
 /// Load a Type 0 font dictionary (§9.7.6): `/Encoding` is
@@ -1565,6 +1668,7 @@ fn load_composite_font(
         }
     };
     let mut ordering: Vec<u8> = Vec::new();
+    let mut registry: Vec<u8> = Vec::new();
     match cid_dict.get(b"CIDSystemInfo".as_slice()) {
         Some(o) => {
             let info = doc.deref(o)?;
@@ -1576,6 +1680,8 @@ fn load_composite_font(
                     Some(Object::String(s)) => {
                         if key == b"Ordering" {
                             ordering = s.clone();
+                        } else {
+                            registry = s.clone();
                         }
                     }
                     None => {}
@@ -1867,6 +1973,12 @@ fn load_composite_font(
         cff: RefCell::new(None),
         cff_matrices: RefCell::new(None),
         cid_gid: RefCell::new(None),
+        collection: if registry == b"Adobe" {
+            crate::cjk::cid_to_unicode_text(&ordering)
+        } else {
+            None
+        },
+        reverse_cmap: RefCell::new(None),
     }))
 }
 
@@ -2145,12 +2257,49 @@ impl CompositeFont {
         }
     }
 
-    pub(crate) fn unicode(&self, code: u32) -> Option<String> {
-        self.tounicode.as_ref()?.decode(code)
+    /// Code (and its byte length) → Unicode: `/ToUnicode` when present
+    /// (a code it does not map has no text); otherwise the CID through
+    /// the font's Adobe character collection (§9.10.2 method 3) and the
+    /// glyph through the embedded program (`cmap` read backwards, or the
+    /// glyph name of a name-keyed CFF). When both answer and disagree
+    /// the code is left unresolved rather than guessed. A non-embedded
+    /// font drawn with the CJK fallback has no program of its own.
+    pub(crate) fn unicode(&self, code: u32, len: usize) -> Option<(String, UnicodeSource)> {
+        if let Some(tu) = &self.tounicode {
+            return tu.decode(code).map(|s| (s, UnicodeSource::ToUnicode));
+        }
+        let cid = self.cid(code, len);
+        let from_collection = self.collection.and_then(|m| m.get(&cid)).cloned();
+        let from_program = if self.fallback.is_some() {
+            None
+        } else {
+            self.program_unicode(code, len)
+        };
+        match (from_collection, from_program) {
+            (Some(c), Some(p)) if c == p => Some((c, UnicodeSource::CharacterCollection)),
+            (Some(_), Some(_)) => None,
+            (Some(c), None) => Some((c, UnicodeSource::CharacterCollection)),
+            (None, Some(p)) => Some((p, UnicodeSource::FontProgram)),
+            (None, None) => None,
+        }
     }
 
-    pub(crate) fn has_tounicode(&self) -> bool {
-        self.tounicode.is_some()
+    fn program_unicode(&self, code: u32, len: usize) -> Option<String> {
+        let gid = self.glyph_id_len(code, len).ok()?;
+        match self.kind {
+            CidProgram::TrueType | CidProgram::OpenType => {
+                let face = self.face().ok()?;
+                program_text(&face, &self.reverse_cmap, gid)
+            }
+            CidProgram::Cff => {
+                // A CID-keyed charset names no glyph; a name-keyed one does.
+                let cff = self.cff().ok()?;
+                if gid.0 == 0 || cff.glyph_cid(GlyphId(0)).is_some() {
+                    return None;
+                }
+                crate::unicode_fallback::agl_unicode(cff.glyph_name(gid)?)
+            }
+        }
     }
 
     /// Word spacing applies to the single-byte code 32 only (§9.3.3):
@@ -2272,22 +2421,15 @@ impl Font {
     /// Code → Unicode string, or `None` when unresolvable.
     /// ToUnicode first for both kinds; simple fonts fall back to
     /// the encoding-name→AGL path, composites do not.
-    pub(crate) fn unicode(&self, code: u32) -> Option<String> {
+    pub(crate) fn unicode(&self, code: u32) -> Option<(String, UnicodeSource)> {
         match self {
             Font::Simple(f) => f.unicode(code as u8),
-            Font::Composite(f) => f.unicode(unpack_code(code).0),
+            Font::Composite(f) => {
+                let (c, len) = unpack_code(code);
+                f.unicode(c, len)
+            }
             Font::Type1(f) => f.unicode(code as u8),
             Font::Type3(f) => f.unicode(code as u8),
-        }
-    }
-
-    /// `true` when the font has a `/ToUnicode` CMap.
-    pub(crate) fn has_tounicode(&self) -> bool {
-        match self {
-            Font::Simple(f) => f.has_tounicode(),
-            Font::Composite(f) => f.has_tounicode(),
-            Font::Type1(f) => f.has_tounicode(),
-            Font::Type3(f) => f.has_tounicode(),
         }
     }
 
