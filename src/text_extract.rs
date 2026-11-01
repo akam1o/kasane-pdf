@@ -195,6 +195,16 @@ pub enum ResolveKind {
     /// the program's built-in one) and the Adobe glyph-name rules
     /// (§9.10.2 method 2; also for Type 3 character names).
     EncodingFallback,
+    /// Not resolvable — `unicode` is `None`.
+    Unresolved,
+    /// Replaced by the enclosing marked content's `/ActualText`
+    /// (§14.9.4): the first character of the span carries the whole
+    /// replacement string, the rest carry `Some("")`. A span that
+    /// shows no glyph at all yields one synthetic entry (`code` 0,
+    /// zero advance, no bounds) so the text is not lost.
+    ActualText,
+    // New variants go last: the implicit discriminants of the earlier
+    // ones are part of the public contract.
     /// No `/ToUnicode` and no meaningful encoding name: through the
     /// embedded font program — its Unicode `cmap` read backwards
     /// (unambiguous glyphs only) or its own glyph name (`post`, CFF
@@ -205,14 +215,6 @@ pub enum ResolveKind {
     /// collection, `Adobe-<ordering>-UCS2` (§9.10.2 method 3). Only the
     /// collections bundled with the `cjk-fallback` feature (Japan1).
     CharacterCollection,
-    /// Not resolvable — `unicode` is `None`.
-    Unresolved,
-    /// Replaced by the enclosing marked content's `/ActualText`
-    /// (§14.9.4): the first character of the span carries the whole
-    /// replacement string, the rest carry `Some("")`. A span that
-    /// shows no glyph at all yields one synthetic entry (`code` 0,
-    /// zero advance, no bounds) so the text is not lost.
-    ActualText,
 }
 
 /// The extracted text for one page.
