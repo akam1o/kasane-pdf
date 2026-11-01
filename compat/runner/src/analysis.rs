@@ -1093,6 +1093,8 @@ mod tests {
                 text_char_f1: None,
                 text_chars_ours: None,
                 text_chars_ref: None,
+                text_char_f1_with_annots: None,
+                text_with_annots: None,
                 rewrite_qpdf_ok: None,
                 rewrite_reparsed: None,
             },

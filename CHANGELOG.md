@@ -6,6 +6,17 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Compatibility runner (no library change): the semantic round trip
+  compares five more categories — XFA packets and `/NeedsRendering`;
+  document, page, annotation and field actions with their `/Next`
+  chains; the `/Names /JavaScript` tree; `/Info` and XMP metadata; viewer
+  preferences, `/PageMode`, `/PageLayout` — by decoded content, and an
+  XFA form's AcroForm half is no longer `unsupported`. A page-1 text
+  agreement with annotation appearance text
+  (`text_char_f1_with_annots`). Both report only
+  (`docs/plans/semantic-roundtrip.md`, `docs/plans/quality-gate.md`).
+
 ### Fixed
 - **Cross-reference precedence across incremental updates** (ISO
   32000-1 §7.5.4, §7.5.6, §7.5.8; ISO 32000-2 §7.5.8.4). Per object

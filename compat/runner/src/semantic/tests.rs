@@ -295,13 +295,28 @@ fn class_of(r: &SemanticRoundTrip, cat: &str) -> SemClass {
     r.checks.iter().find(|c| c.category == cat).unwrap().class
 }
 
+/// The categories this document carries; the document-level ones
+/// (XFA, actions, …) have their own (`tests_doclevel.rs`).
+const RICH: &[&str] = &CATEGORIES_V040;
+const CATEGORIES_V040: [&str; 7] = [
+    "outlines",
+    "named_dests",
+    "page_labels",
+    "struct_tree",
+    "embedded_files",
+    "optional_content",
+    "acroform",
+];
+
 fn only_fail(m: Mut, cat: &str) {
     let r = compare(&doc(&rich(0, Mut::None)), &doc(&rich(0, m)));
     for c in &r.checks {
         let want = if c.category == cat {
             SemClass::Fail
-        } else {
+        } else if RICH.contains(&c.category.as_str()) {
             SemClass::Pass
+        } else {
+            SemClass::NotApplicable
         };
         assert_eq!(
             c.class, want,
@@ -315,7 +330,8 @@ fn only_fail(m: Mut, cat: &str) {
 #[test]
 fn base_document_covers_every_category() {
     let s = snapshot(&doc(&rich(0, Mut::None)));
-    for (c, sec) in CATEGORIES.iter().zip(&s) {
+    assert_eq!(&CATEGORIES[..RICH.len()], RICH);
+    for (c, sec) in RICH.iter().zip(&s) {
         assert!(
             matches!(sec, Section::Data(v) if !v.is_empty()),
             "{c}: {sec:?}"
@@ -394,7 +410,10 @@ fn absent_features_are_not_applicable() {
     // A rewrite that drops every structure is a failure of each one.
     let r = compare(&doc(&rich(0, Mut::None)), &doc(&plain));
     assert!(
-        r.checks.iter().all(|c| c.class == SemClass::Fail),
+        r.checks
+            .iter()
+            .filter(|c| RICH.contains(&c.category.as_str()))
+            .all(|c| c.class == SemClass::Fail),
         "{:?}",
         r.checks
     );
@@ -402,20 +421,20 @@ fn absent_features_are_not_applicable() {
 
 #[test]
 fn unsupported_structures_are_not_success() {
-    // An embedded file under a filter the snapshot does not decode, and
-    // an XFA form.
+    // An embedded file under a filter the snapshot does not decode. (An
+    // XFA form is no longer `unsupported` here: the AcroForm half is
+    // compared in `acroform`, the XFA packets in `xfa` —
+    // `tests_doclevel.rs`.)
     let src = String::from_utf8_lossy(&rich(0, Mut::None)).into_owned();
-    let hex = src
-        .replace(
-            "/Params << /Size 5 >> /Length 5 >>\nstream\nhello",
-            "/Params << /Size 5 >> /Filter /ASCIIHexDecode /Length 5 >>\nstream\nhello",
-        )
-        .replace("/DA (/Helv 0 Tf 0 g)", "/DA (/Helv 0 Tf 0 g) /XFA [] ");
+    let hex = src.replace(
+        "/Params << /Size 5 >> /Length 5 >>\nstream\nhello",
+        "/Params << /Size 5 >> /Filter /ASCIIHexDecode /Length 5 >>\nstream\nhello",
+    );
     // Offsets moved: reparse in recovery mode to read the edited file.
     let d = Document::from_bytes_recovering(hex.as_bytes()).unwrap();
     let r = compare(&d, &d);
     assert_eq!(class_of(&r, "embedded_files"), SemClass::Unsupported);
-    assert_eq!(class_of(&r, "acroform"), SemClass::Unsupported);
+    assert_eq!(class_of(&r, "acroform"), SemClass::Pass);
     assert_eq!(class_of(&r, "outlines"), SemClass::Pass);
     assert_eq!(r.class, SemClass::Unsupported);
 }

@@ -106,6 +106,7 @@ def row(files):
 SEM_CATS = (
     "outlines", "named_dests", "page_labels", "struct_tree",
     "embedded_files", "optional_content", "acroform",
+    "xfa", "doc_actions", "javascript", "metadata", "viewer_prefs",
 )
 
 
@@ -196,6 +197,54 @@ def text_summary(files):
         out.append(f"\n{len(empty)} compared documents have no text on page 1 on either side (all scores 1 by definition).\n")
     else:
         out.append("\n(report without character counts: pages without text are not separated)\n")
+    out.append(annot_text_summary(rows))
+    return "\n".join(out)
+
+
+def annot_text_summary(rows):
+    """Report only: page-1 F1 when the text drawn by annotation
+    appearances is added to ours (`text_char_f1_with_annots`), next to
+    the page-only F1 on the same documents. Population: the compared
+    documents of `text_summary` whose report has the field (newer
+    runners) and with content characters on either side after the
+    addition; documents whose extraction with annotations failed are
+    counted, not scored."""
+    have = [f for f in rows if "text_with_annots" in f["metrics"]]
+    if not have:
+        return "\n(report without the annotation text metric)\n"
+    failed = [f for f in have if f["metrics"].get("text_char_f1_with_annots") is None]
+    scored = [f for f in have if f["metrics"].get("text_char_f1_with_annots") is not None]
+    text = [
+        f for f in scored
+        if f["metrics"].get("text_chars_ref") or (f["metrics"]["text_with_annots"] or {}).get("ours_chars")
+    ]
+    out = [
+        "\n### text agreement with annotation appearances (report only)\n",
+        "| population | n | F1 median (page / with annots) | F1 ≥ 0.9 (page / with annots) | better | worse |",
+        "|---|---:|---:|---:|---:|---:|",
+    ]
+
+    def line(name, fs):
+        a = [f["metrics"]["text_char_f1"] for f in fs]
+        b = [f["metrics"]["text_char_f1_with_annots"] for f in fs]
+        better = sum(y > x + 1e-9 for x, y in zip(a, b))
+        worse = sum(y < x - 1e-9 for x, y in zip(a, b))
+        out.append(
+            f"| {name} | {len(fs)} | {median(a):.2f} / {median(b):.2f} | "
+            f"{sum(x >= 0.9 for x in a)} / {sum(x >= 0.9 for x in b)} | {better} | {worse} |"
+        )
+
+    line("text on page 1 (either side, with annots)", text)
+    exp = [f for f in text if f.get("expect") == "pass"]
+    line("… expect: pass", exp)
+    cjk = [f for f in exp if set((f.get("profile") or {}).get("scripts") or []) & {"Han", "Kana", "Hangul"}]
+    line("… expect: pass, CJK", cjk)
+    with_annot_text = [f for f in exp if (f["metrics"]["text_with_annots"] or {}).get("appearance_chars")]
+    line("… expect: pass, with appearance text", with_annot_text)
+    out.append(
+        f"\n{len(failed)} compared documents: the extraction with annotations failed "
+        "(not scored; the default extraction is unaffected).\n"
+    )
     return "\n".join(out)
 
 
