@@ -19,6 +19,7 @@ skipped at collection and recomputed at write time).
 | Feature | Status | Notes |
 |---|---|---|
 | object collection & renumbering | ✅ | dense 1..N; shared refs share the new number; /Parent cycles terminate via the map |
+| references to undefined objects | ✅ (0.5) | §7.3.10: no in-use or compressed entry for that number and generation (absent, free, another generation) — the reference is kept and points at a new indirect object whose body is `null` (one per undefined target, shared), so array positions and dictionary keys are unchanged and the output has no dangling reference; each recorded as `Warning::UndefinedReference`. A *defined* object that cannot be read (damaged body, object-stream member missing, reference cycle, limit) still fails the rewrite. Before 0.5 every such document was refused with `MissingReference` |
 | `/Info` dictionary | ✅ | carried when trailer references it |
 | `/ID`, `/Prev`, `/XRefStm` | — | dropped by design (single-revision file) |
 | stream bodies | ✅ | encoded bytes verbatim; `/Length` recomputed from emitted bytes; `/Filter`/`/DecodeParms` kept consistent |

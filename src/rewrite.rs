@@ -29,6 +29,18 @@
 //!   (`/Properties`, XObject and annotation `/OC`, OCMDs) keep their
 //!   targets through the renumbering.
 //!
+//! References to undefined objects (§7.3.10: no in-use or compressed
+//! cross-reference entry for that number *and* generation — absent,
+//! free, or another generation) are references to the null object; the
+//! rewrite keeps each such reference in place and points it at an
+//! indirect object whose body is `null`, so array positions, dictionary
+//! keys and shared targets are unchanged and the output has no dangling
+//! reference. Each is recorded on the document as
+//! [`crate::Warning::UndefinedReference`]. An object that is defined
+//! but cannot be read (damaged body, a compressed entry whose object
+//! stream lacks it, a reference cycle, a limit) is never turned into
+//! null: the rewrite fails with that error.
+//!
 //! Everything else reachable is copied verbatim — unknown dictionary
 //! keys are preserved, never silently dropped. That includes named
 //! destinations: the `/Names` → `/Dests` name tree, the legacy
@@ -102,7 +114,8 @@ pub(crate) struct RewriteOverrides {
 /// `synth_numbers` is the set of `(num, gen)` the edit session
 /// allocated as *new* synthetic objects. A reference that originates
 /// from an *input* body is never allowed to resolve to a synthetic —
-/// that would let a malformed/dangling input ref silently succeed.
+/// a dangling input ref resolves through the document (to null, if the
+/// object is undefined), never to an edit's new object.
 /// Refs inside overlay bodies *are* edit refs and may resolve to
 /// synthetics (the new `/Annots` array points at them).
 pub(crate) fn rewrite_overlay(
@@ -302,8 +315,8 @@ impl<'a> Collector<'a> {
     /// an overlay (edit-created) body — those are edit refs and may
     /// resolve to synthetic objects. A reference found in an *input*
     /// body that happens to land on a synthetic number is a dangling
-    /// input ref, not an edit ref: it must go through `doc.resolve`
-    /// and fail rather than silently resolve to a synthetic body.
+    /// input ref, not an edit ref: it goes through `doc.resolve` (null
+    /// if undefined, §7.3.10) and never resolves to a synthetic body.
     fn walk(
         &mut self,
         old_ref: IndirectRef,
@@ -335,8 +348,8 @@ impl<'a> Collector<'a> {
         self.kinds.insert(new_num, kind);
 
         // Guard: an input-side ref to a synthetic number is a dangling
-        // input reference — resolve via the document only (→ the
-        // MissingReference it should be), never via the overlay.
+        // input reference — resolve via the document only (null if
+        // undefined), never via the overlay.
         let overlay_body = if ref_from_overlay {
             self.overlay.get(&key)
         } else if self.synth_numbers.contains(&key) {
@@ -347,7 +360,10 @@ impl<'a> Collector<'a> {
         let (mut obj, from_overlay) = match overlay_body {
             // Overlay wins — the editor's synthetic/replaced body.
             Some(o) => (o.clone(), true),
-            None => (self.doc.resolve_defined(old_ref)?, false),
+            // §7.3.10: an undefined object is the null object (written
+            // as `n 0 obj null`, recorded as a warning); a defined one
+            // that cannot be read stays an error.
+            None => (self.doc.resolve(old_ref)?, false),
         };
         self.scan_and_collect(&mut obj, depth, from_overlay)?;
         self.bodies.insert(new_num, obj);
@@ -468,7 +484,7 @@ fn signed_field_in(
                 continue;
             }
         }
-        let f = doc.deref_defined(f)?;
+        let f = doc.deref(f)?;
         let Some(fd) = f.as_dict() else { continue };
         // /FT may be inherited from the parent field; a Kids-only
         // node carries none and is just walked.
@@ -478,7 +494,7 @@ fn signed_field_in(
             .map(|n| n.to_vec());
         if ft.is_none() {
             if let Some(p) = fd.get(b"Parent".as_slice()) {
-                if let Ok(p) = doc.deref_defined(p) {
+                if let Ok(p) = doc.deref(p) {
                     ft = p
                         .as_dict()
                         .and_then(|pd| pd.get(b"FT".as_slice()))
@@ -489,7 +505,7 @@ fn signed_field_in(
         }
         if ft.as_deref() == Some(b"Sig") {
             if let Some(v) = fd.get(b"V".as_slice()) {
-                let v = doc.deref_defined(v)?;
+                let v = doc.deref(v)?;
                 if let Some(vd) = v.as_dict() {
                     let name = fd
                         .get(b"T".as_slice())
@@ -506,7 +522,7 @@ fn signed_field_in(
             }
         }
         if let Some(kids) = fd.get(b"Kids".as_slice()) {
-            let kids = doc.deref_defined(kids)?;
+            let kids = doc.deref(kids)?;
             if let Some(k) = kids.as_array() {
                 if let Some(w) = signed_field_in(doc, k, depth + 1, seen)? {
                     return Ok(Some(w));
@@ -517,13 +533,16 @@ fn signed_field_in(
     Ok(None)
 }
 
+/// Every reference is followed with the §7.3.10 rule (an undefined
+/// object reads as null, i.e. as absent); an object that is defined but
+/// unreadable fails the check rather than being skipped.
 fn check_refusals(doc: &Document) -> Result<(), Error> {
     let catalog = doc.catalog();
 
     // Signed documents: a signature/lock dictionary in /Perms claims
     // an integrity check a rewrite cannot preserve.
     if let Some(perms_obj) = catalog.get(b"Perms".as_slice()) {
-        let perms = doc.deref_defined(perms_obj)?;
+        let perms = doc.deref(perms_obj)?;
         if let Some(d) = perms.as_dict() {
             for key in [&b"DocMDP"[..], &b"UR"[..], &b"UR3"[..]] {
                 if d.contains_key(key) {
@@ -543,7 +562,7 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
     // (FT=/Sig with a /V entry) means "actually signed" — refuse.
     // Blank unsigned fields are ordinary widgets and pass through.
     if let Some(af_obj) = catalog.get(b"AcroForm".as_slice()) {
-        let af = doc.deref_defined(af_obj)?;
+        let af = doc.deref(af_obj)?;
         if let Some(d) = af.as_dict() {
             if d.contains_key(b"XFA".as_slice()) {
                 return Err(Error::Unsupported {
@@ -552,7 +571,7 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
                 });
             }
             if let Some(fields_obj) = d.get(b"Fields".as_slice()) {
-                let fields = doc.deref_defined(fields_obj)?;
+                let fields = doc.deref(fields_obj)?;
                 if let Some(fields) = fields.as_array() {
                     let mut seen = std::collections::HashSet::new();
                     if let Some(what) = signed_field_in(doc, fields, 0, &mut seen)? {
@@ -576,14 +595,14 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
         let Some(pref) = page.object_ref() else {
             continue;
         };
-        let Ok(pd) = doc.resolve_defined(pref) else {
+        let Ok(pd) = doc.resolve(pref) else {
             continue;
         };
         let Some(pd) = pd.as_dict() else { continue };
         let Some(annots) = pd.get(b"Annots".as_slice()) else {
             continue;
         };
-        let annots = doc.deref_defined(annots)?;
+        let annots = doc.deref(annots)?;
         if let Some(arr) = annots.as_array() {
             let mut seen = std::collections::HashSet::new();
             if let Some(what) = signed_field_in(doc, arr, 0, &mut seen)? {
@@ -638,7 +657,7 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
     // Open-action / Names JavaScript: refuse executable payloads that
     // a rewrite could silently retain.
     if let Some(oa) = catalog.get(b"OpenAction".as_slice()) {
-        let oa = doc.deref_defined(oa)?;
+        let oa = doc.deref(oa)?;
         if let Some(d) = oa.as_dict() {
             let s = d.get(b"S".as_slice()).and_then(|o| o.as_name());
             if s == Some(b"JavaScript") {
@@ -650,7 +669,7 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
         }
     }
     if let Some(names_obj) = catalog.get(b"Names".as_slice()) {
-        let names = doc.deref_defined(names_obj)?;
+        let names = doc.deref(names_obj)?;
         if let Some(d) = names.as_dict() {
             if d.contains_key(b"JavaScript".as_slice()) {
                 return Err(Error::Unsupported {
