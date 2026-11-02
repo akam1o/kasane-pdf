@@ -39,19 +39,21 @@ pub fn fixture(name: &str) -> PathBuf {
 /// so render tests can build small deterministic files inline.
 pub fn build_pdf(objects: &[(u32, Vec<u8>)]) -> Vec<u8> {
     let mut out = b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\n".to_vec();
-    let mut offsets: Vec<(u32, usize)> = Vec::new();
+    let size = objects.iter().map(|(n, _)| *n).max().unwrap_or(0) + 1;
+    // Indexed by object number (first definition wins): a linear search
+    // per xref entry made 100k-object tests take a minute in debug.
+    let mut offsets: Vec<Option<usize>> = vec![None; size as usize];
     for (n, body) in objects {
-        offsets.push((*n, out.len()));
+        offsets[*n as usize].get_or_insert(out.len());
         out.extend_from_slice(format!("{n} 0 obj\n").as_bytes());
         out.extend_from_slice(body);
         out.extend_from_slice(b"\nendobj\n");
     }
-    let size = objects.iter().map(|(n, _)| *n).max().unwrap_or(0) + 1;
     let xref = out.len();
     out.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f \n").as_bytes());
     for n in 1..size {
-        match offsets.iter().find(|(on, _)| *on == n) {
-            Some((_, off)) => out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes()),
+        match offsets[n as usize] {
+            Some(off) => out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes()),
             None => out.extend_from_slice(b"0000000000 65535 f \n"),
         }
     }
