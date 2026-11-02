@@ -700,9 +700,16 @@ impl<'a> Ctx<'a> {
                 let Some(d) = self.dict(it)? else {
                     return Ok(());
                 };
-                // A structure element has /S; marked-content and object
-                // references (/MCR, /OBJR) carry no /AF of their own.
+                // A structure element has /S; a marked-content reference
+                // (/MCR) carries no /AF. An object reference (/OBJR)
+                // carries none either, but the object it names may: an
+                // annotation is an owner already (by page position), an
+                // XObject is one here unless a page's resources listed
+                // it — then it is named by that first owner.
                 if !d.contains_key(b"S".as_slice()) {
+                    if let Some(obj) = d.get(b"Obj".as_slice()).cloned() {
+                        self.objr_afs(&format!("struct:{p}/objr"), &obj, seen, out)?;
+                    }
                     return Ok(());
                 }
                 self.af_owner(&format!("struct:{p}"), &d, seen, out)?;
@@ -715,6 +722,46 @@ impl<'a> Ctx<'a> {
                 on_path.remove(&r);
             }
             res?;
+        }
+        Ok(())
+    }
+
+    /// The object of a structure element's `/OBJR`: an XObject not
+    /// reached before is an owner (its resources walked like a page's);
+    /// one reached before is named by its first owner when it has an
+    /// `/AF`; an annotation on a page is already listed by position.
+    fn objr_afs(
+        &mut self,
+        owner: &str,
+        obj: &Object,
+        seen: &mut HashMap<IndirectRef, String>,
+        out: &mut Vec<String>,
+    ) -> Res<()> {
+        let r = obj.as_ref();
+        if r.is_some_and(|r| self.annots.contains_key(&r)) {
+            return Ok(());
+        }
+        let Object::Stream { dict, .. } = self.get(obj)? else {
+            return Ok(());
+        };
+        if let Some(r) = r {
+            if let Some(first) = seen.get(&r) {
+                if dict.contains_key(b"AF".as_slice()) {
+                    out.push(format!("owner\towner={owner}\tsame_as={first}"));
+                }
+                return Ok(());
+            }
+            seen.insert(r, owner.to_string());
+        }
+        self.af_owner(owner, &dict, seen, out)?;
+        let is_form = dict.get(b"Subtype".as_slice()).and_then(name).as_deref() == Some("Form");
+        if is_form {
+            if let Some(res) = dict.get(b"Resources".as_slice()) {
+                if let Some(res) = self.dict(res)? {
+                    let mut stack: Vec<IndirectRef> = r.into_iter().collect();
+                    self.resource_afs(owner, &res, 1, &mut stack, seen, out)?;
+                }
+            }
         }
         Ok(())
     }

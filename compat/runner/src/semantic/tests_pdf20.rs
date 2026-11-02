@@ -1084,3 +1084,55 @@ fn appearance_streams_are_owners() {
     let c = r.iter().find(|c| c.category == "associated_files").unwrap();
     assert_eq!(c.class, SemClass::Fail, "{:?}", c.notes);
 }
+
+#[test]
+fn object_references_in_the_structure_tree() {
+    // An image reached only through a structure element's /OBJR, with an
+    // /AF: an owner; the same image also in the page's resources: listed
+    // there first and named from the /OBJR; a change fails.
+    let mk = |in_resources: bool, rel: &str| {
+        let res = if in_resources {
+            "/Resources << /XObject << /Im 40 0 R >> >>"
+        } else {
+            "/Resources << >>"
+        };
+        pdf(
+            "2.0",
+            &[
+                (1, d("<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 30 0 R >>")),
+                (2, d("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")),
+                (3, d(&format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] {res} >>"))),
+                (30, d("<< /Type /StructTreeRoot /K 31 0 R >>")),
+                (31, d("<< /Type /StructElem /S /Figure /P 30 0 R /K [<< /Type /OBJR /Obj 40 0 R /Pg 3 0 R >>] >>")),
+                (
+                    40,
+                    st(
+                        &format!("/Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray /AF [<< /Type /Filespec /F (src) /AFRelationship {rel} >>]"),
+                        b"\x80",
+                    ),
+                ),
+            ],
+            0,
+        )
+    };
+    let only = lines(&mk(false, "/Source"), "associated_files");
+    assert!(
+        only.iter()
+            .any(|l| l == "owner\towner=struct:0.0/objr\tcount=1"),
+        "{only:#?}"
+    );
+    let both = lines(&mk(true, "/Source"), "associated_files");
+    assert!(
+        both.iter()
+            .any(|l| l == "owner\towner=res:p0/xobject:Im\tcount=1"),
+        "{both:#?}"
+    );
+    assert!(
+        both.iter()
+            .any(|l| l == "owner\towner=struct:0.0/objr\tsame_as=res:p0/xobject:Im"),
+        "{both:#?}"
+    );
+    let r = report(&mk(false, "/Source"), &mk(false, "/Data"));
+    let c = r.iter().find(|c| c.category == "associated_files").unwrap();
+    assert_eq!(c.class, SemClass::Fail, "{:?}", c.notes);
+}
