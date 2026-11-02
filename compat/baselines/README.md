@@ -199,3 +199,47 @@ semantic round trip 434 compared, 300 pass, 134 not applicable, 0 fail
 / unsupported / error; robustness 44 / 44, crash / timeout 0. The
 fixtures smoke baseline is unchanged: the pull-request run on the same
 commit (41377935675) summarises to it exactly.
+
+Updated 2026-11-03 from nightly run 41480198364 (commit `9962fd0`, the
+merge of v0.5.0 W2: PDF 2.0 documents are rewritten as 2.0, and the
+runner reports four report-only PDF 2.0 semantic categories; same
+environment: ubuntu x86_64, Poppler 26.01.0 with `poppler-data`
+0.4.12, qpdf 12.3.2). Population unchanged (511 files, 425
+`expect: pass`). Compared file by file with the previous nightly
+(41400411935, commit `617444a`; the scheduled nightly 41433320638 on
+the same commit is identical to it):
+
+| difference | files | cause |
+|---|---:|---|
+| rewrite `unsupported` → `pass`, verdict → `pass`, round trip full, semantic pass in every category the document has | 2 | W2: the two documents that declare PDF 2.0, refused before for their version; qpdf exit 0, Poppler SSIM 1.0 |
+| `semantic_report` recorded | 436 | new field: the report-only categories of every compared rewrite |
+
+Every other field of every file is identical: stages, verdicts,
+round-trip checks, the existing `semantic` map, text and annotation F1,
+render values, quality classes, enforced flags and report-only
+findings, warnings, recovery and incremental classes. Aggregates:
+rewrite 370 → 372, Full PASS 343 → 345, `rewrite_pass` (graph round
+trip) 434 → 436, full round trip 430 → 432; robustness 44 / 44, crash /
+timeout 0.
+
+Report-only semantic categories (not enforced; `check` lists a lost
+pass for review):
+
+| category | pass | fail | unsupported | error | not applicable |
+|---|---:|---:|---:|---:|---:|
+| version | 434 | 2 | 0 | 0 | 0 |
+| page_metadata | 1 | 0 | 0 | 0 | 435 |
+| associated_files | 2 | 0 | 0 | 0 | 434 |
+| dparts | 0 | 0 | 0 | 0 | 436 |
+
+The two `version` fails are recorded as fails, deliberately. Both
+inputs declare 1.4 but carry `/OCProperties`, a 1.5 feature, and the
+rewriter raises the output to 1.5 so that it declares what it contains.
+The effective version changes, and the category reports that
+(`plans/v0.5.0.md` §16 proposes classifying such a permitted
+transformation separately before any of these categories is
+enforced). The fixtures smoke baseline is regenerated from the
+pull-request run on the same commit (41480171819; the previous one
+came from 41377935675): it
+differs only by the new `semantic_report` field (61 fixtures: version
+pass, the other three not applicable).

@@ -29,6 +29,7 @@
    "roundtrip": {},
    "roundtrip_full": null,
    "semantic": {},
+   "semantic_report": {},
    "stages": {
     "parse": "error",
     "render": "skip",
@@ -74,6 +75,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -121,6 +128,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "error",
@@ -167,6 +180,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -192,6 +211,7 @@
    "roundtrip": {},
    "roundtrip_full": null,
    "semantic": {},
+   "semantic_report": {},
    "stages": {
     "parse": "error",
     "render": "skip",
@@ -217,6 +237,7 @@
    "roundtrip": {},
    "roundtrip_full": null,
    "semantic": {},
+   "semantic_report": {},
    "stages": {
     "parse": "error",
     "render": "skip",
@@ -262,6 +283,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -309,6 +336,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "error",
@@ -354,6 +387,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -401,6 +440,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "unsupported",
@@ -446,6 +491,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -493,6 +544,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -538,6 +595,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -585,6 +648,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -631,6 +700,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -656,6 +731,7 @@
    "roundtrip": {},
    "roundtrip_full": null,
    "semantic": {},
+   "semantic_report": {},
    "stages": {
     "parse": "error",
     "render": "skip",
@@ -701,6 +777,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -748,6 +830,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -793,6 +881,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -842,6 +936,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "unsupported",
@@ -887,6 +987,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -934,6 +1040,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -979,6 +1091,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -1026,6 +1144,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -1071,6 +1195,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -1118,6 +1248,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -1163,6 +1299,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -1210,6 +1352,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -1255,6 +1403,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -1302,6 +1456,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "error",
@@ -1347,6 +1507,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -1394,6 +1560,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "error",
@@ -1439,6 +1611,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -1486,6 +1664,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -1531,6 +1715,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -1578,6 +1768,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -1623,6 +1819,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -1670,6 +1872,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -1715,6 +1923,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -1762,6 +1976,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -1807,6 +2027,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -1854,6 +2080,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -1899,6 +2131,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -1946,6 +2184,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -1991,6 +2235,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -2038,6 +2288,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -2063,6 +2319,7 @@
    "roundtrip": {},
    "roundtrip_full": null,
    "semantic": {},
+   "semantic_report": {},
    "stages": {
     "parse": "error",
     "render": "skip",
@@ -2108,6 +2365,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -2155,6 +2418,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -2200,6 +2469,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -2247,6 +2522,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -2292,6 +2573,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -2339,6 +2626,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -2384,6 +2677,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -2431,6 +2730,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "error",
@@ -2476,6 +2781,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -2523,6 +2834,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -2568,6 +2885,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -2615,6 +2938,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -2660,6 +2989,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -2707,6 +3042,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -2752,6 +3093,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -2799,6 +3146,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "unsupported",
@@ -2844,6 +3197,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "pass",
@@ -2891,6 +3250,12 @@
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
    },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
+   },
    "stages": {
     "parse": "pass",
     "render": "pass",
@@ -2936,6 +3301,12 @@
     "struct_tree": "not_applicable",
     "viewer_prefs": "not_applicable",
     "xfa": "not_applicable"
+   },
+   "semantic_report": {
+    "associated_files": "not_applicable",
+    "dparts": "not_applicable",
+    "page_metadata": "not_applicable",
+    "version": "pass"
    },
    "stages": {
     "parse": "error",

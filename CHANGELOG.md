@@ -39,7 +39,8 @@ versions follow [Semantic Versioning](https://semver.org/).
   `/Metadata`, associated files and embedded files, document parts —
   are carried as objects with references renumbered and sharing kept.
   A version above 2.0 is still refused; 1.x output is unchanged (no
-  `/ID`).
+  `/ID`). `max_output_bytes` now covers the whole written file, the
+  trailer included.
 - `rewrite`: a reference to an undefined object (ISO 32000-1 §7.3.10:
   no in-use or compressed cross-reference entry for that number and
   generation — absent, free, or another generation) is a reference to
