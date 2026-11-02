@@ -488,3 +488,68 @@ fn metadata_removal_does_not_carry_the_permanent_identifier() {
     assert_eq!(first, second);
     assert_ne!(first, vec![0xA1; 16]);
 }
+
+#[test]
+fn deep_and_large_2_0_structures_are_bounded() {
+    // A DPart chain deeper than the walk limit: a limit error, never a
+    // stack overflow.
+    let depth = kasane_pdf::Limits::default().max_rewrite_walk_depth as u32 + 10;
+    let mut objs = vec![(
+        20,
+        b"<< /Type /DPartRoot /DPartRootNode 100 0 R >>".to_vec(),
+    )];
+    for i in 0..depth {
+        objs.push((
+            100 + i,
+            format!(
+                "<< /Type /DPart /Parent 20 0 R /DParts [[{} 0 R]] >>",
+                101 + i
+            )
+            .into_bytes(),
+        ));
+    }
+    let doc = Document::from_bytes(&pdf("2.0", "/DPartRoot 20 0 R", ["", ""], &objs, "")).unwrap();
+    assert!(
+        matches!(rewrite(&doc), Err(Error::LimitExceeded { .. })),
+        "{:?}",
+        rewrite(&doc).map(|_| ())
+    );
+    // A 4 MiB embedded file and 5 000 associated files: carried, in
+    // bounded time.
+    let big: Vec<u8> = (0..4u32 << 20).map(|i| (i % 251) as u8).collect();
+    let mut objs = vec![
+        (
+            10,
+            b"<< /Type /Filespec /F (big.bin) /AFRelationship /Data /EF << /F 11 0 R >> >>"
+                .to_vec(),
+        ),
+        (11, flate("/Type /EmbeddedFile", &big)),
+    ];
+    let mut many = String::from("[10 0 R");
+    for i in 0..5000u32 {
+        objs.push((
+            1000 + i,
+            format!("<< /Type /Filespec /F (f{i}) /AFRelationship /Supplement >>").into_bytes(),
+        ));
+        many.push_str(&format!(" {} 0 R", 1000 + i));
+    }
+    many.push(']');
+    let t = std::time::Instant::now();
+    let (out, d2) = rw(&pdf("2.0", &format!("/AF {many}"), ["", ""], &objs, ""));
+    assert!(t.elapsed().as_secs() < 20);
+    assert_eq!(header(&out), b"%PDF-2.0");
+    let cat = d2.catalog().clone();
+    let af = entry(&d2, &cat, "AF");
+    assert_eq!(af.as_array().unwrap().len(), 5001);
+    let fs = d2
+        .deref(&af.as_array().unwrap()[0])
+        .unwrap()
+        .as_dict()
+        .unwrap()
+        .clone();
+    let ef = entry(&d2, &fs, "EF");
+    assert_eq!(
+        decoded(&d2, ef.as_dict().unwrap().get(b"F".as_slice()).unwrap()),
+        big
+    );
+}
