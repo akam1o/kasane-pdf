@@ -258,8 +258,9 @@ The document-level rules apply: decoded content by length and digest,
 an unsupported filter is `unsupported`, a value past the depth limit, a
 line past 1 MiB, the decoded budget or the node budget are `error`, an
 unreadable object is `#unresolved` (not null) and an undefined one is
-null (§7.3.10). An XObject named by a structure element's `/OBJR`
-is an owner too (named from the `/OBJR` when a page listed it first).
+null (§7.3.10). An XObject named outside a resource dictionary — by a
+structure element's `/OBJR` or as a page's `/Thumb` — is an owner too
+(named by the first owner when a page listed it first).
 **Not covered** — a change there is not seen, so such a structure is
 not claimed as preserved: `/AF` reached only through the resources of a
 pattern, a Type 3 font, a soft mask or the AcroForm `/DR`, through a
