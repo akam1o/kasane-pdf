@@ -553,3 +553,85 @@ fn deep_and_large_2_0_structures_are_bounded() {
         big
     );
 }
+
+/// What the second /ID element is the digest of: the written file up to
+/// the cross-reference table — the header, the binary comment and every
+/// object — so neither the xref table nor the trailer, and therefore
+/// not the /ID itself (no circularity).
+#[test]
+fn the_changing_identifier_is_the_digest_of_the_written_body() {
+    use md5::{Digest, Md5};
+    let src = pdf(
+        "2.0",
+        "",
+        ["", ""],
+        &[],
+        &format!("/ID [<{}> <{}>]", "A1".repeat(16), "B2".repeat(16)),
+    );
+    let (out, _) = rw(&src);
+    // The table's offset, as `startxref` gives it.
+    let sx = out.windows(9).rposition(|w| w == b"startxref").unwrap() + 10;
+    let end = sx + out[sx..].iter().position(|c| *c == b'\n').unwrap();
+    let xref: usize = std::str::from_utf8(&out[sx..end]).unwrap().parse().unwrap();
+    assert_eq!(&out[xref..xref + 5], b"xref\n");
+    let digest: [u8; 16] = Md5::digest(&out[..xref]).into();
+    let (first, second) = trailer_id(&out).unwrap();
+    assert_eq!(second, digest);
+    assert_eq!(first, vec![0xA1; 16]);
+}
+
+#[test]
+fn identifiers_over_content_changes_and_repeated_rewrites() {
+    let id = format!("/ID [<{}> <{}>]", "A1".repeat(16), "B2".repeat(16));
+    let xmp = |s: &str| format!("<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">{s}</x:xmpmeta>");
+    // A 2.0 file with page metadata and an associated file; a second
+    // input differs only in the metadata's content.
+    let mk = |meta: &str| {
+        pdf(
+            "2.0",
+            "/AF [10 0 R]",
+            ["/Metadata 50 0 R", ""],
+            &[
+                (
+                    10,
+                    b"<< /Type /Filespec /F (a.csv) /AFRelationship /Data /EF << /F 13 0 R >> >>"
+                        .to_vec(),
+                ),
+                (13, stream("/Type /EmbeddedFile", b"a,b\n")),
+                (
+                    50,
+                    stream("/Type /Metadata /Subtype /XML", xmp(meta).as_bytes()),
+                ),
+            ],
+            &id,
+        )
+    };
+    let (a, _) = rw(&mk("one"));
+    let (b, _) = rw(&mk("two"));
+    let (ia, ib) = (trailer_id(&a).unwrap(), trailer_id(&b).unwrap());
+    // The permanent identifier is the input's in both; the changing one
+    // follows the content.
+    assert_eq!(ia.0, vec![0xA1; 16]);
+    assert_eq!(ib.0, vec![0xA1; 16]);
+    assert_ne!(
+        ia.1, ib.1,
+        "different content, different changing identifier"
+    );
+    assert_ne!(
+        ia.1,
+        vec![0xB2; 16],
+        "a rewrite is a new version of the file"
+    );
+    // The same input twice: the same bytes.
+    assert_eq!(rw(&mk("one")).0, a);
+    // The output rewritten again (and again): the permanent identifier
+    // stays; the content did not change, so neither does the file.
+    let (a2, _) = rw(&a);
+    let (a3, _) = rw(&a2);
+    assert_eq!(trailer_id(&a2).unwrap().0, vec![0xA1; 16]);
+    assert_eq!(
+        a2, a,
+        "a rewrite of a rewrite with nothing changed is the same file"
+    );
+    assert_eq!(a3, a);
+}
