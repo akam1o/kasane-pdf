@@ -3,7 +3,9 @@
 //! references to defined objects, undefined numbers, free entries and
 //! other generations; optionally an XFA packet array (duplicate or
 //! non-string names, undefined or non-stream packets, an XML signature,
-//! an unknown filter, arbitrary bytes) and a usage-rights signature.
+//! an unknown filter, arbitrary bytes) and a usage-rights signature;
+//! optionally declared PDF 2.0 (header or catalog) with `/AF`, a DPart
+//! root and page `/Metadata` pointing into the graph.
 //! Oracle: a rewrite that succeeds reparses strictly, has no dangling
 //! reference, and its catalog graph — references resolved by §7.3.10,
 //! streams by raw bytes — equals the original's; a rewrite that fails
@@ -243,14 +245,43 @@ fuzz_target!(|data: &[u8]| {
     }
     let ur3 = flags & 2 != 0;
     let perms = if ur3 { "/Perms << /UR3 << /Type /Sig >> >>" } else { "" };
-    let catalog = format!("<< /Type /Catalog /Pages 2 0 R /Extra {} {xfa} {perms} >>", target(&mut inp));
+    // PDF 2.0 (bit 4): declared by the header or (bit 5) the catalog,
+    // with associated files, document parts and page metadata pointing
+    // into the generated graph.
+    let v20 = flags & 0x10 != 0;
+    let (header, version, pdf20, page20) = if v20 {
+        let cat_declares = flags & 0x20 != 0;
+        let pdf20 = format!(
+            "/AF [{} {}] /DPartRoot << /Type /DPartRoot /DPartRootNode {} >>",
+            target(&mut inp),
+            target(&mut inp),
+            target(&mut inp)
+        );
+        let page20 = format!(
+            "/Metadata {} /AF [{}] /DPart {}",
+            target(&mut inp),
+            target(&mut inp),
+            target(&mut inp)
+        );
+        let (h, v) = if cat_declares { ("1.7", "/Version /2.0") } else { ("2.0", "") };
+        (h, v, pdf20, page20)
+    } else {
+        ("1.7", "", String::new(), String::new())
+    };
+    let catalog = format!(
+        "<< /Type /Catalog /Pages 2 0 R /Extra {} {xfa} {perms} {version} {pdf20} >>",
+        target(&mut inp)
+    );
     let mut objs: Vec<(u32, Vec<u8>)> = vec![
         (1, catalog.into_bytes()),
         (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
-        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>".to_vec()),
+        (
+            3,
+            format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] {page20} >>").into_bytes(),
+        ),
     ];
     objs.extend(bodies);
-    let mut b = b"%PDF-1.7\n".to_vec();
+    let mut b = format!("%PDF-{header}\n").into_bytes();
     let mut rows: Vec<(u32, u16, u8, usize)> = vec![(0, 65535, b'f', 0)];
     for (num, body) in &objs {
         rows.push((*num, 0, b'n', b.len()));
@@ -295,6 +326,12 @@ fuzz_target!(|data: &[u8]| {
                 let audit = audit_residuals(&d2, &limits()).expect("audit");
                 assert_eq!(audit.reachability.missing_references, 0, "dangling reference in the output");
                 assert_eq!(catalog_canon(&doc), catalog_canon(&d2), "the graph changed");
+                // The version is kept; a 2.0 output has the /ID 2.0
+                // requires, a 1.x output none.
+                let want: &[u8] = if v20 { b"%PDF-2.0" } else { b"%PDF-1.7" };
+                assert_eq!(&out[..8], want, "the declared version changed");
+                let trailer = &out[out.windows(7).rposition(|w| w == b"trailer").unwrap()..];
+                assert_eq!(trailer.windows(4).any(|w| w == b"/ID "), v20, "trailer /ID");
             }
             Err(Error::SignaturePolicy { .. }) => assert!(ur3 || xmlsig || raw_packet),
             Err(Error::Unsupported { feature, .. }) => {
