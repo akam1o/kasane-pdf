@@ -32,6 +32,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
+pub use pdf20::compare_report;
+
 /// The document-level categories come last: they share the node budget,
 /// and the earlier categories' results must not depend on them.
 pub const CATEGORIES: [&str; 12] = [
@@ -93,6 +95,10 @@ pub struct SemanticRoundTrip {
     pub class: SemClass,
     pub checks: Vec<SemCheck>,
     pub ms: u128,
+    /// The report-only categories (`pdf20.rs`): reported per category,
+    /// never part of `class`. Empty in older reports.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub report_only: Vec<SemCheck>,
 }
 
 /// One category of a snapshot.
@@ -173,6 +179,7 @@ pub fn compare(a: &Document, b: &Document) -> SemanticRoundTrip {
         class,
         checks,
         ms: t.elapsed().as_millis(),
+        report_only: Vec::new(),
     }
 }
 
@@ -1951,9 +1958,12 @@ pub fn probe(files: &[std::path::PathBuf]) {
 }
 
 mod doclevel;
+mod pdf20;
 mod probe_doclevel;
 
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_doclevel;
+#[cfg(test)]
+mod tests_pdf20;

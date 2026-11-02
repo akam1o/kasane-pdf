@@ -275,6 +275,32 @@ class Gate(unittest.TestCase):
         rc, out = check(run(old), cr.summarize(run(new)))
         self.assertEqual(rc, 0, out)
 
+    def test_report_only_semantic_categories_never_fail(self):
+        # PDF 2.0 categories (report_only): listed when they are not a
+        # pass against a baseline that predates them, or lose a pass
+        # against one that has them; never a regression, and absent from
+        # the enforced "semantic" map.
+        old = self.with_semantic(file("a", [NORMAL]), {"acroform": "pass"})
+        base = cr.summarize(run(old))
+        new = self.with_semantic(file("a", [NORMAL]), {"acroform": "pass"})
+        new["roundtrip"]["semantic"]["report_only"] = [
+            {"category": "version", "class": "pass"},
+            {"category": "associated_files", "class": "fail"},
+            {"category": "dparts", "class": "not_applicable"},
+        ]
+        rc, out = check(run(new), base)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("report-only semantic associated_files: fail (no baseline)", out)
+        self.assertNotIn("dparts", out)
+        summary = cr.summarize(run(new))["files"]["a"]
+        self.assertNotIn("associated_files", summary["semantic"])
+        self.assertEqual(summary["semantic_report"]["associated_files"], "fail")
+        good = self.with_semantic(file("a", [NORMAL]), {"acroform": "pass"})
+        good["roundtrip"]["semantic"]["report_only"] = [{"category": "associated_files", "class": "pass"}]
+        rc, out = check(run(new), cr.summarize(run(good)))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("report-only semantic associated_files pass -> fail", out)
+
 
     def test_text_agreement_is_recorded_and_report_only(self):
         def with_text(f1, f1a):
