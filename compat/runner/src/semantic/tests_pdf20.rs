@@ -1048,4 +1048,39 @@ fn appearance_streams_are_owners() {
     let r = report(&b, &mk("/Data"));
     let c = r.iter().find(|c| c.category == "associated_files").unwrap();
     assert_eq!(c.class, SemClass::Fail, "{:?}", c.notes);
+    // A direct-stream /N and /D shared by two annotations: listed under
+    // the first, named from the second; unsharing them fails.
+    let shared = |second: &str| {
+        pdf(
+            "2.0",
+            &[
+                (1, d("<< /Type /Catalog /Pages 2 0 R >>")),
+                (2, d("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")),
+                (3, d("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Annots [60 0 R 61 0 R] /Resources << >> >>")),
+                (60, d("<< /Type /Annot /Subtype /Square /Rect [0 0 1 1] /AP << /N 40 0 R /D 40 0 R >> >>")),
+                (61, d(&format!("<< /Type /Annot /Subtype /Square /Rect [0 0 1 1] /AP << /N {second} 0 R >> >>"))),
+                (40, st("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /AF [10 0 R]", b"")),
+                (41, st("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /AF [10 0 R]", b"")),
+                (10, d("<< /Type /Filespec /F (a) /AFRelationship /Data >>")),
+            ],
+            0,
+        )
+    };
+    // Keys in order (/D before /N): /D is the first owner.
+    let l = lines(&shared("40"), "associated_files");
+    assert_eq!(
+        l.iter()
+            .filter(|l| l.starts_with("owner"))
+            .cloned()
+            .collect::<Vec<_>>(),
+        [
+            "owner\towner=annot:0.0/ap:D\tcount=1",
+            "owner\towner=annot:0.0/ap:N\tsame_as=annot:0.0/ap:D",
+            "owner\towner=annot:0.1/ap:N\tsame_as=annot:0.0/ap:D",
+        ],
+        "{l:#?}"
+    );
+    let r = report(&shared("40"), &shared("41"));
+    let c = r.iter().find(|c| c.category == "associated_files").unwrap();
+    assert_eq!(c.class, SemClass::Fail, "{:?}", c.notes);
 }

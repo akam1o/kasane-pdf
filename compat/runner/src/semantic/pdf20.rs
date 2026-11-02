@@ -365,8 +365,9 @@ impl<'a> Ctx<'a> {
     /// Every `/AF` array (ISO 32000-2 §14.13) by owner — the catalog,
     /// each page, annotation (page and position), structure element
     /// (tree path), XObject and marked-content property list in a page's
-    /// resources (resource-name path; form XObjects followed), and
-    /// document part (tree path) — and each file specification in it, in
+    /// resources (resource-name path; form XObjects followed), annotation
+    /// appearance stream (`/AP` entries, states included; their resources
+    /// walked like a page's), and document part (tree path) — and each file specification in it, in
     /// order, as a whole: names, description, `/AFRelationship`, every
     /// other key, `/EF` streams by decoded content with their `/Params`.
     /// A file specification or embedded-file stream reached a second time
@@ -549,20 +550,20 @@ impl<'a> Ctx<'a> {
             };
             for (state, x) in streams {
                 let owner = format!("{at}/ap:{}{state}", String::from_utf8_lossy(kind));
+                // As in `resource_afs`: only a stream is an owner, and it
+                // claims its first-owner slot once it is known to be one.
+                let Object::Stream { dict, .. } = self.get(&x)? else {
+                    continue;
+                };
                 if let Some(r) = x.as_ref() {
                     if let Some(first) = seen.get(&r) {
-                        if let Some(d) = self.dict(&x)? {
-                            if d.contains_key(b"AF".as_slice()) {
-                                out.push(format!("owner\towner={owner}\tsame_as={first}"));
-                            }
+                        if dict.contains_key(b"AF".as_slice()) {
+                            out.push(format!("owner\towner={owner}\tsame_as={first}"));
                         }
                         continue;
                     }
                     seen.insert(r, owner.clone());
                 }
-                let Object::Stream { dict, .. } = self.get(&x)? else {
-                    continue;
-                };
                 self.af_owner(&owner, &dict, seen, out)?;
                 if let Some(res) = dict.get(b"Resources".as_slice()) {
                     if let Some(res) = self.dict(res)? {
