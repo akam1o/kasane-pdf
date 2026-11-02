@@ -238,6 +238,56 @@ unsupported / error 0; doc_actions 68 (a hybrid-reference file's page
 annotations are now read), metadata 274 (one from the newly compared document), viewer preferences 125. The
 baseline records the categories per file (report only).
 
+## PDF 2.0 categories, report only (v0.5.0 W2, 2026-11-02)
+
+Four categories (`semantic/pdf20.rs`) taken after the others with their
+own node budget and reported in `roundtrip.semantic.report_only`. They
+never enter the overall class or the `semantic` map of the baseline
+summary (`ci-regression.py` records them as `semantic_report` and lists
+a lost pass without failing), so adding them changes no existing
+result.
+
+| category | what is compared | what is not a difference |
+|---|---|---|
+| `version` | the effective version: the header's, or the catalog `/Version` when it is later (ISO 32000-2 §7.2.2), read from the file bytes and the catalog by the snapshot | how it is declared — header only, catalog only, an indirect `/Version` — recorded as *declared form* and named in the notes when it changes |
+| `page_metadata` | each page's own `/Metadata` (not inheritable) by page position: state (present, empty, undecodable, not a stream, unreadable), other dictionary entries, decoded content, sharing between pages | compression; object numbers. The catalog's `/Metadata` stays in `metadata` |
+| `associated_files` | every `/AF` owner — catalog, page, annotation, annotation appearance stream (states included), structure element, XObject and marked-content property list in a page's or an appearance stream's resources (forms followed, each once), document part — with its count and each file specification whole (names, description, `/AFRelationship`, every other key; `/EF` streams with `/Params` by decoded content); a file specification or embedded-file stream reached again named by its first owner and position | compression; object numbers; key order. `embedded_files` (unchanged) keeps its catalog `/AF` lines |
+| `dparts` | the DPart tree by path: the root's entries, each node's `/Start` and `/End` pages, `/DPM`, number of children, whether `/Parent` names its parent, every other key; a node reached twice named by its first path, one on its own ancestry by the path it returns to; each page's `/DPart` as the node path it names | object numbers. A node's `/AF` is in `associated_files` |
+
+The document-level rules apply: decoded content by length and digest,
+an unsupported filter is `unsupported`, a value past the depth limit, a
+line past 1 MiB, the decoded budget or the node budget are `error`, an
+unreadable object is `#unresolved` (not null) and an undefined one is
+null (§7.3.10). Not covered: `/AF` on objects reached only through a
+structure element's `/OBJR`, and pages that are not indirect objects.
+
+Synthetic tests (`semantic/tests_pdf20.rs`) on one base document with
+all four (two pages, a DPart tree, `/AF` on eight kinds of owner,
+shared file specifications and embedded files): renumbered, keys
+reordered and recompressed pass; the version declared differently
+passes with a note, lowered fails; page metadata changed, removed,
+added, swapped, shared, its dictionary changed or unreadable fail in
+`page_metadata` only; an embedded file's content, relationship,
+description or parameters changed, an entry removed, added or
+reordered, a file specification or embedded file unshared, an entry
+changed on a structure element, a nested form, a property list, an
+annotation, an appearance stream or a document part fail in
+`associated_files` only; a part's pages, `/DPM`, parent, page link,
+root entry, sharing, an added or removed node fail in `dparts` (a
+moved node with an `/AF` also in `associated_files`); cycles end with
+the path they return to; an over-deep tree, an over-deep value and an
+over-long line are `error`; an unsupported filter is `unsupported`;
+notes carry no content; the overall class is untouched; kasane's
+rewrite of the base document passes every category as 1.7 and as 2.0.
+
+Corpus (macOS and Linux arm64, identical by category), with `main`'s
+library: version 432 pass and 2 fail — inputs declaring 1.4 that carry
+`/OCProperties`, which the rewriter raises to 1.5 by design —, page
+metadata 1 pass, associated files and document parts not applicable;
+every other result unchanged. With the W2 rewriter: version 434 pass
+and the same 2 fail, page metadata 1 pass, associated files 2 pass (the
+two 2.0 documents), document parts none in the corpus.
+
 ## Roll-out
 
 Reported in the run report (`roundtrip.semantic`), the baseline summary
