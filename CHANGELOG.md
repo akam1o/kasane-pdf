@@ -22,8 +22,24 @@ versions follow [Semantic Versioning](https://semver.org/).
   packets, XML signatures) and usage-rights signatures; a successful
   rewrite must reparse strictly, leave no dangling reference and keep
   the catalog graph equal, a refusal must have a cause in the input.
+- Compatibility runner (no library change): four report-only semantic
+  categories for PDF 2.0 — the effective version (the declared form
+  noted, not compared), page-level `/Metadata`, associated files (every
+  `/AF` owner, whole file specifications, embedded files by decoded
+  content, sharing) and document parts (the DPart tree, `/DPM`, page
+  links). Reported next to the others (`report_only`), never part of the
+  overall class; `ci-regression.py` lists them without failing.
 
 ### Changed
+- `rewrite`: a document that declares PDF 2.0 (header or catalog
+  `/Version`) is written as 2.0 instead of refused, with the trailer
+  `/ID` 2.0 requires (ISO 32000-2 Table 15): the input's permanent first
+  identifier, the second the digest of the written body (deterministic;
+  not carried by `remove_document_metadata`). Its structures — page
+  `/Metadata`, associated files and embedded files, document parts —
+  are carried as objects with references renumbered and sharing kept.
+  A version above 2.0 is still refused; 1.x output is unchanged (no
+  `/ID`).
 - `rewrite`: a reference to an undefined object (ISO 32000-1 §7.3.10:
   no in-use or compressed cross-reference entry for that number and
   generation — absent, free, or another generation) is a reference to

@@ -703,9 +703,11 @@ fn catalog_version_respected() {
     assert!(out.starts_with(b"%PDF-1.7"));
 }
 
+// 2.0 is written as 2.0 since 0.5 (tests/rewrite_pdf20.rs); a later
+// version is refused.
 #[test]
-fn version_2_0_refused() {
-    let p = pdf_with(1, "/Version /2.0", "");
+fn version_2_1_refused() {
+    let p = pdf_with(1, "/Version /2.1", "");
     let doc = Document::from_bytes(&p).unwrap();
     match rewrite(&doc) {
         Err(Error::Unsupported { feature, .. }) => assert_eq!(feature, "PDF version"),
@@ -714,9 +716,9 @@ fn version_2_0_refused() {
 }
 
 #[test]
-fn version_2_0_header_refused() {
+fn version_2_1_header_refused() {
     let mut src = pdf_with(1, "", "");
-    src.splice(0..8, b"%PDF-2.0\n".iter().cloned());
+    src.splice(0..8, b"%PDF-2.1\n".iter().cloned());
     let doc = Document::from_bytes(&src).unwrap();
     match rewrite(&doc) {
         Err(Error::Unsupported { feature, .. }) => assert_eq!(feature, "PDF version"),

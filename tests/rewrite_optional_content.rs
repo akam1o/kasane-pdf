@@ -495,12 +495,14 @@ fn optional_content_is_declared_at_least_pdf_1_5() {
 #[test]
 fn the_version_floor_combines_with_the_catalog_version() {
     // Effective version = max(header, catalog /Version), then at least
-    // 1.5 for optional content; 2.0 stays refused.
+    // 1.5 for optional content; 2.0 is written as 2.0 (0.5), above is
+    // refused.
     let ocp = "<< /OCGs [10 0 R] /D << >> >>";
     for (cat_version, want) in [
         ("/1.4", Some(&b"%PDF-1.5"[..])),
         ("/1.6", Some(b"%PDF-1.6")),
-        ("/2.0", None),
+        ("/2.0", Some(b"%PDF-2.0")),
+        ("/2.1", None),
     ] {
         let catalog =
             format!("<< /Type /Catalog /Pages 2 0 R /Version {cat_version} /OCProperties {ocp} >>");

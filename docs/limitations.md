@@ -37,8 +37,10 @@ are on the [roadmap](architecture.md#roadmap).
   (today: a Flate stream missing its final block after a sync flush,
   a malformed `/ToUnicode` entry). Everything else that is not
   conforming is still an error in strict mode.
-- **PDF 2.0**: files are read; features new in 2.0 are not interpreted
-  and the rewriter refuses a document that declares version 2.0.
+- **PDF 2.0**: files are read; features new in 2.0 are not interpreted.
+  The rewriter writes a 2.0 document as 2.0 and carries its structures
+  (associated files, document parts, page metadata) as objects (0.5); a
+  version above 2.0 is refused.
 - `Document` holds interior caches (`Cell`/`RefCell`) and is not
   `Sync`; use one instance per thread.
 
@@ -142,7 +144,8 @@ are on the [roadmap](architecture.md#roadmap).
   wrong type, a cyclic or over-deep `/Order`); unknown keys are kept. A
   rewrite carrying it declares at least PDF 1.5 in the header (the
   effective version is the larger of header and catalog `/Version`; 2.0
-  stays refused); an incremental save never changes the header.
+  is written as 2.0, above is refused); an incremental save never
+  changes the header.
   Preserved objects are
   carried verbatim — the rewriter is **not a sanitizer**.
 - **Incremental save** cannot delete bytes (a removed annotation's

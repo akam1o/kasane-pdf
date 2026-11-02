@@ -976,3 +976,26 @@ fn shared_and_deep_form_xobjects() {
         );
     }
 }
+
+#[test]
+fn kasane_rewrite_keeps_the_meaning_of_a_2_0_document() {
+    // W2: the base document as 2.0 (header and catalog) — every
+    // report-only category passes after kasane's rewrite, and so does
+    // every enforced-path category.
+    let b = base(V::None);
+    let out = kasane_pdf::rewrite(&doc(&b)).unwrap();
+    assert!(out.starts_with(b"%PDF-2.0"));
+    for c in report(&b, &out) {
+        assert_eq!(c.class, SemClass::Pass, "{} {:?}", c.category, c.notes);
+    }
+    let s = compare(&doc(&b), &doc(&out));
+    for c in &s.checks {
+        assert!(
+            matches!(c.class, SemClass::Pass | SemClass::NotApplicable),
+            "{} {:?} {:?}",
+            c.category,
+            c.class,
+            c.notes
+        );
+    }
+}

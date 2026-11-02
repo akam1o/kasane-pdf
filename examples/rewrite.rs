@@ -34,8 +34,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("warning: {w}");
             }
         }
-        // A signed document, PDF 2.0, XFA, … are refused with a typed
-        // error before anything is written; the input is never touched.
+        // A signed document, a script, a version above PDF 2.0, … are
+        // refused with a typed error before anything is written; the
+        // input is never touched.
         Err(Error::Unsupported { feature, detail }) => {
             println!("refused: {feature}: {detail}");
         }
