@@ -718,3 +718,76 @@ fn ordinary_xfa_content_is_carried() {
         assert_eq!(packets(&doc), packets(&out), "{case}");
     }
 }
+
+/// A form whose packets are `parts`, in order, as plain streams.
+fn split_form(parts: &[&[u8]]) -> Document {
+    let names: Vec<(&str, u32)> = (0..parts.len())
+        .map(|i| ("datasets", 10 + i as u32))
+        .collect();
+    form(
+        &names,
+        parts
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (10 + i as u32, stream("", p)))
+            .collect(),
+    )
+}
+
+#[test]
+fn constructs_split_across_packets_are_seen() {
+    // The packets are one XML document: what straddles a boundary counts.
+    expect_all(
+        "signed",
+        vec![
+            (
+                "character reference split across packets",
+                split_form(&[
+                    b"<xdp><ds:Signature xmlns:ds=\"http://www.w3.org/2000/09/xmldsi&#1",
+                    b"03;#\"/></xdp>",
+                ]),
+            ),
+            (
+                "an over-long character reference",
+                one_packet(
+                    b"<ds:Signature xmlns:ds=\"http://www.w3.org/2000/09/xmldsi&#x000000000000000067;#\"/>",
+                ),
+            ),
+        ],
+    );
+    expect_all(
+        "unsupported XFA packet",
+        vec![
+            (
+                "DTD split across packets, entities building the namespace",
+                split_form(&[
+                    b"<?xml version=\"1.0\"?><!DOC",
+                    b"TYPE d [<!ENT",
+                    b"ITY % a \"xmld\"><!ENT",
+                    b"ITY % b \"sig\"><!ENT",
+                    b"ITY u \"http://www.w3.org/2000/09/%a;%b#\">]><d xmlns:ds=\"&u;\"><ds:Signature/></d>",
+                ]),
+            ),
+            (
+                "XML declaration split across packets",
+                split_form(&[b"<?xml version=\"1.0\" enc", b"oding=\"UTF-7\"?><d/>"]),
+            ),
+        ],
+    );
+}
+
+#[test]
+fn the_check_is_linear_in_hostile_text() {
+    // 1 MiB of declarations, character references and DTD-like
+    // prefixes in one packet: decided quickly, nothing quadratic.
+    for unit in [&b"<?xml "[..], b"&#0000000", b"<!DOCTYP", b"&#x;&#;"] {
+        let content: Vec<u8> = unit.iter().copied().cycle().take(1 << 20).collect();
+        let t = std::time::Instant::now();
+        let _ = rewrite(&one_packet(&content));
+        assert!(
+            t.elapsed().as_secs() < 5,
+            "{:?}",
+            String::from_utf8_lossy(unit)
+        );
+    }
+}

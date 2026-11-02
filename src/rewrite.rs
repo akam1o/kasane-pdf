@@ -598,14 +598,12 @@ const ASCII_COMPATIBLE: &[&str] = &[
 ];
 
 /// An XFA packet's decoded bytes as ASCII-compatible text for the
-/// signature scan: UTF-16 (byte order mark, or `<` as the first
-/// non-blank code unit) narrowed to one byte per code unit (non-ASCII
-/// → 0xFF), a UTF-8 byte order mark removed. Anything else that is not
-/// ASCII-compatible — UTF-32, EBCDIC, NUL bytes in no known
-/// encoding, a declared encoding outside [`ASCII_COMPATIBLE`] or that
-/// contradicts the bytes — and any DTD (its entities can build markup)
-/// cannot be checked: the reason is returned.
-fn xfa_text(raw: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, String> {
+/// signature scan, and whether they were UTF-16: UTF-16 (byte order
+/// mark, or `<` as the first non-blank code unit) narrowed to one byte
+/// per code unit (non-ASCII → 0xFF), a UTF-8 byte order mark removed.
+/// UTF-32, EBCDIC and NUL bytes in no known encoding cannot be read:
+/// the reason is returned.
+fn xfa_text(raw: &[u8]) -> Result<(std::borrow::Cow<'_, [u8]>, bool), String> {
     use std::borrow::Cow;
     if raw.starts_with(&[0, 0, 0xFE, 0xFF]) || raw.starts_with(&[0xFF, 0xFE, 0, 0]) {
         return Err("UTF-32 content".into());
@@ -658,31 +656,41 @@ fn xfa_text(raw: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, String> {
         }
         None => Cow::Borrowed(raw.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(raw)),
     };
+    Ok((text, utf16.is_some()))
+}
+
+/// Whether text from [`xfa_text`] can be checked completely: every XML
+/// declaration names an encoding the bytes are in — UTF-16 only if
+/// `wide` (the bytes were UTF-16), [`ASCII_COMPATIBLE`] only if
+/// `narrow` (they were not; both for the packets together) — and there
+/// is no DTD (its entities can build markup and bind namespaces).
+/// Otherwise the reason.
+fn xfa_checkable(text: &[u8], wide: bool, narrow: bool) -> Result<(), String> {
     let mut at = 0;
     while let Some(i) = find(&text[at..], b"<?xml") {
+        // A declaration is short: search its end within 512 bytes only
+        // (linear in the number of declarations).
         let decl = &text[at + i..];
-        let decl = &decl[..find(decl, b"?>").unwrap_or(decl.len()).min(512)];
+        let decl = &decl[..decl.len().min(512)];
+        let decl = &decl[..find(decl, b"?>").unwrap_or(decl.len())];
         if let Some(enc) = declared_encoding(decl) {
             let enc = enc.to_ascii_lowercase();
-            let wide = enc.starts_with("utf-16") || enc.starts_with("ucs-2");
-            let ok = if utf16.is_some() {
-                wide
-            } else {
-                ASCII_COMPATIBLE.iter().any(|p| match p.strip_suffix('*') {
-                    Some(prefix) => enc.starts_with(prefix),
-                    None => enc == *p,
-                })
-            };
+            let utf16_name = enc.starts_with("utf-16") || enc.starts_with("ucs-2");
+            let ascii = ASCII_COMPATIBLE.iter().any(|p| match p.strip_suffix('*') {
+                Some(prefix) => enc.starts_with(prefix),
+                None => enc == *p,
+            });
+            let ok = (wide && utf16_name) || (narrow && ascii);
             if !ok {
                 return Err(format!("declared encoding {enc:?}"));
             }
         }
         at += i + 5;
     }
-    if find_ci(&text, b"<!DOCTYPE").is_some() || find_ci(&text, b"<!ENTITY").is_some() {
+    if find_ci(text, b"<!DOCTYPE").is_some() || find_ci(text, b"<!ENTITY").is_some() {
         return Err("a DTD".into());
     }
-    Ok(text)
+    Ok(())
 }
 
 /// The `encoding="…"` value of an XML declaration.
@@ -713,24 +721,20 @@ fn expand_char_refs(text: &[u8]) -> Vec<u8> {
     let mut i = 0;
     while i < text.len() {
         if text[i] == b'&' && text.get(i + 1) == Some(&b'#') {
-            let (hex, start) = match text.get(i + 2) {
-                Some(b'x' | b'X') => (true, i + 3),
-                _ => (false, i + 2),
+            let (radix, start) = match text.get(i + 2) {
+                Some(b'x' | b'X') => (16, i + 3),
+                _ => (10, i + 2),
             };
+            // Any number of digits: leading zeros are valid XML.
             let digits = text[start..]
                 .iter()
-                .take(16)
-                .take_while(|c| {
-                    if hex {
-                        c.is_ascii_hexdigit()
-                    } else {
-                        c.is_ascii_digit()
-                    }
-                })
+                .take_while(|c| (**c as char).is_digit(radix))
                 .count();
             if digits > 0 && text.get(start + digits) == Some(&b';') {
-                let s = std::str::from_utf8(&text[start..start + digits]).unwrap_or("");
-                let v = u32::from_str_radix(s, if hex { 16 } else { 10 }).unwrap_or(u32::MAX);
+                let v = text[start..start + digits].iter().fold(0u32, |v, c| {
+                    let d = (*c as char).to_digit(radix).unwrap_or(0);
+                    v.saturating_mul(radix).saturating_add(d)
+                });
                 out.push(if v < 0x80 { v as u8 } else { 0xFF });
                 i = start + digits + 1;
                 continue;
@@ -743,54 +747,63 @@ fn expand_char_refs(text: &[u8]) -> Vec<u8> {
 }
 
 /// An XFA packet (or the single XFA stream) whose content holds an XML
-/// signature: a description of the first one. The packets are checked
-/// one by one and then as the one XML document they form together (a
-/// signature can straddle two). A packet that cannot be decoded or read
-/// completely ([`xfa_text`]), or whose data is in an external file,
+/// signature: a description of the first one. Each packet is checked
+/// alone and then all of them as the one XML document they form — a
+/// character reference, a DTD, a declaration or the namespace can
+/// straddle a boundary — by the same steps: [`xfa_checkable`],
+/// character references expanded, the namespace searched. A packet
+/// that cannot be decoded or read completely ([`xfa_text`]), whose data
+/// is in an external file, or a document that fails [`xfa_checkable`]
 /// cannot be checked, so it is an error rather than silently treated as
 /// unsigned.
 fn xfa_xml_signature(doc: &Document, xfa: &Object) -> Result<Option<String>, Error> {
-    let text = |o: &Object, what: &str| -> Result<Option<Vec<u8>>, Error> {
+    let unsupported = |what: &str, why: String| Error::Unsupported {
+        feature: "XFA packet",
+        detail: format!("{what} could not be checked for an XML signature ({why})"),
+    };
+    // Checked text (not yet expanded) and whether it was UTF-16.
+    let text = |o: &Object, what: &str| -> Result<Option<(Vec<u8>, bool)>, Error> {
         let Object::Stream { dict, data } = o else {
             return Ok(None);
         };
-        let unsupported = |why: String| Error::Unsupported {
-            feature: "XFA packet",
-            detail: format!("{what} could not be checked for an XML signature ({why})"),
-        };
         if dict.contains_key(b"F".as_slice()) {
-            return Err(unsupported("stream data in an external file".into()));
+            return Err(unsupported(what, "stream data in an external file".into()));
         }
         let decoded = doc
             .decode_stream(dict, data)
-            .map_err(|e| unsupported(e.to_string()))?;
-        let t = xfa_text(&decoded).map_err(unsupported)?;
-        Ok(Some(expand_char_refs(&t)))
+            .map_err(|e| unsupported(what, e.to_string()))?;
+        let (t, wide) = xfa_text(&decoded).map_err(|why| unsupported(what, why))?;
+        xfa_checkable(&t, wide, !wide).map_err(|why| unsupported(what, why))?;
+        Ok(Some((t.into_owned(), wide)))
     };
-    let signed = |t: &[u8]| find_ci(t, XMLDSIG_MARK).is_some();
+    let signed = |t: &[u8]| find_ci(&expand_char_refs(t), XMLDSIG_MARK).is_some();
     match deref_chain(doc, xfa)? {
         Object::Array(items) => {
             let mut name = String::from("(unnamed)");
-            let mut whole = Vec::new();
+            let (mut whole, mut any_wide, mut any_narrow) = (Vec::new(), false, false);
             for it in &items {
                 match deref_chain(doc, it)? {
                     Object::String(s) => name = String::from_utf8_lossy(&s).into_owned(),
                     stream @ Object::Stream { .. } => {
                         let what = format!("packet {name:?}");
-                        if let Some(t) = text(&stream, &what)? {
+                        if let Some((t, wide)) = text(&stream, &what)? {
                             if signed(&t) {
                                 return Ok(Some(what));
                             }
                             whole.extend_from_slice(&t);
+                            any_wide |= wide;
+                            any_narrow |= !wide;
                         }
                     }
                     _ => {}
                 }
             }
+            let what = "the packets together";
+            xfa_checkable(&whole, any_wide, any_narrow).map_err(|why| unsupported(what, why))?;
             Ok(signed(&whole).then(|| "packets (across a packet boundary)".to_string()))
         }
         stream @ Object::Stream { .. } => {
-            let t = text(&stream, "stream")?.unwrap_or_default();
+            let t = text(&stream, "stream")?.map(|t| t.0).unwrap_or_default();
             Ok(signed(&t).then(|| "stream".to_string()))
         }
         _ => Ok(None),
