@@ -115,7 +115,10 @@ pub(super) fn compare_report_section(category: &str, a: &Section, b: &Section) -
     c
 }
 
-/// `M.m` → (M, m).
+/// `M.m` → (M, m), up to three digits each — looser than the engine's
+/// header check (`1.0`–`1.9`, `2.0`) on purpose: the snapshot records
+/// what is declared; a version the engine does not accept is never
+/// rewritten, so never compared.
 fn parse_version(s: &[u8]) -> Option<(u32, u32)> {
     let s = std::str::from_utf8(s).ok()?;
     let (m, n) = s.split_once('.')?;
@@ -383,7 +386,9 @@ impl<'a> Ctx<'a> {
                 if let Object::Array(items) = self.get(a)? {
                     for (k, it) in items.iter().enumerate() {
                         if let Some(ad) = self.dict(it)? {
-                            self.af_owner(&format!("annot:{i}.{k}"), &ad, &mut seen, &mut out)?;
+                            let at = format!("annot:{i}.{k}");
+                            self.af_owner(&at, &ad, &mut seen, &mut out)?;
+                            self.appearance_afs(&at, &ad, &mut seen, &mut out)?;
                         }
                     }
                 }
@@ -515,6 +520,59 @@ impl<'a> Ctx<'a> {
             }
         }
         Ok(format!("fs=<<{}>>", parts.join(" ")))
+    }
+
+    /// `/AF` of an annotation's appearance streams (`/AP` `/N` `/R` `/D`,
+    /// a stream or a dictionary of appearance states) — each a form
+    /// XObject, an `/AF` owner like any other — and of their resources.
+    fn appearance_afs(
+        &mut self,
+        at: &str,
+        ad: &Dict,
+        seen: &mut HashMap<IndirectRef, String>,
+        out: &mut Vec<String>,
+    ) -> Res<()> {
+        let Some(ap) = ad.get(b"AP".as_slice()) else {
+            return Ok(());
+        };
+        let Some(ap) = self.dict(ap)? else {
+            return Ok(());
+        };
+        for (kind, v) in &ap {
+            let streams: Vec<(String, Object)> = match self.get(v)? {
+                Object::Stream { .. } => vec![(String::new(), v.clone())],
+                Object::Dict(states) => states
+                    .iter()
+                    .map(|(s, x)| (format!(":{}", String::from_utf8_lossy(s)), x.clone()))
+                    .collect(),
+                _ => vec![],
+            };
+            for (state, x) in streams {
+                let owner = format!("{at}/ap:{}{state}", String::from_utf8_lossy(kind));
+                if let Some(r) = x.as_ref() {
+                    if let Some(first) = seen.get(&r) {
+                        if let Some(d) = self.dict(&x)? {
+                            if d.contains_key(b"AF".as_slice()) {
+                                out.push(format!("owner\towner={owner}\tsame_as={first}"));
+                            }
+                        }
+                        continue;
+                    }
+                    seen.insert(r, owner.clone());
+                }
+                let Object::Stream { dict, .. } = self.get(&x)? else {
+                    continue;
+                };
+                self.af_owner(&owner, &dict, seen, out)?;
+                if let Some(res) = dict.get(b"Resources".as_slice()) {
+                    if let Some(res) = self.dict(res)? {
+                        let mut stack: Vec<IndirectRef> = x.as_ref().into_iter().collect();
+                        self.resource_afs(&owner, &res, 1, &mut stack, seen, out)?;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// The page's resource dictionary, inherited through `/Parent`

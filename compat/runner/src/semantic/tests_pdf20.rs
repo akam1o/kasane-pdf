@@ -999,3 +999,53 @@ fn kasane_rewrite_keeps_the_meaning_of_a_2_0_document() {
         );
     }
 }
+
+#[test]
+fn appearance_streams_are_owners() {
+    // An annotation's normal appearance (a state dictionary) holds a
+    // form with an /AF, and a resource of it another: both listed; a
+    // change to either fails.
+    let mk = |rel: &str| {
+        pdf(
+            "2.0",
+            &[
+                (1, d("<< /Type /Catalog /Pages 2 0 R >>")),
+                (2, d("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")),
+                (3, d("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Annots [60 0 R] /Resources << >> >>")),
+                (60, d("<< /Type /Annot /Subtype /Widget /Rect [0 0 1 1] /AS /On /AP << /N << /On 40 0 R /Off 41 0 R >> >> >>")),
+                (
+                    40,
+                    st(
+                        "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /AF [10 0 R] /Resources << /XObject << /Im 42 0 R >> >>",
+                        b"",
+                    ),
+                ),
+                (41, st("/Type /XObject /Subtype /Form /BBox [0 0 1 1]", b"")),
+                (
+                    42,
+                    st(
+                        "/Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray /AF [11 0 R]",
+                        b"\x80",
+                    ),
+                ),
+                (10, d("<< /Type /Filespec /F (a) /AFRelationship /Data >>")),
+                (11, d(&format!("<< /Type /Filespec /F (b) /AFRelationship {rel} >>"))),
+            ],
+            0,
+        )
+    };
+    let b = mk("/Source");
+    let l = lines(&b, "associated_files");
+    assert!(
+        l.iter().any(|l| l.contains("owner=annot:0.0/ap:N:On\t")),
+        "{l:#?}"
+    );
+    assert!(
+        l.iter()
+            .any(|l| l.contains("owner=annot:0.0/ap:N:On/xobject:Im\t")),
+        "{l:#?}"
+    );
+    let r = report(&b, &mk("/Data"));
+    let c = r.iter().find(|c| c.category == "associated_files").unwrap();
+    assert_eq!(c.class, SemClass::Fail, "{:?}", c.notes);
+}
