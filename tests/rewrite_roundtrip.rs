@@ -583,13 +583,23 @@ fn nested_and_widget_only_signatures_refused() {
 }
 
 #[test]
-fn xfa_refused() {
+fn xfa_is_carried() {
+    // Since 0.5 XFA is carried verbatim (tests/rewrite_xfa.rs); here
+    // /XFA names an undefined object, which stays a reference to null.
     let p = pdf_with(1, "/AcroForm << /XFA 9 0 R /Fields [] >>", "");
     let doc = Document::from_bytes(&p).unwrap();
-    match rewrite(&doc) {
-        Err(Error::Unsupported { feature, .. }) => assert_eq!(feature, "XFA form"),
-        other => panic!("expected Unsupported, got {other:?}"),
-    }
+    let out = Document::from_bytes(&rewrite(&doc).unwrap()).unwrap();
+    let af = out
+        .deref(out.catalog().get(b"AcroForm".as_slice()).unwrap())
+        .unwrap();
+    let xfa = af
+        .as_dict()
+        .unwrap()
+        .get(b"XFA".as_slice())
+        .unwrap()
+        .clone();
+    assert!(matches!(xfa, kasane_pdf::Object::Ref(_)), "{xfa:?}");
+    assert_eq!(out.deref(&xfa).unwrap(), kasane_pdf::Object::Null);
 }
 
 #[test]

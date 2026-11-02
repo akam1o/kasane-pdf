@@ -16,6 +16,46 @@ versions follow [Semantic Versioning](https://semver.org/).
   agreement with annotation appearance text
   (`text_char_f1_with_annots`). Both report only
   (`docs/plans/semantic-roundtrip.md`, `docs/plans/quality-gate.md`).
+- Fuzz target `rewrite_graph`: object graphs with undefined, free and
+  other-generation references, chains, cycles, XFA packet arrays
+  (duplicate or non-string names, undefined, non-stream or undecodable
+  packets, XML signatures) and usage-rights signatures; a successful
+  rewrite must reparse strictly, leave no dangling reference and keep
+  the catalog graph equal, a refusal must have a cause in the input.
+
+### Changed
+- `rewrite`: a reference to an undefined object (ISO 32000-1 §7.3.10:
+  no in-use or compressed cross-reference entry for that number and
+  generation — absent, free, or another generation) is a reference to
+  null. The reference is kept and points at a new indirect object
+  whose body is `null` (one per undefined target), so array positions,
+  dictionary keys and sharing are unchanged and the output has no
+  dangling reference; each is recorded as
+  `Warning::UndefinedReference`. Such documents were refused with
+  `MissingReference`. A defined object that cannot be read (damaged
+  body, missing object-stream member, reference cycle, limit) still
+  fails the rewrite.
+- `rewrite`: XFA forms are carried verbatim instead of refused — the
+  `/XFA` stream or packet array (names, order, duplicates, stream bytes
+  and filters) and `/NeedsRendering`, with renumbered references;
+  nothing is parsed or regenerated. An XFA packet holding an XML
+  signature — the XML-DSig namespace in a packet or in the packets
+  together (a character reference, declaration or DTD can straddle
+  two), character references expanded, UTF-8, UTF-16 or another
+  ASCII-compatible encoding — is refused with `Error::SignaturePolicy`;
+  a packet that cannot be read completely to check (filter, limits,
+  external data, UTF-32 or another encoding that is not
+  ASCII-compatible, a DTD) is `Error::Unsupported`. The `/Perms`
+  (`/DocMDP`, `/UR`, `/UR3`) and signed-field refusals are unchanged.
+
+### Fixed
+- `rewrite`: the refusal checks (signatures, `/Perms`, scripts, XFA)
+  missed an object reached through a compressed object whose value is
+  a reference — `Document::deref` returns that reference — so, for
+  example, a `/Perms /UR3` dictionary behind one was rewritten. They now
+  follow such references to the object (64 hops at most, then a cycle
+  error); the resolutions count against `max_reference_depth` like
+  any other.
 
 ## [0.4.1] - 2026-11-02
 

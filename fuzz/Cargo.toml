@@ -52,3 +52,10 @@ path = "fuzz_targets/xref_updates.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "rewrite_graph"
+path = "fuzz_targets/rewrite_graph.rs"
+test = false
+doc = false
+bench = false
