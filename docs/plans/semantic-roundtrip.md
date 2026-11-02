@@ -258,8 +258,13 @@ The document-level rules apply: decoded content by length and digest,
 an unsupported filter is `unsupported`, a value past the depth limit, a
 line past 1 MiB, the decoded budget or the node budget are `error`, an
 unreadable object is `#unresolved` (not null) and an undefined one is
-null (§7.3.10). Not covered: `/AF` on objects reached only through a
-structure element's `/OBJR`, and pages that are not indirect objects.
+null (§7.3.10). An XObject named by a structure element's `/OBJR`
+is an owner too (named from the `/OBJR` when a page listed it first).
+**Not covered** — a change there is not seen, so such a structure is
+not claimed as preserved: `/AF` reached only through the resources of a
+pattern, a Type 3 font, a soft mask or the AcroForm `/DR`, through a
+widget that is in no page's `/Annots`, and pages that are not indirect
+objects.
 
 Synthetic tests (`semantic/tests_pdf20.rs`) on one base document with
 all four (two pages, a DPart tree, `/AF` on eight kinds of owner,
@@ -272,7 +277,8 @@ description or parameters changed, an entry removed, added or
 reordered, a file specification or embedded file unshared, an entry
 changed on a structure element, a nested form, a property list, an
 annotation, an appearance stream or a document part fail in
-`associated_files` only; a part's pages, `/DPM`, parent, page link,
+`associated_files` only; an XObject reached only through
+`/OBJR` changed fails too; a part's pages, `/DPM`, parent, page link,
 root entry, sharing, an added or removed node fail in `dparts` (a
 moved node with an `/AF` also in `associated_files`); cycles end with
 the path they return to; an over-deep tree, an over-deep value and an
