@@ -3,13 +3,14 @@
 //! references to defined objects, undefined numbers, free entries and
 //! other generations; optionally an XFA packet array (duplicate or
 //! non-string names, undefined or non-stream packets, an XML signature,
-//! an unknown filter) and a usage-rights signature. Oracle: a rewrite
-//! that succeeds reparses strictly, has no dangling reference, and its
-//! catalog graph — references resolved by §7.3.10, streams by raw bytes
-//! — equals the original's; a rewrite that fails does so for a reason
-//! the input contains (a signature, an undecodable packet, a reference
-//! cycle, a limit). With bit 7 of the first byte one byte is corrupted:
-//! then only no panic / hang / runaway allocation.
+//! an unknown filter, arbitrary bytes) and a usage-rights signature.
+//! Oracle: a rewrite that succeeds reparses strictly, has no dangling
+//! reference, and its catalog graph — references resolved by §7.3.10,
+//! streams by raw bytes — equals the original's; a rewrite that fails
+//! does so for a reason the input contains (a signature, a packet that
+//! cannot be checked, a reference cycle, a limit). With bit 7 of the
+//! first byte one byte is corrupted: then only no panic / hang /
+//! runaway allocation.
 #![no_main]
 
 use kasane_pdf::{audit_residuals, rewrite, Document, Error, IndirectRef, Object, OpenOptions};
@@ -169,6 +170,7 @@ fuzz_target!(|data: &[u8]| {
     // XFA packets as separate streams 100..: names from a small set.
     let mut xfa = String::new();
     let (mut xmlsig, mut bad_filter) = (false, false);
+    let raw_packet = flags & 8 != 0;
     if flags & 1 != 0 {
         let k = inp.byte() % 6;
         let mut items = Vec::new();
@@ -176,8 +178,14 @@ fuzz_target!(|data: &[u8]| {
             let name = ["template", "datasets", "config", "datasets"][inp.byte() as usize % 4];
             let num = 100 + j as u32;
             let sel = inp.byte();
-            let signs = sel % 9 == 0;
-            let content: Vec<u8> = if signs && sel & 0x80 != 0 {
+            let raw = raw_packet && j == 0;
+            let signs = sel % 9 == 0 && !raw;
+            let content: Vec<u8> = if raw {
+                // Arbitrary bytes: the encoding, declaration and
+                // character-reference handling of the check.
+                let len = inp.byte() as usize % 64;
+                (0..len).map(|_| inp.byte()).collect()
+            } else if signs && sel & 0x80 != 0 {
                 // UTF-16LE with a byte order mark.
                 let mut v = vec![0xFF, 0xFE];
                 for u in format!("<ds:Signature xmlns:ds=\"{XMLDSIG}\"/>").encode_utf16() {
@@ -288,8 +296,10 @@ fuzz_target!(|data: &[u8]| {
                 assert_eq!(audit.reachability.missing_references, 0, "dangling reference in the output");
                 assert_eq!(catalog_canon(&doc), catalog_canon(&d2), "the graph changed");
             }
-            Err(Error::SignaturePolicy { .. }) => assert!(ur3 || xmlsig),
-            Err(Error::Unsupported { feature, .. }) => assert!(feature == "XFA packet" && bad_filter, "{feature}"),
+            Err(Error::SignaturePolicy { .. }) => assert!(ur3 || xmlsig || raw_packet),
+            Err(Error::Unsupported { feature, .. }) => {
+                assert!(feature == "XFA packet" && (bad_filter || raw_packet), "{feature}")
+            }
             Err(Error::CycleDetected { .. }) => assert!(has_ref_only),
             Err(Error::LimitExceeded { .. }) => {}
             Err(e) => panic!("unexpected rewrite error: {e:?}"),
