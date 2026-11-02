@@ -21,9 +21,11 @@
 //!   still *claims* one is refused outright (blank unsigned fields
 //!   pass through like any other object).
 //! * an `/AcroForm` `/XFA` packet that holds an XML signature (the
-//!   XML-DSig namespace or a `Signature` element in its decoded
-//!   content, UTF-8 or UTF-16), or that cannot be decoded to check —
-//!   the signature policy applied to XFA. An XFA form without one is
+//!   XML-DSig namespace anywhere in the packets' decoded content,
+//!   character references expanded, UTF-8 or UTF-16), or that cannot
+//!   be read completely to check (filter, limits, external data, an
+//!   encoding that is not ASCII-compatible, a DTD) — the signature
+//!   policy applied to XFA. An XFA form without one is
 //!   carried verbatim (below).
 //! * catalog `/RichMedia`, `/AA` — outside profile.
 //! * a catalog `/OCProperties` that is not well formed (types, required
@@ -492,7 +494,7 @@ fn signed_field_in(
                 continue;
             }
         }
-        let f = doc.deref(f)?;
+        let f = deref_chain(doc, f)?;
         let Some(fd) = f.as_dict() else { continue };
         // /FT may be inherited from the parent field; a Kids-only
         // node carries none and is just walked.
@@ -502,7 +504,7 @@ fn signed_field_in(
             .map(|n| n.to_vec());
         if ft.is_none() {
             if let Some(p) = fd.get(b"Parent".as_slice()) {
-                if let Ok(p) = doc.deref(p) {
+                if let Ok(p) = deref_chain(doc, p) {
                     ft = p
                         .as_dict()
                         .and_then(|pd| pd.get(b"FT".as_slice()))
@@ -513,7 +515,7 @@ fn signed_field_in(
         }
         if ft.as_deref() == Some(b"Sig") {
             if let Some(v) = fd.get(b"V".as_slice()) {
-                let v = doc.deref(v)?;
+                let v = deref_chain(doc, v)?;
                 if let Some(vd) = v.as_dict() {
                     let name = fd
                         .get(b"T".as_slice())
@@ -530,7 +532,7 @@ fn signed_field_in(
             }
         }
         if let Some(kids) = fd.get(b"Kids".as_slice()) {
-            let kids = doc.deref(kids)?;
+            let kids = deref_chain(doc, kids)?;
             if let Some(k) = kids.as_array() {
                 if let Some(w) = signed_field_in(doc, k, depth + 1, seen)? {
                     return Ok(Some(w));
@@ -541,108 +543,255 @@ fn signed_field_in(
     Ok(None)
 }
 
-/// The XML-DSig namespace (W3C XML Signature, used by XFA signatures):
-/// any XML signature element carries it.
-const XMLDSIG_NS: &[u8] = b"http://www.w3.org/2000/09/xmldsig#";
-
-/// Whether decoded XML holds an XML signature: the XML-DSig namespace,
-/// or a `Signature` element under any prefix (the namespace can be
-/// written with character references). UTF-16 is read through its
-/// code units; UTF-32 cannot be checked and is an error.
-fn holds_xml_signature(xml: &[u8]) -> Result<bool, &'static str> {
-    if xml.starts_with(&[0, 0, 0xFE, 0xFF]) || xml.starts_with(&[0xFF, 0xFE, 0, 0]) {
-        return Err("UTF-32");
-    }
-    // UTF-16 (BOM, or `<` as the first code unit): keep the low byte of
-    // each ASCII code unit, map the rest to a byte that is not a name
-    // character.
-    let utf16_le = xml.starts_with(&[0xFF, 0xFE]) || xml.starts_with(b"<\0");
-    let utf16_be = xml.starts_with(&[0xFE, 0xFF]) || xml.starts_with(b"\0<");
-    let narrowed: Vec<u8>;
-    let text = if utf16_le || utf16_be {
-        narrowed = xml
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|&[a, b]| {
-                let (lo, hi) = if utf16_le { (a, b) } else { (b, a) };
-                if hi == 0 && lo < 0x80 {
-                    lo
-                } else {
-                    0xFF
-                }
-            })
-            .collect();
-        &narrowed[..]
-    } else {
-        xml
-    };
-    if text.windows(XMLDSIG_NS.len()).any(|w| w == XMLDSIG_NS) {
-        return Ok(true);
-    }
-    const LOCAL: &[u8] = b"Signature";
-    let name_char = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.');
-    for (i, _) in text
-        .windows(LOCAL.len())
-        .enumerate()
-        .filter(|(_, w)| *w == LOCAL)
-    {
-        let after = text.get(i + LOCAL.len()).copied();
-        if !matches!(after, Some(b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/')) {
-            continue;
-        }
-        // `<Signature` or `<prefix:Signature`.
-        let mut j = i;
-        if j > 0 && text[j - 1] == b':' {
-            j -= 1;
-            while j > 0 && name_char(text[j - 1]) {
-                j -= 1;
-            }
-        }
-        if j > 0 && text[j - 1] == b'<' {
-            return Ok(true);
+/// `obj` with every reference followed. [`Document::deref`] follows a
+/// chain of indirect objects, but a compressed object whose value is a
+/// reference comes back as that reference; the refusal checks must see
+/// the object a reader would, so they follow it here too.
+fn deref_chain(doc: &Document, obj: &Object) -> Result<Object, Error> {
+    let mut o = doc.deref(obj)?;
+    for _ in 0..MAX_REF_CHAIN {
+        match o {
+            Object::Ref(r) => o = doc.resolve(r)?,
+            other => return Ok(other),
         }
     }
-    Ok(false)
+    Err(Error::CycleDetected {
+        context: "reference chain through object streams",
+    })
 }
 
-/// An XFA packet (or the single XFA stream) whose decoded content holds
-/// an XML signature: a description of the first one. A packet that
-/// cannot be decoded or read cannot be checked, so it is an error
-/// rather than silently treated as unsigned.
+/// Hops [`deref_chain`] follows before it calls the chain a cycle.
+const MAX_REF_CHAIN: usize = 64;
+
+/// What XML Signature (XML-DSig 1.0, 1.1, 2.0) namespaces have in
+/// common. An element is an XML signature only in that namespace, and
+/// a namespace can only be bound by writing its URI in an `xmlns`
+/// attribute — where character references may spell it, so they are
+/// expanded first. Matched case-insensitively anywhere, comments and
+/// CDATA included: a mention outside markup is refused too.
+const XMLDSIG_MARK: &[u8] = b"xmldsig";
+
+/// Encodings (lower case; a trailing `*` matches any suffix) in which
+/// every ASCII character is the ASCII byte, so markup and the namespace
+/// URI are visible as bytes.
+const ASCII_COMPATIBLE: &[&str] = &[
+    "utf-8",
+    "utf8",
+    "us-ascii",
+    "ascii",
+    "iso-8859-*",
+    "latin*",
+    "windows-125*",
+    "cp125*",
+    "shift_jis",
+    "shift-jis",
+    "sjis",
+    "windows-31j",
+    "cp932",
+    "euc-*",
+    "gb2312",
+    "gbk",
+    "gb18030",
+    "big5*",
+    "iso-2022-*",
+    "koi8-*",
+];
+
+/// An XFA packet's decoded bytes as ASCII-compatible text for the
+/// signature scan: UTF-16 (byte order mark, or `<` as the first
+/// non-blank code unit) narrowed to one byte per code unit (non-ASCII
+/// → 0xFF), a UTF-8 byte order mark removed. Anything else that is not
+/// ASCII-compatible — UTF-32, EBCDIC, NUL bytes in no known
+/// encoding, a declared encoding outside [`ASCII_COMPATIBLE`] or that
+/// contradicts the bytes — and any DTD (its entities can build markup)
+/// cannot be checked: the reason is returned.
+fn xfa_text(raw: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, String> {
+    use std::borrow::Cow;
+    if raw.starts_with(&[0, 0, 0xFE, 0xFF]) || raw.starts_with(&[0xFF, 0xFE, 0, 0]) {
+        return Err("UTF-32 content".into());
+    }
+    if raw.starts_with(&[0x4C, 0x6F, 0xA7, 0x94]) {
+        return Err("EBCDIC content".into());
+    }
+    let first_unit = |le: bool| {
+        raw.as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&[a, b]| if le { (a, b) } else { (b, a) })
+            .find(|&(lo, hi)| !(hi == 0 && matches!(lo, b' ' | b'\t' | b'\r' | b'\n')))
+    };
+    let utf16 = if raw.starts_with(&[0xFF, 0xFE]) {
+        Some((true, 2))
+    } else if raw.starts_with(&[0xFE, 0xFF]) {
+        Some((false, 2))
+    } else if raw.contains(&0) {
+        // XML text holds no U+0000: NUL bytes mean a wide encoding.
+        if first_unit(true) == Some((b'<', 0)) {
+            Some((true, 0))
+        } else if first_unit(false) == Some((b'<', 0)) {
+            Some((false, 0))
+        } else {
+            return Err("NUL bytes in no recognised encoding".into());
+        }
+    } else {
+        None
+    };
+    let text: Cow<'_, [u8]> = match utf16 {
+        Some((le, bom)) => {
+            let narrowed: Vec<u8> = raw[bom..]
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&[a, b]| {
+                    let (lo, hi) = if le { (a, b) } else { (b, a) };
+                    if hi == 0 && lo < 0x80 {
+                        lo
+                    } else {
+                        0xFF
+                    }
+                })
+                .collect();
+            if narrowed.contains(&0) {
+                return Err("U+0000 in UTF-16 content (UTF-32?)".into());
+            }
+            Cow::Owned(narrowed)
+        }
+        None => Cow::Borrowed(raw.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(raw)),
+    };
+    let mut at = 0;
+    while let Some(i) = find(&text[at..], b"<?xml") {
+        let decl = &text[at + i..];
+        let decl = &decl[..find(decl, b"?>").unwrap_or(decl.len()).min(512)];
+        if let Some(enc) = declared_encoding(decl) {
+            let enc = enc.to_ascii_lowercase();
+            let wide = enc.starts_with("utf-16") || enc.starts_with("ucs-2");
+            let ok = if utf16.is_some() {
+                wide
+            } else {
+                ASCII_COMPATIBLE.iter().any(|p| match p.strip_suffix('*') {
+                    Some(prefix) => enc.starts_with(prefix),
+                    None => enc == *p,
+                })
+            };
+            if !ok {
+                return Err(format!("declared encoding {enc:?}"));
+            }
+        }
+        at += i + 5;
+    }
+    if find_ci(&text, b"<!DOCTYPE").is_some() || find_ci(&text, b"<!ENTITY").is_some() {
+        return Err("a DTD".into());
+    }
+    Ok(text)
+}
+
+/// The `encoding="…"` value of an XML declaration.
+fn declared_encoding(decl: &[u8]) -> Option<String> {
+    let i = find(decl, b"encoding")? + b"encoding".len();
+    let rest = decl[i..]
+        .trim_ascii_start()
+        .strip_prefix(b"=")?
+        .trim_ascii_start();
+    let quote = *rest.first().filter(|q| matches!(q, b'"' | b'\''))?;
+    let end = rest[1..].iter().position(|c| *c == quote)?;
+    Some(String::from_utf8_lossy(&rest[1..1 + end]).into_owned())
+}
+
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len()).position(|w| w == needle)
+}
+
+fn find_ci(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len())
+        .position(|w| w.eq_ignore_ascii_case(needle))
+}
+
+/// `text` with numeric character references (`&#…;`, `&#x…;`)
+/// expanded: ASCII ones to their byte, others to 0xFF.
+fn expand_char_refs(text: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        if text[i] == b'&' && text.get(i + 1) == Some(&b'#') {
+            let (hex, start) = match text.get(i + 2) {
+                Some(b'x' | b'X') => (true, i + 3),
+                _ => (false, i + 2),
+            };
+            let digits = text[start..]
+                .iter()
+                .take(16)
+                .take_while(|c| {
+                    if hex {
+                        c.is_ascii_hexdigit()
+                    } else {
+                        c.is_ascii_digit()
+                    }
+                })
+                .count();
+            if digits > 0 && text.get(start + digits) == Some(&b';') {
+                let s = std::str::from_utf8(&text[start..start + digits]).unwrap_or("");
+                let v = u32::from_str_radix(s, if hex { 16 } else { 10 }).unwrap_or(u32::MAX);
+                out.push(if v < 0x80 { v as u8 } else { 0xFF });
+                i = start + digits + 1;
+                continue;
+            }
+        }
+        out.push(text[i]);
+        i += 1;
+    }
+    out
+}
+
+/// An XFA packet (or the single XFA stream) whose content holds an XML
+/// signature: a description of the first one. The packets are checked
+/// one by one and then as the one XML document they form together (a
+/// signature can straddle two). A packet that cannot be decoded or read
+/// completely ([`xfa_text`]), or whose data is in an external file,
+/// cannot be checked, so it is an error rather than silently treated as
+/// unsigned.
 fn xfa_xml_signature(doc: &Document, xfa: &Object) -> Result<Option<String>, Error> {
-    let signed = |o: &Object, what: &str| -> Result<bool, Error> {
+    let text = |o: &Object, what: &str| -> Result<Option<Vec<u8>>, Error> {
         let Object::Stream { dict, data } = o else {
-            return Ok(false);
+            return Ok(None);
         };
         let unsupported = |why: String| Error::Unsupported {
             feature: "XFA packet",
             detail: format!("{what} could not be checked for an XML signature ({why})"),
         };
+        if dict.contains_key(b"F".as_slice()) {
+            return Err(unsupported("stream data in an external file".into()));
+        }
         let decoded = doc
             .decode_stream(dict, data)
             .map_err(|e| unsupported(e.to_string()))?;
-        holds_xml_signature(&decoded).map_err(|enc| unsupported(format!("{enc} content")))
+        let t = xfa_text(&decoded).map_err(unsupported)?;
+        Ok(Some(expand_char_refs(&t)))
     };
-    match doc.deref(xfa)? {
+    let signed = |t: &[u8]| find_ci(t, XMLDSIG_MARK).is_some();
+    match deref_chain(doc, xfa)? {
         Object::Array(items) => {
             let mut name = String::from("(unnamed)");
+            let mut whole = Vec::new();
             for it in &items {
-                match doc.deref(it)? {
+                match deref_chain(doc, it)? {
                     Object::String(s) => name = String::from_utf8_lossy(&s).into_owned(),
                     stream @ Object::Stream { .. } => {
                         let what = format!("packet {name:?}");
-                        if signed(&stream, &what)? {
-                            return Ok(Some(what));
+                        if let Some(t) = text(&stream, &what)? {
+                            if signed(&t) {
+                                return Ok(Some(what));
+                            }
+                            whole.extend_from_slice(&t);
                         }
                     }
                     _ => {}
                 }
             }
-            Ok(None)
+            Ok(signed(&whole).then(|| "packets (across a packet boundary)".to_string()))
         }
         stream @ Object::Stream { .. } => {
-            Ok(signed(&stream, "stream")?.then(|| "stream".to_string()))
+            let t = text(&stream, "stream")?.unwrap_or_default();
+            Ok(signed(&t).then(|| "stream".to_string()))
         }
         _ => Ok(None),
     }
@@ -657,7 +806,7 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
     // Signed documents: a signature/lock dictionary in /Perms claims
     // an integrity check a rewrite cannot preserve.
     if let Some(perms_obj) = catalog.get(b"Perms".as_slice()) {
-        let perms = doc.deref(perms_obj)?;
+        let perms = deref_chain(doc, perms_obj)?;
         if let Some(d) = perms.as_dict() {
             for key in [&b"DocMDP"[..], &b"UR"[..], &b"UR3"[..]] {
                 if d.contains_key(key) {
@@ -678,22 +827,22 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
     // widgets and pass through. XFA is carried verbatim unless a packet
     // holds an XML signature.
     if let Some(af_obj) = catalog.get(b"AcroForm".as_slice()) {
-        let af = doc.deref(af_obj)?;
+        let af = deref_chain(doc, af_obj)?;
         if let Some(d) = af.as_dict() {
             if let Some(xfa) = d.get(b"XFA".as_slice()) {
                 if let Some(what) = xfa_xml_signature(doc, xfa)? {
                     return Err(Error::SignaturePolicy {
                         rule: crate::error::SignatureRule::RewriteOfSignedDocument,
                         detail: format!(
-                            "XFA {what} holds an XML signature (XML-DSig namespace or a \
-                             Signature element) — what it signs is not evaluated, so the \
-                             document is treated as signed"
+                            "XFA {what} holds an XML signature (the XML-DSig namespace) — \
+                             what it signs is not evaluated, so the document is treated as \
+                             signed"
                         ),
                     });
                 }
             }
             if let Some(fields_obj) = d.get(b"Fields".as_slice()) {
-                let fields = doc.deref(fields_obj)?;
+                let fields = deref_chain(doc, fields_obj)?;
                 if let Some(fields) = fields.as_array() {
                     let mut seen = std::collections::HashSet::new();
                     if let Some(what) = signed_field_in(doc, fields, 0, &mut seen)? {
@@ -724,7 +873,7 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
         let Some(annots) = pd.get(b"Annots".as_slice()) else {
             continue;
         };
-        let annots = doc.deref(annots)?;
+        let annots = deref_chain(doc, annots)?;
         if let Some(arr) = annots.as_array() {
             let mut seen = std::collections::HashSet::new();
             if let Some(what) = signed_field_in(doc, arr, 0, &mut seen)? {
@@ -779,7 +928,7 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
     // Open-action / Names JavaScript: refuse executable payloads that
     // a rewrite could silently retain.
     if let Some(oa) = catalog.get(b"OpenAction".as_slice()) {
-        let oa = doc.deref(oa)?;
+        let oa = deref_chain(doc, oa)?;
         if let Some(d) = oa.as_dict() {
             let s = d.get(b"S".as_slice()).and_then(|o| o.as_name());
             if s == Some(b"JavaScript") {
@@ -791,7 +940,7 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
         }
     }
     if let Some(names_obj) = catalog.get(b"Names".as_slice()) {
-        let names = doc.deref(names_obj)?;
+        let names = deref_chain(doc, names_obj)?;
         if let Some(d) = names.as_dict() {
             if d.contains_key(b"JavaScript".as_slice()) {
                 return Err(Error::Unsupported {

@@ -39,10 +39,21 @@ versions follow [Semantic Versioning](https://semver.org/).
   `/XFA` stream or packet array (names, order, duplicates, stream bytes
   and filters) and `/NeedsRendering`, with renumbered references;
   nothing is parsed or regenerated. An XFA packet holding an XML
-  signature (the XML-DSig namespace or a `Signature` element, UTF-8 or
-  UTF-16) is refused with `Error::SignaturePolicy`; a packet that
-  cannot be decoded to check is `Error::Unsupported`. The `/Perms` (`/DocMDP`, `/UR`, `/UR3`) and
-  signed-field refusals are unchanged.
+  signature — the XML-DSig namespace in a packet or across packets,
+  character references expanded, UTF-8, UTF-16 or another
+  ASCII-compatible encoding — is refused with `Error::SignaturePolicy`;
+  a packet that cannot be read completely to check (filter, limits,
+  external data, UTF-32 or another encoding that is not
+  ASCII-compatible, a DTD) is `Error::Unsupported`. The `/Perms`
+  (`/DocMDP`, `/UR`, `/UR3`) and signed-field refusals are unchanged.
+
+### Fixed
+- `rewrite`: the refusal checks (signatures, `/Perms`, scripts, XFA)
+  missed an object reached through a compressed object whose value is
+  a reference — `Document::deref` returns that reference — so, for
+  example, a `/Perms /UR3` dictionary behind one was rewritten. They now
+  follow such references to the object (64 hops at most, then a cycle
+  error).
 
 ## [0.4.1] - 2026-11-02
 

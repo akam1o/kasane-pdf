@@ -436,13 +436,17 @@ fn an_xml_signature_in_any_encoding_or_spelling_is_refused() {
     for (le, bom) in [(true, true), (false, true), (true, false), (false, false)] {
         cases.push(utf16(sig, le, bom));
     }
-    // The namespace spelt with character references: the element name
-    // still gives it away.
+    // The namespace spelt with a character reference.
     cases.push(
         b"<d><ds:Signature xmlns:ds=\"http&#x3A;//www.w3.org/2000/09/xmldsig#\"><ds:SignedInfo/></ds:Signature></d>"
             .to_vec(),
     );
-    cases.push(b"<d><Signature\n Id=\"s\"></Signature></d>".to_vec());
+    // The namespace bound in another packet (here: earlier in the same
+    // one) than the signature element.
+    cases.push(
+        b"<xdp xmlns:ds=\"http://www.w3.org/2000/09/xmldsig#\"><d><ds:Signature/></d></xdp>"
+            .to_vec(),
+    );
     for (i, c) in cases.iter().enumerate() {
         match rewrite(&one_packet(c)) {
             Err(Error::SignaturePolicy { .. }) => {}
@@ -472,5 +476,245 @@ fn signature_fields_and_names_are_not_xml_signatures() {
         let doc = one_packet(c);
         let out = Document::from_bytes(&rewrite(&doc).unwrap()).unwrap();
         assert_eq!(packets(&doc), packets(&out));
+    }
+}
+
+/// A file with an xref stream: plain objects `plain` and, in object
+/// stream 40, the compressed objects `packed` (number, body).
+fn pdf_objstm(plain: Vec<(u32, Vec<u8>)>, packed: &[(u32, &str)]) -> Vec<u8> {
+    let mut b = b"%PDF-1.7\n".to_vec();
+    let mut rows: Vec<(u32, u8, u64, u64)> = Vec::new();
+    let (mut head, mut body) = (String::new(), String::new());
+    for (n, s) in packed {
+        head.push_str(&format!("{n} {} ", body.len()));
+        body.push_str(s);
+        body.push(' ');
+    }
+    let os = format!("{head}{body}");
+    let mut all = plain;
+    all.push((
+        40,
+        stream(
+            &format!("/Type /ObjStm /N {} /First {}", packed.len(), head.len()),
+            os.as_bytes(),
+        ),
+    ));
+    for (n, s) in &all {
+        rows.push((*n, 1, b.len() as u64, 0));
+        b.extend_from_slice(format!("{n} 0 obj\n").as_bytes());
+        b.extend_from_slice(s);
+        b.extend_from_slice(b"\nendobj\n");
+    }
+    for (i, (n, _)) in packed.iter().enumerate() {
+        rows.push((*n, 2, 40, i as u64));
+    }
+    let x = b.len() as u64;
+    rows.push((41, 1, x, 0));
+    rows.sort();
+    let (mut idx, mut data) = (String::new(), Vec::new());
+    for (n, t, f2, f3) in &rows {
+        idx.push_str(&format!("{n} 1 "));
+        data.push(*t);
+        data.extend_from_slice(&(*f2 as u32).to_be_bytes());
+        data.extend_from_slice(&(*f3 as u16).to_be_bytes());
+    }
+    b.extend_from_slice(
+        format!(
+            "41 0 obj\n<< /Type /XRef /W [1 4 2] /Index [{idx}] /Size 42 /Root 1 0 R /Length {} >>\nstream\n",
+            data.len()
+        )
+        .as_bytes(),
+    );
+    b.extend_from_slice(&data);
+    b.extend_from_slice(format!("\nendstream\nendobj\nstartxref\n{x}\n%%EOF\n").as_bytes());
+    b
+}
+
+const PAGES: [(u32, &[u8]); 2] = [
+    (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+    (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>"),
+];
+
+/// What `rewrite` did, without the output bytes.
+fn outcome(doc: &Document) -> String {
+    match rewrite(doc) {
+        Ok(_) => "rewritten".into(),
+        Err(Error::SignaturePolicy { .. }) => "signed".into(),
+        Err(Error::Unsupported { feature, .. }) => format!("unsupported {feature}"),
+        Err(e) => format!("{:?}", e.kind()),
+    }
+}
+
+/// Every case whose outcome is not `want`, named.
+fn expect_all(want: &str, cases: Vec<(&str, Document)>) {
+    let wrong: Vec<String> = cases
+        .iter()
+        .map(|(case, doc)| (case, outcome(doc)))
+        .filter(|(_, got)| got != want)
+        .map(|(case, got)| format!("{case}: {got}"))
+        .collect();
+    assert!(wrong.is_empty(), "expected {want}: {wrong:#?}");
+}
+
+const DSIG: &str = "http://www.w3.org/2000/09/xmldsig#";
+
+/// A form whose `/XFA` array lists `packets` (name, object) with the
+/// given stream objects.
+fn form(packets: &[(&str, u32)], objs: Vec<(u32, Vec<u8>)>) -> Document {
+    let extra = format!("/AcroForm << /Fields [] /XFA {} >>", xfa_array(packets));
+    Document::from_bytes(&pdf(&extra, objs)).unwrap()
+}
+
+/// `/XFA [(datasets) 20 0 R]` (or `/Perms 20 0 R`) where 20 is a
+/// compressed object whose value is the reference `10 0 R`.
+fn behind_compressed_ref(catalog_extra: &str, ten: Vec<u8>) -> Document {
+    let mut plain: Vec<(u32, Vec<u8>)> = vec![(
+        1,
+        format!("<< /Type /Catalog /Pages 2 0 R {catalog_extra} >>").into_bytes(),
+    )];
+    plain.extend(PAGES.iter().map(|(n, s)| (*n, s.to_vec())));
+    plain.push((10, ten));
+    Document::from_bytes(&pdf_objstm(plain, &[(20, "10 0 R")])).unwrap()
+}
+
+#[test]
+fn signatures_the_lexical_check_missed_are_refused() {
+    let escaped: String = DSIG.chars().map(|c| format!("&#{};", c as u32)).collect();
+    let sig = format!("<Signature xmlns=\"{DSIG}\"/>");
+    expect_all(
+        "signed",
+        vec![
+            (
+                "UTF-16LE, no BOM, leading white space",
+                one_packet(&utf16(
+                    &format!("\n  <ds:Signature xmlns:ds=\"{DSIG}\"/>"),
+                    true,
+                    false,
+                )),
+            ),
+            (
+                "UTF-16BE, no BOM, leading white space",
+                one_packet(&utf16(
+                    &format!(" <Signature xmlns=\"{DSIG}\"/>"),
+                    false,
+                    false,
+                )),
+            ),
+            (
+                "non-ASCII prefix, namespace behind a character reference",
+                one_packet(
+                    "<データ:Signature xmlns:データ=\"http&#x3A;//www.w3.org/2000/09/xmldsig#\"/>"
+                        .as_bytes(),
+                ),
+            ),
+            (
+                "namespace fully escaped, other element name",
+                one_packet(format!("<S xmlns=\"{escaped}\"/>").as_bytes()),
+            ),
+            (
+                "split across two packets",
+                form(
+                    &[("template", 11), ("datasets", 10), ("datasets", 12)],
+                    vec![
+                        (
+                            10,
+                            flate("", b"<x:Signature xmlns:x=\"http://www.w3.org/2000/"),
+                        ),
+                        (12, flate("", b"09/xmldsig#\"/>")),
+                        (11, flate("", TEMPLATE)),
+                    ],
+                ),
+            ),
+            (
+                "packet behind a compressed reference",
+                behind_compressed_ref(
+                    "/AcroForm << /Fields [] /XFA [(datasets) 20 0 R] >>",
+                    stream("", sig.as_bytes()),
+                ),
+            ),
+            (
+                "/Perms behind a compressed reference",
+                behind_compressed_ref("/Perms 20 0 R", b"<< /UR3 << /Type /Sig >> >>".to_vec()),
+            ),
+        ],
+    );
+}
+
+#[test]
+fn packets_that_cannot_be_read_completely_are_refused() {
+    let mut u32le = Vec::new();
+    for c in "<d/>".chars() {
+        u32le.extend_from_slice(&(c as u32).to_le_bytes());
+    }
+    expect_all(
+        "unsupported XFA packet",
+        vec![
+            (
+                "DTD: entities can build markup",
+                one_packet(
+                    b"<!DOCTYPE d [<!ENTITY s \"&#60;ds:Signature xmlns:ds='http&#58;//www.w3.org/2000/09/xml&#100;sig#'/>\">]><d>&s;</d>",
+                ),
+            ),
+            (
+                "UTF-7 declared",
+                one_packet(b"<?xml version=\"1.0\" encoding=\"UTF-7\"?><d>+ADw-x/></d>"),
+            ),
+            (
+                "EBCDIC declared",
+                one_packet(b"<?xml version='1.0' encoding='IBM037'?><d/>"),
+            ),
+            ("EBCDIC bytes", one_packet(&[0x4C, 0x6F, 0xA7, 0x94, 0x93])),
+            ("UTF-32LE without BOM", one_packet(&u32le)),
+            (
+                "UTF-16 declared, bytes not UTF-16",
+                one_packet(b"<?xml version=\"1.0\" encoding=\"UTF-16\"?><d/>"),
+            ),
+            (
+                "NUL bytes in no known encoding",
+                one_packet(b"\x01\x00<\x00\x00<"),
+            ),
+            (
+                "stream data in an external file",
+                form(
+                    &[("template", 11), ("datasets", 10)],
+                    vec![(10, stream("/F (datasets.xml)", b"")), (11, flate("", TEMPLATE))],
+                ),
+            ),
+        ],
+    );
+}
+
+#[test]
+fn ordinary_xfa_content_is_carried() {
+    // A `Signature` element is only an XML signature in the XML-DSig
+    // namespace; forms name data elements and fields Signature.
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        ("data elements", b"<d><Signature>J. Doe</Signature><Signature1/></d>".to_vec()),
+        (
+            "signature field UI and signData",
+            b"<template><field name=\"Signature\"><ui><signature/></ui></field><signData operation=\"sign\"/></template>"
+                .to_vec(),
+        ),
+        ("comment", b"<d><!-- Signature --></d>".to_vec()),
+        ("UTF-16LE, no BOM, CJK", utf16("<d>\u{4E00}\u{3042}</d>", true, false)),
+        (
+            "UTF-16BE with BOM and declaration",
+            utf16("<?xml version=\"1.0\" encoding=\"UTF-16\"?><d/>", false, true),
+        ),
+        (
+            "Shift_JIS declared",
+            b"<?xml version=\"1.0\" encoding=\"Shift_JIS\"?><d>\x93\xfa</d>".to_vec(),
+        ),
+        ("UTF-8 BOM", b"\xEF\xBB\xBF<d/>".to_vec()),
+        ("predefined entities", b"<d a=\"&amp;&lt;&#38;\">&gt;&quot;&apos;</d>".to_vec()),
+    ];
+    expect_all(
+        "rewritten",
+        cases.iter().map(|(c, x)| (*c, one_packet(x))).collect(),
+    );
+    for (case, c) in &cases {
+        let doc = one_packet(c);
+        let out = Document::from_bytes(&rewrite(&doc).unwrap()).unwrap();
+        assert_eq!(packets(&doc), packets(&out), "{case}");
     }
 }
