@@ -780,13 +780,15 @@ fn constructs_split_across_packets_are_seen() {
 fn the_check_is_linear_in_hostile_text() {
     // 256 KiB of declarations, character references and DTD-like
     // prefixes in one packet: decided quickly in a debug build too
-    // (the quadratic declaration scan needed ~10^10 steps here).
+    // (the quadratic declaration scan needed ~10^10 steps here and did
+    // not finish in 5 minutes; the linear one takes under a second, so
+    // the bound leaves room for a loaded machine).
     for unit in [&b"<?xml "[..], b"&#0000000", b"<!DOCTYP", b"&#x;&#;"] {
         let content: Vec<u8> = unit.iter().copied().cycle().take(1 << 18).collect();
         let t = std::time::Instant::now();
         let _ = rewrite(&one_packet(&content));
         assert!(
-            t.elapsed().as_secs() < 5,
+            t.elapsed().as_secs() < 60,
             "{:?}",
             String::from_utf8_lossy(unit)
         );
