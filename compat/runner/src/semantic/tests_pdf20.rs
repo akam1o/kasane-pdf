@@ -1136,3 +1136,33 @@ fn object_references_in_the_structure_tree() {
     let c = r.iter().find(|c| c.category == "associated_files").unwrap();
     assert_eq!(c.class, SemClass::Fail, "{:?}", c.notes);
 }
+
+#[test]
+fn page_thumbnails_are_owners() {
+    let mk = |rel: &str| {
+        pdf(
+            "2.0",
+            &[
+                (1, d("<< /Type /Catalog /Pages 2 0 R >>")),
+                (2, d("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")),
+                (3, d("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Thumb 40 0 R /Resources << >> >>")),
+                (
+                    40,
+                    st(
+                        &format!("/Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace /DeviceGray /AF [<< /Type /Filespec /F (t) /AFRelationship {rel} >>]"),
+                        b"\x80",
+                    ),
+                ),
+            ],
+            0,
+        )
+    };
+    let l = lines(&mk("/Source"), "associated_files");
+    assert!(
+        l.iter().any(|l| l == "owner\towner=page:p0/thumb\tcount=1"),
+        "{l:#?}"
+    );
+    let r = report(&mk("/Source"), &mk("/Data"));
+    let c = r.iter().find(|c| c.category == "associated_files").unwrap();
+    assert_eq!(c.class, SemClass::Fail, "{:?}", c.notes);
+}

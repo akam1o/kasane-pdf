@@ -364,7 +364,8 @@ impl<'a> Ctx<'a> {
 
     /// Every `/AF` array (ISO 32000-2 §14.13) by owner — the catalog,
     /// each page, annotation (page and position), structure element
-    /// (tree path), XObject and marked-content property list in a page's
+    /// (tree path) and the XObject its `/OBJR` names, a page's thumbnail,
+    /// XObject and marked-content property list in a page's
     /// resources (resource-name path; form XObjects followed), annotation
     /// appearance stream (`/AP` entries, states included; their resources
     /// walked like a page's), and document part (tree path) — and each file specification in it, in
@@ -383,6 +384,10 @@ impl<'a> Ctx<'a> {
                 continue;
             };
             self.af_owner(&format!("page:p{i}"), &pd, &mut seen, &mut out)?;
+            // The page's thumbnail image (§12.3.4) is an XObject too.
+            if let Some(t) = self.entry_pdf20(&pd, b"Thumb")? {
+                self.objr_afs(&format!("page:p{i}/thumb"), &t, &mut seen, &mut out)?;
+            }
             if let Some(a) = pd.get(b"Annots".as_slice()) {
                 if let Object::Array(items) = self.get(a)? {
                     for (k, it) in items.iter().enumerate() {
@@ -726,8 +731,9 @@ impl<'a> Ctx<'a> {
         Ok(())
     }
 
-    /// The object of a structure element's `/OBJR`: an XObject not
-    /// reached before is an owner (its resources walked like a page's);
+    /// An XObject named outside a resource dictionary — the object of a
+    /// structure element's `/OBJR`, a page's `/Thumb`: one not reached
+    /// before is an owner (a form's resources walked like a page's);
     /// one reached before is named by its first owner when it has an
     /// `/AF`; an annotation on a page is already listed by position.
     fn objr_afs(
