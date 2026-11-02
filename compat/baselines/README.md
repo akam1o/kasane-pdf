@@ -172,3 +172,30 @@ baseline is regenerated from the pull-request run on the same commit
 `ok`), and the fields added since the smoke baseline was last written
 (report-only rules, semantic categories, text F1) are recorded.
 
+
+Updated 2026-11-02 from nightly run 41377950881 (commit `f921627`, the
+merge of v0.5.0 phase B: W1 references to undefined objects, W3 XFA
+carried; same environment as the previous update). Population unchanged
+(511 files, 425 `expect: pass`). Compared file by file with the previous
+nightly (41315396310): exactly 7 files changed, all in the rewrite
+stage and its round trip; text, pixels, quality classes, report-only
+findings, warnings, recovery, incremental and robustness are identical
+on every file.
+
+| difference | files | cause |
+|---|---:|---|
+| rewrite `error` → `pass`, verdict → `pass`, round trip full, semantic round trip pass | 4 | W1: the dangling reference is written as a reference to an indirect null |
+| rewrite `error` → `pass`, round trip full, semantic not applicable; verdict stays `error` | 1 | W1; render and text still fail on a font resource that is not a dictionary |
+| rewrite `error` → `pass` on the recovered document, semantic pass, `external_no_new` fails; verdict stays `error` (`expect: reject`) | 1 | W1 on a damaged file: qpdf warnings 9 → 0; Poppler, now able to read past the broken cross-reference table, reports the fonts that point at the 4 undefined objects |
+| rewrite `error` → `unsupported` | 1 | W1 lifts the dangling reference; the next refusal is a `/Names /JavaScript` tree (D2) |
+
+No change comes from W3 (the 30 XFA and usage-rights forms stay
+refused for `/Perms /UR3` or a JavaScript tree) or from the XFA
+signature check, and none is specific to Linux. The Linux / macOS
+differences (109 render pages, text on 1 file, 1 full round trip) are
+the same as before the merge. Aggregates: rewrite 365 → 370, Full PASS
+339 → 343, graph round trip 428 → 434, full round trip 425 → 430;
+semantic round trip 434 compared, 300 pass, 134 not applicable, 0 fail
+/ unsupported / error; robustness 44 / 44, crash / timeout 0. The
+fixtures smoke baseline is unchanged: the pull-request run on the same
+commit (41377935675) summarises to it exactly.
