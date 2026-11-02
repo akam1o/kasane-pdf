@@ -635,3 +635,19 @@ fn identifiers_over_content_changes_and_repeated_rewrites() {
     );
     assert_eq!(a3, a);
 }
+
+#[test]
+fn the_output_limit_covers_the_trailer() {
+    // A carried permanent identifier of 1 MiB makes the trailer larger
+    // than the objects: the output limit counts it.
+    let big = "AB".repeat(1 << 20);
+    let src = pdf("2.0", "", ["", ""], &[], &format!("/ID [<{big}> <00>]"));
+    let doc = Document::from_bytes(&src).unwrap();
+    let body = rewrite(&doc).unwrap();
+    assert!(body.len() > 2 << 20);
+    let limits = kasane_pdf::Limits::default().with_max_output_bytes(64 * 1024);
+    match kasane_pdf::rewrite_with_limits(&doc, &limits) {
+        Err(Error::LimitExceeded { limit, .. }) => assert_eq!(limit, "max_output_bytes"),
+        other => panic!("{:?}", other.map(|o| o.len())),
+    }
+}

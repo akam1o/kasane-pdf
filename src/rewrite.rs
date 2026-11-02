@@ -298,6 +298,14 @@ pub(crate) fn rewrite_overlay_with(
     }
     out.extend_from_slice(b">>\n");
     out.extend_from_slice(format!("startxref\n{xref_pos}\n%%EOF\n").as_bytes());
+    // The cap covers the whole file: a carried trailer /ID can be larger
+    // than the objects.
+    if out.len() as u64 > limits.max_output_bytes {
+        return Err(Error::LimitExceeded {
+            limit: "max_output_bytes",
+            max: limits.max_output_bytes,
+        });
+    }
     Ok(out)
 }
 
@@ -488,9 +496,9 @@ fn trailer_id(doc: &Document, body: &[u8], carry: bool) -> ([u8; 16], Vec<u8>) {
     let first = carry
         .then(|| doc.trailer().get(b"ID".as_slice()))
         .flatten()
-        .and_then(|id| doc.deref(id).ok())
+        .and_then(|id| deref_chain(doc, id).ok())
         .and_then(|id| match id {
-            Object::Array(a) if a.len() == 2 => match doc.deref(&a[0]).ok()? {
+            Object::Array(a) if a.len() == 2 => match deref_chain(doc, &a[0]).ok()? {
                 Object::String(s) if !s.is_empty() => Some(s),
                 _ => None,
             },
