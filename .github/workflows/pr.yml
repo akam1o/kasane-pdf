@@ -28,6 +28,11 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # compat/runner is its own package with its own target/.
+          workspaces: |
+            .
+            compat/runner
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
@@ -38,8 +43,14 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo test
 
-  features:
-    name: feature matrix + docs
+  # The public API must be consistent whichever features are on: the
+  # backend-neutral RenderedPage accessors always exist, the tiny-skia
+  # interop only with its feature. Integration tests use the interop and
+  # need the default features; without them the lib, bins, examples,
+  # unit tests and doctests are checked. Lints/docs and tests are
+  # separate jobs so they run in parallel.
+  features-lint:
+    name: feature matrix (clippy + docs)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -47,26 +58,29 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      # The public API must be consistent whichever features are on:
-      # the backend-neutral RenderedPage accessors always exist, the
-      # tiny-skia interop only with its feature. Integration tests use
-      # the interop and need the default features; without them the
-      # lib, bins, examples, unit tests and doctests are checked.
       - run: cargo clippy --all-targets --features cjk-fallback -- -D warnings
       - run: cargo clippy --lib --bins --examples --no-default-features -- -D warnings
       - run: cargo clippy --lib --bins --examples --no-default-features --features cjk-fallback -- -D warnings
       - run: cargo clippy --all-targets --no-default-features --features tiny-skia-interop -- -D warnings
-      - run: cargo test --features cjk-fallback
-      - run: cargo test --no-default-features --lib
-      - run: cargo test --no-default-features --doc
-      - run: cargo test --no-default-features --features cjk-fallback --lib
-      - run: cargo test --no-default-features --features cjk-fallback --doc
       - name: docs build without warnings (all features, and none)
         env:
           RUSTDOCFLAGS: -D warnings
         run: |
           cargo doc --no-deps --all-features
           cargo doc --no-deps --no-default-features
+
+  features-test:
+    name: feature matrix (tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo test --features cjk-fallback
+      - run: cargo test --no-default-features --lib
+      - run: cargo test --no-default-features --doc
+      - run: cargo test --no-default-features --features cjk-fallback --lib
+      - run: cargo test --no-default-features --features cjk-fallback --doc
 
   wasm:
     name: wasm32 build
@@ -86,17 +100,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # A prebuilt cargo-audit: building it from source took ~3 min and
+      # was the slowest step of the whole gate.
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          tool: cargo-audit
       # Reads .cargo/audit.toml: the only ignored id is the informational
       # unmaintained notice for ttf-parser (docs/decisions/ttf-parser.md);
       # any vulnerability advisory fails this job.
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - run: cargo audit
       - name: audit the compatibility runner too
         working-directory: compat/runner
-        run: |
-          cargo install cargo-audit --locked
-          cargo audit
+        run: cargo audit
 
   crate-package:
     name: crate package check
@@ -110,6 +125,10 @@ jobs:
       - name: package from the clean tree (verifies the default build)
         run: cargo package
       - name: the packaged crate builds and tests on its own, default and cjk-fallback
+        # Reuse the cached target/ for the dependencies; the crate itself
+        # is still compiled from the extracted package sources.
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: |
           set -e
           crate=$(ls target/package/kasane-pdf-*.crate)
@@ -131,6 +150,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: compat/runner
       - name: external verifiers (qpdf, poppler)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qpdf poppler-utils poppler-data
       - name: build runner
