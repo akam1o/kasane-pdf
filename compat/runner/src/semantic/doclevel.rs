@@ -170,7 +170,7 @@ impl<'a> Ctx<'a> {
     }
 
     /// `length:digest` of a stream's decoded bytes.
-    fn digest(&mut self, what: &str, dict: &Dict, data: &[u8]) -> Res<String> {
+    pub(super) fn digest(&mut self, what: &str, dict: &Dict, data: &[u8]) -> Res<String> {
         Ok(match self.decode(what, dict, data)? {
             Decoded::Bytes(b) => format!("{}:{}", b.len(), sha(&b)),
             Decoded::Undecodable(raw) => format!("undecodable:{raw}"),

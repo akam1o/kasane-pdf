@@ -208,6 +208,13 @@ def summarize(run):
             "semantic": {
                 c["category"]: c["class"] for c in ((rt.get("semantic") or {}).get("checks") or [])
             },
+            # Report-only semantic categories (PDF 2.0: version, page
+            # metadata, associated files, document parts); absent in
+            # older reports and baselines.
+            "semantic_report": {
+                c["category"]: c["class"]
+                for c in ((rt.get("semantic") or {}).get("report_only") or [])
+            },
             # Page-1 text agreement with pdftotext (report only; absent:
             # not compared, or an older runner).
             "text_f1": text_value(f, "text_char_f1"),
@@ -294,6 +301,17 @@ def check(run, base, summary_md=None):
             now = (n.get("semantic") or {}).get(cat)
             if was == "pass" and now not in ("pass", None):
                 semantic_changes.append(f"{fid}: semantic {cat} pass -> {now}")
+        # Report-only categories: a pass lost against the baseline, or —
+        # when the baseline predates them — any outcome that is not a
+        # pass or not applicable. Never enforced.
+        old_report = o.get("semantic_report")
+        for cat, now in (n.get("semantic_report") or {}).items():
+            was = (old_report or {}).get(cat)
+            if old_report is None or was is None:
+                if now not in ("pass", "not_applicable"):
+                    semantic_changes.append(f"{fid}: report-only semantic {cat}: {now} (no baseline)")
+            elif was == "pass" and now != "pass":
+                semantic_changes.append(f"{fid}: report-only semantic {cat} pass -> {now}")
         # Text agreement: reported, not enforced. Older baselines have no
         # values (nothing to compare).
         for key in ("text_f1", "text_f1_annots"):

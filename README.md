@@ -249,7 +249,7 @@ All examples, runnable against the fixtures in `tests/fixtures/`:
 | [`render_page.rs`](examples/render_page.rs) | open, render a page at a DPI, write PNG, report substitutions |
 | [`inspect_objects.rs`](examples/inspect_objects.rs) | page info (size, rotation, annotations), object model, operators |
 | [`extract_text.rs`](examples/extract_text.rs) | positioned text with Unicode |
-| [`rewrite.rs`](examples/rewrite.rs) | full rewrite and the typed refusals (signed, PDF 2.0, …) |
+| [`rewrite.rs`](examples/rewrite.rs) | full rewrite and the typed refusals (signed, scripts, …) |
 | [`incremental_save.rs`](examples/incremental_save.rs) | `Edit` session saved as an appended revision |
 | [`recovery.rs`](examples/recovery.rs) | strict parse first, explicit recovery parse with its report |
 | [`open_encrypted.rs`](examples/open_encrypted.rs) | encrypted document: empty password, then a password from a file; what `/Encrypt` declares |
@@ -367,7 +367,7 @@ and the remaining blockers are in
   glyph hinting or shaping; no layout analysis, reading order or
   search in text extraction.
 - **Rewrite** flattens the revision history (use the incremental save
-  to keep it), refuses PDF 2.0 declarations, and carries unknown
+  to keep it), refuses versions above PDF 2.0, and carries unknown
   structures verbatim — it is not a sanitizer. The incremental writer
   cannot delete bytes, refuses recovered documents and non-zero
   generation references.

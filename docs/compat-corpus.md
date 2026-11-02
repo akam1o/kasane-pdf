@@ -1834,3 +1834,23 @@ compat/
   corpus/           # downloaded PDFs (gitignored)
   reports/          # run-*.json/.md + diff images (gitignored)
 ```
+
+### PDF 2.0 rewrite and the report-only 2.0 semantic categories (2026-11-02, v0.5.0 W2, branch)
+
+Measured on macOS (nightly configuration) and on a local Linux arm64
+container with the nightly's Poppler, poppler-data and qpdf; the Linux
+nightly comes with the merge. The rewriter writes a document that
+declares 2.0 as 2.0 (with the trailer `/ID` 2.0 requires) instead of
+refusing it; the runner reports four more semantic categories — version,
+page metadata, associated files, document parts — report only
+(`plans/semantic-roundtrip.md`, `plans/v0.5.0.md` §15).
+
+| | before | after |
+|---|---:|---:|
+| rewrite | 370 | 372 |
+| Full PASS | 343 / 425 | 345 / 425 |
+| graph / full round trip (macOS) | 434 / 431 | 436 / 433 |
+| semantic round trip pass / not applicable / fail+unsupported+error | 300 / 134 / 0 | 302 / 134 / 0 |
+
+Exactly the two 2.0 documents change; every other file is identical,
+and every 1.x rewrite is byte-identical to `main`'s.

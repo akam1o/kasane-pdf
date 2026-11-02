@@ -293,7 +293,7 @@ fn rc4(key: &[u8], data: &mut [u8]) {
     c.apply_keystream(data);
 }
 
-fn md5(parts: &[&[u8]]) -> [u8; 16] {
+pub(crate) fn md5(parts: &[&[u8]]) -> [u8; 16] {
     let mut h = Md5::new();
     for p in parts {
         h.update(p);

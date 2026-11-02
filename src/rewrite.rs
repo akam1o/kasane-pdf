@@ -67,14 +67,13 @@ use std::collections::{HashMap, HashSet};
 
 use crate::limits::Limits;
 
-/// Header version — the rewriter writes classic xref + ObjStm-free output, so
-/// 1.7 covers every feature it can emit. A catalog `/Version` of 1.4
-/// through 1.7 is honoured; 1.3 or below means the catalog claims
-/// less than the header — we still output 1.7 so the file's declared
-/// version never falls below the structures it contains.
-/// A document that declares 2.0 (header or catalog) is refused: the rewriter
-/// does not translate 2.0 content down to 1.7.
-const BASE_VERSION: (u8, u8) = (1, 7);
+/// The latest version the rewriter declares. The output — classic xref,
+/// no object streams, every object carried as it is — is valid for the
+/// version the input declares, up to ISO 32000-2 (PDF 2.0): a 2.0
+/// document is written as 2.0 (never translated down), with the trailer
+/// `/ID` 2.0 requires. A later version is refused: its rules are not
+/// known, so the output could not be vouched for.
+const MAX_VERSION: (u8, u8) = (2, 0);
 
 /// Which trailer slot a discovered object came from.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -229,8 +228,7 @@ pub(crate) fn rewrite_overlay_with(
     // ---- Phase 2: emit, in new-number order ----
     let version = effective_version(doc)?;
     let mut out: Vec<u8> = Vec::new();
-    out.extend_from_slice(b"%PDF-");
-    out.extend_from_slice(version.as_bytes());
+    out.extend_from_slice(format!("%PDF-{}.{}", version.0, version.1).as_bytes());
     // Binary marker comment (§7.5.2 recommends bytes >127 so
     // transport layers never mistake the file for text).
     out.extend_from_slice(b"\n%\xE2\xE3\xCF\xD3\n");
@@ -271,8 +269,11 @@ pub(crate) fn rewrite_overlay_with(
     }
 
     // trailer — /Size and only the root references we renumbered.
-    // /ID, /Prev, /XRefStm and other save-history keys are not
-    // carried into a single-revision file.
+    // /Prev, /XRefStm and other save-history keys are not carried into
+    // a single-revision file; /ID is written for 2.0 only (required
+    // there), so 1.x output is unchanged.
+    let id = (version >= (2, 0))
+        .then(|| trailer_id(doc, &out[..xref_pos as usize], !overrides.strip_info));
     out.extend_from_slice(b"trailer\n<<\n");
     out.extend_from_slice(format!("/Size {size}\n").as_bytes());
     let root_new = c
@@ -291,8 +292,20 @@ pub(crate) fn rewrite_overlay_with(
     if let Some(i) = info_new {
         out.extend_from_slice(format!("/Info {i} 0 R\n").as_bytes());
     }
+    if let Some((second, first)) = id {
+        let hex = |b: &[u8]| b.iter().map(|c| format!("{c:02X}")).collect::<String>();
+        out.extend_from_slice(format!("/ID [<{}> <{}>]\n", hex(&first), hex(&second)).as_bytes());
+    }
     out.extend_from_slice(b">>\n");
     out.extend_from_slice(format!("startxref\n{xref_pos}\n%%EOF\n").as_bytes());
+    // The cap covers the whole file: a carried trailer /ID can be larger
+    // than the objects.
+    if out.len() as u64 > limits.max_output_bytes {
+        return Err(Error::LimitExceeded {
+            limit: "max_output_bytes",
+            max: limits.max_output_bytes,
+        });
+    }
     Ok(out)
 }
 
@@ -438,9 +451,8 @@ impl<'a> Collector<'a> {
 /// must not fabricate a version for a file whose own declaration it
 /// could not read. A catalog `/Version` that is present but not a
 /// valid `M.m` name is likewise refused rather than ignored.
-/// `2.0` and above are refused: the rewriter does not translate 2.0-only
-/// features down, so claiming `1.7` would silently break them.
-fn effective_version(doc: &Document) -> Result<String, Error> {
+/// Above [`MAX_VERSION`] is refused.
+fn effective_version(doc: &Document) -> Result<(u8, u8), Error> {
     let hdr = doc.header_version().ok_or_else(|| Error::Unsupported {
         feature: "PDF version",
         detail: "header %PDF- token is malformed — cannot determine ".to_string()
@@ -460,17 +472,40 @@ fn effective_version(doc: &Document) -> Result<String, Error> {
     if doc.catalog().contains_key(b"OCProperties".as_slice()) && effective < (1, 5) {
         effective = (1, 5);
     }
-    // Guaranteed-write ceiling: 1.7. Anything above is Unsupported.
-    if effective > BASE_VERSION {
+    if effective > MAX_VERSION {
         return Err(Error::Unsupported {
             feature: "PDF version",
             detail: format!(
-                "document declares PDF {}.{} — cannot rewrite as ≤{}.{}",
-                effective.0, effective.1, BASE_VERSION.0, BASE_VERSION.1
+                "document declares PDF {}.{} — the rewriter writes up to {}.{}",
+                effective.0, effective.1, MAX_VERSION.0, MAX_VERSION.1
             ),
         });
     }
-    Ok(format!("{}.{}", effective.0, effective.1))
+    Ok(effective)
+}
+
+/// The trailer `/ID` of a PDF 2.0 output (required, ISO 32000-2
+/// Table 15): the input's permanent first identifier when it has one
+/// (§14.4: it is set when the file is created and kept), the second —
+/// which changes with every modification — the MD5 of the written body,
+/// so the same input gives the same output. When `/Info` is stripped
+/// (metadata removal) the input's identifier is not carried either: both
+/// are the digest.
+fn trailer_id(doc: &Document, body: &[u8], carry: bool) -> ([u8; 16], Vec<u8>) {
+    let digest = crate::crypt::md5(&[body]);
+    let first = carry
+        .then(|| doc.trailer().get(b"ID".as_slice()))
+        .flatten()
+        .and_then(|id| deref_chain(doc, id).ok())
+        .and_then(|id| match id {
+            Object::Array(a) if a.len() == 2 => match deref_chain(doc, &a[0]).ok()? {
+                Object::String(s) if !s.is_empty() => Some(s),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap_or_else(|| digest.to_vec());
+    (digest, first)
 }
 
 /// Refusals — checked before any collection or output begins.

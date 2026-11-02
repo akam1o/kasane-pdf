@@ -524,7 +524,9 @@ pub fn run(
         }
     };
 
-    rt.semantic = Some(crate::semantic::compare(doc, &doc2));
+    let mut semantic = crate::semantic::compare(doc, &doc2);
+    semantic.report_only = crate::semantic::compare_report(doc, orig, &doc2, out);
+    rt.semantic = Some(semantic);
     let t = Instant::now();
     let diffs = graph_diff(doc, &doc2);
     // The render and text comparisons must open the rewrite the way the
