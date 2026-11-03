@@ -1327,3 +1327,29 @@ fn review_p2_markers_streams_and_content() {
         c.notes
     );
 }
+
+/// A signature value changed at the same length: `signatures` records
+/// only the length (no value, no digest kept), so the category passes
+/// by design; the graph comparison of the round trip sees the change.
+/// D1's acceptance relies on both (`plans/rewrite-policy.md` §13).
+#[test]
+fn a_same_length_signature_value_change_is_left_to_the_graph_comparison() {
+    let b = |contents: &str| {
+        pdf(
+            "1.7",
+            &[
+                (1, d("<< /Type /Catalog /Pages 2 0 R /X 20 0 R >>")),
+                (2, d("<< /Type /Pages /Kids [] /Count 0 >>")),
+                (20, d(&format!("<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 1 2 3] /Contents <{contents}> >>"))),
+            ],
+            0,
+        )
+    };
+    let (a, c) = (b("0102"), b("0103"));
+    assert_eq!(report_of(&a, &c, "signatures").class, SemClass::Pass);
+    let diffs = crate::roundtrip::graph_diff(&doc(&a), &doc(&c));
+    assert!(
+        diffs.iter().any(|n| n.starts_with("/Root/X/Contents")),
+        "{diffs:?}"
+    );
+}

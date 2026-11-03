@@ -1004,6 +1004,15 @@ Runner only; the library is unchanged. Details and tests:
   bit 1 only (3, 4); any other `sig` line, removed or added, fails (5);
   no `sig` line with a `/ByteRange` left (6); every other line equal
   (7).
+  `/Contents` is recorded by length only (no value and no digest in
+  the snapshot). A signature value changed at the same length passes
+  `signatures` by design. The graph comparison sees it: every string is
+  compared, and under T2 `structure_allows` admits only the `/Perms`
+  and `/SigFlags` paths (test
+  `a_same_length_signature_value_change_is_left_to_the_graph_comparison`).
+  So D1's acceptance needs both, `signatures` `transformed` **and**
+  `structure_declared`. A digest in the line would add nothing the
+  graph comparison does not already check.
 - **§6:**
   - Rules are declared by the runner. T1 comes from its own reading of
     the input (`/OCProperties`, effective version < 1.5), because the
