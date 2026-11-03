@@ -953,7 +953,7 @@ eight P2s, all adopted.
 | G5 | P2 | `/AcroForm` edited for `/SigFlags` has the shared-dictionary hazard | adopted: rule 5a covers every edited dictionary |
 | G6 | P2 | `/Lock` vs an `/SV`-nested `/Lock` read as contradictory | adopted: reworded; a field's own `/Lock` refuses on any field |
 | G7 | P2 | `SigFlagsChange` not defined | adopted |
-| G8 | P2 | an unclassifiable XFA script match carried unreported under `Carry`/`Profile` | adopted: refuses under every policy |
+| G8 | P2 | an unclassifiable XFA script match carried unreported under `Carry`/`Profile` | adopted, then corrected by H1: classified as `Script` (over-report) under every policy |
 | G9 | P2 | `/OpenAction` array members indistinguishable in the report | adopted: member index |
 
 Second re-review: G1–G7 and G9 confirmed. G8's first wording ("refuses
@@ -961,4 +961,6 @@ under every policy") would have made `rewrite_with(default)` refuse
 where `rewrite` succeeds (H1, P1). Adopted the reviewer's resolution:
 an ambiguous match is classified as `Script`, an over-report, and
 refuses only under `RefuseScriptsAndExternal`; test row added.
+
+Final confirmation: approve; no P0 or P1 remains.
 
