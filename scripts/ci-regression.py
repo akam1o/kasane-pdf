@@ -308,7 +308,9 @@ def config_figures(entries):
     strict parse, render and text, the rewrite under this configuration
     — never on a recovered document); `full_pass_verified` additionally
     needs the semantic round trip to be pass or transformed and the
-    graph comparison equal or exactly the declared change."""
+    graph comparison equal or exactly the declared change — and, under a
+    T2 declaration, the signatures transformed (`signatures_transformed`;
+    reports older than C2 do not record it)."""
     fig = {
         k: 0
         for k in (
@@ -319,7 +321,9 @@ def config_figures(entries):
             "report_files", "report_script", "report_external", "report_state", "report_navigation",
             "report_multimedia", "report_unknown", "report_unclassified", "inventory_checked",
             "inventory_agree", "inventory_runner_error", "default_identical", "default_differs",
-            "version_agrees", "version_differs",
+            "version_agrees", "version_differs", "signatures_transformed", "usage_rights_removed",
+            "usage_rights_none_present", "usage_rights_refused", "usage_rights_agree",
+            "usage_rights_disagree",
         )
     }
     for f, rewrite, refusal, rt, extra in entries:
@@ -341,8 +345,19 @@ def config_figures(entries):
         sem = (rt.get("semantic") or {}).get("class")
         if sem in ("pass", "transformed", "fail", "error", "unsupported"):
             fig[f"semantic_{sem}"] += 1
-        if full and sem in ("pass", "transformed", "not_applicable", None) and (graph or rt.get("structure_declared")):
+        declared = bool(rt.get("structure_declared")) and rt.get("signatures_transformed", True) is not False
+        fig["signatures_transformed"] += rt.get("signatures_transformed") is True
+        if full and sem in ("pass", "transformed", "not_applicable", None) and (graph or declared):
             fig["full_pass_verified"] += 1
+        ur = (extra or {}).get("usage_rights") if isinstance(extra, dict) else None
+        if ur:
+            outcome = ur.get("outcome")
+            if outcome in ("removed", "none_present", "refused"):
+                fig[f"usage_rights_{outcome}"] += 1
+            if ur.get("agree") is True:
+                fig["usage_rights_agree"] += 1
+            elif ur.get("agree") is False:
+                fig["usage_rights_disagree"] += 1
         if refusal in REFUSALS:
             fig[REFUSALS[refusal]] += 1
         elif rewrite == "unsupported":

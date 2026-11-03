@@ -395,8 +395,22 @@ class Gate(unittest.TestCase):
                              "inventory": {"agree": True}}
         b["rewrite_options"]["remove-usage-rights"]["report"] = {"script": 2, "unclassified": 1}
         b["rewrite_options"]["remove-usage-rights"]["inventory"] = {"agree": False, "runner_error": "limit"}
+        b["rewrite_options"]["remove-usage-rights"]["usage_rights"] = {"outcome": "removed", "agree": True}
+        c["rewrite_options"]["remove-usage-rights"]["usage_rights"] = {"outcome": "refused", "agree": None}
         figs = cr.summarize(run(a, b, c, d))["aggregate"]["by_config"]
         dflt, d1 = figs["default"], figs["remove-usage-rights"]
+        self.assertEqual((d1["usage_rights_removed"], d1["usage_rights_refused"], d1["usage_rights_agree"],
+                          d1["usage_rights_disagree"]), (1, 1, 1, 0))
+        # T2: the declared structure is not enough when the signatures are
+        # not transformed (a declared path with an undeclared value).
+        bad = json.loads(json.dumps(b))
+        bad["rewrite_options"]["remove-usage-rights"]["roundtrip"]["signatures_transformed"] = False
+        d1b = cr.summarize(run(a, bad, c, d))["aggregate"]["by_config"]["remove-usage-rights"]
+        self.assertEqual((d1b["full_pass"], d1b["full_pass_verified"], d1b["signatures_transformed"]), (2, 1, 0))
+        good = json.loads(json.dumps(b))
+        good["rewrite_options"]["remove-usage-rights"]["roundtrip"]["signatures_transformed"] = True
+        d1g = cr.summarize(run(a, good, c, d))["aggregate"]["by_config"]["remove-usage-rights"]
+        self.assertEqual((d1g["full_pass_verified"], d1g["signatures_transformed"]), (2, 1))
         self.assertEqual((dflt["files"], dflt["full_pass"], dflt["signature_refusal"], dflt["script_refusal"]), (3, 1, 1, 1))
         self.assertEqual((dflt["semantic_pass"], dflt["semantic_transformed"]), (1, 0))
         self.assertEqual((d1["files"], d1["rewrite_pass"], d1["full_pass"], d1["full_pass_verified"]), (3, 2, 2, 2))
