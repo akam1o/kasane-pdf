@@ -143,9 +143,11 @@ pub enum SignatureRule {
     /// `UsageRightsPolicy::Remove`: the catalog has `/DSS` or `/Legal`,
     /// a signature workflow the removal cannot reason about.
     SecurityStore,
-    /// `UsageRightsPolicy::Remove`: the output, read back and searched,
-    /// still holds a signature marker (an internal failure; no bytes
-    /// are returned).
+    /// `UsageRightsPolicy::Remove`: the check of the output failed — read
+    /// back and searched, it still holds a signature marker, differs
+    /// from the declared removal, or could not be read back strictly or
+    /// checked completely (a damaged input's output may not reparse
+    /// strictly). No bytes are returned.
     ResidualSignature,
 }
 
@@ -169,7 +171,7 @@ impl fmt::Display for SignatureRule {
                 "a signature other than the usage-rights signature is present"
             }
             SignatureRule::SecurityStore => "a /DSS or /Legal security store is present",
-            SignatureRule::ResidualSignature => "the output still holds a signature marker",
+            SignatureRule::ResidualSignature => "the check of the output failed",
         })
     }
 }
