@@ -290,3 +290,56 @@ or `unsupported` from any recorded class, and a lost `transformed`.
 Before, only a lost pass was listed, so once a baseline records
 `not_applicable` a structure *added* by the rewrite would have gone
 unlisted. It is still not enforced.
+
+Updated 2026-11-03 from nightly run 41594088429 (commit `9ab94c1`: the
+merge of v0.5.0 C1, `rewrite_with` and the executable-content policies;
+the nightly now also runs `--rewrite-options carry`; same environment).
+Compared field by field, every file:
+- with nightly 41591924259 on the merge commit itself (`7eeb9ea`,
+  default only): the default part is identical in every field, so adding
+  `carry` changes nothing in the default;
+- with nightly 41574125427 (`8ca5e00`, the previous baseline's source):
+
+| difference | files | cause |
+|---|---:|---|
+| `policy_check` recorded (run report; summary `policy`) | 487 | new: on every strictly parsed file, `rewrite_with(default)` gives `rewrite`'s bytes or error (487 / 487); its report agrees with the runner's inventory (436 / 436 rewritten); its version change agrees with T1 (441 / 441) |
+| `rewrite_options.carry` recorded (summary `options`, `by_config.carry`) | 487 | new configuration, its own namespace |
+| `rewrite_refusal` `unsupported` → `encrypted` (run report only) | 4 | the four encrypted documents, now classified by `Error::refusal_reason`; their rewrite stage (`unsupported`, "writing an encrypted document") and verdict are unchanged |
+
+Every other field of every file is identical:
+- stages, verdicts and round-trip checks;
+- every semantic class, items and notes;
+- text and annotation F1, render values, quality, warnings, recovery and
+  incremental classes.
+
+Aggregates are unchanged:
+- Parse 408, Render 380, Text 392, Rewrite 372;
+- Full PASS 345 / 425;
+- graph round trip 436, full round trip 432;
+- semantic 302 pass, 134 not applicable, 0 fail;
+- robustness 44 / 44, crash / timeout 0.
+
+`by_config.carry`, measured on Linux (not enforced): rewrite 444 (+8),
+Full PASS 351 (+6, all verified), graph round trip 444, full round trip
+440, semantic pass 310, semantic fail 0, crash / timeout 0; the report
+agrees with the runner's inventory on 444 / 444. The six gains:
+- are the same documents as on macOS;
+- each has full round trip, render and text equal, qpdf without errors
+  or new warnings, and semantic `pass` (`doc_actions`, `javascript`,
+  `outlines` each `pass` or n/a);
+- have reports equal to the runner's inventory, item by item, with every
+  output object resolved.
+
+The two further rewrites (render unsupported; a recovered parse) are not
+counted.
+
+`check` now:
+- enforces, per file and absolutely, the default's `policy` (identity,
+  inventory agreement, version);
+- lists a semantic category the run lacks;
+- lists a configuration's lost Full PASS, rewrite or semantic pass,
+  never enforced.
+
+The fixtures smoke baseline is regenerated from the pull-request run on
+the same commit (41594083810). It differs only by `policy` (61 fixtures,
+all identical and in agreement) and the new `by_config` keys.
