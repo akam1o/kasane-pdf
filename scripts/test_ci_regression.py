@@ -13,6 +13,7 @@ misrender.
 import contextlib
 import importlib.util
 import io
+import json
 import os
 import tempfile
 import unittest
@@ -301,6 +302,85 @@ class Gate(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("report-only semantic associated_files pass -> fail", out)
 
+
+    def test_transformed_is_listed_never_a_pass(self):
+        # T1 moves a report-only `version` fail to transformed; listed for
+        # review with its rule, never a regression, and not a pass.
+        old = self.with_semantic(file("a", [NORMAL]), {"acroform": "pass"})
+        old["roundtrip"]["semantic"]["report_only"] = [{"category": "version", "class": "fail"}]
+        new = self.with_semantic(file("a", [NORMAL]), {"acroform": "pass"})
+        new["roundtrip"]["semantic"]["report_only"] = [
+            {"category": "version", "class": "transformed", "rules": ["T1 version raised"]},
+            {"category": "signatures", "class": "not_applicable"},
+        ]
+        rc, out = check(run(new), cr.summarize(run(old)))
+        self.assertEqual(rc, 0, out)
+        self.assertIn("semantic version fail -> transformed (T1 version raised)", out)
+        self.assertNotIn("signatures", out)
+        summary = cr.summarize(run(new))
+        self.assertEqual(summary["files"]["a"]["semantic_rules"], {"version": ["T1 version raised"]})
+        # Against a baseline that has it under the same rule: nothing.
+        rc, out = check(run(new), summary)
+        self.assertNotIn("transformed", out)
+        # The same class under another rule set is listed again.
+        other = json.loads(json.dumps(new))
+        other["roundtrip"]["semantic"]["report_only"][0]["rules"] = ["T2 usage rights removed"]
+        rc, out = check(run(other), summary)
+        self.assertIn("version transformed -> transformed (T2 usage rights removed)", out)
+        # An enforced category: pass -> transformed is listed once, with
+        # the rule, and is not a regression.
+        enf = self.with_semantic(file("a", [NORMAL]), {"acroform": "transformed"})
+        enf["roundtrip"]["semantic"]["checks"][0]["rules"] = ["T2 usage rights removed"]
+        rc, out = check(run(enf), cr.summarize(run(old)))
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.count("acroform"), 1, out)
+        self.assertIn("semantic acroform pass -> transformed (T2 usage rights removed)", out)
+        # No baseline record of the file's semantic at all.
+        rc, out = check(run(enf), cr.summarize(run(file("a", [NORMAL]))))
+        self.assertIn("acroform unrecorded -> transformed", out)
+
+    def test_figures_by_config_are_separate_namespaces(self):
+        def rt(full=True, sem="pass", structure="Pass", **extra):
+            return dict(
+                {"full": full, "reparse": {"class": "Pass"}, "structure": {"class": structure},
+                 "semantic": {"class": sem, "checks": []}},
+                **extra,
+            )
+        a = dict(file("a", [NORMAL]), roundtrip=rt())
+        # Refused by default for its signature; rewritten and transformed
+        # under D1, the graph difference exactly the declared one.
+        b = dict(file("b", [NORMAL]), rewrite={"class": "unsupported"}, rewrite_refusal="signature",
+                 roundtrip={"rewrite": {"class": "Unsupported"}})
+        b["rewrite_options"] = {
+            "remove-usage-rights": {
+                "rewrite": "pass", "declared": ["T2 usage rights removed"],
+                "roundtrip": rt(full=False, sem="transformed", structure="Fail",
+                                structure_declared=True, full_declared=True),
+            },
+        }
+        a["rewrite_options"] = {"remove-usage-rights": {"rewrite": "pass", "roundtrip": rt()}}
+        # A script refusal, and a file that never reached the rewrite.
+        c = dict(file("c", [NORMAL]), rewrite={"class": "unsupported"}, rewrite_refusal="script",
+                 roundtrip={"rewrite": {"class": "Unsupported"}})
+        c["rewrite_options"] = {"remove-usage-rights": {"rewrite": "unsupported", "refusal": "script",
+                                                        "roundtrip": {"rewrite": {"class": "Unsupported"}}}}
+        d = dict(file("d", [NORMAL]), parse={"class": "error"}, rewrite={"class": "skip"})
+        figs = cr.summarize(run(a, b, c, d))["aggregate"]["by_config"]
+        dflt, d1 = figs["default"], figs["remove-usage-rights"]
+        self.assertEqual((dflt["files"], dflt["full_pass"], dflt["signature_refusal"], dflt["script_refusal"]), (3, 1, 1, 1))
+        self.assertEqual((dflt["semantic_pass"], dflt["semantic_transformed"]), (1, 0))
+        self.assertEqual((d1["files"], d1["rewrite_pass"], d1["full_pass"], d1["full_pass_verified"]), (3, 2, 2, 2))
+        self.assertEqual((d1["semantic_pass"], d1["semantic_transformed"], d1["script_refusal"]), (1, 1, 1))
+        self.assertEqual((d1["graph_rt"], d1["graph_rt_declared"], d1["full_rt"], d1["full_rt_declared"]), (1, 1, 1, 2))
+        # The enforced aggregate and the gate read the default only: an
+        # option run that loses everything changes nothing in `check`.
+        base = cr.summarize(run(a, b, c, d))
+        worse = json.loads(json.dumps(b))
+        worse["rewrite_options"]["remove-usage-rights"] = {"rewrite": "error", "roundtrip": None}
+        rc, out = check(run(a, worse, c, d), base)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("remove-usage-rights", out)
+        self.assertEqual(base["aggregate"]["rewrite_pass"], 1)
 
     def test_text_agreement_is_recorded_and_report_only(self):
         def with_text(f1, f1a):
