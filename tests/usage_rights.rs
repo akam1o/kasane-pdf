@@ -517,43 +517,29 @@ fn policy_combinations() {
     ));
 }
 
-/// Targets, `/Perms` and `/AcroForm` inside an object stream.
-#[test]
-fn compressed_objects() {
+/// A file with an xref stream: plain objects `plain` and, in object
+/// stream 40, the compressed objects `packed`.
+fn objstm_pdf(plain: &[(u32, &str)], packed: &[(u32, &str)]) -> Vec<u8> {
     let (mut head, mut body) = (String::new(), String::new());
-    let packed = [
-        (10, UR3.to_string()),
-        (30, "<< /UR3 10 0 R >>".to_string()),
-        (31, "<< /Fields [] /SigFlags 3 >>".to_string()),
-    ];
-    for (n, s) in &packed {
+    for (n, s) in packed {
         head.push_str(&format!("{n} {} ", body.len()));
         body.push_str(s);
         body.push(' ');
     }
     let os = format!("{head}{body}");
-    let plain = [
-        (
-            1,
-            "<< /Type /Catalog /Pages 2 0 R /Perms 30 0 R /AcroForm 31 0 R >>".to_string(),
+    let mut all: Vec<(u32, String)> = plain.iter().map(|(n, s)| (*n, s.to_string())).collect();
+    all.push((
+        40,
+        format!(
+            "<< /Type /ObjStm /N {} /First {} /Length {} >>\nstream\n{os}\nendstream",
+            packed.len(),
+            head.len(),
+            os.len()
         ),
-        (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string()),
-        (
-            3,
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>".to_string(),
-        ),
-        (
-            40,
-            format!(
-                "<< /Type /ObjStm /N 3 /First {} /Length {} >>\nstream\n{os}\nendstream",
-                head.len(),
-                os.len()
-            ),
-        ),
-    ];
+    ));
     let mut b = b"%PDF-1.7\n".to_vec();
     let mut rows: Vec<(u32, u8, u64, u64)> = Vec::new();
-    for (n, s) in &plain {
+    for (n, s) in &all {
         rows.push((*n, 1, b.len() as u64, 0));
         b.extend_from_slice(format!("{n} 0 obj\n{s}\nendobj\n").as_bytes());
     }
@@ -580,6 +566,30 @@ fn compressed_objects() {
     );
     b.extend_from_slice(&data);
     b.extend_from_slice(format!("\nendstream\nendobj\nstartxref\n{x}\n%%EOF\n").as_bytes());
+    b
+}
+
+const TREE: [(u32, &str); 2] = [
+    (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+    (3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>"),
+];
+
+/// Targets, `/Perms` and `/AcroForm` inside an object stream.
+#[test]
+fn compressed_objects() {
+    let mut plain = vec![(
+        1,
+        "<< /Type /Catalog /Pages 2 0 R /Perms 30 0 R /AcroForm 31 0 R >>",
+    )];
+    plain.extend(TREE);
+    let b = objstm_pdf(
+        &plain,
+        &[
+            (10, UR3),
+            (30, "<< /UR3 10 0 R >>"),
+            (31, "<< /Fields [] /SigFlags 3 >>"),
+        ],
+    );
     let out = run(&b, &remove()).unwrap();
     let UsageRightsOutcome::Removed(rm) = out.report().usage_rights() else {
         panic!()
@@ -588,6 +598,35 @@ fn compressed_objects() {
     assert_eq!(rm.output_check.objects_removed, 2, "/UR3 and /Perms");
     assert_eq!(sig_flags_of(out.bytes()), Some(2));
     assert!(!contains(out.bytes(), b"/ByteRange"));
+}
+
+/// Object-stream members that are references (aliases) are written
+/// link by link; the output check reaches every link (fuzz
+/// `signature_markers`: the audit walk resolved a written chain in one
+/// step and called its links unreachable).
+#[test]
+fn compressed_alias_chains_are_carried_and_checked() {
+    for cat in [
+        "<< /Type /Catalog /Pages 2 0 R /C 103 0 R >>",
+        "<< /Type /Catalog /Pages 2 0 R /C 103 0 R /Perms << /UR3 10 0 R >> >>",
+    ] {
+        let mut plain = vec![(1, cat)];
+        plain.extend(TREE);
+        let b = objstm_pdf(
+            &plain,
+            &[
+                (10, UR3),
+                (100, "<< /K 1 >>"),
+                (103, "104 0 R"),
+                (104, "100 0 R"),
+            ],
+        );
+        let out = run(&b, &remove()).unwrap();
+        assert_eq!(out.report().signatures_removed(), cat.contains("/Perms"));
+        let d = Document::from_bytes(out.bytes()).unwrap();
+        let k = d.deref(d.catalog().get(b"C".as_slice()).unwrap()).unwrap();
+        assert_eq!(d.deref(&k).unwrap().as_dict().unwrap().len(), 1);
+    }
 }
 
 /// Nothing is left on the document: the warnings are the plain

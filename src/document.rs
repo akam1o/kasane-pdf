@@ -549,6 +549,13 @@ impl Document {
         self.resolve_inner(r, false, true)
     }
 
+    /// [`Document::resolve_defined`] one hop at a time (see
+    /// [`Document::resolve_one_hop`]): for a walk that must reach every
+    /// link of a chain, as the writers write each one.
+    pub(crate) fn resolve_defined_one_hop(&self, r: IndirectRef) -> Result<Object, Error> {
+        self.resolve_inner(r, false, false)
+    }
+
     /// [`Document::deref`] with the [`Document::resolve_defined`] rule.
     pub(crate) fn deref_defined(&self, obj: &Object) -> Result<Object, Error> {
         match obj {

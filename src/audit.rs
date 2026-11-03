@@ -536,7 +536,9 @@ impl<'d> Audit<'d> {
             if !visited.insert(r) {
                 continue;
             }
-            let obj = match self.doc.resolve_defined(r) {
+            // One hop: a chain's every link is an object of its own
+            // (the next link is an edge of it), as the writers write it.
+            let obj = match self.doc.resolve_defined_one_hop(r) {
                 Ok(o) => o,
                 Err(Error::MissingReference(_)) => {
                     // A queued ref that turned out to be absent is a
@@ -2746,6 +2748,32 @@ mod tests {
         assert_eq!(sup.len(), 1);
         assert_eq!(sup[0].object, Some(IndirectRef::new(5, 0)));
         assert_eq!(sup[0].reach, ReachClass::PreviousRevision);
+    }
+
+    /// A reference chain (`5 0 obj 6 0 R`, `6 0 obj 7 0 R`): every link
+    /// is reached — the rewrite writes each one — so none is reported
+    /// unreachable (C2: found by the `signature_markers` fuzz target).
+    #[test]
+    fn every_link_of_a_reference_chain_is_reachable() {
+        let a = audit_residuals(
+            &doc(&assemble(
+                &[
+                    (1, b"<< /Type /Catalog /Pages 2 0 R /X 5 0 R >>"),
+                    (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                    (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>"),
+                    (5, b"6 0 R"),
+                    (6, b"7 0 R"),
+                    (7, b"<< /K 1 >>"),
+                ],
+                b"",
+            )),
+            &Limits::default(),
+        )
+        .unwrap();
+        let r = &a.reachability;
+        assert!(r.walk_complete);
+        assert_eq!((r.reachable_live, r.unreachable_live), (6, 0), "{r:?}");
+        assert!(!has_kind(&a, FindingKind::UnreachableObject));
     }
 
     #[test]
