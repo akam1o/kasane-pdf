@@ -168,6 +168,9 @@ fn expect(
             },
             "acroform",
         ) => {
+            if before & 1 == 0 || *after != (before & !1) {
+                return Err("/SigFlags may change only by clearing a set bit 1".into());
+            }
             let old = format!("\tsig_flags={before}\t");
             let Some(line) = original
                 .iter()

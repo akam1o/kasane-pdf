@@ -1231,3 +1231,99 @@ fn a_stream_length_object_is_not_walked() {
         section(&b, "signatures")
     );
 }
+
+/// Review P1-1 and P1-2: a direct /UR3 signature dictionary, and an
+/// indirect /SigFlags, under a valid T2 declaration.
+#[test]
+fn t2_direct_usage_rights_and_indirect_sig_flags() {
+    let sigdict = "<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 1 2 3] /Contents <00> /Reference [<< /TransformMethod /UR3 >>] >>";
+    let orig = pdf(
+        "1.7",
+        &[
+            (1, d(&format!("<< /Type /Catalog /Pages 2 0 R /Perms << /UR3 {sigdict} >> /AcroForm << /Fields [] /SigFlags 5 0 R >> >>"))),
+            (2, d("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")),
+            (3, d("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>")),
+            (5, d("3")),
+        ],
+        0,
+    );
+    let out = pdf(
+        "1.7",
+        &[
+            (
+                1,
+                d("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [] /SigFlags 2 >> >>"),
+            ),
+            (2, d("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")),
+            (3, d("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>")),
+        ],
+        0,
+    );
+    let decl = crate::configs::derive_usage_rights(&doc(&orig)).unwrap();
+    assert_eq!(
+        decl,
+        Declaration::UsageRightsRemoved {
+            keys: vec!["UR3".into()],
+            perms_removed: true,
+            sig_flags: Some((3, 2))
+        }
+    );
+    let c = check(
+        "signatures",
+        &section(&orig, "signatures"),
+        &section(&out, "signatures"),
+        std::slice::from_ref(&decl),
+    );
+    assert_eq!(c.class, SemClass::Transformed, "signatures: {:?}", c.notes);
+    let r = compare_declared(&doc(&orig), &doc(&out), std::slice::from_ref(&decl));
+    let a = cat_of(&r, "acroform");
+    assert_eq!(a.class, SemClass::Transformed, "acroform: {:?}", a.notes);
+}
+
+/// Review P2: a dict-valued /Reference is a marker; a stream-typed
+/// multimedia annotation is seen; seed values, locks and /Legal keep no
+/// content; the acroform arm re-validates the SigFlags pair.
+#[test]
+fn review_p2_markers_streams_and_content() {
+    let b = pdf(
+        "1.7",
+        &[
+            (1, d("<< /Type /Catalog /Pages 2 0 R /X << /Reference << /TransformMethod /DocMDP >> >> /Legal << /Attestation (SECRET-ATTEST) >> /AcroForm << /Fields [7 0 R] >> >>")),
+            (2, d("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")),
+            (3, d("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Annots [4 0 R] >>")),
+            (4, st("/Type /Annot /Subtype /Screen /Rect [0 0 1 1]", b"x")),
+            (7, d("<< /FT /Sig /T (f) /SV << /Cert [(SECRET-CERT)] >> /Lock << /Action /Include /Fields [(SECRET-FIELD)] >> >>")),
+        ],
+        0,
+    );
+    let l = lines(&b, "signatures");
+    assert!(
+        l.iter()
+            .any(|x| x.starts_with("sig\tat=/Root/X\t") && x.contains("not-an-array")),
+        "{l:#?}"
+    );
+    assert!(l.iter().all(|x| !x.contains("SECRET")), "{l:#?}");
+    assert!(
+        l.iter()
+            .any(|x| x.starts_with("field\t") && x.contains("sv=keys=[Cert]:")),
+        "{l:#?}"
+    );
+    let m = lines(&b, "multimedia");
+    assert!(
+        m.iter()
+            .any(|x| x.starts_with("annot\tat=0.0\tsubtype=/Screen")),
+        "{m:#?}"
+    );
+    // A changed seed value is still a difference.
+    let b2 = patch(&b, "SECRET-CERT", "SECRET-CERU");
+    assert_eq!(report_of(&b, &b2, "signatures").class, SemClass::Fail);
+    // acroform arm: a pair that is not "bit 1 cleared" is invalid.
+    let form = sec(&["form\tneed_appearances=false\tsig_flags=3\tda=-\tq=0"]);
+    let bad = t2(&["UR3"], true, Some((3, 0)));
+    let c = check("acroform", &form, &form, &[bad]);
+    assert!(
+        c.notes.iter().any(|n| n.starts_with("invalid declaration")),
+        "{:?}",
+        c.notes
+    );
+}

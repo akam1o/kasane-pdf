@@ -1535,22 +1535,32 @@ impl<'a> Ctx<'a> {
         // `/XFA` is its own category (`xfa`); this one is the AcroForm
         // half of a form, compared whether or not XFA is present.
         let mut out = Vec::new();
-        let need = af
+        // Scalars through references too: an indirect `/SigFlags 5 0 R`
+        // is its value, not 0.
+        let need = match af
             .get(b"NeedAppearances".as_slice())
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let sig = af
+            .map(|x| self.get(x))
+            .transpose()?
+        {
+            Some(v) => v.as_bool().unwrap_or(false),
+            None => false,
+        };
+        let sig = match af
             .get(b"SigFlags".as_slice())
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+            .map(|x| self.get(x))
+            .transpose()?
+        {
+            Some(v) => v.as_i64().unwrap_or(0),
+            None => 0,
+        };
         let da = match af.get(b"DA".as_slice()).map(|x| self.get(x)).transpose()? {
             Some(Object::String(b)) => text(&b),
             _ => "-".into(),
         };
-        let q = af
-            .get(b"Q".as_slice())
-            .and_then(|v| v.as_i64())
-            .unwrap_or(0);
+        let q = match af.get(b"Q".as_slice()).map(|x| self.get(x)).transpose()? {
+            Some(v) => v.as_i64().unwrap_or(0),
+            None => 0,
+        };
         out.push(format!(
             "form\tneed_appearances={need}\tsig_flags={sig}\tda={da}\tq={q}"
         ));

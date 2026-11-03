@@ -1761,7 +1761,8 @@ fn run_rewrite_options(
             Err(why) => configs::OptionRun {
                 rewrite: "error".into(),
                 refusal: None,
-                declared: vec![why.to_string()],
+                declared: Vec::new(),
+                unavailable: Some(why.to_string()),
                 roundtrip: None,
             },
             Ok(Ok(bytes)) => {
@@ -1780,6 +1781,7 @@ fn run_rewrite_options(
                     rewrite: "pass".into(),
                     refusal: None,
                     declared: decls.iter().map(|d| d.rule_name().to_string()).collect(),
+                    unavailable: None,
                     roundtrip: Some(rt),
                 }
             }
@@ -1789,6 +1791,7 @@ fn run_rewrite_options(
                     rewrite: class.label().to_lowercase(),
                     refusal: configs::refusal(&e),
                     declared: Vec::new(),
+                    unavailable: None,
                     roundtrip: Some(roundtrip::refused(&e, t.elapsed().as_millis())),
                 }
             }

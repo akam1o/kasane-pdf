@@ -335,7 +335,7 @@ impl<'a> Ctx<'a> {
             };
             for (k, it) in items.iter().enumerate() {
                 let ad = match self.get(it)? {
-                    Object::Dict(d) => d,
+                    Object::Dict(d) | Object::Stream { dict: d, .. } => d,
                     // Possibly a multimedia annotation: not "absent".
                     Object::Name(n) if n == b"#unresolved" => {
                         out.push(format!("annot\tat={i}.{k}\tunresolved"));
@@ -468,23 +468,29 @@ impl<'a> Ctx<'a> {
             out.push(format!("sig\tat={at}\trefs={n}\t{}", w.sig_summary(d)?));
         }
         let unresolved = walk.unresolved;
-        let path_of = |o: &Object| -> String {
+        let path_of = |o: &Object| -> Res<String> {
             match o.as_ref().and_then(|r| walk.first.get(&r)) {
-                Some(n) => walk.path(*n).unwrap_or_else(|_| "too-long".into()),
-                None => "direct".into(),
+                Some(n) => walk.path(*n),
+                None => Ok("direct".into()),
             }
         };
         let cat = self.doc.catalog().clone();
         if let Some(p) = self.entry_pdf20(&cat, b"Perms")? {
             match self.get(&p)? {
                 Object::Dict(pd) => {
-                    out.push(format!("perms\tat={}\tkeys={}", path_of(&p), pd.len()));
+                    // Located through the walk's own nodes, so a direct
+                    // value (an inline /UR3 dictionary) has its path too.
+                    let root = self.doc.trailer().get(b"Root".as_slice()).cloned();
+                    let root = root.and_then(|r| walk.node_of(None, "/Root", &r));
+                    let perms = root.and_then(|n| walk.node_of(Some(n), "/Perms", &p));
+                    let at = |n: Option<usize>| -> Res<String> {
+                        n.map_or(Ok("unreached".into()), |n| walk.path(n))
+                    };
+                    out.push(format!("perms\tat={}\tkeys={}", at(perms)?, pd.len()));
                     for (k, v) in &pd {
-                        out.push(format!(
-                            "perms_entry\tkey=/{}\ttarget={}",
-                            String::from_utf8_lossy(k),
-                            path_of(v)
-                        ));
+                        let key = String::from_utf8_lossy(k);
+                        let t = perms.and_then(|n| walk.node_of(Some(n), &format!("/{key}"), v));
+                        out.push(format!("perms_entry\tkey=/{key}\ttarget={}", at(t)?));
                     }
                 }
                 other => out.push(format!("perms\tmalformed={}", self.canon0(&other)?)),
@@ -534,10 +540,7 @@ impl<'a> Ctx<'a> {
             }
         }
         if let Some(l) = self.entry_pdf20(&cat, b"Legal")? {
-            out.push(format!(
-                "legal\tvalue={}",
-                self.cval(&l, 1, &mut Vec::new())?
-            ));
+            out.push(format!("legal\t{}", self.summary(&l)?));
         }
         if unresolved > 0 {
             out.push(format!("walk\tunresolved={unresolved}"));
@@ -618,6 +621,22 @@ impl<'a> Ctx<'a> {
         Ok(w)
     }
 
+    /// A value by its keys and a digest of its canonical form: a change
+    /// is seen, the content (a seed value's certificates, an
+    /// attestation's text, locked field names) is not kept in the line.
+    fn summary(&mut self, o: &Object) -> Res<String> {
+        let c = self.cval(o, 1, &mut Vec::new())?;
+        let keys = match self.get(o)? {
+            Object::Dict(d) => d
+                .keys()
+                .map(|k| String::from_utf8_lossy(k).into_owned())
+                .collect::<Vec<_>>()
+                .join(","),
+            _ => "-".into(),
+        };
+        Ok(format!("keys=[{keys}]:{}", super::sha(c.as_bytes())))
+    }
+
     fn signature_like(&mut self, d: &Dict) -> Res<bool> {
         let has = |k: &str| d.contains_key(k.as_bytes());
         if has("ByteRange")
@@ -632,17 +651,25 @@ impl<'a> Ctx<'a> {
             }
         }
         if let Some(r) = d.get(b"Reference".as_slice()) {
-            if let Object::Array(a) = self.get(r)? {
-                for x in &a {
-                    if let Some(e) = self.dict(x)? {
-                        if e.contains_key(b"TransformMethod".as_slice()) {
-                            return Ok(true);
-                        }
+            for x in self.references(r)? {
+                if let Some(e) = self.dict(&x)? {
+                    if e.contains_key(b"TransformMethod".as_slice()) {
+                        return Ok(true);
                     }
                 }
             }
         }
         Ok(false)
+    }
+
+    /// The signature references of a `/Reference` value: an array's
+    /// elements, or a single (malformed but read) dictionary.
+    fn references(&mut self, r: &Object) -> Res<Vec<Object>> {
+        Ok(match self.get(r)? {
+            Object::Array(a) => a,
+            Object::Dict(_) => vec![r.clone()],
+            _ => vec![],
+        })
     }
 
     /// What a signature-like dictionary declares — kinds, names, sizes;
@@ -673,8 +700,11 @@ impl<'a> Ctx<'a> {
         };
         let mut reference = Vec::new();
         if let Some(r) = d.get(b"Reference".as_slice()) {
-            if let Object::Array(a) = self.get(r)? {
-                for x in &a {
+            if !matches!(self.get(r)?, Object::Array(_)) {
+                reference.push("not-an-array".into());
+            }
+            {
+                for x in &self.references(r)? {
                     match self.dict(x)? {
                         Some(e) => {
                             let tm = e
@@ -726,7 +756,7 @@ impl<'a> Ctx<'a> {
         inherited_ft: Option<String>,
         depth: usize,
         seen: &mut HashSet<IndirectRef>,
-        path_of: &dyn Fn(&Object) -> String,
+        path_of: &dyn Fn(&Object) -> Res<String>,
         out: &mut Vec<String>,
     ) -> Res<()> {
         if depth > MAX_DEPTH {
@@ -747,16 +777,16 @@ impl<'a> Ctx<'a> {
             let v = match self.entry_pdf20(&d, b"V")? {
                 None => "-".to_string(),
                 Some(v) => match self.get(&v)? {
-                    Object::Dict(_) => format!("dict@{}", path_of(&v)),
+                    Object::Dict(_) => format!("dict@{}", path_of(&v)?),
                     other => format!("other:{}", self.canon0(&other)?),
                 },
             };
             let lock = match lock {
-                Some(l) => self.cval(&l, 1, &mut Vec::new())?,
+                Some(l) => self.summary(&l)?,
                 None => "-".into(),
             };
             let sv = match sv {
-                Some(s) => self.cval(&s, 1, &mut Vec::new())?,
+                Some(s) => self.summary(&s)?,
                 None => "-".into(),
             };
             out.push(format!(
@@ -850,6 +880,18 @@ struct Walk {
 }
 
 impl Walk {
+    /// The node of `o` met as `step` under `parent`: an indirect object's
+    /// first node, or the direct value's own node.
+    fn node_of(&self, parent: Option<usize>, step: &str, o: &Object) -> Option<usize> {
+        match o.as_ref() {
+            Some(r) => self.first.get(&r).copied(),
+            None => self
+                .nodes
+                .iter()
+                .position(|(p, s)| *p == parent && &**s == step),
+        }
+    }
+
     /// The path of `node` from the trailer; an error past the line limit.
     fn path(&self, node: usize) -> Res<String> {
         let mut steps = Vec::new();

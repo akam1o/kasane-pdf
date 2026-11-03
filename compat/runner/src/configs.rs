@@ -199,6 +199,9 @@ pub struct OptionRun {
     /// The declared transformations' rule names.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub declared: Vec<String>,
+    /// Why the configuration could not run (`rewrite` is then `error`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable: Option<String>,
     /// The round trip under this configuration (same record as the
     /// default's).
     #[serde(default)]
