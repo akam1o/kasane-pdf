@@ -274,9 +274,13 @@ def config_figures(entries):
             "full_rt", "full_rt_declared", "semantic_pass", "semantic_transformed", "semantic_fail",
             "semantic_error", "semantic_unsupported", "signature_refusal", "script_refusal",
             "multimedia_refusal", "unsupported", "error", "crash_timeout",
+            "report_files", "report_script", "report_external", "report_state", "report_navigation",
+            "report_multimedia", "report_unknown", "report_unclassified", "inventory_checked",
+            "inventory_agree", "inventory_runner_error", "default_identical", "default_differs",
+            "version_agrees", "version_differs",
         )
     }
-    for f, rewrite, refusal, rt in entries:
+    for f, rewrite, refusal, rt, extra in entries:
         fig["files"] += 1
         rt = rt or {}
         if f.get("verdict") in ("crash", "timeout"):
@@ -303,6 +307,23 @@ def config_figures(entries):
             fig["unsupported"] += 1
         elif rewrite not in ("pass", "skip", ""):
             fig["error"] += 1
+        # The library's report (`rewrite_with`) and its check against the
+        # runner's inventory; the default's identity with `rewrite`.
+        extra = extra or {}
+        rep = extra.get("report")
+        if rep:
+            fig["report_files"] += 1
+            for k in ("script", "external", "state", "navigation", "multimedia", "unknown", "unclassified"):
+                fig[f"report_{k}"] += rep.get(k, 0)
+        inv = extra.get("inventory")
+        if inv:
+            fig["inventory_checked"] += 1
+            fig["inventory_agree"] += bool(inv.get("agree"))
+            fig["inventory_runner_error"] += bool(inv.get("runner_error"))
+        if "identical" in extra:
+            fig["default_identical" if extra["identical"] else "default_differs"] += 1
+        if extra.get("version_agrees") is not None:
+            fig["version_agrees" if extra["version_agrees"] else "version_differs"] += 1
     return fig
 
 
@@ -316,9 +337,10 @@ def by_config(run):
         rt = f.get("roundtrip")
         if rt is None and (f.get("rewrite") or {}).get("class") == "skip":
             continue  # never reached the rewrite (strict parse failed)
-        default.append((f, lower((f.get("rewrite") or {}).get("class")), f.get("rewrite_refusal"), rt))
+        default.append((f, lower((f.get("rewrite") or {}).get("class")), f.get("rewrite_refusal"), rt,
+                        f.get("policy_check")))
         for name, o in (f.get("rewrite_options") or {}).items():
-            others.setdefault(name, []).append((f, lower(o.get("rewrite")), o.get("refusal"), o.get("roundtrip")))
+            others.setdefault(name, []).append((f, lower(o.get("rewrite")), o.get("refusal"), o.get("roundtrip"), o))
     out = {"default": config_figures(default)}
     for name, entries in sorted(others.items()):
         out[name] = config_figures(entries)

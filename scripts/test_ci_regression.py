@@ -390,6 +390,11 @@ class Gate(unittest.TestCase):
         c["rewrite_options"] = {"remove-usage-rights": {"rewrite": "unsupported", "refusal": "script",
                                                         "roundtrip": {"rewrite": {"class": "Unsupported"}}}}
         d = dict(file("d", [NORMAL]), parse={"class": "error"}, rewrite={"class": "skip"})
+        a["policy_check"] = {"identical": True, "version_agrees": True,
+                             "report": {"script": 1, "navigation": 2},
+                             "inventory": {"agree": True}}
+        b["rewrite_options"]["remove-usage-rights"]["report"] = {"script": 2, "unclassified": 1}
+        b["rewrite_options"]["remove-usage-rights"]["inventory"] = {"agree": False, "runner_error": "limit"}
         figs = cr.summarize(run(a, b, c, d))["aggregate"]["by_config"]
         dflt, d1 = figs["default"], figs["remove-usage-rights"]
         self.assertEqual((dflt["files"], dflt["full_pass"], dflt["signature_refusal"], dflt["script_refusal"]), (3, 1, 1, 1))
@@ -397,6 +402,11 @@ class Gate(unittest.TestCase):
         self.assertEqual((d1["files"], d1["rewrite_pass"], d1["full_pass"], d1["full_pass_verified"]), (3, 2, 2, 2))
         self.assertEqual((d1["semantic_pass"], d1["semantic_transformed"], d1["script_refusal"]), (1, 1, 1))
         self.assertEqual((d1["graph_rt"], d1["graph_rt_declared"], d1["full_rt"], d1["full_rt_declared"]), (1, 1, 1, 2))
+        self.assertEqual((dflt["default_identical"], dflt["default_differs"], dflt["version_agrees"]), (1, 0, 1))
+        self.assertEqual((dflt["report_files"], dflt["report_script"], dflt["report_navigation"]), (1, 1, 2))
+        self.assertEqual((dflt["inventory_checked"], dflt["inventory_agree"]), (1, 1))
+        self.assertEqual((d1["report_script"], d1["report_unclassified"], d1["inventory_agree"],
+                          d1["inventory_runner_error"]), (2, 1, 0, 1))
         # The enforced aggregate and the gate read the default only: an
         # option run that loses everything changes nothing in `check`.
         base = cr.summarize(run(a, b, c, d))
