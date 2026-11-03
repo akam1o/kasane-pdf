@@ -72,10 +72,27 @@ pub enum MultimediaPolicy {
 #[non_exhaustive]
 pub enum UsageRightsPolicy {
     /// A document with a usage-rights signature is refused (as by
-    /// [`rewrite`](crate::rewrite)). The only policy so far; removing
-    /// them is planned and not available.
+    /// [`rewrite`](crate::rewrite)).
     #[default]
     Refuse,
+    /// The usage-rights signatures (`/Perms /UR`, `/UR3`) are removed,
+    /// and the extended rights they granted (filling and saving a form in
+    /// a reader, commenting, …) are withdrawn; the document's content is
+    /// kept. `/Perms` is dropped when nothing else is left in it, and
+    /// `/AcroForm /SigFlags` bit 1 (SignaturesExist) is cleared when set,
+    /// every other bit kept.
+    ///
+    /// Only when nothing else signature-like is anywhere in the document:
+    /// any other signature (a certification `/DocMDP`, an approval
+    /// signature, a document timestamp, an XFA XML signature, a
+    /// dictionary with a signature marker anywhere reachable), a field
+    /// `/Lock`, `/DSS` or `/Legal`, a usage-rights signature that cannot
+    /// be confirmed as one or is shared with another structure, or a
+    /// document that cannot be searched completely refuses
+    /// ([`Error::SignaturePolicy`]). The output is parsed again and
+    /// searched before it is returned. The removal is reported in
+    /// [`RewriteReport::usage_rights`].
+    Remove,
 }
 
 /// Options of [`rewrite_with`]. Every default is
@@ -164,6 +181,7 @@ pub struct RewriteReport {
     pub(crate) executable_content: ExecutableContentPolicy,
     pub(crate) multimedia: MultimediaPolicy,
     pub(crate) usage_rights: UsageRightsPolicy,
+    pub(crate) usage_rights_outcome: UsageRightsOutcome,
     pub(crate) items: Vec<ExecutableItem>,
     pub(crate) unclassified: Vec<UnclassifiedStructure>,
     pub(crate) version: VersionChange,
@@ -183,6 +201,18 @@ impl RewriteReport {
     /// The usage-rights policy applied.
     pub fn usage_rights_policy(&self) -> UsageRightsPolicy {
         self.usage_rights
+    }
+
+    /// What was done with usage-rights signatures:
+    /// [`UsageRightsOutcome::Removed`] when the rewrite deleted them.
+    pub fn usage_rights(&self) -> &UsageRightsOutcome {
+        &self.usage_rights_outcome
+    }
+
+    /// Whether a signature was removed (only
+    /// [`UsageRightsPolicy::Remove`] removes one).
+    pub fn signatures_removed(&self) -> bool {
+        matches!(self.usage_rights_outcome, UsageRightsOutcome::Removed(_))
     }
 
     /// Every action, multimedia annotation and XFA script carried, in a
@@ -253,8 +283,155 @@ impl fmt::Display for RewriteReport {
             s.multimedia,
             s.unknown,
             self.unclassified.len()
-        )
+        )?;
+        if let UsageRightsOutcome::Removed(r) = &self.usage_rights_outcome {
+            write!(f, "; {} usage-rights signature(s) removed", r.entries.len())?;
+        }
+        Ok(())
     }
+}
+
+/// What [`rewrite_with`] did with usage-rights signatures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum UsageRightsOutcome {
+    /// The policy ([`UsageRightsPolicy::Refuse`]) does not remove them:
+    /// the input was not searched for one. A document with one is
+    /// refused, so the output has none.
+    NotRequested,
+    /// [`UsageRightsPolicy::Remove`], and the input had none (nor any
+    /// other signature: that refuses). Nothing was removed; the output
+    /// was checked as for a removal.
+    NonePresent,
+    /// [`UsageRightsPolicy::Remove`] removed them: the output carries no
+    /// usage-rights signature, and the rights they granted are withdrawn.
+    Removed(UsageRightsRemoval),
+}
+
+/// What [`UsageRightsPolicy::Remove`] removed and changed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct UsageRightsRemoval {
+    /// One per removed `/Perms` entry (`/UR`, then `/UR3`).
+    pub entries: Vec<RemovedSignature>,
+    /// `/Perms` was dropped: it held nothing else.
+    pub perms_removed: bool,
+    /// `/AcroForm /SigFlags` as read and as written; `None` when the
+    /// input has none.
+    pub sig_flags: Option<SigFlagsChange>,
+    /// Seed-value dictionaries (`/SV` of unsigned signature fields)
+    /// carried.
+    pub seed_values: usize,
+    /// Cross-reference sections of the input (saved revisions); the
+    /// output has one.
+    pub input_revisions: u32,
+    /// What the check of the output verified.
+    pub output_check: OutputCheck,
+}
+
+/// `/AcroForm /SigFlags` before and after a removal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct SigFlagsChange {
+    /// As read.
+    pub before: i64,
+    /// As written: bit 1 (SignaturesExist) cleared, every other bit
+    /// (bit 2, AppendOnly, included) kept.
+    pub after: i64,
+}
+
+/// `/Perms /UR` or `/UR3`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum UsageRightsKey {
+    /// `/UR` (PDF 1.5).
+    Ur,
+    /// `/UR3`.
+    Ur3,
+}
+
+/// One removed usage-rights signature. Content-free: no signature
+/// value, certificate or handler string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RemovedSignature {
+    /// The `/Perms` entry.
+    pub key: UsageRightsKey,
+    /// The signature dictionary's object in the input; `None` when it
+    /// was a direct dictionary.
+    pub input_object: Option<IndirectRef>,
+    /// Its `/SubFilter`.
+    pub sub_filter: Option<SubFilterKind>,
+    /// The rights its `/TransformParams` granted, in a fixed order.
+    pub rights: Vec<UsageRight>,
+    /// It had a `/ByteRange`.
+    pub byte_range_present: bool,
+}
+
+/// A signature `/SubFilter`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum SubFilterKind {
+    /// `adbe.pkcs7.detached`.
+    AdbePkcs7Detached,
+    /// `adbe.pkcs7.sha1`.
+    AdbePkcs7Sha1,
+    /// `adbe.x509.rsa_sha1`.
+    AdbeX509RsaSha1,
+    /// `ETSI.CAdES.detached`.
+    EtsiCadesDetached,
+    /// `ETSI.RFC3161`.
+    EtsiRfc3161,
+    /// Another value.
+    Other,
+}
+
+/// A category of rights a usage-rights signature grants (a
+/// `/TransformParams` key, ISO 32000-2 Table 260).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum UsageRight {
+    /// `/Document` (e.g. full save).
+    Document,
+    /// `/Msg`: the message a viewer shows.
+    Message,
+    /// `/Annots`: creating and changing annotations.
+    Annots,
+    /// `/Form`: filling, importing, exporting forms.
+    Form,
+    /// `/FormEx`: barcode form fields.
+    FormEx,
+    /// `/Signature`: signing signature fields.
+    Signature,
+    /// `/EF`: embedded files.
+    EmbeddedFiles,
+    /// Another key.
+    Other,
+}
+
+/// What the check of a [`UsageRightsPolicy::Remove`] output verified:
+/// the bytes returned, parsed again strictly and searched with walkers
+/// of their own. Every condition holds, or the rewrite failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub struct OutputCheck {
+    /// Objects in the output.
+    pub objects: u64,
+    /// Of them, reachable from the trailer (all of them: the check
+    /// requires it).
+    pub reachable_objects: u64,
+    /// Values the signature search examined (none signature-like, no
+    /// `/ByteRange`, no field lock).
+    pub values_examined: usize,
+    /// Pages (as many as the input's).
+    pub pages: usize,
+    /// Catalog entries (the input's, less a dropped `/Perms`).
+    pub catalog_keys: usize,
+    /// Input objects the rewrite does not write because of the removal
+    /// (the signature dictionaries, what only they held, a dropped
+    /// `/Perms` object); every other object [`rewrite`](crate::rewrite)
+    /// writes is written.
+    pub objects_removed: usize,
 }
 
 /// Counts of [`ExecutableItem`]s per [`ActionClass`].
@@ -646,10 +823,27 @@ pub enum VersionReason {
 /// ```
 pub fn rewrite_with(document: &Document, options: &RewriteOptions) -> Result<RewriteOutput, Error> {
     options.limits.validate()?;
+    // Remove: assessed (and refused) before anything is written, outside
+    // the rewrite's decoded-bytes scope; the plan's edits are an overlay.
+    let remove = options.usage_rights == UsageRightsPolicy::Remove;
+    let plan = if remove {
+        if document.is_encrypted() {
+            return Err(crate::incremental::encrypted_write_refused());
+        }
+        Some(crate::usage_rights::assess(document, &options.limits)?)
+    } else {
+        None
+    };
+    let overlay = match &plan {
+        Some(Some(p)) => crate::usage_rights::overlay(document, p)?,
+        _ => std::collections::HashMap::new(),
+    };
     let (bytes, map, version) = crate::rewrite::rewrite_mapped(
         document,
         &options.limits,
         options.executable_content == ExecutableContentPolicy::Carry,
+        &overlay,
+        remove,
     )?;
     // The report is taken on objects the rewrite already read, without
     // leaving anything on the document (budget, warnings) that `rewrite`
@@ -672,12 +866,37 @@ pub fn rewrite_with(document: &Document, options: &RewriteOptions) -> Result<Rew
         (items, unclassified, enforced)
     });
     enforced?;
+    // The bytes the caller receives, checked independently (§5.4 of the
+    // D1 design); nothing is left on the document.
+    let usage_rights_outcome = match plan {
+        None => UsageRightsOutcome::NotRequested,
+        Some(plan) => {
+            let written = map.keys().copied().collect();
+            let check = document.without_side_effects(|| {
+                crate::usage_rights::check_output(
+                    document,
+                    plan.as_ref(),
+                    &bytes,
+                    &written,
+                    &options.limits,
+                )
+            })?;
+            match plan {
+                None => UsageRightsOutcome::NonePresent,
+                Some(p) => UsageRightsOutcome::Removed(
+                    document
+                        .without_side_effects(|| crate::usage_rights::removal(document, &p, check)),
+                ),
+            }
+        }
+    };
     Ok(RewriteOutput {
         bytes,
         report: RewriteReport {
             executable_content: options.executable_content,
             multimedia: options.multimedia,
             usage_rights: options.usage_rights,
+            usage_rights_outcome,
             items,
             unclassified,
             version,

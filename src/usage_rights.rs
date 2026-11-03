@@ -17,16 +17,18 @@
 //! [`assess`] decides, from that walk and the catalog alone, whether the
 //! removal is allowed and what it edits ([`Plan`]); anything it cannot
 //! establish refuses. Handler names never decide: only structure does.
-
-// Phase A (C2): the walk and the assessment, wired into `rewrite_with`
-// in phase B.
-#![cfg_attr(not(test), allow(dead_code))]
+//! [`overlay`] is the plan's edits for the rewrite, and [`check_output`]
+//! checks the bytes the rewrite produced (§5.4) before they are returned.
 
 use crate::document::Document;
 use crate::error::{Error, SignatureRule};
 use crate::limits::Limits;
 use crate::object::{Dict, IndirectRef, Object};
 use crate::rewrite::deref_chain;
+use crate::rewrite_policy::{
+    OutputCheck, RemovedSignature, SigFlagsChange, SubFilterKind, UsageRight, UsageRightsKey,
+    UsageRightsRemoval,
+};
 use std::collections::{HashMap, HashSet};
 
 /// Where a dictionary is: the nearest enclosing indirect object (none: a
@@ -432,6 +434,8 @@ pub(crate) struct Plan {
     pub perms_left: usize,
     /// `(before, after, where)` when bit 1 is set.
     pub sig_flags: Option<(i64, i64, SigFlagsAt)>,
+    /// `/AcroForm /SigFlags` as read (an indirect null is 0).
+    pub sig_flags_read: Option<i64>,
     pub seed_values: usize,
 }
 
@@ -600,6 +604,7 @@ fn assess_inner(doc: &Document, limits: &Limits) -> Result<Option<Plan>, Error> 
     // /SigFlags: bit 1 (SignaturesExist) cleared when set — no signature
     // remains — every other bit kept.
     let mut sig_flags = None;
+    let mut sig_flags_read = None;
     if let Some(af) = cat.get(b"AcroForm".as_slice()) {
         let (af_at, afd) = match one_hop(doc, af, "/AcroForm")? {
             (_, Object::Null) => (None, None),
@@ -612,6 +617,7 @@ fn assess_inner(doc: &Document, limits: &Limits) -> Result<Option<Plan>, Error> 
                 (_, Object::Null) => (None, 0),
                 _ => return Err(not_removable("/AcroForm /SigFlags is not an integer")),
             };
+            sig_flags_read = Some(value);
             if value & 1 == 1 {
                 let at = match (f_at, af_at) {
                     (Some(r), _) => {
@@ -642,8 +648,321 @@ fn assess_inner(doc: &Document, limits: &Limits) -> Result<Option<Plan>, Error> 
         perms: perms_at,
         perms_left,
         sig_flags,
+        sig_flags_read,
         seed_values: scan.seed_values,
     }))
+}
+
+fn key_of(r: IndirectRef) -> (u32, u16) {
+    (r.number, r.generation)
+}
+
+/// The plan's edits, as rewrite overlay bodies (input object → new body):
+/// the catalog, or the `/Perms` object, without the targets (and without
+/// `/Perms` when nothing is left in it); `/SigFlags` with bit 1 cleared
+/// where it is. Bodies are read one hop, as [`assess`] read them.
+pub(crate) fn overlay(doc: &Document, plan: &Plan) -> Result<HashMap<(u32, u16), Object>, Error> {
+    let root = doc
+        .trailer()
+        .get(b"Root".as_slice())
+        .and_then(|o| o.as_ref())
+        .ok_or_else(|| not_removable("the catalog is not an indirect object"))?;
+    let dict_at = |r: IndirectRef, what: &str| -> Result<Dict, Error> {
+        match doc.resolve_one_hop(r).map_err(|e| unreadable(what, &e))? {
+            Object::Dict(d) => Ok(d),
+            _ => Err(not_removable(format!("{what} is not a dictionary"))),
+        }
+    };
+    let mut cat = dict_at(root, "the catalog")?;
+    let mut cat_changed = false;
+    let mut out = HashMap::new();
+    let strip = |d: &mut Dict| {
+        for t in &plan.targets {
+            d.remove(t.key.name());
+        }
+    };
+    match plan.perms {
+        _ if plan.perms_left == 0 => {
+            cat.remove(b"Perms".as_slice());
+            cat_changed = true;
+        }
+        PermsAt::Catalog => {
+            let Some(Object::Dict(p)) = cat.get_mut(b"Perms".as_slice()) else {
+                return Err(not_removable("/Perms is not a dictionary"));
+            };
+            strip(p);
+            cat_changed = true;
+        }
+        PermsAt::Object(r) => {
+            let mut p = dict_at(r, "/Perms")?;
+            strip(&mut p);
+            out.insert(key_of(r), Object::Dict(p));
+        }
+    }
+    if let Some((_, after, at)) = plan.sig_flags {
+        match at {
+            SigFlagsAt::CatalogAcroForm => {
+                let Some(Object::Dict(af)) = cat.get_mut(b"AcroForm".as_slice()) else {
+                    return Err(not_removable("/AcroForm is not a dictionary"));
+                };
+                af.insert(b"SigFlags".to_vec(), Object::Integer(after));
+                cat_changed = true;
+            }
+            SigFlagsAt::AcroFormObject(r) => {
+                let mut af = dict_at(r, "/AcroForm")?;
+                af.insert(b"SigFlags".to_vec(), Object::Integer(after));
+                out.insert(key_of(r), Object::Dict(af));
+            }
+            SigFlagsAt::Object(r) => {
+                out.insert(key_of(r), Object::Integer(after));
+            }
+        }
+    }
+    if cat_changed {
+        out.insert(key_of(root), Object::Dict(cat));
+    }
+    Ok(out)
+}
+
+/// The input objects the removal keeps out of the output: the target
+/// objects, what only they hold, and a dropped `/Perms` object.
+fn removed_objects(
+    doc: &Document,
+    plan: &Plan,
+    limits: &Limits,
+) -> Result<HashSet<(u32, u16)>, Error> {
+    let mut out = HashSet::new();
+    for t in &plan.targets {
+        if let Some(r) = t.object {
+            out.insert(key_of(r));
+        }
+        out.extend(
+            held_edges(doc, &t.dict, budget(limits))?
+                .into_keys()
+                .map(key_of),
+        );
+    }
+    if let (PermsAt::Object(r), 0) = (plan.perms, plan.perms_left) {
+        out.insert(key_of(r));
+    }
+    Ok(out)
+}
+
+fn residual(detail: impl std::fmt::Display) -> Error {
+    Error::SignaturePolicy {
+        rule: SignatureRule::ResidualSignature,
+        detail: format!("the check of the output failed: {detail}"),
+    }
+}
+
+/// §5.4: the output `bytes`, parsed again strictly and searched with
+/// walkers of their own, against the input and the plan (`None`: nothing
+/// to remove). `written` is the input objects the rewrite wrote. Any
+/// failure is [`SignatureRule::ResidualSignature`].
+pub(crate) fn check_output(
+    input: &Document,
+    plan: Option<&Plan>,
+    bytes: &[u8],
+    written: &HashSet<(u32, u16)>,
+    limits: &Limits,
+) -> Result<OutputCheck, Error> {
+    // Nothing removed but what the plan removes: the objects written are
+    // exactly what `rewrite` writes, less those.
+    let plain = crate::rewrite::collected(input, limits).map_err(|e| {
+        residual(format_args!(
+            "the input could not be collected ({})",
+            e.kind().as_str()
+        ))
+    })?;
+    let removed = match plan {
+        Some(p) => removed_objects(input, p, limits)?,
+        None => HashSet::new(),
+    };
+    let expected: HashSet<(u32, u16)> = plain.difference(&removed).copied().collect();
+    if &expected != written {
+        return Err(residual(format_args!(
+            "{} object(s) missing and {} unexpected against the rewrite without the removal",
+            expected.difference(written).count(),
+            written.difference(&expected).count()
+        )));
+    }
+    let objects_removed = plain.intersection(&removed).count();
+
+    let out = Document::from_bytes_with_limits(bytes, limits.clone()).map_err(|e| {
+        residual(format_args!(
+            "the output does not parse ({})",
+            e.kind().as_str()
+        ))
+    })?;
+    let s =
+        scan(&out, limits).map_err(|_| residual("the output could not be searched completely"))?;
+    if s.signature_like > 0 || s.byte_ranges > 0 {
+        return Err(residual(format_args!(
+            "{} signature-like dictionar(ies), {} with /ByteRange",
+            s.signature_like, s.byte_ranges
+        )));
+    }
+    if s.locks > 0 {
+        return Err(residual("a field /Lock"));
+    }
+    let a = crate::audit::audit_residuals(&out, limits).map_err(|e| {
+        residual(format_args!(
+            "the output audit failed ({})",
+            e.kind().as_str()
+        ))
+    })?;
+    let reach = &a.reachability;
+    if !reach.walk_complete || reach.missing_references > 0 || reach.unreachable_live > 0 {
+        return Err(residual(format_args!(
+            "the output walk: complete {}, missing references {}, unreachable objects {}",
+            reach.walk_complete, reach.missing_references, reach.unreachable_live
+        )));
+    }
+
+    let (icat, ocat) = (input.catalog(), out.catalog());
+    let perms_dropped = plan.is_some_and(|p| p.perms_left == 0);
+    let want_keys: HashSet<&Vec<u8>> = icat
+        .keys()
+        .filter(|k| !(perms_dropped && k.as_slice() == b"Perms"))
+        .collect();
+    let got_keys: HashSet<&Vec<u8>> = ocat.keys().collect();
+    if want_keys != got_keys {
+        return Err(residual("the catalog entries differ from the input's"));
+    }
+    if let Some(p) = ocat.get(b"Perms".as_slice()) {
+        let p = deref_chain(&out, p).map_err(|_| residual("/Perms cannot be read"))?;
+        let left = match &p {
+            Object::Dict(d) => d,
+            _ => return Err(residual("/Perms is not a dictionary")),
+        };
+        if [b"UR".as_slice(), b"UR3", b"DocMDP"]
+            .iter()
+            .any(|k| left.contains_key(*k))
+        {
+            return Err(residual("/Perms still has /UR, /UR3 or /DocMDP"));
+        }
+        if plan.is_some_and(|p| p.perms_left != left.len()) {
+            return Err(residual("/Perms does not hold what was left in it"));
+        }
+    }
+    let sig_flags = |d: &Document| -> Result<Option<i64>, Error> {
+        let Some(af) = d.catalog().get(b"AcroForm".as_slice()) else {
+            return Ok(None);
+        };
+        let Object::Dict(af) = deref_chain(d, af)? else {
+            return Ok(None);
+        };
+        Ok(match af.get(b"SigFlags".as_slice()) {
+            None => None,
+            Some(f) => match deref_chain(d, f)? {
+                Object::Integer(v) => Some(v),
+                Object::Null => Some(0),
+                _ => None,
+            },
+        })
+    };
+    let want_flags = match plan {
+        Some(p) => match p.sig_flags {
+            Some((_, after, _)) => Some(after),
+            None => p.sig_flags_read,
+        },
+        None => sig_flags(input).map_err(|_| residual("the input /SigFlags cannot be read"))?,
+    };
+    let got_flags = sig_flags(&out).map_err(|_| residual("/SigFlags cannot be read"))?;
+    if got_flags != want_flags {
+        return Err(residual("/AcroForm /SigFlags is not as declared"));
+    }
+    let pages = out.pages().len();
+    if pages != input.pages().len() {
+        return Err(residual("the page count differs from the input's"));
+    }
+    Ok(OutputCheck {
+        objects: reach.live_objects,
+        reachable_objects: reach.reachable_live,
+        values_examined: s.values,
+        pages,
+        catalog_keys: got_keys.len(),
+        objects_removed,
+    })
+}
+
+/// The report of a removal carried out under `plan`. Content-free.
+pub(crate) fn removal(
+    doc: &Document,
+    plan: &Plan,
+    output_check: OutputCheck,
+) -> UsageRightsRemoval {
+    let entries = plan
+        .targets
+        .iter()
+        .map(|t| RemovedSignature {
+            key: match t.key {
+                Key::Ur => UsageRightsKey::Ur,
+                Key::Ur3 => UsageRightsKey::Ur3,
+            },
+            input_object: t.object,
+            sub_filter: name_of(doc, t.dict.get(b"SubFilter".as_slice())).map(|n| {
+                match n.as_slice() {
+                    b"adbe.pkcs7.detached" => SubFilterKind::AdbePkcs7Detached,
+                    b"adbe.pkcs7.sha1" => SubFilterKind::AdbePkcs7Sha1,
+                    b"adbe.x509.rsa_sha1" => SubFilterKind::AdbeX509RsaSha1,
+                    b"ETSI.CAdES.detached" => SubFilterKind::EtsiCadesDetached,
+                    b"ETSI.RFC3161" => SubFilterKind::EtsiRfc3161,
+                    _ => SubFilterKind::Other,
+                }
+            }),
+            rights: rights(doc, &t.dict),
+            byte_range_present: t.dict.contains_key(b"ByteRange".as_slice()),
+        })
+        .collect();
+    UsageRightsRemoval {
+        entries,
+        perms_removed: plan.perms_left == 0,
+        sig_flags: plan.sig_flags_read.map(|before| SigFlagsChange {
+            before,
+            after: plan.sig_flags.map_or(before, |(_, a, _)| a),
+        }),
+        seed_values: plan.seed_values,
+        input_revisions: u32::try_from(doc.xref_section_offsets().len()).unwrap_or(u32::MAX),
+        output_check,
+    }
+}
+
+/// The right categories of `d`'s `/Reference` `/TransformParams` (keys;
+/// `/Type` and `/V` are not rights), sorted and deduplicated.
+fn rights(doc: &Document, d: &Dict) -> Vec<UsageRight> {
+    let mut out = Vec::new();
+    let elems = match d.get(b"Reference".as_slice()).map(|r| deref_chain(doc, r)) {
+        Some(Ok(Object::Array(a))) => a,
+        _ => Vec::new(),
+    };
+    for e in &elems {
+        let Ok(Object::Dict(ed)) = deref_chain(doc, e) else {
+            continue;
+        };
+        let Some(Ok(Object::Dict(tp))) = ed
+            .get(b"TransformParams".as_slice())
+            .map(|p| deref_chain(doc, p))
+        else {
+            continue;
+        };
+        for k in tp.keys() {
+            out.push(match k.as_slice() {
+                b"Type" | b"V" => continue,
+                b"Document" => UsageRight::Document,
+                b"Msg" => UsageRight::Message,
+                b"Annots" => UsageRight::Annots,
+                b"Form" => UsageRight::Form,
+                b"FormEx" => UsageRight::FormEx,
+                b"Signature" => UsageRight::Signature,
+                b"EF" => UsageRight::EmbeddedFiles,
+                _ => UsageRight::Other,
+            });
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 fn name_of(doc: &Document, o: Option<&Object>) -> Option<Vec<u8>> {
@@ -1418,5 +1737,137 @@ mod tests {
         let before = d.warnings().len();
         assert!(plan(&d).unwrap().is_some());
         assert_eq!(d.warnings().len(), before);
+    }
+
+    /// §5.4 near misses: the check of the output fails on every
+    /// deviation from the declared change.
+    #[test]
+    fn the_output_check_catches_near_misses() {
+        let cat = "/Perms << /UR3 10 0 R >> /AcroForm << /Fields [] /SigFlags 3 >>";
+        let d = doc(
+            cat,
+            "/Zzzzzzzzz [0 1 2 3] /Q << /Wwww /Xyz >> /Ww 11 0 R",
+            &[(10, UR3), (11, "<< /K 1 >>")],
+        );
+        let limits = Limits::default();
+        let p = plan(&d).unwrap().unwrap();
+        let ov = overlay(&d, &p).unwrap();
+        let (bytes, map, _) =
+            crate::rewrite::rewrite_mapped(&d, &limits, false, &ov, true).unwrap();
+        let written: HashSet<(u32, u16)> = map.keys().copied().collect();
+        let check = |b: &[u8], w: &HashSet<(u32, u16)>, p: &Plan| match check_output(
+            &d,
+            Some(p),
+            b,
+            w,
+            &limits,
+        ) {
+            Ok(c) => Ok(c),
+            Err(Error::SignaturePolicy {
+                rule: SignatureRule::ResidualSignature,
+                detail,
+            }) => Err(detail),
+            Err(e) => panic!("{e:?}"),
+        };
+        let c = check(&bytes, &written, &p).unwrap();
+        assert_eq!((c.objects_removed, c.pages), (1, 1));
+        // Same-length byte edits keep the xref offsets valid.
+        let swap = |from: &str, to: &str| -> Vec<u8> {
+            let (from, to) = (from.as_bytes(), to.as_bytes());
+            assert_eq!(from.len(), to.len());
+            let at = bytes
+                .windows(from.len())
+                .position(|w| w == from)
+                .expect("swap target");
+            let mut b = bytes.clone();
+            b[at..at + to.len()].copy_from_slice(to);
+            b
+        };
+        // Each near miss fails for its own reason (not, say, a parse
+        // error that would hide what the check misses).
+        let fails = |b: &[u8], w: &HashSet<(u32, u16)>, p: &Plan, why: &str| match check(b, w, p) {
+            Err(d) => assert!(d.contains(why), "{why}: {d}"),
+            Ok(_) => panic!("{why}: passed"),
+        };
+        let flags = "/SigFlags is not as declared";
+        // A /ByteRange left (or appearing) in another object.
+        fails(
+            &swap("/Zzzzzzzzz", "/ByteRange"),
+            &written,
+            &p,
+            "with /ByteRange",
+        );
+        // A signature-like dictionary appearing anywhere.
+        fails(
+            &swap("/Wwww /Xyz", "/Type /Sig"),
+            &written,
+            &p,
+            "signature-like",
+        );
+        // Bit 2 cleared too; bit 1 not cleared (declared, not done).
+        fails(&swap("/SigFlags 2", "/SigFlags 0"), &written, &p, flags);
+        fails(&swap("/SigFlags 2", "/SigFlags 3"), &written, &p, flags);
+        // An unrelated value changed is not this check's (T2's); an
+        // unrelated catalog entry lost is.
+        fails(
+            &swap("/AcroForm", "/AcroFurm"),
+            &written,
+            &p,
+            "catalog entries",
+        );
+        // A reference to an object the output does not have (the same
+        // number of digits, past the output's objects).
+        let dangling = {
+            let at = bytes.windows(4).position(|w| w == b"/Ww ").unwrap() + 4;
+            let n = bytes[at..]
+                .iter()
+                .take_while(|c| c.is_ascii_digit())
+                .count();
+            let mut b = bytes.clone();
+            b[at..at + n].fill(b'9');
+            b
+        };
+        fails(&dangling, &written, &p, "missing references");
+        // The removal not done: the plain rewrite's output.
+        let (plain, pmap, _) =
+            crate::rewrite::rewrite_mapped(&d, &limits, false, &HashMap::new(), true).unwrap();
+        let pw: HashSet<(u32, u16)> = pmap.keys().copied().collect();
+        fails(&plain, &pw, &p, "1 unexpected");
+        fails(&plain, &written, &p, "with /ByteRange");
+        // An object written or lost that the plan does not explain.
+        let mut extra = written.clone();
+        extra.insert((99, 0));
+        fails(&bytes, &extra, &p, "1 unexpected");
+        let mut fewer = written.clone();
+        fewer.remove(&(3, 0));
+        fails(&bytes, &fewer, &p, "1 object(s) missing");
+        // A plan that declares something else.
+        let mut other = p.clone();
+        other.sig_flags = Some((3, 3, SigFlagsAt::CatalogAcroForm));
+        fails(&bytes, &written, &other, flags);
+        let mut other = p.clone();
+        other.perms_left = 1;
+        fails(&bytes, &written, &other, "catalog entries");
+        // A /UR key left in a kept /Perms (no marker, no other change).
+        let d2 = doc("/Perms << /UR3 10 0 R /XY 1 >>", "", &[(10, UR3)]);
+        let p2 = plan(&d2).unwrap().unwrap();
+        let ov2 = overlay(&d2, &p2).unwrap();
+        let (b2, m2, _) = crate::rewrite::rewrite_mapped(&d2, &limits, false, &ov2, true).unwrap();
+        let w2: HashSet<(u32, u16)> = m2.keys().copied().collect();
+        assert!(check_output(&d2, Some(&p2), &b2, &w2, &limits).is_ok());
+        let at = b2.windows(5).position(|w| w == b"/XY 1").unwrap();
+        let mut b2 = b2;
+        b2[at..at + 3].copy_from_slice(b"/UR");
+        match check_output(&d2, Some(&p2), &b2, &w2, &limits) {
+            Err(Error::SignaturePolicy { detail, .. }) => {
+                assert!(detail.contains("/Perms still has"), "{detail}")
+            }
+            other => panic!("{other:?}"),
+        }
+        // Unparsable output.
+        fails(&bytes[..bytes.len() / 2], &written, &p, "does not parse");
+        // NonePresent on a document that has a signature: the check
+        // refuses the plain rewrite's output.
+        assert!(check_output(&d, None, &plain, &pw, &limits).is_err());
     }
 }
