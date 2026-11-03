@@ -335,6 +335,23 @@ def text_value(f, key):
 TEXT_F1_DROP = 0.05
 
 
+# Semantic classes that are not a success.
+SEMANTIC_BAD = ("fail", "error", "unsupported")
+
+
+def semantic_moved(was, now):
+    """A semantic class change to list for review (never a failure of
+    the gate): a pass or a transformation lost, or a move into a class
+    that is not a success from any other class (`not_applicable` ->
+    `fail` is a structure the rewrite added). A move *to* `transformed`
+    is listed with its rules elsewhere."""
+    if now == was or now == "transformed":
+        return False
+    if was in ("pass", "transformed"):
+        return now != "pass"
+    return now in SEMANTIC_BAD
+
+
 def worse(new, old):
     return RANK.get(new, 9) > RANK.get(old, 9)
 
@@ -383,19 +400,19 @@ def check(run, base, summary_md=None):
         # from the nightly configuration so far).
         for cat, was in (o.get("semantic") or {}).items():
             now = (n.get("semantic") or {}).get(cat)
-            if was == "pass" and now not in ("pass", "transformed", None):
-                semantic_changes.append(f"{fid}: semantic {cat} pass -> {now}")
-        # Report-only categories: a pass lost against the baseline, or —
-        # when the baseline predates them — any outcome that is not a
-        # pass or not applicable. Never enforced.
+            if now is not None and semantic_moved(was, now):
+                semantic_changes.append(f"{fid}: semantic {cat} {was} -> {now}")
+        # Report-only categories: the same, or — when the baseline
+        # predates them — any outcome that is not a pass or not
+        # applicable. Never enforced.
         old_report = o.get("semantic_report")
         for cat, now in (n.get("semantic_report") or {}).items():
             was = (old_report or {}).get(cat)
             if old_report is None or was is None:
                 if now not in ("pass", "not_applicable", "transformed"):
                     semantic_changes.append(f"{fid}: report-only semantic {cat}: {now} (no baseline)")
-            elif was == "pass" and now not in ("pass", "transformed"):
-                semantic_changes.append(f"{fid}: report-only semantic {cat} pass -> {now}")
+            elif semantic_moved(was, now):
+                semantic_changes.append(f"{fid}: report-only semantic {cat} {was} -> {now}")
         # A declared transformation is never a pass: every category that
         # is `transformed` and was not, or under other rules, is listed.
         old_rules = o.get("semantic_rules") or {}

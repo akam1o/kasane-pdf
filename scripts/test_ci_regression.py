@@ -339,6 +339,31 @@ class Gate(unittest.TestCase):
         rc, out = check(run(enf), cr.summarize(run(file("a", [NORMAL]))))
         self.assertIn("acroform unrecorded -> transformed", out)
 
+    def test_semantic_moves_into_failure_are_listed_from_any_class(self):
+        # Against a baseline that records a category, a move into fail,
+        # error or unsupported is listed whatever the class was (n/a ->
+        # fail: the rewrite added the structure), and a transformation
+        # lost is listed; nothing fails the gate.
+        def f(enforced, report, rules=None):
+            x = self.with_semantic(file("a", [NORMAL]), enforced)
+            x["roundtrip"]["semantic"]["report_only"] = [
+                dict({"category": c, "class": k}, **({"rules": rules} if k == "transformed" else {}))
+                for c, k in report.items()
+            ]
+            return x
+        base = cr.summarize(run(f({"acroform": "not_applicable"},
+                                  {"signatures": "not_applicable", "version": "transformed"},
+                                  ["T1 version raised"])))
+        rc, out = check(run(f({"acroform": "fail"}, {"signatures": "fail", "version": "fail"})), base)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("semantic acroform not_applicable -> fail", out)
+        self.assertIn("report-only semantic signatures not_applicable -> fail", out)
+        self.assertIn("report-only semantic version transformed -> fail", out)
+        # Unchanged, or n/a -> pass: nothing listed.
+        rc, out = check(run(f({"acroform": "pass"}, {"signatures": "not_applicable", "version": "transformed"},
+                              ["T1 version raised"])), base)
+        self.assertNotIn("semantic", out)
+
     def test_figures_by_config_are_separate_namespaces(self):
         def rt(full=True, sem="pass", structure="Pass", **extra):
             return dict(
