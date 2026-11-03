@@ -723,6 +723,12 @@ fn xfa_scripts_are_detected_under_any_prefix_and_never_kept() {
         reason(&b, P::RefuseScriptsAndExternal),
         Some(RefusalReason::Script)
     );
+    // In any ASCII case (an over-report: XML is case-sensitive).
+    let upper = xfa_doc(&[b"<x:SCRIPT/>"]);
+    assert_eq!(
+        reason(&upper, P::RefuseScriptsAndExternal),
+        Some(RefusalReason::Script)
+    );
     let out = run(&b, P::Profile).unwrap();
     assert_eq!(
         out.report().executable_content()[0].kind,
