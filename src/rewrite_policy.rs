@@ -405,7 +405,7 @@ pub enum UsageRight {
     Signature,
     /// `/EF`: embedded files.
     EmbeddedFiles,
-    /// Another key.
+    /// Another key (`/Type`, `/V` and the `/P` flag are not rights).
     Other,
 }
 

@@ -257,6 +257,80 @@ fn perms_shapes() {
     assert!(contains(out.bytes(), b"/K 1"));
 }
 
+/// The corpus shape as Acrobat writes it: the signature reference's
+/// `/Data` points at the catalog, `/Perms` is an object, the
+/// `/TransformParams` held only by the signature. The catalog stays (it
+/// is reached from the trailer); what only the signature holds goes.
+#[test]
+fn a_reference_data_entry_pointing_at_the_catalog() {
+    let ur3 = UR3
+        .replace("/Type /SigRef", "/Type /SigRef /Data 1 0 R")
+        .replace(
+            "/TransformParams << /Type /TransformParams /V /2.2 /Document [/FullSave] /Form \
+             [/FillIn /Import] /Annots [/Create] >>",
+            "/TransformParams 11 0 R",
+        );
+    assert!(ur3.contains("/Data 1 0 R") && ur3.contains("11 0 R"));
+    let b = pdf(
+        "/Perms 30 0 R /AcroForm << /Fields [20 0 R] /SigFlags 2 >>",
+        "/Annots [20 0 R]",
+        &[
+            (10, &ur3),
+            (11, "<< /Type /TransformParams /V /2.2 /Form [/FillIn] >>"),
+            (
+                20,
+                "<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /Rect [0 0 5 5] /P 3 0 R >>",
+            ),
+            (30, "<< /UR3 10 0 R >>"),
+        ],
+    );
+    let out = run(&b, &remove()).unwrap();
+    let UsageRightsOutcome::Removed(rm) = out.report().usage_rights() else {
+        panic!()
+    };
+    assert_eq!(
+        rm.output_check.objects_removed, 3,
+        "/UR3, its /TransformParams, /Perms"
+    );
+    assert_eq!(rm.output_check.pages, 1);
+    assert!(!contains(out.bytes(), b"/ByteRange") && !contains(out.bytes(), b"/Perms"));
+    // A held object shared with another structure stays (it is not a
+    // signature: the marker walk refuses any other).
+    let b = pdf(
+        "/Perms << /UR3 10 0 R >> /Keep 11 0 R",
+        "",
+        &[
+            (10, &ur3),
+            (11, "<< /Type /TransformParams /V /2.2 /Form [/FillIn] >>"),
+        ],
+    );
+    let out = run(&b, &remove()).unwrap();
+    let UsageRightsOutcome::Removed(rm) = out.report().usage_rights() else {
+        panic!()
+    };
+    assert_eq!(rm.output_check.objects_removed, 1, "only the signature");
+    let (d, cat) = out_catalog(out.bytes());
+    let keep = d.deref(cat.get(b"Keep".as_slice()).unwrap()).unwrap();
+    assert!(keep.as_dict().unwrap().contains_key(b"Form".as_slice()));
+}
+
+/// A stream's indirect `/Length` is not written (the rewrite writes
+/// the length directly); the check expects exactly that.
+#[test]
+fn an_indirect_stream_length() {
+    let b = pdf(
+        "/Perms << /UR3 10 0 R >>",
+        "/Contents 13 0 R",
+        &[
+            (10, UR3),
+            (13, "<< /Length 14 0 R >>\nstream\nq Q\nendstream"),
+            (14, "3"),
+        ],
+    );
+    let out = run(&b, &remove()).unwrap();
+    assert!(out.report().signatures_removed());
+}
+
 /// An incremental update after the signature: the input's revisions are
 /// counted, the output has one.
 #[test]

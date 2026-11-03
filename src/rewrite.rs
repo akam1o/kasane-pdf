@@ -186,36 +186,6 @@ pub(crate) fn rewrite_mapped(
     )
 }
 
-/// The objects [`rewrite`] writes (by input number and generation),
-/// without its refusals and without writing anything: what the
-/// usage-rights output check compares the edited rewrite with.
-pub(crate) fn collected(doc: &Document, limits: &Limits) -> Result<HashSet<(u32, u16)>, Error> {
-    let _budget = doc.decoded_budget_scope();
-    let overlay = HashMap::new();
-    let synth = HashSet::new();
-    let mut c = Collector {
-        doc,
-        overlay: &overlay,
-        synth_numbers: &synth,
-        limits,
-        map: HashMap::new(),
-        bodies: HashMap::new(),
-        kinds: HashMap::new(),
-        next_number: 1,
-        walked: 0,
-    };
-    let trailer = doc.trailer();
-    for (k, kind) in [
-        (b"Root".as_slice(), RootKind::Root),
-        (b"Info".as_slice(), RootKind::Info),
-    ] {
-        if let Some(r) = trailer.get(k).and_then(|o| o.as_ref()) {
-            c.walk(r, kind, 0, false)?;
-        }
-    }
-    Ok(c.map.into_keys().collect())
-}
-
 fn rewrite_core(
     doc: &Document,
     overlay: &HashMap<(u32, u16), Object>,

@@ -566,8 +566,11 @@ fn assess_inner(doc: &Document, limits: &Limits) -> Result<Option<Plan>, Error> 
     }
     let perms_at = perms_at.expect("targets come from /Perms");
 
-    // Sharing: each target, everything it holds, and /Perms itself are
-    // reachable only from where the removal deletes them.
+    // Sharing (§5.3 rule 3): each target is referenced only from /Perms,
+    // and /Perms only from the catalog. What a target holds may be
+    // shared (a reference's /Data names the catalog): it stays where
+    // something else reaches it, and it is not a signature — the walk
+    // above refuses any other signature-like dictionary.
     for t in &targets {
         if let Some(r) = t.object {
             if refs(&r) != 1 {
@@ -576,18 +579,6 @@ fn assess_inner(doc: &Document, limits: &Limits) -> Result<Option<Plan>, Error> 
                      structure",
                     t.key.label(),
                     refs(&r)
-                )));
-            }
-        }
-        for (r, n) in held_edges(doc, &t.dict, budget(limits))? {
-            // Every reference to it is one from inside the target; any
-            // other keeps it in the output.
-            if refs(&r) != n {
-                return Err(not_removable(format!(
-                    "object {} {} inside the {} signature is shared with another structure",
-                    r.number,
-                    r.generation,
-                    t.key.label()
                 )));
             }
         }
@@ -724,28 +715,74 @@ pub(crate) fn overlay(doc: &Document, plan: &Plan) -> Result<HashMap<(u32, u16),
     Ok(out)
 }
 
-/// The input objects the removal keeps out of the output: the target
-/// objects, what only they hold, and a dropped `/Perms` object.
-fn removed_objects(
+/// The input objects a rewrite writes — walked here on their own, with
+/// the writers' rules (from the trailer `/Root` and `/Info`; a chain
+/// read to its end; a stream's `/Length` not followed) — with the
+/// plan's cut applied when there is one: the catalog's, or the `/Perms`
+/// object's, removed entries (and an empty `/Perms`) are not followed.
+/// What the output check expects the edited rewrite to have written.
+fn written_objects(
     doc: &Document,
-    plan: &Plan,
+    plan: Option<&Plan>,
     limits: &Limits,
 ) -> Result<HashSet<(u32, u16)>, Error> {
-    let mut out = HashSet::new();
-    for t in &plan.targets {
-        if let Some(r) = t.object {
-            out.insert(key_of(r));
+    let budget = budget(limits);
+    let root = doc
+        .trailer()
+        .get(b"Root".as_slice())
+        .and_then(|o| o.as_ref());
+    let mut seen: HashSet<(u32, u16)> = HashSet::new();
+    let mut stack: Vec<Object> = Vec::new();
+    for k in [b"Root".as_slice(), b"Info".as_slice()] {
+        if let Some(Object::Ref(r)) = doc.trailer().get(k) {
+            stack.push(Object::Ref(*r));
         }
-        out.extend(
-            held_edges(doc, &t.dict, budget(limits))?
-                .into_keys()
-                .map(key_of),
-        );
     }
-    if let (PermsAt::Object(r), 0) = (plan.perms, plan.perms_left) {
-        out.insert(key_of(r));
+    let cut = |d: &mut Dict| {
+        if let Some(p) = plan {
+            for t in &p.targets {
+                d.remove(t.key.name());
+            }
+        }
+    };
+    let mut values = 0usize;
+    while let Some(o) = stack.pop() {
+        values += 1;
+        if values > budget {
+            return Err(over_budget(budget));
+        }
+        match o {
+            Object::Ref(r) => {
+                if !seen.insert(key_of(r)) {
+                    continue;
+                }
+                let mut v = doc.resolve(r).map_err(|e| object_unreadable(r, &e))?;
+                if let (Some(p), Object::Dict(d)) = (plan, &mut v) {
+                    if Some(r) == root {
+                        if p.perms_left == 0 {
+                            d.remove(b"Perms".as_slice());
+                        } else if p.perms == PermsAt::Catalog {
+                            if let Some(Object::Dict(pd)) = d.get_mut(b"Perms".as_slice()) {
+                                cut(pd);
+                            }
+                        }
+                    } else if p.perms == PermsAt::Object(r) {
+                        cut(d);
+                    }
+                }
+                stack.push(v);
+            }
+            Object::Array(a) => stack.extend(a.into_iter().filter(container)),
+            Object::Dict(d) => stack.extend(d.into_values().filter(container)),
+            Object::Stream { dict, .. } => stack.extend(
+                dict.into_iter()
+                    .filter(|(k, v)| k.as_slice() != b"Length" && container(v))
+                    .map(|(_, v)| v),
+            ),
+            _ => {}
+        }
     }
-    Ok(out)
+    Ok(seen)
 }
 
 fn residual(detail: impl std::fmt::Display) -> Error {
@@ -767,26 +804,40 @@ pub(crate) fn check_output(
     limits: &Limits,
 ) -> Result<OutputCheck, Error> {
     // Nothing removed but what the plan removes: the objects written are
-    // exactly what `rewrite` writes, less those.
-    let plain = crate::rewrite::collected(input, limits).map_err(|e| {
-        residual(format_args!(
-            "the input could not be collected ({})",
-            e.kind().as_str()
-        ))
-    })?;
-    let removed = match plan {
-        Some(p) => removed_objects(input, p, limits)?,
-        None => HashSet::new(),
+    // exactly what a rewrite writes once the declared entries are cut,
+    // walked here on its own; the signatures are not among them.
+    let collect = |p: Option<&Plan>| {
+        written_objects(input, p, limits).map_err(|e| {
+            residual(format_args!(
+                "the input could not be walked ({})",
+                e.kind().as_str()
+            ))
+        })
     };
-    let expected: HashSet<(u32, u16)> = plain.difference(&removed).copied().collect();
+    let expected = collect(plan)?;
     if &expected != written {
         return Err(residual(format_args!(
-            "{} object(s) missing and {} unexpected against the rewrite without the removal",
+            "{} object(s) missing and {} unexpected against the declared removal",
             expected.difference(written).count(),
             written.difference(&expected).count()
         )));
     }
-    let objects_removed = plain.intersection(&removed).count();
+    if let Some(p) = plan {
+        if let Some(t) = p
+            .targets
+            .iter()
+            .find(|t| t.object.is_some_and(|r| written.contains(&key_of(r))))
+        {
+            return Err(residual(format_args!(
+                "the {} signature object was written",
+                t.key.label()
+            )));
+        }
+    }
+    let objects_removed = match plan {
+        Some(_) => collect(None)?.difference(&expected).count(),
+        None => 0,
+    };
 
     let out = Document::from_bytes_with_limits(bytes, limits.clone()).map_err(|e| {
         residual(format_args!(
@@ -929,7 +980,8 @@ pub(crate) fn removal(
 }
 
 /// The right categories of `d`'s `/Reference` `/TransformParams` (keys;
-/// `/Type` and `/V` are not rights), sorted and deduplicated.
+/// `/Type`, `/V` and `/P` — the restrictive-permissions flag — are not
+/// rights), sorted and deduplicated.
 fn rights(doc: &Document, d: &Dict) -> Vec<UsageRight> {
     let mut out = Vec::new();
     let elems = match d.get(b"Reference".as_slice()).map(|r| deref_chain(doc, r)) {
@@ -948,7 +1000,7 @@ fn rights(doc: &Document, d: &Dict) -> Vec<UsageRight> {
         };
         for k in tp.keys() {
             out.push(match k.as_slice() {
-                b"Type" | b"V" => continue,
+                b"Type" | b"V" | b"P" => continue,
                 b"Document" => UsageRight::Document,
                 b"Msg" => UsageRight::Message,
                 b"Annots" => UsageRight::Annots,
@@ -1018,47 +1070,6 @@ fn check_target(doc: &Document, key: Key, d: &Dict) -> Result<(), Error> {
         }
     }
     Ok(())
-}
-
-/// The references inside `body`, through its references (each object
-/// once, chain links included, a stream's `/Length` skipped — the edges
-/// [`scan`] counts): how many there are to each object.
-fn held_edges(
-    doc: &Document,
-    body: &Dict,
-    budget: usize,
-) -> Result<HashMap<IndirectRef, u32>, Error> {
-    let mut edges: HashMap<IndirectRef, u32> = HashMap::new();
-    let mut stack: Vec<Object> = body.values().cloned().collect();
-    let mut values = stack.len();
-    while let Some(o) = stack.pop() {
-        let more: Vec<Object> = match o {
-            Object::Ref(r) => {
-                let n = edges.entry(r).or_default();
-                *n += 1;
-                if *n > 1 {
-                    continue;
-                }
-                vec![doc
-                    .resolve_one_hop(r)
-                    .map_err(|e| object_unreadable(r, &e))?]
-            }
-            Object::Array(a) => a,
-            Object::Dict(d) => d.into_values().collect(),
-            Object::Stream { dict, .. } => dict
-                .into_iter()
-                .filter(|(k, _)| k.as_slice() != b"Length")
-                .map(|(_, v)| v)
-                .collect(),
-            _ => continue,
-        };
-        values += more.len();
-        if values > budget {
-            return Err(over_budget(budget));
-        }
-        stack.extend(more.into_iter().filter(container));
-    }
-    Ok(edges)
 }
 
 /// Longest key [`describe`] shows, in bytes.
@@ -1295,17 +1306,19 @@ mod tests {
             &[(10, UR3), (40, "<< /T (s) /V 10 0 R >>")],
         );
         assert_eq!(rule(plan(&d)), NotRemovable);
-        // Something the /UR3 holds is referenced elsewhere.
+        // Something the /UR3 holds is referenced elsewhere too: it stays
+        // there (§5.3 rule 3 is about the signature itself), as does the
+        // catalog a reference's /Data names.
         let held = UR3.replace(
             "/TransformParams << /Type /TransformParams /Form [/FillIn] /V /2.2 >>",
-            "/TransformParams 12 0 R",
+            "/TransformParams 12 0 R /Data 1 0 R",
         );
         let d = doc(
             "/Perms << /UR3 10 0 R >> /X 12 0 R",
             "",
             &[(10, &held), (12, "<< /Type /TransformParams /V /2.2 >>")],
         );
-        assert_eq!(rule(plan(&d)), NotRemovable);
+        assert!(plan(&d).unwrap().is_some(), "a held object shared");
         let d = doc(
             "/Perms << /UR3 10 0 R >>",
             "",
