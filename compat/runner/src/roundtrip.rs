@@ -248,6 +248,13 @@ pub struct RoundTrip {
     /// refused rewrite is *not* a full round trip).
     #[serde(default)]
     pub full: bool,
+    /// Under a structural declaration (T2) only: whether the graph
+    /// differences are exactly the declared ones, and `full` read with
+    /// them explained. Absent otherwise (every default run).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub structure_declared: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_declared: Option<bool>,
     #[serde(default)]
     pub total_ms: u128,
 }
@@ -499,6 +506,7 @@ pub fn run(
     rewrite_ms: u128,
     opts: &RtOptions,
     tag: &str,
+    decls: &[crate::semantic::transform::Declaration],
 ) -> RoundTrip {
     let start = Instant::now();
     let mut rt = RoundTrip {
@@ -524,8 +532,11 @@ pub fn run(
         }
     };
 
-    let mut semantic = crate::semantic::compare(doc, &doc2);
-    semantic.report_only = crate::semantic::compare_report(doc, orig, &doc2, out);
+    // Transformations the rewrite makes on purpose, declared by the
+    // caller from the runner's own reading of the input
+    // (`configs::RewriteConfig::declarations`).
+    let mut semantic = crate::semantic::compare_declared(doc, &doc2, decls);
+    semantic.report_only = crate::semantic::compare_report_declared(doc, orig, &doc2, out, decls);
     rt.semantic = Some(semantic);
     let t = Instant::now();
     let diffs = graph_diff(doc, &doc2);
@@ -539,6 +550,18 @@ pub fn run(
     } else {
         doc2
     };
+    // A structural declaration (T2) can explain graph differences; the
+    // check itself stays `fail` (a transformation is never a pass), and
+    // `full_declared` records the round trip read with it.
+    let structural = decls.iter().any(|d| {
+        matches!(
+            d,
+            crate::semantic::transform::Declaration::UsageRightsRemoved { .. }
+        )
+    });
+    if structural {
+        rt.structure_declared = Some(crate::semantic::transform::structure_allows(&diffs, decls));
+    }
     rt.structure = if diffs.is_empty() {
         RtCheck::pass(t.elapsed().as_millis())
     } else {
@@ -575,16 +598,17 @@ pub fn run(
     rt.qpdf = qpdf(out, tag);
     rt.qpdf_original = qpdf(orig, &format!("{tag}-orig"));
     external_checks(&mut rt);
-    rt.full = [
+    let others_pass = [
         &rt.rewrite,
         &rt.reparse,
-        &rt.structure,
         &rt.render,
         &rt.text,
         &rt.annotations,
     ]
     .iter()
-    .all(|c| matches!(c.class, RtClass::Pass | RtClass::NotApplicable))
+    .all(|c| matches!(c.class, RtClass::Pass | RtClass::NotApplicable));
+    rt.full = others_pass
+        && matches!(rt.structure.class, RtClass::Pass | RtClass::NotApplicable)
         && rt.rewrite.class == RtClass::Pass
         && rt.pages.skipped_pages == 0
         && rt.external_no_new.class != RtClass::Fail
@@ -593,6 +617,23 @@ pub fn run(
             .as_ref()
             .map(|p| p.first_divergent_page.is_none() && p.size_mismatch_pages == 0)
             .unwrap_or(true);
+    if rt.structure_declared.is_some() {
+        // The same conditions, with the structure explained by the
+        // declaration instead of equal.
+        let rest = rt.pages.skipped_pages == 0
+            && rt.external_no_new.class != RtClass::Fail
+            && rt
+                .poppler
+                .as_ref()
+                .map(|p| p.first_divergent_page.is_none() && p.size_mismatch_pages == 0)
+                .unwrap_or(true);
+        rt.full_declared = Some(
+            others_pass
+                && rt.rewrite.class == RtClass::Pass
+                && rest
+                && rt.structure_declared == Some(true),
+        );
+    }
     rt.total_ms = start.elapsed().as_millis();
     rt
 }

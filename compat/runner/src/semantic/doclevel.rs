@@ -13,7 +13,7 @@
 use super::*;
 
 /// Decoded content of a stream compared by content.
-enum Decoded {
+pub(super) enum Decoded {
     Bytes(Vec<u8>),
     /// Filtered data that does not decode: its raw digest, so a verbatim
     /// copy still compares equal and any other change does not.
@@ -28,6 +28,7 @@ impl<'a> Ctx<'a> {
     ) -> Res<Option<Vec<String>>> {
         self.truncated = false;
         self.doclevel = true;
+        self.action_ids.clear();
         let r = f(self);
         self.doclevel = false;
         let r = r?;
@@ -77,7 +78,7 @@ impl<'a> Ctx<'a> {
     /// (abbreviations included, as the engine accepts them) — every XFA,
     /// XMP and script stream in the corpus; another filter or a predictor
     /// is `unsupported` rather than compared encoded.
-    fn decode(&mut self, what: &str, dict: &Dict, data: &[u8]) -> Res<Decoded> {
+    pub(super) fn decode(&mut self, what: &str, dict: &Dict, data: &[u8]) -> Res<Decoded> {
         let unsupported = |m: String| Err(Snag::Unsupported(format!("{what}: {m}")));
         let filters: Vec<Vec<u8>> = match dict
             .get(b"Filter".as_slice())
@@ -202,18 +203,37 @@ impl<'a> Ctx<'a> {
     /// one-element array are the same (§12.6.2). A reference back onto
     /// the chain is named by the position it returns to; nesting past
     /// `MAX_ACTION_DEPTH` is `error`.
-    fn chain(&mut self, o: &Object, depth: usize, path: &mut Vec<IndirectRef>) -> Res<String> {
+    pub(super) fn chain(
+        &mut self,
+        o: &Object,
+        depth: usize,
+        path: &mut Vec<IndirectRef>,
+    ) -> Res<String> {
         if depth > MAX_ACTION_DEPTH {
             return err("action chain deeper than the limit");
         }
         let r = o.as_ref();
+        let mut id = String::new();
         if let Some(r) = r {
             if let Some(k) = path.iter().position(|p| *p == r) {
                 return Ok(format!("<cycle@{k}>"));
             }
+            // Sharing: an action object met before in this category is
+            // named by its first-visit position, not expanded again.
+            if let Some(n) = self.action_ids.get(&r) {
+                return Ok(format!("{{=#{n}}}"));
+            }
+            let n = self.action_ids.len();
+            self.action_ids.insert(r, n);
+            id = format!("#{n} ");
             path.push(r);
         }
-        let s = self.chain_body(o, depth, path);
+        let s = self
+            .chain_body(o, depth, path)
+            .map(|s| match s.strip_prefix('{') {
+                Some(rest) if !id.is_empty() => format!("{{{id}{rest}"),
+                _ => s,
+            });
         if r.is_some() {
             path.pop();
         }
@@ -273,6 +293,24 @@ impl<'a> Ctx<'a> {
             other => out.push(format!("{head}\tmalformed={}", self.canon0(&other)?)),
         }
         Ok(())
+    }
+
+    /// `chain` with the document-level rules, from a category that does
+    /// not use them otherwise (outlines): a value cut at the depth limit
+    /// is an error, not a shortened line.
+    pub(super) fn strict_chain(&mut self, o: &Object) -> Res<String> {
+        let (doclevel, truncated) = (self.doclevel, self.truncated);
+        self.doclevel = true;
+        self.truncated = false;
+        let r = self.chain(o, 0, &mut Vec::new());
+        let cut = self.truncated;
+        self.doclevel = doclevel;
+        self.truncated = truncated;
+        let s = r?;
+        if cut {
+            return err("an action value is nested deeper than the limit");
+        }
+        Ok(s)
     }
 
     // ---------------- XFA ----------------

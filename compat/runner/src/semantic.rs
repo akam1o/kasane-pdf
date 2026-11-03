@@ -32,7 +32,21 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
-pub use pdf20::compare_report;
+pub use pdf20::compare_report_declared;
+#[cfg(test)]
+pub use v4::ActionClass;
+pub use v4::InventoryItem;
+
+/// The action inventory of `doc` (`v4.rs`): every action reachable from
+/// its owners, by class, owner and chain position — what the D2 report
+/// is checked against. Content-free.
+pub fn inventory(doc: &Document) -> Result<Vec<InventoryItem>, String> {
+    let mut ctx = Ctx::new(doc);
+    ctx.doclevel = true;
+    ctx.inventory().map_err(|e| match e {
+        Snag::Unsupported(m) | Snag::Error(m) => m,
+    })
+}
 
 /// The document-level categories come last: they share the node budget,
 /// and the earlier categories' results must not depend on them.
@@ -72,6 +86,9 @@ const MAX_LINE_BYTES: usize = 1 << 20;
 #[serde(rename_all = "snake_case")]
 pub enum SemClass {
     Pass,
+    /// Every difference is a transformation the run declared
+    /// (`transform.rs`); reported, never counted as `pass`.
+    Transformed,
     Fail,
     Unsupported,
     #[default]
@@ -87,6 +104,9 @@ pub struct SemCheck {
     pub items: usize,
     #[serde(default)]
     pub notes: Vec<String>,
+    /// The declared rules that explain a `transformed` category.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -158,18 +178,33 @@ pub fn snapshot(doc: &Document) -> Vec<Section> {
 
 /// Compare the snapshots of an original and its rewrite.
 pub fn compare(a: &Document, b: &Document) -> SemanticRoundTrip {
+    compare_declared(a, b, &[])
+}
+
+/// [`compare`] with the run's declared transformations (`transform.rs`);
+/// with none, exactly the plain comparison.
+pub fn compare_declared(
+    a: &Document,
+    b: &Document,
+    decls: &[transform::Declaration],
+) -> SemanticRoundTrip {
     let t = Instant::now();
     let (sa, sb) = (snapshot(a), snapshot(b));
     let checks: Vec<SemCheck> = CATEGORIES
         .iter()
         .zip(sa.iter().zip(sb.iter()))
-        .map(|(c, (x, y))| compare_section(c, x, y))
+        .map(|(c, (x, y))| {
+            let mut check = compare_section(c, x, y);
+            transform::classify(&mut check, x, y, decls);
+            check
+        })
         .collect();
     let has = |k: SemClass| checks.iter().any(|c| c.class == k);
     let class = [
         SemClass::Fail,
         SemClass::Error,
         SemClass::Unsupported,
+        SemClass::Transformed,
         SemClass::Pass,
     ]
     .into_iter()
@@ -210,6 +245,7 @@ fn compare_section(category: &str, a: &Section, b: &Section) -> SemCheck {
         class,
         items,
         notes,
+        rules: Vec::new(),
     }
 }
 
@@ -394,6 +430,10 @@ struct Ctx<'a> {
     struct_paths: HashMap<IndirectRef, String>,
     /// A document-level category is being taken.
     doclevel: bool,
+    /// Action objects met in the current category, by first-visit
+    /// position: an action reached again is named by that position, so
+    /// sharing is compared and a shared chain is not expanded twice.
+    action_ids: HashMap<IndirectRef, usize>,
 }
 
 impl<'a> Ctx<'a> {
@@ -414,6 +454,7 @@ impl<'a> Ctx<'a> {
             decoded: 0,
             struct_paths: HashMap::new(),
             doclevel: false,
+            action_ids: HashMap::new(),
         };
         for (i, p) in doc.pages().iter().enumerate() {
             let Some(r) = p.object_ref() else { continue };
@@ -691,44 +732,8 @@ impl<'a> Ctx<'a> {
 
     /// An action (and its `/Next` chain): GoTo actions by their
     /// destination, others by their dictionary.
-    fn action(&mut self, o: &Object, depth: usize) -> Res<String> {
-        if depth > 8 {
-            return Ok("…".into());
-        }
-        let Some(d) = self.dict(o)? else {
-            return Ok("malformed".into());
-        };
-        let s = d.get(b"S".as_slice()).and_then(name).unwrap_or_default();
-        let mut out = match s.as_str() {
-            "GoTo" => format!(
-                "GoTo {}",
-                match d.get(b"D".as_slice()) {
-                    Some(x) => self.dest(x, 0)?,
-                    None => "none".into(),
-                }
-            ),
-            _ => {
-                let mut rest = d.clone();
-                rest.remove(b"Next".as_slice());
-                self.canon_dict(&rest, 0, &mut Vec::new())?
-            }
-        };
-        if let Some(n) = d.get(b"Next".as_slice()) {
-            let items = match self.get(n)? {
-                Object::Array(a) => a,
-                _ => vec![n.clone()],
-            };
-            for it in items {
-                out.push_str(" → ");
-                out.push_str(&self.action(&it, depth + 1)?);
-            }
-        }
-        Ok(out)
-    }
-
-    // ---------------- outlines ----------------
-
     fn outlines(&mut self) -> Res<Option<Vec<String>>> {
+        self.action_ids.clear();
         let Some(root) = self.doc.catalog().get(b"Outlines".as_slice()).cloned() else {
             return Ok(None);
         };
@@ -792,7 +797,7 @@ impl<'a> Ctx<'a> {
             };
             let target = match (d.get(b"Dest".as_slice()), d.get(b"A".as_slice())) {
                 (Some(x), _) => format!("dest {}", self.dest(x, 0)?),
-                (None, Some(a)) => format!("action {}", self.action(a, 0)?),
+                (None, Some(a)) => format!("action {}", self.strict_chain(a)?),
                 (None, None) => "none".into(),
             };
             let style = format!(
@@ -1960,6 +1965,8 @@ pub fn probe(files: &[std::path::PathBuf]) {
 mod doclevel;
 mod pdf20;
 mod probe_doclevel;
+pub mod transform;
+mod v4;
 
 #[cfg(test)]
 mod tests;
@@ -1967,3 +1974,5 @@ mod tests;
 mod tests_doclevel;
 #[cfg(test)]
 mod tests_pdf20;
+#[cfg(test)]
+mod tests_v4;

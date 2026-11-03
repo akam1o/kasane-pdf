@@ -9,22 +9,22 @@
 use super::pdf20::{compare_report, snapshot_report, REPORT_ONLY};
 use super::*;
 
-enum Body {
+pub(super) enum Body {
     Dict(String),
     Stream(String, Vec<u8>),
     /// An xref entry that points at bytes which are not this object.
     Broken,
 }
 
-fn d(s: &str) -> Body {
+pub(super) fn d(s: &str) -> Body {
     Body::Dict(s.into())
 }
 
-fn st(dict: &str, data: &[u8]) -> Body {
+pub(super) fn st(dict: &str, data: &[u8]) -> Body {
     Body::Stream(dict.into(), data.to_vec())
 }
 
-fn flate(dict: &str, data: &[u8]) -> Body {
+pub(super) fn flate(dict: &str, data: &[u8]) -> Body {
     let z = miniz_oxide::deflate::compress_to_vec_zlib(data, 6);
     Body::Stream(format!("{dict} /Filter /FlateDecode"), z)
 }
@@ -61,7 +61,7 @@ fn shift_refs(s: &str, off: u32) -> String {
 
 /// Serialise with header `%PDF-{header}`; object 1 is the catalog; `off`
 /// renumbers every object.
-fn pdf(header: &str, objs: &[(u32, Body)], off: u32) -> Vec<u8> {
+pub(super) fn pdf(header: &str, objs: &[(u32, Body)], off: u32) -> Vec<u8> {
     let mut out = format!("%PDF-{header}\n").into_bytes();
     let mut offs: Vec<(u32, usize)> = Vec::new();
     let mut broken = Vec::new();
@@ -466,12 +466,19 @@ fn base_off(v: V, off: u32) -> Vec<u8> {
     pdf(header, &objs, off)
 }
 
-fn doc(b: &[u8]) -> Document {
+pub(super) fn doc(b: &[u8]) -> Document {
     Document::from_bytes(b).unwrap()
 }
 
+/// The four PDF 2.0 categories of the report-only comparison (the V4
+/// ones have their own tests).
+const PDF20: [&str; 4] = ["version", "page_metadata", "associated_files", "dparts"];
+
 fn report(a: &[u8], b: &[u8]) -> Vec<SemCheck> {
     compare_report(&doc(a), a, &doc(b), b)
+        .into_iter()
+        .filter(|c| PDF20.contains(&c.category.as_str()))
+        .collect()
 }
 
 fn lines(b: &[u8], cat: &str) -> Vec<String> {

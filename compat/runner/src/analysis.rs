@@ -1102,6 +1102,8 @@ mod tests {
             roundtrip: None,
             incremental: StageResult::not_run(),
             profile: crate::profile::Profile::default(),
+            rewrite_refusal: None,
+            rewrite_options: Default::default(),
         }
     }
 
