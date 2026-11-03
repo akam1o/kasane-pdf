@@ -32,8 +32,9 @@ open decisions of the plan. The design is
   - they must be reachable only from `/Perms`;
   - no other signature-like dictionary may exist anywhere in the
     reachable graph (`/ByteRange`, `/Type /Sig` or `/DocTimeStamp`,
-    signature handler names, transform references; `/FT /Sig` is not
-    required).
+    `/Contents` with any `/Filter` or `/SubFilter`, transform
+    references; `/FT /Sig` is not required, and no handler-name list
+    decides).
 
   DocMDP, approval and timestamp signatures, XFA XML signatures,
   `/DSS` and `/Legal` refuse. The engine never verifies, never

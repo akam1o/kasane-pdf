@@ -55,9 +55,13 @@ and **carries without any report**:
 So the default rewrite's executable-content profile is
 *document-level entry points refused, everything else carried
 silently*, and its signature profile is *the declared entry points
-refused*. D2 and D1 must not change that default, but the new API
-reports what the default carries, and both phases close the signature
-gaps (§5.3), as a refusal under every policy.
+refused*. D2 and D1 must not change that default: `rewrite` and
+`rewrite_with(default)` keep exactly today's bytes and errors. The new
+API reports what the default carries. The signature gaps are closed
+for `Remove` (§5.3: its walker runs only under that policy). Whether
+the default should refuse stray signature-like dictionaries too is
+open decision 7: it would change `rewrite`'s results, so it is not
+part of this design.
 
 ## 2. Public API
 
@@ -234,15 +238,28 @@ Actions are classified by effect, not by "is it JavaScript":
 
 | class | members (ISO 32000-2 §12.6.4, §12.6.3, §13) | effect when the file is viewed |
 |---|---|---|
-| **Script** | `/S /JavaScript` actions anywhere; `/Names /JavaScript`; field `/AA` `/K` `/F` `/V` `/C` scripts; XFA script content (`<script>` in template packets) | runs code in the viewer |
+| **Script** | `/S /JavaScript` actions anywhere; `/Names /JavaScript`; field `/AA` `/K` `/F` `/V` `/C` scripts; XFA script content (below) | runs code in the viewer |
 | **External** | `Launch`, `URI`, `GoToR`, `GoToE`, `SubmitForm`, `ImportData`; `/URI` base | opens files or applications, network access, sends form data |
 | **State** | `ResetForm`, `Hide`, `SetOCGState`, `Trans`, `Named` (other than page navigation) | changes the document's state in the viewer |
-| **Navigation** | `GoTo`, `Thread`, `Named` `NextPage`/`PrevPage`/`FirstPage`/`LastPage`, `GoTo3DView` | moves the view |
+| **Navigation** | `GoTo`, `GoToDp` (PDF 2.0), `Thread`, `Named` `NextPage`/`PrevPage`/`FirstPage`/`LastPage`, `GoTo3DView` | moves the view |
 | **Multimedia** | `Rendition`, `Movie`, `Sound`, `RichMediaExecute`; annotations `/RichMedia`, `/Screen`, `/Movie`, `/Sound`, `/3D`; catalog `/RichMedia` | plays media, may embed active content (Flash, 3D JavaScript) |
 | **Unknown** | an `/S` not in the tables of ISO 32000-2, a missing `/S` | refused under `RefuseScriptsAndExternal` and `Carry`; carried and reported under `Profile` (as today) |
 
+XFA scripts are detected on the text that W3's signature check already
+produces: packets decoded, read completely (UTF-8/UTF-16, no DTD,
+declarations checked), and character references expanded. A script is
+an element whose local name is `script`, under any prefix: `<`, an
+optional `NCName:`, `script`, then white space, `>` or `/`. The packets
+are checked together, as one document. A packet that cannot be read
+completely is refused, as in W3; under `RefuseScriptsAndExternal` an
+ambiguous match refuses. A FormCalc `<script contentType=…>` is a
+script too.
+
 Owners (where an action or trigger lives):
-- catalog `/OpenAction`, catalog `/AA` (document triggers);
+- catalog `/OpenAction` (a dictionary, or an array of action
+  dictionaries, which is non-standard but seen: each member reported),
+  catalog `/AA` (document triggers), catalog `/URI` (a base URI,
+  External);
 - page `/AA`;
 - annotation `/A`, annotation `/AA`;
 - field `/AA` (including non-widget field nodes);
@@ -252,6 +269,11 @@ Owners (where an action or trigger lives):
 - XFA packets (scripts);
 - multimedia annotations and the catalog `/RichMedia`.
 
+Not owners: `/Threads` and `/PresSteps` hold beads and navigation nodes
+(destinations), not actions. `/AA` on a form XObject is not a PDF
+structure (Table 95 has none); an `/AA` key there is carried like any
+unknown key and not classified.
+
 ### 3.2 Policies
 
 | class | `Profile` (default) | `RefuseScriptsAndExternal` | `Carry` |
@@ -260,7 +282,8 @@ Owners (where an action or trigger lives):
 | Script below document level, or through `/Next` | carry, report | refuse | carry |
 | External | carry, report | refuse | carry |
 | State, Navigation | carry, report | carry, report | carry |
-| Multimedia | `MultimediaPolicy` | `MultimediaPolicy` | `MultimediaPolicy` |
+| Multimedia actions (Rendition, Movie, Sound, RichMediaExecute) and page-level multimedia annotations | carry, report | carry, report | carry, report |
+| catalog `/RichMedia` | `MultimediaPolicy` (`Refuse`) | `MultimediaPolicy` | `MultimediaPolicy` |
 | Unknown | carry, report | refuse | refuse |
 | XFA scripts | carry, report (W3) | refuse | carry |
 
@@ -273,7 +296,9 @@ The defaults:
   by `Profile`, as today: the default must not change.
 
 *Carry* is the identity on the action subgraph:
-- no key is added, removed or reordered;
+- no key is added, removed or changed. Keys are written in sorted
+  order, as every rewrite does (dictionaries are ordered maps), which
+  is not a semantic difference;
 - script strings and streams are copied byte-for-byte (the collector
   already does this);
 - `/Next` order and sharing are kept, references renumbered.
@@ -296,7 +321,8 @@ pub struct ExecutableItem {
     pub output_object: Option<IndirectRef>,
     pub script_bytes: Option<u64>,    // length of a script string or decoded stream; never the text
     pub shared_with: Option<usize>,   // index of the first item with the same action object
-    pub disposition: Disposition,     // Carried (always byte-identical) | Refused (only in errors' detail)
+    // No disposition field: a report exists only for a rewrite that
+    // succeeded, so every listed item was carried; a refusal is an Err.
 }
 ```
 
@@ -305,9 +331,13 @@ pub struct ExecutableItem {
   finally sees what is being carried.
 - A refusal names the class, kind and owner in `Error::Unsupported`'s
   `detail`. The detail stays content-free.
-- Bounded: the walk is limited by `max_rewrite_walk_depth` and a new
-  `max_report_items` (default 100 000). Past it, the rewrite is
-  refused with `LimitExceeded`, never a truncated report.
+- Bounded without a new limit: an item is one action object or one
+  owner entry, so the report is at most a small constant times the
+  number of written objects. That number is already bounded by
+  `max_output_objects` and `max_rewrite_walk_depth`, which every
+  rewrite enforces. A separate report cap would make `rewrite_with(default)`
+  fail where `rewrite` succeeds, so there is none. The report is never
+  truncated.
 
 ### 3.4 `/RichMedia` and multimedia
 
@@ -339,8 +369,9 @@ before D2 is measured (V4):
 3. **The report against the snapshot.** The runner derives its own
    action inventory from the snapshot lines (class by `/S`) and
    compares it with `RewriteReport::executable_content` (counts per
-   class and owner). A disagreement is `error`, so a report gap is
-   caught by an independent reader.
+   class and owner). A disagreement is `error`. Both sides use the
+   library's parser, so the corpus acceptance adds a pypdf inventory
+   of actions for the D2 gains.
 
 Already verified by the existing categories:
 - action type and every key;
@@ -385,8 +416,15 @@ that reason.
 **Removed:** the `/UR` and `/UR3` entries of `/Perms`, and `/Perms`
 itself when nothing else is left in it. Through the rewrite's
 reachability, the signature dictionaries they named are then not
-written. Nothing else is modified: `/SigFlags`, `/AcroForm`, form
-fields and every other object are carried as they are.
+written.
+
+`/AcroForm /SigFlags` stays consistent with what remains (the D1
+acceptance in v0.5.0.md §4). Bit 1 (SignaturesExist) is cleared when it
+is set, because after the removal no signature remains (the walker has
+established that). Bit 2 (AppendOnly) is carried and reported.
+Clearing bit 1 is part of the declared D1 change (§5.7). Nothing else
+is modified: `/AcroForm`, form fields and every other object are
+carried as they are.
 
 **Remains:** the output must contain no usage-rights signature. That
 is checked on the *output* independently (§5.4), not inferred from the
@@ -401,9 +439,14 @@ establish refuses.
    signature dictionary:
    - `/Type /Sig` or absent;
    - `/Filter` and `/Contents` present;
-   - `/Reference` an array whose every element has `/TransformMethod`
-     `/UR` or `/UR3`;
-   - no `/TransformMethod /DocMDP` or `/FieldMDP` among them.
+   - `/Reference` a non-empty array whose every element has an explicit
+     `/TransformMethod /UR3` (for `/Perms /UR3`) or `/UR` or `/UR3`
+     (for `/Perms /UR`: `/UR` is the PDF 1.5 name, and 1.6+ writers use
+     `/UR3` under either key);
+   - an element without `/TransformMethod` means `/DocMDP` (§12.8.2.3,
+     Table 257) and refuses; so do an absent, empty or non-array
+     `/Reference` (a usage-rights claim cannot be established) and any
+     `/DocMDP` or `/FieldMDP` element.
 
    Anything else (`UsageRightsNotRemovable`) refuses.
 2. **No other signature.** A walk over the input's reachable graph,
@@ -413,9 +456,11 @@ establish refuses.
    than the removal targets. Signature-like means any of:
    - `/ByteRange` present;
    - `/Type /Sig` or `/Type /DocTimeStamp`;
-   - `/Contents` together with `/Filter` or `/SubFilter` naming a
-     signature handler or sub-filter (`adbe.*`, `ETSI.*`,
-     `Adobe.PPK*`, …);
+   - `/Contents` together with `/Filter` or `/SubFilter`, whatever
+     their values. Handler names are open-ended (vendor handlers,
+     private sub-filters), so no name list decides. A stream has
+     `/Filter` but never `/Contents`; an annotation with `/Contents`
+     and a stray `/Filter` refuses, which is conservative;
    - a `/Reference` containing `/TransformMethod`;
    - `/Cert` together with `/Contents`.
 
@@ -429,9 +474,14 @@ establish refuses.
 4. **Security stores.** `/DSS` or `/Legal` in the catalog refuses
    (`SecurityStore`, §5.6).
 5. **Field signatures, field locks.** `/FT /Sig` fields with `/V`
-   refuse (as today), and so do `/Lock` or `/SV` dictionaries naming
-   a `/FieldMDP` (a seed value for future signing is carried when no
-   signature value exists: §9, an open decision).
+   refuse (as today). A signature field carrying `/Lock` (Table 233)
+   refuses. `/SV` seed values on an unsigned field (which may nest a
+   `/Lock`) are open decision 2: recommended carry and report. `/FieldMDP`
+   is a transform method in a signature's `/Reference`, covered by
+   rule 1 and by the marker walk.
+5a. **Shared `/Perms`.** If the `/Perms` dictionary object is also
+   reachable from anywhere but the catalog, refuse: editing it would
+   change the other referrer's view.
 6. **XFA XML signatures** refuse (as today, W3).
 7. **Incremental history.** A document with earlier revisions is read
    at its latest state (as every rewrite). A usage-rights or other
@@ -459,9 +509,14 @@ After the bytes are produced and before they are returned:
 4. Any failure is `SignaturePolicy { rule: ResidualSignature }`, and
    no bytes are returned.
 
-The check is on the bytes the caller receives, with a reader that does
-not share the collector's state, so a collector bug cannot hide a
-residual signature.
+The check is on the bytes the caller receives: a separate walker over a
+fresh parse, so a collector bug cannot hide a residual signature. It
+shares the library's parser, so a parser blind spot could hide a
+marker from both the input and the output check. Third-party readers
+compensate in the acceptance (§10): for every D1 gain, the runner
+re-reads the output with qpdf (`--check`, and a JSON object dump
+searched for `/ByteRange`, `/Type /Sig`, `/DocTimeStamp` and
+`/TransformMethod`). The corpus acceptance does the same with pypdf.
 
 ### 5.5 Report — `UsageRightsOutcome`
 
@@ -481,7 +536,7 @@ pub enum UsageRightsOutcome {
 pub struct UsageRightsRemoval {
     pub entries: Vec<RemovedSignature>,    // one per /UR, /UR3
     pub perms_removed: bool,               // /Perms dropped (it held nothing else)
-    pub sig_flags_kept: Option<i64>,       // /AcroForm /SigFlags carried unchanged
+    pub sig_flags: Option<SigFlagsChange>, // before / after: bit 1 cleared when set, bit 2 kept
     pub input_revisions: u32,
     pub output_check: OutputCheck,         // what §5.4 verified (counts)
 }
@@ -549,7 +604,11 @@ This is §6's mechanism, with a new snapshot category:
   - nothing in any category may appear;
   - nothing else may disappear or change;
   - the `structure` (graph) comparison may report exactly `/Root/Perms`
-    dropped or `/Root/Perms/UR3` dropped, and nothing else;
+    dropped, or `/Root/Perms/UR3` or `/Root/Perms/UR` dropped, and —
+    when bit 1 was set — `/Root/AcroForm/SigFlags` changed with only
+    bit 1 cleared; nothing else;
+  - in `acroform`, only the `sig_flags` line may change, and only by
+    bit 1;
   - the runner checks its own inventory against
     `RewriteReport::usage_rights`.
 
@@ -700,7 +759,7 @@ whatever non-policy work adds. Planned figures:
 
 | threat | where | defence | residual risk |
 |---|---|---|---|
-| signature not seen (missed refusal) | D1 | signature-like rule over the whole reachable graph (not `/FT /Sig`); `deref_chain` for compressed values; fail closed on limits, unreadable objects, incomplete walks; independent output check | a signature format with none of the markers (§5.3.2). Mitigation: the marker list is broad, `/Contents` + handler names, reviewed |
+| signature not seen (missed refusal) | D1 | signature-like rule over the whole reachable graph (not `/FT /Sig`, no handler-name list); `deref_chain` for compressed values; fail closed on limits, unreadable objects, incomplete walks; output check on a fresh parse; third-party re-read in the acceptance | a signature with none of the structural markers (`/ByteRange`, `/Type /Sig` or `/DocTimeStamp`, `/Contents` with `/Filter` or `/SubFilter`, `/Reference` with `/TransformMethod`, `/Cert` with `/Contents`) is not a PDF signature by ISO 32000 |
 | signature removed that was not a usage-rights one | D1 | targets must carry `/TransformMethod /UR*` only, and be reachable only from `/Perms`; DocMDP, `/FieldMDP`, `/DSS`, `/Legal` refuse | none known |
 | the user does not notice removal | D1 | `UsageRightsOutcome::Removed` in the return type, `#[must_use]` output, option name | a caller ignoring the report entirely |
 | a script carried unexpectedly | D2 | `Carry` only by explicit option; `Profile` reports what it carries; `RefuseScriptsAndExternal` for callers who need none | `Profile` carries below-catalog scripts as 0.4 did (documented, reported) |
@@ -710,6 +769,8 @@ whatever non-policy work adds. Planned figures:
 | semantic snapshot misses a change | both | categories by decoded content; rule near-miss tests; `fuzz` oracle on graph equality | structures listed as not covered (semantic-roundtrip.md) |
 | CPU or memory DoS (huge scripts, many actions, deep `/Next`, huge XFA) | both | existing limits (`max_stream_bytes`, decode budget, `max_rewrite_walk_depth`, output limits); new `max_report_items`; the residual walk shares the audit's bounded BFS | — |
 | stack overflow | both | every walk iterative or depth-bounded (512 rewrite walk, 32 action chain in the snapshot) | — |
+| signatures inside embedded files (a signed PDF in an `/EF` stream) | D1 | carried byte for byte, so the embedded signature's own byte range is untouched; not inspected (documented) | none for integrity; it is not reported |
+| a `/Perms` dictionary shared with another owner | D1 | refuse (§5.3 rule 5a) | — |
 | information exposure through reports or errors | both | reports and errors positional and content-free (§2.3) | object numbers point to content in the output; the output is the caller's anyway |
 
 **Safety boundaries:**
@@ -736,8 +797,12 @@ is one test, run under every policy where the outcome differs.
 | undefined action reference | each | null kept (W1) | none for it | pass |
 | unreadable action object | each | refuse | — | — |
 | `/S` unknown, `/S` missing | each | carry (Profile), refuse (RefuseSE, Carry) | Unknown | — |
-| 1 MiB script, 100 000 actions | Carry | carry within time; `max_report_items` 1 000 → `LimitExceeded` | lengths | — |
+| 1 MiB script, 100 000 actions | Carry | carry within time | lengths | — |
 | catalog `/RichMedia` | Carry | refuse (MultimediaPolicy) | — | — |
+| `GoToDp` action | Carry | carry (Navigation) | Navigation | pass |
+| `/OpenAction` array holding a JavaScript action | Profile / Carry | carry (as today: the top value is not a dictionary) / carry | each member reported | pass |
+| XFA template with `<x:script xmlns:x=…>` and `<script contentType="application/x-formcalc">` | RefuseSE / Carry | refuse / carry | 2 × Script, Xfa | `xfa` pass |
+| 200 000 actions | Profile | as `rewrite` (no report cap) | 200 000 items | — |
 | default options vs `rewrite` | default | identical bytes and errors (every case above, and the corpus) | — | — |
 
 **D1:**
@@ -762,6 +827,11 @@ is one test, run under every policy where the outcome differs.
 | cycle through `/Reference` | refuse or remove per the rules, no loop |
 | `/Perms` holding an unknown key besides `/UR3` | removed, `/Perms` kept with the unknown key; `perms_removed false` |
 | a planted collector bug (test-only hook) leaving the target reachable | the output check refuses `ResidualSignature` |
+| `/UR3` and a dictionary with `/Contents` and `/SubFilter /VendorCorp.SignV2` (an unlisted name) on an annotation | refuse `OtherSignaturePresent` |
+| `/UR3` whose `/Reference` element has no `/TransformMethod` (means DocMDP); absent, empty or non-array `/Reference` | refuse `UsageRightsNotRemovable` |
+| `/SigFlags 3` (bit 1 set) with `/UR3` | removed; `/SigFlags 2`; `sig_flags` 3 → 2 in the report; `acroform` `transformed` |
+| `/Perms` dictionary object also referenced from another catalog key | refuse |
+| a signed PDF as an embedded file next to `/UR3` | removed; the embedded file carried byte-identical (its own signature is untouched; not inspected) |
 
 Every D1 test reparses the output and walks it for signature markers
 with the test's own walker (not the library's).
@@ -803,12 +873,43 @@ and both need V4 to be measured.
 2. **Seed values** (`/SV`) on unsigned signature fields under
    `Remove`. Carry (no signature exists) or refuse (signing is
    anticipated). Recommended: carry and report.
-3. **`/SigFlags`** after removal. Carry unchanged (recommended,
-   reported), or clear `SignaturesExist` when no signature remains (an
-   undeclared semantic change otherwise).
+3. **`/SigFlags`**: resolved after review. Bit 1 is cleared as part of
+   the declared change (the §4 acceptance); bit 2 is carried and
+   reported.
 4. **`/DSS` with usage rights only:** option 1 (refuse) now, option 3
    later on demand.
 5. **`MultimediaPolicy::Carry`:** not in v0.5. Revisit with a use case.
 6. **The `transformed` class in the enforced map:** introduce it with
    the version rule in V4 (moves two report-only fails), or keep it
    report-only until D1. Recommended: introduce in V4, report only.
+7. **Tightening the default.** Should `rewrite` (and `Profile`) refuse
+   stray signature-like dictionaries that the current checks miss (a
+   `/ByteRange` under a field without `/FT`, a timestamp outside
+   fields, `/DSS`, `/Legal`)? Doing so is safer, but it changes
+   `rewrite`'s results (a behaviour change for 0.5, to be measured on
+   the corpus). Recommended: decide after C2, with the walker in hand
+   and its corpus effect measured. Until then `rewrite` is unchanged
+   and the gap is documented in `docs/limitations.md`.
+
+## 12. Independent review of the design
+
+First review (a different model, read-only): approve with changes.
+
+| # | severity | finding | decision |
+|---|---|---|---|
+| F1 | P0 | the signature marker required a known handler or sub-filter name; a dictionary with `/Contents` and an unlisted `/SubFilter` escaped both the input and the output check | adopted: `/Contents` with any `/Filter` or `/SubFilter` is a marker; test |
+| F2 | P1 | "both phases close the signature gaps under every policy" and a report cap both contradicted byte and error identity of the default | adopted: the walker runs under `Remove` only; tightening the default is open decision 7; no report cap (bounded by the existing object limits) |
+| F3 | P1 | `GoToDp` (PDF 2.0) in no class, so refused under `Carry` | adopted: Navigation; test |
+| F4 | P1 | XFA script detection unspecified | adopted: local name `script` under any prefix, on W3's checked text, packets together; tests |
+| F5 | P1 | `/SigFlags` "carry" contradicted the accepted D1 criterion (bit 1 must not claim a removed signature) | adopted: bit 1 cleared as part of the declared change, bit 2 carried and reported; rule and test |
+| F6 | P1 | the "independent" checks share the library's parser | adopted: worded as a separate walker over a fresh parse; qpdf JSON and pypdf re-reads in the acceptance |
+| F7 | P2 | target-check edge cases (`/Reference` without `/TransformMethod` means DocMDP; empty or absent `/Reference`; `/UR` vs `/UR3`) | adopted |
+| F8 | P2 | `/Lock` / `/SV` / `/FieldMDP` conflated | adopted: reworded |
+| F9 | P2 | "no key reordered" is false byte-wise (sorted maps) | adopted: reworded |
+| F10 | P2 | multimedia actions under `MultimediaPolicy::Refuse` ambiguous | adopted: carried and reported; the policy applies to catalog `/RichMedia` |
+| F11 | P2 | `Disposition::Refused` could never appear | adopted: field removed |
+| F12 | P2 | `/OpenAction` arrays, catalog `/URI`, `/Threads` / `/PresSteps` | adopted |
+| F13 | P2 | `/Root/Perms/UR` missing from the graph allowance | adopted |
+| F14 | P2 | security.md overclaimed "every signature" | adopted: reworded |
+| F15 | P2 | test gaps for the above | adopted: rows added to §9 |
+| F16 | P2 | signed embedded files; a shared `/Perms` dictionary | adopted: threat rows, refusal rule 5a, test |

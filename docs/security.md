@@ -77,7 +77,10 @@ invalid. Use a signature validator for that question.
 
 The full rewrite carries scripts and actions below the document level
 and refuses the document-level entry points (catalog `/AA`, a
-JavaScript `/OpenAction`, `/Names /JavaScript`) and every signature.
+JavaScript `/OpenAction`, `/Names /JavaScript`) and the declared
+signature entry points (`/Perms`, signed `/Sig` fields, XFA XML
+signatures). A signature-like dictionary outside those is not checked
+today (`plans/rewrite-policy.md` §1).
 The planned `rewrite_with` (`plans/rewrite-policy.md`) keeps that as
 its default. It adds two explicit options:
 - **Carry executable content.** It copies scripts and actions
