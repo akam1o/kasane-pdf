@@ -10,6 +10,7 @@ are the *why*, not the *what*.
 | [`diagnosis.md`](diagnosis.md) | `diagnose_redaction` / `preflight-redaction` | read-only preflight walker — why it is a separate `DiagWalker` and why it never returns a "safe" verdict |
 | [`editing.md`](editing.md) | experimental scoped editing | text removal, image-region removal, region removal, JPEG decode, grid-aligned CTM, budgets, per-invocation cloning |
 | [`audit.md`](audit.md) | `audit_residuals` | residual-information inventory — read-only, reports presence/location only |
+| [`rewrite-policy.md`](rewrite-policy.md) | `rewrite_with` (planned, v0.5.0 phase C) | explicit policies for executable content (D2) and usage-rights removal (D1); why the default never changes, why removal is checked on the output |
 | [`multi-page.md`](multi-page.md) | `remove_regions` | multi-page walk, inherited-`/Resources` materialisation, post-order strip decision |
 | [`metadata.md`](metadata.md) | `remove_document_metadata` | `/Info`/`/Metadata`/`/PieceInfo`/`/MarkInfo`/`/Perms` removal |
 | [`combined.md`](combined.md) | `remove_regions_and_document_metadata` | region removal + metadata strip in one atomic pass |

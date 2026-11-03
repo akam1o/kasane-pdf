@@ -215,6 +215,9 @@ def summarize(run):
                 c["category"]: c["class"]
                 for c in ((rt.get("semantic") or {}).get("report_only") or [])
             },
+            # The declared rules behind each `transformed` category
+            # (enforced and report-only); absent when there is none.
+            **semantic_rules(rt),
             # Page-1 text agreement with pdftotext (report only; absent:
             # not compared, or an older runner).
             "text_f1": text_value(f, "text_char_f1"),
@@ -238,7 +241,88 @@ def summarize(run):
     agg["quality_report"] = sum(1 for v in files.values() if v["quality"].startswith("report:"))
     agg["quality_exempt"] = sum(1 for v in files.values() if v["quality"].startswith("exempt:"))
     agg["quality_pages"] = sum(v["quality_pages"] for v in files.values())
+    agg["by_config"] = by_config(run)
     return {"aggregate": agg, "files": files}
+
+
+def semantic_rules(rt):
+    sem = (rt or {}).get("semantic") or {}
+    rules = {
+        c["category"]: sorted(c.get("rules") or [])
+        for c in (sem.get("checks") or []) + (sem.get("report_only") or [])
+        if c.get("class") == "transformed"
+    }
+    return {"semantic_rules": rules} if rules else {}
+
+
+# Refusal classes of the runner's `configs::Refusal`, by figure.
+REFUSALS = {"signature": "signature_refusal", "script": "script_refusal", "multimedia": "multimedia_refusal"}
+
+
+def config_figures(entries):
+    """Figures of one rewrite configuration. `entries` holds, per file,
+    (file record, rewrite class, refusal, round trip) under that
+    configuration. Full PASS is the enforced definition (expect: pass;
+    strict parse, render and text, the rewrite under this configuration
+    — never on a recovered document); `full_pass_verified` additionally
+    needs the semantic round trip to be pass or transformed and the
+    graph comparison equal or exactly the declared change."""
+    fig = {
+        k: 0
+        for k in (
+            "files", "rewrite_pass", "full_pass", "full_pass_verified", "graph_rt", "graph_rt_declared",
+            "full_rt", "full_rt_declared", "semantic_pass", "semantic_transformed", "semantic_fail",
+            "semantic_error", "semantic_unsupported", "signature_refusal", "script_refusal",
+            "multimedia_refusal", "unsupported", "error", "crash_timeout",
+        )
+    }
+    for f, rewrite, refusal, rt in entries:
+        fig["files"] += 1
+        rt = rt or {}
+        if f.get("verdict") in ("crash", "timeout"):
+            fig["crash_timeout"] += 1
+        ok = rewrite == "pass" and (rt.get("reparse") or {}).get("class", "Pass") == "Pass"
+        fig["rewrite_pass"] += ok
+        strict = lambda s: (f.get(s) or {}).get("class") == "pass" and (s == "parse" or not f.get("recovered"))
+        full = f.get("expect") == "pass" and ok and all(strict(s) for s in ("parse", "render", "text"))
+        full = full and not f.get("recovered")
+        fig["full_pass"] += full
+        graph = (rt.get("structure") or {}).get("class") == "Pass"
+        fig["graph_rt"] += graph
+        fig["graph_rt_declared"] += bool(rt.get("structure_declared"))
+        fig["full_rt"] += bool(rt.get("full"))
+        fig["full_rt_declared"] += bool(rt.get("full") or rt.get("full_declared"))
+        sem = (rt.get("semantic") or {}).get("class")
+        if sem in ("pass", "transformed", "fail", "error", "unsupported"):
+            fig[f"semantic_{sem}"] += 1
+        if full and sem in ("pass", "transformed", "not_applicable", None) and (graph or rt.get("structure_declared")):
+            fig["full_pass_verified"] += 1
+        if refusal in REFUSALS:
+            fig[REFUSALS[refusal]] += 1
+        elif rewrite == "unsupported":
+            fig["unsupported"] += 1
+        elif rewrite not in ("pass", "skip", ""):
+            fig["error"] += 1
+    return fig
+
+
+def by_config(run):
+    """Figures per rewrite configuration, each in its own namespace: the
+    default from the record's own fields (what the gate enforces), the
+    others from `rewrite_options[<name>]`. Nothing here feeds `check`."""
+    lower = lambda c: (c or "").lower()
+    default, others = [], {}
+    for f in run["files"]:
+        rt = f.get("roundtrip")
+        if rt is None and (f.get("rewrite") or {}).get("class") == "skip":
+            continue  # never reached the rewrite (strict parse failed)
+        default.append((f, lower((f.get("rewrite") or {}).get("class")), f.get("rewrite_refusal"), rt))
+        for name, o in (f.get("rewrite_options") or {}).items():
+            others.setdefault(name, []).append((f, lower(o.get("rewrite")), o.get("refusal"), o.get("roundtrip")))
+    out = {"default": config_figures(default)}
+    for name, entries in sorted(others.items()):
+        out[name] = config_figures(entries)
+    return out
 
 
 def text_value(f, key):
@@ -299,7 +383,7 @@ def check(run, base, summary_md=None):
         # from the nightly configuration so far).
         for cat, was in (o.get("semantic") or {}).items():
             now = (n.get("semantic") or {}).get(cat)
-            if was == "pass" and now not in ("pass", None):
+            if was == "pass" and now not in ("pass", "transformed", None):
                 semantic_changes.append(f"{fid}: semantic {cat} pass -> {now}")
         # Report-only categories: a pass lost against the baseline, or —
         # when the baseline predates them — any outcome that is not a
@@ -308,10 +392,19 @@ def check(run, base, summary_md=None):
         for cat, now in (n.get("semantic_report") or {}).items():
             was = (old_report or {}).get(cat)
             if old_report is None or was is None:
-                if now not in ("pass", "not_applicable"):
+                if now not in ("pass", "not_applicable", "transformed"):
                     semantic_changes.append(f"{fid}: report-only semantic {cat}: {now} (no baseline)")
-            elif was == "pass" and now != "pass":
+            elif was == "pass" and now not in ("pass", "transformed"):
                 semantic_changes.append(f"{fid}: report-only semantic {cat} pass -> {now}")
+        # A declared transformation is never a pass: every category that
+        # is `transformed` and was not, or under other rules, is listed.
+        old_rules = o.get("semantic_rules") or {}
+        for cat, rules in (n.get("semantic_rules") or {}).items():
+            was = (o.get("semantic") or {}).get(cat) or (o.get("semantic_report") or {}).get(cat)
+            if was != "transformed" or old_rules.get(cat) != rules:
+                semantic_changes.append(
+                    f"{fid}: semantic {cat} {was or 'unrecorded'} -> transformed ({', '.join(rules)})"
+                )
         # Text agreement: reported, not enforced. Older baselines have no
         # values (nothing to compare).
         for key in ("text_f1", "text_f1_annots"):

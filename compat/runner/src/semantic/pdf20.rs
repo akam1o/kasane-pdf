@@ -24,7 +24,14 @@
 use super::*;
 
 /// The report-only categories, in snapshot order.
-pub const REPORT_ONLY: [&str; 4] = ["version", "page_metadata", "associated_files", "dparts"];
+pub const REPORT_ONLY: [&str; 6] = [
+    "version",
+    "page_metadata",
+    "associated_files",
+    "dparts",
+    "multimedia",
+    "signatures",
+];
 
 /// Nesting of form XObjects followed for `/AF` (resources of resources):
 /// the general tree limit — resources can nest deeper than what content
@@ -46,6 +53,8 @@ pub fn snapshot_report(doc: &Document, bytes: &[u8]) -> Vec<Section> {
                 "page_metadata" => ctx.strict(Ctx::page_metadata),
                 "associated_files" => ctx.strict(Ctx::associated_files),
                 "dparts" => ctx.strict(Ctx::dparts),
+                "multimedia" => ctx.strict(Ctx::multimedia),
+                "signatures" => ctx.strict(Ctx::signatures),
                 _ => unreachable!(),
             };
             section(r)
@@ -66,13 +75,56 @@ fn section(r: Res<Option<Vec<String>>>) -> Section {
 }
 
 /// Compare the report-only sections of an original and its rewrite.
+#[cfg(test)]
 pub fn compare_report(a: &Document, a_bytes: &[u8], b: &Document, b_bytes: &[u8]) -> Vec<SemCheck> {
+    compare_report_declared(a, a_bytes, b, b_bytes, &[])
+}
+
+/// [`compare_report`] with the run's declared transformations.
+pub fn compare_report_declared(
+    a: &Document,
+    a_bytes: &[u8],
+    b: &Document,
+    b_bytes: &[u8],
+    decls: &[super::transform::Declaration],
+) -> Vec<SemCheck> {
     let (sa, sb) = (snapshot_report(a, a_bytes), snapshot_report(b, b_bytes));
     REPORT_ONLY
         .iter()
         .zip(sa.iter().zip(sb.iter()))
-        .map(|(c, (x, y))| compare_report_section(c, x, y))
+        .map(|(c, (x, y))| {
+            let mut check = compare_report_section(c, x, y);
+            super::transform::classify(&mut check, x, y, decls);
+            check
+        })
         .collect()
+}
+
+/// The effective version (§7.2.2) as the `version` category reads it:
+/// the header's, or the catalog `/Version` when later; `None` when
+/// neither can be read.
+pub fn effective_version(doc: &Document, bytes: &[u8]) -> Option<(u32, u32)> {
+    let head = &bytes[..bytes.len().min(1024)];
+    let hv = head.windows(5).position(|w| w == b"%PDF-").and_then(|i| {
+        let t = &head[i + 5..];
+        let end = t
+            .iter()
+            .position(|c| !(c.is_ascii_digit() || *c == b'.'))
+            .unwrap_or(t.len());
+        parse_version(&t[..end])
+    });
+    let cv = doc
+        .catalog()
+        .get(b"Version".as_slice())
+        .and_then(|o| doc.deref(o).ok())
+        .and_then(|o| match o {
+            Object::Name(n) => parse_version(&n),
+            _ => None,
+        });
+    match (hv, cv) {
+        (Some(h), Some(c)) => Some(h.max(c)),
+        (h, c) => h.or(c),
+    }
 }
 
 /// `compare_section` with the declared-form lines set aside: they never
@@ -251,7 +303,7 @@ impl<'a> Ctx<'a> {
     }
 
     /// Page `i`'s dictionary, `None` when the page has no object.
-    fn page_dict(&mut self, i: usize) -> Res<Option<Dict>> {
+    pub(super) fn page_dict(&mut self, i: usize) -> Res<Option<Dict>> {
         let Some(r) = self.doc.pages().get(i).and_then(|p| p.object_ref()) else {
             return Ok(None);
         };
@@ -260,7 +312,7 @@ impl<'a> Ctx<'a> {
 
     /// `d[key]` unless absent or null (an undefined object is null,
     /// §7.3.10; an unreadable one is not).
-    fn entry_pdf20(&mut self, d: &Dict, key: &[u8]) -> Res<Option<Object>> {
+    pub(super) fn entry_pdf20(&mut self, d: &Dict, key: &[u8]) -> Res<Option<Object>> {
         match d.get(key) {
             None => Ok(None),
             Some(v) => {
@@ -275,7 +327,7 @@ impl<'a> Ctx<'a> {
     }
 
     /// State, other dictionary entries and decoded content of a stream.
-    fn stream_parts(
+    pub(super) fn stream_parts(
         &mut self,
         what: &str,
         dict: &Dict,
@@ -303,7 +355,12 @@ impl<'a> Ctx<'a> {
 
     /// A value with streams compared by decoded content (the
     /// document-level `canon` hashes stream bytes as stored).
-    fn cval(&mut self, o: &Object, depth: usize, path: &mut Vec<IndirectRef>) -> Res<String> {
+    pub(super) fn cval(
+        &mut self,
+        o: &Object,
+        depth: usize,
+        path: &mut Vec<IndirectRef>,
+    ) -> Res<String> {
         if depth > MAX_VALUE_DEPTH {
             self.truncated = true;
             return Ok("…".into());
@@ -345,7 +402,12 @@ impl<'a> Ctx<'a> {
         })
     }
 
-    fn cval_dict(&mut self, d: &Dict, depth: usize, path: &mut Vec<IndirectRef>) -> Res<String> {
+    pub(super) fn cval_dict(
+        &mut self,
+        d: &Dict,
+        depth: usize,
+        path: &mut Vec<IndirectRef>,
+    ) -> Res<String> {
         let mut v = Vec::new();
         for (k, x) in d {
             if k.as_slice() == b"Parent" {

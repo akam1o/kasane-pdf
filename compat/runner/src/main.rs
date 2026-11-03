@@ -16,6 +16,7 @@
 mod analysis;
 mod cause;
 mod colour;
+mod configs;
 mod fontaudit;
 mod gsaudit;
 mod probe;
@@ -214,6 +215,14 @@ struct FileResult {
     /// Measured content profile (`profile.rs`) for per-category tables.
     #[serde(default)]
     profile: profile::Profile,
+    /// The policy that refused the default rewrite (`configs::refusal`);
+    /// absent when it was not refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rewrite_refusal: Option<configs::Refusal>,
+    /// Non-default rewrite configurations (`--rewrite-options`), each in
+    /// its own namespace; the default stays in `rewrite` / `roundtrip`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    rewrite_options: BTreeMap<String, configs::OptionRun>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1413,6 +1422,8 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                         roundtrip: None,
                         incremental: StageResult::not_run(),
                         profile: profile::Profile::default(),
+                        rewrite_refusal: None,
+                        rewrite_options: BTreeMap::new(),
                     });
                 }
             }
@@ -1626,17 +1637,13 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     let features = roundtrip::features(&doc, &data);
     let t = Instant::now();
     let mut rewrite_res = StageResult::pass(0);
+    let mut rewrite_refusal = None;
     let rt = match rewrite(&doc) {
         Ok(out) => {
             let rewrite_ms = t.elapsed().as_millis();
-            let rt_opts = RtOptions {
-                max_pages: (args.rt_pages != usize::MAX).then_some(args.rt_pages),
-                dpi: args.rt_dpi,
-                poppler: args.with_poppler,
-                poppler_pages: (args.poppler_pages != usize::MAX).then_some(args.poppler_pages),
-                budget_ms: args.rt_budget_secs as u128 * 1000,
-            };
-            let rt = roundtrip::run(&doc, &data, &out, rewrite_ms, &rt_opts, id);
+            let rt_opts = rt_options(args);
+            let decls = configs::RewriteConfig::Default.declarations(&doc, &data);
+            let rt = roundtrip::run(&doc, &data, &out, rewrite_ms, &rt_opts, id, &decls);
             metrics.rewrite_qpdf_ok = rt
                 .qpdf
                 .as_ref()
@@ -1656,9 +1663,11 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         Err(e) => {
             let (c, d, f, cid) = classify_err("rewrite", &e);
             rewrite_res = StageResult::caused(c, d, f, cid, t.elapsed().as_millis());
+            rewrite_refusal = configs::refusal(&e);
             roundtrip::refused(&e, t.elapsed().as_millis())
         }
     };
+    let rewrite_options = run_rewrite_options(&doc, &data, id, args);
     if rewrite_res.class == Class::Pass {
         rewrite_res.ms = rt.rewrite.ms;
     }
@@ -1718,6 +1727,105 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         roundtrip: Some(rt),
         incremental,
         profile: prof,
+        rewrite_refusal,
+        rewrite_options,
+    }
+}
+
+fn rt_options(args: &Args) -> RtOptions {
+    RtOptions {
+        max_pages: (args.rt_pages != usize::MAX).then_some(args.rt_pages),
+        dpi: args.rt_dpi,
+        poppler: args.with_poppler,
+        poppler_pages: (args.poppler_pages != usize::MAX).then_some(args.poppler_pages),
+        budget_ms: args.rt_budget_secs as u128 * 1000,
+    }
+}
+
+/// The non-default configurations of `--rewrite-options` on a strictly
+/// parsed document, each recorded under its own name. `main` refuses a
+/// configuration the library cannot run before any file is processed.
+fn run_rewrite_options(
+    doc: &Document,
+    data: &[u8],
+    id: &str,
+    args: &Args,
+) -> BTreeMap<String, configs::OptionRun> {
+    let mut out = BTreeMap::new();
+    for c in &args.rewrite_options {
+        if *c == configs::RewriteConfig::Default {
+            continue;
+        }
+        let t = Instant::now();
+        let run = match c.rewrite(doc) {
+            Err(why) => configs::OptionRun {
+                rewrite: "error".into(),
+                refusal: None,
+                declared: Vec::new(),
+                unavailable: Some(why.to_string()),
+                roundtrip: None,
+            },
+            Ok(Ok(bytes)) => {
+                let decls = c.declarations(doc, data);
+                let tag = format!("{id}-{}", c.name().replace(',', "+"));
+                let rt = roundtrip::run(
+                    doc,
+                    data,
+                    &bytes,
+                    t.elapsed().as_millis(),
+                    &rt_options(args),
+                    &tag,
+                    &decls,
+                );
+                configs::OptionRun {
+                    rewrite: "pass".into(),
+                    refusal: None,
+                    declared: decls.iter().map(|d| d.rule_name().to_string()).collect(),
+                    unavailable: None,
+                    roundtrip: Some(rt),
+                }
+            }
+            Ok(Err(e)) => {
+                let (class, ..) = classify_err("rewrite", &e);
+                configs::OptionRun {
+                    rewrite: class.label().to_lowercase(),
+                    refusal: configs::refusal(&e),
+                    declared: Vec::new(),
+                    unavailable: None,
+                    roundtrip: Some(roundtrip::refused(&e, t.elapsed().as_millis())),
+                }
+            }
+        };
+        out.insert(c.name().to_string(), run);
+    }
+    out
+}
+
+/// `kasane-compat inventory FILE`: the action inventory of FILE, one JSON
+/// object per line (class, kind, owner, position, shared_with,
+/// script_bytes) — content-free, for `scripts/pdf-inventory.py --compare`.
+fn print_inventory(p: &Path) -> i32 {
+    let doc = match fs::read(p)
+        .map_err(|e| e.to_string())
+        .and_then(|b| Document::from_bytes(&b).map_err(|e| e.to_string()))
+    {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("inventory: {e}");
+            return 1;
+        }
+    };
+    match semantic::inventory(&doc) {
+        Ok(items) => {
+            for it in items {
+                println!("{}", serde_json::to_string(&it).unwrap());
+            }
+            0
+        }
+        Err(e) => {
+            eprintln!("inventory: {e}");
+            1
+        }
     }
 }
 
@@ -1765,6 +1873,11 @@ struct Args {
     poppler_pages: usize,
     rt_budget_secs: u64,
     mode: String,
+    /// `--rewrite-options <set>` (repeatable): extra configurations
+    /// measured next to the default (`configs.rs`).
+    rewrite_options: Vec<configs::RewriteConfig>,
+    /// `inventory FILE`: print the action inventory as JSON lines.
+    inventory: Option<PathBuf>,
 }
 
 fn parse_args() -> Args {
@@ -1788,6 +1901,8 @@ fn parse_args() -> Args {
         poppler_pages: usize::MAX,
         rt_budget_secs: 120,
         mode: "full".into(),
+        rewrite_options: Vec::new(),
+        inventory: None,
     };
     let mut it = std::env::args().skip(1).peekable();
     while let Some(arg) = it.next() {
@@ -1856,6 +1971,18 @@ fn parse_args() -> Args {
                 }
             }
             "--font-audit" => a.font_audit = true,
+            "--rewrite-options" => {
+                let set = it.next().unwrap_or_default();
+                match configs::RewriteConfig::parse(&set) {
+                    Some(c) if !a.rewrite_options.contains(&c) => a.rewrite_options.push(c),
+                    Some(_) => {}
+                    None => {
+                        eprintln!("unknown --rewrite-options set {set:?} (default, carry, remove-usage-rights, carry,remove-usage-rights)");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            "inventory" => a.inventory = it.next().map(PathBuf::from),
             _ => {}
         }
     }
@@ -1864,6 +1991,15 @@ fn parse_args() -> Args {
 
 fn main() {
     let args = parse_args();
+    for c in &args.rewrite_options {
+        if let Some(why) = c.unavailable() {
+            eprintln!("--rewrite-options {}: not available: {why}", c.name());
+            std::process::exit(2);
+        }
+    }
+    if let Some(p) = &args.inventory {
+        std::process::exit(print_inventory(p));
+    }
     if let Some(res) = &args.report {
         report(res, &args.report_format, args.compare.as_deref());
         return;
