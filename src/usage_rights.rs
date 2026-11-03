@@ -914,6 +914,7 @@ pub(crate) fn check_output(
     let mut al = limits.clone();
     al.max_audit_elements = al.max_audit_elements.max(budget(limits) as u64);
     al.max_audit_edges = al.max_audit_edges.max(budget(limits) as u64);
+    al.max_audit_walk_depth = al.max_audit_walk_depth.max(limits.max_rewrite_walk_depth);
     let reach = crate::audit::reachability(&out, &al).map_err(|e| {
         residual(format_args!(
             "the output walk failed ({})",

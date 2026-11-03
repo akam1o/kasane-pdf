@@ -545,6 +545,7 @@ impl<'d> Audit<'d> {
         // does not resolve is a missing root, not a reachable one.
         let mut queue: Vec<IndirectRef> = Vec::new();
         let mut visited: HashSet<IndirectRef> = HashSet::new();
+        let mut chain_next: HashMap<IndirectRef, IndirectRef> = HashMap::new();
         for key in [b"Root".as_slice(), b"Info".as_slice()] {
             if let Some(Object::Ref(r)) = self.doc.trailer().get(key) {
                 queue.push(*r);
@@ -563,13 +564,11 @@ impl<'d> Audit<'d> {
             // One hop: a chain's every link is an object of its own
             // (the next link is an edge of it), as the writers write it.
             let obj = match self.doc.resolve_defined_one_hop(r) {
-                // A chain link: a chain that closes on itself has no
-                // object at its end and stays the error it was.
-                Ok(Object::Ref(_)) => {
-                    if let Err(e @ Error::CycleDetected { .. }) = self.doc.resolve_defined(r) {
-                        return Err(e);
-                    }
-                    self.doc.resolve_defined_one_hop(r)?
+                // A chain link: recorded, so a chain that closes on itself
+                // is found after the walk (linear in the links).
+                Ok(Object::Ref(next)) => {
+                    chain_next.insert(r, next);
+                    Object::Ref(next)
                 }
                 Ok(o) => o,
                 Err(Error::MissingReference(_)) => {
@@ -612,6 +611,25 @@ impl<'d> Audit<'d> {
                 // stay Unevaluated.
                 break;
             }
+        }
+        // A chain that closes on itself has no object at its end: the
+        // error it is for every reader (each link is followed once).
+        let mut done: HashSet<IndirectRef> = HashSet::new();
+        for &start in chain_next.keys() {
+            let mut path: HashSet<IndirectRef> = HashSet::new();
+            let mut cur = start;
+            while let Some(&next) = chain_next.get(&cur) {
+                if done.contains(&cur) {
+                    break;
+                }
+                if !path.insert(cur) {
+                    return Err(Error::CycleDetected {
+                        context: "indirect reference chain",
+                    });
+                }
+                cur = next;
+            }
+            done.extend(path);
         }
         // `walk_complete` is true only when every queued ref was
         // popped *and* every object scan finished — a depth stop or
@@ -2806,6 +2824,29 @@ mod tests {
         assert!(r.walk_complete);
         assert_eq!((r.reachable_live, r.unreachable_live), (6, 0), "{r:?}");
         assert!(!has_kind(&a, FindingKind::UnreachableObject));
+    }
+
+    /// A long chain costs linear work: no `LimitExceeded` on the
+    /// document's reference budget (re-review P3-8).
+    #[test]
+    fn a_long_reference_chain_is_linear() {
+        let mut objs: Vec<(u32, Vec<u8>)> = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R /X 10 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>".to_vec(),
+            ),
+        ];
+        for i in 10..1510u32 {
+            objs.push((i, format!("{} 0 R", i + 1).into_bytes()));
+        }
+        objs.push((1510, b"<< /K 1 >>".to_vec()));
+        let refs: Vec<(u32, &[u8])> = objs.iter().map(|(n, b)| (*n, b.as_slice())).collect();
+        let d = doc(&assemble(&refs, b""));
+        let a = audit_residuals(&d, &Limits::default()).unwrap();
+        assert!(a.reachability.walk_complete);
+        assert_eq!(a.reachability.unreachable_live, 0);
     }
 
     /// ... and a chain that closes on itself (`5 → 6 → 5`) stays the

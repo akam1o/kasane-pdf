@@ -268,6 +268,12 @@ def policy_summary(f):
     ]
     if disagree:
         out["options_inventory_disagree"] = disagree
+    ur = [
+        name for name, o in sorted((f.get("rewrite_options") or {}).items())
+        if (o.get("usage_rights") or {}).get("agree") is False
+    ]
+    if ur:
+        out["options_usage_rights_disagree"] = ur
     return {"policy": out}
 
 
@@ -528,6 +534,8 @@ def check(run, base, summary_md=None):
             regressions.append(f"{fid}: the default's version change disagrees with the runner's T1")
         for name in pol.get("options_inventory_disagree") or []:
             semantic_changes.append(f"{fid}: {name}: the report disagrees with the runner's inventory")
+        for name in pol.get("options_usage_rights_disagree") or []:
+            semantic_changes.append(f"{fid}: {name}: the usage-rights report disagrees with the runner's reading")
         # A configuration's lost gain (its own namespace; listed, never
         # enforced): Full PASS, rewrite, semantic pass.
         if o.get("policy") and not n.get("policy") and n["stages"].get("parse") == "pass":

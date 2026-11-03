@@ -391,6 +391,26 @@ fn review_2_no_false_refusals() {
     assert_eq!(rule(&b, &remove()), SignatureRule::UsageRightsNotRemovable);
 }
 
+/// Re-review P2-4: nesting deeper than the residual audit's own walk
+/// depth (64) is not a false refusal; within the rewrite's.
+#[test]
+fn deep_nesting_is_not_a_refusal() {
+    let deep = format!("{}1{}", "[".repeat(200), "]".repeat(200));
+    for cat in [
+        format!("/X {deep}"),
+        format!("/X {deep} /Perms << /UR3 10 0 R >>"),
+    ] {
+        let b = pdf(&cat, "", &[(10, UR3)]);
+        let d = Document::from_bytes(&b).unwrap();
+        let out = rewrite_with(&d, &remove()).unwrap_or_else(|e| panic!("{e:?}"));
+        if !cat.contains("/Perms") {
+            assert_eq!(out.bytes(), rewrite(&d).unwrap());
+        } else {
+            assert!(out.report().signatures_removed());
+        }
+    }
+}
+
 /// An incremental update after the signature: the input's revisions are
 /// counted, the output has one.
 #[test]

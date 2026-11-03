@@ -208,8 +208,10 @@ pub struct RewriteReport {
   impl Write)` can return a report-only result. The `RewriteOutput`
   methods (`bytes()`, not a public field) leave room for a
   writer-backed variant without breaking callers.
-- **Memory.** Same as today (one output `Vec`). The report holds
-  counts, locations and object numbers, never content.
+- **Memory.** Same as today (one output `Vec`) except under
+  `UsageRightsPolicy::Remove`, whose output check reparses the output
+  (§5.8, cost). The report holds counts, locations and object numbers,
+  never content.
 - **semver.** `cargo semver-checks`: additions only, so minor. No
   feature flag: the defaults change nothing, and gating a type behind
   a feature would complicate docs.rs and the API without making
@@ -666,9 +668,18 @@ the design above precise:
 - **The output check** (§5.4) also requires: the written objects are
   exactly those a rewrite writes once the declared entries are cut,
   computed by a walk of its own over the input; no target object is
-  written; `audit_residuals`' walk completes with no missing reference
-  and no unreachable object (it now reaches every link of a chain); no
-  field lock. The counts are `OutputCheck`.
+  written; the residual audit's reachability walk alone (passes 1 and 3
+  of `audit_residuals`, which now reaches every link of a chain), with
+  edge, element and depth limits at least the signature walk's budget
+  and the rewrite's depth, completes with no missing reference and no
+  unreachable object; no field lock. The counts are `OutputCheck`.
+- **Cost.** Only `Remove` pays it: the signature walk over the input,
+  the strict reparse of the output (a second document in memory) and
+  two walks over it. Linear and bounded by the limits. Measured on a
+  27 MB catalog of 9M nested values: peak 1.4 GB and 0.4 s for the
+  plain rewrite, about 3.8 GB and 5 s under `Remove`; the input
+  document (about 1 GB), the reparsed output (about 1 GB) and the
+  walks' copies of the catalog account for it.
 - **T2 in the runner**: the round trip's `full_declared` needs
   `structure_declared` *and* `signatures_transformed` (the report-only
   `signatures` category `transformed`, no semantic category failing): a

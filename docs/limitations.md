@@ -164,7 +164,10 @@ are on the [roadmap](architecture.md#roadmap).
   never reports a signature as valid. `UsageRightsPolicy::Remove`
   deletes usage-rights signatures only (the rights they grant are
   withdrawn) and refuses a document with any other signature, a field
-  lock, `/DSS` or `/Legal`; it never re-signs.
+  lock, `/DSS` or `/Legal`; it never re-signs. It also costs more: the
+  output is reparsed and walked before it is returned, so peak memory
+  is about 2.5× and time about 10× the plain rewrite's on large
+  documents.
 - **Page-level editing** (insert, delete, reorder), link editing and
   other annotation subtypes — *planned*.
 - The **experimental `remove_*` editors** are content editors: they
