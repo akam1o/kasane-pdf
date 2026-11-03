@@ -14,7 +14,11 @@
 //!   `script` element, reachable *anywhere* in the output graph — no
 //!   route around the classification;
 //! - a `Carry` success keeps the catalog graph identical;
-//! - signatures and `/RichMedia` are refused under every policy;
+//! - signatures and `/RichMedia` are refused under every policy, with
+//!   `UsageRightsPolicy::Remove` too (the generated `/UR3` is not a
+//!   usage-rights signature that can be removed);
+//! - with Remove and no usage-rights signature, every policy gives its
+//!   own bytes or refusal (nothing removed, nothing relaxed);
 //! - the report never holds script text; its output objects resolve.
 //!
 //! With bit 7 of the first byte one byte is corrupted: then only no
@@ -23,7 +27,7 @@
 
 use kasane_pdf::{
     rewrite, rewrite_with, Document, ExecutableContentPolicy as P, Object, OpenOptions,
-    RefusalReason, RewriteOptions,
+    RefusalReason, RewriteOptions, UsageRightsOutcome, UsageRightsPolicy,
 };
 use kasane_pdf_fuzz::limits;
 use libfuzzer_sys::fuzz_target;
@@ -271,6 +275,30 @@ fuzz_target!(|data: &[u8]| {
         _ => panic!("default differs from rewrite: {:?} vs {:?}", old.as_ref().err(), new.as_ref().err()),
     }
     let _ = rewrite(&doc);
+    // Remove: the same as without it here (no removable signature).
+    for p in [P::Profile, P::RefuseScriptsAndExternal, P::Carry] {
+        let without = rewrite_with(&doc, &opts(p));
+        let with = rewrite_with(&doc, &opts(p).with_usage_rights(UsageRightsPolicy::Remove));
+        if corrupt {
+            continue;
+        }
+        match (&without, &with) {
+            (Ok(a), Ok(b)) => {
+                assert_eq!(a.bytes(), b.bytes(), "{p:?}: Remove changed the bytes");
+                assert_eq!(b.report().usage_rights(), &UsageRightsOutcome::NonePresent);
+            }
+            (Err(a), Err(b)) => {
+                if ur3 || signed {
+                    assert_eq!(b.refusal_reason(), Some(RefusalReason::Signature), "{p:?}: {b}");
+                } else {
+                    assert_eq!(a.refusal_reason(), b.refusal_reason(), "{p:?}: {a} / {b}");
+                }
+                assert!(!b.to_string().contains("SECRET"), "{p:?}: content in the error");
+            }
+            (Ok(_), Err(b)) => panic!("{p:?}: Remove refused what the policy writes: {b}"),
+            (Err(a), Ok(_)) => panic!("{p:?}: Remove wrote what the policy refuses: {a}"),
+        }
+    }
     for p in [P::Profile, P::RefuseScriptsAndExternal, P::Carry] {
         let r = rewrite_with(&doc, &opts(p));
         if corrupt {
