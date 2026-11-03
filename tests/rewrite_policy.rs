@@ -795,3 +795,26 @@ fn no_route_around_the_strict_policy() {
         .collect();
     assert_eq!(owners, vec!["catalog/OpenAction#0".to_string()]);
 }
+
+/// Corpus finding: the strict policy's search for stray actions followed
+/// a stream's `/Length` to an unreadable object the rewrite never writes
+/// (it writes `/Length` directly), and refused. The search follows what
+/// the rewrite follows.
+#[test]
+fn the_strict_search_skips_a_streams_length_like_the_rewrite() {
+    let b = pdf(
+        "/Metadata 10 0 R",
+        "",
+        &[
+            (
+                10,
+                b"<< /Type /Metadata /Length 11 0 R >>\nstream\nabc\nendstream".to_vec(),
+            ),
+            (11, b"(not a number".to_vec()),
+        ],
+    );
+    let doc = Document::from_bytes(&b).unwrap();
+    assert!(rewrite(&doc).is_ok(), "the rewrite does not read /Length");
+    let out = run(&b, P::RefuseScriptsAndExternal);
+    assert!(out.is_ok(), "{:?}", out.err());
+}

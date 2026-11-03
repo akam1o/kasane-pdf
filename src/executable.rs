@@ -269,7 +269,12 @@ fn action_shaped_anywhere(doc: &Document, limits: &Limits) -> Option<&'static st
         };
         let d = match o {
             Object::Dict(d) => d,
-            Object::Stream { dict, .. } => dict,
+            // A stream's `/Length` is not followed, as the rewrite does
+            // not follow it (it writes the length directly).
+            Object::Stream { mut dict, .. } => {
+                dict.remove(b"Length".as_slice());
+                dict
+            }
             Object::Array(a) => {
                 stack.extend(a);
                 continue;
