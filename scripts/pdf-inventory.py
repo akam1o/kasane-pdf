@@ -17,8 +17,11 @@ later, the library's D2 report are checked against
       `--details` writes the per-file differences (file ids: keep the
       output in a private, git-ignored place).
 
-Owners: catalog/OpenAction (an action dictionary; an array is a
-destination), catalog/AA/<trigger>, page<p>/AA/<trigger>,
+Owners: catalog/OpenAction (an action dictionary, or each member of an
+array of action dictionaries; another array, a name or a string is a
+destination; a malformed value is listed as `#malformed`; an unreadable
+one the runner lists as `#unresolved`, which pypdf, reading leniently,
+cannot tell from null), catalog/AA/<trigger>, page<p>/AA/<trigger>,
 annot<p>.<k>/A, annot<p>.<k>/AA/<trigger>, field<path>/AA/<trigger>
 (field nodes that are not a page's annotation), outline<path>/A,
 names/JavaScript#<i>. Triggers in byte order. `/Next` chains depth
@@ -32,7 +35,7 @@ import subprocess
 import sys
 
 from pypdf import PdfReader
-from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, NullObject, StreamObject
+from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, NameObject, NullObject, StreamObject
 
 SCRIPT = {"JavaScript"}
 EXTERNAL = {"Launch", "URI", "GoToR", "GoToE", "SubmitForm", "ImportData"}
@@ -69,7 +72,9 @@ def entry(d, key):
 
 
 def is_dict(o):
-    return isinstance(get(o), DictionaryObject)
+    """A dictionary, not a stream (pypdf's streams are dictionaries)."""
+    o = get(o)
+    return isinstance(o, DictionaryObject) and not isinstance(o, StreamObject)
 
 
 def name(o):
@@ -99,8 +104,20 @@ class Inventory:
         out = []
         cat = self.root
         oa = entry(cat, "/OpenAction")
-        if oa is not None and is_dict(oa):
-            out.append(("catalog/OpenAction", oa))
+        if oa is not None:
+            v = get(oa)
+            if is_dict(oa):
+                out.append(("catalog/OpenAction", oa))
+            elif isinstance(v, ArrayObject):
+                # A destination, unless every member is an action
+                # dictionary (non-standard): then each member is one.
+                if v and all(is_dict(x) and "/S" in get(x) for x in v):
+                    for i, x in enumerate(v):
+                        out.append((f"catalog/OpenAction#{i}", x))
+            elif isinstance(v, (str, bytes, NameObject)):
+                pass  # a named destination
+            else:
+                out.append(("catalog/OpenAction", oa))  # malformed: listed
         self.aa("catalog", cat, out)
         for i, p in enumerate(self.r.pages):
             self.aa(f"page{i}", p, out)
@@ -203,7 +220,7 @@ class Inventory:
                 d = get(o)
                 if d is None or isinstance(d, NullObject):
                     continue  # undefined: no action
-                if not isinstance(d, DictionaryObject):
+                if not is_dict(d):
                     items.append({"class": "unknown", "kind": "#malformed", "owner": owner, "position": position,
                                   "shared_with": None, "script_bytes": None})
                     position += 1

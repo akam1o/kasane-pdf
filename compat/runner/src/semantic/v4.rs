@@ -62,10 +62,25 @@ impl<'a> Ctx<'a> {
         let mut out = Vec::new();
         let cat = self.doc.catalog().clone();
         if let Some(oa) = self.entry_pdf20(&cat, b"OpenAction")? {
-            // An array is a destination (its first element a page), not
-            // an action.
-            if let Object::Dict(_) = self.get(&oa)? {
-                out.push(("catalog/OpenAction".to_string(), oa));
+            match self.get(&oa)? {
+                Object::Dict(_) => out.push(("catalog/OpenAction".to_string(), oa)),
+                // An array is a destination (its first element a page),
+                // unless every member is an action dictionary
+                // (non-standard, seen): then each member is one.
+                Object::Array(a) if !a.is_empty() && self.all_actions(&a)? => {
+                    for (i, x) in a.into_iter().enumerate() {
+                        out.push((format!("catalog/OpenAction#{i}"), x));
+                    }
+                }
+                // Unreadable: listed (`#unresolved`), never dropped.
+                Object::Name(n) if n == b"#unresolved" => {
+                    out.push(("catalog/OpenAction".to_string(), oa))
+                }
+                // A destination (array, or a named one as name or
+                // string) or an undefined reference (null): no action.
+                Object::Array(_) | Object::Name(_) | Object::String(_) | Object::Null => {}
+                // Malformed (a number, a stream…): listed as such.
+                _ => out.push(("catalog/OpenAction".to_string(), oa)),
             }
         }
         self.aa_roots("catalog", &cat, &mut out)?;
@@ -116,6 +131,17 @@ impl<'a> Ctx<'a> {
             }
         }
         Ok(out)
+    }
+
+    /// Every member is a dictionary with `/S` (an action).
+    fn all_actions(&mut self, a: &[Object]) -> Res<bool> {
+        for x in a {
+            match self.get(x)? {
+                Object::Dict(d) if d.contains_key(b"S".as_slice()) => {}
+                _ => return Ok(false),
+            }
+        }
+        Ok(true)
     }
 
     fn aa_roots(&mut self, head: &str, d: &Dict, out: &mut Vec<(String, Object)>) -> Res<()> {
