@@ -344,7 +344,10 @@ def semantic_moved(was, now):
     the gate): a pass or a transformation lost, or a move into a class
     that is not a success from any other class (`not_applicable` ->
     `fail` is a structure the rewrite added). A move *to* `transformed`
-    is listed with its rules elsewhere."""
+    is listed with its rules elsewhere. `transformed` -> `pass` is not
+    listed: the rules are derived again from the input on every run, so
+    a declared change that stops happening is a `fail`, and a `pass` is
+    the strictest outcome."""
     if now == was or now == "transformed":
         return False
     if was in ("pass", "transformed"):

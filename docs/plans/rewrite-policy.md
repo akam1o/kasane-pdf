@@ -1046,6 +1046,7 @@ Runner only; the library is unchanged. Details and tests:
   - When `rewrite_with` lands, `RewriteConfig::rewrite` calls it with
     the set's options.
   - The default reproduces the baseline: Full PASS 345, graph 436, full
-    round trip 433, semantic pass 302.
+    round trip 432 on Linux (433 on macOS, the Poppler witness),
+    semantic pass 302.
   - The spike figures of §7 stay expectations until C1 and C2 measure
     them.

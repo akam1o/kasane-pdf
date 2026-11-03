@@ -673,7 +673,10 @@ impl<'a> Ctx<'a> {
     }
 
     /// What a signature-like dictionary declares — kinds, names, sizes;
-    /// never `/Contents`, `/Cert`, names or reasons themselves.
+    /// never `/Contents`, `/Cert`, names or reasons themselves. The
+    /// transform parameters are kept whole (canonical form), and they can
+    /// name fields. Lines stay in memory; reports carry field *names* of
+    /// differences only.
     fn sig_summary(&mut self, d: &Dict) -> Res<String> {
         let nm = |k: &str| {
             d.get(k.as_bytes())
