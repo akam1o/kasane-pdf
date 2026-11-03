@@ -73,7 +73,7 @@ guarantee only — kasane-pdf never computes the digest, never checks
 the certificate chain and never reports a signature as valid or
 invalid. Use a signature validator for that question.
 
-## Rewrite policies (planned, v0.5.0)
+## Rewrite policies (v0.5.0)
 
 The full rewrite carries scripts and actions below the document level
 and refuses the document-level entry points (catalog `/AA`, a
@@ -81,12 +81,26 @@ JavaScript `/OpenAction`, `/Names /JavaScript`) and the declared
 signature entry points (`/Perms`, signed `/Sig` fields, XFA XML
 signatures). A signature-like dictionary outside those is not checked
 today (`plans/rewrite-policy.md` §1).
-The planned `rewrite_with` (`plans/rewrite-policy.md`) keeps that as
-its default. It adds two explicit options:
-- **Carry executable content.** It copies scripts and actions
-  verbatim. It never executes them, and it is not sanitizing: the
-  output can do whatever the input could.
-- **Remove usage rights.** It deletes only `/Perms /UR` / `/UR3`
+`rewrite_with` (`plans/rewrite-policy.md`) keeps that as its default
+(`ExecutableContentPolicy::Profile`, the same bytes and errors), and
+reports every action, multimedia annotation and XFA script carried. The
+report never holds script text, URLs, field names, name-tree keys or
+digests. Two explicit policies:
+- **Refuse scripts and external actions** (`RefuseScriptsAndExternal`).
+  It refuses what the default refuses, plus every script, external
+  (Launch, URI, GoToR, GoToE, SubmitForm, ImportData) or unknown action
+  anywhere: page, annotation, field, outline, `/Next` chain, name tree,
+  and XFA scripts. A structure it cannot classify to the end (a cycle in
+  an owner tree, a chain past the walk depth) is refused too.
+- **Carry executable content** (`Carry`, available). It copies scripts
+  and actions verbatim. It never executes them, and it is not
+  sanitizing: the output can do whatever the input could. Unknown
+  actions and unclassifiable structures are refused.
+
+Neither policy lifts the `/RichMedia` or signature refusals. A third
+option is planned and **not available** (`UsageRightsPolicy` has only
+`Refuse`):
+- **Remove usage rights** (D1, planned). It deletes only `/Perms /UR` / `/UR3`
   usage-rights signatures, and only when no other signature-like
   structure exists. The output is checked independently for residual
   signatures. The removal is stated in the returned report. Usage

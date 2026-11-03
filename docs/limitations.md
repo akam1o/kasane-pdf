@@ -138,7 +138,12 @@ are on the [roadmap](architecture.md#roadmap).
   trailers and the incremental-update history are not carried; a
   signed document is refused (an XFA packet holding an XML signature
   included); XFA forms are carried verbatim (0.5); RichMedia and
-  document-level actions and scripts are refused rather than carried. Optional content
+  document-level actions and scripts are refused rather than carried
+  (`rewrite_with` with `ExecutableContentPolicy::Carry` carries the
+  scripts; `/RichMedia` stays refused under every policy). Every other
+  action is carried, and `rewrite_with` reports it. A catalog `/URI`
+  base dictionary is carried and not reported (it is not an action).
+  Optional content
   (`/OCProperties`) is carried when well formed and refused otherwise
   (missing `/OCGs` or `/D`, a group that is not an OCG dictionary, a
   wrong type, a cyclic or over-deep `/Order`); unknown keys are kept. A

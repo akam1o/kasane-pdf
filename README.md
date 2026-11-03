@@ -88,7 +88,8 @@ sets form-field values and `/Info` entries, and can be written either
 as a full rewrite or as an **incremental update** that keeps the
 original bytes verbatim and appends a revision (`save_incremental`).
 Signed documents are detected; edits a signer did not permit are
-refused (see Limitations).
+refused (see Limitations). `rewrite_with` takes explicit policies for
+executable content and reports what it carried (below).
 
 **Inspection and audit** — `inspect` structural dumps,
 `diagnose_redaction` (what is painted inside a rectangle, with
@@ -392,6 +393,33 @@ matters. [`docs/security.md`](docs/security.md) has the full posture.
   so a rewrite is not a sanitizer. `Edit::save_incremental` keeps the
   input bytes exactly and appends a revision: nothing is removed, the
   previous state remains readable by anyone with the file.
+- **Executable content.** `rewrite` (and `rewrite_with` with the
+  default `ExecutableContentPolicy::Profile`) refuses the document-level
+  entry points (catalog `/AA`, a JavaScript `/OpenAction`, `/Names
+  /JavaScript`) and carries every other action verbatim.
+  `rewrite_with` reports each one carried (class, owner, position, script
+  length; never the text):
+
+  ```rust,no_run
+  use kasane_pdf::{rewrite_with, Document, ExecutableContentPolicy, RewriteOptions};
+
+  fn main() -> Result<(), Box<dyn std::error::Error>> {
+      let doc = Document::from_bytes(&std::fs::read("input.pdf")?)?;
+      let opts = RewriteOptions::new()
+          .with_executable_content(ExecutableContentPolicy::RefuseScriptsAndExternal);
+      // Err (refusal_reason() Script / ExternalAction) if any is present.
+      let out = rewrite_with(&doc, &opts)?;
+      for item in out.report().executable_content() {
+          println!("{} {} at {}", item.class.as_str(), item.kind.as_str(), item.owner);
+      }
+      std::fs::write("output.pdf", out.bytes())?;
+      Ok(())
+  }
+  ```
+
+  `ExecutableContentPolicy::Carry` keeps scripts, including the
+  document-level ones. It executes nothing, and it is **not a
+  sanitizer**: the output can run whatever the input could.
 - **Signed documents.** Signatures are detected, never verified.
   Before an incremental save the engine reads `/ByteRange`,
   `/DocMDP` and `/FieldMDP` and refuses edits the signer did not
