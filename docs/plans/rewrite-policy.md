@@ -251,9 +251,10 @@ declarations checked), and character references expanded. A script is
 an element whose local name is `script`, under any prefix: `<`, an
 optional `NCName:`, `script`, then white space, `>` or `/`. The packets
 are checked together, as one document. A packet that cannot be read
-completely is refused, as in W3; under `RefuseScriptsAndExternal` an
-ambiguous match refuses. A FormCalc `<script contentType=…>` is a
-script too.
+completely is refused, as in W3. A match that cannot be classified
+(a `script` local name the rule cannot delimit) refuses under every
+policy, so no carried script can be missing from the report. A FormCalc
+`<script contentType=…>` is a script too.
 
 Owners (where an action or trigger lives):
 - catalog `/OpenAction` (a dictionary, or an array of action
@@ -314,7 +315,7 @@ Unreadable ones refuse, as in every rewrite.
 pub struct ExecutableItem {
     pub class: ActionClass,           // Script | External | State | Navigation | Multimedia | Unknown
     pub kind: ActionKind,             // the /S (or annotation subtype) as an enum, Other for unknown
-    pub owner: ActionOwner,           // Catalog{OpenAction|AA(trigger)} | Page{index, trigger} | Annotation{page, index, A|AA(trigger)}
+    pub owner: ActionOwner,           // Catalog{OpenAction{member: Option<u32>}|AA(trigger)|Uri} | Page{index, trigger} | Annotation{page, index, A|AA(trigger)}
                                       // | Field{path: Vec<u32>, trigger} | Outline{path: Vec<u32>} | NameTree{index} | Xfa{packet}
     pub chain_position: u32,          // 0 for the owner's action, n for the n-th /Next step (depth-first)
     pub input_object: Option<IndirectRef>,
@@ -474,13 +475,16 @@ establish refuses.
 4. **Security stores.** `/DSS` or `/Legal` in the catalog refuses
    (`SecurityStore`, §5.6).
 5. **Field signatures, field locks.** `/FT /Sig` fields with `/V`
-   refuse (as today). A signature field carrying `/Lock` (Table 233)
-   refuses. `/SV` seed values on an unsigned field (which may nest a
-   `/Lock`) are open decision 2: recommended carry and report. `/FieldMDP`
+   refuse (as today). A field's own `/Lock` entry (Table 233) refuses,
+   on a signature field or on any other field (conservative). `/SV`
+   seed values on an unsigned field, including a `/Lock` nested in the
+   seed-value dictionary, are open decision 2: recommended carry and
+   report. `/FieldMDP`
    is a transform method in a signature's `/Reference`, covered by
    rule 1 and by the marker walk.
-5a. **Shared `/Perms`.** If the `/Perms` dictionary object is also
-   reachable from anywhere but the catalog, refuse: editing it would
+5a. **Shared edited dictionaries.** Every dictionary D1 edits must be
+   reachable only from the catalog: `/Perms`, and `/AcroForm` when a
+   `/SigFlags` edit is needed. Otherwise refuse: editing it would
    change the other referrer's view.
 6. **XFA XML signatures** refuse (as today, W3).
 7. **Incremental history.** A document with earlier revisions is read
@@ -493,7 +497,13 @@ establish refuses.
    generation follows §7.3.10 (W1): an undefined object is null and
    not a signature. An unreadable one refuses.
 
-### 5.4 Independent check of the output
+### 5.4 Independent check of the output (under `Remove`)
+
+It runs under `UsageRightsPolicy::Remove` only, for both outcomes
+(`Removed` and `NonePresent`: it is cheap and also guards a collector
+bug when nothing was removed). Under `Refuse` the output may carry the
+signature-like leftovers that today's default carries (open decision
+7), so the check would break the default's identity there.
 
 After the bytes are produced and before they are returned:
 1. Reparse the output strictly.
@@ -515,8 +525,10 @@ shares the library's parser, so a parser blind spot could hide a
 marker from both the input and the output check. Third-party readers
 compensate in the acceptance (§10): for every D1 gain, the runner
 re-reads the output with qpdf (`--check`, and a JSON object dump
-searched for `/ByteRange`, `/Type /Sig`, `/DocTimeStamp` and
-`/TransformMethod`). The corpus acceptance does the same with pypdf.
+searched for the full §5.3.2 marker set: `/ByteRange`; `/Type /Sig`
+or `/DocTimeStamp`; `/Contents` together with `/Filter` or `/SubFilter`
+in one dictionary; `/Reference` with `/TransformMethod`; `/Cert` with
+`/Contents`). The corpus acceptance does the same with pypdf.
 
 ### 5.5 Report — `UsageRightsOutcome`
 
@@ -539,6 +551,13 @@ pub struct UsageRightsRemoval {
     pub sig_flags: Option<SigFlagsChange>, // before / after: bit 1 cleared when set, bit 2 kept
     pub input_revisions: u32,
     pub output_check: OutputCheck,         // what §5.4 verified (counts)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SigFlagsChange {
+    pub before: i64,                       // /AcroForm /SigFlags as read
+    pub after: i64,                        // as written: bit 1 cleared, every other bit kept
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -608,7 +627,10 @@ This is §6's mechanism, with a new snapshot category:
     when bit 1 was set — `/Root/AcroForm/SigFlags` changed with only
     bit 1 cleared; nothing else;
   - in `acroform`, only the `sig_flags` line may change, and only by
-    bit 1;
+    bit 1 being cleared;
+  - in `signatures`, only the `/SigFlags` line may change, and only by
+    bit 1 being cleared (near-miss test: bit 1 cleared while any other
+    `signatures` line appears or disappears must `fail`);
   - the runner checks its own inventory against
     `RewriteReport::usage_rights`.
 
@@ -767,7 +789,7 @@ whatever non-policy work adds. Planned figures:
 | the report incomplete | D1, D2 | the runner's independent inventory against the report; a report limit refuses rather than truncates | — |
 | reference confusion (shared or cyclic actions, generations) | D1, D2 | identity by object, sharing named by first position, cycles named, §7.3.10 for undefined, refusal for unreadable | — |
 | semantic snapshot misses a change | both | categories by decoded content; rule near-miss tests; `fuzz` oracle on graph equality | structures listed as not covered (semantic-roundtrip.md) |
-| CPU or memory DoS (huge scripts, many actions, deep `/Next`, huge XFA) | both | existing limits (`max_stream_bytes`, decode budget, `max_rewrite_walk_depth`, output limits); new `max_report_items`; the residual walk shares the audit's bounded BFS | — |
+| CPU or memory DoS (huge scripts, many actions, deep `/Next`, huge XFA) | both | existing limits (`max_stream_bytes`, decode budget, `max_rewrite_walk_depth`, output limits); the report bounded by `max_output_objects` (no limit of its own); the residual walk shares the audit's bounded BFS | — |
 | stack overflow | both | every walk iterative or depth-bounded (512 rewrite walk, 32 action chain in the snapshot) | — |
 | signatures inside embedded files (a signed PDF in an `/EF` stream) | D1 | carried byte for byte, so the embedded signature's own byte range is untouched; not inspected (documented) | none for integrity; it is not reported |
 | a `/Perms` dictionary shared with another owner | D1 | refuse (§5.3 rule 5a) | — |
@@ -857,8 +879,8 @@ with the test's own walker (not the library's).
 | phase | content | depends on | acceptance | estimate |
 |---|---|---|---|---|
 | V4 (runner) | outline actions strict; `multimedia` report-only category; `signatures` report-only category; the transformation model with the version rule; option runs in the runner (`--rewrite-options`) | — | synthetic tests per category (equal, changed, missing, near miss); corpus with the current library: existing categories unchanged, new ones explained; version rule turns exactly the two known `version` fails into `transformed` | 3–4 d |
-| C1 D2 | `rewrite_with`, options, report, classifier; `Profile` byte identity; `RefuseScriptsAndExternal`; `Carry` | V4 | §9 D2 tests fail first; corpus identity under default options; Carry run: every gain passes `doc_actions`, `javascript` (and `xfa`), report = runner inventory; fuzz | 3–4 d |
-| C2 D1 | signature-like walker, removal, output check, outcome, `signatures` rule | C1 (API), V4 | §9 D1 tests; Remove run: every gain `transformed` only by the D1 rule, qpdf 0, Poppler equal, independent marker walk clean; fuzz | 3–4 d |
+| C1 D2 | `rewrite_with`, options, report, classifier; `Profile` byte identity; `RefuseScriptsAndExternal`; `Carry` | V4 | §9 D2 tests fail first; corpus identity under default options; Carry run: every gain passes `doc_actions`, `javascript` (and `xfa`), report = runner inventory = pypdf action inventory; fuzz | 3–4 d |
+| C2 D1 | signature-like walker, removal, output check, outcome, `signatures` rule | C1 (API), V4 | §9 D1 tests; Remove run: every gain `transformed` only by the D1 rule, qpdf 0, Poppler equal, the library's output check and the qpdf JSON and pypdf marker scans (full §5.3.2 set) clean; fuzz | 3–4 d |
 | review | independent review of each phase before merge, re-review after fixes | — | no open P0 / P1 | — |
 
 Order: V4 → C1 (D2) → C2 (D1). D1 has no corpus value without D2 (§7),
@@ -913,3 +935,19 @@ First review (a different model, read-only): approve with changes.
 | F14 | P2 | security.md overclaimed "every signature" | adopted: reworded |
 | F15 | P2 | test gaps for the above | adopted: rows added to §9 |
 | F16 | P2 | signed embedded files; a shared `/Perms` dictionary | adopted: threat rows, refusal rule 5a, test |
+
+Re-review: the P0 and the P1s above confirmed resolved; one new P1 and
+eight P2s, all adopted.
+
+| # | severity | finding | decision |
+|---|---|---|---|
+| G1 | P1 | clearing `/SigFlags` bit 1 also changes the `signatures` category's `/SigFlags` line, which the D1 rule did not allow, so every such removal would `fail` | adopted: allowed in `signatures` too, only bit 1; near-miss test |
+| G2 | P2 | the output check's policy scope unstated | adopted: `Remove` only, both outcomes |
+| G3 | P2 | a stale `max_report_items` in the threat table | adopted |
+| G4 | P2 | the third-party marker scan narrower than §5.3.2; acceptance rows not naming the re-reads | adopted: full marker set; named in §10 |
+| G5 | P2 | `/AcroForm` edited for `/SigFlags` has the shared-dictionary hazard | adopted: rule 5a covers every edited dictionary |
+| G6 | P2 | `/Lock` vs an `/SV`-nested `/Lock` read as contradictory | adopted: reworded; a field's own `/Lock` refuses on any field |
+| G7 | P2 | `SigFlagsChange` not defined | adopted |
+| G8 | P2 | an unclassifiable XFA script match carried unreported under `Carry`/`Profile` | adopted: refuses under every policy |
+| G9 | P2 | `/OpenAction` array members indistinguishable in the report | adopted: member index |
+
