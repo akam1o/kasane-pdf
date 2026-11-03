@@ -231,6 +231,33 @@ pub enum Error {
     Io(std::io::Error),
 }
 
+/// Why a writer refused a document by policy ([`Error::refusal_reason`]).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RefusalReason {
+    /// A signature (`/Perms`, a signed field, an XFA XML signature, or an
+    /// XFA packet that cannot be checked for one).
+    Signature,
+    /// The document is encrypted; the writers do not encrypt.
+    Encrypted,
+    /// A document-level executable entry point (catalog `/AA`, a
+    /// JavaScript `/OpenAction`, `/Names /JavaScript`), refused by the
+    /// default profile.
+    DocumentLevelScript,
+    /// A script, refused by `RefuseScriptsAndExternal`.
+    Script,
+    /// An external action, refused by `RefuseScriptsAndExternal`.
+    ExternalAction,
+    /// An action of unknown type, refused by `RefuseScriptsAndExternal`
+    /// and `Carry`.
+    UnknownAction,
+    /// A structure that could not be classified, refused by
+    /// `RefuseScriptsAndExternal` and `Carry`.
+    UnclassifiedStructure,
+    /// The catalog `/RichMedia` (`MultimediaPolicy::Refuse`).
+    Multimedia,
+}
+
 impl Error {
     /// The category of this error, for classification.
     ///
@@ -250,6 +277,41 @@ impl Error {
             Error::InvalidArgument { .. } => ErrorKind::InvalidArgument,
             Error::SignaturePolicy { .. } => ErrorKind::SignaturePolicy,
             Error::Io(_) => ErrorKind::Io,
+        }
+    }
+
+    /// Why a writer refused the document by policy — a signature, an
+    /// encryption it cannot keep, executable content or multimedia the
+    /// policy does not carry — or `None` for any other error (a limit, a
+    /// damaged file, an unsupported feature). Classifies the refusals of
+    /// [`rewrite`](crate::rewrite), [`rewrite_with`](crate::rewrite_with)
+    /// and the editors without reading the message.
+    pub fn refusal_reason(&self) -> Option<RefusalReason> {
+        use crate::executable as x;
+        match self {
+            Error::SignaturePolicy { .. } => Some(RefusalReason::Signature),
+            Error::Encrypted => Some(RefusalReason::Encrypted),
+            Error::Unsupported { feature, detail } => match *feature {
+                "writing an encrypted document" => Some(RefusalReason::Encrypted),
+                // A signed field, or an XFA packet that could not be
+                // checked for an XML signature.
+                "signed signature field" | "XFA packet" => Some(RefusalReason::Signature),
+                "OpenAction JavaScript" | "JavaScript name tree" => {
+                    Some(RefusalReason::DocumentLevelScript)
+                }
+                "catalog entry outside profile" if detail.starts_with("/AA ") => {
+                    Some(RefusalReason::DocumentLevelScript)
+                }
+                "catalog entry outside profile" if detail.starts_with("/RichMedia ") => {
+                    Some(RefusalReason::Multimedia)
+                }
+                f if f == x::REFUSED_SCRIPT => Some(RefusalReason::Script),
+                f if f == x::REFUSED_EXTERNAL => Some(RefusalReason::ExternalAction),
+                f if f == x::REFUSED_UNKNOWN => Some(RefusalReason::UnknownAction),
+                f if f == x::REFUSED_UNCLASSIFIED => Some(RefusalReason::UnclassifiedStructure),
+                _ => None,
+            },
+            _ => None,
         }
     }
 

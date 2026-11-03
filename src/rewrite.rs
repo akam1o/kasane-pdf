@@ -75,6 +75,9 @@ use crate::limits::Limits;
 /// known, so the output could not be vouched for.
 const MAX_VERSION: (u8, u8) = (2, 0);
 
+/// A PDF version, `(major, minor)`.
+type Version = (u8, u8);
+
 /// Which trailer slot a discovered object came from.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RootKind {
@@ -151,11 +154,45 @@ pub(crate) fn rewrite_overlay_with(
     limits: &Limits,
     overrides: &RewriteOverrides,
 ) -> Result<Vec<u8>, Error> {
+    rewrite_core(doc, overlay, synth_numbers, limits, overrides, false).map(|(out, ..)| out)
+}
+
+/// `(old number, old generation) → new number` of a rewrite.
+pub(crate) type ObjectMap = HashMap<(u32, u16), u32>;
+
+/// The rewrite of [`rewrite_with`](crate::rewrite_with): [`rewrite`]'s
+/// pipeline, also returning the object map and the version written.
+/// `carry` lifts the document-level executable-content refusals
+/// ([`ExecutableContentPolicy::Carry`](crate::ExecutableContentPolicy::Carry));
+/// with `false` it is exactly [`rewrite_with_limits`].
+pub(crate) fn rewrite_mapped(
+    doc: &Document,
+    limits: &Limits,
+    carry: bool,
+) -> Result<(Vec<u8>, ObjectMap, crate::rewrite_policy::VersionChange), Error> {
+    rewrite_core(
+        doc,
+        &HashMap::new(),
+        &HashSet::new(),
+        limits,
+        &RewriteOverrides::default(),
+        carry,
+    )
+}
+
+fn rewrite_core(
+    doc: &Document,
+    overlay: &HashMap<(u32, u16), Object>,
+    synth_numbers: &HashSet<(u32, u16)>,
+    limits: &Limits,
+    overrides: &RewriteOverrides,
+    carry: bool,
+) -> Result<(Vec<u8>, ObjectMap, crate::rewrite_policy::VersionChange), Error> {
     let _budget = doc.decoded_budget_scope();
     if doc.is_encrypted() {
         return Err(crate::incremental::encrypted_write_refused());
     }
-    check_refusals(doc)?;
+    check_refusals(doc, carry)?;
 
     // The catalog's `/Metadata` is removed by overlaying the catalog
     // object itself — but if the caller already overlaid the catalog
@@ -226,7 +263,7 @@ pub(crate) fn rewrite_overlay_with(
     }
 
     // ---- Phase 2: emit, in new-number order ----
-    let version = effective_version(doc)?;
+    let (declared, version) = effective_version(doc)?;
     let mut out: Vec<u8> = Vec::new();
     out.extend_from_slice(format!("%PDF-{}.{}", version.0, version.1).as_bytes());
     // Binary marker comment (§7.5.2 recommends bytes >127 so
@@ -306,7 +343,13 @@ pub(crate) fn rewrite_overlay_with(
             max: limits.max_output_bytes,
         });
     }
-    Ok(out)
+    let change = crate::rewrite_policy::VersionChange {
+        declared,
+        written: version,
+        reason: (version != declared)
+            .then_some(crate::rewrite_policy::VersionReason::OptionalContent),
+    };
+    Ok((out, c.map, change))
 }
 
 struct Collector<'a> {
@@ -452,7 +495,9 @@ impl<'a> Collector<'a> {
 /// could not read. A catalog `/Version` that is present but not a
 /// valid `M.m` name is likewise refused rather than ignored.
 /// Above [`MAX_VERSION`] is refused.
-fn effective_version(doc: &Document) -> Result<(u8, u8), Error> {
+/// Returns the declared version and the one to write (raised to 1.5 for
+/// optional content, the only reason the two differ).
+fn effective_version(doc: &Document) -> Result<(Version, Version), Error> {
     let hdr = doc.header_version().ok_or_else(|| Error::Unsupported {
         feature: "PDF version",
         detail: "header %PDF- token is malformed — cannot determine ".to_string()
@@ -462,10 +507,11 @@ fn effective_version(doc: &Document) -> Result<(u8, u8), Error> {
     // Catalog /Version: absent → use header; present but not a valid
     // name token → refuse (a malformed version is not "no version").
     let cat = doc.catalog_version()?;
-    let mut effective = match cat {
+    let declared = match cat {
         Some(c) if c > hdr => c,
         _ => hdr,
     };
+    let mut effective = declared;
     // Optional content is a PDF 1.5 feature (§8.11): a file that
     // carries `/OCProperties` declares at least 1.5, whatever the input
     // claimed, so the output never declares less than it contains.
@@ -481,7 +527,7 @@ fn effective_version(doc: &Document) -> Result<(u8, u8), Error> {
             ),
         });
     }
-    Ok(effective)
+    Ok((declared, effective))
 }
 
 /// The trailer `/ID` of a PDF 2.0 output (required, ISO 32000-2
@@ -582,7 +628,7 @@ fn signed_field_in(
 /// chain of indirect objects, but a compressed object whose value is a
 /// reference comes back as that reference; the refusal checks must see
 /// the object a reader would, so they follow it here too.
-fn deref_chain(doc: &Document, obj: &Object) -> Result<Object, Error> {
+pub(crate) fn deref_chain(doc: &Document, obj: &Object) -> Result<Object, Error> {
     let mut o = doc.deref(obj)?;
     for _ in 0..MAX_REF_CHAIN {
         match o {
@@ -845,10 +891,107 @@ fn xfa_xml_signature(doc: &Document, xfa: &Object) -> Result<Option<String>, Err
     }
 }
 
+/// The number of `script` elements in checked XFA text: `<`, an optional
+/// `NCName:` prefix, the local name `script`, then white space, `>` or
+/// `/` (`docs/plans/rewrite-policy.md` §3.1). Any match counts — a
+/// `script`-shaped string the rule cannot delimit (in a comment, an
+/// attribute) is reported as a script: an over-report, never an
+/// under-report.
+pub(crate) fn count_xfa_scripts(text: &[u8]) -> u32 {
+    let name_start = |c: u8| c.is_ascii_alphabetic() || c == b'_' || c >= 0x80;
+    let name_char = |c: u8| name_start(c) || c.is_ascii_digit() || c == b'.' || c == b'-';
+    let mut n = 0u32;
+    let mut i = 0;
+    while let Some(at) = text[i..].iter().position(|c| *c == b'<') {
+        let mut j = i + at + 1;
+        let start = j;
+        while j < text.len() && name_char(text[j]) {
+            j += 1;
+        }
+        let mut local = &text[start..j];
+        if j < text.len() && text[j] == b':' && !local.is_empty() && name_start(local[0]) {
+            let s2 = j + 1;
+            j = s2;
+            while j < text.len() && name_char(text[j]) {
+                j += 1;
+            }
+            local = &text[s2..j];
+        }
+        let delimited = matches!(
+            text.get(j),
+            Some(b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/')
+        );
+        if local == b"script" && delimited {
+            n = n.saturating_add(1);
+        }
+        i = i + at + 1;
+    }
+    n
+}
+
+/// XFA scripts (`docs/plans/rewrite-policy.md` §3.1): for each packet
+/// stream (by position among the streams; `Xfa { packet: None }` for a
+/// single stream) its object and number of `script` elements, then those
+/// seen only when the packets are read together. The text is the one the
+/// signature check reads ([`xfa_text`], character references expanded).
+pub(crate) fn xfa_scripts(
+    doc: &Document,
+    xfa: &Object,
+) -> Result<Vec<(crate::rewrite_policy::ActionOwner, Option<IndirectRef>, u32)>, Error> {
+    use crate::rewrite_policy::ActionOwner;
+    let text = |o: &Object| -> Result<Option<Vec<u8>>, Error> {
+        let Object::Stream { dict, data } = o else {
+            return Ok(None);
+        };
+        let decoded = doc.decode_stream(dict, data)?;
+        let (t, _) = xfa_text(&decoded).map_err(|why| Error::Unsupported {
+            feature: "XFA packet",
+            detail: why,
+        })?;
+        Ok(Some(expand_char_refs(&t)))
+    };
+    let mut out = Vec::new();
+    match deref_chain(doc, xfa)? {
+        Object::Array(items) => {
+            let (mut whole, mut sum, mut packet) = (Vec::new(), 0u32, 0u32);
+            for it in &items {
+                let v = deref_chain(doc, it)?;
+                if let Some(t) = text(&v)? {
+                    let n = count_xfa_scripts(&t);
+                    sum = sum.saturating_add(n);
+                    out.push((
+                        ActionOwner::Xfa {
+                            packet: Some(packet),
+                        },
+                        it.as_ref(),
+                        n,
+                    ));
+                    whole.extend_from_slice(&t);
+                    packet += 1;
+                }
+            }
+            let across = count_xfa_scripts(&whole).saturating_sub(sum);
+            out.push((ActionOwner::XfaAcross, None, across));
+        }
+        stream @ Object::Stream { .. } => {
+            let n = text(&stream)?.map(|t| count_xfa_scripts(&t)).unwrap_or(0);
+            out.push((ActionOwner::Xfa { packet: None }, xfa.as_ref(), n));
+        }
+        _ => {}
+    }
+    Ok(out)
+}
+
 /// Every reference is followed with the §7.3.10 rule (an undefined
 /// object reads as null, i.e. as absent); an object that is defined but
 /// unreadable fails the check rather than being skipped.
-fn check_refusals(doc: &Document) -> Result<(), Error> {
+///
+/// `carry` (`ExecutableContentPolicy::Carry`) lifts the three
+/// document-level executable-content refusals (catalog `/AA`, a
+/// JavaScript `/OpenAction`, `/Names /JavaScript`) and nothing else: the
+/// catalog `/RichMedia` refusal is `MultimediaPolicy::Refuse`, and the
+/// signature refusals apply under every policy.
+fn check_refusals(doc: &Document, carry: bool) -> Result<(), Error> {
     let catalog = doc.catalog();
 
     // Signed documents: a signature/lock dictionary in /Perms claims
@@ -962,6 +1105,9 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
 
     // Active/executable structures outside the rewrite profile.
     for key in [&b"RichMedia"[..], &b"AA"[..]] {
+        if carry && key == b"AA" {
+            continue;
+        }
         if catalog.contains_key(key) {
             return Err(Error::Unsupported {
                 feature: "catalog entry outside profile",
@@ -975,6 +1121,9 @@ fn check_refusals(doc: &Document) -> Result<(), Error> {
 
     // Open-action / Names JavaScript: refuse executable payloads that
     // a rewrite could silently retain.
+    if carry {
+        return Ok(());
+    }
     if let Some(oa) = catalog.get(b"OpenAction".as_slice()) {
         let oa = deref_chain(doc, oa)?;
         if let Some(d) = oa.as_dict() {
