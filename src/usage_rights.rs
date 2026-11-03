@@ -353,9 +353,12 @@ pub(crate) fn scan(doc: &Document, limits: &Limits) -> Result<Scan, Error> {
         if s.values > budget {
             return Err(over_budget(budget));
         }
+        // A seed value is a signature field's `/SV` (`/FT /Sig`, read
+        // directly: a field's type is not written through a reference).
+        let field = matches!(d.get(b"FT".as_slice()), Some(Object::Name(n)) if n == b"Sig");
         for (k, v) in d.into_iter().rev() {
             if container(&v) {
-                let sv = k.as_slice() == b"SV";
+                let sv = field && k.as_slice() == b"SV";
                 nodes.push((Some(node), Link::Step(Step::Key(k))));
                 stack.push(Entry {
                     value: v,
@@ -902,7 +905,7 @@ mod tests {
             "",
             &[
                 (10, UR3),
-                (40, "<< /T (a) /Kids [41 0 R] /SV 42 0 R >>"),
+                (40, "<< /FT /Sig /T (a) /Kids [41 0 R] /SV 42 0 R >>"),
                 (41, "<< /Parent 40 0 R /P 41 0 R >>"),
                 (
                     42,
@@ -1323,6 +1326,17 @@ mod tests {
             rule(plan(&d)),
             Other,
             "a lock below the seed-value dictionary"
+        );
+        // Re-review N2: only a signature field's /SV is a seed value.
+        let d = doc(
+            "/Perms << /UR3 10 0 R >> /X << /SV << /Lock << /Action /All >> >> >>",
+            "",
+            &[(10, UR3)],
+        );
+        assert_eq!(
+            rule(plan(&d)),
+            Other,
+            "an /SV key outside a signature field"
         );
     }
 

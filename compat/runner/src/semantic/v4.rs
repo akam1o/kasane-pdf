@@ -906,6 +906,8 @@ impl<'a> Ctx<'a> {
             } else if let Some(l) = d.get(b"Lock".as_slice()) {
                 w.locks.push((node, l.clone()));
             }
+            // A seed value is a signature field's /SV.
+            let field = d.get(b"FT".as_slice()).and_then(name).as_deref() == Some("Sig");
             for (k, x) in d {
                 // A stream's length is storage, not content: a rewrite
                 // writes it directly (an unreadable `/Length` object
@@ -916,7 +918,7 @@ impl<'a> Ctx<'a> {
                 // Back-pointers (/P, /Parent) are followed too: an object
                 // reached only through one is searched.
                 if matches!(x, Object::Ref(_) | Object::Array(_) | Object::Dict(_)) {
-                    let sv = k.as_slice() == b"SV";
+                    let sv = field && k.as_slice() == b"SV";
                     let step = format!("/{}", String::from_utf8_lossy(&k));
                     queue.push_back((x, Some(node), step.into(), sv));
                 }
