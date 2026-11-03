@@ -106,19 +106,43 @@ with a script or external `/S` (directly or through a reference) or a
 *unknown* `/S` cannot be told from a structure element's role, so it is
 not refused there.
 
-Neither policy lifts the `/RichMedia` or signature refusals. A third
-option is planned and **not available** (`UsageRightsPolicy` has only
-`Refuse`):
-- **Remove usage rights** (D1, planned). It deletes only `/Perms /UR` / `/UR3`
-  usage-rights signatures, and only when no other signature-like
-  structure exists. The output is checked independently for residual
-  signatures. The removal is stated in the returned report. Usage
-  rights granted by the signature are withdrawn. Nothing is verified or
-  re-signed.
+Neither policy lifts the `/RichMedia` or signature refusals. The
+usage-rights policy is separate and must be asked for explicitly:
+- **Remove usage rights** (`UsageRightsPolicy::Remove`, D1, available;
+  the default stays `Refuse`). It deletes only `/Perms /UR` and `/UR3`
+  usage-rights signatures. `/Perms` goes when nothing else is left in
+  it, and `/AcroForm /SigFlags` bit 1 is cleared, every other bit kept.
+  The rights the signature granted in a reader (saving filled forms,
+  commenting, …) are withdrawn; the content is kept. Nothing is
+  verified or re-signed.
+  - It refuses (`Error::SignaturePolicy`) unless the whole reachable
+    graph — `/Root`, `/Info` and every page, every reference including
+    `/P`, `/Parent`, chain links and object-stream members — holds no
+    other signature-like dictionary (`/ByteRange`; `/Type /Sig` or
+    `/DocTimeStamp`; `/Contents` with `/Filter` or `/SubFilter`;
+    `/Reference` with `/TransformMethod`; `/Cert` with `/Contents`;
+    by structure, never by handler or field names), no field `/Lock`,
+    no `/DSS` or `/Legal`, no XFA XML signature. Each removed signature
+    must be one (`/TransformMethod /UR3` or `/UR` in every reference)
+    and reachable only from `/Perms`. A document that cannot be read or
+    searched completely is refused.
+  - The output is reparsed and checked before it is returned, by walkers
+    of its own: no signature marker, no `/ByteRange`, every object
+    reachable and no reference dangling, the catalog's entries and the
+    page count the input's, `/SigFlags` as declared, and exactly the
+    objects a plain rewrite writes less the removed signatures. A
+    failure is an error and no bytes are returned.
+  - The removal is in the report's type
+    (`RewriteReport::usage_rights()` is `UsageRightsOutcome::Removed`);
+    `#[must_use]` on the output does not by itself make a caller look
+    at it.
+  - A usage-rights or other signature dictionary that is only in an
+    earlier revision, or in no revision's graph at all, is not reachable,
+    not searched and not written: the output is a single new revision.
 
-How both will be checked is in place (v0.5.0 V4, the compatibility
-runner): an independent action inventory (also read with pypdf) that the
-report must match, and a `signatures` snapshot of the whole reachable
+Both are checked by the compatibility runner too: an independent action
+inventory (also read with pypdf) that the report must match, and a
+`signatures` snapshot of the whole reachable
 graph. Every signature-like dictionary is recorded by path and number of
 references, with kinds and sizes only, never signature values,
 certificates or names. Only the declared removal may differ; anything

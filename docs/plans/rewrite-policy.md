@@ -639,6 +639,42 @@ This is §6's mechanism, with a new snapshot category:
   - the runner checks its own inventory against
     `RewriteReport::usage_rights`.
 
+### 5.8 As implemented (C2, 2026-11-04)
+
+Where the implementation (`src/usage_rights.rs`, `rewrite_with`) makes
+the design above precise:
+- **Outcome.** `UsageRightsOutcome` has a third variant,
+  `NotRequested` (the policy is `Refuse`: the input is not searched).
+  `RewriteReport::usage_rights()` returns it; `signatures_removed()` is
+  true only for `Removed`.
+- **The walk** (rule 2) reads every link of a reference chain one hop at
+  a time — an object-stream member that is a reference included — and
+  counts each as an edge, as the writers write each link. `/Perms`,
+  `/AcroForm`, `/SigFlags` and a target read through a chain refuse.
+- **Rule 3** concerns the signature itself: each target is referenced
+  only from `/Perms`. What a target holds may be shared: Acrobat's UR3
+  reference has `/Data` naming the catalog. A shared held object stays
+  where something else reaches it, and it is not a signature, because
+  the walk refuses any other signature-like dictionary.
+- **Rule 5, seed values** (open decision 2: carried and reported, with
+  the count in the report): only the `/Lock` of a signature field's
+  (`/FT /Sig`) `/SV` dictionary itself is carried. A `/Lock` below it,
+  under any other `/SV` key, or on an object also reached as something
+  else refuses.
+- **`/SigFlags`**: `SigFlagsChange` records the value before and after
+  whenever `/SigFlags` is present (equal when bit 1 was clear).
+- **The output check** (§5.4) also requires: the written objects are
+  exactly those a rewrite writes once the declared entries are cut,
+  computed by a walk of its own over the input; no target object is
+  written; `audit_residuals`' walk completes with no missing reference
+  and no unreachable object (it now reaches every link of a chain); no
+  field lock. The counts are `OutputCheck`.
+- **T2 in the runner**: the round trip's `full_declared` needs
+  `structure_declared` *and* `signatures_transformed` (the report-only
+  `signatures` category `transformed`, no semantic category failing): a
+  declared path with an undeclared value (`/SigFlags` bit 2 cleared)
+  does not pass.
+
 ## 6. Semantic transformation model
 
 Today a category is `pass` (snapshots equal) or `fail`. W2 already

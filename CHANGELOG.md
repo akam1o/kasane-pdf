@@ -28,6 +28,36 @@ versions follow [Semantic Versioning](https://semver.org/).
     size, sharing), the structures that could not be classified, and
     the version change. It holds no script text, URLs, field names,
     name-tree keys or digests.
+- `UsageRightsPolicy::Remove` (the default stays `Refuse`): `rewrite_with`
+  deletes `/Perms /UR` and `/UR3` usage-rights signatures — and with
+  them the extended rights they grant in a reader — dropping an empty
+  `/Perms` and clearing `/AcroForm /SigFlags` bit 1 (every other bit
+  kept). It refuses (`Error::SignaturePolicy`) a document with any
+  other signature-like dictionary anywhere reachable (by structural
+  markers, not handler names), a field `/Lock`, `/DSS` or `/Legal`, an
+  XFA XML signature, a usage-rights signature that cannot be confirmed
+  or is referenced from anywhere but `/Perms`, or a graph that cannot be
+  read or searched completely. The output is reparsed and checked by
+  walkers of its own before it is returned (no signature marker, no
+  `/ByteRange`, every object reachable, exactly the declared removal);
+  a failure returns no bytes. Nothing is verified or re-signed.
+  - `RewriteReport::usage_rights() -> &UsageRightsOutcome`
+    (`NotRequested`, `NonePresent`, `Removed(UsageRightsRemoval)`) and
+    `signatures_removed()`. `UsageRightsRemoval` lists each removed
+    signature (`RemovedSignature`: key, input object, `SubFilterKind`,
+    the `UsageRight` categories, `/ByteRange` present), whether `/Perms`
+    was dropped, the `SigFlagsChange`, seed values carried, the input's
+    revisions and the `OutputCheck` counts. Content-free.
+  - New `SignatureRule` variants: `UsageRightsNotRemovable`,
+    `OtherSignaturePresent`, `SecurityStore`, `ResidualSignature`.
+  - Fuzz target `signature_markers` (a ground truth of signature
+    markers, near misses and placements); `rewrite_policy` and
+    `rewrite_graph` run `Remove` too.
+  - Compatibility runner: the `remove-usage-rights` and
+    `carry,remove-usage-rights` configurations run; a per-file
+    usage-rights record checks the report against the runner's own
+    reading; a T2 round trip needs the signatures `transformed` as well
+    as the declared structure.
 - `Error::refusal_reason() -> Option<RefusalReason>`: the policy
   refusals of the writers by class (signature, encryption,
   document-level script, script, external or unknown action,
@@ -102,6 +132,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   follow such references to the object (64 hops at most, then a cycle
   error); the resolutions count against `max_reference_depth` like
   any other.
+- `audit_residuals`: a reference chain's intermediate links (`5 0 obj
+  6 0 R endobj`) were reported as unreachable objects; the reachability
+  walk now resolves one hop at a time and reaches every link.
 
 ## [0.4.1] - 2026-11-02
 

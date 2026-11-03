@@ -161,7 +161,10 @@ are on the [roadmap](architecture.md#roadmap).
 - **Signatures** are detected, not verified: no digest or certificate
   check, no `/FieldMDP` evaluation (a document with one is refused),
   no `/UR` usage rights, no timestamp or PAdES structures. The engine
-  never reports a signature as valid.
+  never reports a signature as valid. `UsageRightsPolicy::Remove`
+  deletes usage-rights signatures only (the rights they grant are
+  withdrawn) and refuses a document with any other signature, a field
+  lock, `/DSS` or `/Legal`; it never re-signs.
 - **Page-level editing** (insert, delete, reorder), link editing and
   other annotation subtypes — *planned*.
 - The **experimental `remove_*` editors** are content editors: they
