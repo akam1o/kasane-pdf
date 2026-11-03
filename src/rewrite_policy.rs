@@ -31,11 +31,22 @@ pub enum ExecutableContentPolicy {
     Profile,
     /// Everything [`Profile`](Self::Profile) refuses, and every
     /// [`Script`](ActionClass::Script), [`External`](ActionClass::External)
-    /// and [`Unknown`](ActionClass::Unknown) action anywhere — page,
-    /// annotation, field, outline, `/Next` chain, name tree — as well as
-    /// XFA scripts and any structure that could not be classified.
-    /// Navigation, state and multimedia actions are carried and
-    /// reported.
+    /// and [`Unknown`](ActionClass::Unknown) action at any action owner —
+    /// page, annotation, field, outline, `/Next` chain, name tree — as
+    /// well as XFA scripts and any owner structure that could not be
+    /// classified. In addition, a dictionary with a script or external
+    /// `/S` (directly or through a reference) or a `/JS` entry is refused
+    /// wherever it is in the document. Navigation, state and multimedia
+    /// actions are carried and reported.
+    ///
+    /// What it guarantees: no known execution path — an action at an
+    /// owner a viewer runs, a script or external action dictionary
+    /// anywhere, an XFA script — survives. What it does not: it does not
+    /// treat an arbitrary dictionary as dangerous (an unknown `/S`
+    /// outside an action owner cannot be told from, say, a structure
+    /// element's role, and is carried), and it is **not a sanitizer** —
+    /// fonts, images, embedded files and every other object are carried
+    /// as they are.
     RefuseScriptsAndExternal,
     /// Carry every script and action verbatim, never executed, all
     /// reported. Not sanitizing: the output can run whatever the input
@@ -187,7 +198,9 @@ impl RewriteReport {
     /// parameters, an unknown key, inside another action's values) is
     /// carried like any object and not listed;
     /// [`ExecutableContentPolicy::RefuseScriptsAndExternal`] refuses a
-    /// script or external action wherever it is.
+    /// script or external action wherever it is. So an empty list does
+    /// not mean the document holds no executable content: it means none
+    /// at the positions listed above.
     pub fn executable_content(&self) -> &[ExecutableItem] {
         &self.items
     }

@@ -57,11 +57,17 @@ jobs:
           pip3 install --quiet boto3 pyyaml
           python3 compat/fetch-corpus.py download --dir compat/corpus
       - name: full run (all pages, Poppler witness, external checks)
+        # The default rewrite is the enforced run. `--rewrite-options
+        # carry` also measures `rewrite_with` under
+        # ExecutableContentPolicy::Carry in its own namespace
+        # (`rewrite_options.carry`, `by_config.carry`); the check never
+        # enforces it.
         run: |
           mkdir -p /tmp/full
           ./compat/runner/target/release/kasane-compat run \
             --corpus compat/corpus --out /tmp/full \
-            --with-poppler --dpi 96 --timeout-secs 20 --mode full
+            --with-poppler --dpi 96 --timeout-secs 20 --mode full \
+            --rewrite-options carry
       - name: regression check and exact-render quality gate vs committed 511 baseline
         # Fails on any stage / round-trip regression and on a new
         # quality-gate flag (compat/quality-gate.json); the gate's counts
