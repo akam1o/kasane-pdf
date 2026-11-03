@@ -413,6 +413,14 @@ fn classification_by_effect() {
         (C::Unknown, K::Missing)
     );
     assert_eq!(one("42"), (C::Unknown, K::Malformed));
+    // An indirect /S is read through its reference.
+    let b = pdf(
+        "",
+        "/AA << /O << /S 20 0 R /JS (x) >> >>",
+        &[(20, o("/JavaScript"))],
+    );
+    let it = run(&b, P::Profile).unwrap().report().executable_content()[0].clone();
+    assert_eq!((it.class, it.kind), (C::Script, K::JavaScript));
 }
 
 #[test]
@@ -765,8 +773,10 @@ fn no_route_around_the_strict_policy() {
         format!("/Extra {js}"),
         "/Extra << /S /GoTo /D [3 0 R /Fit] /JS (x) >>".to_string(),
         "/Extra [<< /S /Launch /F (x) >>]".to_string(),
+        // Review P2-1: an indirect /S.
+        "/Extra << /S 20 0 R /URI (u) >>".to_string(),
     ] {
-        let b = pdf(&cat, "", &[]);
+        let b = pdf(&cat, "", &[(20, o("/URI"))]);
         let why = reason(&b, P::RefuseScriptsAndExternal);
         assert!(
             matches!(
@@ -817,4 +827,50 @@ fn the_strict_search_skips_a_streams_length_like_the_rewrite() {
     assert!(rewrite(&doc).is_ok(), "the rewrite does not read /Length");
     let out = run(&b, P::RefuseScriptsAndExternal);
     assert!(out.is_ok(), "{:?}", out.err());
+}
+
+/// Review P2-6/P2-7: the report leaves nothing on the document that
+/// `rewrite` would not have left — no warnings, no consumed budget.
+#[test]
+fn the_report_leaves_no_trace_on_the_document() {
+    // An undefined /Next and an undefined page /AA trigger: the report
+    // resolves them (null), `rewrite` records them as it writes them.
+    let b = pdf(
+        "",
+        "/AA << /O << /S /GoTo /D [3 0 R /Fit] /Next 99 0 R >> /C 98 0 R >>",
+        &[],
+    );
+    let (a, c) = (
+        Document::from_bytes(&b).unwrap(),
+        Document::from_bytes(&b).unwrap(),
+    );
+    rewrite(&a).unwrap();
+    for p in [P::Profile, P::Carry, P::RefuseScriptsAndExternal] {
+        let _ = rewrite_with(&c, &opts(p));
+        assert_eq!(a.warnings(), c.warnings(), "{p:?}");
+        let _ = c.take_warnings();
+        rewrite(&c).unwrap();
+        let _ = c.take_warnings();
+    }
+    // The budget: a document opened with just enough references for
+    // `rewrite` still has them after `rewrite_with`.
+    for n in 1..200u64 {
+        let mut l = Limits::default();
+        l.max_reference_depth = n;
+        let Ok(d) = Document::from_bytes_with_limits(&b, l) else {
+            continue;
+        };
+        if rewrite(&d).is_err() {
+            continue;
+        }
+        let d = Document::from_bytes_with_limits(&b, {
+            let mut l = Limits::default();
+            l.max_reference_depth = n;
+            l
+        })
+        .unwrap();
+        let first = rewrite_with(&d, &RewriteOptions::default()).map(|o| o.into_bytes());
+        assert!(first.is_ok(), "budget {n}: {:?}", first.err());
+        break;
+    }
 }

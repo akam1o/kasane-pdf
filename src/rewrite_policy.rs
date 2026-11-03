@@ -117,6 +117,7 @@ impl RewriteOptions {
 /// The rewritten file and what the rewrite carried.
 #[must_use]
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct RewriteOutput {
     bytes: Vec<u8>,
     report: RewriteReport,
@@ -180,6 +181,13 @@ impl RewriteReport {
     /// (field nodes that are not a page's annotation), outline `/A`,
     /// `/Names /JavaScript` entries, XFA scripts. Each owner's `/Next`
     /// chain follows its action depth first.
+    ///
+    /// The list covers these owner positions — where a viewer runs an
+    /// action. An action dictionary placed anywhere else (a destination's
+    /// parameters, an unknown key, inside another action's values) is
+    /// carried like any object and not listed;
+    /// [`ExecutableContentPolicy::RefuseScriptsAndExternal`] refuses a
+    /// script or external action wherever it is.
     pub fn executable_content(&self) -> &[ExecutableItem] {
         &self.items
     }
@@ -630,20 +638,27 @@ pub fn rewrite_with(document: &Document, options: &RewriteOptions) -> Result<Rew
         &options.limits,
         options.executable_content == ExecutableContentPolicy::Carry,
     )?;
-    let (items, unclassified) =
-        crate::executable::classify(document, &options.limits, &|r: IndirectRef| {
-            map.get(&(r.number, r.generation)).map(|n| IndirectRef {
-                number: *n,
-                generation: 0,
-            })
-        });
-    crate::executable::enforce(
-        options.executable_content,
-        &items,
-        &unclassified,
-        document,
-        &options.limits,
-    )?;
+    // The report is taken on objects the rewrite already read, without
+    // leaving anything on the document (budget, warnings) that `rewrite`
+    // would not have left.
+    let (items, unclassified, enforced) = document.without_side_effects(|| {
+        let (items, unclassified) =
+            crate::executable::classify(document, &options.limits, &|r: IndirectRef| {
+                map.get(&(r.number, r.generation)).map(|n| IndirectRef {
+                    number: *n,
+                    generation: 0,
+                })
+            });
+        let enforced = crate::executable::enforce(
+            options.executable_content,
+            &items,
+            &unclassified,
+            document,
+            &options.limits,
+        );
+        (items, unclassified, enforced)
+    });
+    enforced?;
     Ok(RewriteOutput {
         bytes,
         report: RewriteReport {

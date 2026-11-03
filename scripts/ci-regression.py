@@ -218,6 +218,10 @@ def summarize(run):
             # The declared rules behind each `transformed` category
             # (enforced and report-only); absent when there is none.
             **semantic_rules(rt),
+            # rewrite_with(default) against rewrite, its report against the
+            # runner's inventory, its version change against T1; absent
+            # for an older runner.
+            **policy_summary(f),
             # Page-1 text agreement with pdftotext (report only; absent:
             # not compared, or an older runner).
             "text_f1": text_value(f, "text_char_f1"),
@@ -243,6 +247,25 @@ def summarize(run):
     agg["quality_pages"] = sum(v["quality_pages"] for v in files.values())
     agg["by_config"] = by_config(run)
     return {"aggregate": agg, "files": files}
+
+
+def policy_summary(f):
+    pc = f.get("policy_check")
+    if not pc:
+        return {}
+    inv = pc.get("inventory") or {}
+    out = {"identical": bool(pc.get("identical"))}
+    if inv and not inv.get("runner_error"):
+        out["inventory_agree"] = bool(inv.get("agree"))
+    if pc.get("version_agrees") is not None:
+        out["version_agrees"] = bool(pc["version_agrees"])
+    disagree = [
+        name for name, o in sorted((f.get("rewrite_options") or {}).items())
+        if (o.get("inventory") or {}).get("agree") is False and not (o.get("inventory") or {}).get("runner_error")
+    ]
+    if disagree:
+        out["options_inventory_disagree"] = disagree
+    return {"policy": out}
 
 
 def semantic_rules(rt):
@@ -453,6 +476,18 @@ def check(run, base, summary_md=None):
             was, now = o.get(key), n.get(key)
             if was is not None and (now is None or now <= was - TEXT_F1_DROP):
                 text_changes.append(f"{fid}: {key} {was} -> {now}")
+        # The default's identity with `rewrite`, its report against the
+        # runner's inventory and its version change: enforced (absolute,
+        # not against the baseline). Other configurations: listed.
+        pol = n.get("policy") or {}
+        if pol.get("identical") is False:
+            regressions.append(f"{fid}: rewrite_with(default) differs from rewrite")
+        if pol.get("inventory_agree") is False:
+            regressions.append(f"{fid}: the default's report disagrees with the runner's inventory")
+        if pol.get("version_agrees") is False:
+            regressions.append(f"{fid}: the default's version change disagrees with the runner's T1")
+        for name in pol.get("options_inventory_disagree") or []:
+            semantic_changes.append(f"{fid}: {name}: the report disagrees with the runner's inventory")
         if o.get("incremental") == "pass" and n.get("incremental") not in ("pass", None, ""):
             regressions.append(f"{fid}: incremental pass -> {n['incremental']}")
         oq, nq = o.get("quality", ""), n["quality"]

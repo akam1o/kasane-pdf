@@ -8,6 +8,10 @@
 use kasane_pdf::{ActionKind, Document, IndirectRef, Object, RewriteReport, ScriptSize};
 use serde::{Deserialize, Serialize};
 
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
 /// Counts of a report, per class.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReportSummary {
@@ -49,6 +53,11 @@ pub struct InventoryCheck {
     pub mismatches: Vec<String>,
     pub output_objects_checked: usize,
     pub output_mismatches: usize,
+    /// Script streams the library decoded and the runner's own decoder
+    /// (a restricted set of filters) could not: their sizes are not
+    /// verified, not counted as a disagreement.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub unverified_scripts: usize,
     /// The runner's inventory could not be taken (its own limits).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runner_error: Option<String>,
@@ -139,6 +148,10 @@ pub fn check(report: &RewriteReport, input: &Document, output: &Document) -> Inv
         }
         let script_ok = match (l.script, r.script_bytes, r.script_undecodable) {
             (Some(ScriptSize::Bytes(a)), Some(b), false) => a == b,
+            (Some(ScriptSize::Bytes(_)), None, true) => {
+                c.unverified_scripts += 1;
+                true
+            }
             (Some(ScriptSize::Undecodable), None, true) => true,
             (None, None, false) => true,
             _ => false,
@@ -189,8 +202,10 @@ fn same_kind(
         ActionKind::MultimediaAnnotation(_) => b"Subtype",
         _ => b"S",
     };
+    // The value through its reference (an indirect /S renumbered).
+    let value = |doc: &Document, d: &kasane_pdf::Dict| d.get(key).and_then(|v| doc.deref(v).ok());
     match (&x, &y) {
-        (Object::Dict(d1), Object::Dict(d2)) => d1.get(key) == d2.get(key),
+        (Object::Dict(d1), Object::Dict(d2)) => value(a, d1) == value(b, d2),
         _ => std::mem::discriminant(&x) == std::mem::discriminant(&y),
     }
 }
@@ -294,5 +309,54 @@ mod tests {
         assert!(version_agrees(out.report(), &d, &oc));
         let (_, plain) = carry(&pdf("1.4", "", ""));
         assert!(!version_agrees(plain.report(), &d, &oc));
+    }
+}
+
+#[cfg(test)]
+mod xfa_tests {
+    #[test]
+    fn utf16_with_leading_white_space_is_read_as_the_library_reads_it() {
+        let wide: Vec<u8> = "  \n<template><script/></template>"
+            .encode_utf16()
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let objs = format!("<< /Length {} >>\nstream\n", wide.len());
+        let mut s = objs.into_bytes();
+        s.extend_from_slice(&wide);
+        s.extend_from_slice(b"\nendstream");
+        let bodies: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [] /XFA [(t) 4 0 R] >> >>"
+                .to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>".to_vec(),
+            s,
+        ];
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offs = Vec::new();
+        for (i, o) in bodies.iter().enumerate() {
+            offs.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+            out.extend_from_slice(o);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let x = out.len();
+        out.extend_from_slice(b"xref\n0 5\n0000000000 65535 f \n");
+        for o in offs {
+            out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n").as_bytes(),
+        );
+        let d = kasane_pdf::Document::from_bytes(&out).unwrap();
+        let opts = kasane_pdf::RewriteOptions::new()
+            .with_executable_content(kasane_pdf::ExecutableContentPolicy::Carry);
+        let o = kasane_pdf::rewrite_with(&d, &opts).unwrap();
+        assert_eq!(o.report().executable_summary().script, 1);
+        let c = super::check(
+            o.report(),
+            &d,
+            &kasane_pdf::Document::from_bytes(o.bytes()).unwrap(),
+        );
+        assert!(c.agree, "{c:?}");
     }
 }

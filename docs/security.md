@@ -97,6 +97,15 @@ digests. Two explicit policies:
   sanitizing: the output can do whatever the input could. Unknown
   actions and unclassifiable structures are refused.
 
+The report covers the positions where a viewer runs an action (the
+owners of `plans/rewrite-policy.md` §3.1). An action dictionary placed
+anywhere else is carried like any other object and not listed.
+`RefuseScriptsAndExternal` searches the whole document for a dictionary
+with a script or external `/S` (directly or through a reference) or a
+`/JS` entry, and refuses it in any position. Outside an owner, an
+*unknown* `/S` cannot be told from a structure element's role, so it is
+not refused there.
+
 Neither policy lifts the `/RichMedia` or signature refusals. A third
 option is planned and **not available** (`UsageRightsPolicy` has only
 `Refuse`):

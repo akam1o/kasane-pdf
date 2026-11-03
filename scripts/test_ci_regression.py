@@ -417,6 +417,35 @@ class Gate(unittest.TestCase):
         self.assertNotIn("remove-usage-rights", out)
         self.assertEqual(base["aggregate"]["rewrite_pass"], 1)
 
+    def test_the_defaults_identity_and_report_are_enforced(self):
+        good = dict(file("a", [NORMAL]), policy_check={
+            "identical": True, "version_agrees": True, "inventory": {"agree": True}})
+        base = cr.summarize(run(good))
+        rc, out = check(run(good), base)
+        self.assertEqual(rc, 0, out)
+        for change, msg in [
+            ({"identical": False}, "differs from rewrite"),
+            ({"inventory": {"agree": False}}, "disagrees with the runner's inventory"),
+            ({"version_agrees": False}, "version change disagrees"),
+        ]:
+            bad = json.loads(json.dumps(good))
+            bad["policy_check"].update(change)
+            rc, out = check(run(bad), base)
+            self.assertEqual(rc, 1, out)
+            self.assertIn(msg, out)
+        # The runner's own limit is not a disagreement; an older runner
+        # (no policy_check) reads as before.
+        lim = json.loads(json.dumps(good))
+        lim["policy_check"]["inventory"] = {"agree": False, "runner_error": "limit"}
+        self.assertEqual(check(run(lim), base)[0], 0)
+        self.assertEqual(check(run(file("a", [NORMAL])), base)[0], 0)
+        # Another configuration's disagreement is listed, not enforced.
+        opt = json.loads(json.dumps(good))
+        opt["rewrite_options"] = {"carry": {"rewrite": "pass", "inventory": {"agree": False}}}
+        rc, out = check(run(opt), base)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("carry: the report disagrees", out)
+
     def test_text_agreement_is_recorded_and_report_only(self):
         def with_text(f1, f1a):
             f = file("a", [NORMAL])

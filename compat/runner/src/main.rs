@@ -245,37 +245,48 @@ struct PolicyCheck {
     version_agrees: Option<bool>,
 }
 
-/// `rewrite_with(default)` on `doc` (file bytes `data`) against
-/// `rewrite`'s result.
-fn policy_check(
-    doc: &Document,
-    data: &[u8],
-    rewrite: Result<&[u8], &kasane_pdf::Error>,
-) -> PolicyCheck {
+/// The document parsed again the way the run parsed it (strict, or
+/// recovering): each rewrite under comparison starts from a fresh one,
+/// so none inherits the reference budget another operation consumed.
+fn reopen(data: &[u8], recovered: bool) -> Option<Document> {
+    if recovered {
+        Document::from_bytes_recovering(data).ok()
+    } else {
+        Document::from_bytes(data).ok()
+    }
+}
+
+/// `rewrite_with(default)` against `rewrite`, each on a fresh parse of
+/// `data`.
+fn policy_check(data: &[u8], recovered: bool) -> Option<PolicyCheck> {
     let none = |identical| PolicyCheck {
         identical,
         report: None,
         inventory: None,
         version_agrees: None,
     };
-    match (
-        kasane_pdf::rewrite_with(doc, &kasane_pdf::RewriteOptions::default()),
-        rewrite,
-    ) {
-        (Ok(out), Ok(bytes)) => {
-            let inventory = Document::from_bytes(out.bytes())
-                .ok()
-                .map(|o| policy::check(out.report(), doc, &o));
-            PolicyCheck {
-                identical: out.bytes() == bytes,
-                report: Some(policy::summary(out.report())),
-                inventory,
-                version_agrees: Some(policy::version_agrees(out.report(), doc, data)),
+    let (a, b) = (reopen(data, recovered)?, reopen(data, recovered)?);
+    Some(
+        match (
+            kasane_pdf::rewrite(&a),
+            kasane_pdf::rewrite_with(&b, &kasane_pdf::RewriteOptions::default()),
+        ) {
+            (Ok(bytes), Ok(out)) => {
+                let input = reopen(data, recovered)?;
+                let inventory = Document::from_bytes(out.bytes())
+                    .ok()
+                    .map(|o| policy::check(out.report(), &input, &o));
+                PolicyCheck {
+                    identical: out.bytes() == bytes.as_slice(),
+                    report: Some(policy::summary(out.report())),
+                    inventory,
+                    version_agrees: Some(policy::version_agrees(out.report(), &input, data)),
+                }
             }
-        }
-        (Err(a), Err(b)) => none(a.to_string() == b.to_string() && a.kind() == b.kind()),
-        _ => none(false),
-    }
+            (Err(x), Err(y)) => none(x.to_string() == y.to_string() && x.kind() == y.kind()),
+            _ => none(false),
+        },
+    )
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1695,7 +1706,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     let check;
     let rt = match rewrite(&doc) {
         Ok(out) => {
-            check = Some(policy_check(&doc, &data, Ok(&out)));
+            check = policy_check(&data, recovered);
             let rewrite_ms = t.elapsed().as_millis();
             let rt_opts = rt_options(args);
             let decls = configs::RewriteConfig::Default.declarations(&doc, &data);
@@ -1720,11 +1731,11 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
             let (c, d, f, cid) = classify_err("rewrite", &e);
             rewrite_res = StageResult::caused(c, d, f, cid, t.elapsed().as_millis());
             rewrite_refusal = configs::refusal(&e);
-            check = Some(policy_check(&doc, &data, Err(&e)));
+            check = policy_check(&data, recovered);
             roundtrip::refused(&e, t.elapsed().as_millis())
         }
     };
-    let rewrite_options = run_rewrite_options(&doc, &data, id, args);
+    let rewrite_options = run_rewrite_options(&data, recovered, id, args);
     if rewrite_res.class == Class::Pass {
         rewrite_res.ms = rt.rewrite.ms;
     }
@@ -1804,8 +1815,8 @@ fn rt_options(args: &Args) -> RtOptions {
 /// parsed document, each recorded under its own name. `main` refuses a
 /// configuration the library cannot run before any file is processed.
 fn run_rewrite_options(
-    doc: &Document,
     data: &[u8],
+    recovered: bool,
     id: &str,
     args: &Args,
 ) -> BTreeMap<String, configs::OptionRun> {
@@ -1814,6 +1825,11 @@ fn run_rewrite_options(
         if *c == configs::RewriteConfig::Default {
             continue;
         }
+        // A fresh parse per configuration (and for its checks).
+        let (Some(fresh), Some(input)) = (reopen(data, recovered), reopen(data, recovered)) else {
+            continue;
+        };
+        let doc = &fresh;
         let t = Instant::now();
         let run = match c.rewrite(doc) {
             Err(why) => configs::OptionRun {
@@ -1840,7 +1856,7 @@ fn run_rewrite_options(
                 let inventory = report.as_ref().and_then(|r| {
                     Document::from_bytes(&bytes)
                         .ok()
-                        .map(|o| policy::check(r, doc, &o))
+                        .map(|o| policy::check(r, &input, &o))
                 });
                 configs::OptionRun {
                     rewrite: "pass".into(),

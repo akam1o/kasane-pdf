@@ -462,6 +462,27 @@ impl Document {
         self.warnings.borrow().dropped
     }
 
+    /// Run `f` (a read-only inspection after an operation, like
+    /// `rewrite_with`'s report) and then put back what it consumed or
+    /// recorded on the document: the reference-resolution budget and the
+    /// warnings. The document is then as the operation left it, so the
+    /// inspection is not a side channel (a later operation hitting a
+    /// limit sooner, warnings the operation itself did not record).
+    pub(crate) fn without_side_effects<T>(&self, f: impl FnOnce() -> T) -> T {
+        let budget = self.ref_budget.get();
+        let (list, dropped) = {
+            let w = self.warnings.borrow();
+            (w.list.clone(), w.dropped)
+        };
+        let _scope = self.decoded_budget_scope();
+        let out = f();
+        self.ref_budget.set(budget);
+        let mut w = self.warnings.borrow_mut();
+        w.list = list;
+        w.dropped = dropped;
+        out
+    }
+
     /// Record a warning (engine-internal producers that have no
     /// stream of their own, e.g. the ToUnicode parser).
     pub(crate) fn push_warning(&self, w: crate::Warning) {

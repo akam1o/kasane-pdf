@@ -284,10 +284,18 @@ fn action_shaped_anywhere(doc: &Document, limits: &Limits) -> Option<&'static st
         if d.contains_key(b"JS".as_slice()) {
             return Some("a dictionary with a /JS script");
         }
-        if let Some(s) = d.get(b"S".as_slice()).and_then(|s| s.as_name()) {
-            if SCRIPT_OR_EXTERNAL.contains(&s) {
-                return Some("a script or external action");
-            }
+        // `/S` directly or through a reference.
+        let s = match d.get(b"S".as_slice()) {
+            Some(Object::Name(n)) => Some(n.clone()),
+            Some(r @ Object::Ref(_)) => match crate::rewrite::deref_chain(doc, r) {
+                Ok(Object::Name(n)) => Some(n),
+                Ok(_) => None,
+                Err(_) => return Some("an object that cannot be read"),
+            },
+            _ => None,
+        };
+        if s.is_some_and(|s| SCRIPT_OR_EXTERNAL.contains(&s.as_slice())) {
+            return Some("a script or external action");
         }
         stack.extend(d.into_values());
     }
@@ -641,7 +649,13 @@ impl Classifier<'_> {
                     continue;
                 }
             };
-            let kind = kind_of(d.get(b"S".as_slice()).and_then(|s| s.as_name()));
+            // `/S` directly or through a reference (ISO 32000 allows an
+            // indirect value anywhere).
+            let s = d.get(b"S".as_slice()).and_then(|s| match self.get(s) {
+                Ok(Object::Name(n)) => Some(n),
+                _ => None,
+            });
+            let kind = kind_of(s.as_deref());
             let shared = r.and_then(|r| self.first.get(&r).copied());
             let script = (kind == ActionKind::JavaScript)
                 .then(|| d.get(b"JS".as_slice()).map(|js| self.script(js)))

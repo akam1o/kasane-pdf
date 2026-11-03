@@ -80,8 +80,18 @@ const INVENTORY_CHAIN_DEPTH: usize = 512;
 /// as the first code unit with a zero byte) narrowed, non-ASCII → 0xFF; a
 /// UTF-8 byte order mark dropped.
 fn narrow(b: &[u8]) -> Vec<u8> {
-    let le = b.starts_with(&[0xFF, 0xFE]) || (b.len() > 1 && b[0] == b'<' && b[1] == 0);
-    let be = b.starts_with(&[0xFE, 0xFF]) || (b.len() > 1 && b[0] == 0 && b[1] == b'<');
+    // UTF-16: a byte order mark, or NUL bytes with `<` as the first
+    // non-blank code unit (the library's rule).
+    let first = |le: bool| {
+        b.as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&[x, y]| if le { (x, y) } else { (y, x) })
+            .find(|&(lo, hi)| !(hi == 0 && matches!(lo, b' ' | b'\t' | b'\r' | b'\n')))
+    };
+    let nul = b.contains(&0);
+    let le = b.starts_with(&[0xFF, 0xFE]) || (nul && first(true) == Some((b'<', 0)));
+    let be = !le && (b.starts_with(&[0xFE, 0xFF]) || (nul && first(false) == Some((b'<', 0))));
     if !(le || be) {
         return b.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(b).to_vec();
     }
@@ -434,10 +444,11 @@ impl<'a> Ctx<'a> {
                         continue;
                     }
                 };
-                let kind = d
-                    .get(b"S".as_slice())
-                    .and_then(name)
-                    .unwrap_or_else(|| "-".into());
+                // `/S` directly or through a reference.
+                let kind = match d.get(b"S".as_slice()).map(|s| self.get(s)).transpose()? {
+                    Some(Object::Name(n)) => String::from_utf8_lossy(&n).into_owned(),
+                    _ => "-".into(),
+                };
                 let shared_with = r.and_then(|r| first.get(&r).copied());
                 let mut script_undecodable = false;
                 let script_bytes = if kind == "JavaScript" {

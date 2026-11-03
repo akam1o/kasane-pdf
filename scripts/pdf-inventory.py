@@ -320,8 +320,17 @@ def count_scripts(t):
 def xfa_text(b):
     """One byte per character: UTF-16 narrowed (non-ASCII -> 0xFF), a UTF-8
     BOM dropped; numeric character references expanded."""
-    le = b[:2] == b"\xff\xfe" or (len(b) > 1 and b[0:1] == b"<" and b[1] == 0)
-    be = b[:2] == b"\xfe\xff" or (len(b) > 1 and b[0] == 0 and b[1:2] == b"<")
+    # UTF-16: a byte order mark, or NUL bytes with `<` as the first
+    # non-blank code unit (the library's rule).
+    def first(le):
+        for i in range(0, len(b) - 1, 2):
+            lo, hi = (b[i], b[i + 1]) if le else (b[i + 1], b[i])
+            if not (hi == 0 and lo in b" \t\r\n"):
+                return (lo, hi)
+        return None
+    nul = 0 in b
+    le = b[:2] == b"\xff\xfe" or (nul and first(True) == (ord("<"), 0))
+    be = not le and (b[:2] == b"\xfe\xff" or (nul and first(False) == (ord("<"), 0)))
     if le or be:
         body = b[2:] if b[:2] in (b"\xff\xfe", b"\xfe\xff") else b
         out = bytearray()
