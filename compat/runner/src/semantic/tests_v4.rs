@@ -1165,3 +1165,69 @@ fn hostile_graphs_stay_bounded() {
     assert!(inventory(&doc(&wide)).is_err());
     assert!(matches!(section(&wide, "multimedia"), Section::Error(_)));
 }
+
+#[test]
+fn an_outline_structure_destination_is_named_by_its_element() {
+    // GoTo with /SD into a structure tree whose elements point back to
+    // their parents (/P) and down to kids (/K): named `elem#…`, not
+    // walked; a different target element is a difference.
+    let b = |target: u32, off: u32| {
+        pdf(
+            "1.7",
+            &[
+                (1, d("<< /Type /Catalog /Pages 2 0 R /Outlines 10 0 R /StructTreeRoot 20 0 R >>")),
+                (2, d("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")),
+                (3, d("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>")),
+                (10, d("<< /Type /Outlines /First 11 0 R /Last 11 0 R /Count 1 >>")),
+                (11, d(&format!("<< /Title (a) /Parent 10 0 R /A << /S /GoTo /D (s) /SD [{target} 0 R /XYZ 0 0 null] >> >>"))),
+                (20, d("<< /Type /StructTreeRoot /K [21 0 R] >>")),
+                (21, d("<< /Type /StructElem /S /Document /P 20 0 R /K [22 0 R 23 0 R] >>")),
+                (22, d("<< /Type /StructElem /S /H1 /P 21 0 R /Pg 3 0 R /K 0 >>")),
+                (23, d("<< /Type /StructElem /S /H2 /P 21 0 R /Pg 3 0 R /K 1 >>")),
+            ],
+            off,
+        )
+    };
+    let cls = |x: &[u8], y: &[u8]| cat_of(&compare(&doc(x), &doc(y)), "outlines");
+    let c = cls(&b(22, 0), &b(22, 0));
+    assert_eq!(c.class, SemClass::Pass, "{:?}", c.notes);
+    assert_eq!(
+        cls(&b(22, 0), &b(22, 300)).class,
+        SemClass::Pass,
+        "renumbered"
+    );
+    assert_eq!(
+        cls(&b(22, 0), &b(23, 0)).class,
+        SemClass::Fail,
+        "another element"
+    );
+    let l = match &snapshot(&doc(&b(22, 0)))[0] {
+        Section::Data(v) => v.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(l.iter().any(|x| x.contains("elem#")), "{l:#?}");
+}
+
+#[test]
+fn a_stream_length_object_is_not_walked() {
+    // A stream whose /Length is an unreadable object: storage, not
+    // signature structure — nothing to record.
+    let b = pdf(
+        "1.7",
+        &[
+            (1, d("<< /Type /Catalog /Pages 2 0 R /Metadata 5 0 R >>")),
+            (2, d("<< /Type /Pages /Kids [] /Count 0 >>")),
+            (
+                5,
+                Body::Dict("<< /Type /Metadata /Length 6 0 R >>\nstream\nabc\nendstream".into()),
+            ),
+            (6, Body::Broken),
+        ],
+        0,
+    );
+    assert!(
+        matches!(section(&b, "signatures"), Section::Absent),
+        "{:?}",
+        section(&b, "signatures")
+    );
+}

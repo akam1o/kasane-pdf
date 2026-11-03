@@ -575,13 +575,13 @@ impl<'a> Ctx<'a> {
                 w.first.insert(r, node);
             }
             let v = self.get(&o)?;
-            let d = match v {
+            let (d, stream) = match v {
                 Object::Name(n) if n == b"#unresolved" => {
                     w.unresolved += 1;
                     continue;
                 }
-                Object::Dict(d) => d,
-                Object::Stream { dict, .. } => dict,
+                Object::Dict(d) => (d, false),
+                Object::Stream { dict, .. } => (dict, true),
                 Object::Array(a) => {
                     for (i, x) in a.into_iter().enumerate() {
                         if matches!(x, Object::Ref(_) | Object::Array(_) | Object::Dict(_)) {
@@ -596,6 +596,12 @@ impl<'a> Ctx<'a> {
                 w.sigs.push((node, r, d.clone()));
             }
             for (k, x) in d {
+                // A stream's length is storage, not content: a rewrite
+                // writes it directly (an unreadable `/Length` object
+                // disappears, correctly).
+                if stream && k.as_slice() == b"Length" {
+                    continue;
+                }
                 if matches!(k.as_slice(), b"Parent" | b"P") {
                     // Back-pointers lead to objects reached by their own path.
                     if let Some(r) = x.as_ref() {

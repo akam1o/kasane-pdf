@@ -144,9 +144,22 @@ fn err<T>(m: impl Into<String>) -> Res<T> {
 /// The snapshot of `doc`, one section per entry of `CATEGORIES`.
 pub fn snapshot(doc: &Document) -> Vec<Section> {
     let mut ctx = Ctx::new(doc);
-    CATEGORIES
+    // `outlines` is taken after `struct_tree`: an outline action's
+    // structure destination (`/SD`) names its element by the tree path
+    // the structure category records (as `doc_actions` does), instead
+    // of walking into the tree. Sections keep the CATEGORIES order.
+    let mut order: Vec<usize> = (0..CATEGORIES.len()).collect();
+    order.retain(|&i| CATEGORIES[i] != "outlines");
+    let at = order
         .iter()
-        .map(|c| {
+        .position(|&i| CATEGORIES[i] == "struct_tree")
+        .unwrap()
+        + 1;
+    order.insert(at, 0);
+    let mut sections: Vec<Option<Section>> = vec![None; CATEGORIES.len()];
+    for i in order {
+        let c = &CATEGORIES[i];
+        sections[i] = Some({
             let r = match *c {
                 "outlines" => ctx.outlines(),
                 "named_dests" => ctx.named_dests_lines(),
@@ -172,8 +185,9 @@ pub fn snapshot(doc: &Document) -> Vec<Section> {
                 Err(Snag::Unsupported(m)) => Section::Unsupported(m),
                 Err(Snag::Error(m)) => Section::Error(m),
             }
-        })
-        .collect()
+        });
+    }
+    sections.into_iter().map(|s| s.unwrap()).collect()
 }
 
 /// Compare the snapshots of an original and its rewrite.
