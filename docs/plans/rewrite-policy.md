@@ -251,9 +251,13 @@ declarations checked), and character references expanded. A script is
 an element whose local name is `script`, under any prefix: `<`, an
 optional `NCName:`, `script`, then white space, `>` or `/`. The packets
 are checked together, as one document. A packet that cannot be read
-completely is refused, as in W3. A match that cannot be classified
-(a `script` local name the rule cannot delimit) refuses under every
-policy, so no carried script can be missing from the report. A FormCalc
+completely is refused, as in W3. A `script`-shaped match the rule
+cannot delimit is classified as `Script` under every policy: an
+over-report, never an under-report. It refuses only where the policy
+refuses scripts (`RefuseScriptsAndExternal`). `Profile` and `Carry`
+carry and report it, so no carried script is missing from the report,
+and `Profile` keeps `rewrite`'s results (which carry the packet as it
+is today). A FormCalc
 `<script contentType=…>` is a script too.
 
 Owners (where an action or trigger lives):
@@ -824,6 +828,7 @@ is one test, run under every policy where the outcome differs.
 | `GoToDp` action | Carry | carry (Navigation) | Navigation | pass |
 | `/OpenAction` array holding a JavaScript action | Profile / Carry | carry (as today: the top value is not a dictionary) / carry | each member reported | pass |
 | XFA template with `<x:script xmlns:x=…>` and `<script contentType="application/x-formcalc">` | RefuseSE / Carry | refuse / carry | 2 × Script, Xfa | `xfa` pass |
+| XFA packet with a `script`-shaped match the rule cannot delimit | Profile / Carry / RefuseSE | carry (same bytes and errors as `rewrite`) / carry / refuse | Script, Xfa (over-report) | `xfa` pass |
 | 200 000 actions | Profile | as `rewrite` (no report cap) | 200 000 items | — |
 | default options vs `rewrite` | default | identical bytes and errors (every case above, and the corpus) | — | — |
 
@@ -950,4 +955,10 @@ eight P2s, all adopted.
 | G7 | P2 | `SigFlagsChange` not defined | adopted |
 | G8 | P2 | an unclassifiable XFA script match carried unreported under `Carry`/`Profile` | adopted: refuses under every policy |
 | G9 | P2 | `/OpenAction` array members indistinguishable in the report | adopted: member index |
+
+Second re-review: G1–G7 and G9 confirmed. G8's first wording ("refuses
+under every policy") would have made `rewrite_with(default)` refuse
+where `rewrite` succeeds (H1, P1). Adopted the reviewer's resolution:
+an ambiguous match is classified as `Script`, an over-report, and
+refuses only under `RefuseScriptsAndExternal`; test row added.
 
