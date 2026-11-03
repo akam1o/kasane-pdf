@@ -123,6 +123,7 @@ pub mod text_extract;
 mod tounicode;
 mod type1;
 mod unicode_fallback;
+mod usage_rights;
 pub mod warning;
 mod xref;
 

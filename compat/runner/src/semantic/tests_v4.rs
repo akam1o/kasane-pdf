@@ -1444,3 +1444,41 @@ fn every_open_action_value_is_accounted_for() {
         "{l:#?}"
     );
 }
+
+/// V4 P2 (C2): the signature walk follows /P and /Parent, and records a
+/// field /Lock and seed values wherever they are, a widget outside
+/// /AcroForm /Fields included.
+#[test]
+fn signatures_follow_back_pointers_and_see_locks_outside_fields() {
+    let b = pdf(
+        "1.7",
+        &[
+            (1, d("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [] >> >>")),
+            (2, d("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")),
+            (3, d("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Annots [4 0 R 6 0 R] >>")),
+            // A widget in no /Fields, with a lock and a seed value.
+            (4, d("<< /Type /Annot /Subtype /Widget /FT /Sig /Rect [0 0 1 1] /Lock << /Action /All >> /SV << /Lock << /X 1 >> >> >>")),
+            // Reachable only through /P: a page outside the tree with a
+            // signature-like dictionary.
+            (6, d("<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /P 7 0 R >>")),
+            (7, d("<< /Type /Page /X << /ByteRange [0 1 2 3] >> >>")),
+        ],
+        0,
+    );
+    let l = lines(&b, "signatures");
+    assert!(
+        l.iter()
+            .any(|x| x.starts_with("sig\tat=/Root/Pages/Kids[0]/Annots[1]/P/X\t")),
+        "{l:#?}"
+    );
+    assert_eq!(
+        l.iter().filter(|x| x.starts_with("lock\t")).count(),
+        1,
+        "{l:#?}"
+    );
+    assert_eq!(
+        l.iter().filter(|x| x.starts_with("seed_value\t")).count(),
+        1,
+        "{l:#?}"
+    );
+}

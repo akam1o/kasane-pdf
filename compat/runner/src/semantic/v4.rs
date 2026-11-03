@@ -750,6 +750,13 @@ impl<'a> Ctx<'a> {
             out.push(format!("sig\tat={at}\trefs={n}\t{}", w.sig_summary(d)?));
         }
         let unresolved = walk.unresolved;
+        // Field locks and seed values wherever they are (a widget in no
+        // /Fields included): by path, keys and digest, never values.
+        for (kind, nodes) in [("lock", &walk.locks), ("seed_value", &walk.seed_values)] {
+            for n in nodes.iter() {
+                out.push(format!("{kind}\tat={}", walk.path(*n)?));
+            }
+        }
         let path_of = |o: &Object| -> Res<String> {
             match o.as_ref().and_then(|r| walk.first.get(&r)) {
                 Some(n) => walk.path(*n),
@@ -836,14 +843,17 @@ impl<'a> Ctx<'a> {
     /// that prints it); the queue counts against the node budget.
     fn signature_walk(&mut self) -> Res<Walk> {
         let trailer = self.doc.trailer().clone();
-        let mut queue: VecDeque<(Object, Option<usize>, Box<str>)> = VecDeque::new();
+        // (value, parent node, step, under a seed-value dictionary, is
+        // the /SV value)
+        #[allow(clippy::type_complexity)]
+        let mut queue: VecDeque<(Object, Option<usize>, Box<str>, bool, bool)> = VecDeque::new();
         for k in ["Root", "Info"] {
             if let Some(v) = trailer.get(k.as_bytes()) {
-                queue.push_back((v.clone(), None, format!("/{k}").into()));
+                queue.push_back((v.clone(), None, format!("/{k}").into(), false, false));
             }
         }
         let mut w = Walk::default();
-        while let Some((o, parent, step)) = queue.pop_front() {
+        while let Some((o, parent, step, under_sv, is_sv)) = queue.pop_front() {
             if queue.len() + w.nodes.len() > MAX_NODES {
                 return err(format!("signature walk stopped after {MAX_NODES} values"));
             }
@@ -870,7 +880,13 @@ impl<'a> Ctx<'a> {
                 Object::Array(a) => {
                     for (i, x) in a.into_iter().enumerate() {
                         if matches!(x, Object::Ref(_) | Object::Array(_) | Object::Dict(_)) {
-                            queue.push_back((x, Some(node), format!("[{i}]").into()));
+                            queue.push_back((
+                                x,
+                                Some(node),
+                                format!("[{i}]").into(),
+                                under_sv,
+                                false,
+                            ));
                         }
                     }
                     continue;
@@ -880,6 +896,14 @@ impl<'a> Ctx<'a> {
             if self.signature_like(&d)? {
                 w.sigs.push((node, r, d.clone()));
             }
+            // A field lock anywhere (a widget outside /Fields too), and
+            // seed-value dictionaries (a lock inside one is not a field's).
+            if d.contains_key(b"Lock".as_slice()) && !under_sv {
+                w.locks.push(node);
+            }
+            if is_sv {
+                w.seed_values.push(node);
+            }
             for (k, x) in d {
                 // A stream's length is storage, not content: a rewrite
                 // writes it directly (an unreadable `/Length` object
@@ -887,16 +911,12 @@ impl<'a> Ctx<'a> {
                 if stream && k.as_slice() == b"Length" {
                     continue;
                 }
-                if matches!(k.as_slice(), b"Parent" | b"P") {
-                    // Back-pointers lead to objects reached by their own path.
-                    if let Some(r) = x.as_ref() {
-                        *w.refs.entry(r).or_default() += 1;
-                        continue;
-                    }
-                }
+                // Back-pointers (/P, /Parent) are followed too: an object
+                // reached only through one is searched.
                 if matches!(x, Object::Ref(_) | Object::Array(_) | Object::Dict(_)) {
+                    let sv = k.as_slice() == b"SV";
                     let step = format!("/{}", String::from_utf8_lossy(&k));
-                    queue.push_back((x, Some(node), step.into()));
+                    queue.push_back((x, Some(node), step.into(), under_sv || sv, sv));
                 }
             }
         }
@@ -1162,6 +1182,10 @@ struct Walk {
     refs: HashMap<IndirectRef, usize>,
     unresolved: usize,
     sigs: Vec<(usize, Option<IndirectRef>, Dict)>,
+    /// Dictionaries with a `/Lock` outside a seed-value dictionary.
+    locks: Vec<usize>,
+    /// Seed-value dictionaries.
+    seed_values: Vec<usize>,
 }
 
 impl Walk {
