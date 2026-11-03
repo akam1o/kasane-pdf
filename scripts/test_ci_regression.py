@@ -414,7 +414,9 @@ class Gate(unittest.TestCase):
         worse["rewrite_options"]["remove-usage-rights"] = {"rewrite": "error", "roundtrip": None}
         rc, out = check(run(a, worse, c, d), base)
         self.assertEqual(rc, 0, out)
-        self.assertNotIn("remove-usage-rights", out)
+        # Listed for review in its own namespace, never a regression.
+        self.assertIn("rewrite configuration change (not enforced, review): b: remove-usage-rights", out)
+        self.assertFalse([l for l in out.splitlines() if l.startswith("REGRESSION") and "remove-usage-rights" in l])
         self.assertEqual(base["aggregate"]["rewrite_pass"], 1)
 
     def test_the_defaults_identity_and_report_are_enforced(self):
@@ -445,6 +447,30 @@ class Gate(unittest.TestCase):
         rc, out = check(run(opt), base)
         self.assertEqual(rc, 0, out)
         self.assertIn("carry: the report disagrees", out)
+
+    def test_a_missing_category_and_a_lost_option_gain_are_listed(self):
+        # A semantic category the baseline records and the run lacks is
+        # listed; so is a configuration's lost Full PASS, rewrite or
+        # semantic pass — in its own namespace, never failing the gate.
+        old = self.with_semantic(file("a", [NORMAL]), {"acroform": "pass", "outlines": "pass"})
+        old["rewrite_options"] = {"carry": {"rewrite": "pass", "roundtrip": {
+            "full": True, "reparse": {"class": "Pass"}, "structure": {"class": "Pass"},
+            "semantic": {"class": "pass", "checks": []}}}}
+        base = cr.summarize(run(old))
+        self.assertEqual(base["files"]["a"]["options"]["carry"],
+                         {"rewrite": "pass", "full_pass": True, "semantic": "pass"})
+        new = self.with_semantic(file("a", [NORMAL]), {"acroform": "pass"})
+        new["rewrite_options"] = {"carry": {"rewrite": "unsupported", "refusal": "unknown_action"}}
+        rc, out = check(run(new), base)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("semantic outlines pass -> missing", out)
+        self.assertIn("carry: full_pass True -> False", out)
+        self.assertIn("carry: rewrite pass -> unsupported", out)
+        self.assertIn("carry: semantic pass -> None", out)
+        # The same run against itself: nothing listed.
+        rc, out = check(run(new), cr.summarize(run(new)))
+        self.assertNotIn("carry:", out)
+        self.assertNotIn("-> missing", out)
 
     def test_text_agreement_is_recorded_and_report_only(self):
         def with_text(f1, f1a):

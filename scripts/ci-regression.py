@@ -222,6 +222,9 @@ def summarize(run):
             # runner's inventory, its version change against T1; absent
             # for an older runner.
             **policy_summary(f),
+            # Non-default configurations per file (their own namespace):
+            # rewrite class, Full PASS, overall semantic class.
+            **options_summary(f),
             # Page-1 text agreement with pdftotext (report only; absent:
             # not compared, or an older runner).
             "text_f1": text_value(f, "text_char_f1"),
@@ -266,6 +269,22 @@ def policy_summary(f):
     if disagree:
         out["options_inventory_disagree"] = disagree
     return {"policy": out}
+
+
+def options_summary(f):
+    opts = f.get("rewrite_options") or {}
+    if not opts:
+        return {}
+    strict = lambda s: (f.get(s) or {}).get("class") == "pass" and (s == "parse" or not f.get("recovered"))
+    out = {}
+    for name, o in sorted(opts.items()):
+        rt = o.get("roundtrip") or {}
+        ok = (o.get("rewrite") or "").lower() == "pass" and (rt.get("reparse") or {}).get("class", "Pass") == "Pass"
+        full = f.get("expect") == "pass" and ok and not f.get("recovered") and all(
+            strict(s) for s in ("parse", "render", "text"))
+        out[name] = {"rewrite": (o.get("rewrite") or "").lower(), "full_pass": bool(full),
+                     "semantic": (rt.get("semantic") or {}).get("class")}
+    return {"options": out}
 
 
 def semantic_rules(rt):
@@ -413,6 +432,7 @@ def check(run, base, summary_md=None):
     new_flags = []
     new_reports, known_reports = [], []
     semantic_changes = []
+    option_changes = []
     text_changes = []
     for fid, n in cur.items():
         if n["verdict"] in ("crash", "timeout"):
@@ -448,7 +468,10 @@ def check(run, base, summary_md=None):
         # from the nightly configuration so far).
         for cat, was in (o.get("semantic") or {}).items():
             now = (n.get("semantic") or {}).get(cat)
-            if now is not None and semantic_moved(was, now):
+            if now is None and n.get("semantic"):
+                # The run has a semantic record without this category.
+                semantic_changes.append(f"{fid}: semantic {cat} {was} -> missing")
+            elif now is not None and semantic_moved(was, now):
                 semantic_changes.append(f"{fid}: semantic {cat} {was} -> {now}")
         # Report-only categories: the same, or — when the baseline
         # predates them — any outcome that is not a pass or not
@@ -488,6 +511,15 @@ def check(run, base, summary_md=None):
             regressions.append(f"{fid}: the default's version change disagrees with the runner's T1")
         for name in pol.get("options_inventory_disagree") or []:
             semantic_changes.append(f"{fid}: {name}: the report disagrees with the runner's inventory")
+        # A configuration's lost gain (its own namespace; listed, never
+        # enforced): Full PASS, rewrite, semantic pass.
+        for name, was_o in (o.get("options") or {}).items():
+            now_o = (n.get("options") or {}).get(name)
+            if now_o is None:
+                continue  # the configuration was not run this time
+            for key, good in (("full_pass", True), ("rewrite", "pass"), ("semantic", "pass")):
+                if was_o.get(key) == good and now_o.get(key) != good:
+                    option_changes.append(f"{fid}: {name}: {key} {was_o.get(key)} -> {now_o.get(key)}")
         if o.get("incremental") == "pass" and n.get("incremental") not in ("pass", None, ""):
             regressions.append(f"{fid}: incremental pass -> {n['incremental']}")
         oq, nq = o.get("quality", ""), n["quality"]
@@ -542,6 +574,8 @@ def check(run, base, summary_md=None):
         print("semantic round-trip change (not enforced, review):", line)
     for line in text_changes:
         print("text agreement drop (not enforced, review):", line)
+    for line in option_changes:
+        print("rewrite configuration change (not enforced, review):", line)
     for line in regressions:
         print("REGRESSION:", line)
     if regressions:
