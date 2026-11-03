@@ -1104,6 +1104,7 @@ mod tests {
             profile: crate::profile::Profile::default(),
             rewrite_refusal: None,
             rewrite_options: Default::default(),
+            policy_check: None,
         }
     }
 

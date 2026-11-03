@@ -908,7 +908,17 @@ fn the_inventory_lists_actions_by_class_owner_and_chain() {
         ]);
         pdf("1.7", &objs, 77)
     };
-    assert_eq!(inventory(&doc(&renumbered)).unwrap(), inv);
+    // Renumbered: the same inventory but for the input objects.
+    let strip = |v: Vec<InventoryItem>| -> Vec<InventoryItem> {
+        v.into_iter()
+            .map(|i| InventoryItem { input: None, ..i })
+            .collect()
+    };
+    assert_eq!(
+        strip(inventory(&doc(&renumbered)).unwrap()),
+        strip(inv.clone())
+    );
+    assert_eq!(inv[0].input, Some((20, 0)));
     // A destination /OpenAction is not an action; an action one is, with
     // its /Next chain.
     let open = |oa: &str| {
@@ -1351,5 +1361,86 @@ fn a_same_length_signature_value_change_is_left_to_the_graph_comparison() {
     assert!(
         diffs.iter().any(|n| n.starts_with("/Root/X/Contents")),
         "{diffs:?}"
+    );
+}
+
+/// C1 §5: every /OpenAction value is accounted for in the inventory —
+/// an action dictionary (or an array of them, each member), nothing for
+/// a destination (array, name, string) or an undefined reference, and
+/// an item for an unreadable (`#unresolved`) or malformed (`#malformed`)
+/// value, never silently nothing.
+#[test]
+fn every_open_action_value_is_accounted_for() {
+    let open = |oa: &str, extra: Vec<(u32, Body)>| {
+        let mut objs = vec![
+            (
+                1,
+                d(&format!(
+                    "<< /Type /Catalog /Pages 2 0 R /OpenAction {oa} >>"
+                )),
+            ),
+            (2, d("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")),
+            (3, d("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>")),
+        ];
+        objs.extend(extra);
+        pdf("1.7", &objs, 0)
+    };
+    let kinds = |b: &[u8]| -> Vec<(String, String)> {
+        inventory(&doc(b))
+            .unwrap()
+            .into_iter()
+            .map(|i| (i.owner, i.kind))
+            .collect()
+    };
+    let none: Vec<(String, String)> = vec![];
+    assert_eq!(
+        kinds(&open("[3 0 R /Fit]", vec![])),
+        none,
+        "destination array"
+    );
+    assert_eq!(
+        kinds(&open("(chapter)", vec![])),
+        none,
+        "named destination string"
+    );
+    assert_eq!(
+        kinds(&open("/chapter", vec![])),
+        none,
+        "named destination name"
+    );
+    assert_eq!(kinds(&open("9 0 R", vec![])), none, "undefined reference");
+    let one = |k: &str| vec![("catalog/OpenAction".to_string(), k.to_string())];
+    assert_eq!(
+        kinds(&open("9 0 R", vec![(9, Body::Broken)])),
+        one("#unresolved")
+    );
+    assert_eq!(kinds(&open("42", vec![])), one("#malformed"));
+    assert_eq!(
+        kinds(&open("9 0 R", vec![(9, st("", b"x"))])),
+        one("#malformed"),
+        "a stream"
+    );
+    assert_eq!(
+        kinds(&open("<< /S /Named /N /NextPage >>", vec![])),
+        one("Named")
+    );
+    // Non-standard, seen in the wild: an array of action dictionaries
+    // (its first member an action; a null member is no action).
+    assert_eq!(
+        kinds(&open(
+            "[<< /S /Named /N /NextPage >> 9 0 R 8 0 R]",
+            vec![(9, d("<< /S /URI /URI (u) >>"))]
+        )),
+        vec![
+            ("catalog/OpenAction#0".to_string(), "Named".to_string()),
+            ("catalog/OpenAction#1".to_string(), "URI".to_string())
+        ]
+    );
+    // An unreadable OpenAction is a multimedia "unresolved" line too
+    // (possibly a multimedia action), not absence.
+    let l = lines(&open("9 0 R", vec![(9, Body::Broken)]), "multimedia");
+    assert!(
+        l.contains(&"action\towner=catalog/OpenAction\tposition=0\tunresolved".to_string()),
+        "{l:#?}"
     );
 }

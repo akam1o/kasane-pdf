@@ -19,6 +19,7 @@ mod colour;
 mod configs;
 mod fontaudit;
 mod gsaudit;
+mod policy;
 mod probe;
 mod profile;
 mod roundtrip;
@@ -223,6 +224,69 @@ struct FileResult {
     /// its own namespace; the default stays in `rewrite` / `roundtrip`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     rewrite_options: BTreeMap<String, configs::OptionRun>,
+    /// `rewrite_with` with the default options against `rewrite` (bytes
+    /// or error), and its report against the runner's inventory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    policy_check: Option<PolicyCheck>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PolicyCheck {
+    /// `rewrite_with(default)` gave `rewrite`'s bytes (or the same error).
+    identical: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    report: Option<policy::ReportSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inventory: Option<policy::InventoryCheck>,
+    /// The report's version change agrees with the runner's own T1
+    /// declaration (raised exactly when T1 is declared, to the same
+    /// versions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version_agrees: Option<bool>,
+}
+
+/// The document parsed again the way the run parsed it (strict, or
+/// recovering): each rewrite under comparison starts from a fresh one,
+/// so none inherits the reference budget another operation consumed.
+fn reopen(data: &[u8], recovered: bool) -> Option<Document> {
+    if recovered {
+        Document::from_bytes_recovering(data).ok()
+    } else {
+        Document::from_bytes(data).ok()
+    }
+}
+
+/// `rewrite_with(default)` against `rewrite`, each on a fresh parse of
+/// `data`.
+fn policy_check(data: &[u8], recovered: bool) -> Option<PolicyCheck> {
+    let none = |identical| PolicyCheck {
+        identical,
+        report: None,
+        inventory: None,
+        version_agrees: None,
+    };
+    let (a, b) = (reopen(data, recovered)?, reopen(data, recovered)?);
+    Some(
+        match (
+            kasane_pdf::rewrite(&a),
+            kasane_pdf::rewrite_with(&b, &kasane_pdf::RewriteOptions::default()),
+        ) {
+            (Ok(bytes), Ok(out)) => {
+                let input = reopen(data, recovered)?;
+                let inventory = Document::from_bytes(out.bytes())
+                    .ok()
+                    .map(|o| policy::check(out.report(), &input, &o));
+                PolicyCheck {
+                    identical: out.bytes() == bytes.as_slice(),
+                    report: Some(policy::summary(out.report())),
+                    inventory,
+                    version_agrees: Some(policy::version_agrees(out.report(), &input, data)),
+                }
+            }
+            (Err(x), Err(y)) => none(x.to_string() == y.to_string() && x.kind() == y.kind()),
+            _ => none(false),
+        },
+    )
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1424,6 +1488,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                         profile: profile::Profile::default(),
                         rewrite_refusal: None,
                         rewrite_options: BTreeMap::new(),
+                        policy_check: None,
                     });
                 }
             }
@@ -1638,8 +1703,10 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     let t = Instant::now();
     let mut rewrite_res = StageResult::pass(0);
     let mut rewrite_refusal = None;
+    let check;
     let rt = match rewrite(&doc) {
         Ok(out) => {
+            check = policy_check(&data, recovered);
             let rewrite_ms = t.elapsed().as_millis();
             let rt_opts = rt_options(args);
             let decls = configs::RewriteConfig::Default.declarations(&doc, &data);
@@ -1664,10 +1731,11 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
             let (c, d, f, cid) = classify_err("rewrite", &e);
             rewrite_res = StageResult::caused(c, d, f, cid, t.elapsed().as_millis());
             rewrite_refusal = configs::refusal(&e);
+            check = policy_check(&data, recovered);
             roundtrip::refused(&e, t.elapsed().as_millis())
         }
     };
-    let rewrite_options = run_rewrite_options(&doc, &data, id, args);
+    let rewrite_options = run_rewrite_options(&data, recovered, id, args);
     if rewrite_res.class == Class::Pass {
         rewrite_res.ms = rt.rewrite.ms;
     }
@@ -1729,6 +1797,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         profile: prof,
         rewrite_refusal,
         rewrite_options,
+        policy_check: check,
     }
 }
 
@@ -1746,8 +1815,8 @@ fn rt_options(args: &Args) -> RtOptions {
 /// parsed document, each recorded under its own name. `main` refuses a
 /// configuration the library cannot run before any file is processed.
 fn run_rewrite_options(
-    doc: &Document,
     data: &[u8],
+    recovered: bool,
     id: &str,
     args: &Args,
 ) -> BTreeMap<String, configs::OptionRun> {
@@ -1756,6 +1825,11 @@ fn run_rewrite_options(
         if *c == configs::RewriteConfig::Default {
             continue;
         }
+        // A fresh parse per configuration (and for its checks).
+        let (Some(fresh), Some(input)) = (reopen(data, recovered), reopen(data, recovered)) else {
+            continue;
+        };
+        let doc = &fresh;
         let t = Instant::now();
         let run = match c.rewrite(doc) {
             Err(why) => configs::OptionRun {
@@ -1764,8 +1838,10 @@ fn run_rewrite_options(
                 declared: Vec::new(),
                 unavailable: Some(why.to_string()),
                 roundtrip: None,
+                report: None,
+                inventory: None,
             },
-            Ok(Ok(bytes)) => {
+            Ok(Ok((bytes, report))) => {
                 let decls = c.declarations(doc, data);
                 let tag = format!("{id}-{}", c.name().replace(',', "+"));
                 let rt = roundtrip::run(
@@ -1777,12 +1853,19 @@ fn run_rewrite_options(
                     &tag,
                     &decls,
                 );
+                let inventory = report.as_ref().and_then(|r| {
+                    Document::from_bytes(&bytes)
+                        .ok()
+                        .map(|o| policy::check(r, &input, &o))
+                });
                 configs::OptionRun {
                     rewrite: "pass".into(),
                     refusal: None,
                     declared: decls.iter().map(|d| d.rule_name().to_string()).collect(),
                     unavailable: None,
                     roundtrip: Some(rt),
+                    report: report.as_ref().map(policy::summary),
+                    inventory,
                 }
             }
             Ok(Err(e)) => {
@@ -1793,6 +1876,8 @@ fn run_rewrite_options(
                     declared: Vec::new(),
                     unavailable: None,
                     roundtrip: Some(roundtrip::refused(&e, t.elapsed().as_millis())),
+                    report: None,
+                    inventory: None,
                 }
             }
         };

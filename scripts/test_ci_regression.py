@@ -390,6 +390,11 @@ class Gate(unittest.TestCase):
         c["rewrite_options"] = {"remove-usage-rights": {"rewrite": "unsupported", "refusal": "script",
                                                         "roundtrip": {"rewrite": {"class": "Unsupported"}}}}
         d = dict(file("d", [NORMAL]), parse={"class": "error"}, rewrite={"class": "skip"})
+        a["policy_check"] = {"identical": True, "version_agrees": True,
+                             "report": {"script": 1, "navigation": 2},
+                             "inventory": {"agree": True}}
+        b["rewrite_options"]["remove-usage-rights"]["report"] = {"script": 2, "unclassified": 1}
+        b["rewrite_options"]["remove-usage-rights"]["inventory"] = {"agree": False, "runner_error": "limit"}
         figs = cr.summarize(run(a, b, c, d))["aggregate"]["by_config"]
         dflt, d1 = figs["default"], figs["remove-usage-rights"]
         self.assertEqual((dflt["files"], dflt["full_pass"], dflt["signature_refusal"], dflt["script_refusal"]), (3, 1, 1, 1))
@@ -397,6 +402,11 @@ class Gate(unittest.TestCase):
         self.assertEqual((d1["files"], d1["rewrite_pass"], d1["full_pass"], d1["full_pass_verified"]), (3, 2, 2, 2))
         self.assertEqual((d1["semantic_pass"], d1["semantic_transformed"], d1["script_refusal"]), (1, 1, 1))
         self.assertEqual((d1["graph_rt"], d1["graph_rt_declared"], d1["full_rt"], d1["full_rt_declared"]), (1, 1, 1, 2))
+        self.assertEqual((dflt["default_identical"], dflt["default_differs"], dflt["version_agrees"]), (1, 0, 1))
+        self.assertEqual((dflt["report_files"], dflt["report_script"], dflt["report_navigation"]), (1, 1, 2))
+        self.assertEqual((dflt["inventory_checked"], dflt["inventory_agree"]), (1, 1))
+        self.assertEqual((d1["report_script"], d1["report_unclassified"], d1["inventory_agree"],
+                          d1["inventory_runner_error"]), (2, 1, 0, 1))
         # The enforced aggregate and the gate read the default only: an
         # option run that loses everything changes nothing in `check`.
         base = cr.summarize(run(a, b, c, d))
@@ -406,6 +416,35 @@ class Gate(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertNotIn("remove-usage-rights", out)
         self.assertEqual(base["aggregate"]["rewrite_pass"], 1)
+
+    def test_the_defaults_identity_and_report_are_enforced(self):
+        good = dict(file("a", [NORMAL]), policy_check={
+            "identical": True, "version_agrees": True, "inventory": {"agree": True}})
+        base = cr.summarize(run(good))
+        rc, out = check(run(good), base)
+        self.assertEqual(rc, 0, out)
+        for change, msg in [
+            ({"identical": False}, "differs from rewrite"),
+            ({"inventory": {"agree": False}}, "disagrees with the runner's inventory"),
+            ({"version_agrees": False}, "version change disagrees"),
+        ]:
+            bad = json.loads(json.dumps(good))
+            bad["policy_check"].update(change)
+            rc, out = check(run(bad), base)
+            self.assertEqual(rc, 1, out)
+            self.assertIn(msg, out)
+        # The runner's own limit is not a disagreement; an older runner
+        # (no policy_check) reads as before.
+        lim = json.loads(json.dumps(good))
+        lim["policy_check"]["inventory"] = {"agree": False, "runner_error": "limit"}
+        self.assertEqual(check(run(lim), base)[0], 0)
+        self.assertEqual(check(run(file("a", [NORMAL])), base)[0], 0)
+        # Another configuration's disagreement is listed, not enforced.
+        opt = json.loads(json.dumps(good))
+        opt["rewrite_options"] = {"carry": {"rewrite": "pass", "inventory": {"agree": False}}}
+        rc, out = check(run(opt), base)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("carry: the report disagrees", out)
 
     def test_text_agreement_is_recorded_and_report_only(self):
         def with_text(f1, f1a):

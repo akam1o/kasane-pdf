@@ -218,6 +218,10 @@ def summarize(run):
             # The declared rules behind each `transformed` category
             # (enforced and report-only); absent when there is none.
             **semantic_rules(rt),
+            # rewrite_with(default) against rewrite, its report against the
+            # runner's inventory, its version change against T1; absent
+            # for an older runner.
+            **policy_summary(f),
             # Page-1 text agreement with pdftotext (report only; absent:
             # not compared, or an older runner).
             "text_f1": text_value(f, "text_char_f1"),
@@ -243,6 +247,25 @@ def summarize(run):
     agg["quality_pages"] = sum(v["quality_pages"] for v in files.values())
     agg["by_config"] = by_config(run)
     return {"aggregate": agg, "files": files}
+
+
+def policy_summary(f):
+    pc = f.get("policy_check")
+    if not pc:
+        return {}
+    inv = pc.get("inventory") or {}
+    out = {"identical": bool(pc.get("identical"))}
+    if inv and not inv.get("runner_error"):
+        out["inventory_agree"] = bool(inv.get("agree"))
+    if pc.get("version_agrees") is not None:
+        out["version_agrees"] = bool(pc["version_agrees"])
+    disagree = [
+        name for name, o in sorted((f.get("rewrite_options") or {}).items())
+        if (o.get("inventory") or {}).get("agree") is False and not (o.get("inventory") or {}).get("runner_error")
+    ]
+    if disagree:
+        out["options_inventory_disagree"] = disagree
+    return {"policy": out}
 
 
 def semantic_rules(rt):
@@ -274,9 +297,13 @@ def config_figures(entries):
             "full_rt", "full_rt_declared", "semantic_pass", "semantic_transformed", "semantic_fail",
             "semantic_error", "semantic_unsupported", "signature_refusal", "script_refusal",
             "multimedia_refusal", "unsupported", "error", "crash_timeout",
+            "report_files", "report_script", "report_external", "report_state", "report_navigation",
+            "report_multimedia", "report_unknown", "report_unclassified", "inventory_checked",
+            "inventory_agree", "inventory_runner_error", "default_identical", "default_differs",
+            "version_agrees", "version_differs",
         )
     }
-    for f, rewrite, refusal, rt in entries:
+    for f, rewrite, refusal, rt, extra in entries:
         fig["files"] += 1
         rt = rt or {}
         if f.get("verdict") in ("crash", "timeout"):
@@ -303,6 +330,23 @@ def config_figures(entries):
             fig["unsupported"] += 1
         elif rewrite not in ("pass", "skip", ""):
             fig["error"] += 1
+        # The library's report (`rewrite_with`) and its check against the
+        # runner's inventory; the default's identity with `rewrite`.
+        extra = extra or {}
+        rep = extra.get("report")
+        if rep:
+            fig["report_files"] += 1
+            for k in ("script", "external", "state", "navigation", "multimedia", "unknown", "unclassified"):
+                fig[f"report_{k}"] += rep.get(k, 0)
+        inv = extra.get("inventory")
+        if inv:
+            fig["inventory_checked"] += 1
+            fig["inventory_agree"] += bool(inv.get("agree"))
+            fig["inventory_runner_error"] += bool(inv.get("runner_error"))
+        if "identical" in extra:
+            fig["default_identical" if extra["identical"] else "default_differs"] += 1
+        if extra.get("version_agrees") is not None:
+            fig["version_agrees" if extra["version_agrees"] else "version_differs"] += 1
     return fig
 
 
@@ -316,9 +360,10 @@ def by_config(run):
         rt = f.get("roundtrip")
         if rt is None and (f.get("rewrite") or {}).get("class") == "skip":
             continue  # never reached the rewrite (strict parse failed)
-        default.append((f, lower((f.get("rewrite") or {}).get("class")), f.get("rewrite_refusal"), rt))
+        default.append((f, lower((f.get("rewrite") or {}).get("class")), f.get("rewrite_refusal"), rt,
+                        f.get("policy_check")))
         for name, o in (f.get("rewrite_options") or {}).items():
-            others.setdefault(name, []).append((f, lower(o.get("rewrite")), o.get("refusal"), o.get("roundtrip")))
+            others.setdefault(name, []).append((f, lower(o.get("rewrite")), o.get("refusal"), o.get("roundtrip"), o))
     out = {"default": config_figures(default)}
     for name, entries in sorted(others.items()):
         out[name] = config_figures(entries)
@@ -431,6 +476,18 @@ def check(run, base, summary_md=None):
             was, now = o.get(key), n.get(key)
             if was is not None and (now is None or now <= was - TEXT_F1_DROP):
                 text_changes.append(f"{fid}: {key} {was} -> {now}")
+        # The default's identity with `rewrite`, its report against the
+        # runner's inventory and its version change: enforced (absolute,
+        # not against the baseline). Other configurations: listed.
+        pol = n.get("policy") or {}
+        if pol.get("identical") is False:
+            regressions.append(f"{fid}: rewrite_with(default) differs from rewrite")
+        if pol.get("inventory_agree") is False:
+            regressions.append(f"{fid}: the default's report disagrees with the runner's inventory")
+        if pol.get("version_agrees") is False:
+            regressions.append(f"{fid}: the default's version change disagrees with the runner's T1")
+        for name in pol.get("options_inventory_disagree") or []:
+            semantic_changes.append(f"{fid}: {name}: the report disagrees with the runner's inventory")
         if o.get("incremental") == "pass" and n.get("incremental") not in ("pass", None, ""):
             regressions.append(f"{fid}: incremental pass -> {n['incremental']}")
         oq, nq = o.get("quality", ""), n["quality"]

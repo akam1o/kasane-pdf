@@ -59,3 +59,10 @@ path = "fuzz_targets/rewrite_graph.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "rewrite_policy"
+path = "fuzz_targets/rewrite_policy.rs"
+test = false
+doc = false
+bench = false

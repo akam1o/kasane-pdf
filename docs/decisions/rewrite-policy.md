@@ -73,4 +73,12 @@ open decisions of the plan. The design is
 
   The default rewrite's results are unchanged. The signature refusal
   policy is unchanged.
+- **D2 implemented (C1, 2026-11-03).** `rewrite_with` ships with
+  `Profile` (byte- and error-identical to `rewrite` on the whole
+  corpus), `RefuseScriptsAndExternal` (a superset of `Profile`'s
+  refusals, with a search of the whole document for script and external
+  actions) and `Carry` (+6 Full PASS, each verified by the semantic
+  round trip and three independent inventories). `UsageRightsPolicy` has
+  only `Refuse` until C2. Errors stay `Unsupported` / `SignaturePolicy`;
+  `Error::refusal_reason` classifies them.
 

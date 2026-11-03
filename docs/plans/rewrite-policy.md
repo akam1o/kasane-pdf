@@ -1050,3 +1050,88 @@ Runner only; the library is unchanged. Details and tests:
     semantic pass 302.
   - The spike figures of §7 stay expectations until C1 and C2 measure
     them.
+
+## 14. C1 implementation: D2 (2026-11-03, branch `feat/v050-executable-content`)
+
+`rewrite_with` and its types are as in §2.2, with these choices and
+deviations:
+
+- **`UsageRightsPolicy` has only `Refuse`.** `Remove` is not declared
+  until C2 implements it (the enum is `#[non_exhaustive]`), so no caller
+  can select an option that does nothing. `RewriteReport` has no
+  `usage_rights` field yet, for the same reason.
+- **The report is taken after the output is written.**
+  - `rewrite_with` runs `rewrite`'s own pipeline (`rewrite_core`).
+    `Carry` lifts only the three document-level checks in
+    `check_refusals`.
+  - The classifier (`src/executable.rs`) then reads the input objects
+    the pipeline already read. It never fails: a cycle in an owner
+    tree, a chain past `max_rewrite_walk_depth` or an unreadable object
+    becomes an `UnclassifiedStructure`.
+  - So `Profile` has exactly `rewrite`'s bytes and errors, by
+    construction and measured on the corpus. `Carry` and
+    `RefuseScriptsAndExternal` refuse unclassified structure.
+  - The classification and the policy checks run under
+    `Document::without_side_effects`: the reference budget and the
+    warnings are restored afterwards.
+- **`RefuseScriptsAndExternal` is a superset of `Profile`.** It refuses
+  everything `Profile` refuses, including a catalog `/AA` that holds
+  only navigation, so the strict policy never accepts what the default
+  refuses.
+  - It refuses every script, external and unknown item and XFA script.
+  - As defence in depth, it searches the whole reachable graph for a
+    dictionary with a script or external `/S` (directly or through a
+    reference) or a `/JS` entry, in any position.
+  - A fuzz finding motivated the search: `/OpenAction [<script>
+    <undefined>]` was read as a destination.
+- **The `/OpenAction` array rule.** An array is a list of actions when
+  its first element is an action dictionary; otherwise it is a
+  destination. The rule is the same in the library, the runner and
+  pypdf. (§3.1 said "an array of action dictionaries"; a null or
+  malformed member no longer turns the array into a destination.)
+- **Owners and their order** are those of §3.1, except that the catalog
+  `/URI` base is not listed: it is not an action. Multimedia annotations
+  are items of their own (owner `Annotation`, before the annotation's
+  `/A` and `/AA`). XFA scripts are items per packet, plus `xfa/across`
+  for a `script` element visible only across packets. Unknown `/AA`
+  keys are `Trigger::OTHER`.
+- **Report scope.** The report lists owner positions only. An action
+  dictionary elsewhere (a destination's parameters, an unknown key) is
+  carried and not listed. The strict search refuses a script or
+  external one anywhere.
+- **Errors.** No new variant. Refusals are `Error::Unsupported` with the
+  features `executable content: script` / `external action` / `unknown
+  action` / `unclassified structure`; the detail names class, kind,
+  owner and position.
+  - `Error::refusal_reason() -> Option<RefusalReason>` (additive)
+    classifies every writer refusal: signature, encryption,
+    document-level script, script, external, unknown, unclassified,
+    multimedia.
+  - The string matching lives in the library, next to the strings it
+    defines.
+  - The runner uses it instead of parsing messages (the V4 P2).
+- **`VersionChange`** (declared, written, reason) is in the report. The
+  runner requires it to agree with its own T1 (§13).
+
+**Runner.** `--rewrite-options carry` runs `rewrite_with(Carry)`; the D1
+sets still refuse to start.
+- Every strictly parsed file also gets a `policy_check`, each rewrite on
+  a fresh parse:
+  - `rewrite_with(default)` against `rewrite`, bytes or error;
+  - its report against the runner's own inventory, item by item: class,
+    kind, owner, position, sharing as owner@position, script size and
+    input object. Each output object is also resolved in the rewritten
+    file;
+  - its version change against T1.
+- `ci-regression check` enforces these three for the default, per file.
+  The other configurations' disagreements are listed.
+- pypdf (`scripts/pdf-inventory.py`) is the third reading of the same
+  inventory.
+
+**Acceptance (§10 C1), measured** (`v0.5.0.md` §21):
+- `Profile` is byte- and error-identical to `rewrite` on every corpus
+  document.
+- Under `Carry`, every gain passes `doc_actions`, `javascript` and
+  `outlines` (or they do not apply). For each gain, the library's report
+  equals the runner's inventory and pypdf's reading.
+- Fuzzed (`rewrite_policy`); the one finding is fixed.

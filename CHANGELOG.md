@@ -7,6 +7,35 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `rewrite_with(&Document, &RewriteOptions) -> Result<RewriteOutput, Error>`:
+  the full rewrite under explicit policies, with a report of the
+  executable content it carried. `RewriteOptions` (`#[non_exhaustive]`,
+  `Default`, `with_*`) holds `ExecutableContentPolicy` (`Profile`, the
+  default; `RefuseScriptsAndExternal`; `Carry`), `MultimediaPolicy`
+  (`Refuse`), `UsageRightsPolicy` (`Refuse`) and `Limits`. With the
+  defaults the bytes and errors are exactly `rewrite`'s.
+  - `Carry` carries document-level scripts (catalog `/AA`, a JavaScript
+    `/OpenAction`, `/Names /JavaScript`) verbatim. It executes nothing
+    and is **not sanitizing**.
+  - `RefuseScriptsAndExternal` refuses every script, external or
+    unknown action wherever it is, and XFA scripts.
+  - The catalog `/RichMedia` and every signature refusal hold under
+    every policy.
+  - `RewriteOutput` (`#[must_use]`) gives the bytes and a
+    `RewriteReport`. The report lists every carried action, multimedia
+    annotation and XFA script (`ExecutableItem`: class by effect, kind,
+    positional owner, `/Next` position, input and output object, script
+    size, sharing), the structures that could not be classified, and
+    the version change. It holds no script text, URLs, field names,
+    name-tree keys or digests.
+- `Error::refusal_reason() -> Option<RefusalReason>`: the policy
+  refusals of the writers by class (signature, encryption,
+  document-level script, script, external or unknown action,
+  unclassified structure, multimedia), without reading messages.
+- Fuzz target `rewrite_policy`: action graphs under every policy. The
+  default must equal `rewrite`; a strict success must leave no script,
+  external or unknown action reachable in the output; signature and
+  multimedia refusals must hold; reports must hold no content.
 - Compatibility runner (no library change): the semantic round trip
   compares five more categories — XFA packets and `/NeedsRendering`;
   document, page, annotation and field actions with their `/Next`

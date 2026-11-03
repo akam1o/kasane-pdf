@@ -34,8 +34,141 @@ pub fn classify(s: &str) -> ActionClass {
     }
 }
 
+/// An owner's content: an action, or a multimedia annotation itself
+/// (subtype, object).
+pub(super) enum Root {
+    Action(Object),
+    Media(String, Option<IndirectRef>),
+}
+
+/// `/AA` keys of ISO 32000-2 Tables 197–200; any other key is `other`
+/// (as in the library's report).
+fn trigger(k: &[u8]) -> &'static str {
+    const T: [&str; 20] = [
+        "E", "X", "D", "U", "Fo", "Bl", "PO", "PC", "PV", "PI", "O", "C", "K", "F", "V", "WC",
+        "WS", "DS", "WP", "DP",
+    ];
+    T.iter()
+        .find(|t| t.as_bytes() == k)
+        .copied()
+        .unwrap_or("other")
+}
+
 /// Annotation subtypes that carry multimedia content.
 const MULTIMEDIA_ANNOTS: [&str; 5] = ["RichMedia", "Screen", "Movie", "Sound", "3D"];
+
+/// An XFA owner, its packet object and its number of scripts.
+type XfaScripts = (String, Option<(u32, u16)>, u32);
+
+/// The class of an action dictionary of kind `kind`: `/Named` is
+/// navigation for the four page operations, state otherwise.
+fn classify_action(kind: &str, d: &Dict) -> ActionClass {
+    if kind == "Named" {
+        return match d.get(b"N".as_slice()).and_then(name).as_deref() {
+            Some("NextPage" | "PrevPage" | "FirstPage" | "LastPage") => ActionClass::Navigation,
+            _ => ActionClass::State,
+        };
+    }
+    classify(kind)
+}
+
+/// Depth of a `/Next` chain the inventory follows (the library's default
+/// `max_rewrite_walk_depth`).
+const INVENTORY_CHAIN_DEPTH: usize = 512;
+
+/// XFA text as one byte per character: UTF-16 (byte order mark, or `<`
+/// as the first code unit with a zero byte) narrowed, non-ASCII → 0xFF; a
+/// UTF-8 byte order mark dropped.
+fn narrow(b: &[u8]) -> Vec<u8> {
+    // UTF-16: a byte order mark, or NUL bytes with `<` as the first
+    // non-blank code unit (the library's rule).
+    let first = |le: bool| {
+        b.as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&[x, y]| if le { (x, y) } else { (y, x) })
+            .find(|&(lo, hi)| !(hi == 0 && matches!(lo, b' ' | b'\t' | b'\r' | b'\n')))
+    };
+    let nul = b.contains(&0);
+    let le = b.starts_with(&[0xFF, 0xFE]) || (nul && first(true) == Some((b'<', 0)));
+    let be = !le && (b.starts_with(&[0xFE, 0xFF]) || (nul && first(false) == Some((b'<', 0))));
+    if !(le || be) {
+        return b.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(b).to_vec();
+    }
+    let body = if b.starts_with(&[0xFF, 0xFE]) || b.starts_with(&[0xFE, 0xFF]) {
+        &b[2..]
+    } else {
+        b
+    };
+    body.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|&[a, b]| {
+            let (lo, hi) = if le { (a, b) } else { (b, a) };
+            if hi == 0 && lo < 0x80 {
+                lo
+            } else {
+                0xFF
+            }
+        })
+        .collect()
+}
+
+/// Numeric character references expanded (ASCII to the byte, others to
+/// 0xFF).
+fn expand_refs(t: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(t.len());
+    let mut i = 0;
+    while i < t.len() {
+        if t[i] == b'&' && t.get(i + 1) == Some(&b'#') {
+            let (radix, start) = if matches!(t.get(i + 2), Some(b'x' | b'X')) {
+                (16, i + 3)
+            } else {
+                (10, i + 2)
+            };
+            let digits = t[start..]
+                .iter()
+                .take_while(|c| (**c as char).is_digit(radix))
+                .count();
+            if digits > 0 && t.get(start + digits) == Some(&b';') {
+                let v = t[start..start + digits].iter().fold(0u32, |v, c| {
+                    v.saturating_mul(radix)
+                        .saturating_add((*c as char).to_digit(radix).unwrap_or(0))
+                });
+                out.push(if v < 0x80 { v as u8 } else { 0xFF });
+                i = start + digits + 1;
+                continue;
+            }
+        }
+        out.push(t[i]);
+        i += 1;
+    }
+    out
+}
+
+/// `script` elements: `<`, an optional `NCName:`, `script`, then white
+/// space, `>` or `/`.
+fn count_scripts(t: &[u8]) -> u32 {
+    let start = |c: u8| c.is_ascii_alphabetic() || c == b'_' || c >= 0x80;
+    let more = |c: u8| start(c) || c.is_ascii_digit() || c == b'.' || c == b'-';
+    let mut n = 0;
+    for (i, _) in t.iter().enumerate().filter(|(_, c)| **c == b'<') {
+        let name = |from: usize| from + t[from..].iter().take_while(|c| more(**c)).count();
+        let mut j = name(i + 1);
+        let mut local = &t[i + 1..j];
+        if t.get(j) == Some(&b':') && local.first().is_some_and(|c| start(*c)) {
+            let k = name(j + 1);
+            local = &t[j + 1..k];
+            j = k;
+        }
+        if local == b"script"
+            && matches!(t.get(j), Some(b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/'))
+        {
+            n += 1;
+        }
+    }
+    n
+}
 
 /// One action reached from an owner, in the order the chains are walked.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -53,19 +186,53 @@ pub struct InventoryItem {
     pub shared_with: Option<usize>,
     /// Length of a script (string, or decoded stream); never its text.
     pub script_bytes: Option<u64>,
+    /// The action's (or annotation's, or XFA packet's) input object.
+    #[serde(default)]
+    pub input: Option<(u32, u16)>,
+    /// A script stream that does not decode.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub script_undecodable: bool,
 }
 
 impl<'a> Ctx<'a> {
     /// Every action owner of the document, in a fixed order, with the
     /// action object it holds (`plans/rewrite-policy.md` §3.1).
     pub(super) fn action_roots(&mut self) -> Res<Vec<(String, Object)>> {
+        Ok(self
+            .roots()?
+            .into_iter()
+            .filter_map(|(owner, r)| match r {
+                Root::Action(o) => Some((owner, o)),
+                Root::Media(..) => None,
+            })
+            .collect())
+    }
+
+    /// [`action_roots`] with the multimedia annotations themselves, each
+    /// before the annotation's own actions — the inventory's owners.
+    fn roots(&mut self) -> Res<Vec<(String, Root)>> {
         let mut out = Vec::new();
         let cat = self.doc.catalog().clone();
         if let Some(oa) = self.entry_pdf20(&cat, b"OpenAction")? {
-            // An array is a destination (its first element a page), not
-            // an action.
-            if let Object::Dict(_) = self.get(&oa)? {
-                out.push(("catalog/OpenAction".to_string(), oa));
+            match self.get(&oa)? {
+                Object::Dict(_) => out.push(("catalog/OpenAction".to_string(), Root::Action(oa))),
+                // An array is a destination (its first element a page),
+                // unless its first element is an action dictionary
+                // (non-standard, seen): then each member is one.
+                Object::Array(a) if !a.is_empty() && self.all_actions(&a)? => {
+                    for (i, x) in a.into_iter().enumerate() {
+                        out.push((format!("catalog/OpenAction#{i}"), Root::Action(x)));
+                    }
+                }
+                // Unreadable: listed (`#unresolved`), never dropped.
+                Object::Name(n) if n == b"#unresolved" => {
+                    out.push(("catalog/OpenAction".to_string(), Root::Action(oa)))
+                }
+                // A destination (array, or a named one as name or
+                // string) or an undefined reference (null): no action.
+                Object::Array(_) | Object::Name(_) | Object::String(_) | Object::Null => {}
+                // Malformed (a number, a stream…): listed as such.
+                _ => out.push(("catalog/OpenAction".to_string(), Root::Action(oa))),
             }
         }
         self.aa_roots("catalog", &cat, &mut out)?;
@@ -78,8 +245,15 @@ impl<'a> Ctx<'a> {
                 if let Object::Array(items) = self.get(a)? {
                     for (k, it) in items.iter().enumerate() {
                         let Some(ad) = self.dict(it)? else { continue };
+                        let st = ad
+                            .get(b"Subtype".as_slice())
+                            .and_then(name)
+                            .unwrap_or_default();
+                        if MULTIMEDIA_ANNOTS.contains(&st.as_str()) {
+                            out.push((format!("annot{i}.{k}"), Root::Media(st, it.as_ref())));
+                        }
                         if let Some(x) = self.entry_pdf20(&ad, b"A")? {
-                            out.push((format!("annot{i}.{k}/A"), x));
+                            out.push((format!("annot{i}.{k}/A"), Root::Action(x)));
                         }
                         self.aa_roots(&format!("annot{i}.{k}"), &ad, &mut out)?;
                     }
@@ -111,23 +285,29 @@ impl<'a> Ctx<'a> {
         if let Some(n) = names {
             if let Some(t) = self.entry_pdf20(&n, b"JavaScript")? {
                 for (i, (_, v)) in self.tree(&t, false)?.into_iter().enumerate() {
-                    out.push((format!("names/JavaScript#{i}"), v));
+                    out.push((format!("names/JavaScript#{i}"), Root::Action(v)));
                 }
             }
         }
         Ok(out)
     }
 
-    fn aa_roots(&mut self, head: &str, d: &Dict, out: &mut Vec<(String, Object)>) -> Res<()> {
+    /// The first member is a dictionary with `/S` (an action): the
+    /// array is a list of actions, not a destination.
+    fn all_actions(&mut self, a: &[Object]) -> Res<bool> {
+        Ok(match a.first() {
+            Some(x) => matches!(self.get(x)?, Object::Dict(d) if d.contains_key(b"S".as_slice())),
+            None => false,
+        })
+    }
+
+    fn aa_roots(&mut self, head: &str, d: &Dict, out: &mut Vec<(String, Root)>) -> Res<()> {
         let Some(aa) = self.entry_pdf20(d, b"AA")? else {
             return Ok(());
         };
         if let Object::Dict(aa) = self.get(&aa)? {
             for (k, v) in &aa {
-                out.push((
-                    format!("{head}/AA/{}", String::from_utf8_lossy(k)),
-                    v.clone(),
-                ));
+                out.push((format!("{head}/AA/{}", trigger(k)), Root::Action(v.clone())));
             }
         }
         Ok(())
@@ -141,7 +321,7 @@ impl<'a> Ctx<'a> {
         at: &str,
         depth: usize,
         seen: &mut HashSet<IndirectRef>,
-        out: &mut Vec<(String, Object)>,
+        out: &mut Vec<(String, Root)>,
     ) -> Res<()> {
         if depth > MAX_DEPTH {
             return err("field tree deeper than the limit");
@@ -174,7 +354,7 @@ impl<'a> Ctx<'a> {
         at: &str,
         depth: usize,
         seen: &mut HashSet<IndirectRef>,
-        out: &mut Vec<(String, Object)>,
+        out: &mut Vec<(String, Root)>,
     ) -> Res<()> {
         if depth > MAX_DEPTH {
             return err("outline tree deeper than the limit");
@@ -194,7 +374,7 @@ impl<'a> Ctx<'a> {
                 format!("{at}.{i}")
             };
             if let Some(a) = self.entry_pdf20(&d, b"A")? {
-                out.push((format!("outline{p}/A"), a));
+                out.push((format!("outline{p}/A"), Root::Action(a)));
             }
             self.outline_roots(&d, &p, depth + 1, seen, out)?;
             cur = d.get(b"Next".as_slice()).cloned();
@@ -206,15 +386,31 @@ impl<'a> Ctx<'a> {
     /// Every action reachable from the owners, `/Next` chains followed
     /// depth first (single or array), with sharing and script lengths.
     pub fn inventory(&mut self) -> Res<Vec<InventoryItem>> {
-        let roots = self.action_roots()?;
+        let roots = self.roots()?;
         let mut items = Vec::new();
         let mut first: HashMap<IndirectRef, usize> = HashMap::new();
-        for (owner, o) in roots {
+        for (owner, root) in roots {
+            let o = match root {
+                Root::Action(o) => o,
+                Root::Media(subtype, r) => {
+                    items.push(InventoryItem {
+                        class: ActionClass::Multimedia,
+                        kind: subtype,
+                        owner,
+                        position: 0,
+                        shared_with: None,
+                        script_bytes: None,
+                        input: r.map(|r| (r.number, r.generation)),
+                        script_undecodable: false,
+                    });
+                    continue;
+                }
+            };
             let mut position = 0u32;
             // (object, depth, chain path for cycles)
             let mut stack: Vec<(Object, usize, Rc<Vec<IndirectRef>>)> = vec![(o, 0, Rc::default())];
             while let Some((o, depth, path)) = stack.pop() {
-                if depth > MAX_ACTION_DEPTH {
+                if depth > INVENTORY_CHAIN_DEPTH {
                     return err("action chain deeper than the limit");
                 }
                 let r = o.as_ref();
@@ -241,22 +437,31 @@ impl<'a> Ctx<'a> {
                             position,
                             shared_with: None,
                             script_bytes: None,
+                            input: r.map(|r| (r.number, r.generation)),
+                            script_undecodable: false,
                         });
                         position += 1;
                         continue;
                     }
                 };
-                let kind = d
-                    .get(b"S".as_slice())
-                    .and_then(name)
-                    .unwrap_or_else(|| "-".into());
+                // `/S` directly or through a reference.
+                let kind = match d.get(b"S".as_slice()).map(|s| self.get(s)).transpose()? {
+                    Some(Object::Name(n)) => String::from_utf8_lossy(&n).into_owned(),
+                    _ => "-".into(),
+                };
                 let shared_with = r.and_then(|r| first.get(&r).copied());
+                let mut script_undecodable = false;
                 let script_bytes = if kind == "JavaScript" {
                     match d.get(b"JS".as_slice()).map(|x| self.get(x)).transpose()? {
                         Some(Object::String(s)) => Some(s.len() as u64),
                         Some(Object::Stream { dict, data }) => {
-                            let c = self.digest("script", &dict, &data)?;
-                            c.split(':').next().and_then(|n| n.parse().ok())
+                            match self.decode("script", &dict, &data)? {
+                                doclevel::Decoded::Bytes(b) => Some(b.len() as u64),
+                                doclevel::Decoded::Undecodable(_) => {
+                                    script_undecodable = true;
+                                    None
+                                }
+                            }
                         }
                         _ => None,
                     }
@@ -267,12 +472,14 @@ impl<'a> Ctx<'a> {
                     first.insert(r, items.len());
                 }
                 items.push(InventoryItem {
-                    class: classify(&kind),
+                    class: classify_action(&kind, &d),
                     kind,
                     owner: owner.clone(),
                     position,
                     shared_with,
                     script_bytes,
+                    input: r.map(|r| (r.number, r.generation)),
+                    script_undecodable,
                 });
                 position += 1;
                 if shared_with.is_some() {
@@ -300,7 +507,82 @@ impl<'a> Ctx<'a> {
                 }
             }
         }
+        for (owner, input, count) in self.xfa_scripts()? {
+            for n in 0..count {
+                items.push(InventoryItem {
+                    class: ActionClass::Script,
+                    kind: "#xfa-script".into(),
+                    owner: owner.clone(),
+                    position: n,
+                    shared_with: None,
+                    script_bytes: None,
+                    input,
+                    script_undecodable: false,
+                });
+            }
+        }
         Ok(items)
+    }
+
+    /// XFA `script` elements by packet (`xfa#<i>` among the packet
+    /// streams, `xfa` for a single stream) and those visible only across
+    /// packet boundaries (`xfa/across`): `<`, an optional `NCName:`, the
+    /// local name `script`, then white space, `>` or `/`, on the decoded
+    /// text (UTF-16 narrowed, numeric character references expanded).
+    fn xfa_scripts(&mut self) -> Res<Vec<XfaScripts>> {
+        let cat = self.doc.catalog().clone();
+        let Some(af) = cat.get(b"AcroForm".as_slice()) else {
+            return Ok(vec![]);
+        };
+        let Some(af) = self.dict(af)? else {
+            return Ok(vec![]);
+        };
+        let Some(x) = self.entry_pdf20(&af, b"XFA")? else {
+            return Ok(vec![]);
+        };
+        let text = |c: &mut Self, o: &Object| -> Res<Option<Vec<u8>>> {
+            let Object::Stream { dict, data } = c.get(o)? else {
+                return Ok(None);
+            };
+            match c.decode("XFA packet", &dict, &data)? {
+                doclevel::Decoded::Bytes(b) => Ok(Some(expand_refs(&narrow(&b)))),
+                doclevel::Decoded::Undecodable(_) => err("an XFA packet does not decode"),
+            }
+        };
+        let mut out = Vec::new();
+        match self.get(&x)? {
+            Object::Array(a) => {
+                let (mut whole, mut sum, mut packet) = (Vec::new(), 0u32, 0u32);
+                for it in &a {
+                    if let Some(t) = text(self, it)? {
+                        let n = count_scripts(&t);
+                        sum += n;
+                        out.push((
+                            format!("xfa#{packet}"),
+                            it.as_ref().map(|r| (r.number, r.generation)),
+                            n,
+                        ));
+                        whole.extend_from_slice(&t);
+                        packet += 1;
+                    }
+                }
+                out.push((
+                    "xfa/across".to_string(),
+                    None,
+                    count_scripts(&whole).saturating_sub(sum),
+                ));
+            }
+            Object::Stream { .. } => {
+                let n = text(self, &x)?.map(|t| count_scripts(&t)).unwrap_or(0);
+                out.push((
+                    "xfa".to_string(),
+                    x.as_ref().map(|r| (r.number, r.generation)),
+                    n,
+                ));
+            }
+            _ => {}
+        }
+        Ok(out)
     }
 
     // ---------------- multimedia ----------------

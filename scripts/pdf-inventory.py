@@ -17,8 +17,11 @@ later, the library's D2 report are checked against
       `--details` writes the per-file differences (file ids: keep the
       output in a private, git-ignored place).
 
-Owners: catalog/OpenAction (an action dictionary; an array is a
-destination), catalog/AA/<trigger>, page<p>/AA/<trigger>,
+Owners: catalog/OpenAction (an action dictionary, or each member of an
+array whose first member is an action dictionary; another array, a name or a string is a
+destination; a malformed value is listed as `#malformed`; an unreadable
+one the runner lists as `#unresolved`, which pypdf, reading leniently,
+cannot tell from null), catalog/AA/<trigger>, page<p>/AA/<trigger>,
 annot<p>.<k>/A, annot<p>.<k>/AA/<trigger>, field<path>/AA/<trigger>
 (field nodes that are not a page's annotation), outline<path>/A,
 names/JavaScript#<i>. Triggers in byte order. `/Next` chains depth
@@ -28,26 +31,33 @@ cycle ends the chain.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 
 from pypdf import PdfReader
-from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, NullObject, StreamObject
+from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, NameObject, NullObject, StreamObject
 
 SCRIPT = {"JavaScript"}
 EXTERNAL = {"Launch", "URI", "GoToR", "GoToE", "SubmitForm", "ImportData"}
 STATE = {"ResetForm", "Hide", "SetOCGState", "Trans"}
 NAVIGATION = {"GoTo", "GoToDp", "Thread", "Named", "GoTo3DView"}
 MULTIMEDIA = {"Rendition", "Movie", "Sound", "RichMediaExecute"}
-MAX_ACTION_DEPTH = 32
+MAX_ACTION_DEPTH = 512
+MULTIMEDIA_ANNOTS = {"RichMedia", "Screen", "Movie", "Sound", "3D"}
+TRIGGERS = {"E", "X", "D", "U", "Fo", "Bl", "PO", "PC", "PV", "PI", "O", "C", "K", "F", "V", "WC", "WS",
+            "DS", "WP", "DP"}
+NAV_NAMED = {"NextPage", "PrevPage", "FirstPage", "LastPage"}
 MAX_DEPTH = 64
 
 
-def klass(kind):
-    for name, s in (("script", SCRIPT), ("external", EXTERNAL), ("state", STATE),
+def klass(kind, d=None):
+    if kind == "Named":
+        return "navigation" if d is not None and name(d.get("/N")) in NAV_NAMED else "state"
+    for name_, s in (("script", SCRIPT), ("external", EXTERNAL), ("state", STATE),
                     ("navigation", NAVIGATION), ("multimedia", MULTIMEDIA)):
         if kind in s:
-            return name
+            return name_
     return "unknown"
 
 
@@ -69,7 +79,9 @@ def entry(d, key):
 
 
 def is_dict(o):
-    return isinstance(get(o), DictionaryObject)
+    """A dictionary, not a stream (pypdf's streams are dictionaries)."""
+    o = get(o)
+    return isinstance(o, DictionaryObject) and not isinstance(o, StreamObject)
 
 
 def name(o):
@@ -93,14 +105,27 @@ class Inventory:
             return
         a = get(a)
         for k in sorted(a.keys(), key=lambda k: k[1:].encode("latin-1")):
-            out.append((f"{head}/AA/{k[1:]}", a.raw_get(k)))
+            t = k[1:] if k[1:] in TRIGGERS else "other"
+            out.append((f"{head}/AA/{t}", a.raw_get(k)))
 
     def roots(self):
         out = []
         cat = self.root
         oa = entry(cat, "/OpenAction")
-        if oa is not None and is_dict(oa):
-            out.append(("catalog/OpenAction", oa))
+        if oa is not None:
+            v = get(oa)
+            if is_dict(oa):
+                out.append(("catalog/OpenAction", oa))
+            elif isinstance(v, ArrayObject):
+                # A destination, unless the first member is an action
+                # dictionary (non-standard): then each member is one.
+                if v and is_dict(v[0]) and "/S" in get(v[0]):
+                    for i, x in enumerate(v):
+                        out.append((f"catalog/OpenAction#{i}", x))
+            elif isinstance(v, (str, bytes, NameObject)):
+                pass  # a named destination
+            else:
+                out.append(("catalog/OpenAction", oa))  # malformed: listed
         self.aa("catalog", cat, out)
         for i, p in enumerate(self.r.pages):
             self.aa(f"page{i}", p, out)
@@ -108,6 +133,9 @@ class Inventory:
                 if not is_dict(a):
                     continue
                 ad = get(a)
+                st = name(ad.get("/Subtype"))
+                if st in MULTIMEDIA_ANNOTS:
+                    out.append((f"annot{i}.{k}", ("media", st, ident(a))))
                 x = entry(ad, "/A")
                 if x is not None:
                     out.append((f"annot{i}.{k}/A", x))
@@ -191,6 +219,10 @@ class Inventory:
     def items(self):
         items, first = [], {}
         for owner, o in self.roots():
+            if isinstance(o, tuple) and o and o[0] == "media":
+                items.append({"class": "multimedia", "kind": o[1], "owner": owner, "position": 0,
+                              "shared_with": None, "script_bytes": None, "input": o[2]})
+                continue
             position = 0
             stack = [(o, 0, ())]
             while stack:
@@ -203,24 +235,30 @@ class Inventory:
                 d = get(o)
                 if d is None or isinstance(d, NullObject):
                     continue  # undefined: no action
-                if not isinstance(d, DictionaryObject):
+                if not is_dict(d):
                     items.append({"class": "unknown", "kind": "#malformed", "owner": owner, "position": position,
-                                  "shared_with": None, "script_bytes": None})
+                                  "shared_with": None, "script_bytes": None, "input": r})
                     position += 1
                     continue
                 kind = name(d.get("/S")) or "-"
                 shared = first.get(r) if r else None
-                script = None
+                script, undecodable = None, False
                 if kind == "JavaScript" and "/JS" in d:
                     js = get(d.raw_get("/JS"))
                     if isinstance(js, StreamObject):
-                        script = len(js.get_data())
+                        try:
+                            script = len(js.get_data())
+                        except Exception:  # noqa: BLE001 - an undecodable script stream
+                            undecodable = True
                     elif isinstance(js, (str, bytes)):
                         script = len(js.original_bytes if hasattr(js, "original_bytes") else js)
                 if r and shared is None:
                     first[r] = len(items)
-                items.append({"class": klass(kind), "kind": kind, "owner": owner, "position": position,
-                              "shared_with": shared, "script_bytes": script})
+                item = {"class": klass(kind, d), "kind": kind, "owner": owner, "position": position,
+                        "shared_with": shared, "script_bytes": script, "input": r}
+                if undecodable:
+                    item["script_undecodable"] = True
+                items.append(item)
                 position += 1
                 if shared is not None:
                     continue
@@ -231,7 +269,82 @@ class Inventory:
                     p = path + ((r,) if r else ())
                     for x in reversed(nx):
                         stack.append((x, depth + 1, p))
+        items.extend(self.xfa_scripts())
         return items
+
+    def xfa_scripts(self):
+        """XFA `script` elements per packet stream (`xfa#<i>`, `xfa` for a
+        single stream) and those visible only across packets (`xfa/across`):
+        `<`, an optional `NCName:`, the local name `script`, then white
+        space, `>` or `/`, on the decoded text (UTF-16 narrowed, numeric
+        character references expanded)."""
+        af = entry(self.root, "/AcroForm")
+        if af is None or not is_dict(af):
+            return []
+        x = entry(get(af), "/XFA")
+        if x is None:
+            return []
+        out = []
+
+        def emit(owner, inp, n):
+            for i in range(n):
+                out.append({"class": "script", "kind": "#xfa-script", "owner": owner, "position": i,
+                            "shared_with": None, "script_bytes": None, "input": inp})
+
+        v = get(x)
+        if isinstance(v, ArrayObject):
+            whole, total, packet = b"", 0, 0
+            for it in v:
+                s = get(it)
+                if isinstance(s, StreamObject):
+                    t = xfa_text(s.get_data())
+                    n = count_scripts(t)
+                    total += n
+                    emit(f"xfa#{packet}", ident(it), n)
+                    whole += t
+                    packet += 1
+            emit("xfa/across", None, max(0, count_scripts(whole) - total))
+        elif isinstance(v, StreamObject):
+            emit("xfa", ident(x), count_scripts(xfa_text(v.get_data())))
+        return out
+
+
+SCRIPT_RE = re.compile(rb"<(?:[A-Za-z_\x80-\xff][A-Za-z0-9_.\-\x80-\xff]*:)?script[ \t\r\n>/]")
+
+
+def count_scripts(t):
+    # A lookbehind-free scan: every `<` is a candidate start.
+    return sum(1 for i in range(len(t)) if t[i:i + 1] == b"<" and SCRIPT_RE.match(t, i))
+
+
+def xfa_text(b):
+    """One byte per character: UTF-16 narrowed (non-ASCII -> 0xFF), a UTF-8
+    BOM dropped; numeric character references expanded."""
+    # UTF-16: a byte order mark, or NUL bytes with `<` as the first
+    # non-blank code unit (the library's rule).
+    def first(le):
+        for i in range(0, len(b) - 1, 2):
+            lo, hi = (b[i], b[i + 1]) if le else (b[i + 1], b[i])
+            if not (hi == 0 and lo in b" \t\r\n"):
+                return (lo, hi)
+        return None
+    nul = 0 in b
+    le = b[:2] == b"\xff\xfe" or (nul and first(True) == (ord("<"), 0))
+    be = not le and (b[:2] == b"\xfe\xff" or (nul and first(False) == (ord("<"), 0)))
+    if le or be:
+        body = b[2:] if b[:2] in (b"\xff\xfe", b"\xfe\xff") else b
+        out = bytearray()
+        for i in range(0, len(body) - 1, 2):
+            lo, hi = (body[i], body[i + 1]) if le else (body[i + 1], body[i])
+            out.append(lo if hi == 0 and lo < 0x80 else 0xFF)
+        b = bytes(out)
+    elif b.startswith(b"\xef\xbb\xbf"):
+        b = b[3:]
+
+    def ref(m):
+        v = int(m.group(1)[1:], 16) if m.group(1)[:1] in (b"x", b"X") else int(m.group(1))
+        return bytes([v]) if v < 0x80 else b"\xff"
+    return re.sub(rb"&#([xX][0-9A-Fa-f]+|[0-9]+);", ref, b)
 
 
 def pypdf_items(path):
@@ -244,6 +357,9 @@ def labelled(items):
     out = []
     for it in items:
         it = dict(it)
+        if isinstance(it.get("input"), (list, tuple)):
+            it["input"] = list(it["input"])
+        it.setdefault("script_undecodable", False)
         s = it.get("shared_with")
         if s is not None:
             it["shared_with"] = f"{items[s]['owner']}@{items[s]['position']}"

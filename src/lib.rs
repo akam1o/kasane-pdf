@@ -91,6 +91,7 @@ mod document;
 pub mod edit;
 mod encodings;
 mod error;
+mod executable;
 mod filter;
 mod font;
 mod fontsubst;
@@ -113,6 +114,7 @@ pub mod remove_region;
 pub mod remove_text;
 mod render;
 mod rewrite;
+mod rewrite_policy;
 mod serialize;
 mod shading;
 pub mod signature;
@@ -151,7 +153,7 @@ pub use cjk::{cjk_fallback_enabled, predefined_cmap_known, predefined_cmap_names
 pub use crypt::{Authentication, CryptMethod, EncryptionInfo};
 pub use document::{Document, OpenOptions};
 pub use edit::Edit;
-pub use error::{Error, ErrorKind, MissingReference, SignatureRule};
+pub use error::{Error, ErrorKind, MissingReference, RefusalReason, SignatureRule};
 pub use limits::Limits;
 pub use object::{Dict, IndirectRef, Object};
 pub use page::{Page, Rect};
@@ -164,6 +166,12 @@ pub use remove_region::{
 };
 pub use remove_text::{remove_text, Removal};
 pub use rewrite::{rewrite, rewrite_with_limits};
+pub use rewrite_policy::{
+    rewrite_with, ActionClass, ActionKind, ActionOwner, ExecutableContentPolicy, ExecutableItem,
+    ExecutableSummary, MultimediaPolicy, MultimediaSubtype, RewriteOptions, RewriteOutput,
+    RewriteReport, ScriptSize, Trigger, UnclassifiedReason, UnclassifiedStructure,
+    UsageRightsPolicy, VersionChange, VersionReason,
+};
 pub use signature::{signatures, ChangeKind, SignatureInfo};
 pub use warning::{RecoveryRule, Warning};
 
