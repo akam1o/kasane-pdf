@@ -1,5 +1,28 @@
 {
  "aggregate": {
+  "by_config": {
+   "default": {
+    "crash_timeout": 0,
+    "error": 11,
+    "files": 487,
+    "full_pass": 345,
+    "full_pass_verified": 345,
+    "full_rt": 432,
+    "full_rt_declared": 432,
+    "graph_rt": 436,
+    "graph_rt_declared": 0,
+    "multimedia_refusal": 0,
+    "rewrite_pass": 436,
+    "script_refusal": 8,
+    "semantic_error": 0,
+    "semantic_fail": 0,
+    "semantic_pass": 302,
+    "semantic_transformed": 0,
+    "semantic_unsupported": 0,
+    "signature_refusal": 27,
+    "unsupported": 5
+   }
+  },
   "crash": 0,
   "files": 511,
   "incremental_pass": 446,
@@ -53,7 +76,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -105,7 +130,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -193,7 +220,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -245,7 +274,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -331,7 +362,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -417,7 +450,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -469,7 +504,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -521,7 +558,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -573,7 +612,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -625,7 +666,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -677,7 +720,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -729,7 +774,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -781,7 +828,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -833,7 +882,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -885,7 +936,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -937,7 +990,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -989,7 +1044,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1041,7 +1098,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1093,7 +1152,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1145,7 +1206,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1197,7 +1260,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1249,7 +1314,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1301,7 +1368,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1387,7 +1456,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1439,7 +1510,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1491,7 +1564,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1543,7 +1618,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1595,7 +1672,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1647,7 +1726,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1699,7 +1780,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1751,7 +1834,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1803,7 +1888,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1855,7 +1942,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1907,7 +1996,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -1959,7 +2050,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2011,7 +2104,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2063,7 +2158,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2115,7 +2212,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2167,7 +2266,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2219,7 +2320,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2271,7 +2374,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2323,7 +2428,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2375,7 +2482,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2427,7 +2536,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2479,7 +2590,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2531,7 +2644,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2583,7 +2698,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2635,7 +2752,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2687,7 +2806,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2739,7 +2860,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2859,7 +2982,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2911,7 +3036,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -2963,7 +3090,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3015,7 +3144,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3067,7 +3198,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3119,7 +3252,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3171,7 +3306,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3223,7 +3360,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3275,7 +3414,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3327,7 +3468,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3379,7 +3522,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3431,7 +3576,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3483,7 +3630,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3535,7 +3684,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3587,7 +3738,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3639,7 +3792,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3691,7 +3846,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3743,7 +3900,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3795,7 +3954,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3847,7 +4008,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3899,7 +4062,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -3951,7 +4116,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4003,7 +4170,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4055,7 +4224,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4107,7 +4278,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4159,7 +4332,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4211,7 +4386,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4263,7 +4440,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4315,7 +4494,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4367,7 +4548,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4419,7 +4602,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4471,7 +4656,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4523,7 +4710,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4575,7 +4764,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4627,7 +4818,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4679,7 +4872,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4731,7 +4926,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4783,7 +4980,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4835,7 +5034,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4887,7 +5088,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4939,7 +5142,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -4991,7 +5196,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5043,7 +5250,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5095,7 +5304,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5147,7 +5358,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5199,7 +5412,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5251,7 +5466,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5303,7 +5520,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5355,7 +5574,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5407,7 +5628,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5459,7 +5682,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5511,7 +5736,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5563,7 +5790,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5615,7 +5844,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5667,7 +5898,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5719,7 +5952,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5771,7 +6006,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5823,7 +6060,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5875,7 +6114,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5927,7 +6168,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -5979,7 +6222,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6031,7 +6276,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6083,7 +6330,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6139,7 +6388,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6191,7 +6442,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6243,7 +6496,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6295,7 +6550,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6347,7 +6604,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6399,7 +6658,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6451,7 +6712,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6503,7 +6766,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6557,7 +6822,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6611,7 +6878,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6663,7 +6932,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6715,7 +6986,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6767,7 +7040,9 @@
    "semantic_report": {
     "associated_files": "pass",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6819,7 +7094,9 @@
    "semantic_report": {
     "associated_files": "pass",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6871,7 +7148,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6923,7 +7202,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -6975,7 +7256,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7027,7 +7310,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7079,7 +7364,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7131,7 +7418,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7217,7 +7506,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7269,7 +7560,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7321,7 +7614,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7373,7 +7668,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7425,7 +7722,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7477,7 +7776,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7529,7 +7830,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7583,7 +7886,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7635,7 +7940,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7687,7 +7994,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7739,7 +8048,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7791,7 +8102,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7843,7 +8156,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7895,7 +8210,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7947,7 +8264,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -7999,7 +8318,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8051,7 +8372,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8103,7 +8426,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8155,7 +8480,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8207,7 +8534,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8259,7 +8588,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8311,7 +8642,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8363,7 +8696,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8415,7 +8750,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8467,7 +8804,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8519,7 +8858,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8571,7 +8912,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8623,7 +8966,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8675,7 +9020,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8727,7 +9074,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8779,7 +9128,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8831,7 +9182,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8883,7 +9236,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8935,7 +9290,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -8987,7 +9344,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9039,7 +9398,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9091,7 +9452,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9143,7 +9506,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9195,7 +9560,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9247,7 +9614,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9299,7 +9668,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9351,7 +9722,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9403,7 +9776,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9455,7 +9830,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9507,7 +9884,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9559,7 +9938,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9611,7 +9992,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9663,7 +10046,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9715,7 +10100,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9767,7 +10154,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9819,7 +10208,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9873,7 +10264,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9925,7 +10318,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -9977,7 +10372,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10065,7 +10462,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10177,7 +10576,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10229,7 +10630,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10281,7 +10684,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10333,7 +10738,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10385,7 +10792,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10437,7 +10846,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10489,7 +10900,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10541,7 +10954,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10593,7 +11008,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10645,7 +11062,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10697,7 +11116,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10749,7 +11170,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10801,7 +11224,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10853,7 +11278,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10908,7 +11335,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -10960,7 +11389,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -11012,7 +11443,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -11064,7 +11497,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -11116,7 +11551,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -11168,7 +11605,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -11220,7 +11659,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -11272,7 +11713,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -11324,7 +11767,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -11376,7 +11821,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -11428,7 +11875,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -11480,7 +11929,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -11532,7 +11983,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -11586,7 +12039,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -11638,7 +12093,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -11690,7 +12147,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -12660,7 +13119,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -12712,7 +13173,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -12764,7 +13227,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -12816,7 +13281,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -12868,7 +13335,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -12922,7 +13391,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -12974,7 +13445,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13028,7 +13501,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13080,7 +13555,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13132,7 +13609,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13186,7 +13665,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13238,8 +13719,15 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
-    "version": "fail"
+    "signatures": "not_applicable",
+    "version": "transformed"
+   },
+   "semantic_rules": {
+    "version": [
+     "T1 version raised"
+    ]
    },
    "stages": {
     "parse": "pass",
@@ -13292,7 +13780,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13344,7 +13834,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13396,7 +13888,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13448,7 +13942,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13500,7 +13996,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13554,7 +14052,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13606,7 +14106,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13658,7 +14160,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13710,7 +14214,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13764,7 +14270,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13816,7 +14324,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13868,7 +14378,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13920,7 +14432,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -13972,7 +14486,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14024,7 +14540,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14076,7 +14594,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14130,7 +14650,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14182,7 +14704,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14234,7 +14758,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14286,7 +14812,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14338,7 +14866,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14390,7 +14920,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14442,7 +14974,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14494,7 +15028,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14546,7 +15082,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14598,8 +15136,15 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
-    "version": "fail"
+    "signatures": "not_applicable",
+    "version": "transformed"
+   },
+   "semantic_rules": {
+    "version": [
+     "T1 version raised"
+    ]
    },
    "stages": {
     "parse": "pass",
@@ -14650,7 +15195,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14702,7 +15249,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14754,7 +15303,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14806,7 +15357,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14858,7 +15411,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14910,7 +15465,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -14962,7 +15519,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15014,7 +15573,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15066,7 +15627,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15152,7 +15715,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15204,7 +15769,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15258,7 +15825,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15310,7 +15879,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15362,7 +15933,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15414,7 +15987,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15466,7 +16041,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15520,7 +16097,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15598,7 +16177,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15650,7 +16231,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15702,7 +16285,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15754,7 +16339,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15806,7 +16393,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15858,7 +16447,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15910,7 +16501,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -15962,7 +16555,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -16014,7 +16609,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -16066,7 +16663,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -16118,7 +16717,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -16170,7 +16771,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -16222,7 +16825,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -16274,7 +16879,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -16326,7 +16933,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -16378,7 +16987,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -16430,7 +17041,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -16482,7 +17095,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -16534,7 +17149,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -16742,7 +17359,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -16794,7 +17413,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -16846,7 +17467,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -16976,7 +17599,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -17080,7 +17705,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -17132,7 +17759,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -17184,7 +17813,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -17236,7 +17867,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -17288,7 +17921,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -17340,7 +17975,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -17392,7 +18029,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -17506,7 +18145,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -17558,7 +18199,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -17636,7 +18279,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -17688,7 +18333,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -17740,7 +18387,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -17792,7 +18441,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -17878,7 +18529,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -17956,7 +18609,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -18008,7 +18663,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -18060,7 +18717,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -18138,7 +18797,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -18190,7 +18851,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -18242,7 +18905,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -18346,7 +19011,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -18398,7 +19065,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -18476,7 +19145,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -18562,7 +19233,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -18614,7 +19287,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -18666,7 +19341,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -18752,7 +19429,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -18874,7 +19553,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -18926,7 +19607,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19012,7 +19695,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19098,7 +19783,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19150,7 +19837,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19202,7 +19891,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19280,7 +19971,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19400,7 +20093,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19452,7 +20147,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19504,7 +20201,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19556,7 +20255,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19608,7 +20309,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19660,7 +20363,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19712,7 +20417,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19764,7 +20471,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19816,7 +20525,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19868,7 +20579,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19920,7 +20633,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -19972,7 +20687,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -20024,7 +20741,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -20076,7 +20795,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -20128,7 +20849,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -20248,7 +20971,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -20300,7 +21025,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -20352,7 +21079,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -20490,7 +21219,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -20568,7 +21299,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -20620,7 +21353,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -20672,7 +21407,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -20724,7 +21461,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -20776,7 +21515,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -20828,7 +21569,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -20880,7 +21623,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -20932,7 +21677,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -20984,7 +21731,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21036,7 +21785,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21088,7 +21839,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21140,7 +21893,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21192,7 +21947,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21244,7 +22001,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21296,7 +22055,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21348,7 +22109,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21402,7 +22165,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21454,7 +22219,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21506,7 +22273,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21558,7 +22327,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21610,7 +22381,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21662,7 +22435,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21714,7 +22489,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21766,7 +22543,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21820,7 +22599,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21872,7 +22653,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21924,7 +22707,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -21976,7 +22761,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22028,7 +22815,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22080,7 +22869,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22132,7 +22923,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22184,7 +22977,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22236,7 +23031,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22288,7 +23085,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22340,7 +23139,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22392,7 +23193,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22444,7 +23247,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22496,7 +23301,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22548,7 +23355,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22600,7 +23409,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22652,7 +23463,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22704,7 +23517,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22756,7 +23571,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22808,7 +23625,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22860,7 +23679,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22912,7 +23733,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -22998,7 +23821,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23050,7 +23875,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23102,7 +23929,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23154,7 +23983,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23206,7 +24037,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23258,7 +24091,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23310,7 +24145,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23362,7 +24199,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23414,7 +24253,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23466,7 +24307,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23518,7 +24361,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23570,7 +24415,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23622,7 +24469,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23674,7 +24523,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23726,7 +24577,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23778,7 +24631,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23830,7 +24685,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23882,7 +24739,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23934,7 +24793,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -23986,7 +24847,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24038,7 +24901,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24090,7 +24955,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24142,7 +25009,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24194,7 +25063,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24246,7 +25117,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24298,7 +25171,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24350,7 +25225,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24402,7 +25279,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24454,7 +25333,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24506,7 +25387,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24558,7 +25441,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24610,7 +25495,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24662,7 +25549,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "pass",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24714,7 +25603,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24766,7 +25657,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24818,7 +25711,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "pass",
     "version": "pass"
    },
    "stages": {
@@ -24872,7 +25767,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24924,7 +25821,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -24978,7 +25877,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -25030,7 +25931,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {
@@ -25082,7 +25985,9 @@
    "semantic_report": {
     "associated_files": "not_applicable",
     "dparts": "not_applicable",
+    "multimedia": "not_applicable",
     "page_metadata": "not_applicable",
+    "signatures": "not_applicable",
     "version": "pass"
    },
    "stages": {

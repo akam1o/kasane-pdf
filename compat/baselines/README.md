@@ -243,3 +243,50 @@ pull-request run on the same commit (41480171819; the previous one
 came from 41377935675): it
 differs only by the new `semantic_report` field (61 fixtures: version
 pass, the other three not applicable).
+
+Updated 2026-11-03 from nightly run 41571647011 (commit `67c01d9`, the
+merge of v0.5.0 V4: the runner's strict action comparison, the
+report-only `multimedia` and `signatures` categories, the
+`transformed` class with the version rule T1, figures by rewrite
+configuration; the library is unchanged; same environment). Population
+unchanged. Compared field by field, every file, with the previous
+nightly 41497592731 (commit `ad76fda`), which summarises exactly to the
+previous baseline. Process ids in temporary file names and the output
+directory were normalised.
+
+| difference | files | cause |
+|---|---:|---|
+| `semantic_report.multimedia` recorded (not applicable) | 436 | new report-only category |
+| `semantic_report.signatures` recorded (435 not applicable, 1 pass) | 436 | new report-only category |
+| `semantic_report.version` `fail` → `transformed`, `semantic_rules` = T1 | 2 | the two inputs that declare 1.4 and carry `/OCProperties`; the rewriter raises them to 1.5, and T1 now accepts exactly that change |
+| `rewrite_refusal` recorded (run report only) | 40 | new field: 27 signature, 8 script, 5 other unsupported |
+
+Every other field of every file is identical:
+- stages, verdicts and round-trip checks;
+- the existing `semantic` map, with every category's class, items and
+  notes (`outlines` lines change form, `{#n …}`, but no class or count
+  changes);
+- text and annotation F1;
+- per-page render values, quality classes and findings;
+- warnings, recovery and incremental classes.
+
+Aggregates are unchanged:
+- Parse 408, Render 380, Text 392, Rewrite 372;
+- Full PASS 345 / 425;
+- graph round trip 436, full round trip 432;
+- semantic 302 pass, 134 not applicable;
+- robustness 44 / 44, crash / timeout 0.
+
+The summary adds `by_config` (only `default`, which reproduces these
+figures; `transformed` 0 in the enforced map, never counted as pass) and
+per-file `semantic_rules`.
+
+The fixtures smoke baseline is regenerated from the pull-request run on
+the same commit (41571589747). It differs only by the two new
+report-only categories (61 fixtures, not applicable) and `by_config`.
+
+With this update `check` lists a semantic move into `fail`, `error`
+or `unsupported` from any recorded class, and a lost `transformed`.
+Before, only a lost pass was listed, so once a baseline records
+`not_applicable` a structure *added* by the rewrite would have gone
+unlisted. It is still not enforced.
