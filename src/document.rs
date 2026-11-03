@@ -464,8 +464,9 @@ impl Document {
 
     /// Run `f` (a read-only inspection after an operation, like
     /// `rewrite_with`'s report) and then put back what it consumed or
-    /// recorded on the document: the reference-resolution budget and the
-    /// warnings. The document is then as the operation left it, so the
+    /// recorded on the document: the reference-resolution budget, the
+    /// warnings, and the object streams it decoded into the cache (they
+    /// count against later operations' decoded budget). The document is then as the operation left it, so the
     /// inspection is not a side channel (a later operation hitting a
     /// limit sooner, warnings the operation itself did not record).
     pub(crate) fn without_side_effects<T>(&self, f: impl FnOnce() -> T) -> T {
