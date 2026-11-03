@@ -1,6 +1,7 @@
 //! `UsageRightsPolicy::Remove` (D1) against a ground truth: documents
 //! built from the input with an optional usage-rights signature (direct
-//! or indirect, valid or not, shared or not, holding indirect objects)
+//! or indirect, valid or not, shared or not, holding indirect objects,
+//! shared or not)
 //! and signature-like decoys of every marker (`/ByteRange`; `/Type /Sig`
 //! or `/DocTimeStamp`, directly or through a reference; `/Contents` with
 //! `/Filter` or `/SubFilter`; `/Cert` with `/Contents`; `/Reference` with
@@ -204,9 +205,9 @@ fn build(inp: &mut Input, d: &mut Doc) {
             d.must_refuse = true;
         }
         if tmode == 7 && tp.ends_with('R') {
-            // What it holds is shared.
+            // What it holds is shared: removable (§5.8), the held object
+            // stays where the catalog reaches it.
             d.cat.push_str(" /Held 960 0 R");
-            d.must_refuse = true;
         }
     }
     if f[0] & 4 != 0 {
