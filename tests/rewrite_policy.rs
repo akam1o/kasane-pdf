@@ -747,3 +747,51 @@ fn every_policy_keeps_the_signature_refusals() {
         }
     }
 }
+
+/// Fuzz finding: `/OpenAction [<script action> <undefined>]` was read as
+/// a destination (not every member an action), so the strict policy
+/// carried the script. An array whose first element is an action is a
+/// list of actions; and the strict policy refuses a script or external
+/// action reachable anywhere, also outside the positions it classifies.
+#[test]
+fn no_route_around_the_strict_policy() {
+    let js = "<< /S /JavaScript /JS (x) >>";
+    for cat in [
+        format!("/OpenAction [{js} 999 0 R]"),
+        format!("/OpenAction [{js} /Fit]"),
+        // Out of any action position: a destination's parameter, an
+        // unknown key, a structure the classifier does not walk.
+        format!("/OpenAction [3 0 R {js}]"),
+        format!("/Extra {js}"),
+        "/Extra << /S /GoTo /D [3 0 R /Fit] /JS (x) >>".to_string(),
+        "/Extra [<< /S /Launch /F (x) >>]".to_string(),
+    ] {
+        let b = pdf(&cat, "", &[]);
+        let why = reason(&b, P::RefuseScriptsAndExternal);
+        assert!(
+            matches!(
+                why,
+                Some(
+                    RefusalReason::Script
+                        | RefusalReason::UnclassifiedStructure
+                        | RefusalReason::ExternalAction
+                )
+            ),
+            "{cat}: {why:?}"
+        );
+        assert!(
+            run(&b, P::Profile).is_ok(),
+            "{cat}: Profile carries it, as rewrite does"
+        );
+    }
+    // The array of actions is reported member by member.
+    let b = pdf(&format!("/OpenAction [{js} 999 0 R]"), "", &[]);
+    let out = run(&b, P::Carry).unwrap();
+    let owners: Vec<String> = out
+        .report()
+        .executable_content()
+        .iter()
+        .map(|i| i.owner.to_string())
+        .collect();
+    assert_eq!(owners, vec!["catalog/OpenAction#0".to_string()]);
+}

@@ -18,7 +18,7 @@ later, the library's D2 report are checked against
       output in a private, git-ignored place).
 
 Owners: catalog/OpenAction (an action dictionary, or each member of an
-array of action dictionaries; another array, a name or a string is a
+array whose first member is an action dictionary; another array, a name or a string is a
 destination; a malformed value is listed as `#malformed`; an unreadable
 one the runner lists as `#unresolved`, which pypdf, reading leniently,
 cannot tell from null), catalog/AA/<trigger>, page<p>/AA/<trigger>,
@@ -117,9 +117,9 @@ class Inventory:
             if is_dict(oa):
                 out.append(("catalog/OpenAction", oa))
             elif isinstance(v, ArrayObject):
-                # A destination, unless every member is an action
+                # A destination, unless the first member is an action
                 # dictionary (non-standard): then each member is one.
-                if v and all(is_dict(x) and "/S" in get(x) for x in v):
+                if v and is_dict(v[0]) and "/S" in get(v[0]):
                     for i, x in enumerate(v):
                         out.append((f"catalog/OpenAction#{i}", x))
             elif isinstance(v, (str, bytes, NameObject)):

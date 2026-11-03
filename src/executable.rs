@@ -165,6 +165,8 @@ pub(crate) fn enforce(
     policy: ExecutableContentPolicy,
     items: &[ExecutableItem],
     unclassified: &[UnclassifiedStructure],
+    doc: &Document,
+    limits: &Limits,
 ) -> Result<(), Error> {
     let name = match policy {
         ExecutableContentPolicy::Profile => return Ok(()),
@@ -204,7 +206,87 @@ pub(crate) fn enforce(
             ),
         });
     }
+    // Defence in depth: a script or external action anywhere in the
+    // document, also where no viewer looks for one (a destination's
+    // parameters, an unknown key), is refused by the strict policy —
+    // the classification of owners is not the only gate.
+    if strict {
+        if let Some(what) = action_shaped_anywhere(doc, limits) {
+            return Err(Error::Unsupported {
+                feature: REFUSED_UNCLASSIFIED,
+                detail: format!(
+                    "{what} outside the action owners the classification follows — refused by the \
+                     {name} policy"
+                ),
+            });
+        }
+    }
     Ok(())
+}
+
+/// Action types whose dictionary the strict policy refuses wherever it
+/// is: scripts and external actions.
+const SCRIPT_OR_EXTERNAL: [&[u8]; 7] = [
+    b"JavaScript",
+    b"Launch",
+    b"URI",
+    b"GoToR",
+    b"GoToE",
+    b"SubmitForm",
+    b"ImportData",
+];
+
+/// A dictionary reachable from the trailer with a script or external
+/// `/S`, or with a `/JS` entry: what it is. Every reference is followed
+/// once; the walk is bounded by a multiple of the objects the rewrite
+/// may write (`max_output_objects`) — past it, the answer is "too large
+/// to search", which refuses too.
+fn action_shaped_anywhere(doc: &Document, limits: &Limits) -> Option<&'static str> {
+    let mut seen: HashSet<IndirectRef> = HashSet::new();
+    let mut stack: Vec<Object> = Vec::new();
+    for k in [b"Root".as_slice(), b"Info".as_slice()] {
+        if let Some(v) = doc.trailer().get(k) {
+            stack.push(v.clone());
+        }
+    }
+    let mut nodes = 0usize;
+    while let Some(o) = stack.pop() {
+        nodes += 1;
+        if nodes > limits.max_output_objects.saturating_mul(64) {
+            return Some("a structure too large to search for actions");
+        }
+        let o = match o {
+            Object::Ref(r) => {
+                if !seen.insert(r) {
+                    continue;
+                }
+                match doc.resolve(r) {
+                    Ok(v) => v,
+                    Err(_) => return Some("an object that cannot be read"),
+                }
+            }
+            o => o,
+        };
+        let d = match o {
+            Object::Dict(d) => d,
+            Object::Stream { dict, .. } => dict,
+            Object::Array(a) => {
+                stack.extend(a);
+                continue;
+            }
+            _ => continue,
+        };
+        if d.contains_key(b"JS".as_slice()) {
+            return Some("a dictionary with a /JS script");
+        }
+        if let Some(s) = d.get(b"S".as_slice()).and_then(|s| s.as_name()) {
+            if SCRIPT_OR_EXTERNAL.contains(&s) {
+                return Some("a script or external action");
+            }
+        }
+        stack.extend(d.into_values());
+    }
+    None
 }
 
 impl Classifier<'_> {
@@ -258,13 +340,15 @@ impl Classifier<'_> {
                 Ok(Object::Dict(_)) => {
                     out.push((ActionOwner::OpenAction { member: None }, Root::Action(oa)))
                 }
-                // A destination, unless every member is an action
-                // dictionary (non-standard, seen): then each member is one.
+                // A destination — its first element a page or a page
+                // number — unless the first element is an action
+                // dictionary (non-standard, seen): then each member is
+                // one (a null member is no action, another value
+                // malformed).
                 Ok(Object::Array(a)) => {
-                    let actions = !a.is_empty()
-                        && a.iter().all(|x| {
-                            matches!(self.get(x), Ok(Object::Dict(d)) if d.contains_key(b"S".as_slice()))
-                        });
+                    let actions = a.first().is_some_and(|x| {
+                        matches!(self.get(x), Ok(Object::Dict(d)) if d.contains_key(b"S".as_slice()))
+                    });
                     if actions {
                         for (i, x) in a.into_iter().enumerate() {
                             out.push((
@@ -704,8 +788,22 @@ mod tests {
         assert_eq!(unclassified.len(), 1);
         assert_eq!(unclassified[0].reason, UnclassifiedReason::DepthLimit);
         // Carry and the strict policy refuse it; Profile reports it.
-        assert!(enforce(ExecutableContentPolicy::Carry, &items, &unclassified).is_err());
-        assert!(enforce(ExecutableContentPolicy::Profile, &items, &unclassified).is_ok());
+        assert!(enforce(
+            ExecutableContentPolicy::Carry,
+            &items,
+            &unclassified,
+            &d,
+            &Limits::default()
+        )
+        .is_err());
+        assert!(enforce(
+            ExecutableContentPolicy::Profile,
+            &items,
+            &unclassified,
+            &d,
+            &Limits::default()
+        )
+        .is_ok());
         let (items, unclassified) = classify(&d, &Limits::default(), &|_| None);
         assert_eq!((items.len(), unclassified.len()), (11, 0));
     }

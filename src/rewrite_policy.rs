@@ -637,7 +637,13 @@ pub fn rewrite_with(document: &Document, options: &RewriteOptions) -> Result<Rew
                 generation: 0,
             })
         });
-    crate::executable::enforce(options.executable_content, &items, &unclassified)?;
+    crate::executable::enforce(
+        options.executable_content,
+        &items,
+        &unclassified,
+        document,
+        &options.limits,
+    )?;
     Ok(RewriteOutput {
         bytes,
         report: RewriteReport {

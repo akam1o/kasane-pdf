@@ -207,7 +207,7 @@ impl<'a> Ctx<'a> {
             match self.get(&oa)? {
                 Object::Dict(_) => out.push(("catalog/OpenAction".to_string(), Root::Action(oa))),
                 // An array is a destination (its first element a page),
-                // unless every member is an action dictionary
+                // unless its first element is an action dictionary
                 // (non-standard, seen): then each member is one.
                 Object::Array(a) if !a.is_empty() && self.all_actions(&a)? => {
                     for (i, x) in a.into_iter().enumerate() {
@@ -282,15 +282,13 @@ impl<'a> Ctx<'a> {
         Ok(out)
     }
 
-    /// Every member is a dictionary with `/S` (an action).
+    /// The first member is a dictionary with `/S` (an action): the
+    /// array is a list of actions, not a destination.
     fn all_actions(&mut self, a: &[Object]) -> Res<bool> {
-        for x in a {
-            match self.get(x)? {
-                Object::Dict(d) if d.contains_key(b"S".as_slice()) => {}
-                _ => return Ok(false),
-            }
-        }
-        Ok(true)
+        Ok(match a.first() {
+            Some(x) => matches!(self.get(x)?, Object::Dict(d) if d.contains_key(b"S".as_slice())),
+            None => false,
+        })
     }
 
     fn aa_roots(&mut self, head: &str, d: &Dict, out: &mut Vec<(String, Root)>) -> Res<()> {

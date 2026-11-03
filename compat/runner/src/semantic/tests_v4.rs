@@ -1424,10 +1424,11 @@ fn every_open_action_value_is_accounted_for() {
         kinds(&open("<< /S /Named /N /NextPage >>", vec![])),
         one("Named")
     );
-    // Non-standard, seen in the wild: an array of action dictionaries.
+    // Non-standard, seen in the wild: an array of action dictionaries
+    // (its first member an action; a null member is no action).
     assert_eq!(
         kinds(&open(
-            "[<< /S /Named /N /NextPage >> 9 0 R]",
+            "[<< /S /Named /N /NextPage >> 9 0 R 8 0 R]",
             vec![(9, d("<< /S /URI /URI (u) >>"))]
         )),
         vec![
