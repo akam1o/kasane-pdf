@@ -161,7 +161,7 @@ fn count_scripts(t: &[u8]) -> u32 {
             local = &t[j + 1..k];
             j = k;
         }
-        if local == b"script"
+        if local.eq_ignore_ascii_case(b"script")
             && matches!(t.get(j), Some(b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/'))
         {
             n += 1;

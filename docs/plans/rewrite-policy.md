@@ -248,7 +248,8 @@ Actions are classified by effect, not by "is it JavaScript":
 XFA scripts are detected on the text that W3's signature check already
 produces: packets decoded, read completely (UTF-8/UTF-16, no DTD,
 declarations checked), and character references expanded. A script is
-an element whose local name is `script`, under any prefix: `<`, an
+an element whose local name is `script` (in any ASCII case, an
+over-report: XML is case-sensitive), under any prefix: `<`, an
 optional `NCName:`, `script`, then white space, `>` or `/`. The packets
 are checked together, as one document. A packet that cannot be read
 completely is refused, as in W3. A `script`-shaped match the rule

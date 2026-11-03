@@ -833,6 +833,10 @@ mod tests {
         assert_eq!(n(b"<script>"), 1);
         assert_eq!(n(b"<script/>"), 1);
         assert_eq!(n(b"<script\ncontentType='x'>"), 1);
+        // Any ASCII case: an over-report (XML is case-sensitive), as the
+        // XML-signature scan matches its namespace in any case.
+        assert_eq!(n(b"<SCRIPT>"), 1);
+        assert_eq!(n(b"<x:Script/>"), 1);
         assert_eq!(n(b"<xfa:script>"), 1);
         assert_eq!(n(b"<a.b-c_d:script >"), 1);
         assert_eq!(n(b"</script>"), 0);

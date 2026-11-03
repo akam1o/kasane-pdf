@@ -309,7 +309,8 @@ class Inventory:
         return out
 
 
-SCRIPT_RE = re.compile(rb"<(?:[A-Za-z_\x80-\xff][A-Za-z0-9_.\-\x80-\xff]*:)?script[ \t\r\n>/]")
+# Any ASCII case: an over-report (XML is case-sensitive), as the library.
+SCRIPT_RE = re.compile(rb"<(?:[A-Za-z_\x80-\xff][A-Za-z0-9_.\-\x80-\xff]*:)?script[ \t\r\n>/]", re.I)
 
 
 def count_scripts(t):

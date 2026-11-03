@@ -311,7 +311,7 @@ fn every_owner_is_reported_in_order_with_its_chain() {
     assert!(items[2].input_object.is_some_and(|r| r.number == 21));
     // Nothing of the document's content in the report.
     let dump = format!("{:?} {}", out.report(), out.report());
-    for secret in [
+    for marker in [
         "secret",
         "example.invalid",
         "AFNumber",
@@ -319,7 +319,7 @@ fn every_owner_is_reported_in_order_with_its_chain() {
         "x.exe",
         "Chapter",
     ] {
-        assert!(!dump.contains(secret), "{secret} in the report");
+        assert!(!dump.contains(marker), "document content in the report");
     }
 }
 

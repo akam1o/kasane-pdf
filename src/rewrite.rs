@@ -892,10 +892,11 @@ fn xfa_xml_signature(doc: &Document, xfa: &Object) -> Result<Option<String>, Err
 }
 
 /// The number of `script` elements in checked XFA text: `<`, an optional
-/// `NCName:` prefix, the local name `script`, then white space, `>` or
-/// `/` (`docs/plans/rewrite-policy.md` §3.1). Any match counts — a
-/// `script`-shaped string the rule cannot delimit (in a comment, an
-/// attribute) is reported as a script: an over-report, never an
+/// `NCName:` prefix, the local name `script` in any ASCII case, then
+/// white space, `>` or `/` (`docs/plans/rewrite-policy.md` §3.1). Any
+/// match counts — a `script`-shaped string the rule cannot delimit (in a
+/// comment, an attribute), or one in another case (XML is
+/// case-sensitive), is reported as a script: an over-report, never an
 /// under-report.
 pub(crate) fn count_xfa_scripts(text: &[u8]) -> u32 {
     let name_start = |c: u8| c.is_ascii_alphabetic() || c == b'_' || c >= 0x80;
@@ -921,7 +922,7 @@ pub(crate) fn count_xfa_scripts(text: &[u8]) -> u32 {
             text.get(j),
             Some(b' ' | b'\t' | b'\r' | b'\n' | b'>' | b'/')
         );
-        if local == b"script" && delimited {
+        if local.eq_ignore_ascii_case(b"script") && delimited {
             n = n.saturating_add(1);
         }
         i = i + at + 1;
