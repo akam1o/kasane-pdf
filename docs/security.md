@@ -93,6 +93,18 @@ its default. It adds two explicit options:
   rights granted by the signature are withdrawn. Nothing is verified or
   re-signed.
 
+How both will be checked is in place (v0.5.0 V4, the compatibility
+runner): an independent action inventory (also read with pypdf) that the
+report must match, and a `signatures` snapshot of the whole reachable
+graph. Every signature-like dictionary is recorded by path and number of
+references, with kinds and sizes only, never signature values,
+certificates or names. Only the declared removal may differ; anything
+else, including a declared removal that did not happen, is a failure.
+The runner's own walks are bounded:
+- node, depth and decode budgets end in an error, never a partial pass;
+- cycles end;
+- memory stays linear in the document's graph.
+
 ## Encrypted documents
 
 Authentication happens before the catalog is read; a password that

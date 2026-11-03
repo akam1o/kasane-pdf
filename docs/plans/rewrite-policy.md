@@ -964,3 +964,79 @@ refuses only under `RefuseScriptsAndExternal`; test row added.
 
 Final confirmation: approve; no P0 or P1 remains.
 
+
+## 13. V4 implementation (2026-11-03, branch `feat/v050-semantic-v4`)
+
+Runner only; the library is unchanged. Details and tests:
+`semantic-roundtrip.md`, "V4". Against this design:
+
+- **§3.5 1 (outline actions):** done as proposed — outline `/A` goes
+  through `doc_actions`' strict `chain()`. Two additions: action objects
+  are named by first-visit position (`{#n …}` / `{=#n}`) in every
+  action category, so sharing is compared in the line rather than only
+  by repeated expansion; and `outlines` is taken after `struct_tree`, so
+  an `/SD` names its element by path.
+- **§3.5 2 (`multimedia`):** done, report only, with sharing and
+  unreadable objects recorded.
+- **§3.5 3 (the report against an inventory):** the inventory is
+  `semantic::inventory` (`InventoryItem`: class, kind, owner, position,
+  `shared_with`, `script_bytes`), printed by `kasane-compat inventory`;
+  `scripts/pdf-inventory.py` is the pypdf side. The two agree on 445 of
+  447 corpus files (both differences are malformed inputs, explained).
+  C1 compares `RewriteReport::executable_content` with the runner's
+  inventory of the *input*: counts per class and owner, then item by
+  item (kind, owner, position, sharing as owner@position, script
+  length). A disagreement is `error`. Unknown and unreadable actions
+  are items (`unknown`, `#unresolved` / `#malformed`), so a policy that
+  carries or refuses them can be checked.
+- **§5.7 (`signatures`):** lines as listed there, without values:
+  `perms` (path, entry count), `perms_entry` (key, target path; the
+  transform method is in the target's `sig` line), `sig` (first path,
+  reference count, kinds and sizes), `sigflags`, `field` (signature
+  fields and fields with `/Lock` or `/SV`, both by keys and digest),
+  `dss`, `legal`, `xfa_xmldsig`, `walk unresolved=`. The D1 rule is T2
+  (`semantic/transform.rs`). It predicts the removal from the
+  original's lines, so "only `perms` lines of kind UR/UR3 may
+  disappear, nothing may appear" is checked as an exact multiset
+  difference. Conditions 1–7 of the D1 verification map to: the
+  `perms_entry` and `sig` lines removed (1); `perms` removed or its count
+  lowered (2); the `sigflags` and `acroform` `sig_flags` changes,
+  bit 1 only (3, 4); any other `sig` line, removed or added, fails (5);
+  no `sig` line with a `/ByteRange` left (6); every other line equal
+  (7).
+- **§6:**
+  - Rules are declared by the runner. T1 comes from its own reading of
+    the input (`/OCProperties`, effective version < 1.5), because the
+    library has no `VersionChange` report yet. Once it does, C1 must
+    also require the report to agree.
+  - T2 comes from the D1 configuration and the runner's reading of
+    `/Perms` and `/SigFlags`.
+  - `structure_allows` implements the graph clause. The `structure`
+    check stays `fail` and `structure_declared` / `full_declared`
+    record the declared reading, so a transformation never becomes a
+    pass anywhere.
+- **Open decision 6:** `transformed` is a class in both maps. In V4 it
+  appears only in the report-only `version` category (T1). `acroform`
+  can be `transformed` only under a D1 configuration, which the
+  default run never declares.
+- **§7 runner design:**
+  - `--rewrite-options <set>` (`default`, `carry`,
+    `remove-usage-rights`, `carry,remove-usage-rights`; repeatable).
+    Each non-default set is recorded under `rewrite_options[<set>]`,
+    and the default keeps its fields. The default's refusal class is
+    `rewrite_refusal` (signature, script, multimedia, encrypted,
+    unsupported).
+  - The summary's `by_config` gives, per set: rewrite pass, Full PASS,
+    Full PASS verified (semantic pass or transformed, graph equal or
+    exactly declared), graph and full round trip (plain and declared),
+    semantic pass / transformed / fail / error / unsupported, the
+    refusals by class, unsupported, error, crash / timeout. `check`
+    reads only the default.
+  - Today only `default` exists, so a run asking for another set exits
+    with the reason before any file. No D1/D2 behaviour is imitated.
+  - When `rewrite_with` lands, `RewriteConfig::rewrite` calls it with
+    the set's options.
+  - The default reproduces the baseline: Full PASS 345, graph 436, full
+    round trip 433, semantic pass 302.
+  - The spike figures of §7 stay expectations until C1 and C2 measure
+    them.

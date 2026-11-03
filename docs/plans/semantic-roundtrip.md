@@ -95,6 +95,7 @@ engine cannot resolve is a distinct `#unresolved` value.
 | `fail` | a line differs, is lost or is added | no |
 | `unsupported` | the snapshot needs something not implemented (a stream under another filter or a predictor) | no |
 | `not_applicable` | neither side has the structure | — |
+| `transformed` | every difference is a transformation the run declared, and every declared change happened (V4, `semantic/transform.rs`) | no — reported separately, never counted as `pass` |
 | `error` | the snapshot could not be taken (cycle, limit, malformed structure) | no |
 
 Failure notes carry counts and the *names* of differing fields, never
@@ -294,6 +295,123 @@ metadata 1 pass, associated files and document parts not applicable;
 every other result unchanged. With the W2 rewriter: version 434 pass
 and the same 2 fail, page metadata 1 pass, associated files 2 pass (the
 two 2.0 documents), document parts none in the corpus.
+
+## V4: strict actions, multimedia, signatures, transformations (v0.5.0, 2026-11-03)
+
+Runner only; the library is unchanged. Design: `rewrite-policy.md`
+§3.5, §5.7, §6.
+
+**Strict action comparison.** Outline `/A` used an older `action()`:
+a `/Next` chain cut at depth 8 (`…`, compared as equal past it),
+scripts by raw bytes, a GoTo's `/SD` ignored. It now goes through the
+document-level `chain()` of `doc_actions`:
+- depth 32, a value cut at the value depth is `error`;
+- scripts by decoded content;
+- every key of the action, `/SD` included;
+- action objects named by first-visit position in the category
+  (`{#n …}`, a repeat `{=#n}`), so sharing is compared and a shared
+  chain is expanded once. This applies to `doc_actions` too.
+
+`outlines` is taken after `struct_tree`, so a structure destination
+names its element by tree path (`elem#…`), as in `doc_actions`.
+Section order is unchanged.
+
+**`multimedia`** (report only): RichMedia, Screen, Movie, Sound and 3D
+annotations by page and position (whole dictionary but `/AP` and
+`/Popup`; streams — assets, embedded files, media — by decoded length
+and digest), the catalog `/RichMedia`, and multimedia actions
+(Rendition, Movie, Sound, RichMediaExecute) by owner and chain position.
+A referenced value met again is named by its first owner and key
+(`shared=`). An unreadable annotation or action is a line
+(`unresolved`), never "absent"; an undecodable stream is `unsupported`.
+
+**`signatures`** (report only), for D1:
+- every *signature-like* dictionary in the graph reachable from the
+  trailer's `/Root` and `/Info` (breadth first; `/Parent`, `/P` and a
+  stream's `/Length` counted or skipped, not followed): `/ByteRange`;
+  `/Type /Sig` or `/DocTimeStamp`; `/Contents` with any `/Filter` or
+  `/SubFilter`; `/Reference` (array or dictionary) with
+  `/TransformMethod`; `/Cert` with `/Contents`. Each by first path and
+  number of references, with type, filter, sub-filter, `/ByteRange`
+  length, `/Contents` *length*, each reference's transform method and
+  parameters, and which of `/M /Name /Reason /Location /ContactInfo
+  /Prop_Build /Cert /Changes` are present — never their values;
+- the catalog `/Perms` (path, number of entries) and each entry's
+  target path, `/AcroForm /SigFlags`, signature fields and fields with
+  `/Lock` or `/SV` (path, `/V` kind and path; `/Lock` and `/SV` by keys
+  and digest), `/DSS` (entry counts), `/Legal` (keys and digest), XFA
+  packets naming the XML-DSig namespace;
+- unreadable objects met by the walk (a count).
+
+The walk keeps one node per value (parent and step), so memory is
+linear in the graph; it shares the node budget, and a path past 1 MiB
+is `error`.
+
+**Declared transformations.** The comparison is unchanged and finds
+every difference. Afterwards, a category's difference (as a multiset
+of lines) is compared with what the run's declarations predict from the
+*original* snapshot:
+- no declaration for the category: the comparison stands;
+- exactly the predicted lines removed and added: `transformed`, with
+  the rule names;
+- anything more, anything less (a declared change that did not happen)
+  or a declaration that does not fit the original (`invalid
+  declaration`): `fail`;
+- `error` and `unsupported` stay as they are.
+
+| rule | declared by | category | predicted change |
+|---|---|---|---|
+| T1 version raised | the runner, for every rewrite: `/OCProperties` present and an effective version below 1.5 | `version` | `effective version=1.x` → `1.5`; only to 1.5, only from the document's own version |
+| T2 usage rights removed | the D1 configurations (`--rewrite-options remove-usage-rights`), from the runner's reading of `/Perms` and `/SigFlags` | `signatures` | the `/UR` / `/UR3` entries and their signature dictionary (which must be referenced once) go; `/Perms` goes when nothing else is left, otherwise its entry count drops; `/SigFlags` changes only by clearing a set bit 1 |
+| | | `acroform` | the `form` line's `sig_flags` only, bit 1 cleared |
+| | | graph (`structure`) | exactly `/Root/Perms` (or its removed entries) and, with bit 1, `/Root/AcroForm/SigFlags` — recorded as `structure_declared`, the check itself stays `fail` |
+
+Each rule has the eight tests: the transformation, undeclared,
+declared but absent, out of scope, a near miss (one unrelated change),
+two or more extra changes, invalid declarations, an incomplete
+comparison. T2 on the corpus: all 27 usage-rights forms (refused by the
+default rewrite, so not compared in a run) yield a valid declaration
+from their own snapshot — `/Perms` holds only `/UR3`, one signature
+dictionary referenced once, `/SigFlags 2` (no bit-1 change) — and the
+exact removal applied to their lines classifies `transformed`.
+
+**Action inventory** (`kasane-compat inventory FILE`, `v4.rs`): every
+action reachable from its owners — catalog `/OpenAction` (an array is a
+destination), catalog, page, annotation and field `/AA` triggers,
+annotation and outline `/A`, `/Names /JavaScript` — with class (script,
+external, state, navigation, multimedia, unknown), kind, owner, chain
+position, the first item it shares, and a script's length. An
+unreadable or malformed action is an `unknown` item, never dropped.
+`scripts/pdf-inventory.py` reads the same with pypdf. Corpus: the two
+agree on 445 of the 447 files both read (15 283 actions: 8 120
+navigation, 7 051 external, 112 script); the two others are malformed
+inputs read differently (a stream without `/Length`, whose end-of-line
+pypdf counts; an object pypdf reads and the library does not). The
+D2 report will be checked against this inventory, not trusted.
+
+**Tests** (`semantic/tests_v4.rs`, 18 tests; `configs.rs`, 3): equal, renumbered, keys
+reordered and recompressed pass; content, settings, removal, addition,
+reorder, kind and sharing changes fail; cycles end; undefined and
+unreadable references differ; depth, node and decode budgets are
+`error`; an unsupported filter is `unsupported`; notes and lines carry
+no script text or signature value. 21 deliberate breakages of the
+implementation (sharing ids, the strict outline cut, three signature
+markers, reference counts, multimedia sharing, actions and coverage,
+five transformation checks, the T2 guards, the inventory's sharing,
+the graph allowance, the `/DSS` line, the unresolved count, the
+evaluation order, the stream `/Length` skip) each make a test fail.
+
+**Corpus** (macOS, nightly configuration; numbers in `v0.5.0.md` §19).
+Every existing figure is unchanged; existing semantic classes are
+unchanged (`outlines` lines changed in form — the strict chain's
+`{#n …}` — for every file with outline actions, with the same class);
+`version` moves its two known fails to `transformed` (T1);
+`multimedia` and `signatures` are report only.
+
+**Not covered:** scripts inside embedded files; RichMedia/3D stream
+content beyond the digest; a signature with none of the markers (by
+ISO 32000 not a PDF signature); `/#unresolved` as a literal name is
+indistinguishable from an unreadable object (all categories).
 
 ## Roll-out
 

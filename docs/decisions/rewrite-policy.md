@@ -60,3 +60,17 @@ open decisions of the plan. The design is
   - both together +33, to 378 / 425.
 
   So D2 comes first, and D1 is only worth shipping with it.
+- **Verified before implemented (V4, 2026-11-03).** The runner can now
+  verify both options before either exists in the library:
+  - a strict action comparison, outlines included;
+  - report-only `multimedia` and `signatures` categories;
+  - the `transformed` class with the version rule (T1, in effect) and
+    the usage-rights rule (T2, tested on synthetic documents and
+    checked against the 27 corpus forms' own snapshots);
+  - per-configuration figures, in namespaces of their own;
+  - an action inventory cross-checked with pypdf, against which the D2
+    report will be compared rather than trusted.
+
+  The default rewrite's results are unchanged. The signature refusal
+  policy is unchanged.
+
