@@ -474,9 +474,19 @@ impl Document {
             let w = self.warnings.borrow();
             (w.list.clone(), w.dropped)
         };
+        // Object streams decoded by `f` leave the cache again, so a later
+        // operation's decoded budget (which the cache counts against) is
+        // what it would have been.
+        let cached: std::collections::HashSet<u32> =
+            self.objstm_cache.borrow().keys().copied().collect();
+        let cached_bytes = self.objstm_cached_bytes.get();
         let _scope = self.decoded_budget_scope();
         let out = f();
         self.ref_budget.set(budget);
+        self.objstm_cache
+            .borrow_mut()
+            .retain(|k, _| cached.contains(k));
+        self.objstm_cached_bytes.set(cached_bytes);
         let mut w = self.warnings.borrow_mut();
         w.list = list;
         w.dropped = dropped;
@@ -1409,5 +1419,50 @@ impl Drop for DecodedBudgetScope<'_> {
         if self.outer {
             self.doc.decoded_budget.set(self.doc.fresh_decoded_budget());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_inspection_leaves_no_trace() {
+        // Every object of the fixture but the catalog lives in an object
+        // stream: resolving one decodes and caches the stream.
+        let data = include_bytes!("../tests/fixtures/objstm.pdf");
+        let doc = Document::from_bytes(data).unwrap();
+        let _ = doc.take_warnings();
+        // Loading decoded the stream for the page tree; start without it
+        // so the inspection is the one that decodes it.
+        doc.objstm_cache.borrow_mut().clear();
+        doc.objstm_cached_bytes.set(0);
+        let (budget, bytes) = (doc.ref_budget.get(), doc.objstm_cached_bytes.get());
+        let keys = doc.objstm_cache.borrow().len();
+        let n = doc.without_side_effects(|| {
+            let mut n = 0;
+            for i in 1..10 {
+                if doc
+                    .resolve(IndirectRef {
+                        number: i,
+                        generation: 0,
+                    })
+                    .is_ok()
+                {
+                    n += 1;
+                }
+            }
+            let _ = doc.resolve(IndirectRef {
+                number: 999,
+                generation: 0,
+            });
+            n
+        });
+        assert!(n > 1, "the inspection resolved objects");
+        assert_eq!(keys, 0);
+        assert_eq!(doc.ref_budget.get(), budget);
+        assert_eq!(doc.objstm_cached_bytes.get(), bytes);
+        assert_eq!(doc.objstm_cache.borrow().len(), keys);
+        assert!(doc.warnings().is_empty());
     }
 }

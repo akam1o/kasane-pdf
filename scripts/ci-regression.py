@@ -433,6 +433,7 @@ def check(run, base, summary_md=None):
     new_reports, known_reports = [], []
     semantic_changes = []
     option_changes = []
+    not_run = set()
     text_changes = []
     for fid, n in cur.items():
         if n["verdict"] in ("crash", "timeout"):
@@ -513,10 +514,13 @@ def check(run, base, summary_md=None):
             semantic_changes.append(f"{fid}: {name}: the report disagrees with the runner's inventory")
         # A configuration's lost gain (its own namespace; listed, never
         # enforced): Full PASS, rewrite, semantic pass.
+        if o.get("policy") and not n.get("policy") and n["stages"].get("parse") == "pass":
+            option_changes.append(f"{fid}: policy check not run (the baseline has one)")
         for name, was_o in (o.get("options") or {}).items():
             now_o = (n.get("options") or {}).get(name)
             if now_o is None:
-                continue  # the configuration was not run this time
+                not_run.add(name)
+                continue
             for key, good in (("full_pass", True), ("rewrite", "pass"), ("semantic", "pass")):
                 if was_o.get(key) == good and now_o.get(key) != good:
                     option_changes.append(f"{fid}: {name}: {key} {was_o.get(key)} -> {now_o.get(key)}")
@@ -574,6 +578,8 @@ def check(run, base, summary_md=None):
         print("semantic round-trip change (not enforced, review):", line)
     for line in text_changes:
         print("text agreement drop (not enforced, review):", line)
+    for name in sorted(not_run):
+        print("rewrite configuration not run:", name, "(the baseline has it; not enforced)")
     for line in option_changes:
         print("rewrite configuration change (not enforced, review):", line)
     for line in regressions:

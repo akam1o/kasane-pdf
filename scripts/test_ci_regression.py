@@ -472,6 +472,18 @@ class Gate(unittest.TestCase):
         self.assertNotIn("carry:", out)
         self.assertNotIn("-> missing", out)
 
+    def test_a_configuration_or_policy_check_not_run_is_listed(self):
+        f = dict(file("a", [NORMAL]), policy_check={"identical": True, "version_agrees": True,
+                                                    "inventory": {"agree": True}})
+        f["rewrite_options"] = {"carry": {"rewrite": "pass", "roundtrip": {"reparse": {"class": "Pass"}}}}
+        base = cr.summarize(run(f))
+        rc, out = check(run(file("a", [NORMAL])), base)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("rewrite configuration not run: carry", out)
+        self.assertIn("policy check not run", out)
+        rc, out = check(run(f), base)
+        self.assertNotIn("not run", out)
+
     def test_text_agreement_is_recorded_and_report_only(self):
         def with_text(f1, f1a):
             f = file("a", [NORMAL])
