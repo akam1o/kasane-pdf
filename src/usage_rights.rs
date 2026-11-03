@@ -182,14 +182,37 @@ enum Link {
     Step(Step),
 }
 
+/// A value waiting to be walked, and how it is reached: its node is made
+/// only when it is needed (a container with containers in it, or a hit),
+/// so a wide structure of empty or scalar-only values holds no node per
+/// value.
 struct Entry {
     value: Object,
-    node: usize,
+    /// The parent's node and the step from it.
+    parent: Option<usize>,
+    link: Link,
     /// The edge that led here counts as a reference (not a page-list
     /// root).
     counted: bool,
-    /// The value of an `/SV` key.
+    /// The value of a signature field's `/SV`.
     sv: bool,
+}
+
+/// `entry`'s node, made on first use.
+fn node_of(
+    nodes: &mut Vec<(Option<usize>, Link)>,
+    made: &mut Option<usize>,
+    parent: Option<usize>,
+    link: &Link,
+) -> usize {
+    *made.get_or_insert_with(|| {
+        let link = match link {
+            Link::Obj(r) => Link::Obj(*r),
+            Link::Step(s) => Link::Step(s.clone()),
+        };
+        nodes.push((parent, link));
+        nodes.len() - 1
+    })
 }
 
 fn origin(nodes: &[(Option<usize>, Link)], mut n: usize) -> Origin {
@@ -243,10 +266,10 @@ pub(crate) fn scan(doc: &Document, limits: &Limits) -> Result<Scan, Error> {
     let mut stack: Vec<Entry> = Vec::new();
     for k in [b"Root".as_slice(), b"Info".as_slice()] {
         if let Some(v) = doc.trailer().get(k) {
-            nodes.push((None, Link::Step(Step::Key(k.to_vec()))));
             stack.push(Entry {
                 value: v.clone(),
-                node: nodes.len() - 1,
+                parent: None,
+                link: Link::Step(Step::Key(k.to_vec())),
                 counted: true,
                 sv: false,
             });
@@ -256,10 +279,10 @@ pub(crate) fn scan(doc: &Document, limits: &Limits) -> Result<Scan, Error> {
     // `/Root`; these roots are not references, so not counted.
     for p in doc.pages() {
         if let Some(r) = p.object_ref() {
-            nodes.push((None, Link::Step(Step::Key(b"Page".to_vec()))));
             stack.push(Entry {
                 value: Object::Ref(r),
-                node: nodes.len() - 1,
+                parent: None,
+                link: Link::Step(Step::Key(b"Page".to_vec())),
                 counted: false,
                 sv: false,
             });
@@ -268,12 +291,15 @@ pub(crate) fn scan(doc: &Document, limits: &Limits) -> Result<Scan, Error> {
     s.values = stack.len();
     while let Some(Entry {
         value,
-        node,
+        parent,
+        link,
         counted,
         sv,
     }) = stack.pop()
     {
-        let (value, node) = match value {
+        // An indirect object starts a path of its own (an origin stops
+        // at it), so the step that led to it needs no node.
+        let (value, parent, link) = match value {
             Object::Ref(r) => {
                 if counted {
                     *s.refs.entry(r).or_default() += 1;
@@ -284,8 +310,6 @@ pub(crate) fn scan(doc: &Document, limits: &Limits) -> Result<Scan, Error> {
                 let v = doc
                     .resolve_one_hop(r)
                     .map_err(|e| object_unreadable(r, &e))?;
-                nodes.push((Some(node), Link::Obj(r)));
-                let node = nodes.len() - 1;
                 if let Object::Ref(_) = v {
                     // A chain link (or an object-stream member that is a
                     // reference): the writers write it, then what it
@@ -296,16 +320,18 @@ pub(crate) fn scan(doc: &Document, limits: &Limits) -> Result<Scan, Error> {
                     }
                     stack.push(Entry {
                         value: v,
-                        node,
+                        parent: None,
+                        link: Link::Obj(r),
                         counted: true,
                         sv,
                     });
                     continue;
                 }
-                (v, node)
+                (v, None, Link::Obj(r))
             }
-            v => (v, node),
+            v => (v, parent, link),
         };
+        let mut made = None;
         let d = match value {
             Object::Dict(d) => d,
             // A stream's `/Length` is storage; the rewrite does not
@@ -321,10 +347,11 @@ pub(crate) fn scan(doc: &Document, limits: &Limits) -> Result<Scan, Error> {
                 }
                 for (i, x) in a.into_iter().enumerate().rev() {
                     if container(&x) {
-                        nodes.push((Some(node), Link::Step(Step::Index(i))));
+                        let node = node_of(&mut nodes, &mut made, parent, &link);
                         stack.push(Entry {
                             value: x,
-                            node: nodes.len() - 1,
+                            parent: Some(node),
+                            link: Link::Step(Step::Index(i)),
                             counted: true,
                             sv: false,
                         });
@@ -340,6 +367,7 @@ pub(crate) fn scan(doc: &Document, limits: &Limits) -> Result<Scan, Error> {
                 s.byte_ranges += 1;
             }
             if s.signature_like_at.len() < KEPT {
+                let node = node_of(&mut nodes, &mut made, parent, &link);
                 s.signature_like_at.push(origin(&nodes, node));
             }
         }
@@ -348,6 +376,7 @@ pub(crate) fn scan(doc: &Document, limits: &Limits) -> Result<Scan, Error> {
         } else if d.contains_key(b"Lock".as_slice()) {
             s.locks += 1;
             if s.lock_at.len() < KEPT {
+                let node = node_of(&mut nodes, &mut made, parent, &link);
                 s.lock_at.push(origin(&nodes, node));
             }
         }
@@ -361,10 +390,11 @@ pub(crate) fn scan(doc: &Document, limits: &Limits) -> Result<Scan, Error> {
         for (k, v) in d.into_iter().rev() {
             if container(&v) {
                 let sv = field && k.as_slice() == b"SV";
-                nodes.push((Some(node), Link::Step(Step::Key(k))));
+                let node = node_of(&mut nodes, &mut made, parent, &link);
                 stack.push(Entry {
                     value: v,
-                    node: nodes.len() - 1,
+                    parent: Some(node),
+                    link: Link::Step(Step::Key(k)),
                     counted: true,
                     sv,
                 });
@@ -596,20 +626,25 @@ fn assess_inner(doc: &Document, limits: &Limits) -> Result<Option<Plan>, Error> 
     // remains — every other bit kept.
     let mut sig_flags = None;
     let mut sig_flags_read = None;
+    // Read through chains; where bit 1 must be cleared, what is edited is
+    // read one hop (a chain refuses: §5.8).
+    let read = |o: &Object, what: &str| deref_chain(doc, o).map_err(|e| unreadable(what, &e));
     if let Some(af) = cat.get(b"AcroForm".as_slice()) {
-        let (af_at, afd) = match one_hop(doc, af, "/AcroForm")? {
-            (_, Object::Null) => (None, None),
-            (at, Object::Dict(d)) => (at, Some(d)),
+        let afd = match read(af, "/AcroForm")? {
+            Object::Null => None,
+            Object::Dict(d) => Some(d),
             _ => return Err(not_removable("/AcroForm is not a dictionary")),
         };
         if let Some(f) = afd.as_ref().and_then(|d| d.get(b"SigFlags".as_slice())) {
-            let (f_at, value) = match one_hop(doc, f, "/SigFlags")? {
-                (at, Object::Integer(v)) => (at, v),
-                (_, Object::Null) => (None, 0),
+            let value = match read(f, "/SigFlags")? {
+                Object::Integer(v) => v,
+                Object::Null => 0,
                 _ => return Err(not_removable("/AcroForm /SigFlags is not an integer")),
             };
             sig_flags_read = Some(value);
             if value & 1 == 1 {
+                let af_at = one_hop(doc, af, "/AcroForm")?.0;
+                let f_at = one_hop(doc, f, "/SigFlags")?.0;
                 let at = match (f_at, af_at) {
                     (Some(r), _) => {
                         if refs(&r) != 1 {
@@ -720,12 +755,14 @@ pub(crate) fn overlay(doc: &Document, plan: &Plan) -> Result<HashMap<(u32, u16),
 /// read to its end; a stream's `/Length` not followed) — with the
 /// plan's cut applied when there is one: the catalog's, or the `/Perms`
 /// object's, removed entries (and an empty `/Perms`) are not followed.
-/// What the output check expects the edited rewrite to have written.
+/// What the output check expects the edited rewrite to have written,
+/// and how many objects only the cut-off values reach (what the removal
+/// keeps out of the output).
 fn written_objects(
     doc: &Document,
     plan: Option<&Plan>,
     limits: &Limits,
-) -> Result<HashSet<(u32, u16)>, Error> {
+) -> Result<(HashSet<(u32, u16)>, usize), Error> {
     let budget = budget(limits);
     let root = doc
         .trailer()
@@ -738,15 +775,31 @@ fn written_objects(
             stack.push(Object::Ref(*r));
         }
     }
-    let cut = |d: &mut Dict| {
+    // The values the cut skips, walked last: only what nothing else
+    // reaches is counted as removed.
+    let mut cut_off: Vec<Object> = Vec::new();
+    let cut = |d: &mut Dict, cut_off: &mut Vec<Object>| {
         if let Some(p) = plan {
             for t in &p.targets {
-                d.remove(t.key.name());
+                if let Some(v) = d.remove(t.key.name()) {
+                    cut_off.push(v);
+                }
             }
         }
     };
     let mut values = 0usize;
-    while let Some(o) = stack.pop() {
+    let mut written: Option<HashSet<(u32, u16)>> = None;
+    loop {
+        let Some(o) = stack.pop() else {
+            if written.is_some() {
+                break;
+            }
+            // The edited rewrite's objects are walked; now what only the
+            // cut-off values reach.
+            written = Some(seen.clone());
+            stack.append(&mut cut_off);
+            continue;
+        };
         values += 1;
         if values > budget {
             return Err(over_budget(budget));
@@ -757,17 +810,19 @@ fn written_objects(
                     continue;
                 }
                 let mut v = doc.resolve(r).map_err(|e| object_unreadable(r, &e))?;
-                if let (Some(p), Object::Dict(d)) = (plan, &mut v) {
+                if let (Some(p), Object::Dict(d), None) = (plan, &mut v, &written) {
                     if Some(r) == root {
                         if p.perms_left == 0 {
-                            d.remove(b"Perms".as_slice());
+                            if let Some(pv) = d.remove(b"Perms".as_slice()) {
+                                cut_off.push(pv);
+                            }
                         } else if p.perms == PermsAt::Catalog {
                             if let Some(Object::Dict(pd)) = d.get_mut(b"Perms".as_slice()) {
-                                cut(pd);
+                                cut(pd, &mut cut_off);
                             }
                         }
                     } else if p.perms == PermsAt::Object(r) {
-                        cut(d);
+                        cut(d, &mut cut_off);
                     }
                 }
                 stack.push(v);
@@ -782,7 +837,9 @@ fn written_objects(
             _ => {}
         }
     }
-    Ok(seen)
+    let written = written.unwrap_or_default();
+    let removed = seen.len() - written.len();
+    Ok((written, removed))
 }
 
 fn residual(detail: impl std::fmt::Display) -> Error {
@@ -814,7 +871,7 @@ pub(crate) fn check_output(
             ))
         })
     };
-    let expected = collect(plan)?;
+    let (expected, objects_removed) = collect(plan)?;
     if &expected != written {
         return Err(residual(format_args!(
             "{} object(s) missing and {} unexpected against the declared removal",
@@ -834,10 +891,6 @@ pub(crate) fn check_output(
             )));
         }
     }
-    let objects_removed = match plan {
-        Some(_) => collect(None)?.difference(&expected).count(),
-        None => 0,
-    };
 
     let out = Document::from_bytes_with_limits(bytes, limits.clone()).map_err(|e| {
         residual(format_args!(
@@ -856,17 +909,25 @@ pub(crate) fn check_output(
     if s.locks > 0 {
         return Err(residual("a field /Lock"));
     }
-    let a = crate::audit::audit_residuals(&out, limits).map_err(|e| {
+    // The residual audit's reachability walk, with room for every value
+    // the signature walk may examine.
+    let mut al = limits.clone();
+    al.max_audit_elements = al.max_audit_elements.max(budget(limits) as u64);
+    al.max_audit_edges = al.max_audit_edges.max(budget(limits) as u64);
+    let reach = crate::audit::reachability(&out, &al).map_err(|e| {
         residual(format_args!(
-            "the output audit failed ({})",
+            "the output walk failed ({})",
             e.kind().as_str()
         ))
     })?;
-    let reach = &a.reachability;
-    if !reach.walk_complete || reach.missing_references > 0 || reach.unreachable_live > 0 {
+    let reach = &reach;
+    if !reach.walk_complete {
+        return Err(residual("the output walk stopped at a limit"));
+    }
+    if reach.missing_references > 0 || reach.unreachable_live > 0 {
         return Err(residual(format_args!(
-            "the output walk: complete {}, missing references {}, unreachable objects {}",
-            reach.walk_complete, reach.missing_references, reach.unreachable_live
+            "the output has {} missing reference(s) and {} unreachable object(s)",
+            reach.missing_references, reach.unreachable_live
         )));
     }
 
@@ -882,8 +943,12 @@ pub(crate) fn check_output(
     }
     if let Some(p) = ocat.get(b"Perms".as_slice()) {
         let p = deref_chain(&out, p).map_err(|_| residual("/Perms cannot be read"))?;
+        let empty = Dict::new();
         let left = match &p {
             Object::Dict(d) => d,
+            // A null /Perms (an undefined or null object in the input,
+            // carried as such) holds nothing.
+            Object::Null if plan.is_none() => &empty,
             _ => return Err(residual("/Perms is not a dictionary")),
         };
         if [b"UR".as_slice(), b"UR3", b"DocMDP"]
@@ -1840,7 +1905,7 @@ mod tests {
             b[at..at + n].fill(b'9');
             b
         };
-        fails(&dangling, &written, &p, "missing references");
+        fails(&dangling, &written, &p, "missing reference");
         // The removal not done: the plain rewrite's output.
         let (plain, pmap, _) =
             crate::rewrite::rewrite_mapped(&d, &limits, false, &HashMap::new(), true).unwrap();

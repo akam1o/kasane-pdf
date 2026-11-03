@@ -835,7 +835,9 @@ pub fn rewrite_with(document: &Document, options: &RewriteOptions) -> Result<Rew
         None
     };
     let overlay = match &plan {
-        Some(Some(p)) => crate::usage_rights::overlay(document, p)?,
+        Some(Some(p)) => {
+            document.without_side_effects(|| crate::usage_rights::overlay(document, p))?
+        }
         _ => std::collections::HashMap::new(),
     };
     let (bytes, map, version) = crate::rewrite::rewrite_mapped(

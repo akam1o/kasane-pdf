@@ -331,6 +331,66 @@ fn an_indirect_stream_length() {
     assert!(out.report().signatures_removed());
 }
 
+/// Review 2: documents without any signature are `NonePresent` and the
+/// plain rewrite — a dangling or null `/Perms` (P2-1), a graph larger
+/// than the audit's own element limit (P2-2), an `/AcroForm` read
+/// through a chain when nothing is edited (P3-1).
+#[test]
+fn review_2_no_false_refusals() {
+    let cases = [
+        pdf("/Perms 99 0 R", "", &[]),
+        pdf("/Perms 5 0 R", "", &[(5, "null")]),
+        pdf(
+            "/AcroForm 5 0 R",
+            "",
+            &[(5, "30 0 R"), (30, "<< /Fields [] /SigFlags 2 >>")],
+        ),
+    ];
+    for b in &cases {
+        let d = Document::from_bytes(b).unwrap();
+        let out = rewrite_with(&d, &remove()).unwrap_or_else(|e| panic!("{e:?}"));
+        assert_eq!(
+            out.report().usage_rights(),
+            &UsageRightsOutcome::NonePresent
+        );
+        assert_eq!(out.bytes(), rewrite(&d).unwrap());
+    }
+    // More values than max_audit_elements, within the walk budget.
+    let b = pdf(&format!("/X [{}]", "[] ".repeat(3_000)), "", &[]);
+    let small = remove().with_limits(Limits::default().with_max_audit_elements(1_000));
+    let out = run(&b, &small).unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(
+        out.report().usage_rights(),
+        &UsageRightsOutcome::NonePresent
+    );
+    // With a usage-rights signature too, and /SigFlags behind a chain
+    // that need not change.
+    let b = pdf(
+        &format!(
+            "/Perms << /UR3 10 0 R >> /AcroForm 5 0 R /X [{}]",
+            "[] ".repeat(3_000)
+        ),
+        "",
+        &[
+            (10, UR3),
+            (5, "30 0 R"),
+            (30, "<< /Fields [] /SigFlags 2 >>"),
+        ],
+    );
+    assert!(run(&b, &small).unwrap().report().signatures_removed());
+    // ... but one that must change still refuses.
+    let b = pdf(
+        "/Perms << /UR3 10 0 R >> /AcroForm 5 0 R",
+        "",
+        &[
+            (10, UR3),
+            (5, "30 0 R"),
+            (30, "<< /Fields [] /SigFlags 3 >>"),
+        ],
+    );
+    assert_eq!(rule(&b, &remove()), SignatureRule::UsageRightsNotRemovable);
+}
+
 /// An incremental update after the signature: the input's revisions are
 /// counted, the output has one.
 #[test]

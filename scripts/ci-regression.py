@@ -347,9 +347,10 @@ def config_figures(entries):
             fig[f"semantic_{sem}"] += 1
         declared = bool(rt.get("structure_declared")) and rt.get("signatures_transformed", True) is not False
         fig["signatures_transformed"] += rt.get("signatures_transformed") is True
-        if full and sem in ("pass", "transformed", "not_applicable", None) and (graph or declared):
-            fig["full_pass_verified"] += 1
         ur = (extra or {}).get("usage_rights") if isinstance(extra, dict) else None
+        ur_ok = not ur or ur.get("agree") is not False
+        if full and sem in ("pass", "transformed", "not_applicable", None) and (graph or declared) and ur_ok:
+            fig["full_pass_verified"] += 1
         if ur:
             outcome = ur.get("outcome")
             if outcome in ("removed", "none_present", "refused"):

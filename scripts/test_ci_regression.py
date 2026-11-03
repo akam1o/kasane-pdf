@@ -411,6 +411,11 @@ class Gate(unittest.TestCase):
         good["rewrite_options"]["remove-usage-rights"]["roundtrip"]["signatures_transformed"] = True
         d1g = cr.summarize(run(a, good, c, d))["aggregate"]["by_config"]["remove-usage-rights"]
         self.assertEqual((d1g["full_pass_verified"], d1g["signatures_transformed"]), (2, 1))
+        # A usage-rights report that disagrees with the runner is not verified.
+        dis = json.loads(json.dumps(good))
+        dis["rewrite_options"]["remove-usage-rights"]["usage_rights"] = {"outcome": "removed", "agree": False}
+        d1d = cr.summarize(run(a, dis, c, d))["aggregate"]["by_config"]["remove-usage-rights"]
+        self.assertEqual((d1d["full_pass_verified"], d1d["usage_rights_disagree"]), (1, 1))
         self.assertEqual((dflt["files"], dflt["full_pass"], dflt["signature_refusal"], dflt["script_refusal"]), (3, 1, 1, 1))
         self.assertEqual((dflt["semantic_pass"], dflt["semantic_transformed"]), (1, 0))
         self.assertEqual((d1["files"], d1["rewrite_pass"], d1["full_pass"], d1["full_pass_verified"]), (3, 2, 2, 2))

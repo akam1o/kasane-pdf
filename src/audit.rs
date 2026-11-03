@@ -347,6 +347,30 @@ pub fn audit_residuals(doc: &Document, limits: &Limits) -> Result<ResidualAudit,
     Ok(a.out)
 }
 
+/// [`audit_residuals`]' reachability counts alone: the reachability walk
+/// and the cross-reference pass, without the finding passes (the
+/// usage-rights output check).
+pub(crate) fn reachability(doc: &Document, limits: &Limits) -> Result<ReachabilityReport, Error> {
+    limits.validate()?;
+    let mut a = Audit {
+        doc,
+        limits,
+        out: ResidualAudit::default(),
+        edges: 0,
+        elements: 0,
+        referrers: HashMap::new(),
+        reachable: HashSet::new(),
+        walk_complete: false,
+        findings_seen: 0,
+        findings_capped: false,
+        #[cfg(test)]
+        max_walk_stack: 0,
+    };
+    a.reachability_walk()?;
+    a.audit_xref_and_history();
+    Ok(a.out.reachability)
+}
+
 // ---------------------------------------------------------------------
 // Audit state
 // ---------------------------------------------------------------------
@@ -539,6 +563,14 @@ impl<'d> Audit<'d> {
             // One hop: a chain's every link is an object of its own
             // (the next link is an edge of it), as the writers write it.
             let obj = match self.doc.resolve_defined_one_hop(r) {
+                // A chain link: a chain that closes on itself has no
+                // object at its end and stays the error it was.
+                Ok(Object::Ref(_)) => {
+                    if let Err(e @ Error::CycleDetected { .. }) = self.doc.resolve_defined(r) {
+                        return Err(e);
+                    }
+                    self.doc.resolve_defined_one_hop(r)?
+                }
                 Ok(o) => o,
                 Err(Error::MissingReference(_)) => {
                     // A queued ref that turned out to be absent is a
@@ -2774,6 +2806,30 @@ mod tests {
         assert!(r.walk_complete);
         assert_eq!((r.reachable_live, r.unreachable_live), (6, 0), "{r:?}");
         assert!(!has_kind(&a, FindingKind::UnreachableObject));
+    }
+
+    /// ... and a chain that closes on itself (`5 → 6 → 5`) stays the
+    /// error it was before chains were walked link by link (review 2).
+    #[test]
+    fn a_reference_chain_cycle_is_still_an_error() {
+        let r = audit_residuals(
+            &doc(&assemble(
+                &[
+                    (1, b"<< /Type /Catalog /Pages 2 0 R /X 5 0 R >>"),
+                    (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                    (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>"),
+                    (5, b"6 0 R"),
+                    (6, b"5 0 R"),
+                ],
+                b"",
+            )),
+            &Limits::default(),
+        );
+        assert!(
+            matches!(r, Err(Error::CycleDetected { .. })),
+            "{:?}",
+            r.map(|a| a.reachability)
+        );
     }
 
     #[test]
