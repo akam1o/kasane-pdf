@@ -753,8 +753,8 @@ impl<'a> Ctx<'a> {
         // Field locks and seed values wherever they are (a widget in no
         // /Fields included): by path, keys and digest, never values.
         for (kind, nodes) in [("lock", &walk.locks), ("seed_value", &walk.seed_values)] {
-            for n in nodes.iter() {
-                out.push(format!("{kind}\tat={}", walk.path(*n)?));
+            for (n, v) in nodes.iter() {
+                out.push(format!("{kind}\tat={}\t{}", walk.path(*n)?, w.summary(v)?));
             }
         }
         let path_of = |o: &Object| -> Res<String> {
@@ -843,31 +843,32 @@ impl<'a> Ctx<'a> {
     /// that prints it); the queue counts against the node budget.
     fn signature_walk(&mut self) -> Res<Walk> {
         let trailer = self.doc.trailer().clone();
-        // (value, parent node, step, under a seed-value dictionary, is
-        // the /SV value)
-        #[allow(clippy::type_complexity)]
-        let mut queue: VecDeque<(Object, Option<usize>, Box<str>, bool, bool)> = VecDeque::new();
+        // (value, parent node, step, is the /SV value). An object is
+        // walked once per role (the value of /SV, or anything else), so a
+        // field that is also another's /SV still has its /Lock seen.
+        let mut queue: VecDeque<(Object, Option<usize>, Box<str>, bool)> = VecDeque::new();
         for k in ["Root", "Info"] {
             if let Some(v) = trailer.get(k.as_bytes()) {
-                queue.push_back((v.clone(), None, format!("/{k}").into(), false, false));
+                queue.push_back((v.clone(), None, format!("/{k}").into(), false));
             }
         }
         let mut w = Walk::default();
-        while let Some((o, parent, step, under_sv, is_sv)) = queue.pop_front() {
+        let mut seen: HashSet<(IndirectRef, bool)> = HashSet::new();
+        while let Some((o, parent, step, is_sv)) = queue.pop_front() {
             if queue.len() + w.nodes.len() > MAX_NODES {
                 return err(format!("signature walk stopped after {MAX_NODES} values"));
             }
             let r = o.as_ref();
             if let Some(r) = r {
                 *w.refs.entry(r).or_default() += 1;
-                if w.first.contains_key(&r) {
+                if !seen.insert((r, is_sv)) {
                     continue;
                 }
             }
             let node = w.nodes.len();
             w.nodes.push((parent, step));
             if let Some(r) = r {
-                w.first.insert(r, node);
+                w.first.entry(r).or_insert(node);
             }
             let v = self.get(&o)?;
             let (d, stream) = match v {
@@ -875,18 +876,19 @@ impl<'a> Ctx<'a> {
                     w.unresolved += 1;
                     continue;
                 }
+                // An object-stream member that is itself a reference (an
+                // alias): the rewrite writes what it names, so the walk
+                // follows it as an edge of its own.
+                Object::Ref(_) => {
+                    queue.push_back((v, Some(node), "->".into(), is_sv));
+                    continue;
+                }
                 Object::Dict(d) => (d, false),
                 Object::Stream { dict, .. } => (dict, true),
                 Object::Array(a) => {
                     for (i, x) in a.into_iter().enumerate() {
                         if matches!(x, Object::Ref(_) | Object::Array(_) | Object::Dict(_)) {
-                            queue.push_back((
-                                x,
-                                Some(node),
-                                format!("[{i}]").into(),
-                                under_sv,
-                                false,
-                            ));
+                            queue.push_back((x, Some(node), format!("[{i}]").into(), false));
                         }
                     }
                     continue;
@@ -897,12 +899,12 @@ impl<'a> Ctx<'a> {
                 w.sigs.push((node, r, d.clone()));
             }
             // A field lock anywhere (a widget outside /Fields too), and
-            // seed-value dictionaries (a lock inside one is not a field's).
-            if d.contains_key(b"Lock".as_slice()) && !under_sv {
-                w.locks.push(node);
-            }
+            // seed-value dictionaries (a /Lock on one is carried, §5.3
+            // rule 5 of the D1 design; one below it is a lock again).
             if is_sv {
-                w.seed_values.push(node);
+                w.seed_values.push((node, Object::Dict(d.clone())));
+            } else if let Some(l) = d.get(b"Lock".as_slice()) {
+                w.locks.push((node, l.clone()));
             }
             for (k, x) in d {
                 // A stream's length is storage, not content: a rewrite
@@ -916,7 +918,7 @@ impl<'a> Ctx<'a> {
                 if matches!(x, Object::Ref(_) | Object::Array(_) | Object::Dict(_)) {
                     let sv = k.as_slice() == b"SV";
                     let step = format!("/{}", String::from_utf8_lossy(&k));
-                    queue.push_back((x, Some(node), step.into(), under_sv || sv, sv));
+                    queue.push_back((x, Some(node), step.into(), sv));
                 }
             }
         }
@@ -947,21 +949,41 @@ impl<'a> Ctx<'a> {
         {
             return Ok(true);
         }
-        if let Some(t) = d.get(b"Type".as_slice()).and_then(name) {
-            if t == "Sig" || t == "DocTimeStamp" {
-                return Ok(true);
-            }
-        }
-        if let Some(r) = d.get(b"Reference".as_slice()) {
-            for x in self.references(r)? {
-                if let Some(e) = self.dict(&x)? {
-                    if e.contains_key(b"TransformMethod".as_slice()) {
-                        return Ok(true);
-                    }
+        // /Type is read through a reference too.
+        if let Some(t) = d.get(b"Type".as_slice()) {
+            if let Some(t) = name(&self.get(t)?) {
+                if t == "Sig" || t == "DocTimeStamp" {
+                    return Ok(true);
                 }
             }
         }
-        Ok(false)
+        match d.get(b"Reference".as_slice()) {
+            Some(r) => self.transform_in(r, 0),
+            None => Ok(false),
+        }
+    }
+
+    /// Whether a `/Reference` value holds a dictionary with
+    /// `/TransformMethod`: one alone, an array of them, nested arrays (8
+    /// levels; deeper is taken as one).
+    fn transform_in(&mut self, o: &Object, depth: usize) -> Res<bool> {
+        if depth > 8 {
+            return Ok(true);
+        }
+        Ok(match self.get(o)? {
+            Object::Array(a) => {
+                for x in &a {
+                    if self.transform_in(x, depth + 1)? {
+                        return Ok(true);
+                    }
+                }
+                false
+            }
+            Object::Dict(e) | Object::Stream { dict: e, .. } => {
+                e.contains_key(b"TransformMethod".as_slice())
+            }
+            _ => false,
+        })
     }
 
     /// The signature references of a `/Reference` value: an array's
@@ -1182,10 +1204,11 @@ struct Walk {
     refs: HashMap<IndirectRef, usize>,
     unresolved: usize,
     sigs: Vec<(usize, Option<IndirectRef>, Dict)>,
-    /// Dictionaries with a `/Lock` outside a seed-value dictionary.
-    locks: Vec<usize>,
+    /// Dictionaries with a `/Lock` (not a seed-value dictionary's own),
+    /// with the `/Lock` value.
+    locks: Vec<(usize, Object)>,
     /// Seed-value dictionaries.
-    seed_values: Vec<usize>,
+    seed_values: Vec<(usize, Object)>,
 }
 
 impl Walk {

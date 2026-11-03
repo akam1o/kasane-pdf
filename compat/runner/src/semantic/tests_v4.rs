@@ -1482,3 +1482,106 @@ fn signatures_follow_back_pointers_and_see_locks_outside_fields() {
         "{l:#?}"
     );
 }
+
+/// A file with an xref stream: plain objects `plain` and, in object
+/// stream 40, the compressed objects `packed`.
+fn objstm_pdf(plain: &[(u32, &str)], packed: &[(u32, &str)]) -> Vec<u8> {
+    let (mut head, mut body) = (String::new(), String::new());
+    for (n, s) in packed {
+        head.push_str(&format!("{n} {} ", body.len()));
+        body.push_str(s);
+        body.push(' ');
+    }
+    let os = format!("{head}{body}");
+    let mut all: Vec<(u32, String)> = plain.iter().map(|(n, s)| (*n, s.to_string())).collect();
+    all.push((
+        40,
+        format!(
+            "<< /Type /ObjStm /N {} /First {} /Length {} >>\nstream\n{os}\nendstream",
+            packed.len(),
+            head.len(),
+            os.len()
+        ),
+    ));
+    let mut b = b"%PDF-1.7\n".to_vec();
+    let mut rows: Vec<(u32, u8, u64, u64)> = Vec::new();
+    for (n, s) in &all {
+        rows.push((*n, 1, b.len() as u64, 0));
+        b.extend_from_slice(format!("{n} 0 obj\n{s}\nendobj\n").as_bytes());
+    }
+    for (i, (n, _)) in packed.iter().enumerate() {
+        rows.push((*n, 2, 40, i as u64));
+    }
+    let x = b.len() as u64;
+    rows.push((41, 1, x, 0));
+    rows.sort();
+    let (mut idx, mut data) = (String::new(), Vec::new());
+    for (n, t, f2, f3) in &rows {
+        idx.push_str(&format!("{n} 1 "));
+        data.push(*t);
+        data.extend_from_slice(&(*f2 as u32).to_be_bytes());
+        data.extend_from_slice(&(*f3 as u16).to_be_bytes());
+    }
+    b.extend_from_slice(
+        format!(
+            "41 0 obj\n<< /Type /XRef /W [1 4 2] /Index [{idx}] /Size 42 /Root 1 0 R /Length {} >>\nstream\n",
+            data.len()
+        )
+        .as_bytes(),
+    );
+    b.extend_from_slice(&data);
+    b.extend_from_slice(format!("\nendstream\nendobj\nstartxref\n{x}\n%%EOF\n").as_bytes());
+    b
+}
+
+/// C2 review 1 (F4, F6): the signature walk follows an object-stream
+/// member that is a reference, reads /Type through a reference, sees a
+/// field /Lock on a field that is also another field's /SV, and records
+/// a lock by keys and digest (a changed lock shows).
+#[test]
+fn signatures_follow_aliases_and_type_references_and_seed_value_roles() {
+    let plain = [
+        (1, "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R 6 0 R] >> /X 20 0 R /Y << /Type 22 0 R >> >>"),
+        (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>"),
+        (5, "<< /FT /Sig /T (a) /SV 6 0 R >>"),
+        (6, "<< /FT /Tx /T (b) /Lock << /Action /All >> >>"),
+        (21, "<< /Type /DocTimeStamp /ByteRange [0 1 2 3] /Contents <00> >>"),
+        (22, "/Sig"),
+    ];
+    let b = objstm_pdf(&plain, &[(20, "21 0 R")]);
+    let l = lines(&b, "signatures");
+    assert!(
+        l.iter().any(|x| x.starts_with("sig\tat=/Root/X->\t")),
+        "{l:#?}"
+    );
+    assert!(
+        l.iter().any(|x| x.starts_with("sig\tat=/Root/Y\t")),
+        "{l:#?}"
+    );
+    let locks: Vec<_> = l.iter().filter(|x| x.starts_with("lock\t")).collect();
+    assert_eq!(locks.len(), 1, "{l:#?}");
+    assert!(locks[0].contains("keys=[Action]:"), "{l:#?}");
+    assert_eq!(
+        l.iter().filter(|x| x.starts_with("seed_value\t")).count(),
+        1,
+        "{l:#?}"
+    );
+    let changed = lines(
+        &objstm_pdf(
+            &plain.map(|(n, s)| {
+                (
+                    n,
+                    if n == 6 {
+                        "<< /FT /Tx /T (b) /Lock << /Action /Include >> >>"
+                    } else {
+                        s
+                    },
+                )
+            }),
+            &[(20, "21 0 R")],
+        ),
+        "signatures",
+    );
+    assert_ne!(l, changed);
+}
