@@ -8,6 +8,7 @@
 
 use super::*;
 use std::collections::VecDeque;
+use std::rc::Rc;
 
 /// Action types of ISO 32000-2 Table 201 (and the annotation subtypes)
 /// by class (`plans/rewrite-policy.md` §3.1).
@@ -211,8 +212,8 @@ impl<'a> Ctx<'a> {
         for (owner, o) in roots {
             let mut position = 0u32;
             // (object, depth, chain path for cycles)
-            let mut stack: Vec<(Object, usize, Vec<IndirectRef>)> = vec![(o, 0, Vec::new())];
-            while let Some((o, depth, mut path)) = stack.pop() {
+            let mut stack: Vec<(Object, usize, Rc<Vec<IndirectRef>>)> = vec![(o, 0, Rc::default())];
+            while let Some((o, depth, path)) = stack.pop() {
                 if depth > MAX_ACTION_DEPTH {
                     return err("action chain deeper than the limit");
                 }
@@ -282,11 +283,19 @@ impl<'a> Ctx<'a> {
                         Object::Array(a) => a,
                         _ => vec![n],
                     };
-                    if let Some(r) = r {
-                        path.push(r);
+                    if stack.len() + next.len() > MAX_NODES {
+                        return err(format!("action chains past {MAX_NODES} entries"));
                     }
+                    let path = match r {
+                        Some(r) => {
+                            let mut p = (*path).clone();
+                            p.push(r);
+                            Rc::new(p)
+                        }
+                        None => path,
+                    };
                     for x in next.into_iter().rev() {
-                        stack.push((x, depth + 1, path.clone()));
+                        stack.push((x, depth + 1, Rc::clone(&path)));
                     }
                 }
             }
@@ -363,8 +372,8 @@ impl<'a> Ctx<'a> {
         let mut out = Vec::new();
         for (owner, o) in roots {
             let mut position = 0u32;
-            let mut stack: Vec<(Object, usize, Vec<IndirectRef>)> = vec![(o, 0, Vec::new())];
-            while let Some((o, depth, mut path)) = stack.pop() {
+            let mut stack: Vec<(Object, usize, Rc<Vec<IndirectRef>>)> = vec![(o, 0, Rc::default())];
+            while let Some((o, depth, path)) = stack.pop() {
                 if depth > MAX_ACTION_DEPTH {
                     return err("action chain deeper than the limit");
                 }
@@ -413,11 +422,19 @@ impl<'a> Ctx<'a> {
                         Object::Array(a) => a,
                         _ => vec![n],
                     };
-                    if let Some(r) = r {
-                        path.push(r);
+                    if stack.len() + next.len() > MAX_NODES {
+                        return err(format!("action chains past {MAX_NODES} entries"));
                     }
+                    let path = match r {
+                        Some(r) => {
+                            let mut p = (*path).clone();
+                            p.push(r);
+                            Rc::new(p)
+                        }
+                        None => path,
+                    };
                     for x in next.into_iter().rev() {
-                        stack.push((x, depth + 1, path.clone()));
+                        stack.push((x, depth + 1, Rc::clone(&path)));
                     }
                 }
             }
@@ -443,16 +460,17 @@ impl<'a> Ctx<'a> {
     pub(super) fn signatures(&mut self) -> Res<Option<Vec<String>>> {
         let mut w = Ctx::new(self.doc);
         w.doclevel = true;
-        let (paths, refs, unresolved, sigs) = w.signature_walk()?;
+        let walk = w.signature_walk()?;
         let mut out = Vec::new();
-        for (at, d) in &sigs {
-            let r = paths.iter().find(|(_, p)| p == at).map(|(r, _)| *r);
-            let n = r.and_then(|r| refs.get(&r).copied()).unwrap_or(1);
+        for (node, r, d) in &walk.sigs {
+            let n = r.and_then(|r| walk.refs.get(&r).copied()).unwrap_or(1);
+            let at = walk.path(*node)?;
             out.push(format!("sig\tat={at}\trefs={n}\t{}", w.sig_summary(d)?));
         }
+        let unresolved = walk.unresolved;
         let path_of = |o: &Object| -> String {
-            match o.as_ref().and_then(|r| paths.iter().find(|(x, _)| *x == r)) {
-                Some((_, p)) => p.clone(),
+            match o.as_ref().and_then(|r| walk.first.get(&r)) {
+                Some(n) => walk.path(*n).unwrap_or_else(|_| "too-long".into()),
                 None => "direct".into(),
             }
         };
@@ -527,77 +545,71 @@ impl<'a> Ctx<'a> {
         Ok((!out.is_empty()).then_some(out))
     }
 
-    /// Breadth-first walk from the trailer's `/Root` and `/Info`: the
-    /// first path of every indirect object, the number of references to
-    /// it, the unreadable objects met, and the signature-like
-    /// dictionaries (by first path, in walk order).
-    #[allow(clippy::type_complexity)]
-    fn signature_walk(
-        &mut self,
-    ) -> Res<(
-        Vec<(IndirectRef, String)>,
-        HashMap<IndirectRef, usize>,
-        usize,
-        Vec<(String, Dict)>,
-    )> {
+    /// Breadth-first walk from the trailer's `/Root` and `/Info`
+    /// ([`Walk`]). Each value met is a node with its parent and step, so
+    /// memory stays linear in the graph (a path is built only for a line
+    /// that prints it); the queue counts against the node budget.
+    fn signature_walk(&mut self) -> Res<Walk> {
         let trailer = self.doc.trailer().clone();
-        let mut queue: VecDeque<(Object, String)> = VecDeque::new();
+        let mut queue: VecDeque<(Object, Option<usize>, Box<str>)> = VecDeque::new();
         for k in ["Root", "Info"] {
             if let Some(v) = trailer.get(k.as_bytes()) {
-                queue.push_back((v.clone(), format!("/{k}")));
+                queue.push_back((v.clone(), None, format!("/{k}").into()));
             }
         }
-        let mut paths: Vec<(IndirectRef, String)> = Vec::new();
-        let mut known: HashSet<IndirectRef> = HashSet::new();
-        let mut refs: HashMap<IndirectRef, usize> = HashMap::new();
-        let mut unresolved = 0usize;
-        let mut sigs = Vec::new();
-        while let Some((o, at)) = queue.pop_front() {
-            if let Some(r) = o.as_ref() {
-                *refs.entry(r).or_default() += 1;
-                if !known.insert(r) {
+        let mut w = Walk::default();
+        while let Some((o, parent, step)) = queue.pop_front() {
+            if queue.len() + w.nodes.len() > MAX_NODES {
+                return err(format!("signature walk stopped after {MAX_NODES} values"));
+            }
+            let r = o.as_ref();
+            if let Some(r) = r {
+                *w.refs.entry(r).or_default() += 1;
+                if w.first.contains_key(&r) {
                     continue;
                 }
-                paths.push((r, at.clone()));
+            }
+            let node = w.nodes.len();
+            w.nodes.push((parent, step));
+            if let Some(r) = r {
+                w.first.insert(r, node);
             }
             let v = self.get(&o)?;
-            let d = match &v {
+            let d = match v {
                 Object::Name(n) if n == b"#unresolved" => {
-                    unresolved += 1;
+                    w.unresolved += 1;
                     continue;
                 }
-                Object::Dict(d) => Some(d.clone()),
-                Object::Stream { dict, .. } => Some(dict.clone()),
+                Object::Dict(d) => d,
+                Object::Stream { dict, .. } => dict,
                 Object::Array(a) => {
-                    for (i, x) in a.iter().enumerate() {
+                    for (i, x) in a.into_iter().enumerate() {
                         if matches!(x, Object::Ref(_) | Object::Array(_) | Object::Dict(_)) {
-                            queue.push_back((x.clone(), format!("{at}[{i}]")));
+                            queue.push_back((x, Some(node), format!("[{i}]").into()));
                         }
                     }
-                    None
+                    continue;
                 }
-                _ => None,
+                _ => continue,
             };
-            let Some(d) = d else { continue };
             if self.signature_like(&d)? {
-                sigs.push((at.clone(), d.clone()));
+                w.sigs.push((node, r, d.clone()));
             }
-            for (k, x) in &d {
-                if k.as_slice() == b"Parent" || k.as_slice() == b"P" {
+            for (k, x) in d {
+                if matches!(k.as_slice(), b"Parent" | b"P") {
                     // Back-pointers lead to objects reached by their own path.
-                    if matches!(x, Object::Ref(_)) {
-                        if let Some(r) = x.as_ref() {
-                            *refs.entry(r).or_default() += 1;
-                        }
+                    if let Some(r) = x.as_ref() {
+                        *w.refs.entry(r).or_default() += 1;
                         continue;
                     }
                 }
                 if matches!(x, Object::Ref(_) | Object::Array(_) | Object::Dict(_)) {
-                    queue.push_back((x.clone(), format!("{at}/{}", String::from_utf8_lossy(k))));
+                    let step = format!("/{}", String::from_utf8_lossy(&k));
+                    queue.push_back((x, Some(node), step.into()));
                 }
             }
         }
-        Ok((paths, refs, unresolved, sigs))
+        Ok(w)
     }
 
     fn signature_like(&mut self, d: &Dict) -> Res<bool> {
@@ -816,5 +828,37 @@ fn sharing(d: &Dict, owner: &str, first: &mut HashMap<IndirectRef, String>) -> S
         "-".into()
     } else {
         parts.join(",")
+    }
+}
+
+/// The signature walk: every value met (node = parent and step), the
+/// first node of each indirect object, references counted, unreadable
+/// objects, signature-like dictionaries by node.
+#[derive(Default)]
+struct Walk {
+    nodes: Vec<(Option<usize>, Box<str>)>,
+    first: HashMap<IndirectRef, usize>,
+    refs: HashMap<IndirectRef, usize>,
+    unresolved: usize,
+    sigs: Vec<(usize, Option<IndirectRef>, Dict)>,
+}
+
+impl Walk {
+    /// The path of `node` from the trailer; an error past the line limit.
+    fn path(&self, node: usize) -> Res<String> {
+        let mut steps = Vec::new();
+        let mut len = 0usize;
+        let mut cur = Some(node);
+        while let Some(n) = cur {
+            let (parent, step) = &self.nodes[n];
+            len += step.len();
+            if len > MAX_LINE_BYTES {
+                return err("a signature path longer than the limit");
+            }
+            steps.push(&**step);
+            cur = *parent;
+        }
+        steps.reverse();
+        Ok(steps.concat())
     }
 }

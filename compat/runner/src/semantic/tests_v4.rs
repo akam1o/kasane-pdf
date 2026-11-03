@@ -1123,3 +1123,45 @@ fn unreadable_actions_are_listed_not_dropped() {
         SemClass::Fail
     );
 }
+
+#[test]
+fn hostile_graphs_stay_bounded() {
+    // A 60 000-object chain ending in a signature-like dictionary: the
+    // walk keeps one node per value (no path string per object) and
+    // still names the signature by its path.
+    let n = 60_000u32;
+    let mut objs: Vec<(u32, Body)> = vec![
+        (1, d("<< /Type /Catalog /Pages 2 0 R /X 10 0 R >>")),
+        (2, d("<< /Type /Pages /Kids [] /Count 0 >>")),
+    ];
+    for i in 0..n {
+        objs.push((10 + i, d(&format!("<< /N {} 0 R >>", 11 + i))));
+    }
+    objs.push((10 + n, d("<< /ByteRange [0 1 2 3] >>")));
+    let b = pdf("1.7", &objs, 0);
+    let t = std::time::Instant::now();
+    let l = lines(&b, "signatures");
+    assert!(t.elapsed().as_secs() < 20, "{:?}", t.elapsed());
+    let sig = l
+        .iter()
+        .find(|x| x.starts_with("sig\tat=/Root/X/N/N"))
+        .expect("the signature");
+    assert!(sig.contains("\trefs=1\t"));
+    // A /Next array past the node budget: an error, not a partial list.
+    let refs = "5 0 R ".repeat(MAX_NODES + 1);
+    let wide = pdf(
+        "1.7",
+        &[
+            (1, d("<< /Type /Catalog /Pages 2 0 R /OpenAction 4 0 R >>")),
+            (2, d("<< /Type /Pages /Kids [] /Count 0 >>")),
+            (
+                4,
+                d(&format!("<< /S /Named /N /NextPage /Next [{refs}] >>")),
+            ),
+            (5, d("<< /S /Named /N /PrevPage >>")),
+        ],
+        0,
+    );
+    assert!(inventory(&doc(&wide)).is_err());
+    assert!(matches!(section(&wide, "multimedia"), Section::Error(_)));
+}
