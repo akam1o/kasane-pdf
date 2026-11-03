@@ -19,6 +19,7 @@ mod colour;
 mod configs;
 mod fontaudit;
 mod gsaudit;
+mod policy;
 mod probe;
 mod profile;
 mod roundtrip;
@@ -223,6 +224,58 @@ struct FileResult {
     /// its own namespace; the default stays in `rewrite` / `roundtrip`.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     rewrite_options: BTreeMap<String, configs::OptionRun>,
+    /// `rewrite_with` with the default options against `rewrite` (bytes
+    /// or error), and its report against the runner's inventory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    policy_check: Option<PolicyCheck>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PolicyCheck {
+    /// `rewrite_with(default)` gave `rewrite`'s bytes (or the same error).
+    identical: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    report: Option<policy::ReportSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    inventory: Option<policy::InventoryCheck>,
+    /// The report's version change agrees with the runner's own T1
+    /// declaration (raised exactly when T1 is declared, to the same
+    /// versions).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version_agrees: Option<bool>,
+}
+
+/// `rewrite_with(default)` on `doc` (file bytes `data`) against
+/// `rewrite`'s result.
+fn policy_check(
+    doc: &Document,
+    data: &[u8],
+    rewrite: Result<&[u8], &kasane_pdf::Error>,
+) -> PolicyCheck {
+    let none = |identical| PolicyCheck {
+        identical,
+        report: None,
+        inventory: None,
+        version_agrees: None,
+    };
+    match (
+        kasane_pdf::rewrite_with(doc, &kasane_pdf::RewriteOptions::default()),
+        rewrite,
+    ) {
+        (Ok(out), Ok(bytes)) => {
+            let inventory = Document::from_bytes(out.bytes())
+                .ok()
+                .map(|o| policy::check(out.report(), doc, &o));
+            PolicyCheck {
+                identical: out.bytes() == bytes,
+                report: Some(policy::summary(out.report())),
+                inventory,
+                version_agrees: Some(policy::version_agrees(out.report(), doc, data)),
+            }
+        }
+        (Err(a), Err(b)) => none(a.to_string() == b.to_string() && a.kind() == b.kind()),
+        _ => none(false),
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1424,6 +1477,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
                         profile: profile::Profile::default(),
                         rewrite_refusal: None,
                         rewrite_options: BTreeMap::new(),
+                        policy_check: None,
                     });
                 }
             }
@@ -1638,8 +1692,10 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
     let t = Instant::now();
     let mut rewrite_res = StageResult::pass(0);
     let mut rewrite_refusal = None;
+    let check;
     let rt = match rewrite(&doc) {
         Ok(out) => {
+            check = Some(policy_check(&doc, &data, Ok(&out)));
             let rewrite_ms = t.elapsed().as_millis();
             let rt_opts = rt_options(args);
             let decls = configs::RewriteConfig::Default.declarations(&doc, &data);
@@ -1664,6 +1720,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
             let (c, d, f, cid) = classify_err("rewrite", &e);
             rewrite_res = StageResult::caused(c, d, f, cid, t.elapsed().as_millis());
             rewrite_refusal = configs::refusal(&e);
+            check = Some(policy_check(&doc, &data, Err(&e)));
             roundtrip::refused(&e, t.elapsed().as_millis())
         }
     };
@@ -1729,6 +1786,7 @@ fn process_file(path: &Path, id: &str, category: &str, args: &Args) -> FileResul
         profile: prof,
         rewrite_refusal,
         rewrite_options,
+        policy_check: check,
     }
 }
 
@@ -1764,8 +1822,10 @@ fn run_rewrite_options(
                 declared: Vec::new(),
                 unavailable: Some(why.to_string()),
                 roundtrip: None,
+                report: None,
+                inventory: None,
             },
-            Ok(Ok(bytes)) => {
+            Ok(Ok((bytes, report))) => {
                 let decls = c.declarations(doc, data);
                 let tag = format!("{id}-{}", c.name().replace(',', "+"));
                 let rt = roundtrip::run(
@@ -1777,12 +1837,19 @@ fn run_rewrite_options(
                     &tag,
                     &decls,
                 );
+                let inventory = report.as_ref().and_then(|r| {
+                    Document::from_bytes(&bytes)
+                        .ok()
+                        .map(|o| policy::check(r, doc, &o))
+                });
                 configs::OptionRun {
                     rewrite: "pass".into(),
                     refusal: None,
                     declared: decls.iter().map(|d| d.rule_name().to_string()).collect(),
                     unavailable: None,
                     roundtrip: Some(rt),
+                    report: report.as_ref().map(policy::summary),
+                    inventory,
                 }
             }
             Ok(Err(e)) => {
@@ -1793,6 +1860,8 @@ fn run_rewrite_options(
                     declared: Vec::new(),
                     unavailable: None,
                     roundtrip: Some(roundtrip::refused(&e, t.elapsed().as_millis())),
+                    report: None,
+                    inventory: None,
                 }
             }
         };

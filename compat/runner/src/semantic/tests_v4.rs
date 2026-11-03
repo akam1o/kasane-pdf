@@ -908,7 +908,17 @@ fn the_inventory_lists_actions_by_class_owner_and_chain() {
         ]);
         pdf("1.7", &objs, 77)
     };
-    assert_eq!(inventory(&doc(&renumbered)).unwrap(), inv);
+    // Renumbered: the same inventory but for the input objects.
+    let strip = |v: Vec<InventoryItem>| -> Vec<InventoryItem> {
+        v.into_iter()
+            .map(|i| InventoryItem { input: None, ..i })
+            .collect()
+    };
+    assert_eq!(
+        strip(inventory(&doc(&renumbered)).unwrap()),
+        strip(inv.clone())
+    );
+    assert_eq!(inv[0].input, Some((20, 0)));
     // A destination /OpenAction is not an action; an action one is, with
     // its /Next chain.
     let open = |oa: &str| {

@@ -14,7 +14,7 @@
 
 use crate::roundtrip::RoundTrip;
 use crate::semantic::transform::{self, Declaration};
-use kasane_pdf::{Document, Error, Object};
+use kasane_pdf::{Document, Error, ExecutableContentPolicy, Object, RewriteOptions, RewriteReport};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -72,23 +72,32 @@ impl RewriteConfig {
     pub fn unavailable(self) -> Option<&'static str> {
         match self {
             RewriteConfig::Default => None,
-            RewriteConfig::Carry => Some(
-                "the library has no ExecutableContentPolicy::Carry yet (D2 is not implemented)",
-            ),
-            RewriteConfig::RemoveUsageRights => {
+            RewriteConfig::Carry => None,
+            RewriteConfig::RemoveUsageRights | RewriteConfig::CarryRemoveUsageRights => {
                 Some("the library has no UsageRightsPolicy::Remove yet (D1 is not implemented)")
-            }
-            RewriteConfig::CarryRemoveUsageRights => {
-                Some("the library has neither D2 Carry nor D1 Remove yet")
             }
         }
     }
 
-    /// Rewrite `doc` under this configuration; `Err(why)` when the
-    /// library cannot (never a substitute rewrite).
-    pub fn rewrite(self, doc: &Document) -> Result<Result<Vec<u8>, Error>, &'static str> {
+    /// Rewrite `doc` under this configuration, with the library's report
+    /// when it has one; `Err(why)` when the library cannot (never a
+    /// substitute rewrite). The default is `rewrite` itself (the enforced
+    /// run; `rewrite_with`'s default is checked against it separately).
+    #[allow(clippy::type_complexity)]
+    pub fn rewrite(
+        self,
+        doc: &Document,
+    ) -> Result<Result<(Vec<u8>, Option<RewriteReport>), Error>, &'static str> {
         match self {
-            RewriteConfig::Default => Ok(kasane_pdf::rewrite(doc)),
+            RewriteConfig::Default => Ok(kasane_pdf::rewrite(doc).map(|b| (b, None))),
+            RewriteConfig::Carry => {
+                let opts =
+                    RewriteOptions::new().with_executable_content(ExecutableContentPolicy::Carry);
+                Ok(kasane_pdf::rewrite_with(doc, &opts).map(|o| {
+                    let (b, r) = o.into_parts();
+                    (b, Some(r))
+                }))
+            }
             other => Err(other.unavailable().unwrap_or("not available")),
         }
     }
@@ -154,9 +163,8 @@ pub fn derive_usage_rights(doc: &Document) -> Option<Declaration> {
     })
 }
 
-/// Why a rewrite was refused, by the policy that refused it. The
-/// library has no dedicated error for a policy (§2.2: `SignaturePolicy`
-/// and `Unsupported`), so the classes come from its stable features.
+/// Why a rewrite was refused, by the policy that refused it, as the
+/// library classifies it (`Error::refusal_reason`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Refusal {
@@ -168,24 +176,26 @@ pub enum Refusal {
     /// Catalog `/RichMedia`.
     Multimedia,
     Encrypted,
+    /// An external action (`RefuseScriptsAndExternal`).
+    External,
+    /// An unknown action or an unclassified structure (`Carry`,
+    /// `RefuseScriptsAndExternal`).
+    UnknownAction,
     /// Any other unsupported feature.
     Unsupported,
 }
 
 pub fn refusal(e: &Error) -> Option<Refusal> {
-    match e {
-        Error::SignaturePolicy { .. } => Some(Refusal::Signature),
-        Error::Encrypted => Some(Refusal::Encrypted),
-        Error::Unsupported { feature, detail } => Some(match *feature {
-            "signed signature field" => Refusal::Signature,
-            "OpenAction JavaScript" | "JavaScript name tree" => Refusal::Script,
-            "catalog entry outside profile" if detail.starts_with("/AA ") => Refusal::Script,
-            "catalog entry outside profile" if detail.starts_with("/RichMedia ") => {
-                Refusal::Multimedia
-            }
-            _ => Refusal::Unsupported,
-        }),
-        _ => None,
+    use kasane_pdf::RefusalReason as R;
+    match e.refusal_reason() {
+        Some(R::Signature) => Some(Refusal::Signature),
+        Some(R::Encrypted) => Some(Refusal::Encrypted),
+        Some(R::DocumentLevelScript | R::Script) => Some(Refusal::Script),
+        Some(R::ExternalAction) => Some(Refusal::External),
+        Some(R::UnknownAction | R::UnclassifiedStructure) => Some(Refusal::UnknownAction),
+        Some(R::Multimedia) => Some(Refusal::Multimedia),
+        Some(_) => Some(Refusal::Unsupported),
+        None => matches!(e, Error::Unsupported { .. }).then_some(Refusal::Unsupported),
     }
 }
 
@@ -206,6 +216,12 @@ pub struct OptionRun {
     /// default's).
     #[serde(default)]
     pub roundtrip: Option<RoundTrip>,
+    /// The library's report, per class (`rewrite_with` configurations).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<crate::policy::ReportSummary>,
+    /// The report against the runner's own inventory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventory: Option<crate::policy::InventoryCheck>,
 }
 
 #[cfg(test)]
@@ -253,8 +269,15 @@ mod tests {
         assert_eq!(RewriteConfig::parse("sanitize"), None);
         assert_eq!(RewriteConfig::parse("carry,carry,x"), None);
         let d = doc("", "<< >>");
-        assert!(RewriteConfig::Default.rewrite(&d).unwrap().is_ok());
-        for c in &RewriteConfig::ALL[1..] {
+        assert!(RewriteConfig::Default
+            .rewrite(&d)
+            .unwrap()
+            .unwrap()
+            .1
+            .is_none());
+        let (_, report) = RewriteConfig::Carry.rewrite(&d).unwrap().unwrap();
+        assert!(report.is_some(), "carry runs rewrite_with");
+        for c in &RewriteConfig::ALL[2..] {
             assert!(c.unavailable().is_some());
             assert!(c.rewrite(&d).is_err(), "{c:?} must not run a substitute");
         }
@@ -337,7 +360,14 @@ mod tests {
             refusal(&u("signed signature field", "")),
             Some(Refusal::Signature)
         );
-        assert_eq!(refusal(&u("XFA packet", "")), Some(Refusal::Unsupported));
+        // An XFA packet that cannot be checked for an XML signature is a
+        // signature refusal (the library's classification).
+        assert_eq!(refusal(&u("XFA packet", "")), Some(Refusal::Signature));
+        assert_eq!(
+            refusal(&u("writing an encrypted document", "")),
+            Some(Refusal::Encrypted)
+        );
+        assert_eq!(refusal(&u("PDF version", "")), Some(Refusal::Unsupported));
         assert_eq!(refusal(&Error::Encrypted), Some(Refusal::Encrypted));
         assert_eq!(refusal(&Error::Parse("x".into())), None);
     }
