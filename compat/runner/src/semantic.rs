@@ -1986,6 +1986,20 @@ pub fn probe(files: &[std::path::PathBuf]) {
     }
 }
 
+/// The report-only `signatures` snapshot of `doc` (`bytes` its file):
+/// its lines, or why it could not be taken.
+pub fn signature_lines(doc: &Document, bytes: &[u8]) -> Result<Vec<String>, String> {
+    let i = pdf20::REPORT_ONLY
+        .iter()
+        .position(|c| *c == "signatures")
+        .expect("the signatures category");
+    match pdf20::snapshot_report(doc, bytes).swap_remove(i) {
+        Section::Absent => Ok(Vec::new()),
+        Section::Data(v) => Ok(v),
+        Section::Unsupported(w) | Section::Error(w) => Err(w),
+    }
+}
+
 mod doclevel;
 mod pdf20;
 mod probe_doclevel;
