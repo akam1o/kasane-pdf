@@ -73,6 +73,23 @@ guarantee only — kasane-pdf never computes the digest, never checks
 the certificate chain and never reports a signature as valid or
 invalid. Use a signature validator for that question.
 
+## Rewrite policies (planned, v0.5.0)
+
+The full rewrite carries scripts and actions below the document level
+and refuses the document-level entry points (catalog `/AA`, a
+JavaScript `/OpenAction`, `/Names /JavaScript`) and every signature.
+The planned `rewrite_with` (`plans/rewrite-policy.md`) keeps that as
+its default. It adds two explicit options:
+- **Carry executable content.** It copies scripts and actions
+  verbatim. It never executes them, and it is not sanitizing: the
+  output can do whatever the input could.
+- **Remove usage rights.** It deletes only `/Perms /UR` / `/UR3`
+  usage-rights signatures, and only when no other signature-like
+  structure exists. The output is checked independently for residual
+  signatures. The removal is stated in the returned report. Usage
+  rights granted by the signature are withdrawn. Nothing is verified or
+  re-signed.
+
 ## Encrypted documents
 
 Authentication happens before the catalog is read; a password that
