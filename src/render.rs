@@ -846,6 +846,71 @@ fn gs_stroke(gs: &GraphicsState) -> Stroke {
     }
 }
 
+/// The widest stroke, in device pixels, handed to the rasteriser: far
+/// beyond any page, well below the widths (≈ 5 × 10⁸ px) at which its
+/// fixed-point edge arithmetic fails.
+const MAX_STROKE_DEVICE_WIDTH: f64 = (1u64 << 24) as f64;
+
+/// `stroke` for `path` drawn under `ts` on a `w`×`h` pixmap, with a
+/// width the rasteriser can take. A stroke that covers the whole pixmap
+/// from every point of the path — its half-width, in the transform's
+/// narrowest direction, at least the farthest device distance between
+/// the path and the pixmap — paints the same pixels at any larger
+/// width, so it is narrowed to that width. A stroke wider than
+/// `MAX_STROKE_DEVICE_WIDTH` that cannot be narrowed that way is
+/// refused (`Unsupported`), never approximated.
+fn bounded_stroke(
+    stroke: &Stroke,
+    ts: Transform,
+    path: &tiny_skia::Path,
+    w: u32,
+    h: u32,
+) -> Result<Stroke, Error> {
+    let (a, b, c, d) = (ts.sx as f64, ts.ky as f64, ts.kx as f64, ts.sy as f64);
+    // Singular values of the linear part.
+    let p = a * a + b * b + c * c + d * d;
+    let q = (a * d - b * c).abs();
+    let s_max = ((p + (p * p - 4.0 * q * q).max(0.0).sqrt()) / 2.0).sqrt();
+    let s_min = if s_max > 0.0 { q / s_max } else { 0.0 };
+    let width = stroke.width as f64;
+    if width * s_max <= MAX_STROKE_DEVICE_WIDTH {
+        return Ok(stroke.clone());
+    }
+    // The device box of the path and the pixmap together: no device
+    // point of interest is farther from the path than its diagonal.
+    let r = path.bounds();
+    let (mut x0, mut y0, mut x1, mut y1) = (0.0f64, 0.0f64, w as f64, h as f64);
+    for (x, y) in [
+        (r.left(), r.top()),
+        (r.right(), r.top()),
+        (r.left(), r.bottom()),
+        (r.right(), r.bottom()),
+    ] {
+        let (x, y) = (x as f64, y as f64);
+        let (dx, dy) = (a * x + c * y + ts.tx as f64, b * x + d * y + ts.ty as f64);
+        x0 = x0.min(dx);
+        y0 = y0.min(dy);
+        x1 = x1.max(dx);
+        y1 = y1.max(dy);
+    }
+    let reach = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+    if s_min > 0.0 && reach.is_finite() && width * s_min / 2.0 >= reach {
+        let narrowed = 2.0 * reach / s_min + 1.0;
+        if narrowed * s_max <= MAX_STROKE_DEVICE_WIDTH {
+            let mut s = stroke.clone();
+            s.width = narrowed as f32;
+            return Ok(s);
+        }
+    }
+    Err(Error::Unsupported {
+        feature: "stroke width",
+        detail: format!(
+            "a stroke {:.0} device pixels wide (above {MAX_STROKE_DEVICE_WIDTH:.0}) is not drawn",
+            width * s_max
+        ),
+    })
+}
+
 /// Re-read a single key from the (indirect) page object. `/Annots` and
 /// `/UserUnit` are not part of the inherited attributes stored on
 /// `Page`, so they are fetched lazily here.
@@ -5052,6 +5117,7 @@ impl<'a> Renderer<'a> {
         let Some(pat) = self.gs.stroke_pattern.clone() else {
             return Ok(());
         };
+        let stroke = &bounded_stroke(stroke, ts, path, self.pixmap.width(), self.pixmap.height())?;
         let scale = (ts.sx * ts.sy - ts.kx * ts.ky).abs().sqrt().max(0.01);
         let Some(outline) = path.stroke(stroke, scale) else {
             return Ok(());
@@ -5889,6 +5955,13 @@ impl<'a> Renderer<'a> {
                         };
                         let c = gs.stroke_color.with_alpha(gs.stroke_alpha);
                         p.set_color(tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a));
+                        let stroke = bounded_stroke(
+                            &stroke,
+                            full,
+                            path,
+                            self.pixmap.width(),
+                            self.pixmap.height(),
+                        )?;
                         self.pixmap
                             .stroke_path(path, &p, &stroke, full, gs.clip.as_ref());
                     }
@@ -6272,7 +6345,16 @@ impl<'a> Renderer<'a> {
             ..Default::default()
         };
 
-        let stroke = gs_stroke(&self.gs);
+        let stroke = match kind {
+            PaintKind::Fill(_) => gs_stroke(&self.gs),
+            _ => bounded_stroke(
+                &gs_stroke(&self.gs),
+                ts,
+                &path,
+                self.pixmap.width(),
+                self.pixmap.height(),
+            )?,
+        };
 
         match kind {
             PaintKind::Stroke => {
