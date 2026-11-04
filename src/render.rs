@@ -2709,7 +2709,6 @@ impl<'a> Renderer<'a> {
         }
         let eff = budget.wrap(eff)?;
         let mask = budget.wrap(mask)?;
-        self.clear_soft_mask();
         self.gs.hard_clip = Some(hard);
         self.gs.clip = Some(eff);
         self.gs.soft_mask = Some(mask);

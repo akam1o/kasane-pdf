@@ -244,9 +244,13 @@ fn default_depth_fits_the_default_thread_stack() {
         !small.status.success(),
         "48 levels in a 64 KiB stack should overflow"
     );
+    // An overflow kills the child with a signal (Rust's handler prints
+    // "has overflowed its stack" where it has one); an ordinary failure
+    // (a panic: exit status 101) would not prove the check can fail.
+    let stderr = String::from_utf8_lossy(&small.stderr);
     assert!(
-        String::from_utf8_lossy(&small.stderr).contains("overflow"),
-        "the 64 KiB child failed for another reason:\n{}",
-        String::from_utf8_lossy(&small.stderr)
+        small.status.code().is_none() || stderr.contains("overflow"),
+        "the 64 KiB child failed for another reason: {:?}\n{stderr}",
+        small.status
     );
 }
