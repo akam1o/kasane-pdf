@@ -35,9 +35,9 @@ const NUMS: [&str; 16] = [
     "0", "1", "-1", "0.5", "10", "-20", "255", "1000000", "-1000000", "3.4e38", "1e400",
     "0.000001", "99999999999999999999", "-0", ".", "5",
 ];
-const NAMES: [&str; 14] = [
+const NAMES: [&str; 18] = [
     "/F1", "/F3", "/Fx", "/Fy", "/Grp", "/Im1", "/Im2", "/ImM", "/GS1", "/GSm", "/GSl", "/Sh1",
-    "/P1", "/Nope",
+    "/P1", "/Nope", "/Sh2", "/P2", "/CS0", "/Cyc",
 ];
 
 /// (operator, operand kinds: n = number, a = name, s = string, A = array)
@@ -217,7 +217,7 @@ fuzz_target!(|data: &[u8]| {
     let b = render(&page(&body, false), &l);
     match (&a, &b) {
         (Ok(x), Ok(y)) => assert!(x == y, "rendering is not deterministic"),
-        (Err(x), Err(y)) => assert_eq!(x.to_string(), y.to_string(), "errors differ"),
+        (Err(x), Err(y)) => assert_eq!(format!("{x:?}"), format!("{y:?}"), "errors differ"),
         _ => panic!("one of two identical renders failed"),
     }
     let Ok((w, h, px)) = a else { return };

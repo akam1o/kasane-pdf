@@ -155,7 +155,7 @@ fn render_all(b: &[u8], recovery: bool, l: &Limits) -> Option<Rendered> {
             r.pixels().to_vec()
         });
         let _ = extract_text(&d, p, &TextOptions::default().with_limits(l.clone()));
-        out.push(r.map_err(|e: Error| e.to_string()));
+        out.push(r.map_err(|e: Error| format!("{e:?}")));
     }
     Some(out)
 }
