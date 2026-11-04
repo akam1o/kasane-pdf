@@ -38,7 +38,9 @@ beyond what the rasteriser takes is narrowed exactly, skipped when off
 the page, or refused — two panics in every earlier release, found by
 the structured render fuzz targets (`fuzz/README.md`), which run on
 every pull request (seeds plus a short run) and nightly
-(`fuzz-nightly.yml`).
+(`fuzz-nightly.yml`). The clip and soft masks of the graphics state,
+copied by every `q` before 0.5.1 (a few bytes of content could demand
+tens of GB), are shared and bounded by `max_render_buffer_bytes`.
 
 Additionally: cycle detection on reference chains, `/Prev` chains,
 and page-tree node revisits; object-stream bodies decoded once per

@@ -113,6 +113,13 @@ are on the [roadmap](architecture.md#roadmap).
   release on the costliest path (soft masks), so it fits a 2 MiB thread.
   A caller raising the limit needs ≈ 25 KiB (debug) / 5 KiB (release)
   more stack per level. Tiling patterns nest at most 8 levels (fixed).
+- **Clip and soft masks** (since 0.5.1): each is one byte per page
+  pixel. Saved states share them and a clip that cuts nothing keeps the
+  current one, so only distinct nested clips add masks; those alive at
+  once may take at most `max_render_buffer_bytes` (on their own, beside
+  the page and its layers), beyond which the page is `LimitExceeded`.
+  Example: a 600 pt page at 600 dpi has 25 MB masks, so about ten
+  distinct clips nested inside one another; at 96 dpi, about 400.
 - **Extreme geometry** (since 0.5.1): a stroke wider than 2^24 device
   pixels is drawn at the narrower width that covers the whole page when
   that paints the same pixels, and refused (`Unsupported`, "stroke

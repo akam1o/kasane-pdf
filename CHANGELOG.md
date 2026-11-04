@@ -20,11 +20,26 @@ change.
   them too). A caller's own limit is unchanged; raising it costs
   ≈ 25 KiB (debug) / 5 KiB (release) of stack per level.
 - The content interpreter dispatches the operators that re-enter it
-  (`Do`, `gs`, text showing, path painting) from a small stack frame,
+  (`Do`, `gs`, text showing, path painting, inline images) from a small
+  stack frame,
   cutting the stack per nesting level by 40–60 % in debug builds and
   10–30 % in release. No rendering change.
+- The clip and soft masks held by the graphics state (one byte per
+  page pixel each) are bounded: those alive at once may take at most
+  `max_render_buffer_bytes`, an allowance of their own beside the page
+  and its layers; beyond it, `LimitExceeded`. Shared masks (below) make
+  this reachable only by many *distinct* nested clips at a high
+  resolution — e.g. 32 nested forms with ever smaller BBoxes at 600 dpi,
+  which 0.5.0 drew with ≈ 0.9 GB.
 
 ### Fixed
+- Memory: every `q`, form, group and pattern cell copied the clip mask
+  — `re W n` followed by 1000 `q` cost 1000 page-sized masks (2.2 GB at
+  600 dpi on a 600 pt page; tens of GB at the default pixel cap), with
+  no limit. A saved state now shares the masks, a clip that cuts
+  nothing away (such as a form BBox enclosing the clip) keeps the mask,
+  and the masks are bounded (above). The same 1000 `q`: 119 MB.
+  Present since 0.1.
 - A stroke far wider than the page (e.g. `99999999999999999999 w`)
   panicked inside the rasteriser. A stroke wider than 2^24 device
   pixels is now narrowed to the width that covers the page when that

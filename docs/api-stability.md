@@ -106,10 +106,15 @@ patch release.
 ## 0.5.1 (unreleased; no API change)
 
 - No public item added, removed or changed. `Limits::default()`
-  raises `max_xobject_depth` from 32 to 48: a loosening (rule 5 —
-  everything that rendered still renders; a file nested 33–48 levels
-  deep now renders instead of `LimitExceeded`). Callers that set the
-  limit themselves are unaffected.
+  raises `max_xobject_depth` from 32 to 48: a loosening (a file nested
+  33–48 levels deep now renders instead of `LimitExceeded`). Callers
+  that set the limit themselves are unaffected.
+- `max_render_buffer_bytes` now also bounds the clip and soft masks
+  alive at once (an allowance of their own, beside the page and its
+  layers). It was unbounded memory before; with masks now shared, only
+  many distinct nested clips at a high resolution reach it, and none of
+  the 511 corpus files does at 96 dpi. Recorded as a behaviour change,
+  not a default change: no default value moves.
 - Two inputs that panicked inside the rasteriser are now drawn exactly
   or refused with `Error::Unsupported` (`feature` "stroke width" or
   "geometry extent"), an existing variant.
