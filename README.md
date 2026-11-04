@@ -89,7 +89,8 @@ as a full rewrite or as an **incremental update** that keeps the
 original bytes verbatim and appends a revision (`save_incremental`).
 Signed documents are detected; edits a signer did not permit are
 refused (see Limitations). `rewrite_with` takes explicit policies for
-executable content and reports what it carried (below).
+executable content and usage-rights signatures and reports what it
+carried or removed (below).
 
 **Inspection and audit** — `inspect` structural dumps,
 `diagnose_redaction` (what is painted inside a rectangle, with
@@ -351,7 +352,9 @@ and the remaining blockers are in
   `/ByteRange`, `/DocMDP` and `/FieldMDP` to decide which incremental
   edits a signer permitted and refuses the rest; it never checks the
   digest or certificate and never reports a signature as valid. A full
-  rewrite of a signed document is always refused.
+  rewrite of a signed document is refused, except that
+  `UsageRightsPolicy::Remove`, on request, deletes usage-rights
+  signatures alone (never re-signs; costs more memory and time).
 - **Strict mode fails on malformed files** (damaged cross-reference
   tables, stray `Q`, truncated streams); a reference to an undefined
   object is null as §7.3.10 requires, and an open `q`/`BT` block at the
@@ -424,7 +427,12 @@ matters. [`docs/security.md`](docs/security.md) has the full posture.
 - **Signed documents.** Signatures are detected, never verified.
   Before an incremental save the engine reads `/ByteRange`,
   `/DocMDP` and `/FieldMDP` and refuses edits the signer did not
-  permit; a full rewrite of a signed file is always refused. Keeping
+  permit; a full rewrite of a signed file is refused. The one
+  exception is opt-in: `UsageRightsPolicy::Remove` deletes `/Perms
+  /UR` / `/UR3` usage-rights signatures (withdrawing the reader rights
+  they grant) when no other signature-like structure exists anywhere,
+  and reports it (`RewriteReport::usage_rights()`); any other signature
+  still refuses ([`docs/security.md`](docs/security.md)). Keeping
   the signed byte range intact is a *structural* property —
   it says nothing about whether the signature is cryptographically
   valid, whether the certificate is trusted, or whether the
