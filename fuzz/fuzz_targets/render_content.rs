@@ -214,6 +214,7 @@ fuzz_target!(|data: &[u8]| {
     let body = content(&mut inp);
     let l = limits();
     let a = render(&page(&body, false), &l);
+    kasane_pdf_fuzz::reach(a.as_ref().map(|r| r.2.as_slice()));
     let b = render(&page(&body, false), &l);
     match (&a, &b) {
         (Ok(x), Ok(y)) => assert!(x == y, "rendering is not deterministic"),

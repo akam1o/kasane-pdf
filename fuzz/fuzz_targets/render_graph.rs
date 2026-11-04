@@ -1,11 +1,11 @@
 //! The renderer on structured object graphs (v0.5.1 R4, target A): a
 //! page tree with nested `/Pages` nodes, inherited `/Resources` and
 //! `/MediaBox`, a shared page and an optional `/Kids` cycle; up to 24
-//! Form XObjects whose resources reference each other arbitrarily
-//! (chains, cycles, sharing, a form reached through several names),
-//! with or without a transparency group, a soft mask or a tiling
-//! pattern around the next level; references to undefined numbers and
-//! to another generation; deep direct dictionaries and arrays in the
+//! Form XObjects whose resources reference each other — mostly a later
+//! form (chains, sharing, deep nesting that renders), sometimes any form
+//! (cycles), rarely an undefined number or another generation — with or
+//! without a transparency group, a soft mask or a tiling pattern around
+//! the next level; deep direct dictionaries and arrays in the
 //! resources; the forms packed in an object stream or not. Every page
 //! is rendered and its text extracted, strict and in recovery mode.
 //!
@@ -31,19 +31,28 @@ impl Input<'_> {
 const FORM0: u32 = 100;
 /// Tiling patterns, one per form that draws through one.
 const PAT0: u32 = 200;
+/// Soft-mask groups, one per form that draws through one.
+const MASK0: u32 = 300;
 
 fn stream(dict: &str, data: &str) -> String {
     format!("<< {dict} /Length {} >>\nstream\n{data}\nendstream", data.len())
 }
 
-/// A reference to a form or a broken target.
-fn target(inp: &mut Input, n: u32) -> String {
+/// A reference from form `from` (`None`: the page) to one of the `n`
+/// forms. Mostly forward — a later form, so the forms make chains,
+/// sharing and deep nesting that render — sometimes any form (a cycle
+/// when it points back), rarely a broken target. `None`: no later form
+/// to point to.
+fn target(inp: &mut Input, n: u32, from: Option<u32>) -> Option<String> {
     let b = inp.byte();
-    match b % 16 {
-        0 => "999 0 R".into(), // undefined
+    let first = from.map_or(0, |f| f + 1);
+    Some(match b % 64 {
+        0 => "999 0 R".into(),       // undefined
         1 => format!("{FORM0} 1 R"), // another generation
-        _ => format!("{} 0 R", FORM0 + (b as u32) % n),
-    }
+        2..=5 => format!("{} 0 R", FORM0 + (b as u32) % n),
+        _ if first < n => format!("{} 0 R", FORM0 + first + (b as u32) % (n - first)),
+        _ => return None,
+    })
 }
 
 fn deep(inp: &mut Input) -> String {
@@ -60,17 +69,22 @@ fn graph(inp: &mut Input) -> (Vec<(u32, String)>, bool) {
     for i in 0..n {
         let id = FORM0 + i;
         let k = inp.byte();
-        let refs: Vec<String> = (0..(k % 3)).map(|_| target(inp, n)).collect();
+        let refs: Vec<String> = (0..(k % 3)).filter_map(|_| target(inp, n, Some(i))).collect();
         let names: String =
             refs.iter().enumerate().map(|(j, r)| format!(" /X{j} {r}")).collect();
         let draws: String = (0..refs.len()).map(|j| format!("/X{j} Do ")).collect();
         let wrap = inp.byte();
         let (res, body) = match wrap % 4 {
-            // Draw the referenced forms through a soft mask.
-            1 if !refs.is_empty() => (
-                format!("/XObject << {names} >> /ExtGState << /M << /SMask << /S /Alpha /G {} >> >> >>", refs[0]),
-                format!("/M gs 0 0 1 rg 0 0 9 9 re f {draws}"),
-            ),
+            // Draw the referenced forms through a soft mask (its /G a
+            // transparency group, as §11.6.5.2 requires, drawing the
+            // first of them).
+            1 if !refs.is_empty() => {
+                o.push((MASK0 + i, stream(&format!("/Type /XObject /Subtype /Form /BBox [0 0 20 20] /Group << /S /Transparency /CS /DeviceGray >> /Resources << /XObject << /X {} >> >>", refs[0]), "/X Do")));
+                (
+                    format!("/XObject << {names} >> /ExtGState << /M << /SMask << /S /Alpha /G {} 0 R >> >> >>", MASK0 + i),
+                    format!("/M gs 0 0 1 rg 0 0 9 9 re f {draws}"),
+                )
+            }
             // ... through a tiling pattern whose cell draws them.
             2 if !refs.is_empty() => {
                 o.push((PAT0 + i, stream(&format!("/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 9 9] /XStep 9 /YStep 9 /Resources << /XObject << {names} >> >>"), &draws)));
@@ -82,15 +96,17 @@ fn graph(inp: &mut Input) -> (Vec<(u32, String)>, bool) {
         o.push((id, stream(&format!("/Type /XObject /Subtype /Form /BBox [0 0 20 20] {group} /Resources << {res} /Deep {} >>", deep(inp)), &body)));
     }
     // Page tree: 2 = root; 5 = an intermediate node holding pages 6, 7.
-    let first = target(inp, n);
-    let res = format!("<< /XObject << /A {first} /B {} >> >>", target(inp, n));
+    // The page always finds a form (`from` is `None`).
+    let mut page_ref = || target(inp, n, None).expect("a form");
+    let first = page_ref();
+    let res = format!("<< /XObject << /A {first} /B {} >> >>", page_ref());
     let cycle = if flags & 1 != 0 { " 5 0 R" } else { "" };
     let shared = if flags & 2 != 0 { " 6 0 R" } else { "" };
     o.push((1, "<< /Type /Catalog /Pages 2 0 R >>".into()));
     o.push((2, format!("<< /Type /Pages /Kids [5 0 R{shared}] /Count 2 /Resources {res} /MediaBox [0 0 40 40] >>")));
     o.push((5, format!("<< /Type /Pages /Parent 2 0 R /Kids [6 0 R 7 0 R{cycle}] /Count 2 >>")));
     o.push((6, "<< /Type /Page /Parent 5 0 R /Contents 8 0 R >>".into()));
-    o.push((7, format!("<< /Type /Page /Parent 5 0 R /Contents 9 0 R /Resources << /XObject << /C {} >> >> >>", target(inp, n))));
+    o.push((7, format!("<< /Type /Page /Parent 5 0 R /Contents 9 0 R /Resources << /XObject << /C {} >> >> >>", page_ref())));
     o.push((8, stream("", "/A Do /B Do")));
     o.push((9, stream("", "q 0.5 0 0 0.5 0 0 cm /C Do Q /C Do")));
     (o, flags & 4 != 0)
@@ -154,6 +170,7 @@ fn render_all(b: &[u8], recovery: bool, l: &Limits) -> Option<Rendered> {
             assert!((r.width() as u64) * (r.height() as u64) <= l.max_render_total_pixels);
             r.pixels().to_vec()
         });
+        kasane_pdf_fuzz::reach(r.as_ref().map(Vec::as_slice));
         let _ = extract_text(&d, p, &TextOptions::default().with_limits(l.clone()));
         out.push(r.map_err(|e: Error| format!("{e:?}")));
     }
