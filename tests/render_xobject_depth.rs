@@ -172,22 +172,45 @@ fn state_after_a_refusal() {
     assert_eq!(a.pixels(), b.pixels());
 }
 
-/// The stack the default needs. In a child process (this test binary,
-/// filtered to this test): each kind at the default depth, in a thread
-/// of 2 MiB (std's default, and a test thread's) in debug builds and
-/// 512 KiB in release builds. An overflow aborts the child, never the
-/// runner; the parent asserts the child's success.
+/// Eight tiling patterns, each cell painting the next through an
+/// inline stencil image (`BI /IM true … EI` under a pattern colour).
+fn inline_pattern_chain() -> Vec<u8> {
+    let paint = "/Pattern cs /P scn q 20 0 0 20 0 0 cm BI /W 1 /H 1 /IM true /BPC 1 ID \x00 EI Q";
+    let mut o: Vec<(u32, Vec<u8>)> = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 50 50] /Resources << /Pattern << /P 100 0 R >> >> /Contents 4 0 R >>".to_vec()),
+        (4, stream("", paint)),
+    ];
+    for i in 0..8 {
+        let (res, body) = if i == 7 {
+            (String::new(), LEAF.to_string())
+        } else {
+            (
+                format!("/Pattern << /P {} 0 R >>", 101 + i),
+                paint.to_string(),
+            )
+        };
+        o.push((100 + i, stream(&format!("/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 20 /YStep 20 /Resources << {res} >>"), &body)));
+    }
+    build_pdf(&o)
+}
+
+/// The stack the default needs, in a child process (this test binary,
+/// filtered to this test, the thread's stack in KiB in the environment):
+/// each kind at the default depth and the inline-image pattern chain,
+/// in a thread of 2 MiB (std's default, and a test thread's) in debug
+/// builds and 512 KiB in release builds. The same child with a 64 KiB
+/// stack must die of the overflow — showing the check can fail, and
+/// that an overflow takes the child down, never the runner.
 #[test]
 fn default_depth_fits_the_default_thread_stack() {
-    const CHILD: &str = "KASANE_R2_STACK_CHILD";
-    if std::env::var_os(CHILD).is_some() {
-        let stack = if cfg!(debug_assertions) {
-            2 << 20
-        } else {
-            512 << 10
-        };
-        for kind in KINDS {
-            let b = nested(kind, 48);
+    const CHILD: &str = "KASANE_R2_STACK_CHILD_KIB";
+    if let Some(kib) = std::env::var_os(CHILD) {
+        let stack = kib.to_str().unwrap().parse::<usize>().unwrap() << 10;
+        let mut docs: Vec<(&str, Vec<u8>)> = KINDS.iter().map(|k| (*k, nested(k, 48))).collect();
+        docs.push(("inline pattern chain", inline_pattern_chain()));
+        for (kind, b) in docs {
             std::thread::Builder::new()
                 .stack_size(stack)
                 .spawn(move || render(&b, None).unwrap())
@@ -197,20 +220,33 @@ fn default_depth_fits_the_default_thread_stack() {
         }
         return;
     }
-    let out = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            "default_depth_fits_the_default_thread_stack",
-            "--test-threads",
-            "1",
-        ])
-        .env(CHILD, "1")
-        .output()
-        .unwrap();
+    let child = |kib: usize| {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "default_depth_fits_the_default_thread_stack",
+                "--test-threads",
+                "1",
+            ])
+            .env(CHILD, kib.to_string())
+            .output()
+            .unwrap()
+    };
+    let fits = child(if cfg!(debug_assertions) { 2048 } else { 512 });
     assert!(
-        out.status.success(),
+        fits.status.success(),
         "child: {:?}\n{}",
-        out.status,
-        String::from_utf8_lossy(&out.stderr)
+        fits.status,
+        String::from_utf8_lossy(&fits.stderr)
+    );
+    let small = child(64);
+    assert!(
+        !small.status.success(),
+        "48 levels in a 64 KiB stack should overflow"
+    );
+    assert!(
+        String::from_utf8_lossy(&small.stderr).contains("overflow"),
+        "the 64 KiB child failed for another reason:\n{}",
+        String::from_utf8_lossy(&small.stderr)
     );
 }

@@ -1518,10 +1518,11 @@ impl<'a> Renderer<'a> {
         }
         // The operators that can re-enter `run` — `Do` (forms, groups,
         // annotation appearances), `gs` (a soft mask's group), text
-        // showing (Type 3 CharProcs) and path painting (tiling pattern
-        // cells) — are dispatched from this small frame, so the
-        // operator match's large frame is not on the stack once per
-        // nesting level (R2: stack per level measured, `docs/plans/v0.5.1.md`).
+        // showing (Type 3 CharProcs), path painting and inline stencil
+        // images (tiling pattern cells) — are dispatched from this small
+        // frame, so the operator match's large frame is not on the stack
+        // once per nesting level (R2: stack per level measured,
+        // `docs/plans/v0.5.1.md`).
         if let Some(r) = self.execute_reentrant(op) {
             return r;
         }
@@ -1536,6 +1537,15 @@ impl<'a> Renderer<'a> {
         Some(match op {
             Operation::Do(n) => self.do_xobject(n),
             Operation::SetExtGState(n) => self.apply_extgstate(n),
+            // A stencil image painted with a pattern runs the pattern's
+            // cell.
+            Operation::InlineImage { dict, data } => {
+                if !self.extraction_only && self.hidden == 0 {
+                    self.paint_inline_image(dict, data)
+                } else {
+                    Ok(())
+                }
+            }
             Operation::ShowText(s) => self.show_text(s),
             Operation::ShowTextAdjusted(items) => self.show_text_adjusted(items),
             Operation::NextLineShowText(s) => {
