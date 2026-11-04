@@ -1901,12 +1901,8 @@ impl<'a> Renderer<'a> {
                 self.text_tm = *m;
                 self.text_tlm = *m;
             }
-            Operation::NextLine => {
-                // T* ≡ 0 -Tl Td
-                let t = Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.gs.text.leading);
-                self.text_tlm = t.concat(self.text_tlm);
-                self.text_tm = self.text_tlm;
-            }
+            // T* ≡ 0 -Tl Td
+            Operation::NextLine => self.next_line(),
             // Showing.
             Operation::ShowText(s) => self.show_text(s)?,
             Operation::ShowTextAdjusted(items) => self.show_text_adjusted(items)?,
@@ -2625,35 +2621,49 @@ impl<'a> Renderer<'a> {
             return self.clip_empty();
         }
         let budget = self.mask_budget();
-        let apply = |slot: &mut Option<Rc<GsMask>>| -> Result<(), Error> {
+        // Every new mask is made (and counted) before either slot
+        // changes, so a refusal leaves the state as it was. `None`: no
+        // new mask — an unshared one is intersected in place below, a
+        // shared one the clip cut nothing from stays shared.
+        let replacement = |slot: &Option<Rc<GsMask>>| -> Result<Option<Rc<GsMask>>, Error> {
             match slot {
                 None => {
                     let mut mask = Mask::new(w, h)
                         .ok_or_else(|| Error::Structure("clip mask allocation failed".into()))?;
                     mask.fill_path(path, rule, true, ts);
-                    *slot = Some(budget.wrap(mask)?);
+                    Ok(Some(budget.wrap(mask)?))
                 }
-                Some(existing) => match Rc::get_mut(existing) {
-                    Some(own) => {
-                        own.mask.intersect_path(path, rule, true, ts);
-                        own.bounds = Default::default();
+                Some(existing) if Rc::strong_count(existing) == 1 => Ok(None),
+                Some(existing) => {
+                    let mut m = existing.mask.clone();
+                    m.intersect_path(path, rule, true, ts);
+                    if m.data() == existing.mask.data() {
+                        Ok(None)
+                    } else {
+                        Ok(Some(budget.wrap(m)?))
                     }
-                    // Shared with a saved state: intersect a copy, and
-                    // keep sharing when the clip cut nothing away.
-                    None => {
-                        let mut m = existing.mask.clone();
-                        m.intersect_path(path, rule, true, ts);
-                        if m.data() != existing.mask.data() {
-                            *existing = budget.wrap(m)?;
-                        }
-                    }
-                },
+                }
             }
-            Ok(())
         };
-        apply(&mut self.gs.clip)?;
-        if self.gs.soft_mask.is_some() {
-            apply(&mut self.gs.hard_clip)?;
+        let with_hard = self.gs.soft_mask.is_some();
+        let clip = replacement(&self.gs.clip)?;
+        let hard = if with_hard {
+            replacement(&self.gs.hard_clip)?
+        } else {
+            None
+        };
+        let apply = |slot: &mut Option<Rc<GsMask>>, new: Option<Rc<GsMask>>| match new {
+            Some(m) => *slot = Some(m),
+            None => {
+                if let Some(own) = slot.as_mut().and_then(Rc::get_mut) {
+                    own.mask.intersect_path(path, rule, true, ts);
+                    own.bounds = Default::default();
+                }
+            }
+        };
+        apply(&mut self.gs.clip, clip);
+        if with_hard {
+            apply(&mut self.gs.hard_clip, hard);
         }
         Ok(())
     }
@@ -2675,9 +2685,16 @@ impl<'a> Renderer<'a> {
     /// Install `mask` as the soft mask: the effective clip becomes the
     /// hard clip multiplied by it.
     fn set_soft_mask(&mut self, mask: Mask) -> Result<(), Error> {
-        self.clear_soft_mask();
+        // Every mask is made (and counted) before the state changes, so
+        // a refusal leaves it as it was. The hard clip is the clip
+        // without the soft mask in force now, if any.
         let budget = self.mask_budget();
-        let hard = match self.gs.clip.take() {
+        let current = if self.gs.soft_mask.is_some() {
+            self.gs.hard_clip.clone()
+        } else {
+            self.gs.clip.clone()
+        };
+        let hard = match current {
             Some(c) => c,
             None => {
                 let mut m = Mask::new(self.pixmap.width(), self.pixmap.height())
@@ -2690,9 +2707,12 @@ impl<'a> Renderer<'a> {
         for (e, m) in eff.data_mut().iter_mut().zip(mask.data()) {
             *e = mul255(*e, *m);
         }
+        let eff = budget.wrap(eff)?;
+        let mask = budget.wrap(mask)?;
+        self.clear_soft_mask();
         self.gs.hard_clip = Some(hard);
-        self.gs.clip = Some(budget.wrap(eff)?);
-        self.gs.soft_mask = Some(budget.wrap(mask)?);
+        self.gs.clip = Some(eff);
+        self.gs.soft_mask = Some(mask);
         Ok(())
     }
 
@@ -2901,6 +2921,14 @@ impl<'a> Renderer<'a> {
         // or transitively) is rejected. Track by the indirect ref the
         // resource name resolves to — same form used at different
         // spots is fine, recursion is not.
+        // The save below must fit before anything is pushed or swapped,
+        // so a refusal leaves no state behind.
+        if self.gs_stack.len() >= self.limits.max_gsave_depth {
+            return Err(Error::LimitExceeded {
+                limit: "max_gsave_depth",
+                max: self.limits.max_gsave_depth as u64,
+            });
+        }
         if let Some(r) = entry_ref {
             if self.xobject_stack.contains(&r) {
                 return Err(Error::CycleDetected {
@@ -2923,12 +2951,6 @@ impl<'a> Renderer<'a> {
 
         // §8.10.1 Do(): (a) save gs, (b) concat Matrix into CTM,
         // (c) clip to BBox, (d) run form ops, (e) restore gs.
-        if self.gs_stack.len() >= self.limits.max_gsave_depth {
-            return Err(Error::LimitExceeded {
-                limit: "max_gsave_depth",
-                max: self.limits.max_gsave_depth as u64,
-            });
-        }
         self.gs_stack.push(self.gs.clone());
         // CTM' = Matrix × CTM: form-space points go through /Matrix
         // *first*, then the existing CTM. `concat` applies `self` before
