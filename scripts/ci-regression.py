@@ -288,8 +288,21 @@ def options_summary(f):
         ok = (o.get("rewrite") or "").lower() == "pass" and (rt.get("reparse") or {}).get("class", "Pass") == "Pass"
         full = f.get("expect") == "pass" and ok and not f.get("recovered") and all(
             strict(s) for s in ("parse", "render", "text"))
-        out[name] = {"rewrite": (o.get("rewrite") or "").lower(), "full_pass": bool(full),
-                     "semantic": (rt.get("semantic") or {}).get("class")}
+        rec = {"rewrite": (o.get("rewrite") or "").lower(), "full_pass": bool(full),
+               "semantic": (rt.get("semantic") or {}).get("class")}
+        # Under a structural declaration (T2): what verified it.
+        for key in ("structure_declared", "signatures_transformed", "full_declared"):
+            if key in rt:
+                rec[key] = bool(rt[key])
+        report_only = {c["category"]: c["class"] for c in (rt.get("semantic") or {}).get("report_only") or []}
+        if "signatures" in report_only:
+            rec["signatures"] = report_only["signatures"]
+        ur = o.get("usage_rights") or {}
+        if ur:
+            rec["usage_rights"] = ur.get("outcome")
+            if ur.get("sig_flags") is not None:
+                rec["sig_flags"] = list(ur["sig_flags"])
+        out[name] = rec
     return {"options": out}
 
 
@@ -456,6 +469,7 @@ def check(run, base, summary_md=None):
     semantic_changes = []
     option_changes = []
     not_run = set()
+    not_in_baseline = set()
     text_changes = []
     for fid, n in cur.items():
         if n["verdict"] in ("crash", "timeout"):
@@ -545,9 +559,18 @@ def check(run, base, summary_md=None):
             if now_o is None:
                 not_run.add(name)
                 continue
-            for key, good in (("full_pass", True), ("rewrite", "pass"), ("semantic", "pass")):
+            for key, good in (("full_pass", True), ("rewrite", "pass"), ("semantic", "pass"),
+                              ("structure_declared", True), ("signatures_transformed", True),
+                              ("full_declared", True), ("signatures", "transformed"),
+                              ("usage_rights", "removed")):
                 if was_o.get(key) == good and now_o.get(key) != good:
                     option_changes.append(f"{fid}: {name}: {key} {was_o.get(key)} -> {now_o.get(key)}")
+            if "sig_flags" in was_o and now_o.get("sig_flags") != was_o["sig_flags"]:
+                option_changes.append(
+                    f"{fid}: {name}: /SigFlags change {was_o['sig_flags']} -> {now_o.get('sig_flags')}")
+        for name in (n.get("options") or {}):
+            if name not in (o.get("options") or {}) and o:
+                not_in_baseline.add(name)
         if o.get("incremental") == "pass" and n.get("incremental") not in ("pass", None, ""):
             regressions.append(f"{fid}: incremental pass -> {n['incremental']}")
         oq, nq = o.get("quality", ""), n["quality"]
@@ -604,6 +627,8 @@ def check(run, base, summary_md=None):
         print("text agreement drop (not enforced, review):", line)
     for name in sorted(not_run):
         print("rewrite configuration not run:", name, "(the baseline has it; not enforced)")
+    for name in sorted(not_in_baseline - not_run):
+        print("rewrite configuration not in the baseline:", name, "(nothing to compare; not enforced)")
     for line in option_changes:
         print("rewrite configuration change (not enforced, review):", line)
     for line in regressions:

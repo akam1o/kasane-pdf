@@ -420,6 +420,27 @@ class Gate(unittest.TestCase):
         b_pc["policy_check"] = {"identical": True}
         rc, out = check(run(a, b_pc, c, d), cr.summarize(run(a, b, c, d)))
         self.assertIn("b: remove-usage-rights: the usage-rights report disagrees", out)
+        # Per file, a D1 run's verification is compared with the baseline's:
+        # a lost declaration, a lost transformed or a changed /SigFlags is
+        # listed (never enforced); a configuration the baseline does not
+        # record is said to be new, not silently skipped.
+        v = json.loads(json.dumps(good))
+        v["rewrite_options"]["remove-usage-rights"]["usage_rights"] = {"outcome": "removed", "agree": True,
+                                                                       "sig_flags": [3, 2]}
+        base_v = cr.summarize(run(a, v, c, d))
+        lost = json.loads(json.dumps(v))
+        lost["rewrite_options"]["remove-usage-rights"]["roundtrip"]["structure_declared"] = False
+        lost["rewrite_options"]["remove-usage-rights"]["usage_rights"]["sig_flags"] = [3, 0]
+        rc, out = check(run(a, lost, c, d), base_v)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("b: remove-usage-rights: structure_declared True -> False", out)
+        self.assertIn("b: remove-usage-rights: /SigFlags change [3, 2] -> [3, 0]", out)
+        no_d1 = json.loads(json.dumps(base_v))
+        for rec in no_d1["files"].values():
+            (rec.get("options") or {}).pop("remove-usage-rights", None)
+        rc, out = check(run(a, v, c, d), no_d1)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("rewrite configuration not in the baseline: remove-usage-rights", out)
         self.assertEqual((dflt["files"], dflt["full_pass"], dflt["signature_refusal"], dflt["script_refusal"]), (3, 1, 1, 1))
         self.assertEqual((dflt["semantic_pass"], dflt["semantic_transformed"]), (1, 0))
         self.assertEqual((d1["files"], d1["rewrite_pass"], d1["full_pass"], d1["full_pass_verified"]), (3, 2, 2, 2))

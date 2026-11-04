@@ -53,6 +53,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   - Fuzz target `signature_markers` (a ground truth of signature
     markers, near misses and placements); `rewrite_policy` and
     `rewrite_graph` run `Remove` too.
+  - `examples/remove_usage_rights.rs`; `scripts/usage-rights-audit.py`
+    re-reads input/output pairs with qpdf and pypdf for every signature
+    marker (content-free; `--self-test`).
   - Compatibility runner: the `remove-usage-rights` and
     `carry,remove-usage-rights` configurations run; a per-file
     usage-rights record checks the report against the runner's own

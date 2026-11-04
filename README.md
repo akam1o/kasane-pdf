@@ -251,6 +251,7 @@ All examples, runnable against the fixtures in `tests/fixtures/`:
 | [`inspect_objects.rs`](examples/inspect_objects.rs) | page info (size, rotation, annotations), object model, operators |
 | [`extract_text.rs`](examples/extract_text.rs) | positioned text with Unicode |
 | [`rewrite.rs`](examples/rewrite.rs) | full rewrite and the typed refusals (signed, scripts, …) |
+| [`remove_usage_rights.rs`](examples/remove_usage_rights.rs) | `rewrite_with` + `UsageRightsPolicy::Remove`: usage-rights signatures removed, every other signature refused, the report |
 | [`incremental_save.rs`](examples/incremental_save.rs) | `Edit` session saved as an appended revision |
 | [`recovery.rs`](examples/recovery.rs) | strict parse first, explicit recovery parse with its report |
 | [`open_encrypted.rs`](examples/open_encrypted.rs) | encrypted document: empty password, then a password from a file; what `/Encrypt` declares |
