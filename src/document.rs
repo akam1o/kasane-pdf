@@ -529,7 +529,15 @@ impl Document {
     /// detection on the chain itself. Free entries and absent objects
     /// produce [`Error::MissingReference`].
     pub fn resolve(&self, r: IndirectRef) -> Result<Object, Error> {
-        self.resolve_inner(r, true)
+        self.resolve_inner(r, true, true)
+    }
+
+    /// [`Document::resolve`] without following a chain: the body of `r`
+    /// as written, a reference included (`5 0 obj 7 0 R endobj`, or an
+    /// object-stream member that is a reference) — for a walk that must
+    /// count every link of a chain, as the writers write each link.
+    pub(crate) fn resolve_one_hop(&self, r: IndirectRef) -> Result<Object, Error> {
+        self.resolve_inner(r, true, false)
     }
 
     /// [`Document::resolve`] for the writers and the audit, where a
@@ -538,7 +546,14 @@ impl Document {
     /// null: a rewrite must not quietly turn a dangling reference into
     /// `null`, and an audit must report what it could not examine.
     pub(crate) fn resolve_defined(&self, r: IndirectRef) -> Result<Object, Error> {
-        self.resolve_inner(r, false)
+        self.resolve_inner(r, false, true)
+    }
+
+    /// [`Document::resolve_defined`] one hop at a time (see
+    /// [`Document::resolve_one_hop`]): for a walk that must reach every
+    /// link of a chain, as the writers write each one.
+    pub(crate) fn resolve_defined_one_hop(&self, r: IndirectRef) -> Result<Object, Error> {
+        self.resolve_inner(r, false, false)
     }
 
     /// [`Document::deref`] with the [`Document::resolve_defined`] rule.
@@ -549,7 +564,12 @@ impl Document {
         }
     }
 
-    fn resolve_inner(&self, r: IndirectRef, undefined_is_null: bool) -> Result<Object, Error> {
+    fn resolve_inner(
+        &self,
+        r: IndirectRef,
+        undefined_is_null: bool,
+        follow_chain: bool,
+    ) -> Result<Object, Error> {
         let mut seen = HashSet::new();
         let mut current = r;
         loop {
@@ -616,7 +636,7 @@ impl Document {
                 None => obj.object,
             };
             match object {
-                Object::Ref(next) => current = next,
+                Object::Ref(next) if follow_chain => current = next,
                 other => return Ok(other),
             }
         }

@@ -253,6 +253,14 @@ pub struct RoundTrip {
     /// them explained. Absent otherwise (every default run).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub structure_declared: Option<bool>,
+    /// Under T2 only: the report-only `signatures` category is
+    /// `transformed` (the declared removal, and nothing else, happened to
+    /// the signatures) and no semantic category fails.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signatures_transformed: Option<bool>,
+    /// `full` read with the T2 declaration: every other check passes, the
+    /// structure is exactly the declared change (`structure_declared`) and
+    /// the signatures are `transformed` (`signatures_transformed`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_declared: Option<bool>,
     #[serde(default)]
@@ -561,6 +569,21 @@ pub fn run(
     });
     if structural {
         rt.structure_declared = Some(crate::semantic::transform::structure_allows(&diffs, decls));
+        let sem = rt.semantic.as_ref();
+        let sig = sem.and_then(|s| s.report_only.iter().find(|c| c.category == "signatures"));
+        let no_fail = sem.is_some_and(|s| {
+            !matches!(
+                s.class,
+                crate::semantic::SemClass::Fail | crate::semantic::SemClass::Error
+            ) && s.report_only.iter().all(|c| {
+                !matches!(
+                    c.class,
+                    crate::semantic::SemClass::Fail | crate::semantic::SemClass::Error
+                )
+            })
+        });
+        rt.signatures_transformed =
+            Some(no_fail && sig.is_some_and(|c| c.class == crate::semantic::SemClass::Transformed));
     }
     rt.structure = if diffs.is_empty() {
         RtCheck::pass(t.elapsed().as_millis())
@@ -631,7 +654,8 @@ pub fn run(
             others_pass
                 && rt.rewrite.class == RtClass::Pass
                 && rest
-                && rt.structure_declared == Some(true),
+                && rt.structure_declared == Some(true)
+                && rt.signatures_transformed == Some(true),
         );
     }
     rt.total_ms = start.elapsed().as_millis();

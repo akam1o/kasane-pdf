@@ -347,6 +347,30 @@ pub fn audit_residuals(doc: &Document, limits: &Limits) -> Result<ResidualAudit,
     Ok(a.out)
 }
 
+/// [`audit_residuals`]' reachability counts alone: the reachability walk
+/// and the cross-reference pass, without the finding passes (the
+/// usage-rights output check).
+pub(crate) fn reachability(doc: &Document, limits: &Limits) -> Result<ReachabilityReport, Error> {
+    limits.validate()?;
+    let mut a = Audit {
+        doc,
+        limits,
+        out: ResidualAudit::default(),
+        edges: 0,
+        elements: 0,
+        referrers: HashMap::new(),
+        reachable: HashSet::new(),
+        walk_complete: false,
+        findings_seen: 0,
+        findings_capped: false,
+        #[cfg(test)]
+        max_walk_stack: 0,
+    };
+    a.reachability_walk()?;
+    a.audit_xref_and_history();
+    Ok(a.out.reachability)
+}
+
 // ---------------------------------------------------------------------
 // Audit state
 // ---------------------------------------------------------------------
@@ -521,6 +545,7 @@ impl<'d> Audit<'d> {
         // does not resolve is a missing root, not a reachable one.
         let mut queue: Vec<IndirectRef> = Vec::new();
         let mut visited: HashSet<IndirectRef> = HashSet::new();
+        let mut chain_next: HashMap<IndirectRef, IndirectRef> = HashMap::new();
         for key in [b"Root".as_slice(), b"Info".as_slice()] {
             if let Some(Object::Ref(r)) = self.doc.trailer().get(key) {
                 queue.push(*r);
@@ -536,7 +561,15 @@ impl<'d> Audit<'d> {
             if !visited.insert(r) {
                 continue;
             }
-            let obj = match self.doc.resolve_defined(r) {
+            // One hop: a chain's every link is an object of its own
+            // (the next link is an edge of it), as the writers write it.
+            let obj = match self.doc.resolve_defined_one_hop(r) {
+                // A chain link: recorded, so a chain that closes on itself
+                // is found after the walk (linear in the links).
+                Ok(Object::Ref(next)) => {
+                    chain_next.insert(r, next);
+                    Object::Ref(next)
+                }
                 Ok(o) => o,
                 Err(Error::MissingReference(_)) => {
                     // A queued ref that turned out to be absent is a
@@ -578,6 +611,25 @@ impl<'d> Audit<'d> {
                 // stay Unevaluated.
                 break;
             }
+        }
+        // A chain that closes on itself has no object at its end: the
+        // error it is for every reader (each link is followed once).
+        let mut done: HashSet<IndirectRef> = HashSet::new();
+        for &start in chain_next.keys() {
+            let mut path: HashSet<IndirectRef> = HashSet::new();
+            let mut cur = start;
+            while let Some(&next) = chain_next.get(&cur) {
+                if done.contains(&cur) {
+                    break;
+                }
+                if !path.insert(cur) {
+                    return Err(Error::CycleDetected {
+                        context: "indirect reference chain",
+                    });
+                }
+                cur = next;
+            }
+            done.extend(path);
         }
         // `walk_complete` is true only when every queued ref was
         // popped *and* every object scan finished — a depth stop or
@@ -2746,6 +2798,79 @@ mod tests {
         assert_eq!(sup.len(), 1);
         assert_eq!(sup[0].object, Some(IndirectRef::new(5, 0)));
         assert_eq!(sup[0].reach, ReachClass::PreviousRevision);
+    }
+
+    /// A reference chain (`5 0 obj 6 0 R`, `6 0 obj 7 0 R`): every link
+    /// is reached — the rewrite writes each one — so none is reported
+    /// unreachable (C2: found by the `signature_markers` fuzz target).
+    #[test]
+    fn every_link_of_a_reference_chain_is_reachable() {
+        let a = audit_residuals(
+            &doc(&assemble(
+                &[
+                    (1, b"<< /Type /Catalog /Pages 2 0 R /X 5 0 R >>"),
+                    (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                    (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>"),
+                    (5, b"6 0 R"),
+                    (6, b"7 0 R"),
+                    (7, b"<< /K 1 >>"),
+                ],
+                b"",
+            )),
+            &Limits::default(),
+        )
+        .unwrap();
+        let r = &a.reachability;
+        assert!(r.walk_complete);
+        assert_eq!((r.reachable_live, r.unreachable_live), (6, 0), "{r:?}");
+        assert!(!has_kind(&a, FindingKind::UnreachableObject));
+    }
+
+    /// A long chain costs linear work: no `LimitExceeded` on the
+    /// document's reference budget (re-review P3-8).
+    #[test]
+    fn a_long_reference_chain_is_linear() {
+        let mut objs: Vec<(u32, Vec<u8>)> = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R /X 10 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>".to_vec(),
+            ),
+        ];
+        for i in 10..1510u32 {
+            objs.push((i, format!("{} 0 R", i + 1).into_bytes()));
+        }
+        objs.push((1510, b"<< /K 1 >>".to_vec()));
+        let refs: Vec<(u32, &[u8])> = objs.iter().map(|(n, b)| (*n, b.as_slice())).collect();
+        let d = doc(&assemble(&refs, b""));
+        let a = audit_residuals(&d, &Limits::default()).unwrap();
+        assert!(a.reachability.walk_complete);
+        assert_eq!(a.reachability.unreachable_live, 0);
+    }
+
+    /// ... and a chain that closes on itself (`5 → 6 → 5`) stays the
+    /// error it was before chains were walked link by link (review 2).
+    #[test]
+    fn a_reference_chain_cycle_is_still_an_error() {
+        let r = audit_residuals(
+            &doc(&assemble(
+                &[
+                    (1, b"<< /Type /Catalog /Pages 2 0 R /X 5 0 R >>"),
+                    (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+                    (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>"),
+                    (5, b"6 0 R"),
+                    (6, b"5 0 R"),
+                ],
+                b"",
+            )),
+            &Limits::default(),
+        );
+        assert!(
+            matches!(r, Err(Error::CycleDetected { .. })),
+            "{:?}",
+            r.map(|a| a.reachability)
+        );
     }
 
     #[test]

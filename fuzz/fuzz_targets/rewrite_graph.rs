@@ -10,12 +10,18 @@
 //! reference, and its catalog graph — references resolved by §7.3.10,
 //! streams by raw bytes — equals the original's; a rewrite that fails
 //! does so for a reason the input contains (a signature, a packet that
-//! cannot be checked, a reference cycle, a limit). With bit 7 of the
+//! cannot be checked, a reference cycle, a limit). Under
+//! `UsageRightsPolicy::Remove` (nothing signature-like is generated but
+//! the refused `/UR3` and XML signature) the result is `rewrite`'s: the
+//! same bytes with nothing removed, or a refusal. With bit 7 of the
 //! first byte one byte is corrupted: then only no panic / hang /
 //! runaway allocation.
 #![no_main]
 
-use kasane_pdf::{audit_residuals, rewrite, Document, Error, IndirectRef, Object, OpenOptions};
+use kasane_pdf::{
+    audit_residuals, rewrite, rewrite_with, Document, Error, IndirectRef, Object, OpenOptions,
+    RewriteOptions, UsageRightsOutcome, UsageRightsPolicy,
+};
 use kasane_pdf_fuzz::limits;
 use libfuzzer_sys::fuzz_target;
 
@@ -312,11 +318,24 @@ fuzz_target!(|data: &[u8]| {
             continue;
         };
         let out = rewrite(&doc);
+        let removed = rewrite_with(
+            &doc,
+            &RewriteOptions::new().with_usage_rights(UsageRightsPolicy::Remove).with_limits(limits()),
+        );
         if corrupt || doc.recovery_mode() {
             if let Ok(out) = out {
                 let _ = Document::from_bytes(&out);
             }
             continue;
+        }
+        match (&out, &removed) {
+            (Ok(a), Ok(b)) => {
+                assert_eq!(a.as_slice(), b.bytes(), "Remove changed a graph without signatures");
+                assert_eq!(b.report().usage_rights(), &UsageRightsOutcome::NonePresent);
+            }
+            (Err(_), Err(_)) => {}
+            (Ok(_), Err(e)) => panic!("Remove refused what rewrite writes: {e:?}"),
+            (Err(e), Ok(_)) => panic!("Remove wrote what rewrite refuses: {e:?}"),
         }
         match out {
             Ok(out) => {

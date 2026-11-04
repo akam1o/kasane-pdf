@@ -6,15 +6,16 @@
 //! recorded in its own namespace (`rewrite_options[<name>]`), so it can
 //! never change the default's figures or the baseline's format.
 //!
-//! Only `default` exists in the library today (`rewrite`); the D2 and D1
-//! options do not, and the runner refuses to start a run that asks for
-//! them rather than imitating them. When `rewrite_with` lands, each
-//! configuration's [`RewriteConfig::rewrite`] arm calls it with that
-//! option set.
+//! Each non-default configuration calls `rewrite_with` with its option
+//! set; a library without one would make the runner refuse the run
+//! rather than imitate it ([`RewriteConfig::unavailable`]).
 
 use crate::roundtrip::RoundTrip;
 use crate::semantic::transform::{self, Declaration};
-use kasane_pdf::{Document, Error, ExecutableContentPolicy, Object, RewriteOptions, RewriteReport};
+use kasane_pdf::{
+    Document, Error, ExecutableContentPolicy, Object, RewriteOptions, RewriteReport,
+    UsageRightsKey, UsageRightsOutcome, UsageRightsPolicy,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -70,13 +71,23 @@ impl RewriteConfig {
     /// Why this library build cannot run the configuration, `None` when
     /// it can.
     pub fn unavailable(self) -> Option<&'static str> {
-        match self {
-            RewriteConfig::Default => None,
-            RewriteConfig::Carry => None,
-            RewriteConfig::RemoveUsageRights | RewriteConfig::CarryRemoveUsageRights => {
-                Some("the library has no UsageRightsPolicy::Remove yet (D1 is not implemented)")
-            }
+        None
+    }
+
+    /// The `rewrite_with` options of a non-default configuration.
+    fn options(self) -> RewriteOptions {
+        let carry = matches!(
+            self,
+            RewriteConfig::Carry | RewriteConfig::CarryRemoveUsageRights
+        );
+        let mut o = RewriteOptions::new();
+        if carry {
+            o = o.with_executable_content(ExecutableContentPolicy::Carry);
         }
+        if self.removes_usage_rights() {
+            o = o.with_usage_rights(UsageRightsPolicy::Remove);
+        }
+        o
     }
 
     /// Rewrite `doc` under this configuration, with the library's report
@@ -90,15 +101,13 @@ impl RewriteConfig {
     ) -> Result<Result<(Vec<u8>, Option<RewriteReport>), Error>, &'static str> {
         match self {
             RewriteConfig::Default => Ok(kasane_pdf::rewrite(doc).map(|b| (b, None))),
-            RewriteConfig::Carry => {
-                let opts =
-                    RewriteOptions::new().with_executable_content(ExecutableContentPolicy::Carry);
-                Ok(kasane_pdf::rewrite_with(doc, &opts).map(|o| {
+            other => match other.unavailable() {
+                Some(why) => Err(why),
+                None => Ok(kasane_pdf::rewrite_with(doc, &other.options()).map(|o| {
                     let (b, r) = o.into_parts();
                     (b, Some(r))
-                }))
-            }
-            other => Err(other.unavailable().unwrap_or("not available")),
+                })),
+            },
         }
     }
 
@@ -222,6 +231,190 @@ pub struct OptionRun {
     /// The report against the runner's own inventory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inventory: Option<crate::policy::InventoryCheck>,
+    /// D1 configurations: what the library did with usage-rights
+    /// signatures, against the runner's own reading of the input and the
+    /// output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_rights: Option<UsageRightsCheck>,
+}
+
+/// A D1 configuration's usage-rights result, checked against the
+/// runner's T2 declaration and its `signatures` snapshots (never taken
+/// as the truth). Content-free: keys, counts, paths' kinds.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageRightsCheck {
+    /// `removed`, `none_present`, or `refused` (`rule` says why).
+    pub outcome: String,
+    /// The library's `SignatureRule` when it refused with one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<String>,
+    /// Removed entries (`UR`, `UR3`), in the report's order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub perms_removed: Option<bool>,
+    /// `/SigFlags` before and after, as the library reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sig_flags: Option<(i64, i64)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objects_removed: Option<usize>,
+    /// The runner's `signatures` snapshot of the input: signature-like
+    /// dictionaries, those under `/Perms /UR` or `/UR3`, field locks.
+    pub input_sigs: usize,
+    pub input_usage_rights_sigs: usize,
+    pub input_locks: usize,
+    /// ... and of the output (a successful rewrite only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_sigs: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_locks: Option<usize>,
+    /// The report agrees with the runner's declaration and snapshots
+    /// (successful rewrites), or the snapshot shows what the refusal
+    /// names (an `OtherSignaturePresent` refusal); `None` when there is
+    /// nothing to compare.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agree: Option<bool>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mismatches: Vec<String>,
+}
+
+/// The runner's own counts from a `signatures` snapshot: `(sigs, under
+/// /Perms /UR or /UR3, locks)`. A snapshot that could not be taken is
+/// `None`.
+fn signature_counts(doc: &Document, bytes: &[u8]) -> Option<(usize, usize, usize)> {
+    let lines = crate::semantic::signature_lines(doc, bytes).ok()?;
+    let sigs: Vec<&String> = lines.iter().filter(|l| l.starts_with("sig\t")).collect();
+    let ur = sigs
+        .iter()
+        .filter(|l| {
+            let at = l.split('\t').nth(1).unwrap_or("");
+            // The target itself (indirect, first reached from /Perms) or
+            // a direct dictionary in /Perms.
+            matches!(at, "at=/Root/Perms/UR" | "at=/Root/Perms/UR3")
+        })
+        .count();
+    let locks = lines.iter().filter(|l| l.starts_with("lock\t")).count();
+    Some((sigs.len(), ur, locks))
+}
+
+/// The usage-rights record of a D1 run: `result` is the rewrite's
+/// (`Ok((output bytes, report))` or the refusal), `input` the input as
+/// parsed, `data` its bytes.
+pub fn usage_rights_check(
+    input: &Document,
+    data: &[u8],
+    result: Result<(&[u8], &RewriteReport), &Error>,
+    decls: &[Declaration],
+) -> UsageRightsCheck {
+    let mut c = UsageRightsCheck::default();
+    let mut miss = Vec::new();
+    match signature_counts(input, data) {
+        Some((s, u, l)) => (c.input_sigs, c.input_usage_rights_sigs, c.input_locks) = (s, u, l),
+        None => miss.push("the input's signatures snapshot could not be taken".to_string()),
+    }
+    match result {
+        Err(e) => {
+            c.outcome = "refused".into();
+            if let Error::SignaturePolicy { rule, .. } = e {
+                c.rule = Some(format!("{rule:?}"));
+                if matches!(rule, kasane_pdf::SignatureRule::OtherSignaturePresent) {
+                    // Another signature, or a lock, is what the runner sees too.
+                    let explained = c.input_locks > 0 || c.input_sigs > c.input_usage_rights_sigs;
+                    if !explained {
+                        miss.push(format!(
+                            "refused for another signature; the runner sees {} sig(s), {} under \
+                             /Perms /UR, /UR3, {} lock(s)",
+                            c.input_sigs, c.input_usage_rights_sigs, c.input_locks
+                        ));
+                    }
+                    c.agree = Some(explained);
+                }
+            }
+        }
+        Ok((out, report)) => {
+            match Document::from_bytes(out)
+                .ok()
+                .and_then(|o| signature_counts(&o, out))
+            {
+                Some((s, _, l)) => (c.output_sigs, c.output_locks) = (Some(s), Some(l)),
+                None => miss.push("the output's signatures snapshot could not be taken".into()),
+            }
+            if c.output_sigs.unwrap_or(0) > 0 || c.output_locks.unwrap_or(0) > 0 {
+                miss.push("the output has a signature-like dictionary or a lock".into());
+            }
+            let declared = decls.iter().find_map(|d| match d {
+                Declaration::UsageRightsRemoved {
+                    keys,
+                    perms_removed,
+                    sig_flags,
+                } => Some((keys, *perms_removed, *sig_flags)),
+                _ => None,
+            });
+            match report.usage_rights() {
+                UsageRightsOutcome::Removed(r) => {
+                    c.outcome = "removed".into();
+                    c.removed = r
+                        .entries
+                        .iter()
+                        .map(|e| match e.key {
+                            UsageRightsKey::Ur => "UR".to_string(),
+                            UsageRightsKey::Ur3 => "UR3".to_string(),
+                            _ => "other".to_string(),
+                        })
+                        .collect();
+                    c.perms_removed = Some(r.perms_removed);
+                    c.sig_flags = r.sig_flags.map(|f| (f.before, f.after));
+                    c.objects_removed = Some(r.output_check.objects_removed);
+                    match declared {
+                        None => miss.push("removed, but the runner declares no T2".into()),
+                        Some((keys, perms, flags)) => {
+                            if *keys != c.removed {
+                                miss.push(format!("keys: runner {keys:?}"));
+                            }
+                            if perms != r.perms_removed {
+                                miss.push(format!("perms_removed: runner {perms}"));
+                            }
+                            let lib_flags = c.sig_flags.filter(|(b, a)| b != a);
+                            if flags != lib_flags {
+                                miss.push(format!(
+                                    "sig_flags: runner {flags:?}, library {lib_flags:?}"
+                                ));
+                            }
+                        }
+                    }
+                    if c.input_sigs != r.entries.len()
+                        || c.input_usage_rights_sigs != r.entries.len()
+                        || c.input_locks > 0
+                    {
+                        miss.push(format!(
+                            "the runner sees {} sig(s), {} under /Perms /UR, /UR3, {} lock(s) for \
+                             {} removed",
+                            c.input_sigs,
+                            c.input_usage_rights_sigs,
+                            c.input_locks,
+                            r.entries.len()
+                        ));
+                    }
+                }
+                UsageRightsOutcome::NonePresent => {
+                    c.outcome = "none_present".into();
+                    if declared.is_some() {
+                        miss.push("nothing removed, but the runner declares T2".into());
+                    }
+                    if c.input_sigs > 0 || c.input_locks > 0 {
+                        miss.push(format!(
+                            "nothing removed, but the runner sees {} sig(s), {} lock(s)",
+                            c.input_sigs, c.input_locks
+                        ));
+                    }
+                }
+                other => miss.push(format!("outcome {other:?} under Remove")),
+            }
+            c.agree = Some(miss.is_empty());
+        }
+    }
+    c.mismatches = miss;
+    c
 }
 
 #[cfg(test)]
@@ -258,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn option_sets_parse_and_only_default_runs() {
+    fn option_sets_parse_and_every_configuration_runs() {
         for c in RewriteConfig::ALL {
             assert_eq!(RewriteConfig::parse(c.name()), Some(c));
         }
@@ -278,8 +471,13 @@ mod tests {
         let (_, report) = RewriteConfig::Carry.rewrite(&d).unwrap().unwrap();
         assert!(report.is_some(), "carry runs rewrite_with");
         for c in &RewriteConfig::ALL[2..] {
-            assert!(c.unavailable().is_some());
-            assert!(c.rewrite(&d).is_err(), "{c:?} must not run a substitute");
+            assert!(c.unavailable().is_none());
+            let (_, r) = c.rewrite(&d).unwrap().unwrap();
+            let r = r.unwrap();
+            assert_eq!(r.usage_rights_policy(), UsageRightsPolicy::Remove);
+            assert_eq!(r.usage_rights(), &UsageRightsOutcome::NonePresent);
+            let carry = r.executable_content_policy() == ExecutableContentPolicy::Carry;
+            assert_eq!(carry, *c == RewriteConfig::CarryRemoveUsageRights);
         }
     }
 
@@ -370,5 +568,103 @@ mod tests {
         assert_eq!(refusal(&u("PDF version", "")), Some(Refusal::Unsupported));
         assert_eq!(refusal(&Error::Encrypted), Some(Refusal::Encrypted));
         assert_eq!(refusal(&Error::Parse("x".into())), None);
+    }
+
+    const UR3: &str = "<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 1 2 3] /Contents <00> \
+        /Reference [<< /TransformMethod /UR3 /TransformParams << /Form [/FillIn] >> >>] >>";
+
+    /// The cross-check of a D1 run: a removal the runner reads the same
+    /// way agrees; a refusal for another signature is explained by the
+    /// runner's own snapshot.
+    #[test]
+    fn usage_rights_checks_against_the_runner() {
+        let bytes = |cat: &str, extra: &str| {
+            let objs = [
+                format!("<< /Type /Catalog /Pages 2 0 R {cat} >>"),
+                "<< /Type /Pages /Kids [] /Count 0 >>".to_string(),
+                extra.to_string(),
+            ];
+            let mut out = b"%PDF-1.7\n".to_vec();
+            let mut offs = Vec::new();
+            for (i, o) in objs.iter().enumerate() {
+                offs.push(out.len());
+                out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+            }
+            let x = out.len();
+            out.extend_from_slice(b"xref\n0 4\n0000000000 65535 f \n");
+            for o in offs {
+                out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+            }
+            out.extend_from_slice(
+                format!("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n").as_bytes(),
+            );
+            out
+        };
+        let run = |b: &[u8]| {
+            let d = Document::from_bytes(b).unwrap();
+            let decls = RewriteConfig::RemoveUsageRights.declarations(&d, b);
+            let r = RewriteConfig::RemoveUsageRights.rewrite(&d).unwrap();
+            let input = Document::from_bytes(b).unwrap();
+            match &r {
+                Ok((out, rep)) => {
+                    usage_rights_check(&input, b, Ok((out, rep.as_ref().unwrap())), &decls)
+                }
+                Err(e) => usage_rights_check(&input, b, Err(e), &decls),
+            }
+        };
+        let b = bytes(
+            "/Perms << /UR3 3 0 R >> /AcroForm << /Fields [] /SigFlags 3 >>",
+            UR3,
+        );
+        let c = run(&b);
+        assert_eq!(
+            (c.outcome.as_str(), c.agree),
+            ("removed", Some(true)),
+            "{c:?}"
+        );
+        assert_eq!(c.removed, vec!["UR3".to_string()]);
+        assert_eq!((c.sig_flags, c.perms_removed), (Some((3, 2)), Some(true)));
+        assert_eq!(
+            (c.input_sigs, c.input_usage_rights_sigs, c.input_locks),
+            (1, 1, 0)
+        );
+        assert_eq!((c.output_sigs, c.output_locks), (Some(0), Some(0)));
+        // Another signature: refused, and the runner sees it too.
+        let b = bytes("/Perms << /UR3 3 0 R >> /X << /Type /DocTimeStamp >>", UR3);
+        let c = run(&b);
+        assert_eq!(c.outcome, "refused");
+        assert_eq!(c.rule.as_deref(), Some("OtherSignaturePresent"));
+        assert_eq!(
+            (c.input_sigs, c.input_usage_rights_sigs, c.agree),
+            (2, 1, Some(true))
+        );
+        // A lock.
+        let b = bytes(
+            "/Perms << /UR3 3 0 R >> /AcroForm << /Fields [<< /FT /Tx /T (a) /Lock << /Action /All >> >>] >>",
+            UR3,
+        );
+        let c = run(&b);
+        assert_eq!(
+            (c.rule.as_deref(), c.input_locks, c.agree),
+            (Some("OtherSignaturePresent"), 1, Some(true))
+        );
+        // Nothing to remove.
+        let c = run(&bytes("", "<< >>"));
+        assert_eq!((c.outcome.as_str(), c.agree), ("none_present", Some(true)));
+        // A declaration that disagrees with the report is recorded.
+        let b = bytes("/Perms << /UR3 3 0 R >>", UR3);
+        let d = Document::from_bytes(&b).unwrap();
+        let (out, rep) = RewriteConfig::RemoveUsageRights
+            .rewrite(&d)
+            .unwrap()
+            .unwrap();
+        let wrong = [Declaration::UsageRightsRemoved {
+            keys: vec!["UR".into()],
+            perms_removed: false,
+            sig_flags: Some((1, 0)),
+        }];
+        let c = usage_rights_check(&d, &b, Ok((&out, rep.as_ref().unwrap())), &wrong);
+        assert_eq!(c.agree, Some(false));
+        assert_eq!(c.mismatches.len(), 3, "{:?}", c.mismatches);
     }
 }

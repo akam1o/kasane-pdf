@@ -81,4 +81,11 @@ open decisions of the plan. The design is
   round trip and three independent inventories). `UsageRightsPolicy` has
   only `Refuse` until C2. Errors stay `Unsupported` / `SignaturePolicy`;
   `Error::refusal_reason` classifies them.
+- **D1 implemented (C2, 2026-11-04).** `UsageRightsPolicy::Remove`
+  ships as designed, with the output checked independently (no marker,
+  exactly the declared objects removed). On the corpus `carry,remove-usage-rights`
+  reaches 378 Full PASS (+27 over `carry`), every one of the 27 checked
+  by the library, the runner, qpdf and pypdf; `remove-usage-rights`
+  alone stays 345, as measured. Sharing is required of the signature
+  itself only: Acrobat's UR3 references name the catalog (`/Data`).
 

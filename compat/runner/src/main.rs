@@ -1840,6 +1840,7 @@ fn run_rewrite_options(
                 roundtrip: None,
                 report: None,
                 inventory: None,
+                usage_rights: None,
             },
             Ok(Ok((bytes, report))) => {
                 let decls = c.declarations(doc, data);
@@ -1858,6 +1859,10 @@ fn run_rewrite_options(
                         .ok()
                         .map(|o| policy::check(r, &input, &o))
                 });
+                let usage_rights = report
+                    .as_ref()
+                    .filter(|_| c.removes_usage_rights())
+                    .map(|r| configs::usage_rights_check(&input, data, Ok((&bytes, r)), &decls));
                 configs::OptionRun {
                     rewrite: "pass".into(),
                     refusal: None,
@@ -1866,6 +1871,7 @@ fn run_rewrite_options(
                     roundtrip: Some(rt),
                     report: report.as_ref().map(policy::summary),
                     inventory,
+                    usage_rights,
                 }
             }
             Ok(Err(e)) => {
@@ -1878,6 +1884,9 @@ fn run_rewrite_options(
                     roundtrip: Some(roundtrip::refused(&e, t.elapsed().as_millis())),
                     report: None,
                     inventory: None,
+                    usage_rights: c
+                        .removes_usage_rights()
+                        .then(|| configs::usage_rights_check(&input, data, Err(&e), &[])),
                 }
             }
         };

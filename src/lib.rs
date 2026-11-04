@@ -123,6 +123,7 @@ pub mod text_extract;
 mod tounicode;
 mod type1;
 mod unicode_fallback;
+mod usage_rights;
 pub mod warning;
 mod xref;
 
@@ -168,9 +169,10 @@ pub use remove_text::{remove_text, Removal};
 pub use rewrite::{rewrite, rewrite_with_limits};
 pub use rewrite_policy::{
     rewrite_with, ActionClass, ActionKind, ActionOwner, ExecutableContentPolicy, ExecutableItem,
-    ExecutableSummary, MultimediaPolicy, MultimediaSubtype, RewriteOptions, RewriteOutput,
-    RewriteReport, ScriptSize, Trigger, UnclassifiedReason, UnclassifiedStructure,
-    UsageRightsPolicy, VersionChange, VersionReason,
+    ExecutableSummary, MultimediaPolicy, MultimediaSubtype, OutputCheck, RemovedSignature,
+    RewriteOptions, RewriteOutput, RewriteReport, ScriptSize, SigFlagsChange, SubFilterKind,
+    Trigger, UnclassifiedReason, UnclassifiedStructure, UsageRight, UsageRightsKey,
+    UsageRightsOutcome, UsageRightsPolicy, UsageRightsRemoval, VersionChange, VersionReason,
 };
 pub use signature::{signatures, ChangeKind, SignatureInfo};
 pub use warning::{RecoveryRule, Warning};

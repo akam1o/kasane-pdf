@@ -208,8 +208,10 @@ pub struct RewriteReport {
   impl Write)` can return a report-only result. The `RewriteOutput`
   methods (`bytes()`, not a public field) leave room for a
   writer-backed variant without breaking callers.
-- **Memory.** Same as today (one output `Vec`). The report holds
-  counts, locations and object numbers, never content.
+- **Memory.** Same as today (one output `Vec`) except under
+  `UsageRightsPolicy::Remove`, whose output check reparses the output
+  (§5.8, cost). The report holds counts, locations and object numbers,
+  never content.
 - **semver.** `cargo semver-checks`: additions only, so minor. No
   feature flag: the defaults change nothing, and gating a type behind
   a feature would complicate docs.rs and the API without making
@@ -638,6 +640,51 @@ This is §6's mechanism, with a new snapshot category:
     `signatures` line appears or disappears must `fail`);
   - the runner checks its own inventory against
     `RewriteReport::usage_rights`.
+
+### 5.8 As implemented (C2, 2026-11-04)
+
+Where the implementation (`src/usage_rights.rs`, `rewrite_with`) makes
+the design above precise:
+- **Outcome.** `UsageRightsOutcome` has a third variant,
+  `NotRequested` (the policy is `Refuse`: the input is not searched).
+  `RewriteReport::usage_rights()` returns it; `signatures_removed()` is
+  true only for `Removed`.
+- **The walk** (rule 2) reads every link of a reference chain one hop at
+  a time — an object-stream member that is a reference included — and
+  counts each as an edge, as the writers write each link. `/Perms`,
+  `/AcroForm`, `/SigFlags` and a target read through a chain refuse.
+- **Rule 3** concerns the signature itself: each target is referenced
+  only from `/Perms`. What a target holds may be shared: Acrobat's UR3
+  reference has `/Data` naming the catalog. A shared held object stays
+  where something else reaches it, and it is not a signature, because
+  the walk refuses any other signature-like dictionary.
+- **Rule 5, seed values** (open decision 2: carried and reported, with
+  the count in the report): only the `/Lock` of a signature field's
+  (`/FT /Sig`) `/SV` dictionary itself is carried. A `/Lock` below it,
+  under any other `/SV` key, or on an object also reached as something
+  else refuses.
+- **`/SigFlags`**: `SigFlagsChange` records the value before and after
+  whenever `/SigFlags` is present (equal when bit 1 was clear).
+- **The output check** (§5.4) also requires: the written objects are
+  exactly those a rewrite writes once the declared entries are cut,
+  computed by a walk of its own over the input; no target object is
+  written; the residual audit's reachability walk alone (passes 1 and 3
+  of `audit_residuals`, which now reaches every link of a chain), with
+  edge, element and depth limits at least the signature walk's budget
+  and the rewrite's depth, completes with no missing reference and no
+  unreachable object; no field lock. The counts are `OutputCheck`.
+- **Cost.** Only `Remove` pays it: the signature walk over the input,
+  the strict reparse of the output (a second document in memory) and
+  two walks over it. Linear and bounded by the limits. Measured on a
+  27 MB catalog of 9M nested values: peak 1.4 GB and 0.4 s for the
+  plain rewrite, about 3.8 GB and 5 s under `Remove`; the input
+  document (about 1 GB), the reparsed output (about 1 GB) and the
+  walks' copies of the catalog account for it.
+- **T2 in the runner**: the round trip's `full_declared` needs
+  `structure_declared` *and* `signatures_transformed` (the report-only
+  `signatures` category `transformed`, no semantic category failing): a
+  declared path with an undeclared value (`/SigFlags` bit 2 cleared)
+  does not pass.
 
 ## 6. Semantic transformation model
 

@@ -129,6 +129,26 @@ pub enum SignatureRule {
     /// invalidate every signature; only an incremental update can
     /// keep them.
     RewriteOfSignedDocument,
+    /// `UsageRightsPolicy::Remove`: a `/Perms /UR` or `/UR3` entry is
+    /// not a usage-rights signature that can be removed — it is not a
+    /// signature dictionary, its `/Reference` does not establish usage
+    /// rights, it (or what it holds) is shared with another structure,
+    /// or a dictionary the removal edits is shared; or the document
+    /// could not be searched completely.
+    UsageRightsNotRemovable,
+    /// `UsageRightsPolicy::Remove`: a signature other than the
+    /// usage-rights signatures to remove (a signature-like dictionary
+    /// anywhere, a field lock), which the removal must never touch.
+    OtherSignaturePresent,
+    /// `UsageRightsPolicy::Remove`: the catalog has `/DSS` or `/Legal`,
+    /// a signature workflow the removal cannot reason about.
+    SecurityStore,
+    /// `UsageRightsPolicy::Remove`: the check of the output failed — read
+    /// back and searched, it still holds a signature marker, differs
+    /// from the declared removal, or could not be read back strictly or
+    /// checked completely (a damaged input's output may not reparse
+    /// strictly). No bytes are returned.
+    ResidualSignature,
 }
 
 impl fmt::Display for SignatureRule {
@@ -144,6 +164,14 @@ impl fmt::Display for SignatureRule {
             SignatureRule::RewriteOfSignedDocument => {
                 "a full rewrite would invalidate the signature"
             }
+            SignatureRule::UsageRightsNotRemovable => {
+                "the usage-rights signature cannot be removed"
+            }
+            SignatureRule::OtherSignaturePresent => {
+                "a signature other than the usage-rights signature is present"
+            }
+            SignatureRule::SecurityStore => "a /DSS or /Legal security store is present",
+            SignatureRule::ResidualSignature => "the check of the output failed",
         })
     }
 }

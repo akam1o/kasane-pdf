@@ -154,7 +154,7 @@ pub(crate) fn rewrite_overlay_with(
     limits: &Limits,
     overrides: &RewriteOverrides,
 ) -> Result<Vec<u8>, Error> {
-    rewrite_core(doc, overlay, synth_numbers, limits, overrides, false).map(|(out, ..)| out)
+    rewrite_core(doc, overlay, synth_numbers, limits, overrides, false, false).map(|(out, ..)| out)
 }
 
 /// `(old number, old generation) → new number` of a rewrite.
@@ -164,19 +164,25 @@ pub(crate) type ObjectMap = HashMap<(u32, u16), u32>;
 /// pipeline, also returning the object map and the version written.
 /// `carry` lifts the document-level executable-content refusals
 /// ([`ExecutableContentPolicy::Carry`](crate::ExecutableContentPolicy::Carry));
-/// with `false` it is exactly [`rewrite_with_limits`].
+/// `remove_usage_rights` lifts the `/Perms /UR`, `/UR3` refusal for
+/// [`UsageRightsPolicy::Remove`](crate::UsageRightsPolicy::Remove), whose
+/// edits (`crate::usage_rights`) are `overlay`. With `false`, `false` and
+/// an empty overlay it is exactly [`rewrite_with_limits`].
 pub(crate) fn rewrite_mapped(
     doc: &Document,
     limits: &Limits,
     carry: bool,
+    overlay: &HashMap<(u32, u16), Object>,
+    remove_usage_rights: bool,
 ) -> Result<(Vec<u8>, ObjectMap, crate::rewrite_policy::VersionChange), Error> {
     rewrite_core(
         doc,
-        &HashMap::new(),
+        overlay,
         &HashSet::new(),
         limits,
         &RewriteOverrides::default(),
         carry,
+        remove_usage_rights,
     )
 }
 
@@ -187,12 +193,13 @@ fn rewrite_core(
     limits: &Limits,
     overrides: &RewriteOverrides,
     carry: bool,
+    remove_usage_rights: bool,
 ) -> Result<(Vec<u8>, ObjectMap, crate::rewrite_policy::VersionChange), Error> {
     let _budget = doc.decoded_budget_scope();
     if doc.is_encrypted() {
         return Err(crate::incremental::encrypted_write_refused());
     }
-    check_refusals(doc, carry)?;
+    check_refusals(doc, carry, remove_usage_rights)?;
 
     // The catalog's `/Metadata` is removed by overlaying the catalog
     // object itself — but if the caller already overlaid the catalog
@@ -992,15 +999,20 @@ pub(crate) fn xfa_scripts(
 /// JavaScript `/OpenAction`, `/Names /JavaScript`) and nothing else: the
 /// catalog `/RichMedia` refusal is `MultimediaPolicy::Refuse`, and the
 /// signature refusals apply under every policy.
-fn check_refusals(doc: &Document, carry: bool) -> Result<(), Error> {
+fn check_refusals(doc: &Document, carry: bool, remove_usage_rights: bool) -> Result<(), Error> {
     let catalog = doc.catalog();
 
     // Signed documents: a signature/lock dictionary in /Perms claims
-    // an integrity check a rewrite cannot preserve.
+    // an integrity check a rewrite cannot preserve. Under
+    // `UsageRightsPolicy::Remove`, `/UR` and `/UR3` are what the
+    // (assessed) edits remove; `/DocMDP` still refuses.
     if let Some(perms_obj) = catalog.get(b"Perms".as_slice()) {
         let perms = deref_chain(doc, perms_obj)?;
         if let Some(d) = perms.as_dict() {
             for key in [&b"DocMDP"[..], &b"UR"[..], &b"UR3"[..]] {
+                if remove_usage_rights && key != b"DocMDP" {
+                    continue;
+                }
                 if d.contains_key(key) {
                     return Err(Error::SignaturePolicy {
                         rule: crate::error::SignatureRule::RewriteOfSignedDocument,

@@ -1444,3 +1444,290 @@ fn every_open_action_value_is_accounted_for() {
         "{l:#?}"
     );
 }
+
+/// V4 P2 (C2): the signature walk follows /P and /Parent, and records a
+/// field /Lock and seed values wherever they are, a widget outside
+/// /AcroForm /Fields included.
+#[test]
+fn signatures_follow_back_pointers_and_see_locks_outside_fields() {
+    let b = pdf(
+        "1.7",
+        &[
+            (1, d("<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [] >> >>")),
+            (2, d("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")),
+            (3, d("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] /Annots [4 0 R 6 0 R] >>")),
+            // A widget in no /Fields, with a lock and a seed value.
+            (4, d("<< /Type /Annot /Subtype /Widget /FT /Sig /Rect [0 0 1 1] /Lock << /Action /All >> /SV << /Lock << /X 1 >> >> >>")),
+            // Reachable only through /P: a page outside the tree with a
+            // signature-like dictionary.
+            (6, d("<< /Type /Annot /Subtype /Link /Rect [0 0 1 1] /P 7 0 R >>")),
+            (7, d("<< /Type /Page /X << /ByteRange [0 1 2 3] >> >>")),
+        ],
+        0,
+    );
+    let l = lines(&b, "signatures");
+    assert!(
+        l.iter()
+            .any(|x| x.starts_with("sig\tat=/Root/Pages/Kids[0]/Annots[1]/P/X\t")),
+        "{l:#?}"
+    );
+    assert_eq!(
+        l.iter().filter(|x| x.starts_with("lock\t")).count(),
+        1,
+        "{l:#?}"
+    );
+    assert_eq!(
+        l.iter().filter(|x| x.starts_with("seed_value\t")).count(),
+        1,
+        "{l:#?}"
+    );
+}
+
+/// A file with an xref stream: plain objects `plain` and, in object
+/// stream 40, the compressed objects `packed`.
+fn objstm_pdf(plain: &[(u32, &str)], packed: &[(u32, &str)]) -> Vec<u8> {
+    let (mut head, mut body) = (String::new(), String::new());
+    for (n, s) in packed {
+        head.push_str(&format!("{n} {} ", body.len()));
+        body.push_str(s);
+        body.push(' ');
+    }
+    let os = format!("{head}{body}");
+    let mut all: Vec<(u32, String)> = plain.iter().map(|(n, s)| (*n, s.to_string())).collect();
+    all.push((
+        40,
+        format!(
+            "<< /Type /ObjStm /N {} /First {} /Length {} >>\nstream\n{os}\nendstream",
+            packed.len(),
+            head.len(),
+            os.len()
+        ),
+    ));
+    let mut b = b"%PDF-1.7\n".to_vec();
+    let mut rows: Vec<(u32, u8, u64, u64)> = Vec::new();
+    for (n, s) in &all {
+        rows.push((*n, 1, b.len() as u64, 0));
+        b.extend_from_slice(format!("{n} 0 obj\n{s}\nendobj\n").as_bytes());
+    }
+    for (i, (n, _)) in packed.iter().enumerate() {
+        rows.push((*n, 2, 40, i as u64));
+    }
+    let x = b.len() as u64;
+    rows.push((41, 1, x, 0));
+    rows.sort();
+    let (mut idx, mut data) = (String::new(), Vec::new());
+    for (n, t, f2, f3) in &rows {
+        idx.push_str(&format!("{n} 1 "));
+        data.push(*t);
+        data.extend_from_slice(&(*f2 as u32).to_be_bytes());
+        data.extend_from_slice(&(*f3 as u16).to_be_bytes());
+    }
+    b.extend_from_slice(
+        format!(
+            "41 0 obj\n<< /Type /XRef /W [1 4 2] /Index [{idx}] /Size 42 /Root 1 0 R /Length {} >>\nstream\n",
+            data.len()
+        )
+        .as_bytes(),
+    );
+    b.extend_from_slice(&data);
+    b.extend_from_slice(format!("\nendstream\nendobj\nstartxref\n{x}\n%%EOF\n").as_bytes());
+    b
+}
+
+/// C2 review 1 (F4, F6): the signature walk follows an object-stream
+/// member that is a reference, reads /Type through a reference, sees a
+/// field /Lock on a field that is also another field's /SV, and records
+/// a lock by keys and digest (a changed lock shows).
+#[test]
+fn signatures_follow_aliases_and_type_references_and_seed_value_roles() {
+    let plain = [
+        (1, "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [5 0 R 6 0 R] >> /X 20 0 R /Y << /Type 22 0 R >> >>"),
+        (2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        (3, "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 1 1] >>"),
+        (5, "<< /FT /Sig /T (a) /SV 6 0 R >>"),
+        (6, "<< /FT /Tx /T (b) /Lock << /Action /All >> >>"),
+        (21, "<< /Type /DocTimeStamp /ByteRange [0 1 2 3] /Contents <00> >>"),
+        (22, "/Sig"),
+    ];
+    let b = objstm_pdf(&plain, &[(20, "21 0 R")]);
+    let l = lines(&b, "signatures");
+    assert!(
+        l.iter().any(|x| x.starts_with("sig\tat=/Root/X->\t")),
+        "{l:#?}"
+    );
+    assert!(
+        l.iter().any(|x| x.starts_with("sig\tat=/Root/Y\t")),
+        "{l:#?}"
+    );
+    let locks: Vec<_> = l.iter().filter(|x| x.starts_with("lock\t")).collect();
+    assert_eq!(locks.len(), 1, "{l:#?}");
+    assert!(locks[0].contains("keys=[Action]:"), "{l:#?}");
+    assert_eq!(
+        l.iter().filter(|x| x.starts_with("seed_value\t")).count(),
+        1,
+        "{l:#?}"
+    );
+    let changed = lines(
+        &objstm_pdf(
+            &plain.map(|(n, s)| {
+                (
+                    n,
+                    if n == 6 {
+                        "<< /FT /Tx /T (b) /Lock << /Action /Include >> >>"
+                    } else {
+                        s
+                    },
+                )
+            }),
+            &[(20, "21 0 R")],
+        ),
+        "signatures",
+    );
+    assert_ne!(l, changed);
+}
+
+/// C2: T2 on the library's real D1 output. The removal is `transformed`
+/// and the graph differences are exactly the declared ones; every near
+/// miss fails one of the two (the round trip's `full_declared` needs
+/// both).
+#[test]
+fn t2_on_a_real_removal_and_its_near_misses() {
+    let ur3 = "<< /Type /Sig /Filter /Adobe.PPKLite /SubFilter /adbe.pkcs7.detached /ByteRange [0 1 2 3] /Contents <0123456789abcdef> /Reference [<< /TransformMethod /UR3 /TransformParams << /Form [/FillIn] >> >>] >>";
+    let input = |cat_extra: &str| {
+        let objs = vec![
+            (1, d(&format!("<< /Type /Catalog /Pages 2 0 R /Perms << /UR3 20 0 R >> /AcroForm << /Fields [4 0 R] /SigFlags 3 >> {cat_extra} >>"))),
+            (2, d("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")),
+            (3, d("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Annots [4 0 R] /Zzzzzzzzz [0 1 2 3] >>")),
+            (4, d("<< /Type /Annot /Subtype /Widget /FT /Tx /T (name) /Rect [0 0 5 5] /P 3 0 R >>")),
+            (20, d(ur3)),
+        ];
+        pdf("1.7", &objs, 0)
+    };
+    let orig = input("");
+    let src = doc(&orig);
+    let opts =
+        kasane_pdf::RewriteOptions::new().with_usage_rights(kasane_pdf::UsageRightsPolicy::Remove);
+    let out = kasane_pdf::rewrite_with(&src, &opts).unwrap().into_bytes();
+    let decls = crate::configs::RewriteConfig::RemoveUsageRights.declarations(&src, &orig);
+    assert_eq!(decls, vec![t2(&["UR3"], true, Some((3, 2)))]);
+    // (signatures transformed and nothing failing, structure declared)
+    let judge = |a: &[u8], b: &[u8], decls: &[Declaration]| -> (bool, bool) {
+        let (da, db) = (doc(a), doc(b));
+        let core = super::compare_declared(&da, &db, decls);
+        let rep = compare_report_declared(&da, a, &db, b, decls);
+        let sig = rep.iter().find(|c| c.category == "signatures").unwrap();
+        let sem_ok = sig.class == SemClass::Transformed
+            && !matches!(core.class, SemClass::Fail | SemClass::Error)
+            && rep
+                .iter()
+                .all(|c| !matches!(c.class, SemClass::Fail | SemClass::Error));
+        let diffs = crate::roundtrip::graph_diff(&da, &db);
+        (sem_ok, structure_allows(&diffs, decls))
+    };
+    assert_eq!(judge(&orig, &out, &decls), (true, true), "the real removal");
+    // ... and the round trip itself (`full_declared` needs both).
+    let rt = |b: &[u8], decls: &[Declaration]| {
+        crate::roundtrip::run(
+            &src,
+            &orig,
+            b,
+            0,
+            &crate::roundtrip::RtOptions::default(),
+            "t2-real",
+            decls,
+        )
+    };
+    let r = rt(&out, &decls);
+    assert_eq!(
+        (
+            r.structure_declared,
+            r.signatures_transformed,
+            r.full_declared
+        ),
+        (Some(true), Some(true), Some(true)),
+        "{:?}",
+        r.semantic.as_ref().map(|s| &s.report_only)
+    );
+    assert!(!r.full, "a transformation is never a plain pass");
+    let r = rt(&patch(&out, "/SigFlags 2", "/SigFlags 0"), &decls);
+    assert_eq!(
+        (
+            r.structure_declared,
+            r.signatures_transformed,
+            r.full_declared
+        ),
+        (Some(true), Some(false), Some(false)),
+        "bit 2 cleared: the declared path, an undeclared value"
+    );
+    let r = rt(
+        &patch(&out, "/MediaBox [0 0 10 10]", "/MediaBox [0 0 10 11]"),
+        &decls,
+    );
+    assert_eq!(
+        (r.structure_declared, r.full_declared),
+        (Some(false), Some(false))
+    );
+    // An unrelated object changed (same length), then several.
+    let one = patch(&out, "/MediaBox [0 0 10 10]", "/MediaBox [0 0 10 11]");
+    assert!(!judge(&orig, &one, &decls).1, "one unrelated change");
+    let two = patch(&one, "/Rect [0 0 5 5]", "/Rect [0 0 5 6]");
+    assert!(!judge(&orig, &two, &decls).1, "several unrelated changes");
+    // Bit 2 cleared too: the path is declared, the value is not.
+    let bit2 = patch(&out, "/SigFlags 2", "/SigFlags 0");
+    assert!(!judge(&orig, &bit2, &decls).0, "bit 2 cleared");
+    // A /ByteRange left in another object.
+    let left = patch(&out, "/Zzzzzzzzz", "/ByteRange");
+    let j = judge(&orig, &left, &decls);
+    assert!(!j.0 && !j.1, "/ByteRange elsewhere: {j:?}");
+    // Declared, not happened: the input against itself.
+    let j = judge(&orig, &orig, &decls);
+    assert!(!j.0 && !j.1, "declared, not happened: {j:?}");
+    // Undeclared removal: the real output without the declaration.
+    let j = judge(&orig, &out, &[]);
+    assert!(!j.0 && !j.1, "undeclared: {j:?}");
+    // An undeclared removal next to the declared one: a catalog entry.
+    let extra_in = input("/Lang (en)");
+    let extra_out = kasane_pdf::rewrite_with(&doc(&extra_in), &opts)
+        .unwrap()
+        .into_bytes();
+    assert_eq!(judge(&extra_in, &extra_out, &decls), (true, true));
+    let dropped = patch(&extra_out, "/Lang <656E>", "");
+    assert!(!judge(&extra_in, &dropped, &decls).1, "an extra removal");
+    // A shared signature dictionary removed (the library refuses it; the
+    // runner fails a hand-made output).
+    let shared = input("/Y 20 0 R");
+    assert!(kasane_pdf::rewrite_with(&doc(&shared), &opts).is_err());
+    let sdecls =
+        crate::configs::RewriteConfig::RemoveUsageRights.declarations(&doc(&shared), &shared);
+    let j = judge(&shared, &out, &sdecls);
+    assert!(!j.0 && !j.1, "shared: {j:?}");
+    // A signature value changed with the same length: the signatures
+    // snapshot records lengths only; the graph comparison sees it.
+    let same_len = patch(&orig, "<0123456789abcdef>", "<0123456789abcdee>");
+    assert!(!crate::roundtrip::graph_diff(&doc(&orig), &doc(&same_len)).is_empty());
+    assert!(!judge(&orig, &same_len, &decls).1);
+    // DocMDP removed with the usage rights (the library refuses; a
+    // hand-made output that drops both fails).
+    let mdp = input("");
+    let mdp = patch(
+        &mdp,
+        "/Perms << /UR3 20 0 R >>",
+        "/Perms << /UR3 20 0 R /DocMDP 21 0 R >>",
+    );
+    let mut mdp = mdp;
+    {
+        // object 21: a DocMDP signature, appended as an update.
+        let prev = String::from_utf8_lossy(&mdp);
+        let at = prev.rfind("startxref\n").unwrap() + 10;
+        let px: usize = prev[at..].lines().next().unwrap().trim().parse().unwrap();
+        let off = mdp.len();
+        mdp.extend_from_slice(b"21 0 obj\n<< /Type /Sig /Filter /Adobe.PPKLite /ByteRange [0 1 2 3] /Contents <00> /Reference [<< /TransformMethod /DocMDP /TransformParams << /P 2 >> >>] >>\nendobj\n");
+        let x = mdp.len();
+        mdp.extend_from_slice(format!("xref\n21 1\n{off:010} 00000 n \ntrailer\n<< /Size 22 /Root 1 0 R /Prev {px} >>\nstartxref\n{x}\n%%EOF\n").as_bytes());
+    }
+    assert!(kasane_pdf::rewrite_with(&doc(&mdp), &opts).is_err());
+    let mdecls = crate::configs::RewriteConfig::RemoveUsageRights.declarations(&doc(&mdp), &mdp);
+    assert_eq!(mdecls, vec![t2(&["UR3"], false, Some((3, 2)))]);
+    let j = judge(&mdp, &out, &mdecls);
+    assert!(!j.0 && !j.1, "DocMDP removed: {j:?}");
+}
