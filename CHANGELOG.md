@@ -4,7 +4,19 @@ All notable changes to this project are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.0] - 2026-11-04
+
+`rewrite` now writes documents it refused before — PDF 2.0, XFA forms,
+references to undefined objects (*Changed*). A document it wrote before
+is written as before, unless a refusal check had missed it (*Fixed*: it
+is now refused) or its trailer pushes it past `max_output_bytes`. The
+new `rewrite_with` adds explicit policies: carrying executable content
+and removing usage-rights signatures, each opt-in and reported. Every public API change is
+additive, on `#[non_exhaustive]` types (`cargo semver-checks` against
+0.4.1: no semver update required); the minor version is for the
+behaviour changes under *Changed*. `rewrite_with` with the default
+options gives exactly `rewrite`'s bytes and errors. Release notes:
+`docs/releases/v0.5.0.md`.
 
 ### Added
 - `rewrite_with(&Document, &RewriteOptions) -> Result<RewriteOutput, Error>`:
@@ -12,8 +24,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   executable content it carried. `RewriteOptions` (`#[non_exhaustive]`,
   `Default`, `with_*`) holds `ExecutableContentPolicy` (`Profile`, the
   default; `RefuseScriptsAndExternal`; `Carry`), `MultimediaPolicy`
-  (`Refuse`), `UsageRightsPolicy` (`Refuse`) and `Limits`. With the
-  defaults the bytes and errors are exactly `rewrite`'s.
+  (`Refuse`), `UsageRightsPolicy` (`Refuse`, the default; `Remove`,
+  below) and `Limits`. With the defaults the bytes and errors are
+  exactly `rewrite`'s.
   - `Carry` carries document-level scripts (catalog `/AA`, a JavaScript
     `/OpenAction`, `/Names /JavaScript`) verbatim. It executes nothing
     and is **not sanitizing**.
@@ -50,47 +63,11 @@ versions follow [Semantic Versioning](https://semver.org/).
     revisions and the `OutputCheck` counts. Content-free.
   - New `SignatureRule` variants: `UsageRightsNotRemovable`,
     `OtherSignaturePresent`, `SecurityStore`, `ResidualSignature`.
-  - Fuzz target `signature_markers` (a ground truth of signature
-    markers, near misses and placements); `rewrite_policy` and
-    `rewrite_graph` run `Remove` too.
-  - `examples/remove_usage_rights.rs`; `scripts/usage-rights-audit.py`
-    re-reads input/output pairs with qpdf and pypdf for every signature
-    marker (content-free; `--self-test`).
-  - Compatibility runner: the `remove-usage-rights` and
-    `carry,remove-usage-rights` configurations run; a per-file
-    usage-rights record checks the report against the runner's own
-    reading; a T2 round trip needs the signatures `transformed` as well
-    as the declared structure.
 - `Error::refusal_reason() -> Option<RefusalReason>`: the policy
   refusals of the writers by class (signature, encryption,
   document-level script, script, external or unknown action,
   unclassified structure, multimedia), without reading messages.
-- Fuzz target `rewrite_policy`: action graphs under every policy. The
-  default must equal `rewrite`; a strict success must leave no script,
-  external or unknown action reachable in the output; signature and
-  multimedia refusals must hold; reports must hold no content.
-- Compatibility runner (no library change): the semantic round trip
-  compares five more categories — XFA packets and `/NeedsRendering`;
-  document, page, annotation and field actions with their `/Next`
-  chains; the `/Names /JavaScript` tree; `/Info` and XMP metadata; viewer
-  preferences, `/PageMode`, `/PageLayout` — by decoded content, and an
-  XFA form's AcroForm half is no longer `unsupported`. A page-1 text
-  agreement with annotation appearance text
-  (`text_char_f1_with_annots`). Both report only
-  (`docs/plans/semantic-roundtrip.md`, `docs/plans/quality-gate.md`).
-- Fuzz target `rewrite_graph`: object graphs with undefined, free and
-  other-generation references, chains, cycles, XFA packet arrays
-  (duplicate or non-string names, undefined, non-stream or undecodable
-  packets, XML signatures) and usage-rights signatures; a successful
-  rewrite must reparse strictly, leave no dangling reference and keep
-  the catalog graph equal, a refusal must have a cause in the input.
-- Compatibility runner (no library change): four report-only semantic
-  categories for PDF 2.0 — the effective version (the declared form
-  noted, not compared), page-level `/Metadata`, associated files (every
-  `/AF` owner, whole file specifications, embedded files by decoded
-  content, sharing) and document parts (the DPart tree, `/DPM`, page
-  links). Reported next to the others (`report_only`), never part of the
-  overall class; `ci-regression.py` lists them without failing.
+- `examples/remove_usage_rights.rs`.
 
 ### Changed
 - `rewrite`: a document that declares PDF 2.0 (header or catalog
@@ -138,6 +115,30 @@ versions follow [Semantic Versioning](https://semver.org/).
 - `audit_residuals`: a reference chain's intermediate links (`5 0 obj
   6 0 R endobj`) were reported as unreachable objects; the reachability
   walk now resolves one hop at a time and reaches every link.
+  A reference chain that closes on itself is still `CycleDetected`.
+
+### Testing and tooling (no library change)
+- Fuzz targets `rewrite_graph` (hostile object graphs: undefined, free
+  and other-generation references, chains, cycles, XFA packet arrays,
+  usage-rights signatures; model-based oracle), `rewrite_policy`
+  (action graphs under every executable-content policy, with `Remove`
+  too) and `signature_markers` (`Remove` against a ground truth of
+  signature markers, near misses and placements).
+- Compatibility runner: semantic round-trip categories for XFA,
+  document / page / annotation / field actions, `/Names /JavaScript`,
+  metadata, viewer preferences, PDF 2.0 (effective version, page
+  `/Metadata`, associated files, document parts), multimedia and
+  signatures; declared transformations (`transformed`, never counted as
+  `pass`: T1 version raised, T2 usage rights removed); every rewrite
+  configuration (`carry`, `remove-usage-rights`,
+  `carry,remove-usage-rights`) measured in its own namespace, with the
+  report checked against the runner's own inventory and signature
+  reading; text agreement with annotation appearance text. Report only.
+- `scripts/ci-regression.py`: figures per configuration; per-file
+  changes of a configuration listed for review (the default stays the
+  only enforced run). `scripts/usage-rights-audit.py`: qpdf and pypdf
+  re-read input/output pairs for every signature marker (content-free;
+  `--self-test` on a synthetic form).
 
 ## [0.4.1] - 2026-11-02
 
