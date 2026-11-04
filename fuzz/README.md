@@ -60,19 +60,36 @@ fixtures' own dictionaries and streams (first byte: template index).
 `fuzz/seeds/render_content/` (one seed per operator, well-formed
 snippet and inline image; `regression-*` are the two inputs that
 panicked the rasteriser before 0.5.1) and `fuzz/seeds/render_graph/`
-(each page-tree flag × nesting style). Reproduce the PR smoke exactly
-as CI runs it, then fuzz longer:
+(each page-tree flag × nesting style as a chain of forward references,
+some forms sharing the next; and four graphs broken on purpose: a
+cycle, a soft-mask cycle, an undefined reference, another generation).
+
+CI runs every target through `fuzz/ci-run.sh`, which fails on
+libFuzzer's exit status *and* on any file left in
+`fuzz/artifacts/<target>/`, an error marker in the log, or a missing
+final `Done … runs` line; limits 2 GiB RSS and malloc, 10 s per input.
+Reproduce the PR smoke exactly as CI runs it, then fuzz longer
+(`FUZZ_TOOLCHAIN` overrides the pinned `nightly-2026-10-29`):
 
 ```console
-cd fuzz
 for t in render_content render_graph; do
-  cargo +nightly fuzz run -O "$t" "seeds/$t" -- -runs=0 -rss_limit_mb=2048 -timeout=10
-  mkdir -p "/tmp/corpus-$t" && cp "seeds/$t"/* "/tmp/corpus-$t/"
-  cargo +nightly fuzz run -O "$t" "/tmp/corpus-$t" -- -seed=1 -runs=3000 -max_total_time=180 -rss_limit_mb=2048 -timeout=10
+  KASANE_FUZZ_REACH="/tmp/reach-$t" fuzz/ci-run.sh "$t" "fuzz/seeds/$t" -- -runs=0
+  sort "/tmp/reach-$t" | uniq -c          # ok painted / ok blank / err <kind>, per page
+  mkdir -p "/tmp/corpus-$t" && cp "fuzz/seeds/$t"/* "/tmp/corpus-$t/"
+  fuzz/ci-run.sh "$t" "/tmp/corpus-$t" -- -seed=1 -runs=3000 -max_total_time=180
 done
-mkdir -p corpus/render_content
-cargo +nightly fuzz run -O render_content corpus/render_content seeds/render_content -- -max_total_time=900 -rss_limit_mb=2048 -timeout=10
+mkdir -p fuzz/corpus/render_content
+fuzz/ci-run.sh render_content fuzz/corpus/render_content fuzz/seeds/render_content -- -max_total_time=900
 ```
+
+`KASANE_FUZZ_REACH` (a file name) makes the render targets append one
+line per rendered page: CI replays the seeds with it and requires
+painted pages, so a generator that stops reaching the rasteriser fails
+the job. `ci_selftest` is not a fuzz target: with
+`KASANE_FUZZ_SELFTEST=crash|timeout|oom` every input panics, hangs or
+exhausts memory, and `fuzz-nightly.yml`'s `selftest` job checks that
+`ci-run.sh` reports each as a failure with its input saved; unset, it
+does nothing.
 
 The seed replay gives the same inputs every run; the 3000-input phase
 is bounded but not bit-reproducible (libFuzzer's coverage feedback

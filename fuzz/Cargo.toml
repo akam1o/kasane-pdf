@@ -87,3 +87,10 @@ path = "fuzz_targets/render_graph.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "ci_selftest"
+path = "fuzz_targets/ci_selftest.rs"
+test = false
+doc = false
+bench = false
