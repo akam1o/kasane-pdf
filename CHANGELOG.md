@@ -4,6 +4,48 @@ All notable changes to this project are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Rendering robustness (plan: `docs/plans/v0.5.1.md`). No public API
+change.
+
+### Changed
+- `Limits::default().max_xobject_depth` is **48** (was 32), from a
+  stack measurement of every nesting path (forms, transparency groups,
+  soft-mask groups, annotation appearances, Type 3 glyphs): at 48 each
+  needs less stack than 0.5.0 needed at 32 — at most ≈ 1.2 MiB in a
+  debug build, ≈ 0.25 MiB in release — so the default fits a 2 MiB
+  thread. Documents nested 33–48 levels deep now render instead of
+  `LimitExceeded` (`diagnose_redaction` and the region removers follow
+  them too). A caller's own limit is unchanged; raising it costs
+  ≈ 25 KiB (debug) / 5 KiB (release) of stack per level.
+- The content interpreter dispatches the operators that re-enter it
+  (`Do`, `gs`, text showing, path painting) from a small stack frame,
+  cutting the stack per nesting level by 40–60 % in debug builds and
+  10–30 % in release. No rendering change.
+
+### Fixed
+- A stroke far wider than the page (e.g. `99999999999999999999 w`)
+  panicked inside the rasteriser. A stroke wider than 2^24 device
+  pixels is now narrowed to the width that covers the page when that
+  paints the same pixels, and refused with `Error::Unsupported`
+  ("stroke width") otherwise. Present since 0.1; found by fuzzing.
+- Geometry reaching about 5 × 10⁸ device pixels panicked inside the
+  rasteriser. A path beyond ±2^24 device pixels is now skipped when it
+  lies entirely off the page (a clip there leaves nothing visible) and
+  refused with `Error::Unsupported` ("geometry extent") otherwise.
+  Present since 0.1; found by fuzzing.
+
+### Added
+- Fuzz targets `render_content` (a valid page with every resource kind
+  the renderer draws, its content stream generated from the input) and
+  `render_graph` (page trees and form graphs with cycles, sharing,
+  soft masks, patterns, broken references and object streams), with
+  committed seeds (`fuzz/README.md`).
+- CI: a render fuzz smoke job on every pull request (seeds plus 3000
+  inputs per target) and a separate nightly workflow
+  (`fuzz-nightly.yml`, 15 minutes per target).
+
 ## [0.5.0] - 2026-11-05
 
 `rewrite` now writes documents it refused before — PDF 2.0, XFA forms,

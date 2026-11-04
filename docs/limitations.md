@@ -101,13 +101,25 @@ are on the [roadmap](architecture.md#roadmap).
 - Mesh shadings interpolate colours in sRGB after conversion, not in
   the source space; function-based shadings are sampled on a 128×128
   grid. Both are recorded as approximations in the feature file.
-- **Resource use** (robustness work planned for 0.5.1 / 0.6, not in
-  0.5.0): a very large 1-bit soft mask is expanded at full resolution
-  for each use (one 60 KB corpus page reaches 1.3 GB); form nesting
-  deeper than `max_xobject_depth` (default 32) is refused with
-  `LimitExceeded` — raise the limit to render such a file; 32-bit
-  targets build (wasm32) but their arithmetic is not audited nor tested
-  in CI.
+- **Resource use** (robustness work planned for 0.6): a very large
+  1-bit soft mask is expanded at full resolution for each use (one
+  60 KB corpus page reaches 1.3 GB); 32-bit targets build (wasm32) but
+  their arithmetic is not audited nor tested in CI.
+- **Nesting depth.** Form XObjects, transparency groups, soft-mask
+  groups, annotation appearances and Type 3 glyph procedures nest at
+  most `max_xobject_depth` levels (default 48 since 0.5.1, 32 before);
+  deeper is `LimitExceeded`. The interpreter recurses on the native
+  stack: the default needs ≈ 1.2 MiB in a debug build and ≈ 0.25 MiB in
+  release on the costliest path (soft masks), so it fits a 2 MiB thread.
+  A caller raising the limit needs ≈ 25 KiB (debug) / 5 KiB (release)
+  more stack per level. Tiling patterns nest at most 8 levels (fixed).
+- **Extreme geometry** (since 0.5.1): a stroke wider than 2^24 device
+  pixels is drawn at the narrower width that covers the whole page when
+  that paints the same pixels, and refused (`Unsupported`, "stroke
+  width") otherwise; a path reaching beyond ±2^24 device pixels is
+  skipped when it lies entirely off the page (a clip there leaves
+  nothing visible) and refused (`Unsupported`, "geometry extent")
+  otherwise. Earlier releases panicked inside the rasteriser on both.
 
 ## Text extraction
 

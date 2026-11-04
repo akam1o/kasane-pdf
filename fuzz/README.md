@@ -55,3 +55,34 @@ cargo +nightly fuzz run -O rewrite_graph fuzz/corpus/rewrite_graph -- -max_total
 
 `encrypt_dict` and `ciphertext` start from an empty corpus or from the
 fixtures' own dictionaries and streams (first byte: template index).
+
+`render_content` and `render_graph` (0.5.1) start from
+`fuzz/seeds/render_content/` (one seed per operator, well-formed
+snippet and inline image; `regression-*` are the two inputs that
+panicked the rasteriser before 0.5.1) and `fuzz/seeds/render_graph/`
+(each page-tree flag × nesting style). Reproduce the PR smoke exactly
+as CI runs it, then fuzz longer:
+
+```console
+cd fuzz
+for t in render_content render_graph; do
+  cargo +nightly fuzz run -O "$t" "seeds/$t" -- -runs=0 -rss_limit_mb=2048 -timeout=10
+  mkdir -p "/tmp/corpus-$t" && cp "seeds/$t"/* "/tmp/corpus-$t/"
+  cargo +nightly fuzz run -O "$t" "/tmp/corpus-$t" -- -seed=1 -runs=3000 -max_total_time=180 -rss_limit_mb=2048 -timeout=10
+done
+mkdir -p corpus/render_content
+cargo +nightly fuzz run -O render_content corpus/render_content seeds/render_content -- -max_total_time=900 -rss_limit_mb=2048 -timeout=10
+```
+
+The seed replay gives the same inputs every run; the 3000-input phase
+is bounded but not bit-reproducible (libFuzzer's coverage feedback
+follows the library's per-process hash order). A failing input is
+deterministic: `cargo +nightly fuzz run -O <target> <artifact>` replays
+it, and CI uploads it (`render-fuzz-smoke-artifacts`, or
+`render-fuzz-<target>-artifacts` from `fuzz-nightly.yml`). Inputs are
+generator bytes that become synthetic PDFs; they hold no document
+content.
+
+Not covered by these two targets: TrueType / CFF / CID fonts (see
+`text_sources`), function-based and mesh shadings, images behind
+filters, optional content.

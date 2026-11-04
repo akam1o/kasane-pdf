@@ -103,6 +103,22 @@ patch release.
   class of input is refused with `max_pattern_tiles`, and `rewrite`
   carries `/OCProperties`.
 
+## 0.5.1 (unreleased; no API change)
+
+- No public item added, removed or changed. `Limits::default()`
+  raises `max_xobject_depth` from 32 to 48: a loosening (rule 5 —
+  everything that rendered still renders; a file nested 33–48 levels
+  deep now renders instead of `LimitExceeded`). Callers that set the
+  limit themselves are unaffected.
+- Two inputs that panicked inside the rasteriser are now drawn exactly
+  or refused with `Error::Unsupported` (`feature` "stroke width" or
+  "geometry extent"), an existing variant.
+- `rewrite`, `rewrite_with` and `rewrite_with_limits` do not read
+  `max_xobject_depth`: their bytes and errors are unchanged. The
+  editors' content walk (`diagnose_redaction`, `remove_region`,
+  `remove_image_region`) shares the limit, so it too now follows forms
+  up to 48 levels deep.
+
 ## Open items (additive)
 
 - `Document::from_vec(Vec<u8>)` to hand ownership over without a copy.
