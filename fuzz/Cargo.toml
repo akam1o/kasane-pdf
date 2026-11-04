@@ -73,3 +73,17 @@ path = "fuzz_targets/signature_markers.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "render_content"
+path = "fuzz_targets/render_content.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "render_graph"
+path = "fuzz_targets/render_graph.rs"
+test = false
+doc = false
+bench = false
