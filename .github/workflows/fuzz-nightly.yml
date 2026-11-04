@@ -1,0 +1,59 @@
+# Nightly render fuzzing (v0.5.1 R4): each structured render target for
+# 15 minutes from its committed seeds and the corpus the previous runs
+# left in the Actions cache. Independent of the corpus nightly (no
+# credentials, no documents): a crash, timeout or out-of-memory fails
+# the job and uploads the synthetic input that caused it.
+name: fuzz-nightly
+
+on:
+  schedule:
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    name: render fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [render_content, render_graph]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+        with:
+          toolchain: nightly-2026-10-29
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: fuzz
+      - run: cargo install cargo-fuzz --locked --version 0.13.2
+      - name: corpus from earlier runs
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/${{ matrix.target }}
+          key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
+          restore-keys: fuzz-corpus-${{ matrix.target }}-
+      - name: fuzz 15 minutes (2 GiB RSS, 10 s per input)
+        working-directory: fuzz
+        run: |
+          mkdir -p "corpus/${{ matrix.target }}"
+          cargo +nightly-2026-10-29 fuzz build -O "${{ matrix.target }}"
+          cargo +nightly-2026-10-29 fuzz run -O "${{ matrix.target }}" \
+            "corpus/${{ matrix.target }}" "seeds/${{ matrix.target }}" -- \
+            -max_total_time=900 -rss_limit_mb=2048 -timeout=10 -print_final_stats=1
+      - name: keep the corpus small for the cache
+        if: success()
+        working-directory: fuzz
+        run: cargo +nightly-2026-10-29 fuzz cmin -O "${{ matrix.target }}" "corpus/${{ matrix.target }}"
+      - name: crash inputs (synthetic documents)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: render-fuzz-${{ matrix.target }}-artifacts
+          path: fuzz/artifacts/${{ matrix.target }}
+          retention-days: 14
+          if-no-files-found: ignore

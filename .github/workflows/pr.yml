@@ -82,6 +82,44 @@ jobs:
       - run: cargo test --no-default-features --features cjk-fallback --lib
       - run: cargo test --no-default-features --features cjk-fallback --doc
 
+  render-fuzz-smoke:
+    # The structured render fuzz targets (v0.5.1 R4): the committed seeds
+    # replayed (the same inputs every run), then 3000 new inputs from
+    # libFuzzer seed 1 (bounded in count and time; which inputs it reaches
+    # can vary, since coverage feedback depends on the library's hash
+    # order). A failure uploads the input, whose result is deterministic.
+    # Minutes, no corpus; long runs are fuzz-nightly.yml.
+    name: render fuzz smoke (seeds, fixed seed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+        with:
+          toolchain: nightly-2026-10-29
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: fuzz
+      - run: cargo install cargo-fuzz --locked --version 0.13.2
+      - name: replay the seeds, then 3000 new inputs per target
+        working-directory: fuzz
+        run: |
+          for t in render_content render_graph; do
+            cargo +nightly-2026-10-29 fuzz build -O "$t"
+            cargo +nightly-2026-10-29 fuzz run -O "$t" "seeds/$t" -- -runs=0 -rss_limit_mb=2048 -timeout=10
+            mkdir -p "/tmp/corpus-$t" && cp "seeds/$t"/* "/tmp/corpus-$t/"
+            cargo +nightly-2026-10-29 fuzz run -O "$t" "/tmp/corpus-$t" -- \
+              -seed=1 -runs=3000 -max_total_time=180 -rss_limit_mb=2048 -timeout=10 -print_final_stats=1
+          done
+      - name: crash inputs (synthetic documents, no corpus content)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: render-fuzz-smoke-artifacts
+          path: fuzz/artifacts
+          retention-days: 7
+          if-no-files-found: ignore
+
   wasm:
     name: wasm32 build
     runs-on: ubuntu-latest
