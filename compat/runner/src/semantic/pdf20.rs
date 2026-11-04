@@ -35,7 +35,7 @@ pub const REPORT_ONLY: [&str; 6] = [
 
 /// Nesting of form XObjects followed for `/AF` (resources of resources):
 /// the general tree limit — resources can nest deeper than what content
-/// draws (the engine's `max_xobject_depth` bounds drawing, 32).
+/// draws (the engine's `max_xobject_depth` bounds drawing, 48 by default).
 const MAX_XOBJECT_DEPTH: usize = MAX_DEPTH;
 
 /// Lines that start with this record the *declared form* (how a value is
