@@ -209,7 +209,10 @@ fn default_depth_fits_the_default_thread_stack() {
     if let Some(kib) = std::env::var_os(CHILD) {
         let stack = kib.to_str().unwrap().parse::<usize>().unwrap() << 10;
         let mut docs: Vec<(&str, Vec<u8>)> = KINDS.iter().map(|k| (*k, nested(k, 48))).collect();
-        docs.push(("inline pattern chain", inline_pattern_chain()));
+        docs.push(("inline", inline_pattern_chain()));
+        // One path only, when measuring (`measure_stack_per_path`).
+        let only = std::env::var("KASANE_R2_STACK_ONLY").ok();
+        docs.retain(|(kind, _)| only.as_deref().is_none_or(|o| o == *kind));
         for (kind, b) in docs {
             std::thread::Builder::new()
                 .stack_size(stack)
@@ -253,4 +256,50 @@ fn default_depth_fits_the_default_thread_stack() {
         "the 64 KiB child failed for another reason: {:?}\n{stderr}",
         small.status
     );
+}
+
+/// A measurement, not a check (CI's `r2-depth-linux` job prints it):
+/// the smallest thread stack each nesting path needs at the default
+/// depth — the inline-image path at its 8 pattern levels — bisected to
+/// 4 KiB over child processes like the test above.
+/// `cargo test [--release] --test render_xobject_depth -- --ignored --nocapture --exact measure_stack_per_path`
+#[test]
+#[ignore]
+fn measure_stack_per_path() {
+    let fits = |kind: &str, kib: usize| {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "default_depth_fits_the_default_thread_stack",
+                "--test-threads",
+                "1",
+            ])
+            .env("KASANE_R2_STACK_CHILD_KIB", kib.to_string())
+            .env("KASANE_R2_STACK_ONLY", kind)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    let build = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    for kind in KINDS.iter().copied().chain(["inline"]) {
+        let (mut lo, mut hi) = (16usize, 8192usize);
+        assert!(fits(kind, hi), "{kind}: not even {hi} KiB");
+        while hi - lo > 4 {
+            let mid = (lo + hi) / 2;
+            if fits(kind, mid) {
+                hi = mid;
+            } else {
+                lo = mid;
+            }
+        }
+        println!(
+            "stack {build} {kind:<6} depth {}: {hi} KiB",
+            if kind == "inline" { 8 } else { 48 }
+        );
+    }
 }
