@@ -8,7 +8,7 @@ rasteriser and writer are implemented in this repository, and the
 only external code is a handful of permissively licensed codec and
 raster crates.
 
-Status: 0.2.x on [crates.io](https://crates.io/crates/kasane-pdf),
+Status: 0.5 on [crates.io](https://crates.io/crates/kasane-pdf),
 documented on [docs.rs](https://docs.rs/kasane-pdf). The API is 0.x:
 additions arrive in minor releases, breaking changes are recorded in
 [`CHANGELOG.md`](CHANGELOG.md), classified in

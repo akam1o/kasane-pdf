@@ -16,12 +16,19 @@ cargo build --release
 cargo install --path .          # puts `kasane-pdf` on your PATH
 ```
 
-The crate is not published on crates.io yet. To use it as a
-dependency, point Cargo at the repository:
+To use it as a dependency, take it from
+[crates.io](https://crates.io/crates/kasane-pdf):
 
 ```toml
 [dependencies]
-kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf" }
+kasane-pdf = "0.5"
+```
+
+or point Cargo at a tag of the repository:
+
+```toml
+[dependencies]
+kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.5.0" }
 ```
 
 ## A tour of the CLI
