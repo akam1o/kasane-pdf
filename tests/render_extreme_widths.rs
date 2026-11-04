@@ -76,3 +76,36 @@ fn an_unnarrowable_stroke_is_refused() {
         other => panic!("{:?}", other.map(|p| p.len())),
     }
 }
+
+/// Coordinates beyond what the rasteriser takes (also found by
+/// `render_content`): a shape overlapping the page is refused with a
+/// typed error; one entirely off the page paints nothing, exactly; a
+/// clip entirely off the page leaves nothing.
+#[test]
+fn extreme_coordinates() {
+    let blank = pixels("").unwrap();
+    for body in [
+        "0 0 m 10000000000 0 l 0 10000000000 l f",
+        "-20 99999999999999999999 -20 -20 re 5 5 5 -20 re B*",
+    ] {
+        match pixels(body) {
+            Err(kasane_pdf::Error::Unsupported {
+                feature: "geometry extent",
+                ..
+            }) => {}
+            other => panic!("{body}: {:?}", other.map(|p| p.len())),
+        }
+    }
+    // A glyph at an extreme size (filled and stroked): drawn or
+    // refused, never a panic.
+    let _ = pixels("BT /F1 99999999999999999999 Tf 1 1 Td 2 Tr (Hi) Tj ET");
+    let off =
+        "1 0 0 rg 20000000000 20000000000 m 30000000000 20000000000 l 20000000000 30000000000 l f";
+    assert_eq!(pixels(off).unwrap(), blank, "off the page: nothing");
+    let clipped = "20000000000 20000000000 10 10 re W n 1 0 0 rg 0 0 60 60 re f";
+    assert_eq!(
+        pixels(clipped).unwrap(),
+        blank,
+        "a clip off the page empties the clip"
+    );
+}

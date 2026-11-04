@@ -846,10 +846,71 @@ fn gs_stroke(gs: &GraphicsState) -> Stroke {
     }
 }
 
-/// The widest stroke, in device pixels, handed to the rasteriser: far
-/// beyond any page, well below the widths (≈ 5 × 10⁸ px) at which its
-/// fixed-point edge arithmetic fails.
+/// The widest stroke, and the farthest device coordinate, handed to the
+/// rasteriser: far beyond any page, well below the magnitudes
+/// (≈ 5 × 10⁸ px) at which its fixed-point edge arithmetic fails.
 const MAX_STROKE_DEVICE_WIDTH: f64 = (1u64 << 24) as f64;
+const MAX_DEVICE_COORD: f64 = (1u64 << 24) as f64;
+
+/// Where `path` lands under `ts` on a `w`×`h` pixmap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Extent {
+    /// Within ±`MAX_DEVICE_COORD`: the rasteriser takes it.
+    InRange,
+    /// Entirely off the pixmap: it paints nothing (and, as a clip,
+    /// leaves nothing).
+    Outside,
+}
+
+/// The device extent of `path` (its bounds' corners under `ts`). Off
+/// the pixmap entirely: [`Extent::Outside`] — unless `stroked`, where
+/// the width can still reach the pixmap and only the range counts.
+/// Beyond ±`MAX_DEVICE_COORD` (and not outside), or not finite:
+/// refused (`Unsupported`) — the rasteriser cannot take it and nothing
+/// exact replaces it.
+fn device_extent(
+    path: &tiny_skia::Path,
+    ts: Transform,
+    w: u32,
+    h: u32,
+    stroked: bool,
+) -> Result<Extent, Error> {
+    let r = path.bounds();
+    let (a, b, c, d) = (ts.sx as f64, ts.ky as f64, ts.kx as f64, ts.sy as f64);
+    let (mut x0, mut y0, mut x1, mut y1) = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for (x, y) in [
+        (r.left(), r.top()),
+        (r.right(), r.top()),
+        (r.left(), r.bottom()),
+        (r.right(), r.bottom()),
+    ] {
+        let (x, y) = (x as f64, y as f64);
+        let (dx, dy) = (a * x + c * y + ts.tx as f64, b * x + d * y + ts.ty as f64);
+        x0 = x0.min(dx);
+        y0 = y0.min(dy);
+        x1 = x1.max(dx);
+        y1 = y1.max(dy);
+    }
+    let finite = x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite();
+    if !stroked && finite && (x1 < -1.0 || y1 < -1.0 || x0 > w as f64 + 1.0 || y0 > h as f64 + 1.0)
+    {
+        return Ok(Extent::Outside);
+    }
+    if finite && [x0, y0, x1, y1].iter().all(|v| v.abs() <= MAX_DEVICE_COORD) {
+        return Ok(Extent::InRange);
+    }
+    Err(Error::Unsupported {
+        feature: "geometry extent",
+        detail: format!(
+            "a path reaching beyond {MAX_DEVICE_COORD:.0} device pixels over the page is not drawn"
+        ),
+    })
+}
 
 /// `stroke` for `path` drawn under `ts` on a `w`×`h` pixmap, with a
 /// width the rasteriser can take. A stroke that covers the whole pixmap
@@ -2435,6 +2496,10 @@ impl<'a> Renderer<'a> {
         ts: Transform,
     ) -> Result<(), Error> {
         let (w, h) = (self.pixmap.width(), self.pixmap.height());
+        if device_extent(path, ts, w, h, false)? == Extent::Outside {
+            // Nothing of the pixmap is inside the clip path.
+            return self.clip_empty();
+        }
         let apply = |slot: &mut Option<Mask>| -> Result<(), Error> {
             match slot {
                 None => {
@@ -5089,6 +5154,11 @@ impl<'a> Renderer<'a> {
         rule: FillRule,
         ts: Transform,
     ) -> Result<(), Error> {
+        if device_extent(path, ts, self.pixmap.width(), self.pixmap.height(), false)?
+            == Extent::Outside
+        {
+            return Ok(());
+        }
         let mask = match &self.gs.clip {
             Some(m) => {
                 let mut m = m.clone();
@@ -5905,8 +5975,16 @@ impl<'a> Renderer<'a> {
                         };
                         let c = gs.fill_color.with_alpha(gs.fill_alpha);
                         p.set_color(tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a));
-                        self.pixmap
-                            .fill_path(path, &p, FillRule::Winding, full, gs.clip.as_ref());
+                        let (w, h) = (self.pixmap.width(), self.pixmap.height());
+                        if device_extent(path, full, w, h, false)? == Extent::InRange {
+                            self.pixmap.fill_path(
+                                path,
+                                &p,
+                                FillRule::Winding,
+                                full,
+                                gs.clip.as_ref(),
+                            );
+                        }
                     }
                     _ => {}
                 }
@@ -5955,6 +6033,7 @@ impl<'a> Renderer<'a> {
                         };
                         let c = gs.stroke_color.with_alpha(gs.stroke_alpha);
                         p.set_color(tiny_skia::Color::from_rgba8(c.r, c.g, c.b, c.a));
+                        device_extent(path, full, self.pixmap.width(), self.pixmap.height(), true)?;
                         let stroke = bounded_stroke(
                             &stroke,
                             full,
@@ -6345,6 +6424,23 @@ impl<'a> Renderer<'a> {
             ..Default::default()
         };
 
+        let stroked = !matches!(kind, PaintKind::Fill(_));
+        let extent = device_extent(
+            &path,
+            ts,
+            self.pixmap.width(),
+            self.pixmap.height(),
+            stroked,
+        )?;
+        if extent == Extent::Outside {
+            // A fill entirely off the pixmap paints nothing; a pending
+            // clip still applies (it empties the clip).
+            if self.path.pending_clip.is_some() {
+                self.install_clip()?;
+            }
+            self.path.reset();
+            return Ok(());
+        }
         let stroke = match kind {
             PaintKind::Fill(_) => gs_stroke(&self.gs),
             _ => bounded_stroke(
