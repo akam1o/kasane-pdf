@@ -1276,6 +1276,78 @@ impl<'a> Renderer<'a> {
         {
             return Ok(());
         }
+        // The operators that can re-enter `run` — `Do` (forms, groups,
+        // annotation appearances), `gs` (a soft mask's group), text
+        // showing (Type 3 CharProcs) and path painting (tiling pattern
+        // cells) — are dispatched from this small frame, so the
+        // operator match's large frame is not on the stack once per
+        // nesting level (R2: stack per level measured, `docs/plans/v0.5.1.md`).
+        if let Some(r) = self.execute_reentrant(op) {
+            return r;
+        }
+        self.execute_op(op)
+    }
+
+    /// The re-entrant operators of [`Renderer::execute`]; `None` for
+    /// every other operator. `execute_op` keeps an arm for each of
+    /// these too (same calls); they are not reached through `execute`.
+    #[inline(never)]
+    fn execute_reentrant(&mut self, op: &Operation) -> Option<Result<(), Error>> {
+        Some(match op {
+            Operation::Do(n) => self.do_xobject(n),
+            Operation::SetExtGState(n) => self.apply_extgstate(n),
+            Operation::ShowText(s) => self.show_text(s),
+            Operation::ShowTextAdjusted(items) => self.show_text_adjusted(items),
+            Operation::NextLineShowText(s) => {
+                // ' ≡ T* string Tj
+                self.next_line();
+                self.show_text(s)
+            }
+            Operation::SetSpacingNextLineShowText {
+                word_spacing,
+                char_spacing,
+                text,
+            } => {
+                // " ≡ aw Tw ac Tc string '
+                self.gs.text.word_spacing = *word_spacing;
+                self.gs.text.char_spacing = *char_spacing;
+                self.next_line();
+                self.show_text(text)
+            }
+            Operation::Stroke => self.paint_path(PaintKind::Stroke),
+            Operation::CloseAndStroke => {
+                self.close_open_subpath();
+                self.paint_path(PaintKind::Stroke)
+            }
+            Operation::Fill => self.paint_path(PaintKind::Fill(FillRule::Winding)),
+            Operation::FillEvenOdd => self.paint_path(PaintKind::Fill(FillRule::EvenOdd)),
+            Operation::FillAndStroke => self.paint_path(PaintKind::FillStroke(FillRule::Winding)),
+            Operation::FillAndStrokeEvenOdd => {
+                self.paint_path(PaintKind::FillStroke(FillRule::EvenOdd))
+            }
+            Operation::CloseFillAndStroke => {
+                self.close_open_subpath();
+                self.paint_path(PaintKind::FillStroke(FillRule::Winding))
+            }
+            Operation::CloseFillAndStrokeEvenOdd => {
+                self.close_open_subpath();
+                self.paint_path(PaintKind::FillStroke(FillRule::EvenOdd))
+            }
+            _ => return None,
+        })
+    }
+
+    /// `T*`'s move: to the start of the next line, `leading` below.
+    fn next_line(&mut self) {
+        let t = Matrix::new(1.0, 0.0, 0.0, 1.0, 0.0, -self.gs.text.leading);
+        self.text_tlm = t.concat(self.text_tlm);
+        self.text_tm = self.text_tlm;
+    }
+
+    /// The operator dispatch of [`Renderer::execute`], after its
+    /// placement checks.
+    #[inline(never)]
+    fn execute_op(&mut self, op: &Operation) -> Result<(), Error> {
         match op {
             // ---- graphics state stack ---------------------------
             Operation::SaveState => {
