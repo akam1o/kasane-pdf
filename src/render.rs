@@ -1326,7 +1326,14 @@ fn quad_holds_box(q: &[(f64, f64); 4], b: (i32, i32, i32, i32)) -> bool {
             })
         })
     };
-    q.iter().all(|(x, y)| x.is_finite() && y.is_finite()) && (all(true) || all(false))
+    // A zero-area quad (a point or line BBox) holds nothing: its clip
+    // empties the page.
+    let area2: f64 = (0..4)
+        .map(|i| q[i].0 * q[(i + 1) % 4].1 - q[(i + 1) % 4].0 * q[i].1)
+        .sum();
+    q.iter().all(|(x, y)| x.is_finite() && y.is_finite())
+        && area2 != 0.0
+        && (all(true) || all(false))
 }
 
 /// Device bounding box (inclusive pixels) of the non-zero coverage in

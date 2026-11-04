@@ -132,3 +132,24 @@ fn a_clip_that_cuts_nothing_keeps_the_mask() {
     let a = render(&page(&repeated, 1), 4 * MIB).expect("one shared mask");
     assert_eq!(a, render(&page(once, 1), 4 * MIB).unwrap());
 }
+
+/// A zero-area BBox (a point or a line) clips everything away, as it
+/// always has: the clip skip must not read its empty quad as one that
+/// holds the page (independent review, v0.5.1).
+#[test]
+fn a_degenerate_bbox_still_clips_everything() {
+    let blank = render(&page("", 1), 256 * MIB).unwrap();
+    for bbox in ["[10 10 10 10]", "[0 0 0 0]", "[0 0 0 100]", "[0 0 100 0]"] {
+        let s = |d: &str, c: &str| {
+            format!("<< {d} /Length {} >>\nstream\n{c}\nendstream", c.len()).into_bytes()
+        };
+        let b = build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 600] /Resources << /XObject << /X 10 0 R >> >> /Contents 4 0 R >>".to_vec()),
+            (4, s("", "/X Do")),
+            (10, s(&format!("/Type /XObject /Subtype /Form /BBox {bbox}"), "1 0 0 rg 0 0 600 600 re f")),
+        ]);
+        assert!(render(&b, 256 * MIB).unwrap() == blank, "{bbox} painted");
+    }
+}
