@@ -3,15 +3,32 @@
 # left in the Actions cache. Independent of the corpus nightly (no
 # credentials, no documents): a crash, timeout or out-of-memory fails
 # the job and uploads the synthetic input that caused it.
+#
+# fuzz/ci-run.sh runs every target and decides failure from libFuzzer's
+# exit status, the files it leaves in fuzz/artifacts/, its error markers
+# and its final "Done" line. The `selftest` job checks that decision on
+# GitHub's runners: a target that crashes, hangs or exhausts memory on
+# purpose (fuzz_targets/ci_selftest.rs, inert unless told to) must be
+# reported as a failure, with its input saved.
+#
+# A pull request that changes this workflow or the fuzz crate runs it
+# too (a new workflow cannot be dispatched before it is on main).
 name: fuzz-nightly
 
 on:
   schedule:
     - cron: "41 4 * * *"
   workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/fuzz-nightly.yml"
+      - "fuzz/**"
 
 permissions:
   contents: read
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   render:
@@ -37,18 +54,23 @@ jobs:
           path: fuzz/corpus/${{ matrix.target }}
           key: fuzz-corpus-${{ matrix.target }}-${{ github.run_id }}
           restore-keys: fuzz-corpus-${{ matrix.target }}-
-      - name: fuzz 15 minutes (2 GiB RSS, 10 s per input)
-        working-directory: fuzz
+      - name: corpus restored
         run: |
-          mkdir -p "corpus/${{ matrix.target }}"
-          cargo +nightly-2026-10-29 fuzz build -O "${{ matrix.target }}"
-          cargo +nightly-2026-10-29 fuzz run -O "${{ matrix.target }}" \
-            "corpus/${{ matrix.target }}" "seeds/${{ matrix.target }}" -- \
-            -max_total_time=900 -rss_limit_mb=2048 -timeout=10 -print_final_stats=1
+          mkdir -p "fuzz/corpus/${{ matrix.target }}"
+          echo "corpus files restored: $(find "fuzz/corpus/${{ matrix.target }}" -type f | wc -l)"
+      - name: build
+        run: cargo +nightly-2026-10-29 fuzz build -O "${{ matrix.target }}"
+        working-directory: fuzz
+      - name: fuzz 15 minutes (2 GiB RSS and malloc, 10 s per input)
+        run: |
+          fuzz/ci-run.sh "${{ matrix.target }}" "fuzz/corpus/${{ matrix.target }}" "fuzz/seeds/${{ matrix.target }}" -- \
+            -max_total_time=900
       - name: keep the corpus small for the cache
         if: success()
         working-directory: fuzz
-        run: cargo +nightly-2026-10-29 fuzz cmin -O "${{ matrix.target }}" "corpus/${{ matrix.target }}"
+        run: |
+          cargo +nightly-2026-10-29 fuzz cmin -O "${{ matrix.target }}" "corpus/${{ matrix.target }}"
+          echo "corpus files saved: $(find "corpus/${{ matrix.target }}" -type f | wc -l)"
       - name: crash inputs (synthetic documents)
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -57,3 +79,50 @@ jobs:
           path: fuzz/artifacts/${{ matrix.target }}
           retention-days: 14
           if-no-files-found: ignore
+
+  selftest:
+    name: runner self-test (${{ matrix.mode }})
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [crash, timeout, oom]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+        with:
+          toolchain: nightly-2026-10-29
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: fuzz
+      - run: cargo install cargo-fuzz --locked --version 0.13.2
+      - name: build
+        run: cargo +nightly-2026-10-29 fuzz build -O ci_selftest
+        working-directory: fuzz
+      - name: inert without the switch
+        run: |
+          mkdir -p /tmp/selftest-inert
+          fuzz/ci-run.sh ci_selftest /tmp/selftest-inert -- -runs=200
+      - name: a ${{ matrix.mode }} must fail the run
+        id: run
+        continue-on-error: true
+        env:
+          KASANE_FUZZ_SELFTEST: ${{ matrix.mode }}
+        run: |
+          mkdir -p /tmp/selftest-corpus
+          fuzz/ci-run.sh ci_selftest /tmp/selftest-corpus -- -max_total_time=120
+      - name: the input that caused it
+        if: steps.run.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-selftest-${{ matrix.mode }}
+          path: fuzz/artifacts/ci_selftest
+          retention-days: 1
+          if-no-files-found: error
+      - name: reported as a failure, its input saved as a ${{ matrix.mode }}
+        run: |
+          test "${{ steps.run.outcome }}" = failure || { echo "::error::a ${{ matrix.mode }} was not reported as a failure"; exit 1; }
+          ls fuzz/artifacts/ci_selftest
+          ls fuzz/artifacts/ci_selftest | grep -q "^${{ matrix.mode }}-" || { echo "::error::no ${{ matrix.mode }}- input saved"; exit 1; }

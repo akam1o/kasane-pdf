@@ -88,6 +88,9 @@ jobs:
     # libFuzzer seed 1 (bounded in count and time; which inputs it reaches
     # can vary, since coverage feedback depends on the library's hash
     # order). A failure uploads the input, whose result is deterministic.
+    # fuzz/ci-run.sh fails on the exit status, saved inputs, error markers
+    # or a missing final line; the seed replay also reports, per page,
+    # whether rendering painted, and painted pages are required.
     # Minutes, no corpus; long runs are fuzz-nightly.yml.
     name: render fuzz smoke (seeds, fixed seed)
     runs-on: ubuntu-latest
@@ -101,15 +104,23 @@ jobs:
         with:
           workspaces: fuzz
       - run: cargo install cargo-fuzz --locked --version 0.13.2
-      - name: replay the seeds, then 3000 new inputs per target
+      - name: build
         working-directory: fuzz
         run: |
+          cargo +nightly-2026-10-29 fuzz build -O render_content
+          cargo +nightly-2026-10-29 fuzz build -O render_graph
+      - name: replay the seeds; the pages they render must paint
+        run: |
           for t in render_content render_graph; do
-            cargo +nightly-2026-10-29 fuzz build -O "$t"
-            cargo +nightly-2026-10-29 fuzz run -O "$t" "seeds/$t" -- -runs=0 -rss_limit_mb=2048 -timeout=10
-            mkdir -p "/tmp/corpus-$t" && cp "seeds/$t"/* "/tmp/corpus-$t/"
-            cargo +nightly-2026-10-29 fuzz run -O "$t" "/tmp/corpus-$t" -- \
-              -seed=1 -runs=3000 -max_total_time=180 -rss_limit_mb=2048 -timeout=10 -print_final_stats=1
+            KASANE_FUZZ_REACH="/tmp/reach-$t" fuzz/ci-run.sh "$t" "fuzz/seeds/$t" -- -runs=0
+            echo "$t pages:"; sort "/tmp/reach-$t" | uniq -c | sort -rn
+            grep -q "^ok painted" "/tmp/reach-$t" || { echo "::error::$t seeds painted nothing"; exit 1; }
+          done
+      - name: 3000 new inputs per target (libFuzzer seed 1, at most 180 s each)
+        run: |
+          for t in render_content render_graph; do
+            mkdir -p "/tmp/corpus-$t" && cp "fuzz/seeds/$t"/* "/tmp/corpus-$t/"
+            fuzz/ci-run.sh "$t" "/tmp/corpus-$t" -- -seed=1 -runs=3000 -max_total_time=180 || exit 1
           done
       - name: crash inputs (synthetic documents, no corpus content)
         if: failure()
@@ -119,6 +130,27 @@ jobs:
           path: fuzz/artifacts
           retention-days: 7
           if-no-files-found: ignore
+
+  r2-depth-linux:
+    # max_xobject_depth (v0.5.1 R2) on Linux x86_64: the boundary tests in
+    # debug and release builds — 47/48 render and 49 is refused on every
+    # nesting path, cycles stop, a refusal leaves the document rendering,
+    # the default depth fits a 2 MiB (debug) / 512 KiB (release) thread
+    # and a 64 KiB one overflows, each in a child process — then the
+    # smallest stack each path needs, measured (reported, not a check).
+    name: R2 depth and stack (linux, debug + release)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo test --test render_xobject_depth
+      - run: cargo test --release --test render_xobject_depth
+      - name: stack per nesting path (debug, release)
+        run: |
+          cargo test --test render_xobject_depth -- --ignored --nocapture --exact measure_stack_per_path
+          cargo test --release --test render_xobject_depth -- --ignored --nocapture --exact measure_stack_per_path
 
   wasm:
     name: wasm32 build
