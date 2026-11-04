@@ -88,13 +88,13 @@ struct GraphicsState {
     /// only. Stacked clips intersect via `Mask::intersect_path`. While
     /// a soft mask is set this is the *effective* mask — hard clip ×
     /// soft mask (§11.6.4.3: the mask multiplies the source shape).
-    clip: Option<Mask>,
+    clip: Option<Rc<GsMask>>,
     /// The ExtGState `/SMask` in force (§11.6.5), already in device
     /// space; `None` = `/SMask /None`.
-    soft_mask: Option<Rc<Mask>>,
+    soft_mask: Option<Rc<GsMask>>,
     /// The clip without the soft mask, kept while `soft_mask` is set
     /// so a later `/SMask /None` can drop the mask and nothing else.
-    hard_clip: Option<Mask>,
+    hard_clip: Option<Rc<GsMask>>,
     /// `AIS` (§11.6.4.4): `ca`/`CA` and the soft mask are *shape*
     /// rather than opacity. The two multiply identically in ordinary
     /// compositing; they differ inside knockout groups (§11.4.8), where
@@ -589,6 +589,7 @@ pub fn render_page(
         dct_target: std::cell::Cell::new(None),
         default_spaces: None,
         layer_bytes: 0,
+        mask_bytes: Rc::default(),
         pattern_base: Matrix::IDENTITY,
         pattern_depth: 0,
         pattern_stack: Vec::new(),
@@ -1149,6 +1150,9 @@ pub(crate) struct Renderer<'a> {
     /// Bytes of offscreen group layers currently alive — bounded by
     /// `max_render_buffer_bytes` together with the page pixmap.
     layer_bytes: u64,
+    /// Bytes of the graphics-state masks currently alive (`GsMask`),
+    /// bounded by `max_render_buffer_bytes` apart from the layers.
+    mask_bytes: Rc<std::cell::Cell<u64>>,
     /// Pattern space → page space for the content stream being run
     /// (§8.7.3.1): identity for the page, the form's CTM (after its
     /// `/Matrix`) inside a Form XObject or Type 3 glyph.
@@ -1222,6 +1226,108 @@ const MAX_PATTERN_DEPTH: u32 = 8;
 /// Up to this many cells a fill is executed cell by cell (crisp,
 /// exact); denser tilings go through the cached cell.
 const DIRECT_TILES: u64 = 64;
+
+/// A device-space mask of the graphics state (clip, hard clip, soft
+/// mask). Held through `Rc`: saving the state (`q`, a form, a group)
+/// shares it, and a clip that changes a shared mask makes a new one
+/// (`clip_intersect`). Its bytes count in `live` from creation to
+/// drop, so the masks alive at once are bounded ([`MaskBudget`]).
+#[derive(Debug)]
+struct GsMask {
+    mask: Mask,
+    live: Rc<std::cell::Cell<u64>>,
+    /// `mask_bounds(&mask)`, once asked; reset by every change.
+    bounds: std::cell::OnceCell<Option<(i32, i32, i32, i32)>>,
+}
+
+impl GsMask {
+    fn bytes(&self) -> u64 {
+        self.mask.data().len() as u64
+    }
+
+    fn bounds(&self) -> Option<(i32, i32, i32, i32)> {
+        *self.bounds.get_or_init(|| mask_bounds(&self.mask))
+    }
+}
+
+impl Drop for GsMask {
+    fn drop(&mut self) {
+        self.live.set(self.live.get().saturating_sub(self.bytes()));
+    }
+}
+
+impl std::ops::Deref for GsMask {
+    type Target = Mask;
+    fn deref(&self) -> &Mask {
+        &self.mask
+    }
+}
+
+/// The bound on the graphics state's masks: every live [`GsMask`]
+/// together within `max` — `max_render_buffer_bytes`, an allowance of
+/// its own beside the page and its layers (a page at a high resolution
+/// legitimately holds a page-sized clip per nesting level).
+struct MaskBudget {
+    live: Rc<std::cell::Cell<u64>>,
+    max: u64,
+}
+
+impl MaskBudget {
+    fn check(&self) -> Result<(), Error> {
+        if self.live.get() > self.max {
+            return Err(Error::LimitExceeded {
+                limit: "max_render_buffer_bytes",
+                max: self.max,
+            });
+        }
+        Ok(())
+    }
+
+    /// `mask` as a counted graphics-state mask, or `LimitExceeded`.
+    fn wrap(&self, mask: Mask) -> Result<Rc<GsMask>, Error> {
+        let m = GsMask {
+            live: self.live.clone(),
+            mask,
+            bounds: Default::default(),
+        };
+        self.live.set(self.live.get().saturating_add(m.bytes()));
+        self.check()?;
+        Ok(Rc::new(m))
+    }
+}
+
+impl GraphicsState {
+    /// The clip as the rasteriser takes it.
+    fn clip_mask(&self) -> Option<&Mask> {
+        self.clip.as_deref().map(|m| &m.mask)
+    }
+}
+
+/// Whether the convex device quadrilateral `q` (corners in order)
+/// contains every pixel of the inclusive pixel box `b` whole (edges may
+/// touch): the rasteriser covers each of those pixels fully
+/// (`tests::a_holding_rect_leaves_the_mask_unchanged`).
+fn quad_holds_box(q: &[(f64, f64); 4], b: (i32, i32, i32, i32)) -> bool {
+    let (x0, y0, x1, y1) = (b.0 as f64, b.1 as f64, b.2 as f64 + 1.0, b.3 as f64 + 1.0);
+    let side = |i: usize, (x, y): (f64, f64)| {
+        let (ax, ay) = q[i];
+        let (bx, by) = q[(i + 1) % 4];
+        (bx - ax) * (y - ay) - (by - ay) * (x - ax)
+    };
+    let corners = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)];
+    let all = |positive: bool| {
+        (0..4).all(|i| {
+            corners.iter().all(|&c| {
+                if positive {
+                    side(i, c) >= 0.0
+                } else {
+                    side(i, c) <= 0.0
+                }
+            })
+        })
+    };
+    q.iter().all(|(x, y)| x.is_finite() && y.is_finite()) && (all(true) || all(false))
+}
 
 /// Device bounding box (inclusive pixels) of the non-zero coverage in
 /// `mask`, or `None` when it is empty.
@@ -1313,6 +1419,7 @@ impl<'a> Renderer<'a> {
             dct_target: std::cell::Cell::new(None),
             default_spaces: None,
             layer_bytes: 0,
+            mask_bytes: Rc::default(),
             pattern_base: Matrix::IDENTITY,
             pattern_depth: 0,
             pattern_stack: Vec::new(),
@@ -2373,7 +2480,7 @@ impl<'a> Renderer<'a> {
                         Object::Dict(sm) => {
                             let mask = self.render_soft_mask(sm)?;
                             if !self.extraction_only {
-                                self.set_soft_mask(mask);
+                                self.set_soft_mask(mask)?;
                             }
                         }
                         _ => {
@@ -2500,15 +2607,30 @@ impl<'a> Renderer<'a> {
             // Nothing of the pixmap is inside the clip path.
             return self.clip_empty();
         }
-        let apply = |slot: &mut Option<Mask>| -> Result<(), Error> {
+        let budget = self.mask_budget();
+        let apply = |slot: &mut Option<Rc<GsMask>>| -> Result<(), Error> {
             match slot {
                 None => {
                     let mut mask = Mask::new(w, h)
                         .ok_or_else(|| Error::Structure("clip mask allocation failed".into()))?;
                     mask.fill_path(path, rule, true, ts);
-                    *slot = Some(mask);
+                    *slot = Some(budget.wrap(mask)?);
                 }
-                Some(existing) => existing.intersect_path(path, rule, true, ts),
+                Some(existing) => match Rc::get_mut(existing) {
+                    Some(own) => {
+                        own.mask.intersect_path(path, rule, true, ts);
+                        own.bounds = Default::default();
+                    }
+                    // Shared with a saved state: intersect a copy, and
+                    // keep sharing when the clip cut nothing away.
+                    None => {
+                        let mut m = existing.mask.clone();
+                        m.intersect_path(path, rule, true, ts);
+                        if m.data() != existing.mask.data() {
+                            *existing = budget.wrap(m)?;
+                        }
+                    }
+                },
             }
             Ok(())
         };
@@ -2521,36 +2643,48 @@ impl<'a> Renderer<'a> {
 
     /// Clip everything away (`W n` on an empty path, a degenerate BBox).
     fn clip_empty(&mut self) -> Result<(), Error> {
-        let empty = || {
-            Mask::new(self.pixmap.width(), self.pixmap.height())
-                .ok_or_else(|| Error::Structure("clip mask allocation failed".into()))
-        };
-        self.gs.clip = Some(empty()?);
+        let budget = self.mask_budget();
+        let empty = Mask::new(self.pixmap.width(), self.pixmap.height())
+            .ok_or_else(|| Error::Structure("clip mask allocation failed".into()))?;
+        let empty = budget.wrap(empty)?;
+        // Nothing paints through either: they can share the one mask.
         if self.gs.soft_mask.is_some() {
-            self.gs.hard_clip = Some(empty()?);
+            self.gs.hard_clip = Some(empty.clone());
         }
+        self.gs.clip = Some(empty);
         Ok(())
     }
 
     /// Install `mask` as the soft mask: the effective clip becomes the
     /// hard clip multiplied by it.
-    fn set_soft_mask(&mut self, mask: Mask) {
+    fn set_soft_mask(&mut self, mask: Mask) -> Result<(), Error> {
         self.clear_soft_mask();
-        let mut eff = match self.gs.clip.take() {
+        let budget = self.mask_budget();
+        let hard = match self.gs.clip.take() {
             Some(c) => c,
-            None => Mask::new(self.pixmap.width(), self.pixmap.height())
-                .map(|mut m| {
-                    m.data_mut().fill(255);
-                    m
-                })
-                .expect("page-sized mask"),
+            None => {
+                let mut m = Mask::new(self.pixmap.width(), self.pixmap.height())
+                    .ok_or_else(|| Error::Structure("soft mask allocation failed".into()))?;
+                m.data_mut().fill(255);
+                budget.wrap(m)?
+            }
         };
-        self.gs.hard_clip = Some(eff.clone());
+        let mut eff = hard.mask.clone();
         for (e, m) in eff.data_mut().iter_mut().zip(mask.data()) {
             *e = mul255(*e, *m);
         }
-        self.gs.clip = Some(eff);
-        self.gs.soft_mask = Some(Rc::new(mask));
+        self.gs.hard_clip = Some(hard);
+        self.gs.clip = Some(budget.wrap(eff)?);
+        self.gs.soft_mask = Some(budget.wrap(mask)?);
+        Ok(())
+    }
+
+    /// The budget the graphics state's masks are counted in.
+    fn mask_budget(&self) -> MaskBudget {
+        MaskBudget {
+            live: self.mask_bytes.clone(),
+            max: self.limits.max_render_buffer_bytes,
+        }
     }
 
     /// `/SMask /None`: back to the hard clip.
@@ -2915,7 +3049,7 @@ impl<'a> Renderer<'a> {
             r?;
             remove_backdrop(&mut layer, &over, self.pixmap.data());
         }
-        self.composite_layer(&layer, alpha, bm, mask.as_deref());
+        self.composite_layer(&layer, alpha, bm, mask.as_deref().map(|m| &m.mask));
         Ok(())
     }
 
@@ -2941,7 +3075,7 @@ impl<'a> Renderer<'a> {
         isolated: bool,
         alpha: f64,
         bm: tiny_skia::BlendMode,
-        mask: Option<Rc<Mask>>,
+        mask: Option<Rc<GsMask>>,
         bytes: u64,
     ) -> Result<(), Error> {
         let (w, h) = (self.pixmap.width(), self.pixmap.height());
@@ -2961,7 +3095,7 @@ impl<'a> Renderer<'a> {
             self.knockout_pass(ops, &mut over, Some(&backdrop), bytes)?;
             remove_backdrop(&mut layer, &over, backdrop.data());
         }
-        self.composite_layer(&layer, alpha, bm, mask.as_deref());
+        self.composite_layer(&layer, alpha, bm, mask.as_deref().map(|m| &m.mask));
         Ok(())
     }
 
@@ -3471,6 +3605,33 @@ impl<'a> Renderer<'a> {
             // Degenerate BBox → empty clip.
             return self.clip_empty();
         };
+        // A rectangle that holds every pixel the clip lets through, with
+        // a pixel to spare, has full coverage on each of them: the
+        // intersection changes nothing, and the (shared) mask is kept
+        // instead of copied — nested forms with enclosing BBoxes cost no
+        // mask per level.
+        let quad = [
+            (rect.llx, rect.lly),
+            (rect.urx, rect.lly),
+            (rect.urx, rect.ury),
+            (rect.llx, rect.ury),
+        ]
+        .map(|(x, y)| {
+            let mut p = tiny_skia::Point {
+                x: x as f32,
+                y: y as f32,
+            };
+            ts.map_point(&mut p);
+            (p.x as f64, p.y as f64)
+        });
+        let (w, h) = (self.pixmap.width() as i32, self.pixmap.height() as i32);
+        let holds = |slot: &Option<Rc<GsMask>>| match slot {
+            None => quad_holds_box(&quad, (0, 0, w - 1, h - 1)),
+            Some(m) => m.bounds().is_none_or(|b| quad_holds_box(&quad, b)),
+        };
+        if holds(&self.gs.clip) && (self.gs.soft_mask.is_none() || holds(&self.gs.hard_clip)) {
+            return Ok(());
+        }
         self.clip_intersect(&path, FillRule::Winding, ts)
     }
 
@@ -5161,7 +5322,7 @@ impl<'a> Renderer<'a> {
         }
         let mask = match &self.gs.clip {
             Some(m) => {
-                let mut m = m.clone();
+                let mut m = m.mask.clone();
                 m.intersect_path(path, rule, true, ts);
                 m
             }
@@ -5202,6 +5363,7 @@ impl<'a> Renderer<'a> {
             PatternPaint::Shading(sp) => {
                 let to_page = sp.matrix.concat(self.pattern_base);
                 let shading = sp.shading.clone();
+                let mask = self.mask_budget().wrap(mask)?;
                 let saved = self.gs.clip.replace(mask);
                 let r = self.paint_shading(&shading, &to_page, None, true);
                 self.gs.clip = saved;
@@ -5411,7 +5573,7 @@ impl<'a> Renderer<'a> {
 
     /// Fresh graphics state for one cell: `ctm` as the CTM, the outer
     /// fill colour for an uncoloured pattern, `clip` as the clip.
-    fn reset_cell_state(&mut self, tp: &TilingPattern, ctm: Matrix, clip: Option<Mask>) {
+    fn reset_cell_state(&mut self, tp: &TilingPattern, ctm: Matrix, clip: Option<Rc<GsMask>>) {
         self.gs = GraphicsState::new();
         self.gs.ctm = ctm;
         if let Some(u) = tp.under {
@@ -5441,6 +5603,8 @@ impl<'a> Renderer<'a> {
         alpha: (f64, f64, tiny_skia::BlendMode),
     ) -> Result<(), Error> {
         let bb = tp.bbox;
+        // Shared by the cells; each cell's BBox clip copies it.
+        let cell_clip = self.mask_budget().wrap(mask.clone())?;
         for j in range[2]..=range[3] {
             for i in range[0]..=range[1] {
                 let cell =
@@ -5485,7 +5649,7 @@ impl<'a> Renderer<'a> {
                 {
                     continue;
                 }
-                self.reset_cell_state(tp, cell, Some(mask.clone()));
+                self.reset_cell_state(tp, cell, Some(cell_clip.clone()));
                 self.gs.fill_alpha = alpha.0;
                 self.gs.stroke_alpha = alpha.1;
                 self.gs.blend_mode = alpha.2;
@@ -5982,7 +6146,7 @@ impl<'a> Renderer<'a> {
                                 &p,
                                 FillRule::Winding,
                                 full,
-                                gs.clip.as_ref(),
+                                gs.clip.as_deref().map(|m| &m.mask),
                             );
                         }
                     }
@@ -6041,8 +6205,13 @@ impl<'a> Renderer<'a> {
                             self.pixmap.width(),
                             self.pixmap.height(),
                         )?;
-                        self.pixmap
-                            .stroke_path(path, &p, &stroke, full, gs.clip.as_ref());
+                        self.pixmap.stroke_path(
+                            path,
+                            &p,
+                            &stroke,
+                            full,
+                            gs.clip.as_deref().map(|m| &m.mask),
+                        );
                     }
                 }
                 // mode 3: invisible — paint nothing, still advance.
@@ -6461,7 +6630,7 @@ impl<'a> Renderer<'a> {
                         self.gs.stroke_color.with_alpha(self.gs.stroke_alpha),
                     ));
                     self.pixmap
-                        .stroke_path(&path, &paint, &stroke, ts, self.gs.clip.as_ref());
+                        .stroke_path(&path, &paint, &stroke, ts, self.gs.clip_mask());
                 }
             }
             PaintKind::Fill(rule) => {
@@ -6472,7 +6641,7 @@ impl<'a> Renderer<'a> {
                 } else {
                     paint.set_color(ts_color(self.gs.fill_color.with_alpha(self.gs.fill_alpha)));
                     self.pixmap
-                        .fill_path(&path, &paint, rule, ts, self.gs.clip.as_ref());
+                        .fill_path(&path, &paint, rule, ts, self.gs.clip_mask());
                 }
             }
             PaintKind::FillStroke(rule) => {
@@ -6483,7 +6652,7 @@ impl<'a> Renderer<'a> {
                 } else {
                     paint.set_color(ts_color(self.gs.fill_color.with_alpha(self.gs.fill_alpha)));
                     self.pixmap
-                        .fill_path(&path, &paint, rule, ts, self.gs.clip.as_ref());
+                        .fill_path(&path, &paint, rule, ts, self.gs.clip_mask());
                 }
                 if self.gs.stroke_space.is_pattern() {
                     self.stroke_path_with_pattern(&path, &stroke, ts)?;
@@ -6492,7 +6661,7 @@ impl<'a> Renderer<'a> {
                         self.gs.stroke_color.with_alpha(self.gs.stroke_alpha),
                     ));
                     self.pixmap
-                        .stroke_path(&path, &paint, &stroke, ts, self.gs.clip.as_ref());
+                        .stroke_path(&path, &paint, &stroke, ts, self.gs.clip_mask());
                 }
             }
         }
@@ -7036,4 +7205,130 @@ fn matrix_from_array(o: &Object) -> Option<Matrix> {
 /// replaced by the hairline path anyway.
 fn hairline_width() -> f32 {
     0.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect_path(r: [f32; 4]) -> tiny_skia::Path {
+        let mut pb = PathBuilder::new();
+        pb.move_to(r[0], r[1]);
+        pb.line_to(r[2], r[1]);
+        pb.line_to(r[2], r[3]);
+        pb.line_to(r[0], r[3]);
+        pb.close();
+        pb.finish().unwrap()
+    }
+
+    /// The premise of the BBox-clip skip (`intersect_clip_rect`): when
+    /// `quad_holds_box` says a rectangle holds a mask's coverage,
+    /// intersecting the mask with it changes no byte. Random
+    /// fractional rectangles under random transforms (rotations and
+    /// shears included), many of them touching the coverage's edge.
+    #[test]
+    fn a_holding_rect_leaves_the_mask_unchanged() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut rnd = |lo: f32, hi: f32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            lo + (hi - lo) * ((seed >> 40) as f32 / (1u64 << 24) as f32)
+        };
+        let (mut held, mut checked) = (0, 0);
+        for k in 0..4000 {
+            let ts = match k % 3 {
+                0 => Transform::from_row(
+                    rnd(0.5, 3.0),
+                    0.0,
+                    0.0,
+                    -rnd(0.5, 3.0),
+                    rnd(0.0, 20.0),
+                    64.0,
+                ),
+                1 => Transform::from_row(1.0, 0.0, 0.0, 1.0, rnd(-3.0, 3.0), rnd(-3.0, 3.0)),
+                _ => Transform::from_row(
+                    rnd(-2.0, 2.0),
+                    rnd(-2.0, 2.0),
+                    rnd(-2.0, 2.0),
+                    rnd(-2.0, 2.0),
+                    32.0,
+                    32.0,
+                ),
+            };
+            let a = [
+                rnd(-10.0, 30.0),
+                rnd(-10.0, 30.0),
+                rnd(-10.0, 30.0),
+                rnd(-10.0, 30.0),
+            ];
+            let mut mask = Mask::new(64, 64).unwrap();
+            mask.fill_path(&rect_path(a), FillRule::Winding, true, ts);
+            let Some(b) = mask_bounds(&mask) else {
+                continue;
+            };
+            // The same rectangle, one grown or shrunk a little, or a
+            // random one.
+            let g = match k % 4 {
+                0 => 0.0,
+                1 => rnd(0.0, 1.0),
+                2 => -rnd(0.0, 0.3),
+                _ => rnd(-5.0, 5.0),
+            };
+            let r = [
+                a[0].min(a[2]) - g,
+                a[1].min(a[3]) - g,
+                a[0].max(a[2]) + g,
+                a[1].max(a[3]) + g,
+            ];
+            if r[0] >= r[2] || r[1] >= r[3] {
+                continue;
+            }
+            let quad = [(r[0], r[1]), (r[2], r[1]), (r[2], r[3]), (r[0], r[3])].map(|(x, y)| {
+                let mut p = tiny_skia::Point { x, y };
+                ts.map_point(&mut p);
+                (p.x as f64, p.y as f64)
+            });
+            checked += 1;
+            if !quad_holds_box(&quad, b) {
+                continue;
+            }
+            held += 1;
+            let mut after = mask.clone();
+            after.intersect_path(&rect_path(r), FillRule::Winding, true, ts);
+            assert!(
+                after.data() == mask.data(),
+                "case {k}: {a:?} then {r:?} under {ts:?}"
+            );
+        }
+        assert!(held > 300, "held {held} of {checked}");
+    }
+
+    /// The common case exactly: a form BBox on whole device pixels,
+    /// applied again (nested forms with one BBox), with a flipped page
+    /// transform as `paint_ts` gives it.
+    #[test]
+    fn an_aligned_rect_holds_its_own_coverage() {
+        for (x0, y0, x1, y1) in [
+            (0, 0, 64, 64),
+            (3, 5, 40, 22),
+            (0, 10, 7, 64),
+            (-5, -5, 70, 70),
+        ] {
+            let ts = Transform::from_row(1.0, 0.0, 0.0, -1.0, 0.0, 64.0);
+            let r = [x0 as f32, y0 as f32, x1 as f32, y1 as f32];
+            let mut mask = Mask::new(64, 64).unwrap();
+            mask.fill_path(&rect_path(r), FillRule::Winding, true, ts);
+            let b = mask_bounds(&mask).unwrap();
+            let quad = [(r[0], r[1]), (r[2], r[1]), (r[2], r[3]), (r[0], r[3])].map(|(x, y)| {
+                let mut p = tiny_skia::Point { x, y };
+                ts.map_point(&mut p);
+                (p.x as f64, p.y as f64)
+            });
+            assert!(quad_holds_box(&quad, b), "{r:?}");
+            let mut after = mask.clone();
+            after.intersect_path(&rect_path(r), FillRule::Winding, true, ts);
+            assert!(after.data() == mask.data(), "{r:?}");
+        }
+    }
 }
