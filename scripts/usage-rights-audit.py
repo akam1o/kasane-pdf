@@ -105,6 +105,7 @@ def qpdf_scan(path):
         "markers": markers,
         "byte_ranges": byte_ranges,
         "perms_keys": sorted(perms) if isinstance(perms, dict) else None,
+        "perms_malformed": perms is not None and not isinstance(perms, dict),
         "sig_flags": sf if isinstance(sf, int) else None,
         "pages": int(pages) if pages.isdigit() else None,
     }
@@ -159,6 +160,7 @@ def pypdf_scan(path):
         "byte_ranges": byte_ranges,
         "pages": len(r.pages),
         "perms_keys": sorted(str(k)[1:] for k in perms) if isinstance(perms, DictionaryObject) else None,
+        "perms_malformed": perms is not None and not isinstance(perms, DictionaryObject),
         "sig_flags": int(sf) if sf is not None else None,
     }
 
@@ -188,6 +190,8 @@ def judge(i, o):
             why.append(f"{tool}: no signature marker in the input")
         if o[tool]["markers"] or o[tool]["byte_ranges"]:
             why.append(f"{tool}: {o[tool]['markers']} marker(s), {o[tool]['byte_ranges']} /ByteRange in the output")
+        if o[tool].get("perms_malformed"):
+            why.append(f"{tool}: the output /Perms is not a dictionary")
         left = set(o[tool]["perms_keys"] or ()) & {"UR", "UR3", "DocMDP"}
         if left:
             why.append(f"{tool}: /Perms still has {sorted(left)}")
@@ -254,9 +258,14 @@ def self_test():
         # dictionary still reachable, /SigFlags unchanged.
         bad_objs = [(1, b"<< /Type /Catalog /Pages 2 0 R /X 10 0 R /AcroForm << /Fields [] /SigFlags 3 >> >>")] + objs[1:]
         open(bad, "wb").write(build_pdf(bad_objs))
-        good, wrong = audit([(inp, out), (inp, bad)])
-        ok = not good["failures"] and len(wrong["failures"]) >= 3
-        print("self-test:", "ok" if ok else "FAILED", {"good": good["failures"], "bad": wrong["failures"]})
+        scalar = os.path.join(d, "scalar.pdf")
+        scalar_objs = [(1, b"<< /Type /Catalog /Pages 2 0 R /Perms 5 /AcroForm << /Fields [] /SigFlags 2 >> >>")] + objs[1:3]
+        open(scalar, "wb").write(build_pdf(scalar_objs))
+        good, wrong, odd = audit([(inp, out), (inp, bad), (inp, scalar)])
+        ok = (not good["failures"] and len(wrong["failures"]) >= 3
+              and any("not a dictionary" in w for w in odd["failures"]))
+        print("self-test:", "ok" if ok else "FAILED",
+              {"good": good["failures"], "bad": wrong["failures"], "scalar /Perms": odd["failures"]})
         return 0 if ok else 1
 
 
