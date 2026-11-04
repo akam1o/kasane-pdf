@@ -1607,7 +1607,7 @@ Two workflows under `.github/workflows/`:
 
 | workflow | trigger | what runs | needs |
 |---|---|---|---|
-| `pr.yml` | pull requests, pushes to `main` | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (engine and `compat/runner`); then the runner in `--mode smoke --with-poppler` over `tests/fixtures` (66 committed, licence-clean fixtures) and `scripts/ci-regression.py check` against `compat/baselines/fixtures-smoke.json` | qpdf + poppler-utils from apt; **no credentials, no corpus** |
+| `pr.yml` | pull requests, pushes to `main` | `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` (engine and `compat/runner`); then the runner in `--mode smoke --with-poppler` over `tests/fixtures` (66 committed, licence-clean fixtures) and `scripts/ci-regression.py check` against `compat/baselines/fixtures-smoke.json`; `scripts/usage-rights-audit.py --self-test` (a synthetic Reader-extended form removed with `examples/remove_usage_rights.rs`, then re-read by qpdf and pypdf; a bad output must fail) | qpdf + poppler-utils from apt, pypdf (pinned) from pip; **no credentials, no corpus** |
 | `nightly.yml` | daily cron, manual dispatch | `scripts/fetch-cjk-assets.sh`, runner built with `cjk-fallback`, corpus fetched from the private store, `--mode full --with-poppler` over the 511 files, regression check against `compat/baselines/corpus-full.json`; a second job runs clippy + tests with the `cjk-fallback` feature | repository secrets `KASANE_R2_*` and the variable `KASANE_CORPUS_ENABLED=true`; the job is skipped when they are absent (forks, public mirrors) |
 
 Rules the workflows follow: the store credentials are only read by

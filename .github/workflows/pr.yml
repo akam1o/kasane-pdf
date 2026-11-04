@@ -170,6 +170,10 @@ jobs:
             --with-poppler --mode smoke
       - name: quality-gate unit tests
         run: python3 scripts/test_ci_regression.py
+      - name: usage-rights removal audited by qpdf and pypdf (synthetic form, no corpus)
+        run: |
+          pip3 install --quiet pypdf==6.21.4
+          python3 scripts/usage-rights-audit.py --self-test
       - name: regression check vs committed baseline
         run: |
           python3 scripts/ci-regression.py check /tmp/smoke/latest.json compat/baselines/fixtures-smoke.json \

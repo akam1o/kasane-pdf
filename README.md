@@ -106,14 +106,14 @@ experimental scoped content editors (`remove_text`,
 
 ```toml
 [dependencies]
-kasane-pdf = "0.4"
+kasane-pdf = "0.5"
 ```
 
 Or track the repository directly:
 
 ```toml
 [dependencies]
-kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.4.1" }
+kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.5.0" }
 ```
 
 Supported Rust versions: 1.92 or newer (`rust-version` in
@@ -318,22 +318,25 @@ test suites (pdf.js, PDFium, veraPDF, Poppler, pdfbox) and real-world
 documents (arXiv papers, government forms, browser prints, scans,
 Japanese documents), and cross-checks against Poppler and qpdf. The
 corpus itself is not in the repository; the aggregate baseline is
-(`compat/baselines/corpus-full.json`). Latest Linux nightly
-(2026-11-01), on the 425 files expected to be well-formed:
+(`compat/baselines/corpus-full.json`). Linux nightly on the 0.5.0
+code (2026-11-04), on the 425 files expected to be well-formed:
 
 | stage | pass |
 |---|---|
 | strict parse | 408 (96.0%) |
 | render, every page | 380 (89.4%) |
 | text extraction | 392 (92.2%) |
-| rewrite | 364 (85.6%) |
-| all four | 338 (79.5%) |
+| rewrite (default policy) | 372 (87.5%) |
+| all four | 345 (81.2%) |
 
-Of the 427 files rewritten (every expectation tag), 424 reparse with an
-identical object graph and match on every comparison; 203 also pass
-the semantic catalog comparison (the others carry nothing it
-compares). All 44 adversarial files are refused without crash or
-timeout. Exact renders are checked against Poppler by an enforced
+With `rewrite_with`'s options all four pass for 351
+(`ExecutableContentPolicy::Carry`, Linux and macOS) and 378 (`Carry`
+and `UsageRightsPolicy::Remove`, measured on macOS so far); the
+options are opt-in, and the default is the figure above. Of the files rewritten by
+default (every expectation tag), 436 reparse with an identical object
+graph and 432 match on every comparison; 302 also pass the semantic
+comparison (the others carry nothing it compares). All 44 adversarial
+files are refused without crash or timeout. Exact renders are checked against Poppler by an enforced
 quality gate and report-only placement and colour rules.
 These numbers describe that corpus and the strict parser; they are
 not a general compatibility claim. Definitions, per-category results
@@ -424,6 +427,33 @@ matters. [`docs/security.md`](docs/security.md) has the full posture.
   `ExecutableContentPolicy::Carry` keeps scripts, including the
   document-level ones. It executes nothing, and it is **not a
   sanitizer**: the output can run whatever the input could.
+- **Usage-rights signatures.** `UsageRightsPolicy::Remove` (opt-in;
+  the default refuses) deletes Reader-extension signatures (`/Perms
+  /UR`, `/UR3`) and withdraws the rights they grant; any other
+  signature, a field lock, `/DSS` or `/Legal`, or anything it cannot
+  determine refuses, and the output is re-checked before it is
+  returned. It never verifies or re-signs:
+
+  ```rust,no_run
+  use kasane_pdf::{
+      rewrite_with, Document, ExecutableContentPolicy, RewriteOptions, UsageRightsOutcome,
+      UsageRightsPolicy,
+  };
+
+  fn main() -> Result<(), Box<dyn std::error::Error>> {
+      let doc = Document::from_bytes(&std::fs::read("form.pdf")?)?;
+      let opts = RewriteOptions::new()
+          .with_executable_content(ExecutableContentPolicy::Carry)
+          .with_usage_rights(UsageRightsPolicy::Remove);
+      let out = rewrite_with(&doc, &opts)?; // Err: refused, nothing written
+      if let UsageRightsOutcome::Removed(r) = out.report().usage_rights() {
+          println!("removed {} usage-rights signature(s)", r.entries.len());
+      }
+      println!("{}", out.report()); // counts per class
+      std::fs::write("out.pdf", out.bytes())?;
+      Ok(())
+  }
+  ```
 - **Signed documents.** Signatures are detected, never verified.
   Before an incremental save the engine reads `/ByteRange`,
   `/DocMDP` and `/FieldMDP` and refuses edits the signer did not

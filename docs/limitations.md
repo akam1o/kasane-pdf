@@ -101,6 +101,13 @@ are on the [roadmap](architecture.md#roadmap).
 - Mesh shadings interpolate colours in sRGB after conversion, not in
   the source space; function-based shadings are sampled on a 128×128
   grid. Both are recorded as approximations in the feature file.
+- **Resource use** (robustness work planned for 0.5.1 / 0.6, not in
+  0.5.0): a very large 1-bit soft mask is expanded at full resolution
+  for each use (one 60 KB corpus page reaches 1.3 GB); form nesting
+  deeper than `max_xobject_depth` (default 32) is refused with
+  `LimitExceeded` — raise the limit to render such a file; 32-bit
+  targets build (wasm32) but their arithmetic is not audited nor tested
+  in CI.
 
 ## Text extraction
 
