@@ -33,6 +33,8 @@ env:
 jobs:
   render:
     name: render fuzz (${{ matrix.target }})
+    # The schedule fuzzes this repository only; forks can still dispatch.
+    if: github.event_name != 'schedule' || github.repository == 'akam1o/kasane-pdf'
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
@@ -69,7 +71,8 @@ jobs:
         if: success()
         working-directory: fuzz
         run: |
-          cargo +nightly-2026-10-29 fuzz cmin -O "${{ matrix.target }}" "corpus/${{ matrix.target }}"
+          # Bounded: the job must end well inside timeout-minutes.
+          timeout 600 cargo +nightly-2026-10-29 fuzz cmin -O "${{ matrix.target }}" "corpus/${{ matrix.target }}"
           echo "corpus files saved: $(find "corpus/${{ matrix.target }}" -type f | wc -l)"
       - name: crash inputs (synthetic documents)
         if: failure()
