@@ -121,12 +121,21 @@ are on the [roadmap](architecture.md#roadmap).
   Example: a 600 pt page at 600 dpi has 25 MB masks, so about ten
   distinct clips nested inside one another; at 96 dpi, about 400.
 - **Extreme geometry** (since 0.5.1): a stroke wider than 2^24 device
-  pixels is drawn at the narrower width that covers the whole page when
-  that paints the same pixels, and refused (`Unsupported`, "stroke
-  width") otherwise; a path reaching beyond ±2^24 device pixels is
-  skipped when it lies entirely off the page (a clip there leaves
-  nothing visible) and refused (`Unsupported`, "geometry extent")
-  otherwise. Earlier releases panicked inside the rasteriser on both.
+  pixels is drawn at a narrower width that still covers the whole page
+  from every point when it is made of straight segments with round
+  joins or miters within their limit (curves and bevels would change
+  shape), and refused (`Unsupported`, "stroke width") otherwise; a path
+  reaching beyond ±2^24 device pixels is skipped when it lies entirely
+  off the page (a clip there leaves nothing visible) and refused
+  (`Unsupported`, "geometry extent") otherwise. Earlier releases
+  panicked inside the rasteriser on both.
+- **Dashed strokes** (since 0.5.1): a dashed stroke whose rasterisation
+  work is estimated too high — many dash segments crossing the same
+  pixel rows (Σ over rows of edges² above 4 × 10¹³), or more than
+  4 × 10⁶ outline edges in all — is refused (`Unsupported`, "dashed
+  stroke") rather than drawn for minutes. Ordinary dashing is far
+  below either bound; the slowest dashed stroke still drawn takes about
+  0.3 s (release, 600 × 600 px).
 
 ## Text extraction
 

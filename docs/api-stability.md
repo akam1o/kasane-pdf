@@ -115,9 +115,11 @@ patch release.
   many distinct nested clips at a high resolution reach it, and none of
   the 511 corpus files does at 96 dpi. Recorded as a behaviour change,
   not a default change: no default value moves.
-- Two inputs that panicked inside the rasteriser are now drawn exactly
-  or refused with `Error::Unsupported` (`feature` "stroke width" or
-  "geometry extent"), an existing variant.
+- Two inputs that panicked inside the rasteriser are now drawn or
+  refused with `Error::Unsupported` (`feature` "stroke width" or
+  "geometry extent"), an existing variant; a dashed stroke too costly to
+  rasterise (0.5.0 took minutes) is refused with `Unsupported`
+  ("dashed stroke").
 - `rewrite`, `rewrite_with` and `rewrite_with_limits` do not read
   `max_xobject_depth`: their bytes and errors are unchanged. The
   editors' content walk (`diagnose_redaction`, `remove_region`,

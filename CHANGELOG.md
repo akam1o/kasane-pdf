@@ -40,11 +40,26 @@ change.
   nothing away (such as a form BBox enclosing the clip) keeps the mask,
   and the masks are bounded (above). The same 1000 `q`: 119 MB.
   Present since 0.1.
+- **Dashed strokes could take minutes.** Round or square caps on a
+  dash pattern along a long path made the rasteriser's work grow with
+  the square of the edges per row: a 15 KB content stream (250 000
+  round-capped dashes) took 63 s in 0.5.0 at width 100 and over 170 s
+  at width 600 (release, 600 pt page at 72 dpi). A dashed stroke's work
+  is now estimated before drawing — Σ over rows of (edges of the dash
+  segments reaching the row)², and all segments' edges — and a stroke
+  over the bound is refused with `Error::Unsupported` ("dashed stroke"),
+  never approximated; the slowest stroke still drawn takes ≈ 0.3 s. A
+  stroke that covers the page from every point through round or square
+  caps draws one segment (every pixel fully covered, as by all of
+  them). Other dashed strokes draw exactly as before. Present since
+  0.1; found by the nightly fuzzing.
 - A stroke far wider than the page (e.g. `99999999999999999999 w`)
   panicked inside the rasteriser. A stroke wider than 2^24 device
-  pixels is now narrowed to the width that covers the page when that
-  paints the same pixels, and refused with `Error::Unsupported`
-  ("stroke width") otherwise. Present since 0.1; found by fuzzing.
+  pixels made of straight segments with round joins or miters within
+  their limit, covering the page from every point, is now narrowed to
+  a covering width (the same coverage, up to the rasteriser's rounding
+  at a far edge); any other is refused with `Error::Unsupported`
+  ("stroke width"). Present since 0.1; found by fuzzing.
 - Geometry reaching about 5 × 10⁸ device pixels panicked inside the
   rasteriser. A path beyond ±2^24 device pixels is now skipped when it
   lies entirely off the page (a clip there leaves nothing visible) and

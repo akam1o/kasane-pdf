@@ -40,7 +40,9 @@ the structured render fuzz targets (`fuzz/README.md`), which run on
 every pull request (seeds plus a short run) and nightly
 (`fuzz-nightly.yml`). The clip and soft masks of the graphics state,
 copied by every `q` before 0.5.1 (a few bytes of content could demand
-tens of GB), are shared and bounded by `max_render_buffer_bytes`.
+tens of GB), are shared and bounded by `max_render_buffer_bytes`; a
+dashed stroke's rasterisation work is estimated and bounded before
+drawing (before 0.5.1 a 15 KB content stream could take minutes).
 
 Additionally: cycle detection on reference chains, `/Prev` chains,
 and page-tree node revisits; object-stream bodies decoded once per
