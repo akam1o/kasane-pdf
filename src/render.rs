@@ -916,11 +916,12 @@ fn device_extent(
 /// `stroke` for `path` drawn under `ts` on a `w`×`h` pixmap, with a
 /// width the rasteriser can take. A stroke that covers the whole pixmap
 /// from every point of the path — its half-width, in the transform's
-/// narrowest direction, at least the farthest device distance between
-/// the path and the pixmap — paints the same pixels at any larger
-/// width, so it is narrowed to that width. A stroke wider than
-/// `MAX_STROKE_DEVICE_WIDTH` that cannot be narrowed that way is
-/// refused (`Unsupported`), never approximated.
+/// narrowest direction, beyond the farthest device distance between the
+/// path and the pixmap (with `COVER_SLACK`) — paints the same pixels at
+/// any larger width when its corners fill at every width
+/// (`narrowing_is_exact`), so it is narrowed to that width. A stroke
+/// wider than `MAX_STROKE_DEVICE_WIDTH` that cannot be narrowed that way
+/// is refused (`Unsupported`), never approximated.
 fn bounded_stroke(
     stroke: &Stroke,
     ts: Transform,
@@ -956,8 +957,12 @@ fn bounded_stroke(
         y1 = y1.max(dy);
     }
     let reach = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
-    if s_min > 0.0 && reach.is_finite() && width * s_min / 2.0 >= reach {
-        let narrowed = 2.0 * reach / s_min + 1.0;
+    // Covering with a margin: round caps and joins are drawn with curves
+    // that fall slightly inside the true radius.
+    let covering = |half: f64| half * s_min >= COVER_SLACK * reach + 2.0;
+    if s_min > 0.0 && reach.is_finite() && covering(width / 2.0) && narrowing_is_exact(path, stroke)
+    {
+        let narrowed = 2.0 * (COVER_SLACK * reach + 2.0) / s_min + 1.0;
         if narrowed * s_max <= MAX_STROKE_DEVICE_WIDTH {
             let mut s = stroke.clone();
             s.width = narrowed as f32;
@@ -971,6 +976,338 @@ fn bounded_stroke(
             width * s_max
         ),
     })
+}
+
+/// How much farther than the farthest pixmap point a stroke must reach
+/// to count as covering it (the round caps and joins of a narrower
+/// stroke are drawn with curves slightly inside their radius).
+const COVER_SLACK: f64 = 1.05;
+
+/// Whether a stroke along `path` that covers the pixmap from every
+/// point keeps covering exactly the same pixels at any other covering
+/// width. Not for curves (their offsets are approximated, closer to the
+/// path at a smaller width), nor where a join bevels — a bevel join, or
+/// a miter past its limit, leaves an uncovered wedge at the corner whose
+/// depth grows with the width. Round joins and miters within their
+/// limit fill the corner at any width.
+fn narrowing_is_exact(path: &tiny_skia::Path, stroke: &Stroke) -> bool {
+    use tiny_skia::PathSegment as S;
+    let mut contour: Vec<(f64, f64)> = Vec::new();
+    let mut closed = false;
+    let corners_fill = |pts: &[(f64, f64)], closed: bool| -> bool {
+        if stroke.line_join == tiny_skia::LineJoin::Round {
+            return true;
+        }
+        // Directions of the non-degenerate pieces, in order.
+        let mut dirs: Vec<(f64, f64)> = Vec::new();
+        let n = pts.len();
+        let last = if closed { n } else { n.saturating_sub(1) };
+        for i in 0..last {
+            let (a, b) = (pts[i], pts[(i + 1) % n]);
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let len = (dx * dx + dy * dy).sqrt();
+            if len > 0.0 {
+                dirs.push((dx / len, dy / len));
+            }
+        }
+        let pairs = if closed {
+            dirs.len()
+        } else {
+            dirs.len().saturating_sub(1)
+        };
+        for i in 0..pairs {
+            let (u, v) = (dirs[i], dirs[(i + 1) % dirs.len()]);
+            // φ, the angle between the incoming piece reversed and the
+            // outgoing one; the miter is 1 / sin(φ/2) half-widths long.
+            let cos_phi = -(u.0 * v.0 + u.1 * v.1);
+            if cos_phi <= -1.0 + 1e-9 {
+                continue; // straight on: no corner
+            }
+            if stroke.line_join == tiny_skia::LineJoin::Bevel {
+                return false;
+            }
+            let sin_half = ((1.0 - cos_phi) / 2.0).max(0.0).sqrt();
+            if sin_half <= 0.0 || 1.0 / sin_half > stroke.miter_limit as f64 {
+                return false;
+            }
+        }
+        true
+    };
+    for seg in path.segments() {
+        match seg {
+            S::MoveTo(p) => {
+                if !corners_fill(&contour, closed) {
+                    return false;
+                }
+                contour.clear();
+                closed = false;
+                contour.push((p.x as f64, p.y as f64));
+            }
+            S::LineTo(p) => contour.push((p.x as f64, p.y as f64)),
+            S::QuadTo(..) | S::CubicTo(..) => return false,
+            S::Close => closed = true,
+        }
+    }
+    corners_fill(&contour, closed)
+}
+
+/// The rasteriser work a dashed stroke may take. Its time grows with
+/// the square of the outline edges crossing each pixmap row (every row
+/// sorts and walks them), so the bound is on Σ over rows of (edges in
+/// the row)², counting the segments that can reach the row.
+const MAX_DASHED_ROW_WORK: f64 = 4e13;
+
+/// And on the outline edges of all the segments, reached or not: each
+/// is built and clipped away.
+const MAX_DASHED_EDGES: f64 = 4e6;
+
+/// How to draw `stroke` along `path` under `ts` on a `w`×`h` pixmap.
+enum DashedStroke {
+    /// No dash: draw as given.
+    Undashed,
+    /// Nothing to draw (the rasteriser draws nothing either).
+    Nothing,
+    /// The dashed geometry to stroke without a dash, and that stroke.
+    Segments(tiny_skia::Path, Stroke),
+}
+
+/// A dashed stroke, dashed here exactly as the rasteriser dashes it
+/// (the same resolution scale), so its work can be bounded first
+/// (`MAX_DASHED_ROW_WORK`, `MAX_DASHED_EDGES`),
+/// else `Unsupported` ("dashed stroke") — never approximated. Every
+/// segment is drawn (dropping even an invisible one changes the
+/// rasteriser's rounding), except when the stroke covers the whole
+/// pixmap from every point of the path through its round or square
+/// caps: then any one segment that reaches it paints every pixel fully,
+/// as all of them do, and only that one is drawn.
+fn dashed_stroke(
+    path: &tiny_skia::Path,
+    stroke: &Stroke,
+    ts: Transform,
+    w: u32,
+    h: u32,
+) -> Result<DashedStroke, Error> {
+    let Some(dash) = &stroke.dash else {
+        return Ok(DashedStroke::Undashed);
+    };
+    let res_scale = tiny_skia::PathStroker::compute_resolution_scale(&ts);
+    let Some(dashed) = path.dash(dash, res_scale) else {
+        return Ok(DashedStroke::Nothing);
+    };
+    let (a, b, c, d) = (ts.sx as f64, ts.ky as f64, ts.kx as f64, ts.sy as f64);
+    let p = a * a + b * b + c * c + d * d;
+    let q = (a * d - b * c).abs();
+    let s_max = ((p + (p * p - 4.0 * q * q).max(0.0).sqrt()) / 2.0).sqrt();
+    let s_min = if s_max > 0.0 { q / s_max } else { 0.0 };
+    let half = stroke.width as f64 / 2.0;
+    // How far an outline reaches from its segment, in device pixels: a
+    // miter join up to its limit, a square cap √2 half-widths.
+    let factor = if stroke.line_join == tiny_skia::LineJoin::Miter {
+        (stroke.miter_limit as f64).max(std::f64::consts::SQRT_2)
+    } else {
+        std::f64::consts::SQRT_2
+    };
+    let device = |x: f32, y: f32| {
+        let (x, y) = (x as f64, y as f64);
+        (a * x + c * y + ts.tx as f64, b * x + d * y + ts.ty as f64)
+    };
+    // Covering from every point, as in `bounded_stroke`, against the box
+    // of the whole path and the pixmap; through the caps (a butt cap
+    // covers nothing past its segment's end).
+    let r = path.bounds();
+    let (mut x0, mut y0, mut x1, mut y1) = (0.0f64, 0.0f64, w as f64, h as f64);
+    for (x, y) in [
+        (r.left(), r.top()),
+        (r.right(), r.top()),
+        (r.left(), r.bottom()),
+        (r.right(), r.bottom()),
+    ] {
+        let (dx, dy) = device(x, y);
+        x0 = x0.min(dx);
+        y0 = y0.min(dy);
+        x1 = x1.max(dx);
+        y1 = y1.max(dy);
+    }
+    let diag = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
+    let covers = stroke.line_cap != tiny_skia::LineCap::Butt
+        && s_min > 0.0
+        && diag.is_finite()
+        && half * s_min >= COVER_SLACK * diag + 2.0;
+
+    use tiny_skia::PathSegment as S;
+    let mut undashed = stroke.clone();
+    undashed.dash = None;
+    let mut work = 0.0f64;
+    let mut contour: Vec<S> = Vec::new();
+    // The device box a segment's outline can occupy: each straight piece
+    // sweeps its two ends ± the normal × the half-width (what a butt cap
+    // and a bevel cover); round and square caps, joins (a miter up to its
+    // limit) and curves add the half-width × `factor` around their points.
+    let round_reach = half * s_max * factor + 2.0;
+    let outline_box = |contour: &[S]| -> ([f64; 4], f64) {
+        let mut bbox = [
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        ];
+        let mut grow = |x: f64, y: f64, r: f64| {
+            bbox = [
+                bbox[0].min(x - r),
+                bbox[1].min(y - r),
+                bbox[2].max(x + r),
+                bbox[3].max(y + r),
+            ];
+        };
+        // Edges: the two caps (curves for round), then each piece's sides.
+        let mut edges = match stroke.line_cap {
+            tiny_skia::LineCap::Butt => 0.0,
+            tiny_skia::LineCap::Square => 8.0,
+            tiny_skia::LineCap::Round => 16.0,
+        };
+        let mut last: Option<tiny_skia::Point> = None;
+        let (mut first, mut corners) = (None, 0usize);
+        for seg in contour {
+            match *seg {
+                S::MoveTo(p) => {
+                    first = Some(p);
+                    last = Some(p);
+                }
+                S::LineTo(p) => {
+                    edges += 4.0;
+                    if let Some(a) = last {
+                        let (dx, dy) = (p.x as f64 - a.x as f64, p.y as f64 - a.y as f64);
+                        let len = (dx * dx + dy * dy).sqrt();
+                        let (nx, ny) = if len > 0.0 {
+                            (-dy / len * half, dx / len * half)
+                        } else {
+                            (0.0, 0.0)
+                        };
+                        for (x, y) in [(a.x as f64, a.y as f64), (p.x as f64, p.y as f64)] {
+                            for sgn in [-1.0, 1.0] {
+                                let (u, v) = device((x + sgn * nx) as f32, (y + sgn * ny) as f32);
+                                grow(u, v, 2.0);
+                            }
+                        }
+                        if corners > 0 {
+                            let (u, v) = device(a.x, a.y);
+                            grow(u, v, round_reach); // the join at `a`
+                        }
+                        corners += 1;
+                    }
+                    last = Some(p);
+                }
+                S::QuadTo(p1, p2) | S::CubicTo(p1, _, p2) => {
+                    edges += if matches!(seg, S::QuadTo(..)) {
+                        8.0
+                    } else {
+                        16.0
+                    };
+                    let pts: &[tiny_skia::Point] = match seg {
+                        S::CubicTo(c1, c2, e) => &[*c1, *c2, *e],
+                        _ => &[p1, p2],
+                    };
+                    for pt in last.iter().chain(pts) {
+                        let (u, v) = device(pt.x, pt.y);
+                        grow(u, v, round_reach);
+                    }
+                    last = pts.last().copied();
+                    corners += 1;
+                }
+                S::Close => edges += 4.0,
+            }
+        }
+        // Caps at the two ends (a butt cap adds nothing).
+        if stroke.line_cap != tiny_skia::LineCap::Butt {
+            for pt in first.iter().chain(last.iter()) {
+                let (u, v) = device(pt.x, pt.y);
+                grow(u, v, round_reach);
+            }
+        }
+        (bbox, edges)
+    };
+    // A segment's outline edges and, when it can reach the pixmap, the
+    // pixmap rows it can reach.
+    let measure = |contour: &[S]| -> (Option<(usize, usize)>, f64) {
+        let ([bx0, by0, bx1, by1], edges) = outline_box(contour);
+        let reaches = bx1 >= 0.0 && by1 >= 0.0 && bx0 <= w as f64 && by0 <= h as f64;
+        let rows = reaches.then(|| {
+            let top = (by0.max(0.0).floor() as usize).min(h as usize);
+            let bottom = (by1.min(h as f64).ceil() as usize).clamp(top + 1, h as usize + 1);
+            (top, bottom)
+        });
+        (rows, edges)
+    };
+    let replay = |contour: &[S]| {
+        let mut pb = tiny_skia::PathBuilder::new();
+        for seg in contour {
+            match *seg {
+                S::MoveTo(p) => pb.move_to(p.x, p.y),
+                S::LineTo(p) => pb.line_to(p.x, p.y),
+                S::QuadTo(p1, p2) => pb.quad_to(p1.x, p1.y, p2.x, p2.y),
+                S::CubicTo(p1, p2, p3) => pb.cubic_to(p1.x, p1.y, p2.x, p2.y, p3.x, p3.y),
+                S::Close => pb.close(),
+            }
+        }
+        pb.finish()
+    };
+    let too_much = |what: &str| Error::Unsupported {
+        feature: "dashed stroke",
+        detail: format!(
+            "a dashed stroke whose segments would take too long to rasterise ({what}) is not drawn"
+        ),
+    };
+    // Edges entering (+) and leaving (−) each row, summed below.
+    let mut rows_delta = vec![0.0f64; h as usize + 2];
+    let mut segments = dashed.segments().peekable();
+    while let Some(seg) = segments.next() {
+        contour.push(seg);
+        if !matches!(segments.peek(), None | Some(S::MoveTo(_))) {
+            continue;
+        }
+        let (rows, edges) = measure(&contour);
+        if rows.is_some() && covers {
+            return Ok(match replay(&contour) {
+                Some(one) => DashedStroke::Segments(one, undashed),
+                None => DashedStroke::Nothing,
+            });
+        }
+        work += edges;
+        if work > MAX_DASHED_EDGES {
+            return Err(too_much("outline edges"));
+        }
+        if let Some((top, bottom)) = rows {
+            rows_delta[top] += edges;
+            rows_delta[bottom] -= edges;
+        }
+        contour.clear();
+    }
+    let (mut active, mut row_work) = (0.0f64, 0.0f64);
+    for d in &rows_delta[..h as usize] {
+        active += d;
+        row_work += active * active;
+    }
+    if row_work > MAX_DASHED_ROW_WORK {
+        return Err(too_much("edges per row"));
+    }
+    Ok(DashedStroke::Segments(dashed, undashed))
+}
+
+/// Stroke `path` on `pixmap` through [`dashed_stroke`].
+fn stroke_bounded(
+    pixmap: &mut Pixmap,
+    path: &tiny_skia::Path,
+    paint: &Paint,
+    stroke: &Stroke,
+    ts: Transform,
+    clip: Option<&Mask>,
+) -> Result<(), Error> {
+    match dashed_stroke(path, stroke, ts, pixmap.width(), pixmap.height())? {
+        DashedStroke::Undashed => pixmap.stroke_path(path, paint, stroke, ts, clip),
+        DashedStroke::Nothing => {}
+        DashedStroke::Segments(p, s) => pixmap.stroke_path(&p, paint, &s, ts, clip),
+    }
+    Ok(())
 }
 
 /// Re-read a single key from the (indirect) page object. `/Annots` and
@@ -6243,13 +6580,14 @@ impl<'a> Renderer<'a> {
                             self.pixmap.width(),
                             self.pixmap.height(),
                         )?;
-                        self.pixmap.stroke_path(
+                        stroke_bounded(
+                            self.pixmap,
                             path,
                             &p,
                             &stroke,
                             full,
                             gs.clip.as_deref().map(|m| &m.mask),
-                        );
+                        )?;
                     }
                 }
                 // mode 3: invisible — paint nothing, still advance.
@@ -6667,8 +7005,7 @@ impl<'a> Renderer<'a> {
                     paint.set_color(ts_color(
                         self.gs.stroke_color.with_alpha(self.gs.stroke_alpha),
                     ));
-                    self.pixmap
-                        .stroke_path(&path, &paint, &stroke, ts, self.gs.clip_mask());
+                    stroke_bounded(self.pixmap, &path, &paint, &stroke, ts, self.gs.clip_mask())?;
                 }
             }
             PaintKind::Fill(rule) => {
@@ -6698,8 +7035,7 @@ impl<'a> Renderer<'a> {
                     paint.set_color(ts_color(
                         self.gs.stroke_color.with_alpha(self.gs.stroke_alpha),
                     ));
-                    self.pixmap
-                        .stroke_path(&path, &paint, &stroke, ts, self.gs.clip_mask());
+                    stroke_bounded(self.pixmap, &path, &paint, &stroke, ts, self.gs.clip_mask())?;
                 }
             }
         }
@@ -7340,6 +7676,178 @@ mod tests {
             );
         }
         assert!(held > 300, "held {held} of {checked}");
+    }
+
+    /// A random stroke scene on a 64×64 pixmap: a polyline (sometimes
+    /// with a curve, sometimes closed) in and around the pixmap, a dash,
+    /// cap, join, miter limit and width, and a transform.
+    fn scene(
+        rnd: &mut impl FnMut(f32, f32) -> f32,
+        k: usize,
+    ) -> (tiny_skia::Path, Stroke, Transform) {
+        let mut pb = PathBuilder::new();
+        pb.move_to(rnd(-40.0, 100.0), rnd(-40.0, 100.0));
+        for i in 0..(1 + (k % 5)) {
+            if k.is_multiple_of(7) && i == 0 {
+                pb.quad_to(
+                    rnd(-40.0, 100.0),
+                    rnd(-40.0, 100.0),
+                    rnd(-40.0, 100.0),
+                    rnd(-40.0, 100.0),
+                );
+            } else {
+                pb.line_to(rnd(-40.0, 100.0), rnd(-40.0, 100.0));
+            }
+        }
+        if k.is_multiple_of(3) {
+            pb.close();
+        }
+        let path = pb.finish().unwrap();
+        let caps = [
+            tiny_skia::LineCap::Butt,
+            tiny_skia::LineCap::Round,
+            tiny_skia::LineCap::Square,
+        ];
+        let joins = [
+            tiny_skia::LineJoin::Miter,
+            tiny_skia::LineJoin::Round,
+            tiny_skia::LineJoin::Bevel,
+        ];
+        let width = match k % 4 {
+            0 => rnd(0.5, 6.0),
+            1 => rnd(6.0, 60.0),
+            2 => rnd(60.0, 600.0),
+            _ => rnd(600.0, 4000.0), // covering the pixmap
+        };
+        let stroke = Stroke {
+            width,
+            miter_limit: [1.0, 4.0, 10.0][k % 3],
+            line_cap: caps[(k / 4) % 3],
+            line_join: joins[(k / 12) % 3],
+            dash: StrokeDash::new(vec![rnd(0.5, 12.0), rnd(0.5, 12.0)], rnd(0.0, 10.0)),
+        };
+        let ts = match k % 3 {
+            0 => Transform::from_row(1.0, 0.0, 0.0, -1.0, 0.0, 64.0),
+            1 => Transform::from_row(
+                rnd(0.3, 2.0),
+                0.0,
+                0.0,
+                rnd(0.3, 2.0),
+                rnd(-10.0, 10.0),
+                rnd(-10.0, 10.0),
+            ),
+            _ => Transform::from_row(
+                rnd(-1.5, 1.5),
+                rnd(-1.5, 1.5),
+                rnd(-1.5, 1.5),
+                rnd(-1.5, 1.5),
+                32.0,
+                32.0,
+            ),
+        };
+        (path, stroke, ts)
+    }
+
+    fn rng(mut seed: u64) -> impl FnMut(f32, f32) -> f32 {
+        move |lo: f32, hi: f32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            lo + (hi - lo) * ((seed >> 40) as f32 / (1u64 << 24) as f32)
+        }
+    }
+
+    /// `dashed_stroke` draws exactly what the rasteriser's own dashing
+    /// draws, whenever it does not refuse — the one-segment shortcut of a
+    /// covering stroke included.
+    #[test]
+    fn a_bounded_dashed_stroke_draws_the_same_pixels() {
+        let mut rnd = rng(0x9e37_79b9_7f4a_7c15);
+        let paint = Paint {
+            anti_alias: true,
+            ..Default::default()
+        };
+        let (mut compared, mut one_segment, mut refused) = (0, 0, 0);
+        for k in 0..3000 {
+            let (path, stroke, ts) = scene(&mut rnd, k);
+            let mut direct = Pixmap::new(64, 64).unwrap();
+            direct.stroke_path(&path, &paint, &stroke, ts, None);
+            let mut ours = Pixmap::new(64, 64).unwrap();
+            match dashed_stroke(&path, &stroke, ts, 64, 64) {
+                Ok(DashedStroke::Undashed) => ours.stroke_path(&path, &paint, &stroke, ts, None),
+                Ok(DashedStroke::Nothing) => {}
+                Ok(DashedStroke::Segments(p, s)) => {
+                    let all = path
+                        .dash(
+                            stroke.dash.as_ref().unwrap(),
+                            tiny_skia::PathStroker::compute_resolution_scale(&ts),
+                        )
+                        .map_or(0, |d| d.len());
+                    one_segment += usize::from(p.len() < all);
+                    ours.stroke_path(&p, &paint, &s, ts, None)
+                }
+                Err(_) => {
+                    refused += 1;
+                    continue;
+                }
+            }
+            compared += 1;
+            assert!(
+                ours.data() == direct.data(),
+                "case {k}: {stroke:?} under {ts:?}"
+            );
+        }
+        assert!(
+            compared > 2500 && one_segment > 100,
+            "compared {compared}, one segment {one_segment}, refused {refused}"
+        );
+    }
+
+    /// A narrowed stroke (`bounded_stroke`) paints what the same stroke
+    /// paints at another covering width — three times wider, which the
+    /// rasteriser can still take — up to the rasteriser's rounding where
+    /// an edge's far endpoints differ (measured: one byte in 3 000 cases,
+    /// by 16).
+    #[test]
+    fn a_narrowed_stroke_draws_the_same_pixels() {
+        let mut rnd = rng(0x2545_f491_4f6c_dd1d);
+        let paint = Paint {
+            anti_alias: true,
+            ..Default::default()
+        };
+        let (mut narrowed, mut refused) = (0, 0);
+        for k in 0..3000 {
+            let (path, mut stroke, ts) = scene(&mut rnd, k);
+            stroke.dash = None;
+            stroke.width = 1e12;
+            let Ok(n) = bounded_stroke(&stroke, ts, &path, 64, 64) else {
+                refused += 1;
+                continue;
+            };
+            narrowed += 1;
+            let mut wider = n.clone();
+            wider.width *= 3.0;
+            let (mut a, mut b) = (Pixmap::new(64, 64).unwrap(), Pixmap::new(64, 64).unwrap());
+            a.stroke_path(&path, &paint, &n, ts, None);
+            b.stroke_path(&path, &paint, &wider, ts, None);
+            let off: Vec<i32> = a
+                .data()
+                .iter()
+                .zip(b.data())
+                .map(|(x, y)| (*x as i32 - *y as i32).abs())
+                .filter(|d| *d > 0)
+                .collect();
+            assert!(
+                off.len() <= 4 && off.iter().all(|d| *d <= 32),
+                "case {k}: {} bytes differ (max {:?}): {n:?} under {ts:?}",
+                off.len(),
+                off.iter().max()
+            );
+        }
+        assert!(
+            narrowed > 500 && refused > 500,
+            "narrowed {narrowed}, refused {refused}"
+        );
     }
 
     /// The common case exactly: a form BBox on whole device pixels,
