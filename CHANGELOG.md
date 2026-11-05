@@ -58,8 +58,12 @@ change.
   soft masks, patterns, broken references and object streams), with
   committed seeds (`fuzz/README.md`).
 - CI: a render fuzz smoke job on every pull request (seeds plus 3000
-  inputs per target) and a separate nightly workflow
-  (`fuzz-nightly.yml`, 15 minutes per target).
+  inputs per target, and a check that the seeds' pages paint), a
+  Linux depth-and-stack job (debug and release), and a separate nightly
+  workflow (`fuzz-nightly.yml`, 15 minutes per target, with a
+  self-test that a crash, a timeout and an out-of-memory each fail it).
+  All of them run the targets through `fuzz/ci-run.sh`, which fails on
+  any input libFuzzer saves, not only on its exit status.
 
 ## [0.5.0] - 2026-11-05
 
