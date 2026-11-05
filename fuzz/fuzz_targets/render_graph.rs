@@ -181,7 +181,10 @@ fuzz_target!(|data: &[u8]| {
     let mut inp = Input(data.iter());
     let (objs, packed) = graph(&mut inp);
     let b = write(&objs, packed);
-    let l = limits().with_max_xobject_invocations(2_000);
+    // 250 form invocations a page bound an input's cost: it renders up
+    // to 4 pages, strict and recovered, twice — at 2 000, a 23-form
+    // fan-out took 3 s here and over libFuzzer's 10 s on a CI runner.
+    let l = limits().with_max_xobject_invocations(250);
     for recovery in [false, true] {
         let a = render_all(&b, recovery, &l);
         let again = render_all(&b, recovery, &l);
