@@ -30,6 +30,20 @@ collection is linear in `/Annots`, and a simple font's `/FirstChar` /
 `/LastChar` outside 0–255 is handled instead of panicking (also since
 0.1; found by fuzzing).
 
+Rendering (0.5.1): nesting of forms, groups, soft masks, annotation
+appearances and Type 3 glyphs is bounded by `max_xobject_depth`
+(default 48, chosen from a measured stack cost — see
+`limitations.md`, *Nesting depth*); a stroke width or a coordinate
+beyond what the rasteriser takes is narrowed exactly, skipped when off
+the page, or refused — two panics in every earlier release, found by
+the structured render fuzz targets (`fuzz/README.md`), which run on
+every pull request (seeds plus a short run) and nightly
+(`fuzz-nightly.yml`). The clip and soft masks of the graphics state,
+copied by every `q` before 0.5.1 (a few bytes of content could demand
+tens of GB), are shared and bounded by `max_render_buffer_bytes`; a
+dashed stroke's rasterisation work is estimated and bounded before
+drawing (before 0.5.1 a 15 KB content stream could take minutes).
+
 Additionally: cycle detection on reference chains, `/Prev` chains,
 and page-tree node revisits; object-stream bodies decoded once per
 Document; `unsafe` is confined to four documented lifetime transmutes

@@ -89,8 +89,16 @@ pub struct Limits {
     /// against pathological path input. Default: 100,000.
     pub max_path_elements: usize,
     /// Maximum depth of `Do`-invoked Form XObjects (a Form that `Do`s
-    /// another Form counts one level). Guards self-referential and
-    /// deeply nested forms. Default: 32.
+    /// another Form counts one level; so do a transparency group, a
+    /// soft mask's group, an annotation appearance and a Type 3 glyph
+    /// procedure). Guards self-referential and deeply nested forms.
+    /// Default: 48.
+    ///
+    /// Each level is a native stack frame chain: measured at about
+    /// 5 KiB per level in release builds and 25 KiB in debug builds on
+    /// the costliest path (a soft mask's group), so the default fits a
+    /// 2 MiB thread stack in debug builds and wasm32's 1 MiB in
+    /// release. Raise it only with a larger stack.
     pub max_xobject_depth: u32,
     /// Maximum total number of `Do` invocations processed while
     /// rendering one page (Forms and images together). Bounds sibling
@@ -255,7 +263,7 @@ impl Default for Limits {
             max_render_total_pixels: 67_108_864,
             max_render_buffer_bytes: 256 * 1024 * 1024,
             max_path_elements: 100_000,
-            max_xobject_depth: 32,
+            max_xobject_depth: 48,
             max_xobject_invocations: 10_000,
             max_pattern_tiles: 4_096,
             max_shading_triangles: 500_000,

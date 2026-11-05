@@ -101,13 +101,44 @@ are on the [roadmap](architecture.md#roadmap).
 - Mesh shadings interpolate colours in sRGB after conversion, not in
   the source space; function-based shadings are sampled on a 128×128
   grid. Both are recorded as approximations in the feature file.
-- **Resource use** (robustness work planned for 0.5.1 / 0.6, not in
-  0.5.0): a very large 1-bit soft mask is expanded at full resolution
-  for each use (one 60 KB corpus page reaches 1.3 GB); form nesting
-  deeper than `max_xobject_depth` (default 32) is refused with
-  `LimitExceeded` — raise the limit to render such a file; 32-bit
-  targets build (wasm32) but their arithmetic is not audited nor tested
-  in CI.
+- **Resource use** (robustness work planned for 0.6): a very large
+  1-bit soft mask is expanded at full resolution for each use (one
+  60 KB corpus page reaches 1.3 GB); 32-bit targets build (wasm32) but
+  their arithmetic is not audited nor tested in CI.
+- **Nesting depth.** Form XObjects, transparency groups, soft-mask
+  groups, annotation appearances and Type 3 glyph procedures nest at
+  most `max_xobject_depth` levels (default 48 since 0.5.1, 32 before);
+  deeper is `LimitExceeded`. The interpreter recurses on the native
+  stack: the default needs ≈ 1.2 MiB in a debug build and ≈ 0.25 MiB in
+  release on the costliest path (soft masks), so it fits a 2 MiB thread.
+  A caller raising the limit needs ≈ 25 KiB (debug) / 5 KiB (release)
+  more stack per level. Tiling patterns nest at most 8 levels (fixed).
+- **Clip and soft masks** (since 0.5.1): each is one byte per page
+  pixel. Saved states share them and a clip that cuts nothing keeps the
+  current one, so only distinct nested clips add masks; those alive at
+  once may take at most `max_render_buffer_bytes` (on their own, beside
+  the page and its layers), beyond which the page is `LimitExceeded`.
+  Example: a 600 pt page at 600 dpi has 25 MB masks, so about ten
+  distinct clips nested inside one another; at 96 dpi, about 400.
+- **Extreme geometry** (since 0.5.1): a stroke wider than 2^24 device
+  pixels is drawn at a narrower width that still covers the whole page
+  from every point when it is made of straight segments with round
+  joins or miters within their limit (curves and bevels would change
+  shape), and refused (`Unsupported`, "stroke width") otherwise; a path
+  reaching beyond ±2^24 device pixels is skipped when it lies entirely
+  off the page (a clip there leaves nothing visible) and refused
+  (`Unsupported`, "geometry extent") otherwise. Earlier releases
+  panicked inside the rasteriser on both.
+- **Dashed strokes** (since 0.5.1): a dashed stroke whose rasterisation
+  work is estimated too high — many dash segments crossing the same
+  pixel rows (Σ over rows of edges² above 10¹³ for one stroke, or
+  10¹⁴ for a page's dashed strokes together), or more than 4 × 10⁶
+  outline edges in all — is refused (`Unsupported`, "dashed stroke")
+  rather than drawn for minutes. A page of 90 000 round-capped dots at
+  600 dpi is 5 × 10¹² (drawn, 0.4 s, as in 0.5.0); the slowest dashed
+  stroke still drawn takes about 0.7 s (release, 600 × 600 px).
+- A stroke in a **pattern** colour is drawn without its dash pattern
+  (since 0.1; the outline is filled with the pattern undashed).
 
 ## Text extraction
 

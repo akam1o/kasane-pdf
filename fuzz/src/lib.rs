@@ -108,3 +108,21 @@ pub fn exercise(doc: &Document) {
     }
     let _ = doc.take_warnings();
 }
+
+/// Reach report for CI (`fuzz-nightly.yml`, `pr.yml`): with
+/// `KASANE_FUZZ_REACH` naming a file, a render target appends one line
+/// per page it renders — `ok painted` (some pixel is not the white
+/// page), `ok blank` or `err <kind>` — so a job can show the inputs got
+/// through to the rasteriser. Unset, nothing is written.
+pub fn reach(page: Result<&[u8], &kasane_pdf::Error>) {
+    let Some(path) = std::env::var_os("KASANE_FUZZ_REACH") else { return };
+    let line = match page {
+        Ok(px) if px.chunks(4).any(|p| p[..3] != [255, 255, 255]) => "ok painted".to_string(),
+        Ok(_) => "ok blank".to_string(),
+        Err(e) => format!("err {:?}", e.kind()),
+    };
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{line}");
+    }
+}
