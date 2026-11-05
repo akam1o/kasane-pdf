@@ -58,11 +58,15 @@ fixtures' own dictionaries and streams (first byte: template index).
 
 `render_content` and `render_graph` (0.5.1) start from
 `fuzz/seeds/render_content/` (one seed per operator, well-formed
-snippet and inline image; `regression-*` are the two inputs that
-panicked the rasteriser before 0.5.1) and `fuzz/seeds/render_graph/`
-(each page-tree flag × nesting style as a chain of forward references,
-some forms sharing the next; and four graphs broken on purpose: a
-cycle, a soft-mask cycle, an undefined reference, another generation).
+snippet and inline image; `regression-*` are inputs the targets found:
+`huge-rect-fill` and `wide-text-stroke` panicked the rasteriser before
+0.5.1, `dashed-square-caps` took minutes before 0.5.1, and
+`long-dashed-rect` timed the harness out at 10 s per input) and
+`fuzz/seeds/render_graph/` (each page-tree flag × nesting style as a
+chain of forward references, some forms sharing the next; four graphs
+broken on purpose: a cycle, a soft-mask cycle, an undefined reference,
+another generation; and `regression-slow-fanout`, a slow unit at the
+old 2 000-invocation budget).
 
 CI runs every target through `fuzz/ci-run.sh`, which fails on
 libFuzzer's exit status *and* on any file left in

@@ -12,8 +12,9 @@
 # same bound); the caller adds the run count or -max_total_time.
 # Toolchain: $FUZZ_TOOLCHAIN (CI's pinned nightly by default).
 #
-# Why 30 s: a render target renders each input up to seven times (two
-# passes, the equivalence variants, text extraction) under ASan (≈ 9×
+# Why 30 s: a render target renders each input up to five times (two
+# passes, the equivalence variants) and extracts its text as often, under
+# ASan (≈ 9×
 # slower) on a runner ≈ 5× slower than a workstation. The renderer's own
 # bounds allow ≈ 70 ms for one render of render_content's page (e.g.
 # 500 000 butt-capped dash segments along a million-unit path), which
