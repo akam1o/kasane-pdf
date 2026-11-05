@@ -46,9 +46,11 @@ change.
   round-capped dashes) took 63 s in 0.5.0 at width 100 and over 170 s
   at width 600 (release, 600 pt page at 72 dpi). A dashed stroke's work
   is now estimated before drawing — Σ over rows of (edges of the dash
-  segments reaching the row)², and all segments' edges — and a stroke
-  over the bound is refused with `Error::Unsupported` ("dashed stroke"),
-  never approximated; the slowest stroke still drawn takes ≈ 0.3 s. A
+  segments reaching the row)², per stroke and summed over the page, and
+  all segments' edges — and a stroke over a bound is refused with
+  `Error::Unsupported` ("dashed stroke"), never approximated; the
+  slowest stroke still drawn takes ≈ 0.7 s, a page's dashed strokes
+  together ≈ 10 s at most. A
   stroke that covers the page from every point through round or square
   caps draws one segment (every pixel fully covered, as by all of
   them). Other dashed strokes draw exactly as before. Present since

@@ -131,11 +131,14 @@ are on the [roadmap](architecture.md#roadmap).
   panicked inside the rasteriser on both.
 - **Dashed strokes** (since 0.5.1): a dashed stroke whose rasterisation
   work is estimated too high — many dash segments crossing the same
-  pixel rows (Σ over rows of edges² above 4 × 10¹³), or more than
-  4 × 10⁶ outline edges in all — is refused (`Unsupported`, "dashed
-  stroke") rather than drawn for minutes. Ordinary dashing is far
-  below either bound; the slowest dashed stroke still drawn takes about
-  0.3 s (release, 600 × 600 px).
+  pixel rows (Σ over rows of edges² above 10¹³ for one stroke, or
+  10¹⁴ for a page's dashed strokes together), or more than 4 × 10⁶
+  outline edges in all — is refused (`Unsupported`, "dashed stroke")
+  rather than drawn for minutes. A page of 90 000 round-capped dots at
+  600 dpi is 5 × 10¹² (drawn, 0.4 s, as in 0.5.0); the slowest dashed
+  stroke still drawn takes about 0.7 s (release, 600 × 600 px).
+- A stroke in a **pattern** colour is drawn without its dash pattern
+  (since 0.1; the outline is filled with the pattern undashed).
 
 ## Text extraction
 

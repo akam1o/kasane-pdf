@@ -590,6 +590,7 @@ pub fn render_page(
         default_spaces: None,
         layer_bytes: 0,
         mask_bytes: Rc::default(),
+        dash_work: 0.0,
         pattern_base: Matrix::IDENTITY,
         pattern_depth: 0,
         pattern_stack: Vec::new(),
@@ -1052,10 +1053,16 @@ fn narrowing_is_exact(path: &tiny_skia::Path, stroke: &Stroke) -> bool {
 }
 
 /// The rasteriser work a dashed stroke may take. Its time grows with
-/// the square of the outline edges crossing each pixmap row (every row
-/// sorts and walks them), so the bound is on Σ over rows of (edges in
-/// the row)², counting the segments that can reach the row.
-const MAX_DASHED_ROW_WORK: f64 = 4e13;
+/// the outline edges crossing each pixmap row and with their number
+/// (every row sorts and walks them): the measure is Σ over rows of
+/// (edges of the segments that can reach the row)². Measured (release):
+/// ≈ 0.1 s per 10¹² — a page of 90 000 round-capped dots at 600 dpi is
+/// 5 × 10¹² (0.4 s, as in 0.5.0); a stroke at the bound takes ≈ 1 s.
+const MAX_DASHED_ROW_WORK: f64 = 1e13;
+
+/// The same measure summed over the dashed strokes of one render: a
+/// page repeating strokes each under the bound stops at ≈ 10 s.
+const MAX_DASHED_PAGE_WORK: f64 = 1e14;
 
 /// And on the outline edges of all the segments, reached or not: each
 /// is built and clipped away.
@@ -1073,7 +1080,8 @@ enum DashedStroke {
 
 /// A dashed stroke, dashed here exactly as the rasteriser dashes it
 /// (the same resolution scale), so its work can be bounded first
-/// (`MAX_DASHED_ROW_WORK`, `MAX_DASHED_EDGES`),
+/// (`MAX_DASHED_ROW_WORK`, `MAX_DASHED_EDGES`, and with `spent`, the
+/// work of the render's earlier dashed strokes, `MAX_DASHED_PAGE_WORK`),
 /// else `Unsupported` ("dashed stroke") — never approximated. Every
 /// segment is drawn (dropping even an invisible one changes the
 /// rasteriser's rounding), except when the stroke covers the whole
@@ -1086,6 +1094,7 @@ fn dashed_stroke(
     ts: Transform,
     w: u32,
     h: u32,
+    spent: &mut f64,
 ) -> Result<DashedStroke, Error> {
     let Some(dash) = &stroke.dash else {
         return Ok(DashedStroke::Undashed);
@@ -1214,6 +1223,7 @@ fn dashed_stroke(
                     last = pts.last().copied();
                     corners += 1;
                 }
+                // `Path::dash` emits open segments only; counted for safety.
                 S::Close => edges += 4.0,
             }
         }
@@ -1290,19 +1300,24 @@ fn dashed_stroke(
     if row_work > MAX_DASHED_ROW_WORK {
         return Err(too_much("edges per row"));
     }
+    if *spent + row_work > MAX_DASHED_PAGE_WORK {
+        return Err(too_much("the page's dashed strokes together"));
+    }
+    *spent += row_work;
     Ok(DashedStroke::Segments(dashed, undashed))
 }
 
 /// Stroke `path` on `pixmap` through [`dashed_stroke`].
 fn stroke_bounded(
     pixmap: &mut Pixmap,
+    spent: &mut f64,
     path: &tiny_skia::Path,
     paint: &Paint,
     stroke: &Stroke,
     ts: Transform,
     clip: Option<&Mask>,
 ) -> Result<(), Error> {
-    match dashed_stroke(path, stroke, ts, pixmap.width(), pixmap.height())? {
+    match dashed_stroke(path, stroke, ts, pixmap.width(), pixmap.height(), spent)? {
         DashedStroke::Undashed => pixmap.stroke_path(path, paint, stroke, ts, clip),
         DashedStroke::Nothing => {}
         DashedStroke::Segments(p, s) => pixmap.stroke_path(&p, paint, &s, ts, clip),
@@ -1487,6 +1502,9 @@ pub(crate) struct Renderer<'a> {
     /// Bytes of offscreen group layers currently alive — bounded by
     /// `max_render_buffer_bytes` together with the page pixmap.
     layer_bytes: u64,
+    /// `dashed_stroke`'s work so far in this render, bounded by
+    /// `MAX_DASHED_PAGE_WORK`.
+    dash_work: f64,
     /// Bytes of the graphics-state masks currently alive (`GsMask`),
     /// bounded by `max_render_buffer_bytes` apart from the layers.
     mask_bytes: Rc<std::cell::Cell<u64>>,
@@ -1764,6 +1782,7 @@ impl<'a> Renderer<'a> {
             default_spaces: None,
             layer_bytes: 0,
             mask_bytes: Rc::default(),
+            dash_work: 0.0,
             pattern_base: Matrix::IDENTITY,
             pattern_depth: 0,
             pattern_stack: Vec::new(),
@@ -6582,6 +6601,7 @@ impl<'a> Renderer<'a> {
                         )?;
                         stroke_bounded(
                             self.pixmap,
+                            &mut self.dash_work,
                             path,
                             &p,
                             &stroke,
@@ -7005,7 +7025,15 @@ impl<'a> Renderer<'a> {
                     paint.set_color(ts_color(
                         self.gs.stroke_color.with_alpha(self.gs.stroke_alpha),
                     ));
-                    stroke_bounded(self.pixmap, &path, &paint, &stroke, ts, self.gs.clip_mask())?;
+                    stroke_bounded(
+                        self.pixmap,
+                        &mut self.dash_work,
+                        &path,
+                        &paint,
+                        &stroke,
+                        ts,
+                        self.gs.clip_mask(),
+                    )?;
                 }
             }
             PaintKind::Fill(rule) => {
@@ -7035,7 +7063,15 @@ impl<'a> Renderer<'a> {
                     paint.set_color(ts_color(
                         self.gs.stroke_color.with_alpha(self.gs.stroke_alpha),
                     ));
-                    stroke_bounded(self.pixmap, &path, &paint, &stroke, ts, self.gs.clip_mask())?;
+                    stroke_bounded(
+                        self.pixmap,
+                        &mut self.dash_work,
+                        &path,
+                        &paint,
+                        &stroke,
+                        ts,
+                        self.gs.clip_mask(),
+                    )?;
                 }
             }
         }
@@ -7773,7 +7809,7 @@ mod tests {
             let mut direct = Pixmap::new(64, 64).unwrap();
             direct.stroke_path(&path, &paint, &stroke, ts, None);
             let mut ours = Pixmap::new(64, 64).unwrap();
-            match dashed_stroke(&path, &stroke, ts, 64, 64) {
+            match dashed_stroke(&path, &stroke, ts, 64, 64, &mut 0.0) {
                 Ok(DashedStroke::Undashed) => ours.stroke_path(&path, &paint, &stroke, ts, None),
                 Ok(DashedStroke::Nothing) => {}
                 Ok(DashedStroke::Segments(p, s)) => {
@@ -7801,6 +7837,39 @@ mod tests {
             compared > 2500 && one_segment > 100,
             "compared {compared}, one segment {one_segment}, refused {refused}"
         );
+    }
+
+    /// The render's dashed work accumulates: a stroke well under the
+    /// per-stroke bound is drawn on a fresh page and its work recorded,
+    /// and refused once the page's earlier strokes used up the budget.
+    #[test]
+    fn dashed_work_accumulates_over_the_page() {
+        let mut pb = PathBuilder::new();
+        pb.move_to(0.0, 10.0);
+        pb.line_to(64.0, 10.0);
+        let path = pb.finish().unwrap();
+        let stroke = Stroke {
+            width: 2.0,
+            line_cap: tiny_skia::LineCap::Round,
+            dash: StrokeDash::new(vec![2.0, 2.0], 0.0),
+            ..Default::default()
+        };
+        let ts = Transform::identity();
+        let mut spent = 0.0;
+        assert!(matches!(
+            dashed_stroke(&path, &stroke, ts, 64, 64, &mut spent),
+            Ok(DashedStroke::Segments(..))
+        ));
+        assert!(spent > 0.0 && spent < MAX_DASHED_ROW_WORK);
+        let mut spent = MAX_DASHED_PAGE_WORK - 1.0;
+        assert!(matches!(
+            dashed_stroke(&path, &stroke, ts, 64, 64, &mut spent),
+            Err(Error::Unsupported {
+                feature: "dashed stroke",
+                ..
+            })
+        ));
+        assert_eq!(spent, MAX_DASHED_PAGE_WORK - 1.0, "a refusal adds nothing");
     }
 
     /// A narrowed stroke (`bounded_stroke`) paints what the same stroke
