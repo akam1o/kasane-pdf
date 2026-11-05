@@ -67,7 +67,8 @@ cycle, a soft-mask cycle, an undefined reference, another generation).
 CI runs every target through `fuzz/ci-run.sh`, which fails on
 libFuzzer's exit status *and* on any file left in
 `fuzz/artifacts/<target>/`, an error marker in the log, or a missing
-final `Done … runs` line; limits 2 GiB RSS and malloc, 10 s per input.
+final `Done … runs` line; limits 2 GiB RSS and malloc, 30 s per input
+(`FUZZ_TIMEOUT`; the script says why).
 Reproduce the PR smoke exactly as CI runs it, then fuzz longer
 (`FUZZ_TOOLCHAIN` overrides the pinned `nightly-2026-10-29`):
 

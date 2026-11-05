@@ -7,9 +7,18 @@
 #
 #   fuzz/ci-run.sh TARGET CORPUS_DIR... -- [extra libFuzzer flags]
 #
-# Limits: 2 GiB RSS and malloc, 10 s per input; the caller adds the run
-# count or -max_total_time. Toolchain: $FUZZ_TOOLCHAIN (CI's pinned
-# nightly by default).
+# Limits: 2 GiB RSS and malloc, 30 s per input ($FUZZ_TIMEOUT; an input
+# slower than that is a timeout, and libFuzzer's slow-unit report uses the
+# same bound); the caller adds the run count or -max_total_time.
+# Toolchain: $FUZZ_TOOLCHAIN (CI's pinned nightly by default).
+#
+# Why 30 s: a render target renders each input up to seven times (two
+# passes, the equivalence variants, text extraction) under ASan (≈ 9×
+# slower) on a runner ≈ 5× slower than a workstation. The renderer's own
+# bounds allow ≈ 70 ms for one render of render_content's page (e.g.
+# 500 000 butt-capped dash segments along a million-unit path), which
+# that multiplies to ≈ 14 s on the runner: a 10 s limit fired on
+# legitimate inputs (fuzz-nightly, PR #3).
 set -uo pipefail
 target=$1
 shift
@@ -25,9 +34,11 @@ done
 [ $# -gt 0 ] && shift
 cd "$(dirname "$0")"
 toolchain=${FUZZ_TOOLCHAIN:-nightly-2026-10-29}
+timeout=${FUZZ_TIMEOUT:-30}
 log=$(mktemp)
 cargo "+$toolchain" fuzz run -O "$target" "${dirs[@]}" -- \
-  -rss_limit_mb=2048 -malloc_limit_mb=2048 -timeout=10 -print_final_stats=1 "$@" 2>&1 | tee "$log"
+  -rss_limit_mb=2048 -malloc_limit_mb=2048 -timeout="$timeout" -report_slow_units="$timeout" \
+  -print_final_stats=1 "$@" 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 artifacts=$(find "artifacts/$target" -type f 2>/dev/null | wc -l | tr -d ' ')
 markers=$(grep -cE '^==[0-9]+== ERROR: libFuzzer|^SUMMARY: libFuzzer|^ERROR: libFuzzer|panicked at' "$log")
