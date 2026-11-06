@@ -28,7 +28,7 @@ or point Cargo at a tag of the repository:
 
 ```toml
 [dependencies]
-kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.5.0" }
+kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.5.1" }
 ```
 
 ## A tour of the CLI
