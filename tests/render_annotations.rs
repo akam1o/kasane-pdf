@@ -439,3 +439,35 @@ fn page_without_annotations_is_unchanged() {
     assert_eq!(px(&r, 20, 180), BLUE);
     assert!(r.font_substitutions().is_empty());
 }
+
+/// `/AP /N` states whose values are all `null` (directly or through an
+/// undefined reference) are absent (§7.3.7, §7.3.10): no appearance, so
+/// nothing is drawn — not "states without /AS". One non-null state among
+/// null ones is unambiguous; two non-null states without `/AS` are still
+/// refused.
+#[test]
+fn null_appearance_states_are_absent() {
+    let annot = |n: &str| {
+        format!("<< /Type /Annot /Subtype /Square /Rect [0 0 200 200] /AP << /N << {n} >> >> >>")
+    };
+    let red = stream(
+        "/Type /XObject /Subtype /Form /BBox [0 0 10 10]",
+        "1 0 0 rg 0 0 10 10 re f",
+    );
+    for n in ["/Yes null /Off null", "/Yes 99 0 R /Off null"] {
+        let extra = vec![(10, annot(n)), (14, red.clone())];
+        let r = render(&page_pdf("", "10 0 R", &extra)).unwrap_or_else(|e| panic!("{n}: {e:?}"));
+        assert_eq!(px(&r, 100, 100), WHITE, "{n}");
+    }
+    let extra = vec![(10, annot("/Yes 14 0 R /Off null")), (14, red.clone())];
+    let r = render(&page_pdf("", "10 0 R", &extra)).unwrap();
+    assert_eq!(px(&r, 100, 100), (255, 0, 0), "the one live state is drawn");
+    let extra = vec![(10, annot("/Yes 14 0 R /Off 14 0 R")), (14, red)];
+    assert!(matches!(
+        render(&page_pdf("", "10 0 R", &extra)),
+        Err(Error::Unsupported {
+            feature: "annotation appearance states without /AS",
+            ..
+        })
+    ));
+}
