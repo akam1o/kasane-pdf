@@ -329,3 +329,63 @@ fn malformed_geometry_is_a_structure_error_and_counts_are_bounded() {
     let err = render(&pdf(b"", &[&a])).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
 }
+
+/// A `/Link` without `/AP` draws its border, as viewers do: `/C` the
+/// colour, the default `/Border [0 0 1]` or `/BS` width inside `/Rect`,
+/// `/BS /S /U` the bottom edge only. No `/C`, an empty `/C` or a zero
+/// width draw nothing; the link's area stays blank inside the border.
+#[test]
+fn link_without_appearance_draws_its_border() {
+    let link =
+        |extra: &str| format!("<< /Type /Annot /Subtype /Link /Rect [50 50 150 150] {extra} >>");
+    // Default border, green: a 1 pt box on the rect's edges.
+    let r = render(&pdf(b"", &[&link("/C [0 1 0]")])).unwrap();
+    assert!(
+        near(px(&r, 100, 50), (0, 255, 0), 40),
+        "top edge {:?}",
+        px(&r, 100, 50)
+    );
+    assert!(near(px(&r, 50, 100), (0, 255, 0), 40), "left edge");
+    assert_eq!(px(&r, 100, 100), (255, 255, 255), "inside stays blank");
+    assert_eq!(px(&r, 40, 100), (255, 255, 255), "outside stays blank");
+    // A wide border fills inward from the rect.
+    let r = render(&pdf(b"", &[&link("/C [0 0 1] /Border [0 0 20]")])).unwrap();
+    assert!(
+        near(px(&r, 100, 140), (0, 0, 255), 10),
+        "within the 20 pt band"
+    );
+    assert_eq!(px(&r, 100, 100), (255, 255, 255));
+    assert_eq!(px(&r, 45, 100), (255, 255, 255), "nothing outside the rect");
+    // Underline: the bottom edge only (user y 50 → pixmap row 150).
+    let r = render(&pdf(b"", &[&link("/C [1 0 0] /BS << /W 2 /S /U >>")])).unwrap();
+    assert!(near(px(&r, 100, 149), (255, 0, 0), 40), "bottom edge");
+    assert_eq!(px(&r, 100, 50), (255, 255, 255), "no top edge");
+    assert_eq!(px(&r, 50, 100), (255, 255, 255), "no side edge");
+    // Nothing to draw.
+    for extra in [
+        "",
+        "/C []",
+        "/C [1 0 0] /Border [0 0 0]",
+        "/C [1 0 0] /BS << /W 0 >>",
+    ] {
+        let r = render(&pdf(b"", &[&link(extra)])).unwrap();
+        assert_eq!(ink(&r, 0, 0, 200, 200), 0, "{extra}");
+    }
+}
+
+/// Text extraction does not report or draw a link's border.
+#[test]
+fn link_border_is_not_text() {
+    let b = pdf(
+        b"",
+        &["<< /Type /Annot /Subtype /Link /Rect [50 50 150 150] /C [0 1 0] >>"],
+    );
+    let doc = Document::from_bytes(&b).unwrap();
+    let t = kasane_pdf::extract_text(
+        &doc,
+        &doc.pages()[0],
+        &kasane_pdf::TextOptions::default().with_annotations(true),
+    )
+    .unwrap();
+    assert!(t.chars.is_empty());
+}

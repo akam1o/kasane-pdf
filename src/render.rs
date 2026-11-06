@@ -3596,8 +3596,8 @@ impl<'a> Renderer<'a> {
     /// For each entry of `/Annots`, in array order (the painting
     /// order): skip annotations flagged *Hidden* or *NoView*, skip
     /// `/Popup` (a viewer-side pop-up window, never part of the page
-    /// image), skip a `/Link` without `/AP` (links have no appearance
-    /// unless one is supplied). Every other annotation must carry an
+    /// image); a `/Link` without `/AP` draws its border (`/C`, `/BS` or
+    /// `/Border`), as viewers do. Every other annotation must carry an
     /// `/AP` with a normal appearance `/N` — a stream, or a
     /// sub-dictionary of states selected by `/AS`. An annotation whose
     /// appearance we would have to *synthesise* (no `/AP`) is refused
@@ -3728,16 +3728,15 @@ impl<'a> Renderer<'a> {
                 }
             } else if !has_ap
                 && subtype != b"Widget"
-                && subtype != b"Link"
                 && self.extraction_only
-                && !crate::annot_appearance::synthesizes(&subtype)
+                && (subtype == b"Link" || !crate::annot_appearance::synthesizes(&subtype))
             {
                 // Extraction: an annotation with no appearance of its
                 // own and none we draw has no appearance text — its
                 // dictionary text is reported on its own.
                 continue;
-            } else if !has_ap && subtype != b"Widget" && subtype != b"Link" {
-                // Markup annotations without /AP (§12.5.6,
+            } else if !has_ap && subtype != b"Widget" {
+                // Markup annotations and links without /AP (§12.5.6,
                 // `crate::annot_appearance`); unhandled subtypes are
                 // refused there.
                 match crate::annot_appearance::synthesize(

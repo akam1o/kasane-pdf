@@ -82,9 +82,17 @@ pub(crate) fn synthesize(
     limits: &Limits,
 ) -> Result<Option<Markup>, Error> {
     let stroke = color(doc, annot, b"C", false)?.map(|c| c + " ");
-    let interior = color(doc, annot, b"IC", true)?.map(|c| c + " ");
+    // A link is not a markup annotation: /IC and /CA do not apply.
+    let link = subtype == b"Link";
+    if link && stroke.is_none() {
+        return Ok(None);
+    }
+    let interior = match link {
+        true => None,
+        false => color(doc, annot, b"IC", true)?.map(|c| c + " "),
+    };
     let (bw, dash) = border(doc, annot)?;
-    let alpha = match annot.get(b"CA".as_slice()) {
+    let alpha = match annot.get(b"CA".as_slice()).filter(|_| !link) {
         None | Some(Object::Null) => None,
         Some(o) => {
             let v = o
@@ -131,6 +139,25 @@ pub(crate) fn synthesize(
                     stroke.clone().unwrap_or_default(),
                     interior.clone().unwrap_or_default()
                 ));
+            }
+        }
+        b"Link" => {
+            // The border (§12.5.2, §12.5.4) inside /Rect: /C is the
+            // colour, width and dash come from /BS or /Border
+            // (default [0 0 1]); /BS /S /U draws the bottom edge only.
+            let [x0, y0, x1, y1] = rect;
+            let hw = bw / 2.0;
+            if let Some(s) = stroke.as_ref().filter(|_| bw > 0.0) {
+                let path = if border_style(doc, annot)? == Some(b"U".to_vec()) {
+                    format!("{x0:.4} {:.4} m {x1:.4} {:.4} l", y0 + hw, y0 + hw)
+                } else {
+                    let (ix0, iy0, ix1, iy1) = (x0 + hw, y0 + hw, x1 - hw, y1 - hw);
+                    if ix1 <= ix0 || iy1 <= iy0 {
+                        return Ok(None);
+                    }
+                    format!("{ix0:.4} {iy0:.4} {:.4} {:.4} re", ix1 - ix0, iy1 - iy0)
+                };
+                c.push_str(&format!("q {s}{bw:.4} w {dash_op}{path} S\nQ\n"));
             }
         }
         b"Line" => {
@@ -544,6 +571,19 @@ fn color(doc: &Document, annot: &Dict, key: &[u8], fill: bool) -> Result<Option<
             String::from_utf8_lossy(key)
         ))),
     }
+}
+
+/// `/BS /S`, the border style name, if given.
+fn border_style(doc: &Document, annot: &Dict) -> Result<Option<Vec<u8>>, Error> {
+    let Some(bs) = annot.get(b"BS".as_slice()) else {
+        return Ok(None);
+    };
+    let bs = doc.deref(bs)?;
+    Ok(bs
+        .as_dict()
+        .and_then(|d| d.get(b"S".as_slice()))
+        .and_then(|o| o.as_name())
+        .map(|n| n.to_vec()))
 }
 
 /// Border width and dash from `/BS` (preferred) or `/Border`.
