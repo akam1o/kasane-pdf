@@ -3793,12 +3793,25 @@ impl<'a> Renderer<'a> {
                             // single state is unambiguous; a widget's
                             // field value (/V) names its state; else
                             // refuse.
-                            let key: Vec<u8> = match ad
-                                .get(b"AS".as_slice())
-                                .and_then(|o| o.as_name())
-                            {
+                            let named = ad.get(b"AS".as_slice()).and_then(|o| o.as_name());
+                            // A null entry is an absent one (§7.3.7; a
+                            // reference to an undefined object is null,
+                            // §7.3.10): only the other states count.
+                            let mut live: Vec<Vec<u8>> = Vec::new();
+                            if named.is_none() {
+                                for (k, v) in states.iter() {
+                                    if !matches!(self.doc.deref(v)?, Object::Null) {
+                                        live.push(k.clone());
+                                    }
+                                }
+                                if live.is_empty() {
+                                    // No appearance at all: nothing to draw.
+                                    continue;
+                                }
+                            }
+                            let key: Vec<u8> = match named {
                                 Some(k) => k.to_vec(),
-                                None if states.len() == 1 => states.keys().next().unwrap().clone(),
+                                None if live.len() == 1 => live.remove(0),
                                 None => {
                                     let v = if subtype == b"Widget" {
                                         crate::acroform::field_value_name(self.doc, ad)?
@@ -3817,7 +3830,7 @@ impl<'a> Renderer<'a> {
                                                         "annotation appearance states without /AS",
                                                     detail: format!(
                                                         "/AP /N has {} states and the annotation names none",
-                                                        states.len()
+                                                        live.len()
                                                     ),
                                                 })
                                             }
