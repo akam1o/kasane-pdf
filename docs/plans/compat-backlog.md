@@ -36,7 +36,7 @@ with the recovery-rule work (phase E).
 
 | item | files | status |
 |---|---:|---|
-| `/Link` borders without `/AP` | 7 | done (link borders) |
+| `/Link` borders without `/AP` | 7 | done: missing ink 0 on the 3 measured files (`file_url_link` SSIM 0.615 → 0.673); open: a border wider than its `/Rect` (`bug1552113`, Poppler strokes outside the rect) |
 | Chrome-printed pages (`chrome-wiki-*`) at SSIM 0.6–0.7 | ~12 | to investigate: likely text anti-aliasing and hinting, not missing content |
 | `jbig2_file_header`, `issue21878`, `devicen-none-zero-domain`, `bug1844583` | 4 | low SSIM; to investigate one by one |
 
