@@ -79,6 +79,7 @@ PDFium / MuPDF / Poppler. The documentation is split into
 | [`releases/v0.5.0.md`](releases/v0.5.0.md) | v0.5.0 release notes |
 | [`plans/v0.5.1.md`](plans/v0.5.1.md) | v0.5.1 plan and results: the measured `max_xobject_depth`, structured render fuzzing and its CI, clip-mask memory, the dashed-stroke fix, the corpus and the reviews |
 | [`releases/v0.5.1.md`](releases/v0.5.1.md) | v0.5.1 release notes |
+| [`plans/compat-backlog.md`](plans/compat-backlog.md) | the corpus failures left after 0.5.1, ranked for the next work |
 | [`plans/encryption.md`](plans/encryption.md) | design of the Standard security handler support: revisions, algorithms, model, API, security notes, milestones |
 | [`plans/redaction-api.md`](plans/redaction-api.md) | memo: what a distribution-safe redaction API would have to guarantee, from an external evaluation of the region editor; not scheduled |
 

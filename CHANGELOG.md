@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+- A `/Link` annotation without an appearance stream now draws its
+  border — `/C` as the colour, width and dash from `/BS` or `/Border`
+  (default `[0 0 1]`), `/BS /S /U` as an underline — as Poppler,
+  pdf.js and Acrobat do. It was silently left out, so pages with
+  coloured link boxes (LaTeX hyperref's default, for example) were
+  reported as exact renders while missing them. A link without `/C`,
+  or with a zero width, still draws nothing.
+
 ## [0.5.1] - 2026-11-07
 
 Rendering robustness and
