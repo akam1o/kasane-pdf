@@ -4,9 +4,9 @@ All notable changes to this project are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.1] - 2026-11-07
 
-Version 0.5.1 (release date set at release). Rendering robustness and
+Rendering robustness and
 a security fix; no public API change (`cargo semver-checks` against
 0.5.0: no semver update required). The patch version covers behaviour
 changes on hostile or extreme input; on the 511-file compatibility
@@ -770,7 +770,8 @@ are possible between minor versions and are recorded here.
   1.1 and Adobe CMap resources under BSD-3-Clause (`NOTICE`,
   `docs/third-party.md`).
 
-[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.5.1
 [0.5.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.5.0
 [0.4.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.4.1
 [0.4.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.4.0
