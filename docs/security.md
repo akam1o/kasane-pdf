@@ -8,8 +8,9 @@ partial or best-effort result presented as success.
 
 ## Resource bounds
 
-Every unbounded operation is capped by [`Limits`](../src/limits.rs)
-(see `architecture.md` § Safety / hostile input for the full table):
+Every unbounded size, count and depth is capped by
+[`Limits`](../src/limits.rs) (see `architecture.md` § Safety / hostile
+input for the full table):
 input size, indirect-resolution depth, page-tree depth/nodes,
 collection sizes, string/nesting depth, decoded-stream bytes (single
 + cumulative), filter-chain length, object-stream size, parsed-op and
@@ -48,6 +49,31 @@ Additionally: cycle detection on reference chains, `/Prev` chains,
 and page-tree node revisits; object-stream bodies decoded once per
 Document; `unsafe` is confined to four documented lifetime transmutes
 in `src/font.rs` (see `architecture.md` § Safety / hostile input).
+
+## Processing time is not bounded
+
+`Limits` caps what is parsed, decoded, allocated and executed — bytes,
+pixels, operators, invocations, depths — not elapsed time. Rendering
+cost depends on geometry as well as on counts (how many path edges
+cross each pixel row, how often a form is drawn, at what resolution),
+so a page within every limit can still take minutes to render. 0.5.1
+removed one amplification (dashed strokes, below), not the class.
+Rendering untrusted input therefore needs a time limit in the
+application: render in a worker thread or process that can be
+abandoned, and tighten `Limits` (`max_operations`,
+`max_xobject_invocations`, `max_path_elements`, `max_render_total_pixels`)
+and the DPI to what the application needs.
+
+**Dashed strokes (fixed in 0.5.1; affects 0.1.0 – 0.5.0).** Round or
+square caps on a dash pattern along a long path made the rasteriser's
+work grow with the square of the edges crossing each pixel row: a
+15 KB content stream took over a minute to render in 0.5.0 at default
+settings (60 s and more at 72 dpi on a 600 pt page; longer at higher
+resolutions). 0.5.1 estimates a dashed stroke's work before drawing
+it and refuses one over a bound per stroke and per page with
+`Error::Unsupported { feature: "dashed stroke" }`. The estimate is a
+bound on the rasteriser's work, not a time guarantee: dashed strokes
+inside it have been measured at up to a few seconds.
 
 ## Typed errors, not partial results
 

@@ -29,9 +29,15 @@ bounty.
 
 ## Scope and guarantees
 
-- Every unbounded operation is capped by `Limits`
+- Every unbounded size, count and depth is capped by `Limits`
   ([`docs/security.md`](docs/security.md)); exceeding a limit is a
   typed `Error::LimitExceeded`, never a panic.
+- Processing **time** is not bounded. The limits bound how much is
+  parsed, decoded, allocated and executed, but not how long one page
+  takes to render: content within every limit can still take minutes.
+  Applications rendering untrusted documents must enforce their own
+  time limit (a worker thread or process they can abandon) and may
+  tighten `Limits` and the DPI.
 - The engine never executes JavaScript, follows external references,
   or performs network or filesystem access from the library.
 - **Not** in scope: the engine is not a redaction tool or a sanitizer

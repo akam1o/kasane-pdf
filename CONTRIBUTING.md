@@ -123,6 +123,37 @@ without an explanation in the pull request.
 - Do not commit PDFs, rendered images, reports or logs from the
   compatibility corpus — only aggregates under `compat/baselines/`.
 
+## Change risk and verification
+
+Verify what a change can break, once; reuse results that still apply.
+A pull request is ready to merge when the change does what it should,
+its tests pass, CI (`pr.yml`, CodeQL) is green and no serious problem
+is known.
+
+| risk | examples | verification |
+|---|---|---|
+| **Low** | docs, comments, examples, test-only changes, small refactors, a local fix with a clear cause | the related tests; CI |
+| **Normal** | rendering features, operators, fonts, filters, internal APIs, fixes across modules | the related tests; CI; the corpus subset the change touches; independent review optional |
+| **High** | parser safety, rewrite compatibility, signatures and encryption, breaking public API, security-relevant limits, `unsafe`, large memory-management or concurrency changes | the above, corpus as wide as the impact, targeted fuzzing of a new risky path, one independent review |
+
+- **Review findings:** fix P0/P1 before merging; judge P2 by its real
+  impact; record P3 and move on. After fixes, re-check only what they
+  touched. Stop regardless of label on demonstrated data corruption,
+  an authentication bypass or a serious safety problem.
+- **Corpus:** the full 511 files run in `nightly.yml`; during
+  development run the related fixtures and the affected subset. The
+  baseline is not updated per feature. Investigate a failing nightly,
+  or related code changed since the last green one.
+- **Fuzzing:** pull requests run the render fuzz smoke, `fuzz-nightly.yml`
+  fuzzes for long; run more locally only to reproduce a finding or for
+  a new high-risk path. A nightly finding becomes a seed and a fix.
+- **Reuse:** a green CI, nightly or release-gate run stays valid until
+  related code changes. Text-only changes (docs, comments, dates) need
+  no re-run beyond CI.
+- **Flow:** branch → implement → related tests → review if High → PR →
+  CI green → merge. Tags, GitHub Releases and crates.io publishes need
+  the maintainer's approval of that release.
+
 ## Reporting bugs
 
 Use the issue templates. For a parsing or rendering problem a

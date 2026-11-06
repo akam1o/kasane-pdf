@@ -6,6 +6,17 @@ yanked, never replaced), so everything is verified before the
 irreversible step, and the tag is created only after the package has
 been verified from the exact commit it will point at.
 
+Keep it short: run the release gate once on the candidate, and reuse
+the latest green nightly (corpus and fuzz) and review results when the
+code they covered has not changed since. Changes after the gate that
+touch only the CHANGELOG date, release notes, README, comments or links
+need CI and the package check, not a new gate; a code change re-runs
+the checks it affects. A patch release needs no extra review or corpus
+run beyond what its changes call for (`CONTRIBUTING.md`, *Change risk
+and verification*). Minimal path: version + CHANGELOG + release notes →
+CI and `cargo publish --dry-run` → approval → tag, publish, GitHub
+Release → check crates.io and docs.rs.
+
 ## 1. Release preparation commit
 
 - `Cargo.toml`: `version`, `rust-version` (verified with that
@@ -22,8 +33,10 @@ been verified from the exact commit it will point at.
 
 Push the preparation commit; `pr.yml` (test / fmt / clippy, feature
 matrix + docs, wasm32 build, dependency audit, compat + round-trip
-smoke, crate package check) and CodeQL must pass; the latest nightly
-must be green on the same code.
+smoke, crate package check, render fuzz smoke, R2 depth and stack on
+Linux) and CodeQL must pass; the latest corpus nightly (`nightly.yml`)
+and render fuzz nightly (`fuzz-nightly.yml`) must be green on the same
+code (dispatch either on the branch if the scheduled run is older).
 
 ### Patch releases from a release branch
 

@@ -113,7 +113,7 @@ Or track the repository directly:
 
 ```toml
 [dependencies]
-kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.5.0" }
+kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.5.1" }
 ```
 
 Supported Rust versions: 1.92 or newer (`rust-version` in
@@ -480,11 +480,14 @@ matters. [`docs/security.md`](docs/security.md) has the full posture.
   *is* reported on a successful result: font substitutions and
   colour approximations (`RenderedPage`), and non-conforming input
   processed exactly (`Document::take_warnings`).
-- **Resource limits.** Every unbounded operation is capped by
-  `Limits` (input size, decoded bytes, pixels, operator counts,
+- **Resource limits.** Every unbounded size, count and depth is capped
+  by `Limits` (input size, decoded bytes, pixels, operator counts,
   depths, edit budgets). The defaults suit ordinary documents;
   tighten them for untrusted input in constrained environments with
-  `Limits::default().with_<field>(value)`. Exceeding one is
+  `Limits::default().with_<field>(value)`. Processing **time** is not
+  bounded: a page within every limit can still take minutes to
+  render, so run untrusted renders under your own time limit
+  ([`docs/security.md`](docs/security.md)). Exceeding one is
   `Error::LimitExceeded { limit, max }`, distinct from a malformed
   file; a zero structural bound is `Error::InvalidArgument`.
 - **Encryption is not a security property of the output.** Opening an
