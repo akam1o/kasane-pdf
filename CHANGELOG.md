@@ -6,82 +6,102 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Rendering robustness (plan: `docs/plans/v0.5.1.md`). No public API
-change.
+Version 0.5.1 (release date set at release). Rendering robustness and
+a security fix; no public API change (`cargo semver-checks` against
+0.5.0: no semver update required). The patch version covers behaviour
+changes on hostile or extreme input; on the 511-file compatibility
+corpus one file improves and every other renders, extracts and
+rewrites identically. Release notes: `docs/releases/v0.5.1.md`;
+plan and measurements: `docs/plans/v0.5.1.md`.
+
+### Security
+- **Dashed strokes could take minutes to render (0.1.0 – 0.5.0).**
+  Round or square caps on a dash pattern along a long path made the
+  rasteriser's work grow with the square of the edges crossing each
+  pixel row: a 15 KB content stream took 63 s in 0.5.0 at width 100 and
+  over 170 s at width 600 (release build, default settings, 600 pt page
+  at 72 dpi). A dashed stroke's work is now estimated before drawing —
+  Σ over pixel rows of (edges of the dash segments reaching the row)²,
+  per stroke and summed over the page, and all segments' edges — and a
+  stroke over a bound is refused with `Error::Unsupported` ("dashed
+  stroke"), never approximated. The bound is on estimated work, not on
+  time: dashed strokes inside it have been measured at up to a few
+  seconds (release, 600 pt page at 72–300 dpi), and rendering time in
+  general is not bounded — render untrusted documents under an
+  application time limit (`docs/security.md`). A stroke that covers the
+  page from every point through round or square caps draws one segment
+  (every pixel fully covered, as by all of them); other dashed strokes
+  draw exactly as before. Found by the nightly render fuzzing.
 
 ### Changed
 - `Limits::default().max_xobject_depth` is **48** (was 32), from a
   stack measurement of every nesting path (forms, transparency groups,
-  soft-mask groups, annotation appearances, Type 3 glyphs): at 48 each
-  needs less stack than 0.5.0 needed at 32 — at most ≈ 1.2 MiB in a
-  debug build, ≈ 0.25 MiB in release — so the default fits a 2 MiB
-  thread. Documents nested 33–48 levels deep now render instead of
-  `LimitExceeded` (`diagnose_redaction` and the region removers follow
-  them too). A caller's own limit is unchanged; raising it costs
-  ≈ 25 KiB (debug) / 5 KiB (release) of stack per level.
-- The content interpreter dispatches the operators that re-enter it
-  (`Do`, `gs`, text showing, path painting, inline images) from a small
-  stack frame,
-  cutting the stack per nesting level by 40–60 % in debug builds and
-  10–30 % in release. No rendering change.
+  soft-mask groups, annotation appearances, Type 3 glyphs) on macOS
+  arm64 and Linux x86_64: at 48 each needs less stack than 0.5.0
+  needed at 32 — at most ≈ 1.2 MiB in a debug build, ≈ 0.25 MiB in
+  release — so the default fits a 2 MiB thread. Documents nested 33–48
+  levels deep now render instead of `LimitExceeded`
+  (`diagnose_redaction` and the region removers follow them too). A
+  caller's own limit is unchanged; raising it costs ≈ 25 KiB (debug) /
+  5 KiB (release) of stack per level.
 - The clip and soft masks held by the graphics state (one byte per
   page pixel each) are bounded: those alive at once may take at most
   `max_render_buffer_bytes`, an allowance of their own beside the page
-  and its layers; beyond it, `LimitExceeded`. Shared masks (below) make
-  this reachable only by many *distinct* nested clips at a high
-  resolution — e.g. 32 nested forms with ever smaller BBoxes at 600 dpi,
-  which 0.5.0 drew with ≈ 0.9 GB.
+  and its layers; beyond it, `LimitExceeded`. Shared masks (Fixed,
+  below) make this reachable only by many *distinct* nested clips at a
+  high resolution — e.g. 32 nested forms with ever smaller BBoxes at
+  600 dpi, which 0.5.0 drew with ≈ 0.9 GB.
+- New refusals on extreme input, all `Error::Unsupported` (an existing
+  variant): "dashed stroke" (Security, above), "stroke width" and
+  "geometry extent" (Fixed, below) — the last two replace panics.
+- The content interpreter dispatches the operators that re-enter it
+  (`Do`, `gs`, text showing, path painting, inline images) from a small
+  stack frame, cutting the stack per nesting level by 40–60 % in debug
+  builds and 10–30 % in release. No rendering change.
 
 ### Fixed
-- Memory: every `q`, form, group and pattern cell copied the clip mask
-  — `re W n` followed by 1000 `q` cost 1000 page-sized masks (2.2 GB at
-  600 dpi on a 600 pt page; tens of GB at the default pixel cap), with
-  no limit. A saved state now shares the masks, a clip that cuts
-  nothing away (such as a form BBox enclosing the clip) keeps the mask,
-  and the masks are bounded (above). The same 1000 `q`: 119 MB.
-  Present since 0.1.
-- **Dashed strokes could take minutes.** Round or square caps on a
-  dash pattern along a long path made the rasteriser's work grow with
-  the square of the edges per row: a 15 KB content stream (250 000
-  round-capped dashes) took 63 s in 0.5.0 at width 100 and over 170 s
-  at width 600 (release, 600 pt page at 72 dpi). A dashed stroke's work
-  is now estimated before drawing — Σ over rows of (edges of the dash
-  segments reaching the row)², per stroke and summed over the page, and
-  all segments' edges — and a stroke over a bound is refused with
-  `Error::Unsupported` ("dashed stroke"), never approximated. The bound
-  is on estimated rasteriser work, not on time: dashed strokes inside
-  it have been measured at up to a few seconds (release, 600 pt page at
-  72–300 dpi). A
-  stroke that covers the page from every point through round or square
-  caps draws one segment (every pixel fully covered, as by all of
-  them). Other dashed strokes draw exactly as before. Present since
-  0.1; found by the nightly fuzzing.
-- A stroke far wider than the page (e.g. `99999999999999999999 w`)
-  panicked inside the rasteriser. A stroke wider than 2^24 device
-  pixels made of straight segments with round joins or miters within
-  their limit, covering the page from every point, is now narrowed to
-  a covering width (the same coverage, up to the rasteriser's rounding
-  at a far edge); any other is refused with `Error::Unsupported`
-  ("stroke width"). Present since 0.1; found by fuzzing.
-- Geometry reaching about 5 × 10⁸ device pixels panicked inside the
-  rasteriser. A path beyond ±2^24 device pixels is now skipped when it
-  lies entirely off the page (a clip there leaves nothing visible) and
-  refused with `Error::Unsupported` ("geometry extent") otherwise.
-  Present since 0.1; found by fuzzing.
+- **Clip-mask memory.** Every `q`, form, group and pattern cell copied
+  the clip mask — `re W n` followed by 1000 `q` cost 1000 page-sized
+  masks (2.2 GB at 600 dpi on a 600 pt page; tens of GB at the default
+  pixel cap), with no limit. A saved state now shares the masks, a
+  clip that cuts nothing away (such as a form BBox enclosing the clip)
+  keeps the mask, and the masks are bounded (Changed, above). The same
+  1000 `q`: 119 MB. Present since 0.1.
+- **Panic on a stroke far wider than the page** (e.g.
+  `99999999999999999999 w`), inside the rasteriser. A stroke wider than
+  2^24 device pixels made of straight segments with round joins or
+  miters within their limit, covering the page from every point, is
+  now narrowed to a covering width (the same coverage, up to the
+  rasteriser's rounding at a far edge); any other is refused with
+  `Error::Unsupported` ("stroke width"). Present since 0.1; found by
+  fuzzing.
+- **Panic on geometry reaching about 5 × 10⁸ device pixels**, inside
+  the rasteriser. A path beyond ±2^24 device pixels is now skipped
+  when it lies entirely off the page (a clip there leaves nothing
+  visible) and refused with `Error::Unsupported` ("geometry extent")
+  otherwise. Present since 0.1; found by fuzzing.
 
-### Added
+### Testing and tooling (no library change)
 - Fuzz targets `render_content` (a valid page with every resource kind
   the renderer draws, its content stream generated from the input) and
   `render_graph` (page trees and form graphs with cycles, sharing,
-  soft masks, patterns, broken references and object streams), with
-  committed seeds (`fuzz/README.md`).
+  soft masks, patterns, broken references and object streams; at most
+  250 form invocations a page inside the target), with committed
+  synthetic seeds (`fuzz/README.md`).
 - CI: a render fuzz smoke job on every pull request (seeds plus 3000
   inputs per target, and a check that the seeds' pages paint), a
-  Linux depth-and-stack job (debug and release), and a separate nightly
-  workflow (`fuzz-nightly.yml`, 15 minutes per target, with a
-  self-test that a crash, a timeout and an out-of-memory each fail it).
-  All of them run the targets through `fuzz/ci-run.sh`, which fails on
-  any input libFuzzer saves, not only on its exit status.
+  Linux depth-and-stack job (debug and release), and a separate
+  nightly workflow (`fuzz-nightly.yml`: 15 minutes per target daily,
+  corpus kept in the Actions cache, `contents: read` only, with a
+  self-test that a crash, a timeout and an out-of-memory each fail
+  it). All of them run the targets through `fuzz/ci-run.sh`, which
+  fails on any input libFuzzer saves, not only on its exit status
+  (30 s per input).
+- Stack and boundary tests for `max_xobject_depth` on every nesting
+  path, run in child processes (`tests/render_xobject_depth.rs`); clip
+  memory, extreme-width and dashed-stroke tests; property tests of the
+  dashed-stroke and narrowing paths against the rasteriser's own
+  output.
 
 ## [0.5.0] - 2026-11-05
 
