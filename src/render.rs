@@ -7873,6 +7873,53 @@ mod tests {
         assert_eq!(spent, MAX_DASHED_PAGE_WORK - 1.0, "a refusal adds nothing");
     }
 
+    /// The per-stroke bound's edge: a dashed path grown one piece at a
+    /// time is drawn while its estimate stays within
+    /// `MAX_DASHED_ROW_WORK` and refused, typed, from the first piece that
+    /// takes it over — never a different error.
+    #[test]
+    fn the_dashed_bound_refuses_exactly_past_its_limit() {
+        let stroke = Stroke {
+            width: 8.0,
+            line_cap: tiny_skia::LineCap::Round,
+            dash: StrokeDash::new(vec![1.0, 3.0], 0.0),
+            ..Default::default()
+        };
+        let ts = Transform::identity();
+        let path = |pieces: usize| {
+            let mut pb = PathBuilder::new();
+            pb.move_to(0.0, 32.0);
+            for i in 0..pieces {
+                pb.line_to(if i % 2 == 0 { 64.0 } else { 0.0 }, 32.0);
+            }
+            pb.finish().unwrap()
+        };
+        let (mut last_drawn, mut refused_at) = (0.0, None);
+        for pieces in (1..20_000).step_by(25) {
+            let mut spent = 0.0;
+            match dashed_stroke(&path(pieces), &stroke, ts, 64, 64, &mut spent) {
+                Ok(DashedStroke::Segments(..)) => {
+                    assert!(spent <= MAX_DASHED_ROW_WORK, "{pieces}: {spent}");
+                    last_drawn = spent;
+                }
+                Err(Error::Unsupported {
+                    feature: "dashed stroke",
+                    ..
+                }) => {
+                    assert_eq!(spent, 0.0, "a refusal records nothing");
+                    refused_at = Some(pieces);
+                    break;
+                }
+                other => panic!("{pieces}: {:?}", other.map(|_| ())),
+            }
+        }
+        assert!(refused_at.is_some(), "never refused");
+        assert!(
+            last_drawn > MAX_DASHED_ROW_WORK / 2.0,
+            "drawn up to {last_drawn}"
+        );
+    }
+
     /// A narrowed stroke (`bounded_stroke`) paints what the same stroke
     /// paints at another covering width — three times wider, which the
     /// rasteriser can still take — up to the rasteriser's rounding where
