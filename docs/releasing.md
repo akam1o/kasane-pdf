@@ -6,6 +6,17 @@ yanked, never replaced), so everything is verified before the
 irreversible step, and the tag is created only after the package has
 been verified from the exact commit it will point at.
 
+Keep it short: run the release gate once on the candidate, and reuse
+the latest green nightly (corpus and fuzz) and review results when the
+code they covered has not changed since. Changes after the gate that
+touch only the CHANGELOG date, release notes, README, comments or links
+need CI and the package check, not a new gate; a code change re-runs
+the checks it affects. A patch release needs no extra review or corpus
+run beyond what its changes call for (`CONTRIBUTING.md`, *Change risk
+and verification*). Minimal path: version + CHANGELOG + release notes →
+CI and `cargo publish --dry-run` → approval → tag, publish, GitHub
+Release → check crates.io and docs.rs.
+
 ## 1. Release preparation commit
 
 - `Cargo.toml`: `version`, `rust-version` (verified with that
