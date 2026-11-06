@@ -6533,6 +6533,17 @@ impl<'a> Renderer<'a> {
                 // first for points. Pipeline order glyph → Trm → page
                 // → pixmap therefore wants `trm.post_concat(upx)`.
                 let full = trm_ts.post_concat(self.user_to_pix);
+                // Unrotated, unskewed glyphs sit on a whole device row
+                // (the origin's y rounded), as Splash and Skia place
+                // horizontal text: crisper baselines, no change of
+                // shape or advance. Rotated or skewed text is drawn
+                // at its exact position.
+                let snap = if full.kx == 0.0 && full.ky == 0.0 && full.ty.is_finite() {
+                    full.ty.floor() - full.ty
+                } else {
+                    0.0
+                };
+                let full = full.post_translate(0.0, snap);
                 match t.render_mode {
                     0 | 2 | 4 | 6 if gs.fill_space.is_pattern() => {
                         // Filled with the pattern once the gs borrow ends.
@@ -6590,7 +6601,8 @@ impl<'a> Renderer<'a> {
                         gs.ctm.e as f32,
                         gs.ctm.f as f32,
                     )
-                    .post_concat(self.user_to_pix);
+                    .post_concat(self.user_to_pix)
+                    .post_translate(0.0, snap);
                     path.clone().transform(tp).map(|p| (p, ctm, stroke))
                 });
                 if let Some((path, full, stroke)) = user_stroke {
