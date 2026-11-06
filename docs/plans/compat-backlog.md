@@ -28,7 +28,7 @@ with the recovery-rule work (phase E).
 | item | files | notes |
 |---|---:|---|
 | non-embedded Chinese fonts (TrueType and CID, GB1 / Identity) | 4 + 2 `any` | needs a bundled GB1 fallback (like `cjk-fallback` for Japan1); Identity-ordering CID fonts cannot be substituted |
-| annotation `/AP /N` states that are all `null` | 1 | §7.3.7: a null entry is absent, so there are no states and nothing to draw; currently refused as "states without /AS" |
+| ~~annotation `/AP /N` states that are all `null`~~ | 0 | done for real null entries (§7.3.7); the suspected file, `issue15557`, has the *name* `/null` as its state values — malformed, still refused |
 | FreeText / field values outside Latin with the fallback font | 1 | needs a Unicode field font |
 | `/BrotliDecode` | 1 | not in ISO 32000; pdfium-only |
 
@@ -37,8 +37,13 @@ with the recovery-rule work (phase E).
 | item | files | status |
 |---|---:|---|
 | `/Link` borders without `/AP` | 7 | done: missing ink 0 on the 3 measured files (`file_url_link` SSIM 0.615 → 0.673); open: a border wider than its `/Rect` (`bug1552113`, Poppler strokes outside the rect) |
-| Chrome-printed pages (`chrome-wiki-*`) at SSIM 0.6–0.7 | ~12 | to investigate: likely text anti-aliasing and hinting, not missing content |
+| Chrome-printed and text pages, glyph baselines | 15 improved | done: Splash floors each glyph origin's device y; kasane now does for unrotated text (35 text files: mean SSIM 0.8035 → 0.8268, none worse) |
+| Chrome pages, glyph weight | ~10 | the largest remaining gap on `chrome-wiki-*` (SSIM 0.6–0.7, same ink, no offset): FreeType draws stems thinner and lighter than tiny-skia's coverage. A gamma or hinting choice, not a placement error; no exact fix |
+| Type 3 glyph baselines | 3 + (`chrome-japanese-vertical-*` use Type 3 only) | Type 3 glyphs are run as content and not snapped; extending the snap to their origin is the next small step |
+| axis-aligned rectangles | many, small | Splash snaps rectangle edges to whole pixels (stroke adjustment); kasane anti-aliases them exactly. Not adopted: a heuristic, not a PDF rule (only `/SA` strokes) |
 | `jbig2_file_header`, `issue21878`, `devicen-none-zero-domain`, `bug1844583` | 4 | low SSIM; to investigate one by one |
 
-Next: the null-state annotation fix (small, spec-exact, +1 Full PASS),
-then the Chrome-print fidelity investigation (largest remaining group).
+Next: Type 3 glyph baselines (small, extends the snap), then the
+non-embedded Chinese fonts (largest Full PASS gain left, needs a GB1
+fallback font and its licensing) and the wide link border. Lower: the
+FreeText non-Latin font, `/BrotliDecode`.

@@ -6,7 +6,18 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- Unrotated text is placed on a whole device row: each glyph origin's
+  device y is floored, as Poppler's Splash places it (x keeps its
+  exact position; shapes, advances and extracted coordinates do not
+  change). Lines no longer fall up to a pixel below where Poppler draws
+  them; on 35 text and Chrome-printed corpus files SSIM against Poppler
+  rises from 0.80 to 0.83 on average, none lower.
+
 ### Fixed
+- A `null` appearance state of an annotation is absent (§7.3.7): with
+  no `/AS`, only the other states count, and none means nothing to draw
+  instead of a refusal.
 - A `/Link` annotation without an appearance stream now draws its
   border — `/C` as the colour, width and dash from `/BS` or `/Border`
   (default `[0 0 1]`), `/BS /S /U` as an underline — as Poppler,
