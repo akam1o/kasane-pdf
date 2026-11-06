@@ -1062,7 +1062,8 @@ fn narrowing_is_exact(path: &tiny_skia::Path, stroke: &Stroke) -> bool {
 const MAX_DASHED_ROW_WORK: f64 = 1e13;
 
 /// The same measure summed over the dashed strokes of one render: a
-/// page repeating strokes each under the bound stops at ≈ 10 s.
+/// page repeating strokes each under the bound is refused after ten
+/// bounds' worth of estimated work (an estimate, not a time bound).
 const MAX_DASHED_PAGE_WORK: f64 = 1e14;
 
 /// And on the outline edges of all the segments, reached or not: each
