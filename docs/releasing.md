@@ -22,8 +22,10 @@ been verified from the exact commit it will point at.
 
 Push the preparation commit; `pr.yml` (test / fmt / clippy, feature
 matrix + docs, wasm32 build, dependency audit, compat + round-trip
-smoke, crate package check) and CodeQL must pass; the latest nightly
-must be green on the same code.
+smoke, crate package check, render fuzz smoke, R2 depth and stack on
+Linux) and CodeQL must pass; the latest corpus nightly (`nightly.yml`)
+and render fuzz nightly (`fuzz-nightly.yml`) must be green on the same
+code (dispatch either on the branch if the scheduled run is older).
 
 ### Patch releases from a release branch
 
