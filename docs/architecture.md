@@ -337,7 +337,7 @@ Every unbounded operation has a `Limits` bound:
 | `max_filter_chain` | filters applied to one stream |
 | `max_objstm_entries` / `max_objstm_bytes` | `/N` and `/First`+body bounds in object streams |
 | `max_operations` / `max_operand_stack` / `max_gsave_depth` | parsed ops per page, pending operands, `q` stack depth |
-| `max_render_pixels` / `max_render_total_pixels` / `max_render_buffer_bytes` | output pixmap size |
+| `max_render_pixels` / `max_render_total_pixels` / `max_render_buffer_bytes` | output pixmap size; `max_render_buffer_bytes` also bounds the page with its live group layers, and (since 0.5.1, a separate allowance) the graphics state's live clip and soft masks |
 | `max_path_elements` | path-construction commands per painted path |
 | (xref) section & entry counts | `/Prev` chains and subsection loops |
 
