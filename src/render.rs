@@ -1057,7 +1057,8 @@ fn narrowing_is_exact(path: &tiny_skia::Path, stroke: &Stroke) -> bool {
 /// (every row sorts and walks them): the measure is Σ over rows of
 /// (edges of the segments that can reach the row)². Measured (release):
 /// ≈ 0.1 s per 10¹² — a page of 90 000 round-capped dots at 600 dpi is
-/// 5 × 10¹² (0.4 s, as in 0.5.0); a stroke at the bound takes ≈ 1 s.
+/// 5 × 10¹² (0.4 s, as in 0.5.0). An estimate, not a time bound:
+/// strokes inside it have been measured at up to a few seconds.
 const MAX_DASHED_ROW_WORK: f64 = 1e13;
 
 /// The same measure summed over the dashed strokes of one render: a

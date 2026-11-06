@@ -48,9 +48,10 @@ change.
   is now estimated before drawing — Σ over rows of (edges of the dash
   segments reaching the row)², per stroke and summed over the page, and
   all segments' edges — and a stroke over a bound is refused with
-  `Error::Unsupported` ("dashed stroke"), never approximated; the
-  slowest stroke still drawn takes ≈ 0.7 s, a page's dashed strokes
-  together ≈ 10 s at most. A
+  `Error::Unsupported` ("dashed stroke"), never approximated. The bound
+  is on estimated rasteriser work, not on time: dashed strokes inside
+  it have been measured at up to a few seconds (release, 600 pt page at
+  72–300 dpi). A
   stroke that covers the page from every point through round or square
   caps draws one segment (every pixel fully covered, as by all of
   them). Other dashed strokes draw exactly as before. Present since
