@@ -59,8 +59,10 @@ cross each pixel row, how often a form is drawn, at what resolution),
 so a page within every limit can still take minutes to render. 0.5.1
 removed one amplification (dashed strokes, below), not the class.
 Rendering untrusted input therefore needs a time limit in the
-application: render in a worker thread or process that can be
-abandoned, and tighten `Limits` (`max_operations`,
+application: render in a separate process that can be terminated when
+the limit expires — a rendering call has no cancellation point, so
+timing out its caller or abandoning a thread leaves the computation
+running — and tighten `Limits` (`max_operations`,
 `max_xobject_invocations`, `max_path_elements`, `max_render_total_pixels`)
 and the DPI to what the application needs.
 
