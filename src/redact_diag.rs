@@ -1588,6 +1588,12 @@ impl<'a> DiagWalker<'a> {
     /// rect where nothing shows; such a hit is counted in
     /// `clip_undecided_hits`.
     fn visible_hits(&mut self, b: &(f64, f64, f64, f64)) -> Vec<usize> {
+        // Redaction: a clip hides ink, not data — text is extracted,
+        // image samples and path coordinates read, wherever they stand.
+        // Whatever meets a rect is a hit, clipped or not.
+        if self.redaction_mode {
+            return hits_for(b, self.rects);
+        }
         match self.gs.clip {
             None => hits_for(b, self.rects),
             Some(c) => {
@@ -1818,6 +1824,34 @@ impl<'a> DiagWalker<'a> {
             return Ok(());
         }
         let origin = trm.transform(0.0, 0.0);
+        // Readers place glyphs under a strongly anisotropic transform
+        // unreliably (Poppler draws a 0.1 × 10 scaled glyph far from
+        // where its outline lies): redaction refuses beyond 16:1 — in
+        // the text matrix, the CTM or their product (a CTM can cancel
+        // the text matrix's stretch in the product while readers still
+        // draw it distorted).
+        let text_space =
+            crate::matrix::Matrix::new(font_size * h_scale, 0.0, 0.0, font_size, 0.0, rise)
+                .concat(self.text_tm);
+        if self.redaction_mode
+            && [
+                anisotropy(&trm),
+                anisotropy(&text_space),
+                anisotropy(&self.gs.ctm),
+            ]
+            .iter()
+            .any(|r| *r > 16.0)
+        {
+            return self.glyph_error(
+                code,
+                Error::Unsupported {
+                    feature: "strongly anisotropic text",
+                    detail: "the text matrix or CTM stretches one axis over 16 times the \
+                             other; readers do not agree where such glyphs are drawn"
+                        .into(),
+                },
+            );
+        }
         // A Type 3 glyph is a content stream that may paint anywhere
         // (and draw images); its extent is not evaluated, so it is not
         // estimated either.
@@ -1846,14 +1880,6 @@ impl<'a> DiagWalker<'a> {
         // file names. For redaction the real ink extent is unknown, so
         // the glyph is reported as uncertain exactly as a font with no
         // outlines was before substitution existed.
-        //
-        // One exception needs no extent: under a clip that is exactly a
-        // rectangle meeting no rect, the glyph cannot paint inside a
-        // rect whatever font draws it — it is not a hit.
-        if font.substitution().is_some() && render_mode < 4 && self.clipped_away_from_rects() {
-            self.advance_glyph(font, code, font_size, h_scale, char_spacing, word_spacing);
-            return Ok(());
-        }
         if let Some(s) = font.substitution() {
             return self.glyph_error(
                 code,
@@ -2514,6 +2540,20 @@ impl<'a> DiagWalker<'a> {
 /// `sqrt(|det|)` — the geometric mean of the singular values — is
 /// *not* conservative: under `10 0 0 0.1` it returns 1 while the
 /// actual stretch is 10.
+/// The ratio of a 2×2 matrix's singular values (∞ when singular).
+fn anisotropy(m: &crate::matrix::Matrix) -> f64 {
+    let (a, b, c, d) = (m.a, m.b, m.c, m.d);
+    let s = a * a + b * b + c * c + d * d;
+    let det = (a * d - b * c).abs();
+    let r = (s * s - 4.0 * det * det).max(0.0).sqrt();
+    let (big, small) = (((s + r) / 2.0).sqrt(), ((s - r) / 2.0).max(0.0).sqrt());
+    if small > 0.0 {
+        big / small
+    } else {
+        f64::INFINITY
+    }
+}
+
 fn ctm_max_scale(m: &crate::matrix::Matrix) -> f64 {
     let c1 = (m.a * m.a + m.c * m.c).sqrt();
     let c2 = (m.b * m.b + m.d * m.d).sqrt();

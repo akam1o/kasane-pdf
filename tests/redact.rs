@@ -650,18 +650,47 @@ fn norotate_links_are_refused() {
     assert!(e.contains("NoRotate"), "{e}");
 }
 
-/// Text clipped away from the rect shows only outside it: kept.
+/// A clip hides ink, not data: text, a path and an image standing in
+/// the rect are removed even when clipped away there (extraction and
+/// readers of the file still find them).
 #[test]
-fn text_clipped_away_from_the_rect_is_kept() {
+fn clipped_content_in_the_rect_is_removed() {
     let pdf = one_page(
-        "q 65 0 100 200 re W n BT /F1 40 Tf 50 100 Td (M) Tj ET Q",
+        "q 65 0 100 200 re W n BT /F1 40 Tf 50 100 Td (M) Tj ET 50 100 10 30 re f Q",
         "",
         "",
         vec![],
     );
     let r = run(&pdf, vec![(50.0, 100.0, 60.0, 140.0)]).unwrap();
-    assert_eq!(r.codes_removed, 0);
-    assert_eq!(page_text(&r.output, 0), "M");
+    assert_eq!((r.codes_removed, r.paths_removed), (1, 1));
+    assert_eq!(page_text(&r.output, 0), "");
+    // Text and an image fully clipped away (invisible) in the rect.
+    let pdf = build_pdf(&{
+        let mut o = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /Font << /F1 20 0 R >> /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (
+                4,
+                stream_obj(
+                    "",
+                    format!("q 0 0 10 10 re W n {SECRET} q 100 0 0 100 50 50 cm /Im1 Do Q Q").as_bytes(),
+                ),
+            ),
+            (5, image_obj()),
+        ];
+        o.extend(font_objs());
+        o
+    });
+    let r = run(&pdf, vec![(45.0, 50.0, 160.0, 150.0)]).unwrap();
+    assert_eq!((r.codes_removed, r.pixels_changed), (10, 256));
+    assert!(!contains(&r.output, b"SECRETTEXT"));
+    assert!(!contains(&r.output, &secret_samples()));
 }
 
 /// A `cm` inside a path object is placed differently by different
@@ -725,17 +754,18 @@ fn numbers_survive_the_rewrite() {
 // Third independent review (P0, fixed).
 
 /// A clip that is not a rectangle: its bounds meeting a rect does not
-/// mean anything shows there. Refused rather than guessed.
+/// mean anything shows there — and clips decide no hit: whatever meets
+/// a rect is removed under any clip.
 #[test]
-fn non_rectangular_clip_is_refused() {
+fn clips_do_not_decide_hits() {
     let pdf = one_page(
         "q 0 0 m 200 0 l 50 150 l h W n BT /F1 40 Tf 50 100 Td (M) Tj ET Q",
         "",
         "",
         vec![],
     );
-    let e = unsupported(run(&pdf, vec![(50.0, 100.0, 60.0, 140.0)]));
-    assert!(e.contains("not a rectangle"), "{e}");
+    let r = run(&pdf, vec![(50.0, 100.0, 60.0, 140.0)]).unwrap();
+    assert_eq!(r.codes_removed, 1);
     // Rectangular clips, restored by Q and set under changed CTMs,
     // stay exact.
     let ok = one_page(
@@ -1954,30 +1984,30 @@ fn non_embedded_text_is_refused() {
     }
 }
 
-/// Under a clip that is exactly a rectangle meeting no rect, a
-/// non-embedded glyph cannot paint inside one whatever font draws it.
+/// A clip hides a non-embedded glyph's ink, not its code: refused
+/// even clipped away from the rects (the code could stand in one).
 #[test]
-fn non_embedded_text_clipped_away_from_the_rects_is_kept() {
+fn non_embedded_text_is_refused_even_clipped_away() {
     let mut objs = font_objs();
     objs.push(helv());
+    for clip in ["0 0 200 60", "0 0 200 95"] {
+        let pdf = doc_with(
+            HELV,
+            &[
+                format!("{SECRET} q {clip} re W n BT /H 12 Tf 20 20 Td (FARAWAY) Tj ET Q")
+                    .as_bytes(),
+            ],
+            objs.clone(),
+        );
+        assert!(
+            unsupported(run(&pdf, vec![RECT])).contains("non-embedded"),
+            "{clip}"
+        );
+    }
+    // Non-embedded text clipped away entirely, standing in the rect.
     let pdf = doc_with(
         HELV,
-        &[
-            format!("{SECRET} q 0 0 200 60 re W n BT /H 12 Tf 20 20 Td (FARAWAY) Tj ET Q")
-                .as_bytes(),
-        ],
-        objs.clone(),
-    );
-    let r = run(&pdf, vec![RECT]).unwrap();
-    assert_eq!(r.codes_removed, 10);
-    assert!(page_text(&r.output, 0).contains("FARAWAY"));
-    // A clip that meets the rect decides nothing: refused.
-    let pdf = doc_with(
-        HELV,
-        &[
-            format!("{SECRET} q 0 0 200 95 re W n BT /H 12 Tf 20 20 Td (FARAWAY) Tj ET Q")
-                .as_bytes(),
-        ],
+        &[b"q 0 0 10 10 re W n BT /H 12 Tf 50 100 Td (SECRETTEXT) Tj ET Q"],
         objs,
     );
     assert!(unsupported(run(&pdf, vec![RECT])).contains("non-embedded"));
@@ -2425,8 +2455,8 @@ fn missing_width_places_what_follows() {
         "{}",
         t.chars[4].origin.0
     );
-    let r = run(&pdf, vec![(55.0, 90.0, 80.0, 115.0)]).unwrap();
-    assert_eq!(r.codes_removed, 1, "the W in the rect is removed");
+    // The non-embedded B's ink is unknown (clipped or not): refused.
+    assert!(unsupported(run(&pdf, vec![(55.0, 90.0, 80.0, 115.0)])).contains("non-embedded"));
 }
 
 /// Metrics follow the font's name, not its descriptor's flags:
@@ -2450,4 +2480,28 @@ fn afm_widths_follow_the_name() {
         "{}",
         t.chars[4].origin.0
     );
+}
+
+/// Under a strongly anisotropic text matrix readers disagree where a
+/// glyph is drawn (Poppler draws a 0.1 × 10 glyph far from its
+/// outline): refused — also when a CTM cancels the stretch in the
+/// product.
+#[test]
+fn strongly_anisotropic_text_is_refused() {
+    for c in [
+        "BT /F1 20 Tf .1 0 0 10 100 100 Tm (W) Tj ET",
+        "10 0 0 .1 0 0 cm BT /F1 20 Tf .1 0 0 10 20 2000 Tm (W) Tj ET",
+        "BT /F1 20 Tf 10 0 0 .1 20 100 Tm (W) Tj ET",
+    ] {
+        let pdf = one_page(c, "", "", vec![]);
+        let e = unsupported(run(&pdf, vec![(150.0, 150.0, 160.0, 160.0)]));
+        assert!(e.contains("anisotropic"), "{c}: {e}");
+    }
+    let ok = one_page(
+        "BT /F1 20 Tf .25 0 0 4 100 100 Tm (W) Tj ET",
+        "",
+        "",
+        vec![],
+    );
+    run(&ok, vec![(150.0, 150.0, 160.0, 160.0)]).unwrap();
 }
