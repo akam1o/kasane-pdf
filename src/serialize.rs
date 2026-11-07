@@ -143,10 +143,18 @@ fn write_real(r: f64, out: &mut Vec<u8>) -> Result<(), Error> {
             "real number {r} is not finite — cannot serialize"
         )));
     }
-    // `{:.10}` is enough precision for PDF coordinates (spec examples
-    // use ≤4 decimals); trimming `0`s keeps determinism.
-    let s = format!("{r:.10}");
-    let trimmed = s.trim_end_matches('0').trim_end_matches('.');
+    // The shortest decimal that reads back as the same f64 (Rust's
+    // float `Display` never uses an exponent), so a rewrite keeps every
+    // value it read — `.00100000005` must not become `.0010000001`,
+    // which moves glyphs that sit a hair from a pixel boundary.
+    // Magnitudes below 1e-10 are written as 0, as before, rather than
+    // as hundreds of digits.
+    let s = if r.abs() < 1e-10 {
+        "0".to_string()
+    } else {
+        format!("{r}")
+    };
+    let trimmed = s.as_str();
     // Always keep a decimal point (e.g. `5` → `5.0`) so the token is
     // unambiguously a real, not an integer (§7.3.3 note).
     let s = if trimmed.contains('.') {
@@ -189,6 +197,20 @@ mod tests {
         d.insert(b"weird key".to_vec(), Object::String(b"v".to_vec()));
         let out = ser(&Object::Dict(d));
         assert!(String::from_utf8_lossy(&out).contains("/weird#20key"));
+    }
+
+    #[test]
+    fn real_keeps_its_value() {
+        for (r, want) in [
+            (0.00100000005, "0.00100000005"),
+            (-0.23999999, "-0.23999999"),
+            (998.32813, "998.32813"),
+            (5.0, "5.0"),
+            (1e-11, "0.0"),
+        ] {
+            let out = ser(&Object::Real(r));
+            assert_eq!(String::from_utf8_lossy(&out), want);
+        }
     }
 
     #[test]
