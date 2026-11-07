@@ -45,7 +45,7 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 | text in a non-embedded Times, Helvetica or Courier font (or a metric-compatible alias such as Arial), with `embed_substitute_fonts(true)` (CLI `--embed-substitute-fonts`) | refused by default. On request each such font is first replaced, document-wide, by a non-symbolic TrueType font embedding the bundled Liberation face, with every code's glyph name (`/Differences`) and advance (`/Widths`) written out, so every reader draws exactly those glyphs at the same positions; the text is then redacted by ink like any embedded font's (`fonts_embedded`). The output shows Liberation's shapes wherever those fonts are used and carries the programs (≈ 0.3–0.4 MB per face). Symbol, ZapfDingbats, other non-embedded and CID fonts stay refused |
 | optional content (`BDC /OC`, a form's or image's `/OC`) | taken as drawn whether a viewer shows it or not: what meets a rect is removed — hidden content too — and the rest kept |
 | shadings (`sh`) | a shading fills the clip: kept under a clip that is exactly a rectangle meeting no rect, refused otherwise |
-| ExtGState (`gs`) | stroke parameters (`/LW`, `/LC`, `/LJ`, `/ML`, `/D`) are applied; colour and compositing parameters (alpha, blend mode, overprint, transfer, halftone, `/SMask /None` …) are passed through, since removal and cutting are by geometry. A soft mask and `/Font` are refused. Stroke adjustment (`/SA true`) moves edges to device pixels by an amount no user-space bound covers (and Splash snaps a rectangle fill's edges too), so while it is on any stroke (paths, stroked text, a Type 3 CharProc's), and any fill meeting a rect without lying wholly inside one (which would be cut), is refused; text fills, images, fills removed whole and fills clear of every rect are accepted — their kept ink is the input's, unchanged |
+| ExtGState (`gs`) | stroke parameters (`/LW`, `/LC`, `/LJ`, `/ML`, `/D`) are applied; colour and compositing parameters (alpha, blend mode, overprint, transfer, halftone, `/SMask /None` …) are passed through, since removal and cutting are by geometry. A soft mask and `/Font` are refused. Stroke adjustment (`/SA true`) moves edges to device pixels by an amount no user-space bound covers (and Splash snaps a rectangle fill's edges too), so while it is on any stroke (paths, stroked text, a Type 3 CharProc's), and any fill meeting a rect without lying wholly inside one (which would be cut), is refused; text fills, images, fills removed whole and fills clear of every rect are accepted — their kept ink is the input's, unchanged, and like all kept content may be snapped by up to a device pixel (see Known limits of exactness) |
 | Form XObjects, nested up to 16 deep (transparency groups included) | their text, paths and images inside the rects are removed, cut or zeroed in copies along the invocation chain — each copy drawn by that one invocation only (`forms_edited`), its `/Resources` naming only what it draws. Other invocations and pages keep the originals; an original still drawn is reported in `elsewhere` (`Removed::Form` / `Removed::Image`); otherwise it is not carried. A form cycle is refused |
 | document `/Info`, catalog XMP `/Metadata` | always removed |
 | structure tree | refused when it carries `/Alt`, `/ActualText` or `/E`; with `remove_structure_tree(true)` the tree and `/MarkInfo` are removed |
@@ -164,6 +164,13 @@ document text in `Debug` output.
   below any rendering resolution).
 - Glyphs are removed whole: a glyph straddling a rect's edge goes
   entirely, including its part outside.
+- Geometry is exact in user space, not in device pixels. A reader
+  snaps what it draws to its pixel grid (Splash places images and thin
+  fills on whole pixels, with or without stroke adjustment), so kept
+  content lying within one device pixel of a rect's edge can colour
+  that edge's pixels inside the rect — measured: one pixel column of
+  the kept neighbouring image samples at 72–300 dpi. Nothing removed
+  is drawn there; the pixels are the kept content's own.
 
 ## Not covered (known limitations of 0.6)
 

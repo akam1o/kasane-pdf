@@ -53,11 +53,13 @@ versions follow [Semantic Versioning](https://semver.org/).
   stroke text modes do not inflate Type 3 glyphs; CharProc ops count
   against `max_diag_exec_ops`, refused CharProcs included. Removed glyphs' CharProcs stay in the
   font, as an embedded font program keeps its glyphs.
-- `redact` accepts stroke adjustment (`/SA true`) where it cannot move
-  ink into a rect: while it is on, any stroke (paths, stroked text, a
+- `redact` accepts stroke adjustment (`/SA true`) for content it does
+  not change and whose ink it does not move: while it is on, any stroke (paths, stroked text, a
   Type 3 CharProc's) and any fill that would be cut at a rect are
   refused; text fills, images, fills removed whole and fills clear of
-  every rect are accepted. It was refused wherever set.
+  every rect are accepted. It was refused wherever set. As without it,
+  kept content within one device pixel of a rect's edge may be drawn
+  into that pixel by readers that snap to their grid (documented).
 - `redact` edits Indexed images with their default `/Decode [0 255]`
   and images whose `/ColorSpace` is a reference to an array (Indexed,
   ICCBased) or to `/DeviceCMYK`; a reference to a reference is refused
