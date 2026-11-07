@@ -93,6 +93,9 @@ pub struct Redaction {
     pub codes_removed: u64,
     /// Image invocations whose samples inside the rects were zeroed.
     pub images_edited: u64,
+    /// Form invocations whose text or paths inside the rects were
+    /// removed — each now draws its own edited copy of the form.
+    pub forms_edited: u64,
     /// Image pixels set to black.
     pub pixels_changed: u64,
     /// Painted paths removed (each wholly inside a rect).
@@ -153,6 +156,9 @@ pub enum Removed {
     /// An image edited in the rects whose original is still drawn
     /// unredacted at the location ([`ElsewhereLocation::Page`]).
     Image,
+    /// A form XObject edited in the rects (its text or paths) whose
+    /// original is still drawn unredacted at the location.
+    Form,
 }
 
 impl std::fmt::Debug for Removed {
@@ -160,6 +166,7 @@ impl std::fmt::Debug for Removed {
         match self {
             Removed::Text(t) => write!(f, "Text({} chars)", t.chars().count()),
             Removed::Image => f.write_str("Image"),
+            Removed::Form => f.write_str("Form"),
         }
     }
 }
@@ -179,6 +186,7 @@ impl std::fmt::Debug for Redaction {
             .field("output_bytes", &self.output.len())
             .field("codes_removed", &self.codes_removed)
             .field("images_edited", &self.images_edited)
+            .field("forms_edited", &self.forms_edited)
             .field("pixels_changed", &self.pixels_changed)
             .field("paths_removed", &self.paths_removed)
             .field("paths_cut", &self.paths_cut)
@@ -262,7 +270,7 @@ pub fn redact(
 
     // Originals another page still draws stay in the file by design;
     // every other copy must be gone.
-    let shown: HashSet<[u8; 32]> = s.originals_shown.iter().flat_map(|(_, d)| *d).collect();
+    let shown: HashSet<[u8; 32]> = s.originals_shown.iter().flat_map(|(_, d, _)| *d).collect();
     let must_be_gone: Vec<[u8; 32]> = s
         .original_digests
         .iter()
@@ -272,11 +280,12 @@ pub fn redact(
     let (out, residual) = verify(&output, specs, limits, &must_be_gone)?;
     let (mut elsewhere, elsewhere_unsearched_pages) =
         find_elsewhere(&out, &s.removed_text, limits)?;
-    let mut pages: Vec<usize> = s.originals_shown.iter().map(|(p, _)| *p).collect();
-    pages.sort_unstable();
-    pages.dedup();
-    elsewhere.extend(pages.into_iter().map(|p| Elsewhere {
-        removed: Removed::Image,
+    let mut shown_at: Vec<(usize, bool)> =
+        s.originals_shown.iter().map(|(p, _, f)| (*p, *f)).collect();
+    shown_at.sort_unstable();
+    shown_at.dedup();
+    elsewhere.extend(shown_at.into_iter().map(|(p, form)| Elsewhere {
+        removed: if form { Removed::Form } else { Removed::Image },
         location: ElsewhereLocation::Page(p),
     }));
     if options.refuse_copies_elsewhere
@@ -296,6 +305,7 @@ pub fn redact(
         output,
         codes_removed: s.codes_removed_total,
         images_edited: s.invocations_edited_total,
+        forms_edited: s.forms_edited_total,
         pixels_changed: s.pixels_changed_total,
         paths_removed: s.paths_removed_total,
         paths_cut: s.paths_cut_total,

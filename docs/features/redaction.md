@@ -38,6 +38,7 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 | painted paths wholly inside one rect | the path and its painting op are deleted |
 | painted paths crossing a rect's edge | cut there (`paths_cut`): filled axis-aligned rectangles become their difference with the rects (exact; several only when they do not overlap); stroked straight segments are cut, in user space where the stroke is defined, at the centreline positions whose cross-section (and cap) would reach the rect — exact for butt caps, the cap's square for square and round caps — so nothing reaches inside and nothing outside is lost; a corner kept near a rect must clear it by its join (the exact miter, or the bevel/round extent). Curves, dashed strokes, other fill shapes and overlapping rectangles near a rect are refused |
 | `/Link` annotations whose `/Rect` meets a rect | removed with their action or destination (`links_removed`); links outside every rect are kept. A removed link the structure tree refers to (`/StructParent`) is refused unless the tree is removed |
+| Form XObjects the page draws directly (transparency groups included) | their text and paths inside the rects are removed or cut in a copy of the form drawn by that invocation only (`forms_edited`); other invocations and pages keep the original, which is reported in `elsewhere` (`Removed::Form`) when still drawn and otherwise not carried. A nested form or an image inside a form that meets a rect is refused |
 | document `/Info`, catalog XMP `/Metadata` | always removed |
 | structure tree | refused when it carries `/Alt`, `/ActualText` or `/E`; with `remove_structure_tree(true)` the tree and `/MarkInfo` are removed |
 
@@ -97,7 +98,8 @@ secret; the rest must be refused with no file written.
 
 ## Refused (typed error, no output)
 
-On an edited page: annotations other than links, Form XObjects, inline images, `sh`,
+On an edited page: annotations other than links, nested forms or
+images inside a form that meet a rect, inline images, `sh`,
 ExtGState (`gs`), optional content and `/ActualText` marked content,
 text in any mode but `Tr 0` (invisible OCR text, stroked, clipping),
 non-embedded fonts (glyph extent unknown), Type 3 fonts (a CharProc
@@ -142,7 +144,7 @@ document text in `Debug` output.
 
 ## Not covered
 
-Annotations other than links and form fields on an edited page, forms
-and patterns, inline images, transparency, shadings, partial paths
+Annotations other than links and form fields on an edited page, nested
+forms, images inside forms, patterns, inline images, transparency, shadings, partial paths
 (table rules crossing a rect), masked, CMYK or indexed images,
 invisible OCR text. Each is refused, not approximated.

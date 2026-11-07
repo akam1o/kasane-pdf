@@ -711,7 +711,9 @@ pub(crate) struct RegionsEdit<'a> {
     pub(crate) paths_cut_total: u64,
     /// Redaction mode only: pages that still draw an edited image's
     /// original outside the rects, with the original's digests.
-    pub(crate) originals_shown: Vec<(usize, [[u8; 32]; 2])>,
+    pub(crate) originals_shown: Vec<(usize, [[u8; 32]; 2], bool)>,
+    /// Redaction mode only: form invocations drawn from an edited copy.
+    pub(crate) forms_edited_total: u64,
 }
 
 /// What `regions_edit_session` does beyond the content editor.
@@ -814,7 +816,9 @@ pub(crate) fn regions_edit_session<'a>(
     let mut original_digests: Vec<[u8; 32]> = Vec::new();
     // Redaction: the refs of edited images, and per page the names
     // still drawn after the edit.
-    let mut edited_originals: HashMap<IndirectRef, [[u8; 32]; 2]> = HashMap::new();
+    // Edited image / form originals: digests, and whether a form.
+    let mut edited_originals: HashMap<IndirectRef, ([[u8; 32]; 2], bool)> = HashMap::new();
+    let mut forms_edited_total: u64 = 0;
     let mut drawn_after: HashMap<IndirectRef, BTreeSet<Vec<u8>>> = HashMap::new();
     let mut removed_text: Vec<String> = Vec::new();
     let mut per_page: Vec<(usize, Vec<Site>)> = Vec::new();
@@ -956,6 +960,7 @@ pub(crate) fn regions_edit_session<'a>(
             ..limits.clone()
         };
         let mut walker = DiagWalker::new(doc, page, &page_limits, &validated);
+        walker.allow_group_forms = mode == SessionMode::Redact;
         walker.run(&ops)?;
         // Carry this page's spend forward — the next page gets the
         // remaining budget, not a fresh one.
@@ -988,7 +993,66 @@ pub(crate) fn regions_edit_session<'a>(
         }
 
         // ---- page-level eligibility ---------------------------------
-        for t in &walker.targets {
+        // Redaction also edits forms the page draws directly: their
+        // text and paths are edited in a per-invocation copy. What a
+        // form draws through a nested form, and images inside a form,
+        // are refused when they meet a rect.
+        for t in walker
+            .targets
+            .iter()
+            .filter(|_| mode == SessionMode::Redact)
+        {
+            let depth = t.site.form_path.len();
+            let hit = !t.hits.is_empty();
+            match t.kind {
+                _ if depth > 1 && hit => {
+                    return Err(Error::Unsupported {
+                        feature: "redaction inside a nested form",
+                        detail: format!("op #{} at form depth {depth}", t.site.op_index),
+                    })
+                }
+                TargetKind::Form if depth == 1 && hit => {
+                    return Err(Error::Unsupported {
+                        feature: "redaction inside a nested form",
+                        detail: format!(
+                            "a form drawn by a form meets a rect (op #{})",
+                            t.site.op_index
+                        ),
+                    })
+                }
+                TargetKind::Image if depth == 1 && hit => {
+                    return Err(Error::Unsupported {
+                        feature: "redaction of an image inside a form",
+                        detail: format!("op #{}", t.site.op_index),
+                    })
+                }
+                TargetKind::Text => {
+                    if let TargetDetail::Text { render_mode, .. } = &t.detail {
+                        if *render_mode != 0u8 {
+                            return Err(Error::Unsupported {
+                                feature: "region removal on a page with non-fill text",
+                                detail: format!(
+                                    "Tr {render_mode} text is out of scope — only Tr 0 fill \
+                                     is rewritten (op #{}, code #{:?})",
+                                    t.site.op_index, t.site.code_index
+                                ),
+                            });
+                        }
+                    }
+                }
+                TargetKind::Other => {
+                    return Err(Error::Unsupported {
+                        feature: "region removal on a page with non-image XObjects",
+                        detail: format!(
+                            "an Other occurrence at op #{} is out of scope",
+                            t.site.op_index
+                        ),
+                    })
+                }
+                _ => {}
+            }
+        }
+        for t in walker.targets.iter().filter(|_| mode == SessionMode::Edit) {
             if t.site.form_path.len() > 1 {
                 return Err(Error::Unsupported {
                     feature: "region removal on a page with nested XObjects",
@@ -1041,8 +1105,47 @@ pub(crate) fn regions_edit_session<'a>(
         // (its geometry inside the rect cannot be cut out exactly),
         // and so is one that also sets a clip (removing it would
         // change what later content shows).
-        let mut removed_op_set: BTreeSet<usize> = BTreeSet::new();
-        let mut replacements: BTreeMap<usize, Vec<Operation>> = BTreeMap::new();
+        type FrameKey = (Vec<crate::redact_diag::FormFrame>, usize);
+        let mut removed_op_set: BTreeSet<FrameKey> = BTreeSet::new();
+        let mut replacements: BTreeMap<FrameKey, Vec<Operation>> = BTreeMap::new();
+        // The ops (and stream) of each form invocation the page draws
+        // directly, loaded once.
+        let mut form_streams: BTreeMap<
+            Vec<crate::redact_diag::FormFrame>,
+            (Vec<Operation>, Dict, Object),
+        > = BTreeMap::new();
+        let load_form = |fp: &[crate::redact_diag::FormFrame]| -> Result<(Vec<Operation>, Dict, Object), Error> {
+            let frame = &fp[0];
+            let entry = doc
+                .resolve_resource_raw(
+                    page.resources()
+                        .ok_or_else(|| Error::Structure("page has no /Resources".into()))?,
+                    "XObject",
+                    &frame.name,
+                )?
+                .ok_or_else(|| {
+                    Error::Structure(format!(
+                        "/XObject /{} no longer resolves",
+                        String::from_utf8_lossy(&frame.name)
+                    ))
+                })?;
+            let obj = doc.deref(&entry)?;
+            let (fdict, fraw) = obj
+                .as_stream()
+                .ok_or_else(|| Error::Structure("form XObject is not a stream".into()))?;
+            let decoded = doc.decode_stream(fdict, fraw)?;
+            let mut warnings = Vec::new();
+            let fops = crate::content::parse_content_stream(
+                &[decoded],
+                limits,
+                doc.recovery_mode(),
+                &mut warnings,
+            )?;
+            for w in warnings {
+                doc.push_warning(w);
+            }
+            Ok((fops, fdict.clone(), entry))
+        };
         let mut paths_removed: u64 = 0;
         let mut paths_cut: u64 = 0;
         if mode == SessionMode::Redact {
@@ -1050,17 +1153,27 @@ pub(crate) fn regions_edit_session<'a>(
                 if t.hits.is_empty() {
                     continue;
                 }
-                if !t.site.form_path.is_empty() {
+                let fp = t.site.form_path.clone();
+                if fp.len() > 1 {
                     return Err(Error::Unsupported {
-                        feature: "redaction of a path inside a form",
+                        feature: "redaction inside a nested form",
                         detail: format!("op #{}", t.site.op_index),
                     });
                 }
+                if !fp.is_empty() && !form_streams.contains_key(&fp) {
+                    let f = load_form(&fp)?;
+                    form_streams.insert(fp.clone(), f);
+                }
+                let these: &[Operation] = if fp.is_empty() {
+                    &ops
+                } else {
+                    &form_streams[&fp].0
+                };
                 let inside = validated.iter().any(|r| rect_contains(r, t.bounds));
                 let paint = t.site.op_index;
                 let mut start = paint;
                 while start > 0 {
-                    match &ops[start - 1] {
+                    match &these[start - 1] {
                         Operation::MoveTo(..)
                         | Operation::LineTo(..)
                         | Operation::CurveTo(..)
@@ -1078,7 +1191,7 @@ pub(crate) fn regions_edit_session<'a>(
                     }
                 }
                 if inside {
-                    removed_op_set.extend(start..=paint);
+                    removed_op_set.extend((start..=paint).map(|i| (fp.clone(), i)));
                     paths_removed += 1;
                     continue;
                 }
@@ -1089,18 +1202,23 @@ pub(crate) fn regions_edit_session<'a>(
                     .ok_or_else(|| {
                         Error::Structure("path target without its paint state".into())
                     })?;
-                match crate::redact_geom::cut_path(&ops[start..paint], &ops[paint], st, &validated)
-                    .map_err(|e| match e {
-                        Error::Unsupported { feature, detail } => Error::Unsupported {
-                            feature,
-                            detail: format!("op #{paint}: {detail}"),
-                        },
-                        e => e,
-                    })? {
+                match crate::redact_geom::cut_path(
+                    &these[start..paint],
+                    &these[paint],
+                    st,
+                    &validated,
+                )
+                .map_err(|e| match e {
+                    Error::Unsupported { feature, detail } => Error::Unsupported {
+                        feature,
+                        detail: format!("op #{paint}: {detail}"),
+                    },
+                    e => e,
+                })? {
                     crate::redact_geom::Cut::Unchanged => {}
                     crate::redact_geom::Cut::Replace(new) => {
-                        removed_op_set.extend(start..=paint);
-                        replacements.insert(start, new);
+                        removed_op_set.extend((start..=paint).map(|i| (fp.clone(), i)));
+                        replacements.insert((fp.clone(), start), new);
                         paths_cut += 1;
                     }
                 }
@@ -1257,7 +1375,7 @@ pub(crate) fn regions_edit_session<'a>(
             if let Some(d) = digests {
                 original_digests.extend(d);
                 if let Object::Ref(r) = &entry {
-                    edited_originals.insert(*r, d);
+                    edited_originals.insert(*r, (d, false));
                 }
             }
 
@@ -1297,13 +1415,85 @@ pub(crate) fn regions_edit_session<'a>(
             removed_sites.push(site.clone());
         }
 
+        // ---- redaction: per-invocation copies of edited forms --------
+        let mut form_names: Vec<Vec<u8>> = Vec::new();
+        if mode == SessionMode::Redact {
+            let mut invocations: BTreeSet<Vec<crate::redact_diag::FormFrame>> = BTreeSet::new();
+            for (fp, _) in to_remove_text.keys().chain(removed_op_set.iter()) {
+                if fp.len() == 1 {
+                    invocations.insert(fp.clone());
+                }
+            }
+            for fp in invocations {
+                if !form_streams.contains_key(&fp) {
+                    let f = load_form(&fp)?;
+                    form_streams.insert(fp.clone(), f);
+                }
+                let (fops, fdict, entry) = &form_streams[&fp];
+                let mut new_form_ops: Vec<Operation> = Vec::with_capacity(fops.len());
+                for (inner, fop) in fops.iter().enumerate() {
+                    let key = (fp.clone(), inner);
+                    if let Some(new) = replacements.get(&key) {
+                        new_form_ops.extend(new.iter().cloned());
+                    }
+                    if removed_op_set.contains(&key) {
+                        continue;
+                    }
+                    new_form_ops.extend(rewrite_ops_for(
+                        &walker,
+                        &to_remove_text,
+                        &site_lookup,
+                        &fp,
+                        inner,
+                        fop,
+                        &mut codes_removed,
+                        &mut removed_sites,
+                    )?);
+                }
+                let new_body = serialize_ops(&new_form_ops, limits, generated_bytes)?;
+                generated_bytes = charge_generated(generated_bytes, new_body.len(), limits)?;
+                let mut new_dict = fdict.clone();
+                new_dict.remove(b"Filter".as_slice());
+                new_dict.remove(b"DecodeParms".as_slice());
+                new_dict.insert(b"Length".to_vec(), Object::Integer(new_body.len() as i64));
+                // The original must not stay reachable from where it
+                // was edited (checked by digest on the output).
+                let obj = doc.deref(entry)?;
+                if let Some((d, raw)) = obj.as_stream() {
+                    let digests = [sha256(&doc.decode_stream(d, raw)?), sha256(raw)];
+                    original_digests.extend(digests);
+                    if let Object::Ref(r) = entry {
+                        edited_originals.insert(*r, (digests, true));
+                    }
+                }
+                if edit_guard.is_none() {
+                    edit_guard = Some(Edit::new(doc, limits.clone())?);
+                }
+                let edit = edit_guard.as_mut().unwrap();
+                let clone_ref = edit.alloc()?;
+                edit.overlay.insert(
+                    (clone_ref.number, clone_ref.generation),
+                    Object::Stream {
+                        dict: new_dict,
+                        data: new_body,
+                    },
+                );
+                let allocated: Vec<Vec<u8>> =
+                    new_xobject_entries.iter().map(|(n, _)| n.clone()).collect();
+                let new_name = fresh_xobject_name(page, doc, do_renames.len() as u64, &allocated)?;
+                do_renames.insert(fp[0].op_index, new_name.clone());
+                new_xobject_entries.push((new_name, clone_ref));
+                form_names.push(fp[0].name.clone());
+            }
+        }
+
         // ---- rewrite this page's content stream ---------------------
         let mut new_ops: Vec<Operation> = Vec::with_capacity(ops.len());
         for (op_index, op) in ops.iter().enumerate() {
-            if let Some(new) = replacements.get(&op_index) {
+            if let Some(new) = replacements.get(&(Vec::new(), op_index)) {
                 new_ops.extend(new.iter().cloned());
             }
-            if removed_op_set.contains(&op_index) {
+            if removed_op_set.contains(&(Vec::new(), op_index)) {
                 continue;
             }
             match op {
@@ -1343,6 +1533,7 @@ pub(crate) fn regions_edit_session<'a>(
         for (_site, _ctm, _xobj_ref, name) in to_edit_image.values() {
             candidate_names.insert(name.clone());
         }
+        candidate_names.extend(form_names.iter().cloned());
         let mut used_names: BTreeSet<Vec<u8>> = BTreeSet::new();
         for op in &new_ops {
             if let Operation::Do(name) = op {
@@ -1436,7 +1627,8 @@ pub(crate) fn regions_edit_session<'a>(
         paths_cut_total += paths_cut;
         links_removed_total += links_removed;
         tagged_links_removed_total += tagged_links_removed;
-        invocations_edited_total += do_renames.len() as u64;
+        invocations_edited_total += (do_renames.len() - form_names.len()) as u64;
+        forms_edited_total += form_names.len() as u64;
         pixels_changed_total += pixels_changed;
         orphaned_names_removed_total += orphaned_names_removed;
         per_page.push((*page_index, removed_sites));
@@ -1514,9 +1706,10 @@ pub(crate) fn regions_edit_session<'a>(
         links_removed_total,
         tagged_links_removed_total,
         paths_cut_total,
+        forms_edited_total,
         originals_shown: originals_shown
             .into_iter()
-            .map(|(i, r)| (i, edited_originals[&r]))
+            .map(|(i, r)| (i, edited_originals[&r].0, edited_originals[&r].1))
             .collect(),
     })
 }

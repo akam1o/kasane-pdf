@@ -992,3 +992,124 @@ fn a_butt_cut_keeps_everything_outside() {
     }
     assert_eq!(at(&r.output, 100, 100), 255);
 }
+
+// Form XObjects drawn by the page: edited in a per-invocation copy.
+
+/// A page drawing `/Fm` (object 30) with `content`, plus extra objects.
+fn form_page(
+    page_content: &str,
+    form_dict: &str,
+    form_content: &str,
+    extra: Vec<(u32, Vec<u8>)>,
+) -> Vec<u8> {
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 20 0 R >> /XObject << /Fm 30 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", page_content.as_bytes())),
+        (
+            30,
+            stream_obj(
+                &format!(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+                     /Resources << /Font << /F1 20 0 R >> >> {form_dict}"
+                ),
+                form_content.as_bytes(),
+            ),
+        ),
+    ];
+    objs.extend(font_objs());
+    objs.extend(extra);
+    build_pdf(&objs)
+}
+
+#[test]
+fn text_and_paths_in_a_form_are_redacted() {
+    let pdf = form_page(
+        "/Fm Do",
+        "",
+        "BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET BT /F1 12 Tf 10 20 Td (PUBLICWORD) Tj ET \
+         2 w 10 103 m 190 103 l S",
+        vec![],
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!((r.forms_edited, r.codes_removed, r.paths_cut), (1, 10, 1));
+    let text = page_text(&r.output, 0);
+    assert!(
+        text.contains("PUBLICWORD") && !text.contains("SECRET"),
+        "{text}"
+    );
+    assert!(
+        !contains(&r.output, b"SECRETTEXT"),
+        "the original form is not carried"
+    );
+    assert_eq!(at(&r.output, 100, 103), 255);
+    assert_eq!(at(&r.output, 20, 103), 0);
+}
+
+/// A transparency group form is edited like any other.
+#[test]
+fn a_transparency_group_form_is_redacted() {
+    let pdf = form_page(
+        "/Fm Do",
+        "/Group << /S /Transparency >>",
+        "BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET",
+        vec![],
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.codes_removed, 10);
+}
+
+/// The same form drawn again outside the rect keeps its original
+/// there: reported, the text found again.
+#[test]
+fn a_form_drawn_again_elsewhere_is_reported() {
+    let pdf = form_page(
+        "/Fm Do q 1 0 0 1 0 -80 cm /Fm Do Q",
+        "",
+        "BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET",
+        vec![],
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.forms_edited, 1);
+    assert!(r
+        .elsewhere
+        .iter()
+        .any(|e| e.removed == kasane_pdf::Removed::Form));
+    assert!(r
+        .elsewhere
+        .iter()
+        .any(|e| matches!(e.removed, kasane_pdf::Removed::Text(_))));
+}
+
+/// Nested forms and images inside a form that meet a rect are refused.
+#[test]
+fn nested_forms_and_form_images_are_refused() {
+    let nested = form_page(
+        "/Fm Do",
+        "/Resources << /XObject << /In 31 0 R >> /Font << /F1 20 0 R >> >>",
+        "/In Do",
+        vec![(
+            31,
+            stream_obj(
+                "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 20 0 R >> >>",
+                b"BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET",
+            ),
+        )],
+    );
+    let e = unsupported(run(&nested, vec![RECT]));
+    assert!(e.contains("nested form"), "{e}");
+    let image = form_page(
+        "/Fm Do",
+        "/Resources << /XObject << /I 31 0 R >> >>",
+        "q 100 0 0 30 50 90 cm /I Do Q",
+        vec![(31, image_obj())],
+    );
+    let e = unsupported(run(&image, vec![RECT]));
+    assert!(e.contains("image inside a form"), "{e}");
+}

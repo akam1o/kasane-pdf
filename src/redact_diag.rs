@@ -816,6 +816,10 @@ pub(crate) struct DiagWalker<'a> {
     /// `diagnose_redaction` (the diagnosis reports targets and never
     /// rewrites ops, so it doesn't pay the map's memory).
     record_show_states: bool,
+    /// Accept a form's `/Group` (transparency group) instead of
+    /// reporting it as a blocker — `redact` only removes or cuts
+    /// content, which the group composites the same way either way.
+    pub(crate) allow_group_forms: bool,
     /// object ref → (kind, sites) for sharing analysis.
     site_map: BTreeMap<(u32, u16), (String, Vec<Site>)>,
     /// Counting budget for reported items.
@@ -961,6 +965,7 @@ impl<'a> DiagWalker<'a> {
             show_states: BTreeMap::new(),
             path_states: BTreeMap::new(),
             record_show_states,
+            allow_group_forms: false,
             site_map: BTreeMap::new(),
             reported: 0,
             text_codes: 0,
@@ -2050,6 +2055,9 @@ impl<'a> DiagWalker<'a> {
         }
         // Blocking attributes that change what's painted.
         for key in [b"Group".as_slice(), b"OC".as_slice(), b"Ref".as_slice()] {
+            if key == b"Group" && self.allow_group_forms {
+                continue;
+            }
             if dict.contains_key(key) {
                 self.push_blocker(Blocker {
                     site: Some(self.site()),

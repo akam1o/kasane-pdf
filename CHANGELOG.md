@@ -31,6 +31,10 @@ versions follow [Semantic Versioning](https://semver.org/).
   `RedactOptions::refuse_copies_elsewhere` (CLI
   `--refuse-copies-elsewhere`) refuses whenever removed content is
   found elsewhere.
+- `redact` edits Form XObjects the page draws directly (transparency
+  groups included): text and paths in the rects are removed or cut in a
+  per-invocation copy (`forms_edited`); an original still drawn
+  elsewhere is reported (`Removed::Form`), otherwise not carried.
 - `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
   RFC 7932 data including large windows, Flate predictors, refused on
   inline images. Output and decoder memory are bounded by

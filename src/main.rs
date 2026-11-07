@@ -2036,6 +2036,7 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
         "images edited: {} ({} pixels)",
         r.images_edited, r.pixels_changed
     );
+    println!("forms edited: {}", r.forms_edited);
     println!("paths removed: {}", r.paths_removed);
     println!("paths cut at a rect: {}", r.paths_cut);
     println!("links removed: {}", r.links_removed);
@@ -2047,6 +2048,7 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
         let what = match e.removed {
             kasane_pdf::Removed::Text(_) => "removed text",
             kasane_pdf::Removed::Image => "an edited image's original",
+            kasane_pdf::Removed::Form => "an edited form's original",
         };
         match &e.location {
             kasane_pdf::ElsewhereLocation::Page(i) => {

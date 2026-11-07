@@ -105,7 +105,10 @@ CASES = [
         9: b"<< /Type /StructElem /S /P /P 8 0 R /Pg 3 0 R /K 0 /ActualText (SECRETTEXT) >>"})), ["--remove-structure-tree"], "ok"),
     ("invisible-ocr-text", build(page(b"BT /F1 12 Tf 3 Tr 50 100 Td (SECRETTEXT) Tj ET")), [], "refused"),
     ("form-xobject", build(page(b"/Fm Do", res=b"/XObject << /Fm 8 0 R >>", more={
-        8: stream(b"/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 5 0 R >> >>", TEXT)})), [], "refused"),
+        8: stream(b"/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 5 0 R >> >>", TEXT)})), [], "ok"),
+    ("form-in-form", build(page(b"/Fm Do", res=b"/XObject << /Fm 8 0 R >>", more={
+        8: stream(b"/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /XObject << /In 9 0 R >> >>", b"/In Do"),
+        9: stream(b"/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 5 0 R >> >>", TEXT)})), [], "refused"),
     ("text-annotation", build(page(TEXT, page_extra=b"/Annots [8 0 R]", more={
         8: b"<< /Type /Annot /Subtype /Text /Rect [50 95 60 105] /Contents (SECRETTEXT) >>"})), [], "refused"),
     # Structures common in real documents.
