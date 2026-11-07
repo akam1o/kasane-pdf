@@ -3205,3 +3205,207 @@ fn type3_cycles_and_degenerate_fonts_are_refused() {
     let unbalanced = type3_page(T3_TEXT, "1000 0 d0 Q 0 0 10 10 re f", T3_FILL, "", vec![]);
     assert!(run(&unbalanced, vec![(41.5, 99.0, 55.0, 108.0)]).is_err());
 }
+
+/// One 16×16 image drawn at (50, 50)–(150, 150) with `img_extra` in its
+/// dictionary (its `/ColorSpace` among them), plus `objs`.
+fn image_page(img_extra: &str, samples: &[u8], objs: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+    let mut o = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"q 100 0 0 100 50 50 cm /Im1 Do Q")),
+        (
+            5,
+            stream_obj(
+                &format!("/Type /XObject /Subtype /Image /Width 16 /Height 16 /BitsPerComponent 8 {img_extra}"),
+                samples,
+            ),
+        ),
+    ];
+    o.extend(objs);
+    build_pdf(&o)
+}
+
+/// A palette whose red channel is the index.
+fn ramp_palette() -> (u32, Vec<u8>) {
+    (
+        41,
+        stream_obj(
+            "",
+            &(0..768)
+                .map(|i| if i % 3 == 0 { (i / 3) as u8 } else { 0 })
+                .collect::<Vec<_>>(),
+        ),
+    )
+}
+
+/// An Indexed image with its default /Decode [0 255] is edited: indices
+/// inside the rect zeroed, every index outside kept exactly.
+#[test]
+fn indexed_default_decode_is_edited() {
+    let samples: Vec<u8> = (0..256).map(|i| (i * 7 % 250 + 3) as u8).collect();
+    let pdf = image_page(
+        "/ColorSpace [/Indexed /DeviceRGB 255 41 0 R] /Decode [0 255]",
+        &samples,
+        vec![ramp_palette()],
+    );
+    let r = run(&pdf, vec![(50.0, 50.0, 100.0, 150.0)]).unwrap();
+    assert_eq!(r.pixels_changed, 128);
+    let (a, b) = (reds(&pdf), reds(&r.output));
+    for y in 50..150u32 {
+        for x in 50..150u32 {
+            let i = (y * 200 + x) as usize;
+            if x < 100 {
+                assert_eq!(b[i], 0, "inside ({x}, {y})");
+            } else {
+                assert_eq!(a[i], b[i], "outside ({x}, {y})");
+            }
+        }
+    }
+    // Remapping decodes stay refused, Indexed or not.
+    for extra in [
+        "/ColorSpace [/Indexed /DeviceRGB 255 41 0 R] /Decode [255 0]",
+        "/ColorSpace [/Indexed /DeviceRGB 255 41 0 R] /Decode [0 127]",
+        "/ColorSpace /DeviceGray /Decode [0 255]",
+    ] {
+        let pdf = image_page(extra, &samples, vec![ramp_palette()]);
+        let e = unsupported(run(&pdf, vec![(50.0, 50.0, 100.0, 150.0)]));
+        assert!(e.contains("Decode"), "{extra}: {e}");
+    }
+}
+
+/// A /ColorSpace reached through a reference to an array or a device
+/// name (its parameters indirect too) is taken like a direct one; a
+/// reference cycle or chain, a malformed array and an Indexed JPEG
+/// behind a reference are refused.
+#[test]
+fn indirect_colour_spaces_are_resolved() {
+    let samples: Vec<u8> = (0..256 * 4).map(|i| (i * 13 % 251 + 1) as u8).collect();
+    let palette = ramp_palette();
+    type Objs = Vec<(u32, Vec<u8>)>;
+    let ok: [(Objs, usize); 4] = [
+        (
+            vec![
+                (43, b"[/Indexed /DeviceRGB 255 41 0 R]".to_vec()),
+                palette.clone(),
+            ],
+            1,
+        ),
+        (
+            vec![
+                (43, b"[/ICCBased 45 0 R]".to_vec()),
+                (45, stream_obj("/N 3 /Alternate 46 0 R", b"profile")),
+                (46, b"/DeviceRGB".to_vec()),
+            ],
+            3,
+        ),
+        (vec![(43, b"/DeviceCMYK".to_vec())], 4),
+        (vec![(43, b"/DeviceGray".to_vec())], 1),
+    ];
+    for (objs, n) in ok {
+        let s = &samples[..256 * n];
+        let pdf = image_page("/ColorSpace 43 0 R", s, objs);
+        let r = run(&pdf, vec![(50.0, 50.0, 150.0, 150.0)]).unwrap();
+        assert_eq!(r.pixels_changed, 256, "{n}");
+        assert!(!contains(&r.output, &s[..64]));
+    }
+    let refused: [Objs; 5] = [
+        vec![(43, b"44 0 R".to_vec()), (44, b"43 0 R".to_vec())],
+        // A chain of references (Poppler does not follow it): refused.
+        vec![
+            (43, b"44 0 R".to_vec()),
+            (44, b"[/Indexed /DeviceRGB 255 41 0 R]".to_vec()),
+            palette.clone(),
+        ],
+        vec![
+            (43, b"[/Indexed /DeviceRGB 255 44 0 R]".to_vec()),
+            (44, b"41 0 R".to_vec()),
+            palette.clone(),
+        ],
+        vec![(43, b"[/Indexed /DeviceRGB 255]".to_vec())],
+        vec![(43, b"[/Separation /Spot /DeviceGray 46 0 R]".to_vec())],
+    ];
+    for objs in refused {
+        let pdf = image_page("/ColorSpace 43 0 R", &samples[..256], objs.clone());
+        assert!(
+            run(&pdf, vec![(50.0, 50.0, 150.0, 150.0)]).is_err(),
+            "{:?}",
+            String::from_utf8_lossy(&objs[0].1)
+        );
+    }
+    let jpeg = image_page(
+        "/ColorSpace 43 0 R /Filter /DCTDecode",
+        &samples[..256],
+        vec![(43, b"[/Indexed /DeviceRGB 255 41 0 R]".to_vec()), palette],
+    );
+    let e = unsupported(run(&jpeg, vec![(50.0, 50.0, 150.0, 150.0)]));
+    assert!(e.contains("Indexed DCTDecode"), "{e}");
+}
+
+/// A CharProc strokes with the line state it is shown with: an inherited
+/// wide line is taken at its reach.
+#[test]
+fn type3_strokes_inherit_the_line_state() {
+    let proc = "1000 0 d0 2000 0 m 2000 500 l S";
+    let pdf = type3_page(
+        "1000 w 1 j BT /T3 20 Tf 50 100 Td (A) Tj ET",
+        proc,
+        proc,
+        "",
+        vec![],
+    );
+    let r = run(&pdf, vec![(95.0, 100.0, 98.0, 105.0)]).unwrap();
+    assert_eq!(
+        r.codes_removed, 1,
+        "the inherited 1000-unit line reaches the rect"
+    );
+    // The same CharProc under a thin line stays clear of it.
+    let pdf = type3_page(
+        "1 w 1 j BT /T3 20 Tf 50 100 Td (A) Tj ET",
+        proc,
+        proc,
+        "",
+        vec![],
+    );
+    assert_eq!(
+        run(&pdf, vec![(95.0, 100.0, 98.0, 105.0)])
+            .unwrap()
+            .codes_removed,
+        0
+    );
+}
+
+/// Stroke text modes do not stroke a Type 3 glyph (its CharProc decides
+/// what is painted): no inflation by the line width.
+#[test]
+fn type3_glyphs_are_not_inflated_by_stroke_modes() {
+    let proc = "1000 0 d0 0 0 400 500 re f";
+    for tr in [0, 1, 2] {
+        let pdf = type3_page(
+            &format!("10 w BT /T3 20 Tf {tr} Tr 50 100 Td (A) Tj ET"),
+            proc,
+            proc,
+            "",
+            vec![],
+        );
+        let r = run(&pdf, vec![(120.0, 100.0, 125.0, 105.0)]).unwrap();
+        assert_eq!(r.codes_removed, 0, "Tr {tr}");
+    }
+}
+
+/// CharProc ops count against the execution budget.
+#[test]
+fn type3_charprocs_count_against_the_execution_budget() {
+    let proc = format!("1000 0 d0 {} 0 0 10 10 re f", "q Q ".repeat(2000));
+    let pdf = type3_page(T3_TEXT, &proc, T3_FILL, "", vec![]);
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let opts = RedactOptions::new()
+        .with_limits(kasane_pdf::Limits::default().with_max_diag_exec_ops(1000));
+    let e = redact(&doc, &[(0, vec![(41.5, 99.0, 55.0, 108.0)])], &opts).unwrap_err();
+    assert!(e.to_string().contains("max_diag_exec_ops"), "{e}");
+}

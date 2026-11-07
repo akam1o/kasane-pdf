@@ -827,7 +827,7 @@ pub(crate) struct DiagWalker<'a> {
     /// only when it meets a rect (one elsewhere is kept as it is).
     pub(crate) redaction_mode: bool,
     /// Redaction: Type 3 glyph bounds by (font, code), evaluated once.
-    type3_cache: std::collections::HashMap<[u8; 32], Result<Option<[f64; 4]>, String>>,
+    type3_cache: std::collections::HashMap<Type3Key, Result<Option<[f64; 4]>, String>>,
     /// object ref → (kind, sites) for sharing analysis.
     site_map: BTreeMap<(u32, u16), (String, Vec<Site>)>,
     /// Counting budget for reported items.
@@ -1873,27 +1873,50 @@ impl<'a> DiagWalker<'a> {
                     },
                 );
             }
-            // Keyed by the CharProc itself (its dictionary and bytes):
-            // the bounds depend on nothing else.
-            let charproc = match t3.charproc(self.doc, code as u8) {
-                Ok(c) => c,
-                Err(e @ Error::LimitExceeded { .. }) => return Err(e),
-                Err(e) => return self.glyph_error(code, e),
+            // The CharProc inherits the line state it is shown with
+            // (§9.6.4: it runs in the graphics state of the show).
+            let s = &self.gs.stroke;
+            let inherited = (s.width, s.cap, s.join, s.miter_limit);
+            // Keyed by the CharProc object and that state: the bounds
+            // depend on nothing else.
+            let key = match t3.charproc_entry(code as u8) {
+                Some(Object::Ref(r)) => Some((
+                    *r,
+                    [
+                        inherited.0.to_bits(),
+                        inherited.1 as u64,
+                        inherited.2 as u64,
+                        inherited.3.to_bits(),
+                    ],
+                )),
+                _ => None,
             };
-            let key = charproc.as_ref().map(|(d, raw)| {
-                let mut k = format!("{d:?}").into_bytes();
-                k.extend_from_slice(raw);
-                crate::remove_region::sha256(&k)
-            });
             let glyph = match key.and_then(|k| self.type3_cache.get(&k).cloned()) {
                 Some(g) => g,
                 None => {
+                    let charproc = match t3.charproc(self.doc, code as u8) {
+                        Ok(c) => c,
+                        Err(e @ Error::LimitExceeded { .. }) => return Err(e),
+                        Err(e) => return self.glyph_error(code, e),
+                    };
                     let g = match &charproc {
-                        Some((d, raw)) => type3_glyph_bounds(self.doc, d, raw, self.limits),
-                        None => Ok(None),
+                        Some((d, raw)) => {
+                            type3_glyph_bounds(self.doc, d, raw, self.limits, inherited)
+                        }
+                        None => Ok((None, 0)),
                     };
                     let g = match g {
-                        Ok(b) => Ok(b),
+                        Ok((b, ops)) => {
+                            // Its ops count against the page's budget.
+                            self.exec_ops = self.exec_ops.saturating_add(ops.max(1));
+                            if self.exec_ops > self.limits.max_diag_exec_ops {
+                                return Err(Error::LimitExceeded {
+                                    limit: "max_diag_exec_ops",
+                                    max: self.limits.max_diag_exec_ops,
+                                });
+                            }
+                            Ok(b)
+                        }
                         Err(e @ Error::LimitExceeded { .. }) => return Err(e),
                         Err(e) => Err(e.to_string()),
                     };
@@ -2055,8 +2078,10 @@ impl<'a> DiagWalker<'a> {
         // coverage is resolution-dependent and cannot be bounded in
         // user space, so the whole occurrence reports `uncertain`.
         // Fill-only text (Tr 0, 3) is unaffected.
-        let is_stroked_text =
-            render_mode == 1 || render_mode == 2 || render_mode == 5 || render_mode == 6;
+        // A Type 3 glyph paints what its CharProc paints, whatever the
+        // mode (its strokes are in `type3_bounds`).
+        let is_stroked_text = type3_bounds.is_none()
+            && (render_mode == 1 || render_mode == 2 || render_mode == 5 || render_mode == 6);
         let (bounds, bounds_kind) = if render_mode >= 4 {
             self.push_blocker(Blocker {
                 site: Some(self.text_site(self.code_index)),
@@ -2815,6 +2840,10 @@ fn matrix_from_array(o: &Object) -> Option<crate::matrix::Matrix> {
 
 use crate::object::Dict;
 
+/// A CharProc object and the line state it is shown with (bits of
+/// width, cap, join, miter limit).
+type Type3Key = (crate::object::IndirectRef, [u64; 4]);
+
 /// The glyph-space bounds of everything a Type 3 CharProc paints —
 /// `None` when it paints nothing — for `redact`, which accepts the
 /// CharProcs it can bound exactly: path construction and painting
@@ -2825,13 +2854,16 @@ use crate::object::Dict;
 /// rendering intent, and unpropertied marked content. Anything else —
 /// images, XObjects, text, shadings, ExtGState, patterns, marked
 /// content with properties, a hairline (`0 w`) stroke — is refused: its
-/// extent or the data it carries is not evaluated.
+/// extent or the data it carries is not evaluated. The line state
+/// starts as `inherited` (width, cap, join, miter limit of the show);
+/// the op count is returned for the caller's execution budget.
 pub(crate) fn type3_glyph_bounds(
     doc: &Document,
     dict: &crate::object::Dict,
     raw: &[u8],
     limits: &Limits,
-) -> Result<Option<[f64; 4]>, Error> {
+    inherited: (f64, i64, i64, f64),
+) -> Result<(Option<[f64; 4]>, u64), Error> {
     use crate::content::Operation as O;
     let refuse = |what: &str| Error::Unsupported {
         feature: "Type 3 glyph",
@@ -2850,10 +2882,10 @@ pub(crate) fn type3_glyph_bounds(
     }
     let mut gs = Gs {
         ctm: crate::matrix::Matrix::IDENTITY,
-        w: 1.0,
-        cap: 0,
-        join: 0,
-        miter: 10.0,
+        w: inherited.0,
+        cap: inherited.1,
+        join: inherited.2,
+        miter: inherited.3,
     };
     let mut stack: Vec<Gs> = Vec::new();
     let mut path: Option<[f64; 4]> = None;
@@ -2968,7 +3000,7 @@ pub(crate) fn type3_glyph_bounds(
     if out.is_some_and(|b| !b.iter().all(|v| v.is_finite())) {
         return Err(Error::Structure("non-finite Type 3 glyph bounds".into()));
     }
-    Ok(out)
+    Ok((out, ops.len() as u64))
 }
 
 #[cfg(test)]

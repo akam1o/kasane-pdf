@@ -160,6 +160,16 @@ CASES = [
                         b"1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfrange <41> <5A> <0041> endbfrange "
                         b"endcmap CMapName currentdict /CMap defineresource pop end end"),
     })), [], "ok"),
+    # An Indexed image with its default /Decode [0 255], its colour
+    # space and its base reached through references.
+    ("image-indexed-indirect", build(page(TEXT + b" q 100 0 0 20 50 92 cm /Im1 Do Q",
+                                          res=b"/Font << /F1 5 0 R >> /XObject << /Im1 8 0 R >>", more={
+        8: stream(b"/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace 9 0 R /Decode [0 255] "
+                  b"/BitsPerComponent 8", SAMPLES[:256], flate=True),
+        9: b"[/Indexed 10 0 R 255 11 0 R]",
+        10: b"/DeviceRGB",
+        11: stream(b"", bytes(range(256)) * 3),
+    })), [], "ok"),
 ]
 # The same file with the document-wide option: the original still drawn
 # on page 2 is a copy elsewhere, so refused.

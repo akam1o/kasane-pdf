@@ -49,8 +49,15 @@ versions follow [Semantic Versioning](https://semver.org/).
   advance cell. CharProcs with images, XObjects, text, shadings, `gs`,
   patterns, named colour spaces, marked content with properties or
   hairline strokes stay refused, as do FontMatrices stretching one axis
-  over 16:1. Removed glyphs' CharProcs stay in the font, as an embedded
-  font program keeps its glyphs.
+  over 16:1. A CharProc starts from the line state it is shown with;
+  stroke text modes do not inflate Type 3 glyphs; CharProc ops count
+  against `max_diag_exec_ops`. Removed glyphs' CharProcs stay in the
+  font, as an embedded font program keeps its glyphs.
+- `redact` edits Indexed images with their default `/Decode [0 255]`
+  and images whose `/ColorSpace` is a reference to an array (Indexed,
+  ICCBased) or to `/DeviceCMYK`; a reference to a reference is refused
+  (Poppler does not follow such a chain, so readers would disagree on
+  what is drawn).
 
 ### Fixed
 - `diagnose_redaction` and the editors grew stroked text by the stroke's

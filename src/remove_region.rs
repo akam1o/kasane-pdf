@@ -1763,7 +1763,20 @@ pub(crate) fn regions_edit_session_with<'a>(
             new_dict.remove(b"Length".as_slice());
             new_dict.insert(b"Length".to_vec(), Object::Integer(new_data.len() as i64));
             if let Some(d) = dict.get(b"Decode".as_slice()) {
-                if !is_default_decode(d, ncomps) {
+                // An Indexed space's default is [0 2^bpc−1] (§8.9.5.2,
+                // Table 90): 8-bit samples are the indices themselves.
+                let indexed_default = mode == SessionMode::Redact
+                    && d.as_array().is_some_and(|a| {
+                        a.len() == 2
+                            && a[0].as_number() == Some(0.0)
+                            && a[1].as_number() == Some(255.0)
+                    })
+                    && crate::remove_image::image_space_is_indexed(
+                        doc,
+                        scope_res.as_ref(),
+                        dict.get(b"ColorSpace".as_slice()).unwrap_or(&Object::Null),
+                    )?;
+                if !indexed_default && !is_default_decode(d, ncomps) {
                     return Err(Error::Unsupported {
                         feature: "image with non-default /Decode",
                         detail: "inverted or remapped samples are not rewritten".into(),

@@ -543,13 +543,24 @@ pub fn remove_image_region(
     })
 }
 
-/// Validate an image XObject for region removal — returns `(width, height,
-/// ncomps)` on success, `Err` on any unsupported attribute.
-///
-/// `resources` is the page's effective `/Resources` — needed to
-/// resolve named colour spaces (`/CS1`) and `Default*` substitutions.
-///
-/// Shared with `remove_region.rs`.
+/// Redaction: an object of a colour space, one reference followed. A
+/// reference to an object that is itself a reference is refused:
+/// readers resolve such chains differently (Poppler draws nothing), so
+/// what is drawn outside the rects would not be known.
+fn deref_unchained(doc: &Document, o: &Object) -> Result<Object, Error> {
+    let Object::Ref(r) = o else {
+        return Ok(o.clone());
+    };
+    match doc.resolve_one_hop(*r)? {
+        Object::Ref(_) => Err(Error::Unsupported {
+            feature: "image colour space",
+            detail: "reached through a chain of references, which readers resolve differently"
+                .into(),
+        }),
+        v => Ok(v),
+    }
+}
+
 /// Redaction: the components per sample of an array colour space it
 /// edits — `[/Indexed base hival lookup]` (1: an index; zeroing it
 /// selects the palette's first colour) and `[/ICCBased stream]` with
@@ -563,7 +574,7 @@ fn redaction_components(
     if !redaction {
         return Ok(None);
     }
-    let cs = doc.deref(cs)?;
+    let cs = deref_unchained(doc, cs)?;
     let Some(a) = cs.as_array() else {
         return Ok(None);
     };
@@ -571,8 +582,9 @@ fn redaction_components(
         Some(b"Indexed" | b"I") if a.len() == 4 => {
             // hival 0…255; a base that is itself a device or ICC space
             // (not Indexed or Pattern, §8.6.6.3).
-            let hival = doc.deref(&a[2])?.as_i64();
-            let base = doc.deref(&a[1])?;
+            let hival = deref_unchained(doc, &a[2])?.as_i64();
+            let base = deref_unchained(doc, &a[1])?;
+            deref_unchained(doc, &a[3])?;
             let base_name = match &base {
                 Object::Name(n) => Some(n.clone()),
                 Object::Array(b) => b.first().and_then(|f| f.as_name()).map(|n| n.to_vec()),
@@ -593,7 +605,7 @@ fn redaction_components(
             Ok((matches!(hival, Some(0..=255)) && base_ok).then_some(1))
         }
         Some(b"ICCBased") if a.len() == 2 => {
-            let s = doc.deref(&a[1])?;
+            let s = deref_unchained(doc, &a[1])?;
             // A reader that cannot use the profile falls back to
             // /Alternate: only a device space there is accepted (an
             // Indexed alternate would make the samples palette indices).
@@ -601,7 +613,7 @@ fn redaction_components(
                 Object::Stream { dict, .. } => match dict.get(b"Alternate".as_slice()) {
                     None => true,
                     Some(alt) => matches!(
-                        doc.deref(alt)?.as_name(),
+                        deref_unchained(doc, alt)?.as_name(),
                         Some(b"DeviceGray" | b"DeviceRGB" | b"DeviceCMYK")
                     ),
                 },
@@ -625,6 +637,13 @@ fn redaction_components(
     }
 }
 
+/// Validate an image XObject for region removal — returns `(width, height,
+/// ncomps)` on success, `Err` on any unsupported attribute.
+///
+/// `resources` is the page's effective `/Resources` — needed to
+/// resolve named colour spaces (`/CS1`) and `Default*` substitutions.
+///
+/// Shared with `remove_region.rs`.
 pub(crate) fn validate_image(
     dict: &Dict,
     resources: Option<&Object>,
@@ -752,24 +771,43 @@ pub(crate) fn validate_image(
             // An indirect colour space — resolve the reference, then
             // apply the same name-based rules. A named space that
             // resolves to another name is followed one level deep.
-            let resolved = doc.deref(&Object::Ref(*r))?;
-            let name = resolved.as_name().ok_or_else(|| Error::Unsupported {
-                feature: "image colour space",
-                detail: "indirect colour space is not a name".into(),
-            })?;
-            let resolved2 = resolve_colorspace_name(doc, resources, name)?;
-            let final_obj = apply_default_substitution(doc, resources, resolved2)?;
-            match final_obj.as_name() {
-                Some(b"DeviceGray") => 1,
-                Some(b"DeviceRGB") => 3,
-                _ => {
-                    return Err(Error::Unsupported {
-                        feature: "image colour space",
-                        detail: format!(
-                            "indirect /{} resolves to non-device space",
-                            String::from_utf8_lossy(name)
-                        ),
-                    })
+            // Redaction takes an array there like a direct one, and
+            // refuses a chain of references (`deref_unchained`).
+            let resolved = if redaction {
+                deref_unchained(doc, cs_obj)?
+            } else {
+                doc.deref(&Object::Ref(*r))?
+            };
+            match resolved.as_name() {
+                None => match redaction_components(doc, &resolved, redaction)? {
+                    Some(n) => n,
+                    None => {
+                        return Err(Error::Unsupported {
+                            feature: "image colour space",
+                            detail: "indirect colour space is not a name".into(),
+                        })
+                    }
+                },
+                Some(name) => {
+                    let resolved2 = resolve_colorspace_name(doc, resources, name)?;
+                    let final_obj = apply_default_substitution(doc, resources, resolved2)?;
+                    match final_obj.as_name() {
+                        Some(b"DeviceGray") => 1,
+                        Some(b"DeviceRGB") => 3,
+                        Some(b"DeviceCMYK") if redaction => 4,
+                        _ => match redaction_components(doc, &final_obj, redaction)? {
+                            Some(n) => n,
+                            None => {
+                                return Err(Error::Unsupported {
+                                    feature: "image colour space",
+                                    detail: format!(
+                                        "indirect /{} resolves to non-device space",
+                                        String::from_utf8_lossy(name)
+                                    ),
+                                })
+                            }
+                        },
+                    }
                 }
             }
         }
@@ -793,17 +831,7 @@ pub(crate) fn validate_image(
     // convention); decoding and writing it back raw is not exact.
     // Nor a JPEG whose samples are palette indices: a decoder's
     // rounding by one changes an index — any colour — outside the rects.
-    let cs_resolved = match doc.deref(cs_obj)? {
-        Object::Name(n) => resolve_colorspace_name(doc, resources, &n)?,
-        other => other,
-    };
-    let indexed = matches!(
-        cs_resolved
-            .as_array()
-            .and_then(|a| a.first())
-            .and_then(|f| f.as_name()),
-        Some(b"Indexed" | b"I")
-    );
+    let indexed = image_space_is_indexed(doc, resources, cs_obj)?;
     if (ncomps == 4 || indexed) && filters.iter().any(|f| f == b"DCTDecode" || f == b"DCT") {
         return Err(Error::Unsupported {
             feature: "image stream filter",
@@ -1390,6 +1418,25 @@ fn apply_default_substitution(
             }
         }
     }
+}
+
+/// Whether an image's `/ColorSpace` (direct, indirect or a named
+/// resource) is an Indexed space — whose samples are palette indices.
+pub(crate) fn image_space_is_indexed(
+    doc: &Document,
+    resources: Option<&Object>,
+    cs_obj: &Object,
+) -> Result<bool, Error> {
+    let cs = match doc.deref(cs_obj)? {
+        Object::Name(n) => doc.deref(&resolve_colorspace_name(doc, resources, &n)?)?,
+        other => other,
+    };
+    Ok(matches!(
+        cs.as_array()
+            .and_then(|a| a.first())
+            .and_then(|f| f.as_name()),
+        Some(b"Indexed" | b"I")
+    ))
 }
 
 /// Whether a `/Decode` array is the default `[0 1 …]` for `ncomps`.
