@@ -33,7 +33,7 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 
 | content inside a rect | handling |
 |---|---|
-| text shown with `Tr 0` in an embedded font (rotated, scaled, `Ts`/`Tz`/`Tc`/`Tw`, `TJ` kerning) | the codes whose glyph ink hits a rect are deleted — whole glyphs, so a glyph straddling a rect's edge goes entirely; advances are preserved so the rest of the line keeps its position. Content whose clip keeps it out of every rect is not a hit |
+| text shown with `Tr 0` in an embedded font (rotated, scaled, `Ts`/`Tz`/`Tc`/`Tw`, `TJ` kerning) | the codes whose glyph ink hits a rect are deleted — whole glyphs, so a glyph straddling a rect's edge goes entirely; advances are preserved so the rest of the line keeps its position. A clip hides ink, not data: text, images and paths are hits wherever they meet a rect, clipped or not (the one exception: a shading `sh`, which fills the clip, is accepted under a rectangular clip meeting no rect, its resource kept as it is; a glyph is removed whole, so one whose clipped-away part meets a rect also loses its visible part). Text whose text matrix, CTM or their product stretches one axis over 16 times the other is refused (readers disagree where it is drawn) |
 | image XObjects, 8-bit DeviceGray/RGB, unfiltered / Flate / one DCT, axis-aligned | a copy with the covered samples set to 0 replaces the call; the original is not carried (next section) |
 | painted paths wholly inside one rect | the path and its painting op are deleted |
 | painted paths crossing a rect's edge | cut there (`paths_cut`): filled axis-aligned rectangles become their difference with the rects (exact; several only when they do not overlap); stroked straight segments are cut, in user space where the stroke is defined, at the centreline positions whose cross-section (and cap) would reach the rect — exact for butt caps; for square and round caps the cut end is pulled back by the cap's square, so nothing reaches inside but up to half a line width of the band next to the rect is lost (and a round cap's corners); a corner kept near a rect must clear it by its join (the exact miter, or the bevel/round extent). A dashed stroke's pieces each restart the pattern at the phase where they start on the original subpath (an odd array written out in full, the phase reduced into one period), so the dashes outside fall where they did (a closed dashed outline is not rejoined at its start); each piece is its own stroke, so a dashed stroke that is not opaque in the Normal blend mode (`/CA` < 1, another `/BM`) is refused when cut into pieces. Curves, degenerate dash patterns, other fill shapes and overlapping rectangles near a rect are refused |
@@ -120,15 +120,14 @@ than 16 deep or cyclic, inline images meeting a rect
 (or whose data length is not fixed by their dictionary), `sh` that may paint inside a rect,
 ExtGState with a soft mask, `/Font` or `/SA true`, `/ActualText` marked content,
 text in any mode but `Tr 0` (invisible OCR text, stroked, clipping),
-non-embedded fonts (glyph extent unknown; except under a clip that is
-exactly a rectangle meeting no rect), Type 3 fonts (a CharProc
+non-embedded fonts (glyph extent unknown), strongly anisotropic text
+(over 16:1), Type 3 fonts (a CharProc
 may paint anywhere), vertical writing, images with masks, soft masks,
 `/Alternates` or OPI, `/Decode`, other colour spaces or filter chains, rotated or
 sheared images, `/UserUnit` ≠ 1, a path crossing a rect's edge that
 cannot be cut exactly (curves, degenerate dash patterns, non-rectangular fills,
 overlapping filled rectangles, a corner whose join reaches a rect), a
-path that also clips, content meeting a rect under a clip that is not an
-axis-aligned rectangle (whether it shows there is not decided), an
+path that also clips, an
 operator other than path construction inside a path object (§8.2).
 Anywhere: an
 undecidable resource use, a structure tree with alternate text (by
@@ -167,14 +166,13 @@ Each of these is refused with a typed error, not approximated:
 
 - **Text in a non-embedded font.** A reader draws it with a font of its
   own choosing, so where its glyphs reach is not known; keeping any of
-  it next to a rect could keep data drawn inside the rect. Accepted
-  only under a clip that is exactly a rectangle meeting no rect. Type 3
+  it next to a rect could keep data drawn inside the rect. A clip does
+  not help: it hides ink, not the code. Type 3
   and vertical fonts, and text in any mode but `Tr 0` (invisible OCR
   text included), are refused too.
 - **Geometry**: curves, non-rectangular or overlapping fills crossing a
   rect, a corner whose join reaches a rect, a translucent or blended
-  dashed stroke cut into pieces, clips that are not rectangles meeting
-  a rect, `/UserUnit` ≠ 1. Square and round caps cut at a rect lose up
+  dashed stroke cut into pieces, `/UserUnit` ≠ 1. Square and round caps cut at a rect lose up
   to half a line width of the band next to it (accepted, documented).
 - **Images**: masked, CMYK, indexed, other bit depths or filter chains,
   rotated or sheared, with `/Alternates` or OPI, with `/OC` meeting a
