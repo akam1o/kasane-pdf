@@ -71,7 +71,7 @@ hayro-jbig2 = { version = "0.3", default-features = false }
 # `unsafe`/`ffi-api` features it is `#![forbid(unsafe_code)]`.
 brotli-decompressor = { version = "6.3", default-features = false, features = ["std"] }
 hayro-ccitt = { version = "0.4", default-features = false }
-hayro-jpeg2000 = { version = "0.4", default-features = false }
+hayro-jpeg2000 = { version = "0.5", default-features = false }
 
 # Standard security handler (encrypted documents, decryption only).
 # RustCrypto, pure Rust, MIT OR Apache-2.0, WASM-clean; kasane-pdf
