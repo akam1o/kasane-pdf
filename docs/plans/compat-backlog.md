@@ -1,9 +1,11 @@
 # Compatibility backlog
 
 The corpus failures left, ranked for the next work. Source: the macOS
-full run at `928dbfd` (all four rewrite configurations); 425
-`expect: pass` files, Full PASS 346 / 352 / 346 / 379 (default / carry
+full run at `cdad273` (all four rewrite configurations); 425
+`expect: pass` files, Full PASS 347 / 353 / 347 / 380 (default / carry
 / remove-usage-rights / both), Semantic fail 0, crash and timeout 0.
+Render SSIM against Poppler over 427 compared files: median 0.9964,
+mean 0.9672; below 0.7: 10, below 0.8: 13, below 0.9: 37.
 
 ## Not engine work (79 − 44 = 35 files)
 
@@ -34,7 +36,7 @@ with the recovery-rule work (phase E).
 | GB1 / CNS1 / Korea1 fallback fonts | 0 | no corpus file needs one. Noto Sans SC/TC/KR (SIL OFL 1.1) may be bundled, but each is several MB and the crate already carries 4.5 MB of Noto Sans JP (crates.io limit 10 MB): a companion crate or a user-supplied font path |
 | ~~annotation `/AP /N` states that are all `null`~~ | 0 | done for real null entries (§7.3.7); `issue15557` has the *name* `/null` as its state values — malformed, still refused |
 | FreeText / field values outside Latin with the fallback font | 1 | `freetext_no_appearance` (Arabic): needs a Unicode field font |
-| `/BrotliDecode` | 1 | Poppler and pdfium decode it; one file, a new decompressor dependency on untrusted input |
+| ~~`/BrotliDecode`~~ | 0 | done (EXTN-BROTLI-1; `pdfium-many_rectangles_brotli` passes) |
 
 ## Fidelity (pages rendered as exact but differing from Poppler)
 
@@ -44,10 +46,12 @@ with the recovery-rule work (phase E).
 | `bug1844583` | 1 | 0.680 → 0.664. Not the snap's fault: the widget has `/MK /BC` but no `/BS` or `/Border`; Poppler draws no border then (AnnotWidget only builds a border from `/BS`), kasane draws the 1 pt default (§12.5.2). Text position then differs too. Kept: the spec default |
 | `bug1552113` (`/Border [0 0 112]` on a 20 pt high link) | 1 | Poppler strokes far outside `/Rect` and covers the page text the file says "should be visible"; pdf.js falls back to width 1; kasane draws nothing. A degenerate border — not adopted |
 | `/Link` borders without `/AP` | 7 | done |
-| axis-aligned rectangles | many, small | Splash snaps rectangle edges to whole pixels (stroke adjustment); kasane anti-aliases them exactly. Not adopted: a heuristic, not a PDF rule (only `/SA` strokes) |
-| `jbig2_file_header`, `issue21878`, `devicen-none-zero-domain` | 3 | low SSIM; to investigate one by one |
+| stroke adjustment without `/SA` (IRS forms ×19 at 0.73–0.89, `vertical`, `bug1743245`) | ~20 | Poppler adjusts every stroke and rectangle whatever `/SA` says ("Acrobat apparently hardwires it to true"): thin rules become crisp 1 px black lines. kasane now honours `/SA true` (§10.7.5; 32 corpus files set it, mostly Chrome — little measured change) but keeps the spec default false, so hairlines stay anti-aliased. Adopting Poppler's behaviour is a policy decision. `vertical` is now flagged by the ink-ratio gate: since page sizes round up, Poppler's two 1 px page-edge hairlines are no longer resampled away — the render itself did not change; the baseline needs the next nightly |
+| tiling patterns with tiny cells (`issue16038`, `scan-issue16038`, `issue21878`) | 3 | 0.45–0.67 on 50–100 px pages; cell rasterisation and seams differ from Splash. To investigate |
+| glyph coverage (`chrome-wiki-*` residual, 0.85–0.96) | many | placement now matches Splash (y floor, x quarter pixel); the rest is FreeType's exact-area coverage against tiny-skia's anti-aliasing |
+| Poppler renders wrongly (`bug1552113`, `jbig2_file_header`, `devicen-none-zero-domain`, `bug1743245`, `issue19484_1`) | 5 | reference defects (overflowing border, JBIG2 file header not decoded, invalid function domain, hairlines thickened, page not rendered); kept |
 
-Next: the lowest-SSIM files of the latest run, one by one; `/BrotliDecode`
-(one file, a dependency decision); an opt-in font source (system or
-user-supplied fonts) would serve the Identity CID and GBK-named fonts
-but changes what strict rendering means and needs a decision.
+Next: tiling patterns with small cells (3 files below 0.7); the
+stroke-adjustment policy (about 20 files, a decision); an opt-in font
+source (system or user-supplied fonts) for the Identity CID and
+GBK-named fonts (a decision).

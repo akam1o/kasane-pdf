@@ -6,7 +6,26 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
+  RFC 7932 data including large windows, Flate predictors, refused on
+  inline images. Output and decoder memory are bounded by
+  `max_stream_bytes`. New dependency `brotli-decompressor` (BSD-3-Clause
+  OR MIT, no unsafe code).
+- Automatic stroke adjustment for `/SA true` (§10.7.5): a filled
+  axis-aligned rectangle and strokes of axis-aligned straight segments
+  or rectangles get edges on whole pixels, at least one pixel apart.
+  The default (`/SA false`) is unchanged.
+
 ### Changed
+- A page's pixel size is rounded up instead of to nearest, so the whole
+  page box is drawn (595 × 842 pt at 96 dpi: 794 × 1123 px, was
+  793 × 1123), as pdftoppm sizes it. Exact sizes do not change.
+- Minified images drawn without rotation or skew (up to 8 samples per
+  pixel and axis) are area-averaged instead of sampled on a grid, so
+  dithered scans and halftones no longer alias.
+- Glyph x is placed on a quarter pixel (a whole pixel above 50 px
+  high), with the same conditions as the baseline floor below.
 - Glyphs are placed on the device grid as Poppler's Splash places the
   glyphs it caches. Unrotated text only filled with a colour (`Tr` 0,
   and the fill of `Tr` 4) has its origin's device y floored, x exact;
