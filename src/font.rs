@@ -933,6 +933,13 @@ impl SimpleFont {
     ///
     /// Anything else is `.notdef`; no glyph is ever chosen by position
     /// in a table the font did not define.
+    /// The glyph the face's (3,1) cmap gives `u`.
+    pub(crate) fn unicode_glyph(&self, u: u32) -> Option<GlyphId> {
+        let face = self.face().ok()?;
+        let s = find_cmap(face.tables(), 3, 1)?;
+        s.glyph_index(u)
+    }
+
     pub(crate) fn glyph_id(&self, code: u8) -> Result<Option<GlyphId>, Error> {
         let face = self.face()?;
         let tables = face.tables();
@@ -1392,8 +1399,8 @@ impl Type1Font {
 
     /// For a non-embedded Latin Standard 14 font (or a metric-compatible
     /// alias) drawn with a bundled substitute: the substitute, and per
-    /// code the glyph name it draws (`None`: no glyph — drawn as
-    /// `.notdef`) and the advance. What `redact` needs to embed the
+    /// code the glyph it draws, named `uniXXXX` (`None`: no glyph —
+    /// `.notdef`), and the advance. What `redact` needs to embed the
     /// substitute so every reader draws exactly those glyphs.
     pub(crate) fn substitute_for_embedding(&self) -> Option<EmbeddableSubstitute<'_>> {
         use crate::fontsubst::SubstKind as K;
@@ -1401,10 +1408,16 @@ impl Type1Font {
         if !matches!(s.kind, K::Standard14 | K::Alias) || s.builtin_encoding.is_some() {
             return None;
         }
+        // Each code's glyph, named canonically by its Unicode value
+        // (`uniXXXX`), which every reader resolves alike — the original
+        // names include aliases (`sfthyphen`, `nbspace`) that readers'
+        // glyph lists treat differently.
         let names = (0..=255u8)
             .map(|c| {
-                self.subst_glyph_name(c)
-                    .filter(|n| s.glyph_for_name(n).is_some_and(|g| g.0 != 0))
+                let n = self.subst_glyph_name(c)?;
+                s.glyph_for_name(&n).filter(|g| g.0 != 0)?;
+                let u = crate::fontsubst::glyph_name_unicode(&n)?;
+                (u <= 0xFFFF).then(|| format!("uni{u:04X}"))
             })
             .collect();
         let widths = (0..=255u8).map(|c| self.width(c)).collect();

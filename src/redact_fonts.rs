@@ -161,8 +161,72 @@ pub(crate) fn embed_substitutes(
         e.overlay.insert((r.number, r.generation), Object::Dict(nd));
         count += 1;
     }
-    match edit {
-        None => Ok(None),
-        Some(e) => Ok(Some((e.rewrite()?, count))),
+    let Some(e) = edit else {
+        return Ok(None);
+    };
+    let bytes = e.rewrite()?;
+    check_embedded(&bytes, limits)?;
+    Ok(Some((bytes, count)))
+}
+
+/// Every font written here must map each code, in this crate's own
+/// resolver, to the glyph its `uniXXXX` name designates through the
+/// face's (3,1) cmap — what readers do for a non-symbolic TrueType
+/// font (§9.6.6.4) — so that the redaction's ink decision is about the
+/// glyphs readers draw. Anything else refuses.
+fn check_embedded(bytes: &[u8], limits: &Limits) -> Result<(), Error> {
+    let doc = Document::from_bytes_with_limits(bytes, limits.clone())?;
+    let refs: Vec<_> = doc
+        .xref_entries()
+        .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
+        .map(|(r, _)| r)
+        .collect();
+    let mismatch = |detail: String| Error::Unsupported {
+        feature: "embedding a substitute font",
+        detail,
+    };
+    for r in refs {
+        let Ok(obj) = doc.resolve(r) else { continue };
+        let Some(d) = obj.as_dict() else { continue };
+        if d.get(b"Type".as_slice()).and_then(|v| v.as_name()) != Some(b"Font") {
+            continue;
+        }
+        let Some(diffs) = d
+            .get(b"Encoding".as_slice())
+            .and_then(|e| e.as_dict())
+            .and_then(|e| e.get(b"Differences".as_slice()))
+            .and_then(|a| a.as_array())
+        else {
+            continue;
+        };
+        let base = d
+            .get(b"BaseFont".as_slice())
+            .and_then(|v| v.as_name())
+            .unwrap_or(b"");
+        if !base.starts_with(b"Liberation") || diffs.len() != 257 {
+            continue;
+        }
+        let font = crate::font::load_font_dict(&doc, d, b"", limits)?;
+        let crate::font::Font::Simple(f) = &font else {
+            return Err(mismatch(format!(
+                "object {r} did not load as a TrueType font"
+            )));
+        };
+        for (code, name) in diffs[1..].iter().enumerate() {
+            let name = name.as_name().unwrap_or(b".notdef");
+            let want = std::str::from_utf8(name)
+                .ok()
+                .and_then(|n| n.strip_prefix("uni"))
+                .and_then(|h| u32::from_str_radix(h, 16).ok())
+                .and_then(|u| f.unicode_glyph(u));
+            let got = f.glyph_id(code as u8)?;
+            let want = want.unwrap_or(ttf_parser::GlyphId(0));
+            if got != Some(want) {
+                return Err(mismatch(format!(
+                    "object {r}: code {code} resolves to glyph {got:?}, its name to {want:?}"
+                )));
+            }
+        }
     }
+    Ok(())
 }

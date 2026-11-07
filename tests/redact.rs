@@ -2530,3 +2530,134 @@ fn fonts_not_embedded_by_the_option_stay_refused() {
     );
     assert!(embed_run(&pdf, vec![RECT]).is_err());
 }
+
+// Caps at a cut: the band of a perpendicular crossing ends exactly at
+// the rect. Square caps (pulled back by their extent) and round-capped
+// pieces whose both ends are cuts (stroked with square caps) lose
+// nothing outside; a round-capped piece keeping an original end keeps
+// its round cap and loses the cap's corners at the cut.
+
+/// Pixels that differ between two renders away from `rect` (1 px
+/// margin); asserts nothing is drawn well inside it.
+fn lost_outside(a: &[u8], b: &[u8], rect: (f64, f64, f64, f64)) -> usize {
+    let mut lost = 0;
+    for y in 0..200u32 {
+        for x in 0..200u32 {
+            let (xf, yf) = (x as f64 + 0.5, 199.5 - y as f64);
+            let i = (y * 200 + x) as usize;
+            if xf < rect.0 - 1.0 || xf > rect.2 + 1.0 || yf < rect.1 - 1.0 || yf > rect.3 + 1.0 {
+                lost += usize::from(a[i] != b[i]);
+            } else if xf > rect.0 + 1.0
+                && xf < rect.2 - 1.0
+                && yf > rect.1 + 1.0
+                && yf < rect.3 - 1.0
+            {
+                assert_eq!(b[i], 255, "drawn inside at ({x}, {y})");
+            }
+        }
+    }
+    lost
+}
+
+#[test]
+fn square_caps_and_round_pieces_between_cuts_lose_nothing() {
+    // Square caps, horizontal and under a non-uniform CTM.
+    for c in [
+        "10 w 2 J 20 100 m 180 100 l S",
+        "q 2 0 0 0.5 0 0 cm 6 w 2 J 10 200 m 90 200 l S Q",
+    ] {
+        let pdf = one_page(c, "", "", vec![]);
+        let rect = (90.0, 90.0, 110.0, 160.0);
+        let r = run(&pdf, vec![rect]).unwrap();
+        assert_eq!(lost_outside(&reds(&pdf), &reds(&r.output), rect), 0, "{c}");
+    }
+    // Round caps: the middle piece between two rects is square-capped.
+    let pdf = one_page("10 w 1 J 20 100 m 180 100 l S", "", "", vec![]);
+    let rects = vec![(60.0, 90.0, 70.0, 110.0), (130.0, 90.0, 140.0, 110.0)];
+    let r = run(&pdf, rects.clone()).unwrap();
+    let (a, b) = (reds(&pdf), reds(&r.output));
+    // Between the rects (x 72…128) nothing differs.
+    for y in 90..111u32 {
+        for x in 72..128u32 {
+            let i = ((200 - y) * 200 + x) as usize;
+            assert_eq!(a[i], b[i], "({x}, {y})");
+        }
+    }
+    // A closed round-capped outline cut once: its one piece has cuts at
+    // both ends.
+    let pdf = one_page(
+        "6 w 1 J 30 30 m 30 170 l 170 170 l 170 30 l h S",
+        "",
+        "",
+        vec![],
+    );
+    let rect = (90.0, 160.0, 110.0, 180.0);
+    let r = run(&pdf, vec![rect]).unwrap();
+    assert_eq!(lost_outside(&reds(&pdf), &reds(&r.output), rect), 0);
+}
+
+/// A round-capped piece that keeps an original end loses only its
+/// cut cap's corners; an oblique crossing also loses the sliver beyond
+/// the perpendicular cut.
+#[test]
+fn round_caps_with_an_original_end_lose_little() {
+    for (c, bound) in [
+        ("10 w 1 J 20 100 m 180 100 l S", 30),
+        ("8 w 1 J 1 j 20 40 m 100 150 l 180 40 l S", 150),
+    ] {
+        let pdf = one_page(c, "", "", vec![]);
+        let rect = (90.0, 90.0, 110.0, 160.0);
+        let r = run(&pdf, vec![rect]).unwrap();
+        let lost = lost_outside(&reds(&pdf), &reds(&r.output), rect);
+        assert!(lost <= bound, "{c}: {lost} pixels lost outside");
+    }
+}
+
+/// Glyph-name aliases readers resolve differently (`sfthyphen`,
+/// `nbspace`) are written as canonical `uniXXXX` names: this crate and
+/// readers then draw the same glyph, and what is drawn in the rect goes.
+#[test]
+fn embedded_substitutes_use_canonical_glyph_names() {
+    let pdf = doc_with(
+        "/Font << /F 50 0 R >>",
+        &[b"BT /F 80 Tf 50 50 Td <49> Tj ET BT /F 12 Tf 20 150 Td (KEEP) Tj ET"],
+        vec![(
+            50,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding << \
+              /BaseEncoding /WinAnsiEncoding /Differences [73 /sfthyphen] >> >>"
+                .to_vec(),
+        )],
+    );
+    let r = embed_run(&pdf, vec![(50.0, 40.0, 100.0, 100.0)]).unwrap();
+    assert_eq!(r.codes_removed, 1);
+    assert!(page_text(&r.output, 0).contains("KEEP"));
+    // The written font names code 73 `uni00AD`, not the alias.
+    let doc = Document::from_bytes(&r.output).unwrap();
+    let page = doc.resolve(doc.pages()[0].object_ref().unwrap()).unwrap();
+    let res = doc
+        .deref(
+            page.as_dict()
+                .unwrap()
+                .get(b"Resources".as_slice())
+                .unwrap(),
+        )
+        .unwrap();
+    let fonts = doc
+        .deref(res.as_dict().unwrap().get(b"Font".as_slice()).unwrap())
+        .unwrap();
+    let font = doc
+        .deref(fonts.as_dict().unwrap().get(b"F".as_slice()).unwrap())
+        .unwrap();
+    let enc = doc
+        .deref(font.as_dict().unwrap().get(b"Encoding".as_slice()).unwrap())
+        .unwrap();
+    let diffs = enc
+        .as_dict()
+        .unwrap()
+        .get(b"Differences".as_slice())
+        .unwrap()
+        .as_array()
+        .unwrap()
+        .to_vec();
+    assert_eq!(diffs[1 + 73].as_name(), Some(b"uni00AD".as_slice()));
+}

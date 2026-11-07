@@ -17,6 +17,13 @@ versions follow [Semantic Versioning](https://semver.org/).
   The output shows Liberation's glyph shapes for those fonts. Without
   the option such text stays refused.
 
+### Changed
+- `redact`: a round-capped piece of a cut stroke whose both ends are
+  cuts is stroked with square caps, so its band ends exactly at the
+  rects (it lost the round caps' corners). Square caps were already
+  exact; a round-capped piece keeping one of the path's own ends still
+  loses its cut cap's corners.
+
 ## [0.6.0] - 2026-11-07
 
 The first release of `redact`, positional redaction that removes what

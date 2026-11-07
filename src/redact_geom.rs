@@ -50,10 +50,11 @@ pub(crate) enum Cut {
 }
 
 /// Page-space polylines with their closed flag.
-/// User-space polylines with their closed flag and the arc length
-/// along their original subpath at which each starts (where its dash
-/// pattern stands).
-type Lines = Vec<(Vec<(f64, f64)>, bool, f64)>;
+/// User-space polylines with their closed flag, the arc length along
+/// their original subpath at which each starts (where its dash pattern
+/// stands), and whether they are stroked with square caps instead of
+/// the original round ones (a piece both of whose ends are cuts).
+type Lines = Vec<(Vec<(f64, f64)>, bool, f64, bool)>;
 
 struct Subpath {
     /// Page-space points.
@@ -278,7 +279,7 @@ pub(crate) fn cut_path(
                 if rects.iter().any(|q| overlaps_open(&grown_hull, q)) {
                     return Err(unsupported("a curve near a rect"));
                 }
-                out.push((s.upts.clone(), s.closed, 0.0));
+                out.push((s.upts.clone(), s.closed, 0.0, false));
                 continue;
             }
             // Repeated points draw nothing and hide the real joins:
@@ -298,7 +299,7 @@ pub(crate) fn cut_path(
                 if !clear_of(pts[0], half * std::f64::consts::SQRT_2) {
                     return Err(unsupported("a degenerate subpath near a rect"));
                 }
-                out.push((s.upts.clone(), s.closed, 0.0));
+                out.push((s.upts.clone(), s.closed, 0.0, false));
                 continue;
             }
             let seg_count = if s.closed { n } else { n - 1 };
@@ -358,7 +359,7 @@ pub(crate) fn cut_path(
                         return Err(unsupported("a corner whose join reaches a rect"));
                     }
                 }
-                out.push((s.upts.clone(), s.closed, 0.0));
+                out.push((s.upts.clone(), s.closed, 0.0, false));
                 continue;
             }
             changed = true;
@@ -405,7 +406,15 @@ pub(crate) fn cut_path(
                     }
                 }
                 if p.windows(2).map(|w| dist(w[0], w[1])).sum::<f64>() > 0.0 {
-                    out.push((p, false, at));
+                    // A round-capped piece both of whose ends are cuts:
+                    // the cuts were pulled back by the cap's square, so a
+                    // square cap ends the band exactly where the rect
+                    // begins (a round one would leave its corners out).
+                    // Original ends keep their round caps.
+                    let original_end =
+                        !s.closed && (p[0] == pts[0] || p[p.len() - 1] == pts[n - 1]);
+                    let square = st.cap == 1 && st.dash.is_none() && !original_end;
+                    out.push((p, false, at, square));
                 }
             }
         }
@@ -474,11 +483,20 @@ pub(crate) fn cut_path(
             Some(lines) => match &st.dash {
                 None => {
                     let before = ops.len();
-                    for (pts, closed, _) in lines {
+                    for (pts, closed, _, _) in lines.iter().filter(|l| !l.3) {
                         push_polyline(&mut ops, pts, *closed);
                     }
                     if ops.len() > before {
                         ops.push(O::Stroke);
+                    }
+                    if lines.iter().any(|l| l.3) {
+                        ops.push(O::SaveState);
+                        ops.push(O::SetLineCap(2));
+                        for (pts, closed, _, _) in lines.iter().filter(|l| l.3) {
+                            push_polyline(&mut ops, pts, *closed);
+                        }
+                        ops.push(O::Stroke);
+                        ops.push(O::RestoreState);
                     }
                 }
                 // Dashed: each piece is stroked with the pattern set to
@@ -494,7 +512,7 @@ pub(crate) fn cut_path(
                         full.extend_from_slice(d);
                     }
                     let period: f64 = full.iter().sum();
-                    for (pts, closed, at) in lines {
+                    for (pts, closed, at, _) in lines {
                         ops.push(O::SaveState);
                         ops.push(O::SetDash {
                             dashes: full.clone(),
