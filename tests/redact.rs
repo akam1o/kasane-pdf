@@ -556,9 +556,10 @@ fn rotated_rectangle_path_is_located() {
     assert_eq!(r.paths_removed, 1);
 }
 
-/// A Type 3 glyph may paint anywhere: refused, not estimated.
+/// A Type 3 glyph painting far from its cell (40 pt to the right) is
+/// taken where its CharProc paints, not estimated from the cell.
 #[test]
-fn type3_text_is_refused() {
+fn type3_ink_far_from_the_cell_is_found() {
     let pdf = build_pdf(&[
         (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
         (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
@@ -579,8 +580,8 @@ fn type3_text_is_refused() {
         ),
         (6, stream_obj("", b"600 0 d0 2000 0 1000 1000 re f")),
     ]);
-    let e = unsupported(run(&pdf, vec![(90.0, 100.0, 110.0, 120.0)]));
-    assert!(e.contains("Type 3"), "{e}");
+    let r = run(&pdf, vec![(90.0, 100.0, 110.0, 120.0)]).unwrap();
+    assert_eq!(r.codes_removed, 1);
 }
 
 /// An image's `/Alternates` hold the same picture: refused.
@@ -2963,4 +2964,244 @@ fn indexed_jpegs_and_invalid_indexed_spaces_are_refused() {
             "{cs} {filter}"
         );
     }
+}
+
+// Type 3 fonts: CharProcs made of paths are evaluated (their ink, under
+// the FontMatrix, united with the advance cell); anything else in a
+// CharProc is refused.
+
+/// A page showing `text` (codes 65…) in a Type 3 font whose glyph `A`
+/// is `proc_a` and `B` is `proc_b`, with `font_extra` in the font dict.
+fn type3_page(
+    content: &str,
+    proc_a: &str,
+    proc_b: &str,
+    font_extra: &str,
+    extra: Vec<(u32, Vec<u8>)>,
+) -> Vec<u8> {
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /T3 60 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", content.as_bytes())),
+        (
+            60,
+            format!(
+                "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
+                 /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /A 61 0 R /B 62 0 R >> \
+                 /Encoding << /Type /Encoding /Differences [65 /A /B] >> /FirstChar 65 \
+                 /LastChar 66 /Widths [1000 1000] /Resources << >> {font_extra} >>"
+            )
+            .into_bytes(),
+        ),
+        (61, stream_obj("", proc_a.as_bytes())),
+        (62, stream_obj("", proc_b.as_bytes())),
+    ];
+    objs.extend(extra);
+    build_pdf(&objs)
+}
+
+const T3_FILL: &str = "1000 0 0 0 800 800 d1 100 0 600 700 re f";
+
+/// Code positions: 10 pt glyphs at x = 20, 30, 40, … on y = 100.
+const T3_TEXT: &str = "BT /T3 10 Tf 20 100 Td (AAAAAA) Tj ET";
+
+#[test]
+fn type3_fill_glyphs_are_redacted() {
+    let pdf = type3_page(T3_TEXT, T3_FILL, T3_FILL, "", vec![]);
+    // The third and fourth glyphs (x 40…50, 50…60).
+    let r = run(&pdf, vec![(41.5, 99.0, 55.0, 108.0)]).unwrap();
+    assert_eq!(r.codes_removed, 2);
+    let (a, b) = (reds(&pdf), reds(&r.output));
+    for y in 0..200u32 {
+        for x in 0..200u32 {
+            let (xf, yf) = (x as f64 + 0.5, 199.5 - y as f64);
+            let i = (y * 200 + x) as usize;
+            if (39.0..=61.0).contains(&xf) && (95.0..=110.0).contains(&yf) {
+                if (42.0..55.0).contains(&xf) && (100.0..106.0).contains(&yf) {
+                    assert_eq!(b[i], 255, "inside ({x}, {y})");
+                }
+            } else {
+                assert_eq!(a[i], b[i], "outside ({x}, {y})");
+            }
+        }
+    }
+}
+
+/// Strokes are grown by their reach; the FontMatrix (rotated, sheared)
+/// places the ink; a glyph painting beyond /FontBBox and beyond its
+/// cell is found where it paints; a clip in the CharProc decides
+/// nothing.
+#[test]
+fn type3_ink_is_taken_where_it_is_painted() {
+    // A stroke 400 glyph units wide reaching 200 below the baseline.
+    let stroked = type3_page(
+        T3_TEXT,
+        "1000 0 d0 400 w 500 0 m 500 0 l 0 J S",
+        T3_FILL,
+        "",
+        vec![],
+    );
+    let r = run(&stroked, vec![(20.0, 97.0, 200.0, 98.5)]).unwrap();
+    assert_eq!(
+        r.codes_removed, 6,
+        "the stroke reaches 2 pt below the baseline"
+    );
+    // Ink 3000 glyph units to the right of the glyph (30 pt), outside
+    // /FontBBox and the cell.
+    let far = type3_page(
+        "BT /T3 10 Tf 20 100 Td (A) Tj ET",
+        "1000 0 d0 3000 0 400 400 re f",
+        T3_FILL,
+        "",
+        vec![],
+    );
+    let r = run(&far, vec![(49.0, 99.0, 55.0, 105.0)]).unwrap();
+    assert_eq!(r.codes_removed, 1);
+    // A sheared, rotated FontMatrix.
+    let pdf = type3_page(
+        "BT /T3 10 Tf 20 100 Td (A) Tj ET",
+        T3_FILL,
+        T3_FILL,
+        "/FontMatrix [0 0.001 -0.001 0.0005 0 0]",
+        vec![],
+    );
+    let r = run(&pdf, vec![(10.0, 101.0, 19.0, 107.0)]).unwrap();
+    assert_eq!(
+        r.codes_removed, 1,
+        "the rotated glyph lies left of its origin"
+    );
+    // A clip in the CharProc hides the ink, not the glyph.
+    let clipped = type3_page(
+        T3_TEXT,
+        "1000 0 d0 0 0 1 1 re W n 100 0 600 700 re f",
+        T3_FILL,
+        "",
+        vec![],
+    );
+    let r = run(&clipped, vec![(41.5, 99.0, 45.0, 106.0)]).unwrap();
+    assert_eq!(r.codes_removed, 1);
+}
+
+/// The same glyph inside and outside the rect: only the one inside goes.
+#[test]
+fn type3_same_glyph_inside_and_outside() {
+    let pdf = type3_page(
+        "BT /T3 10 Tf 20 100 Td (AB) Tj 0 -50 Td (AB) Tj ET",
+        T3_FILL,
+        T3_FILL,
+        "",
+        vec![],
+    );
+    let r = run(&pdf, vec![(21.0, 99.0, 29.0, 108.0)]).unwrap();
+    assert_eq!(r.codes_removed, 1);
+    assert_ne!(at(&r.output, 25, 53), 255, "the same glyph below is kept");
+}
+
+/// CharProcs with images, XObjects, text, ExtGState, patterns, shadings
+/// or hairlines are refused; so are non-finite coordinates.
+#[test]
+fn type3_charprocs_beyond_paths_are_refused() {
+    for proc in [
+        "1000 0 d0 q 100 0 0 100 0 0 cm /Im Do Q",
+        "1000 0 d0 BI /W 1 /H 1 /CS /G /BPC 8 ID \u{0} EI",
+        "1000 0 d0 BT /T3 1 Tf (A) Tj ET",
+        "1000 0 d0 /G gs 0 0 10 10 re f",
+        "1000 0 d0 /Pattern cs /P scn 0 0 10 10 re f",
+        "1000 0 d0 /Sh sh",
+        "1000 0 d0 0 w 0 0 m 10 10 l S",
+        "1000 0 d0 /P << /ActualText (X) >> BDC 0 0 10 10 re f EMC",
+    ] {
+        let pdf = type3_page(T3_TEXT, proc, T3_FILL, "", vec![]);
+        let e = unsupported(run(&pdf, vec![(41.5, 99.0, 55.0, 108.0)]));
+        assert!(e.contains("Type 3"), "{proc}: {e}");
+    }
+    let huge = type3_page(
+        T3_TEXT,
+        "1000 0 d0 1e308 1e308 m -1e308 -1e308 l 1e308 w S",
+        T3_FILL,
+        "",
+        vec![],
+    );
+    assert!(run(&huge, vec![(41.5, 99.0, 55.0, 108.0)]).is_err());
+}
+
+/// An ICCBased space whose /Alternate is not a device space (a reader
+/// may fall back to it — an Indexed one makes samples palette indices)
+/// is refused.
+#[test]
+fn icc_with_a_non_device_alternate_is_refused() {
+    let img = stream_obj(
+        "/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace [/ICCBased 42 0 R] \
+         /BitsPerComponent 8",
+        &[1u8; 256],
+    );
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"q 100 0 0 100 50 50 cm /Im1 Do Q")),
+        (5, img),
+        (
+            42,
+            stream_obj(
+                "/N 1 /Alternate [/Indexed /DeviceRGB 255 41 0 R]",
+                b"profile",
+            ),
+        ),
+        (41, stream_obj("", &[7u8; 768])),
+    ]);
+    assert!(run(&pdf, vec![(50.0, 50.0, 150.0, 150.0)]).is_err());
+}
+
+/// A CharProc reached through a reference cycle, a singular or
+/// strongly anisotropic FontMatrix, and malformed CharProcs (an
+/// unbalanced Q, a non-stream) are refused.
+#[test]
+fn type3_cycles_and_degenerate_fonts_are_refused() {
+    let cyclic = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /T3 60 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", T3_TEXT.as_bytes())),
+        (
+            60,
+            b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
+              /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /A 61 0 R >> \
+              /Encoding << /Differences [65 /A] >> /FirstChar 65 /LastChar 65 \
+              /Widths [1000] /Resources << >> >>"
+                .to_vec(),
+        ),
+        (61, b"62 0 R".to_vec()),
+        (62, b"61 0 R".to_vec()),
+    ]);
+    assert!(run(&cyclic, vec![(41.5, 99.0, 55.0, 108.0)]).is_err());
+    for fm in ["[0 0 0 0 0 0]", "[0.001 0 0 0.00001 0 0]"] {
+        let pdf = type3_page(
+            T3_TEXT,
+            T3_FILL,
+            T3_FILL,
+            &format!("/FontMatrix {fm}"),
+            vec![],
+        );
+        let e = unsupported(run(&pdf, vec![(41.5, 99.0, 55.0, 108.0)]));
+        assert!(e.contains("anisotropic"), "{fm}: {e}");
+    }
+    let unbalanced = type3_page(T3_TEXT, "1000 0 d0 Q 0 0 10 10 re f", T3_FILL, "", vec![]);
+    assert!(run(&unbalanced, vec![(41.5, 99.0, 55.0, 108.0)]).is_err());
 }

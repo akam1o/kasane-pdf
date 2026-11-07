@@ -38,7 +38,19 @@ versions follow [Semantic Versioning](https://semver.org/).
   (zeroed samples carry nothing whatever colour they show; a zeroed
   index selects the palette's first colour); four-component and Indexed JPEGs stay
   refused. Pages with `/UserUnit` are redacted in their user space,
-  the space the rects are given in.
+  the space the rects are given in. An ICCBased space is accepted only
+  when its `/Alternate` (which a reader may fall back to) is absent or a
+  device space: an Indexed alternate would make the samples palette
+  indices.
+- `redact` removes text in Type 3 fonts whose CharProcs are paths
+  instead of refusing it: each CharProc is evaluated for the bounds of
+  what it fills and strokes (strokes grown by their reach; clips in it
+  decide nothing), mapped by `/FontMatrix` and united with the code's
+  advance cell. CharProcs with images, XObjects, text, shadings, `gs`,
+  patterns, named colour spaces, marked content with properties or
+  hairline strokes stay refused, as do FontMatrices stretching one axis
+  over 16:1. Removed glyphs' CharProcs stay in the font, as an embedded
+  font program keeps its glyphs.
 
 ### Fixed
 - `diagnose_redaction` and the editors grew stroked text by the stroke's

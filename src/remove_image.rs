@@ -594,6 +594,22 @@ fn redaction_components(
         }
         Some(b"ICCBased") if a.len() == 2 => {
             let s = doc.deref(&a[1])?;
+            // A reader that cannot use the profile falls back to
+            // /Alternate: only a device space there is accepted (an
+            // Indexed alternate would make the samples palette indices).
+            let alternate_ok = match &s {
+                Object::Stream { dict, .. } => match dict.get(b"Alternate".as_slice()) {
+                    None => true,
+                    Some(alt) => matches!(
+                        doc.deref(alt)?.as_name(),
+                        Some(b"DeviceGray" | b"DeviceRGB" | b"DeviceCMYK")
+                    ),
+                },
+                _ => false,
+            };
+            if !alternate_ok {
+                return Ok(None);
+            }
             let n = match &s {
                 Object::Stream { dict, .. } => dict.get(b"N".as_slice()).and_then(|v| v.as_i64()),
                 _ => None,

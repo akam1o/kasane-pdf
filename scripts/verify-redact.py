@@ -148,10 +148,22 @@ CASES = [
     # exactly the embedded glyphs.
     ("non-embedded-font-embedded", build(page(TEXT, res=b"/Font << /F1 8 0 R >>", more={
         8: b"<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>"})), ["--embed-substitute-fonts"], "ok"),
+    # A Type 3 font whose glyphs are paths: evaluated by their ink.
+    ("type3-font", build(page(b"BT /T3 12 Tf 50 100 Td (SECRETTEXT) Tj ET BT /T3 12 Tf 10 20 Td (PUBLICWORD) Tj ET",
+                              res=b"/Font << /T3 8 0 R >>", more={
+        8: b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] /FontMatrix [0.001 0 0 0.001 0 0] "
+           b"/CharProcs << /g 9 0 R >> /Encoding << /Type /Encoding /Differences [65 "
+           + b" ".join(b"/g" for _ in range(26)) + b"] >> /FirstChar 65 /LastChar 90 "
+           b"/Widths [" + b" ".join(b"700" for _ in range(26)) + b"] /ToUnicode 10 0 R /Resources << >> >>",
+        9: stream(b"", b"700 0 0 0 600 700 d1 50 0 500 650 re f"),
+        10: stream(b"", b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /T3 def "
+                        b"1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfrange <41> <5A> <0041> endbfrange "
+                        b"endcmap CMapName currentdict /CMap defineresource pop end end"),
+    })), [], "ok"),
 ]
 # The same file with the document-wide option: the original still drawn
 # on page 2 is a copy elsewhere, so refused.
-CASES.append(("image-shown-on-two-pages-refuse-copies", CASES[-1][1], ["--refuse-copies-elsewhere"], "refused"))
+CASES.append(("image-shown-on-two-pages-refuse-copies", dict((c[0], c[1]) for c in CASES)["image-shown-on-two-pages"], ["--refuse-copies-elsewhere"], "refused"))
 # Cases whose original image samples legitimately stay (another page
 # draws the original; the redaction is positional and reports it).
 ORIGINAL_STAYS = {"image-shown-on-two-pages"}

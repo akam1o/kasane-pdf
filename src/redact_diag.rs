@@ -826,6 +826,8 @@ pub(crate) struct DiagWalker<'a> {
     /// same way, so it is not a blocker; an inline image is a blocker
     /// only when it meets a rect (one elsewhere is kept as it is).
     pub(crate) redaction_mode: bool,
+    /// Redaction: Type 3 glyph bounds by (font, code), evaluated once.
+    type3_cache: std::collections::HashMap<[u8; 32], Result<Option<[f64; 4]>, String>>,
     /// object ref → (kind, sites) for sharing analysis.
     site_map: BTreeMap<(u32, u16), (String, Vec<Site>)>,
     /// Counting budget for reported items.
@@ -973,6 +975,7 @@ impl<'a> DiagWalker<'a> {
             path_states: BTreeMap::new(),
             record_show_states,
             redaction_mode: false,
+            type3_cache: std::collections::HashMap::new(),
             site_map: BTreeMap::new(),
             reported: 0,
             text_codes: 0,
@@ -1854,14 +1857,104 @@ impl<'a> DiagWalker<'a> {
         // A Type 3 glyph is a content stream that may paint anywhere
         // (and draw images); its extent is not evaluated, so it is not
         // estimated either.
-        if font.as_type3().is_some() {
-            return self.glyph_error(
-                code,
-                Error::Unsupported {
-                    feature: "Type 3 glyph",
-                    detail: "its CharProc may paint anywhere; the extent is not evaluated".into(),
-                },
-            );
+        // A Type 3 glyph is a content stream that may paint anywhere.
+        // Redaction evaluates the CharProcs it can bound exactly
+        // (`type3_glyph_bounds`); the glyph is then taken by that ink
+        // united with its advance cell (where extraction places it).
+        let mut type3_bounds: Option<(f64, f64, f64, f64)> = None;
+        if let Some(t3) = font.as_type3() {
+            if !self.redaction_mode {
+                return self.glyph_error(
+                    code,
+                    Error::Unsupported {
+                        feature: "Type 3 glyph",
+                        detail: "its CharProc may paint anywhere; the extent is not evaluated"
+                            .into(),
+                    },
+                );
+            }
+            // Keyed by the CharProc itself (its dictionary and bytes):
+            // the bounds depend on nothing else.
+            let charproc = match t3.charproc(self.doc, code as u8) {
+                Ok(c) => c,
+                Err(e @ Error::LimitExceeded { .. }) => return Err(e),
+                Err(e) => return self.glyph_error(code, e),
+            };
+            let key = charproc.as_ref().map(|(d, raw)| {
+                let mut k = format!("{d:?}").into_bytes();
+                k.extend_from_slice(raw);
+                crate::remove_region::sha256(&k)
+            });
+            let glyph = match key.and_then(|k| self.type3_cache.get(&k).cloned()) {
+                Some(g) => g,
+                None => {
+                    let g = match &charproc {
+                        Some((d, raw)) => type3_glyph_bounds(self.doc, d, raw, self.limits),
+                        None => Ok(None),
+                    };
+                    let g = match g {
+                        Ok(b) => Ok(b),
+                        Err(e @ Error::LimitExceeded { .. }) => return Err(e),
+                        Err(e) => Err(e.to_string()),
+                    };
+                    if let Some(k) = key {
+                        self.type3_cache.insert(k, g.clone());
+                    }
+                    g
+                }
+            };
+            let glyph = match glyph {
+                Ok(g) => g,
+                Err(detail) => {
+                    return self.glyph_error(
+                        code,
+                        Error::Unsupported {
+                            feature: "Type 3 glyph",
+                            detail,
+                        },
+                    )
+                }
+            };
+            let to_page = t3.font_matrix().concat(trm);
+            // The FontMatrix stretches the glyph too: the same 16:1
+            // bound as for the text matrix (a singular one is refused).
+            if anisotropy(&to_page) > 16.0 || !to_page.is_finite() {
+                return self.glyph_error(
+                    code,
+                    Error::Unsupported {
+                        feature: "strongly anisotropic text",
+                        detail: "the Type 3 FontMatrix stretches one axis over 16 times the \
+                                 other or is singular"
+                            .into(),
+                    },
+                );
+            }
+            let w = font.width(code) / 1000.0;
+            // The advance cell in text space (from 0.2 em below the
+            // baseline to 1 em above), mapped by `trm`: where extraction
+            // places the code.
+            let mut pts: Vec<(f64, f64)> = [
+                (w.min(0.0), -0.2),
+                (w.max(0.0), -0.2),
+                (w.min(0.0), 1.0),
+                (w.max(0.0), 1.0),
+            ]
+            .iter()
+            .map(|p| trm.transform(p.0, p.1))
+            .collect();
+            if let Some(b) = glyph {
+                pts.extend(
+                    [(b[0], b[1]), (b[2], b[1]), (b[0], b[3]), (b[2], b[3])]
+                        .iter()
+                        .map(|p| to_page.transform(p.0, p.1)),
+                );
+            }
+            type3_bounds = Some((
+                pts.iter().map(|p| p.0).fold(f64::INFINITY, f64::min),
+                pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min),
+                pts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max),
+                pts.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max),
+            ));
         }
         // Vertical writing places glyphs by vertical origins and
         // advances this walker does not model.
@@ -1896,6 +1989,7 @@ impl<'a> DiagWalker<'a> {
         // failed" (broken font, limit, unsupported → uncertain). An
         // error is never silently swapped for a cell estimate.
         let (bounds, bounds_kind) = match font.glyph_id(code) {
+            _ if type3_bounds.is_some() => (type3_bounds.expect("checked"), TextBounds::Cell),
             Ok(gid) => {
                 let m = match font.glyph_matrix(gid) {
                     Ok(m) => m,
@@ -2720,6 +2814,162 @@ fn matrix_from_array(o: &Object) -> Option<crate::matrix::Matrix> {
 }
 
 use crate::object::Dict;
+
+/// The glyph-space bounds of everything a Type 3 CharProc paints —
+/// `None` when it paints nothing — for `redact`, which accepts the
+/// CharProcs it can bound exactly: path construction and painting
+/// (fills; strokes grown by their reach — half the width, the miter
+/// limit for miter joins, √2 for square caps — under the local CTM's
+/// largest stretch), `q`/`Q`/`cm`, line state, colour (not a pattern),
+/// clips (which decide nothing in redaction), `d0`/`d1`, flatness,
+/// rendering intent, and unpropertied marked content. Anything else —
+/// images, XObjects, text, shadings, ExtGState, patterns, marked
+/// content with properties, a hairline (`0 w`) stroke — is refused: its
+/// extent or the data it carries is not evaluated.
+pub(crate) fn type3_glyph_bounds(
+    doc: &Document,
+    dict: &crate::object::Dict,
+    raw: &[u8],
+    limits: &Limits,
+) -> Result<Option<[f64; 4]>, Error> {
+    use crate::content::Operation as O;
+    let refuse = |what: &str| Error::Unsupported {
+        feature: "Type 3 glyph",
+        detail: format!("its CharProc uses {what}; only paths are evaluated"),
+    };
+    let decoded = doc.decode_stream(dict, raw)?;
+    let mut warnings = Vec::new();
+    let ops = crate::content::parse_content_stream(&[decoded], limits, false, &mut warnings)?;
+    #[derive(Clone)]
+    struct Gs {
+        ctm: crate::matrix::Matrix,
+        w: f64,
+        cap: i64,
+        join: i64,
+        miter: f64,
+    }
+    let mut gs = Gs {
+        ctm: crate::matrix::Matrix::IDENTITY,
+        w: 1.0,
+        cap: 0,
+        join: 0,
+        miter: 10.0,
+    };
+    let mut stack: Vec<Gs> = Vec::new();
+    let mut path: Option<[f64; 4]> = None;
+    let mut out: Option<[f64; 4]> = None;
+    let add = |b: &mut Option<[f64; 4]>, p: (f64, f64)| {
+        *b = Some(match *b {
+            None => [p.0, p.1, p.0, p.1],
+            Some(c) => [c[0].min(p.0), c[1].min(p.1), c[2].max(p.0), c[3].max(p.1)],
+        });
+    };
+    for op in &ops {
+        match op {
+            O::SaveState => {
+                if stack.len() >= limits.max_gsave_depth {
+                    return Err(Error::LimitExceeded {
+                        limit: "max_gsave_depth",
+                        max: limits.max_gsave_depth as u64,
+                    });
+                }
+                stack.push(gs.clone());
+            }
+            O::RestoreState => {
+                gs = stack
+                    .pop()
+                    .ok_or_else(|| Error::Structure("Q without matching q".into()))?;
+            }
+            O::ConcatMatrix(m) => {
+                if !m.is_finite() {
+                    return Err(Error::Structure("non-finite cm operands".into()));
+                }
+                gs.ctm = m.concat(gs.ctm);
+            }
+            O::SetLineWidth(w) => gs.w = *w,
+            O::SetLineCap(c) => gs.cap = *c,
+            O::SetLineJoin(j) => gs.join = *j,
+            O::SetMiterLimit(m) => gs.miter = *m,
+            O::SetDash { .. }
+            | O::SetFlatness(_)
+            | O::SetRenderingIntent(_)
+            | O::Type3SetWidth { .. }
+            | O::Type3SetWidthAndBox { .. }
+            | O::SetGrayStroke(_)
+            | O::SetGrayFill(_)
+            | O::SetRgbStroke(..)
+            | O::SetRgbFill(..)
+            | O::SetCmykStroke(..)
+            | O::SetCmykFill(..)
+            | O::MarkedContentPoint(_)
+            | O::BeginMarkedContent(_)
+            | O::EndMarkedContent => {}
+            O::SetColorSpaceStroke(n) | O::SetColorSpaceFill(n) => {
+                if n.as_slice() == b"Pattern"
+                    || !matches!(n.as_slice(), b"DeviceGray" | b"DeviceRGB" | b"DeviceCMYK")
+                {
+                    return Err(refuse("a colour space other than a device space"));
+                }
+            }
+            O::SetColorStroke(v) | O::SetColorFill(v) => {
+                if v.iter()
+                    .any(|o| !matches!(o, Object::Integer(_) | Object::Real(_)))
+                {
+                    return Err(refuse("a pattern colour"));
+                }
+            }
+            O::MoveTo(x, y) | O::LineTo(x, y) => add(&mut path, gs.ctm.transform(*x, *y)),
+            O::CurveTo(a, b, c, d, e, f) => {
+                for (x, y) in [(*a, *b), (*c, *d), (*e, *f)] {
+                    add(&mut path, gs.ctm.transform(x, y));
+                }
+            }
+            O::CurveToV(a, b, c, d) | O::CurveToY(a, b, c, d) => {
+                for (x, y) in [(*a, *b), (*c, *d)] {
+                    add(&mut path, gs.ctm.transform(x, y));
+                }
+            }
+            O::Rectangle(x, y, w, h) => {
+                for (px, py) in [(*x, *y), (*x + *w, *y), (*x, *y + *h), (*x + *w, *y + *h)] {
+                    add(&mut path, gs.ctm.transform(px, py));
+                }
+            }
+            O::ClosePath | O::Clip | O::ClipEvenOdd => {}
+            O::EndPath => path = None,
+            O::Fill | O::FillEvenOdd => {
+                if let Some(b) = path.take() {
+                    add(&mut out, (b[0], b[1]));
+                    add(&mut out, (b[2], b[3]));
+                }
+            }
+            O::Stroke
+            | O::CloseAndStroke
+            | O::FillAndStroke
+            | O::FillAndStrokeEvenOdd
+            | O::CloseFillAndStroke
+            | O::CloseFillAndStrokeEvenOdd => {
+                if !(gs.w.is_finite() && gs.w > 0.0) {
+                    return Err(refuse("a hairline or non-finite stroke"));
+                }
+                let miter = if gs.join == 0 && gs.miter.is_finite() {
+                    gs.miter.max(1.0)
+                } else {
+                    1.0
+                };
+                let r = gs.w / 2.0 * miter.max(std::f64::consts::SQRT_2) * ctm_max_scale(&gs.ctm);
+                if let Some(b) = path.take() {
+                    add(&mut out, (b[0] - r, b[1] - r));
+                    add(&mut out, (b[2] + r, b[3] + r));
+                }
+            }
+            other => return Err(refuse(other.name())),
+        }
+    }
+    if out.is_some_and(|b| !b.iter().all(|v| v.is_finite())) {
+        return Err(Error::Structure("non-finite Type 3 glyph bounds".into()));
+    }
+    Ok(out)
+}
 
 #[cfg(test)]
 mod tests {
