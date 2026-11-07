@@ -121,7 +121,7 @@ CASES = [
     ("background-box-crossing", build(page(b"0.9 g 20 85 170 35 re f 0 g " + TEXT)), [], "ok"),
     ("rotated-ctm-rule", build(page(TEXT + b" q 0 1 -1 0 200 0 cm 1 w 10 100 m 190 100 l S Q")), [], "ok"),
     ("curve-crossing", build(page(TEXT + b" 1 w 30 100 m 80 130 120 70 170 100 c S")), [], "refused"),
-    ("dashed-rule-crossing", build(page(TEXT + b" [3 2] 0 d 1 w 10 100 m 190 100 l S")), [], "refused"),
+    ("dashed-rule-crossing", build(page(TEXT + b" [3 2] 0 d 1 w 10 100 m 190 100 l S")), [], "ok"),
     ("inline-image", build(page(TEXT + b" q 20 0 0 20 60 95 cm BI /W 2 /H 1 /CS /G /BPC 8 ID \x10\x20 EI Q")), [], "refused"),
     ("inline-image-outside", build(page(TEXT + b" q 20 0 0 20 150 20 cm BI /W 2 /H 1 /CS /G /BPC 8 ID \x10\x20 EI Q")), [], "ok"),
     ("image-shown-on-two-pages", build({

@@ -7,14 +7,14 @@
 //!   rectangles' difference with the rects — exact. Several rectangles
 //!   are cut only when they do not overlap (so the fill rule does not
 //!   matter).
-//! - **Strokes** of straight segments are cut along their centreline:
-//!   the part within the rect grown by the stroke's reach (half the
-//!   line width under the CTM's largest stretch, √2 times that for a
-//!   square cap) is removed, so the remaining band, caps included,
-//!   stays outside the rect. A corner kept next to a rect must clear
-//!   it by its join's own reach (a miter's tip), or the path refuses.
-//!   Dashed strokes refuse (the remaining pieces would restart the
-//!   dash pattern).
+//! - **Strokes** of straight segments are cut in user space along
+//!   their centreline, where the segment's cross-section (and cap)
+//!   would reach the rect's parallelogram, so the remaining band, caps
+//!   included, stays outside the rect. A corner kept next to a rect
+//!   must clear it by its join's own reach (a miter's tip), or the path
+//!   refuses. A dashed stroke's pieces are each stroked with the
+//!   pattern's phase set to where the piece starts on the original
+//!   subpath (in `q … Q`), so the dashes outside fall where they did.
 //!
 //! Anything else that comes near a rect — curves, other fill shapes,
 //! overlapping rectangles — refuses. A path that keeps clear of every
@@ -33,7 +33,8 @@ pub(crate) struct PathPaintState {
     pub(crate) cap: i64,
     pub(crate) join: i64,
     pub(crate) miter_limit: f64,
-    pub(crate) dashed: bool,
+    /// The dash array and phase; `None` for a solid line.
+    pub(crate) dash: Option<(Vec<f64>, f64)>,
 }
 
 /// The outcome of [`cut_path`].
@@ -46,7 +47,10 @@ pub(crate) enum Cut {
 }
 
 /// Page-space polylines with their closed flag.
-type Lines = Vec<(Vec<(f64, f64)>, bool)>;
+/// User-space polylines with their closed flag and the arc length
+/// along their original subpath at which each starts (where its dash
+/// pattern stands).
+type Lines = Vec<(Vec<(f64, f64)>, bool, f64)>;
 
 struct Subpath {
     /// Page-space points.
@@ -271,7 +275,7 @@ pub(crate) fn cut_path(
                 if rects.iter().any(|q| overlaps_open(&grown_hull, q)) {
                     return Err(unsupported("a curve near a rect"));
                 }
-                out.push((s.upts.clone(), s.closed));
+                out.push((s.upts.clone(), s.closed, 0.0));
                 continue;
             }
             // Repeated points draw nothing and hide the real joins:
@@ -291,7 +295,7 @@ pub(crate) fn cut_path(
                 if !clear_of(pts[0], half * std::f64::consts::SQRT_2) {
                     return Err(unsupported("a degenerate subpath near a rect"));
                 }
-                out.push((s.upts.clone(), s.closed));
+                out.push((s.upts.clone(), s.closed, 0.0));
                 continue;
             }
             let seg_count = if s.closed { n } else { n - 1 };
@@ -351,46 +355,54 @@ pub(crate) fn cut_path(
                         return Err(unsupported("a corner whose join reaches a rect"));
                     }
                 }
-                out.push((s.upts.clone(), s.closed));
+                out.push((s.upts.clone(), s.closed, 0.0));
                 continue;
             }
             changed = true;
-            let mut pieces: Vec<Vec<(f64, f64)>> = Vec::new();
+            let mut pieces: Vec<(Vec<(f64, f64)>, f64)> = Vec::new();
             let mut cur: Vec<(f64, f64)> = Vec::new();
+            let mut cur_at = 0.0f64;
+            let mut along = 0.0f64;
             for k in 0..seg_count {
                 let (a, b) = seg(k);
+                let len = dist(a, b);
                 for (t0, t1) in kept_intervals_poly(a, b, &forbidden(a, b, &quads_cut)) {
                     let p1 = lerp(a, b, t1);
                     if t0 == 0.0 && cur.last() == Some(&a) {
                         cur.push(p1);
                     } else {
                         if cur.len() >= 2 {
-                            pieces.push(std::mem::take(&mut cur));
+                            pieces.push((std::mem::take(&mut cur), cur_at));
                         }
                         cur = vec![lerp(a, b, t0), p1];
+                        cur_at = along + t0 * len;
                     }
                 }
+                along += len;
             }
             if cur.len() >= 2 {
-                pieces.push(cur);
+                pieces.push((cur, cur_at));
             }
-            if s.closed && pieces.len() >= 2 {
+            // A closed subpath: a last piece ending at the start vertex
+            // runs on into a first piece starting there — unless dashed,
+            // where the pattern restarts at the start vertex.
+            if s.closed && pieces.len() >= 2 && st.dash.is_none() {
                 let start = pts[0];
-                if pieces[0][0] == start && pieces.last().and_then(|p| p.last()) == Some(&start) {
-                    let last = pieces.pop().expect("two or more");
-                    let mut merged = last;
-                    merged.extend_from_slice(&pieces[0][1..]);
-                    pieces[0] = merged;
+                if pieces[0].0[0] == start && pieces.last().and_then(|p| p.0.last()) == Some(&start)
+                {
+                    let (mut merged, at) = pieces.pop().expect("two or more");
+                    merged.extend_from_slice(&pieces[0].0[1..]);
+                    pieces[0] = (merged, at);
                 }
             }
-            for p in pieces {
+            for (p, at) in pieces {
                 for i in 1..p.len() - 1 {
                     if !clear_of(p[i], join_reach(p[i - 1], p[i], p[i + 1])) {
                         return Err(unsupported("a corner whose join reaches a rect"));
                     }
                 }
                 if p.windows(2).map(|w| dist(w[0], w[1])).sum::<f64>() > 0.0 {
-                    out.push((p, false));
+                    out.push((p, false, at));
                 }
             }
         }
@@ -398,8 +410,15 @@ pub(crate) fn cut_path(
             return Err(unsupported("a curve in a path cut at a rect"));
         }
         if changed {
-            if st.dashed {
-                return Err(unsupported("a dashed stroke near a rect"));
+            if let Some((d, phase)) = &st.dash {
+                // Each piece restarts the pattern at its own phase:
+                // only a well-formed pattern is followed exactly.
+                let ok = phase.is_finite()
+                    && d.iter().all(|x| x.is_finite() && *x >= 0.0)
+                    && d.iter().sum::<f64>() > 0.0;
+                if !ok {
+                    return Err(unsupported("a dashed stroke with a degenerate pattern"));
+                }
             }
             stroke_lines = Some(out);
         }
@@ -441,21 +460,32 @@ pub(crate) fn cut_path(
     }
     if stroke {
         match &stroke_lines {
-            Some(lines) => {
-                let before = ops.len();
-                for (pts, closed) in lines {
-                    ops.push(O::MoveTo(pts[0].0, pts[0].1));
-                    for p in &pts[1..] {
-                        ops.push(O::LineTo(p.0, p.1));
+            Some(lines) => match &st.dash {
+                None => {
+                    let before = ops.len();
+                    for (pts, closed, _) in lines {
+                        push_polyline(&mut ops, pts, *closed);
                     }
-                    if *closed {
-                        ops.push(O::ClosePath);
+                    if ops.len() > before {
+                        ops.push(O::Stroke);
                     }
                 }
-                if ops.len() > before {
-                    ops.push(O::Stroke);
+                // Dashed: each piece is stroked with the pattern set to
+                // where its start stood on the original subpath, inside
+                // q … Q so the dash state after it is the original's.
+                Some((d, phase)) => {
+                    for (pts, closed, at) in lines {
+                        ops.push(O::SaveState);
+                        ops.push(O::SetDash {
+                            dashes: d.clone(),
+                            phase: phase + at,
+                        });
+                        push_polyline(&mut ops, pts, *closed);
+                        ops.push(O::Stroke);
+                        ops.push(O::RestoreState);
+                    }
                 }
-            }
+            },
             None => {
                 // The stroke is untouched: paint it as before.
                 ops.extend(construction.iter().cloned());
@@ -464,6 +494,16 @@ pub(crate) fn cut_path(
         }
     }
     Ok(Cut::Replace(ops))
+}
+
+fn push_polyline(ops: &mut Vec<Operation>, pts: &[(f64, f64)], closed: bool) {
+    ops.push(Operation::MoveTo(pts[0].0, pts[0].1));
+    for p in &pts[1..] {
+        ops.push(Operation::LineTo(p.0, p.1));
+    }
+    if closed {
+        ops.push(Operation::ClosePath);
+    }
 }
 
 /// Page-space margin, far above rounding error and far below anything

@@ -715,8 +715,9 @@ struct StrokeState {
     join: i64,
     /// `M` — miter limit, applied to the join extension.
     miter_limit: f64,
-    /// `d` — a dash pattern is set (non-empty array).
-    dashed: bool,
+    /// `d` — the dash array and phase, `None` for a solid line (an
+    /// empty array).
+    dash: Option<(Vec<f64>, f64)>,
 }
 
 /// The *whole* graphics state a diagnosis tracks — saved and restored
@@ -936,7 +937,7 @@ impl<'a> DiagWalker<'a> {
                     cap: 0,
                     join: 0,
                     miter_limit: 10.0,
-                    dashed: false,
+                    dash: None,
                 },
                 text: TextState {
                     h_scale: 1.0,
@@ -1036,14 +1037,21 @@ impl<'a> DiagWalker<'a> {
                     _ => return Ok(Some("/ML is not a finite number")),
                 },
                 b"D" => {
-                    let dashes = v
+                    let parts = v.as_array().filter(|a| a.len() == 2);
+                    let Some(parts) = parts else {
+                        return Ok(Some("/D is not [array phase]"));
+                    };
+                    let arr = self.doc.deref(&parts[0])?;
+                    let phase = self.doc.deref(&parts[1])?.as_number();
+                    let nums: Option<Vec<f64>> = arr
                         .as_array()
-                        .and_then(|a| a.first())
-                        .map(|a| self.doc.deref(a))
-                        .transpose()?;
-                    match dashes.as_ref().and_then(|a| a.as_array()) {
-                        Some(a) => st.dashed = !a.is_empty(),
-                        None => return Ok(Some("/D is not [array phase]")),
+                        .map(|a| a.iter().map(|x| x.as_number()).collect())
+                        .unwrap_or(None);
+                    match (nums, phase) {
+                        (Some(n), Some(p)) => {
+                            st.dash = (!n.is_empty()).then_some((n, p));
+                        }
+                        _ => return Ok(Some("/D is not [array phase]")),
                     }
                 }
                 b"SMask" => {
@@ -1198,7 +1206,9 @@ impl<'a> DiagWalker<'a> {
             O::SetLineCap(c) => self.gs.stroke.cap = *c,
             O::SetLineJoin(j) => self.gs.stroke.join = *j,
             O::SetMiterLimit(m) => self.gs.stroke.miter_limit = *m,
-            O::SetDash { dashes, .. } => self.gs.stroke.dashed = !dashes.is_empty(),
+            O::SetDash { dashes, phase } => {
+                self.gs.stroke.dash = (!dashes.is_empty()).then(|| (dashes.clone(), *phase));
+            }
             O::SetFlatness(_) | O::SetRenderingIntent(_) => {}
             O::Type3SetWidth { .. } | O::Type3SetWidthAndBox { .. } => {
                 // d0/d1 only appear inside a Type3 CharProc; at page
@@ -1647,7 +1657,7 @@ impl<'a> DiagWalker<'a> {
                                     cap: s.cap,
                                     join: s.join,
                                     miter_limit: s.miter_limit,
-                                    dashed: s.dashed,
+                                    dash: s.dash.clone(),
                                 },
                             );
                         }

@@ -36,7 +36,7 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 | text shown with `Tr 0` in an embedded font (rotated, scaled, `Ts`/`Tz`/`Tc`/`Tw`, `TJ` kerning) | the codes whose glyph ink hits a rect are deleted — whole glyphs, so a glyph straddling a rect's edge goes entirely; advances are preserved so the rest of the line keeps its position. Content whose clip keeps it out of every rect is not a hit |
 | image XObjects, 8-bit DeviceGray/RGB, unfiltered / Flate / one DCT, axis-aligned | a copy with the covered samples set to 0 replaces the call; the original is not carried (next section) |
 | painted paths wholly inside one rect | the path and its painting op are deleted |
-| painted paths crossing a rect's edge | cut there (`paths_cut`): filled axis-aligned rectangles become their difference with the rects (exact; several only when they do not overlap); stroked straight segments are cut, in user space where the stroke is defined, at the centreline positions whose cross-section (and cap) would reach the rect — exact for butt caps, the cap's square for square and round caps — so nothing reaches inside and nothing outside is lost; a corner kept near a rect must clear it by its join (the exact miter, or the bevel/round extent). Curves, dashed strokes, other fill shapes and overlapping rectangles near a rect are refused |
+| painted paths crossing a rect's edge | cut there (`paths_cut`): filled axis-aligned rectangles become their difference with the rects (exact; several only when they do not overlap); stroked straight segments are cut, in user space where the stroke is defined, at the centreline positions whose cross-section (and cap) would reach the rect — exact for butt caps, the cap's square for square and round caps — so nothing reaches inside and nothing outside is lost; a corner kept near a rect must clear it by its join (the exact miter, or the bevel/round extent). A dashed stroke's pieces each restart the pattern at the phase where they start on the original subpath, so the dashes outside fall where they did (a closed dashed outline is not rejoined at its start). Curves, degenerate dash patterns, other fill shapes and overlapping rectangles near a rect are refused |
 | `/Link` annotations whose `/Rect` meets a rect | removed with their action or destination (`links_removed`); links outside every rect are kept. A removed link the structure tree refers to (`/StructParent`) is refused unless the tree is removed |
 | other annotations clear of every rect | kept as they are (their appearance is drawn into `/Rect`); their text is still searched for `elsewhere` |
 | shading patterns as fill or stroke colour | a pattern paints only inside what it fills, so the path or glyph is removed or cut as with any colour; tiling patterns (whose cell is content of its own) are refused |
@@ -119,7 +119,7 @@ non-embedded fonts (glyph extent unknown), Type 3 fonts (a CharProc
 may paint anywhere), vertical writing, images with masks, soft masks,
 `/Alternates` or OPI, `/Decode`, other colour spaces or filter chains, rotated or
 sheared images, `/UserUnit` ≠ 1, a path crossing a rect's edge that
-cannot be cut exactly (curves, dashes, non-rectangular fills,
+cannot be cut exactly (curves, degenerate dash patterns, non-rectangular fills,
 overlapping filled rectangles, a corner whose join reaches a rect), a
 path that also clips, content meeting a rect under a clip that is not an
 axis-aligned rectangle (whether it shows there is not decided), an
@@ -159,6 +159,5 @@ document text in `Debug` output.
 
 Annotations other than links meeting a rect, forms nested more than
 16 deep, tiling patterns, inline images meeting a rect, soft masks and fonts
-set by ExtGState, shadings, curves and dashed strokes
-crossing a rect, masked, CMYK or indexed images, invisible OCR text.
+set by ExtGState, shadings, curves crossing a rect, masked, CMYK or indexed images, invisible OCR text.
 Each is refused, not approximated.

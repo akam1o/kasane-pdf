@@ -53,6 +53,9 @@ versions follow [Semantic Versioning](https://semver.org/).
 - `redact` accepts shading patterns as fill or stroke colour (the path
   or glyph is removed or cut as with any colour); tiling patterns are
   still refused.
+- `redact` cuts dashed strokes crossing a rect: each remaining piece
+  is stroked with the pattern's phase set to where it starts on the
+  original subpath, so the dashes outside the rect are unchanged.
 - `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
   RFC 7932 data including large windows, Flate predictors, refused on
   inline images. Output and decoder memory are bounded by

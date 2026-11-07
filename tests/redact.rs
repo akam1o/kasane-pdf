@@ -909,9 +909,9 @@ fn fill_and_stroke_crossing_a_rect_are_cut() {
 /// whose miter reaches into the rect.
 #[test]
 fn uncuttable_paths_are_refused() {
-    let dashed = one_page("[4 2] 0 d 2 w 10 100 m 190 100 l S", "", "", vec![]);
+    let dashed = one_page("[0 0] 0 d 2 w 10 100 m 190 100 l S", "", "", vec![]);
     let e = unsupported(run(&dashed, vec![(50.0, 90.0, 100.0, 110.0)]));
-    assert!(e.contains("dashed"), "{e}");
+    assert!(e.contains("degenerate pattern"), "{e}");
     // A right-angle corner at (100, 100) whose miter tip, at (102, 102),
     // lies inside a rect from (101.5, 101.5): the segments clear it (2
     // is half the width, 1.5 the gap), the join does not.
@@ -1783,4 +1783,55 @@ fn an_original_drawn_by_an_annotation_appearance_is_reported() {
         .elsewhere
         .iter()
         .any(|e| e.removed == kasane_pdf::Removed::Image));
+}
+
+/// A dashed stroke is cut, each piece keeping the pattern where it
+/// stood: outside the rect the pixels are those of the original.
+#[test]
+fn a_dashed_stroke_is_cut_keeping_its_pattern() {
+    for c in [
+        "[6 4] 3 d 2 w 10 100 m 190 100 l S",
+        "[7 3 1 3] 0 d 2 w 1 J 20 20 m 20 180 l 180 180 l 180 20 l h S",
+        "q 0.5 0 0 2 0 0 cm [8 4] 0 d 2 w 20 50 m 380 50 l S Q",
+    ] {
+        let pdf = one_page(c, "", "", vec![]);
+        let rect = (50.0, 90.0, 100.0, 190.0);
+        let r = run(&pdf, vec![rect]).unwrap();
+        assert!(r.paths_cut >= 1, "{c}");
+        let (a, b) = (reds(&pdf), reds(&r.output));
+        let at = |img: &Vec<u8>, x: u32, y: u32| img[((200 - y.max(1)) * 200 + x) as usize];
+        for y in (1..200).step_by(2) {
+            for x in (0..200).step_by(1) {
+                let (xf, yf) = (x as f64, y as f64);
+                let clear = xf < rect.0 - 4.0
+                    || xf > rect.2 + 4.0
+                    || yf < rect.1 - 4.0
+                    || yf > rect.3 + 4.0;
+                if clear {
+                    assert_eq!(at(&b, x, y), at(&a, x, y), "{c}: ({x}, {y})");
+                } else if xf > rect.0 + 1.0
+                    && xf < rect.2 - 1.0
+                    && yf > rect.1 + 1.0
+                    && yf < rect.3 - 1.0
+                {
+                    assert_eq!(at(&b, x, y), 255, "{c}: inside ({x}, {y})");
+                }
+            }
+        }
+    }
+}
+
+/// The red channel of page 1 at 72 dpi, row-major from the top.
+fn reds(pdf: &[u8]) -> Vec<u8> {
+    let doc = Document::from_bytes(pdf).unwrap();
+    let p = kasane_pdf::render_page(&doc, &doc.pages()[0], &kasane_pdf::RenderOptions::default())
+        .unwrap();
+    let m = p.pixmap();
+    let mut v = Vec::new();
+    for y in 0..m.height() {
+        for x in 0..m.width() {
+            v.push(m.pixel(x, y).unwrap().red());
+        }
+    }
+    v
 }
