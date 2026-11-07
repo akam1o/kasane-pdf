@@ -90,6 +90,12 @@ fn dpi_scales_dimensions() {
     assert_eq!((r.width(), r.height()), (200, 200));
     let r = render_with(b"", "[0 0 100 50]", "", 72.0).unwrap();
     assert_eq!((r.width(), r.height()), (100, 50));
+    // A fractional size rounds up, so the whole page is drawn: 595 × 842
+    // pt at 96 dpi is 793.3 × 1122.7 px. Exact sizes stay exact.
+    let r = render_with(b"", "[0 0 595 842]", "", 96.0).unwrap();
+    assert_eq!((r.width(), r.height()), (794, 1123));
+    let r = render_with(b"", "[0 0 612 792]", "", 96.0).unwrap();
+    assert_eq!((r.width(), r.height()), (816, 1056));
 }
 
 #[test]

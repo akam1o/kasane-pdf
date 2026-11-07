@@ -520,8 +520,8 @@ pub fn render_page(
     if !(w_pts.is_finite() && h_pts.is_finite() && w_pts >= 0.0 && h_pts >= 0.0) {
         return Err(Error::Structure("CropBox dimensions are invalid".into()));
     }
-    let width = checked_px(w_pts, scale, limits)?;
-    let height = checked_px(h_pts, scale, limits)?;
+    let width = checked_px(w_pts, opts.dpi * user_unit, limits)?;
+    let height = checked_px(h_pts, opts.dpi * user_unit, limits)?;
     if width as u64 * height as u64 > limits.max_render_total_pixels {
         return Err(Error::LimitExceeded {
             limit: "max_render_total_pixels",
@@ -1373,14 +1373,18 @@ fn crop_size_after_rotate(crop: &crate::page::Rect, rotate: i64) -> (f64, f64) {
     }
 }
 
-fn checked_px(pts: f64, scale: f64, limits: &Limits) -> Result<u32, Error> {
-    let px = pts * scale;
+/// Pixels for `pts` points at `dpi`: rounded up, so the whole page box
+/// is drawn (a 595.28 pt A4 width at 96 dpi is 793.7 px → 794; rounding
+/// to nearest dropped the last 0.3 px column). Computed as
+/// `pts × dpi / 72`, as pdftoppm does, so an exact size stays exact.
+fn checked_px(pts: f64, dpi: f64, limits: &Limits) -> Result<u32, Error> {
+    let px = pts * dpi / 72.0;
     if !(px.is_finite() && px >= 0.0) {
         return Err(Error::Structure(format!(
             "non-finite or negative pixel dimension ({px})"
         )));
     }
-    let rounded = px.round();
+    let rounded = px.ceil();
     if rounded > limits.max_render_pixels as f64 {
         return Err(Error::LimitExceeded {
             limit: "max_render_pixels",
