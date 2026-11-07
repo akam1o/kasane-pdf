@@ -539,7 +539,7 @@ pub fn render_page(
         });
     }
 
-    let user_to_pix = build_page_transform(&crop, rotate, scale)?;
+    let (user_to_pix, user_to_pix_exact) = build_page_transform(&crop, rotate, scale)?;
 
     let mut pixmap = Pixmap::new(width, height)
         .ok_or_else(|| Error::Structure(format!("cannot allocate {width}x{height} pixmap")))?;
@@ -565,6 +565,7 @@ pub fn render_page(
         doc,
         pixmap: &mut pixmap,
         user_to_pix,
+        user_to_pix_exact,
         gs: GraphicsState::new(),
         gs_stack: Vec::new(),
         path: CurrentPath::default(),
@@ -1386,7 +1387,8 @@ fn checked_px(pts: f64, scale: f64, limits: &Limits) -> Result<u32, Error> {
     Ok(rounded as u32)
 }
 
-/// Map PDF user space to pixmap space.
+/// Map PDF user space to pixmap space, as tiny-skia's f32 transform and
+/// in f64.
 ///
 /// `/Rotate` rotates the displayed page counterclockwise in user space
 /// (§7.7.3.3). The CropBox is moved to the origin, rotated about it,
@@ -1396,7 +1398,7 @@ fn build_page_transform(
     crop: &crate::page::Rect,
     rotate: i64,
     scale: f64,
-) -> Result<Transform, Error> {
+) -> Result<(Transform, Matrix), Error> {
     let (_w_pts, h_pts) = crop_size_after_rotate(crop, rotate);
 
     // Step 1: CropBox.ll -> origin.
@@ -1423,8 +1425,11 @@ fn build_page_transform(
     if !m.is_finite() {
         return Err(Error::Structure("page transform is not finite".into()));
     }
-    Ok(Transform::from_row(
-        m.a as f32, m.b as f32, m.c as f32, m.d as f32, m.e as f32, m.f as f32,
+    Ok((
+        Transform::from_row(
+            m.a as f32, m.b as f32, m.c as f32, m.d as f32, m.e as f32, m.f as f32,
+        ),
+        m,
     ))
 }
 
@@ -1438,6 +1443,9 @@ pub(crate) struct Renderer<'a> {
     pixmap: &'a mut Pixmap,
     /// page→pixmap transform (crop offset, rotate, dpi scale, y flip).
     user_to_pix: Transform,
+    /// `user_to_pix` in f64, for decisions that depend on where a
+    /// coordinate falls between pixels (glyph placement).
+    user_to_pix_exact: Matrix,
     gs: GraphicsState,
     gs_stack: Vec<GraphicsState>,
     path: CurrentPath,
@@ -1762,6 +1770,7 @@ impl<'a> Renderer<'a> {
             doc,
             pixmap,
             user_to_pix: Transform::default(),
+            user_to_pix_exact: Matrix::IDENTITY,
             gs: GraphicsState::new(),
             gs_stack: Vec::new(),
             path: CurrentPath::default(),
@@ -6117,6 +6126,17 @@ impl<'a> Renderer<'a> {
         );
         std::mem::swap(&mut *self.pixmap, &mut cell);
         let saved_u2p = std::mem::replace(&mut self.user_to_pix, cell_ts);
+        let saved_u2p_exact = std::mem::replace(
+            &mut self.user_to_pix_exact,
+            Matrix::new(
+                sx as f64,
+                0.0,
+                0.0,
+                sy as f64,
+                cell_ts.tx as f64,
+                cell_ts.ty as f64,
+            ),
+        );
         self.layer_bytes += bytes;
         let r = (|| {
             // Alpha and blend are reset inside the cell and applied once
@@ -6127,6 +6147,7 @@ impl<'a> Renderer<'a> {
         })();
         self.layer_bytes -= bytes;
         self.user_to_pix = saved_u2p;
+        self.user_to_pix_exact = saved_u2p_exact;
         std::mem::swap(&mut *self.pixmap, &mut cell);
         r?;
         let Some(cell_inv) = cell_ts.invert() else {
@@ -6543,13 +6564,17 @@ impl<'a> Renderer<'a> {
                 // shape or advance. Splash draws stroked, clipping and
                 // pattern-filled text as exact paths, and so does this:
                 // they, and rotated or skewed text, stay where they fall.
+                // The origin is placed in f64, as Splash computes it: a
+                // baseline a hair above a row boundary must not round to
+                // it in f32.
+                let ty = trm.concat(self.user_to_pix_exact).f;
                 let snap = if t.render_mode == 0
                     && !gs.fill_space.is_pattern()
                     && full.kx == 0.0
                     && full.ky == 0.0
-                    && full.ty.is_finite()
+                    && ty.is_finite()
                 {
-                    full.ty.floor() - full.ty
+                    ty.floor() as f32 - full.ty
                 } else {
                     0.0
                 };
@@ -6802,15 +6827,7 @@ impl<'a> Renderer<'a> {
             }
             _ => None,
         })??;
-        let u = self.user_to_pix;
-        let u = Matrix::new(
-            u.sx as f64,
-            u.ky as f64,
-            u.kx as f64,
-            u.sy as f64,
-            u.tx as f64,
-            u.ty as f64,
-        );
+        let u = self.user_to_pix_exact;
         let d = self.gs.ctm.concat(u);
         if d.b != 0.0 || d.c != 0.0 || !d.is_finite() {
             return None;

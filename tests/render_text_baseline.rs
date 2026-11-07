@@ -74,6 +74,15 @@ fn horizontal_text_snaps_to_the_row_above() {
     assert!(patterned("40.5") != patterned("41"));
 }
 
+/// The origin is placed in f64: a baseline a millionth of a point
+/// above user y 41 (device y 58.999999, 59.0 in f32) floors to row 58,
+/// the row of baseline 42.
+#[test]
+fn baseline_is_floored_in_f64() {
+    let at = |y: &str| pixels(&format!("BT /F1 24 Tf 20 {y} Td (Hxg) Tj ET"));
+    assert!(at("41.000001") == at("42"));
+}
+
 /// Rotated text keeps its exact position.
 #[test]
 fn rotated_text_is_not_snapped() {
