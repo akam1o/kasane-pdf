@@ -104,9 +104,10 @@ per-use copies; `/Info` and XMP are removed. Before returning, the
 output is parsed again and checked: the same rects find nothing left,
 no edited original or removed annotation is still in the file unless
 the output still uses it elsewhere (reported), one revision only. What
-it cannot process exactly — non-embedded or Type 3 fonts, curves
-crossing a rect, masked images, widgets meeting a rect and more — is a
-typed error and no output. Copies of the information elsewhere in the
+it cannot process exactly — non-embedded fonts (unless their
+Standard 14 substitutes are embedded first, on request), Type 3 fonts,
+curved fills crossing a rect, masked images, widgets meeting a rect and
+more — is a typed error and no output. Copies of the information elsewhere in the
 document are reported, not removed.
 
 **Inspection and audit** — `inspect` structural dumps,
@@ -400,10 +401,13 @@ and the remaining blockers are in
 - **`redact` is positional**: it removes what is drawn inside the
   rects and reports — does not remove — copies elsewhere (other pages,
   annotations, attachments, metadata it does not own). It refuses
-  non-embedded, Type 3 and vertical fonts, curves crossing a rect,
-  masked/CMYK/indexed images, widgets and media meeting a rect, tiling
-  patterns, soft masks and more (`docs/features/redaction.md`); square
-  and round caps cut at a rect lose up to half a line width next to it.
+  non-embedded fonts unless `embed_substitute_fonts` embeds the
+  Standard 14 substitutes first, Type 3 and vertical fonts, curved
+  fills crossing a rect, masked/CMYK/indexed images, widgets and media
+  meeting a rect, tiling patterns, soft masks and more
+  (`docs/features/redaction.md`); a stroke cut at a rect can lose a
+  sliver of band next to it (oblique crossings, round caps at an
+  original end).
 - **The experimental `remove_*` editors are content editors**, not
   redaction: they report what they changed, not that data is gone.
 - `Document` is single-threaded (interior caches); use one instance

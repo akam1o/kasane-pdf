@@ -45,7 +45,7 @@ versions follow [Semantic Versioning](https://semver.org/).
   withdrawn; content under a clip that is not a rectangle is no longer
   refused for that reason (a shading, which carries no data, is still
   accepted clipped away from the rects).
-- `redact` refuses text whose text matrix stretches one axis over 16
+- `redact` refuses text whose text matrix, CTM or their product stretches one axis over 16
   times the other: Poppler draws such glyphs far from their outlines.
 - `diagnose_redaction` and the editors grew stroked text by the stroke's
   reach under the text matrix (font size included) instead of the CTM,

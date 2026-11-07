@@ -2822,6 +2822,15 @@ fn strongly_anisotropic_text_is_refused() {
     );
     let e = unsupported(run(&pdf, vec![(150.0, 150.0, 160.0, 160.0)]));
     assert!(e.contains("anisotropic"), "{e}");
+    // A CTM cancelling the text matrix's stretch does not hide it.
+    let cancelled = one_page(
+        "10 0 0 .1 0 0 cm BT /F1 20 Tf .1 0 0 10 20 2000 Tm (W) Tj ET",
+        "",
+        "",
+        vec![],
+    );
+    let e = unsupported(run(&cancelled, vec![(150.0, 150.0, 160.0, 160.0)]));
+    assert!(e.contains("anisotropic"), "{e}");
     let ok = one_page(
         "BT /F1 20 Tf .25 0 0 4 100 100 Tm (W) Tj ET",
         "",

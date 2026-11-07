@@ -1827,7 +1827,20 @@ impl<'a> DiagWalker<'a> {
         // Readers place glyphs under a strongly anisotropic text matrix
         // unreliably (Poppler draws a 0.1 × 10 scaled glyph far from
         // where its outline lies): redaction refuses beyond 16:1.
-        if self.redaction_mode && anisotropy(&trm) > 16.0 {
+        // Each factor is checked: a CTM can cancel a text matrix's
+        // stretch in the product, and readers still draw it distorted.
+        let text_space =
+            crate::matrix::Matrix::new(font_size * h_scale, 0.0, 0.0, font_size, 0.0, rise)
+                .concat(self.text_tm);
+        if self.redaction_mode
+            && [
+                anisotropy(&trm),
+                anisotropy(&text_space),
+                anisotropy(&self.gs.ctm),
+            ]
+            .iter()
+            .any(|r| *r > 16.0)
+        {
             return self.glyph_error(
                 code,
                 Error::Unsupported {
