@@ -100,6 +100,8 @@ struct GraphicsState {
     /// compositing; they differ inside knockout groups (§11.4.8), where
     /// only shape decides how much of earlier objects is replaced.
     alpha_is_shape: bool,
+    /// `SA` (§10.7.5): automatic stroke adjustment, initially false.
+    stroke_adjust: bool,
     /// Text state (§9.3) — per-object, not part of `q`/`Q` save.
     text: TextState,
 }
@@ -213,6 +215,7 @@ impl GraphicsState {
             soft_mask: None,
             hard_clip: None,
             alpha_is_shape: false,
+            stroke_adjust: false,
             text: TextState::default(),
         }
     }
@@ -2834,10 +2837,13 @@ impl<'a> Renderer<'a> {
                 // output; in device-RGB compositing it has no effect.
                 // All corpus values are OP/op=false, OPM=1.
                 b"OP" | b"op" | b"OPM" => {}
-                // SA = stroke adjustment hint; a quality-of-rendering
-                // hint, not a correctness parameter. Ignoring it is a
-                // spec-permitted approximation (§11.7).
-                b"SA" => {}
+                // SA = automatic stroke adjustment (§10.7.5); a value
+                // that is not a boolean is ignored, as before.
+                b"SA" => {
+                    if let Some(b) = v.as_bool() {
+                        self.gs.stroke_adjust = b;
+                    }
+                }
                 // AIS = alpha-is-shape flag (§11.6.4.4): decides whether
                 // ca/CA/SMask are shape or opacity — which matters only
                 // in knockout groups (see `knockout_shape`).
@@ -7147,8 +7153,72 @@ impl<'a> Renderer<'a> {
             )?,
         };
 
+        // Stroke adjustment (§10.7.5): axis-aligned rectangles and
+        // straight strokes get edges on whole pixels. Pattern paint and
+        // other shapes are drawn exactly.
+        let adjust = self.gs.stroke_adjust;
+        let adjusted_fill = match kind {
+            PaintKind::Fill(_) | PaintKind::FillStroke(_)
+                if adjust && !self.gs.fill_space.is_pattern() =>
+            {
+                adjusted_rect_fill(&path, ts)
+            }
+            _ => None,
+        };
+        let adjusted_stroke = match kind {
+            PaintKind::Stroke | PaintKind::FillStroke(_)
+                if adjust && !self.gs.stroke_space.is_pattern() =>
+            {
+                adjusted_stroke(&path, ts, &self.gs)
+            }
+            _ => None,
+        };
+        if let Some(dev) = &adjusted_fill {
+            paint.set_color(ts_color(self.gs.fill_color.with_alpha(self.gs.fill_alpha)));
+            self.pixmap.fill_path(
+                dev,
+                &paint,
+                FillRule::Winding,
+                Transform::identity(),
+                self.gs.clip_mask(),
+            );
+        }
+        if let Some(dev) = &adjusted_stroke {
+            paint.set_color(ts_color(
+                self.gs.stroke_color.with_alpha(self.gs.stroke_alpha),
+            ));
+            if adjusted_fill.is_none() {
+                if let PaintKind::FillStroke(rule) = kind {
+                    // The fill is not a rectangle: paint it exactly first.
+                    let mut fp = paint.clone();
+                    fp.set_color(ts_color(self.gs.fill_color.with_alpha(self.gs.fill_alpha)));
+                    if self.gs.fill_space.is_pattern() {
+                        if let Some(pat) = self.gs.fill_pattern.clone() {
+                            self.fill_path_with_pattern(pat, &path, rule, ts)?;
+                        }
+                    } else {
+                        self.pixmap
+                            .fill_path(&path, &fp, rule, ts, self.gs.clip_mask());
+                    }
+                }
+            }
+            self.pixmap.fill_path(
+                dev,
+                &paint,
+                FillRule::Winding,
+                Transform::identity(),
+                self.gs.clip_mask(),
+            );
+        }
+        let kind = match (kind, adjusted_fill.is_some(), adjusted_stroke.is_some()) {
+            (_, _, true) => None,
+            (PaintKind::Fill(_), true, _) => None,
+            (PaintKind::FillStroke(_), true, false) => Some(PaintKind::Stroke),
+            (k, _, _) => Some(k),
+        };
         match kind {
-            PaintKind::Stroke => {
+            None => {}
+            Some(PaintKind::Stroke) => {
                 if self.gs.stroke_space.is_pattern() {
                     self.stroke_path_with_pattern(&path, &stroke, ts)?;
                 } else {
@@ -7166,7 +7236,7 @@ impl<'a> Renderer<'a> {
                     )?;
                 }
             }
-            PaintKind::Fill(rule) => {
+            Some(PaintKind::Fill(rule)) => {
                 if self.gs.fill_space.is_pattern() {
                     if let Some(pat) = self.gs.fill_pattern.clone() {
                         self.fill_path_with_pattern(pat, &path, rule, ts)?;
@@ -7177,7 +7247,7 @@ impl<'a> Renderer<'a> {
                         .fill_path(&path, &paint, rule, ts, self.gs.clip_mask());
                 }
             }
-            PaintKind::FillStroke(rule) => {
+            Some(PaintKind::FillStroke(rule)) => {
                 if self.gs.fill_space.is_pattern() {
                     if let Some(pat) = self.gs.fill_pattern.clone() {
                         self.fill_path_with_pattern(pat, &path, rule, ts)?;
@@ -7216,10 +7286,208 @@ impl<'a> Renderer<'a> {
     }
 }
 
+#[derive(Clone, Copy)]
 enum PaintKind {
     Stroke,
     Fill(FillRule),
     FillStroke(FillRule),
+}
+
+/// Stroke adjustment of two parallel device-space edges (§10.7.5): each
+/// is moved to the nearest pixel boundary, keeping them at least one
+/// pixel apart — the rule Splash applies to its stroke-adjust hints.
+fn adjust_edges(a: f64, b: f64) -> (f64, f64) {
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    let x0 = (lo + 0.5).floor();
+    let mut x1 = (hi + 0.5).floor();
+    if x1 == x0 {
+        x1 += 1.0;
+    }
+    (x0, x1)
+}
+
+/// A subpath's points and whether it is closed.
+type Polyline = (Vec<(f64, f64)>, bool);
+
+/// The path's subpaths as user-space polylines with their closed flag;
+/// `None` when a subpath has a curve.
+fn polylines(path: &tiny_skia::Path) -> Option<Vec<Polyline>> {
+    use tiny_skia::PathSegment;
+    let mut out: Vec<Polyline> = Vec::new();
+    for seg in path.segments() {
+        match seg {
+            PathSegment::MoveTo(p) => out.push((vec![(p.x as f64, p.y as f64)], false)),
+            PathSegment::LineTo(p) => out.last_mut()?.0.push((p.x as f64, p.y as f64)),
+            PathSegment::Close => out.last_mut()?.1 = true,
+            PathSegment::QuadTo(..) | PathSegment::CubicTo(..) => return None,
+        }
+    }
+    for (pts, closed) in out.iter_mut() {
+        if pts.len() > 2 && pts.first() == pts.last() {
+            pts.pop();
+            *closed = true;
+        }
+    }
+    Some(out)
+}
+
+fn dev(ts: Transform, (x, y): (f64, f64)) -> (f64, f64) {
+    (
+        ts.sx as f64 * x + ts.kx as f64 * y + ts.tx as f64,
+        ts.ky as f64 * x + ts.sy as f64 * y + ts.ty as f64,
+    )
+}
+
+/// The device-space box of four points forming an axis-aligned
+/// rectangle in device space, edges in path order.
+fn device_box(d: &[(f64, f64)]) -> Option<[f64; 4]> {
+    let [a, b, c, e] = <[(f64, f64); 4]>::try_from(d).ok()?;
+    let ok = (a.0 == b.0 && c.0 == e.0 && b.1 == c.1 && e.1 == a.1)
+        || (a.1 == b.1 && c.1 == e.1 && b.0 == c.0 && e.0 == a.0);
+    ok.then(|| {
+        let xs = [a.0, b.0, c.0, e.0];
+        let ys = [a.1, b.1, c.1, e.1];
+        let f = |v: &[f64; 4], m: fn(f64, f64) -> f64| v.iter().copied().reduce(m).unwrap();
+        [
+            f(&xs, f64::min),
+            f(&ys, f64::min),
+            f(&xs, f64::max),
+            f(&ys, f64::max),
+        ]
+    })
+}
+
+fn rect_path(x0: f64, y0: f64, x1: f64, y1: f64) -> Option<tiny_skia::Path> {
+    let r = tiny_skia::Rect::from_ltrb(x0 as f32, y0 as f32, x1 as f32, y1 as f32)?;
+    Some(PathBuilder::from_rect(r))
+}
+
+/// A fill of one axis-aligned rectangle under stroke adjustment: the
+/// device-space rectangle with adjusted edges (Splash adjusts a filled
+/// path of one four-point subpath the same way).
+fn adjusted_rect_fill(path: &tiny_skia::Path, ts: Transform) -> Option<tiny_skia::Path> {
+    let subs = polylines(path)?;
+    let [(pts, _)] = subs.as_slice() else {
+        return None;
+    };
+    let d: Vec<(f64, f64)> = pts.iter().map(|&p| dev(ts, p)).collect();
+    let [x0, y0, x1, y1] = device_box(&d)?;
+    let (x0, x1) = adjust_edges(x0, x1);
+    let (y0, y1) = adjust_edges(y0, y1);
+    rect_path(x0, y0, x1, y1)
+}
+
+/// A stroke under stroke adjustment, as device-space rectangles: every
+/// subpath must be one axis-aligned segment with butt or projecting
+/// caps, or an axis-aligned closed rectangle with miter joins; no dash.
+/// Each segment's two side edges (and a single segment's two cap
+/// edges) are adjusted, as Splash's stroke-adjust hints do. `None`
+/// leaves the stroke exact.
+fn adjusted_stroke(
+    path: &tiny_skia::Path,
+    ts: Transform,
+    gs: &GraphicsState,
+) -> Option<tiny_skia::Path> {
+    if gs.dash.is_some() {
+        return None;
+    }
+    let hw = gs.line_width.abs() / 2.0;
+    // Device-space half-width across, and half-extent along, a user
+    // segment p→q.
+    let halves = |p: (f64, f64), q: (f64, f64), horizontal: bool| -> Option<(f64, f64)> {
+        let (ux, uy) = (q.0 - p.0, q.1 - p.1);
+        let len = (ux * ux + uy * uy).sqrt();
+        if len == 0.0 || !len.is_finite() {
+            return None;
+        }
+        let (nx, ny) = (-uy / len * hw, ux / len * hw);
+        let n = (
+            ts.sx as f64 * nx + ts.kx as f64 * ny,
+            ts.ky as f64 * nx + ts.sy as f64 * ny,
+        );
+        let (ax, ay) = (ux / len * hw, uy / len * hw);
+        let a = (
+            ts.sx as f64 * ax + ts.kx as f64 * ay,
+            ts.ky as f64 * ax + ts.sy as f64 * ay,
+        );
+        Some(if horizontal {
+            (n.1.abs(), a.0.abs())
+        } else {
+            (n.0.abs(), a.1.abs())
+        })
+    };
+    let mut pb = PathBuilder::new();
+    for (pts, closed) in polylines(path)? {
+        let d: Vec<(f64, f64)> = pts.iter().map(|&p| dev(ts, p)).collect();
+        match (d.len(), closed) {
+            (2, false) => {
+                let (a, b) = (d[0], d[1]);
+                let horizontal = a.1 == b.1 && a.0 != b.0;
+                if !horizontal && !(a.0 == b.0 && a.1 != b.1) {
+                    return None;
+                }
+                let (across, along) = halves(pts[0], pts[1], horizontal)?;
+                let ext = match gs.line_cap {
+                    0 => 0.0,
+                    2 => along,
+                    _ => return None,
+                };
+                let r = if horizontal {
+                    let (x0, x1) = adjust_edges(a.0.min(b.0) - ext, a.0.max(b.0) + ext);
+                    let (y0, y1) = adjust_edges(a.1 - across, a.1 + across);
+                    [x0, y0, x1, y1]
+                } else {
+                    let (x0, x1) = adjust_edges(a.0 - across, a.0 + across);
+                    let (y0, y1) = adjust_edges(a.1.min(b.1) - ext, a.1.max(b.1) + ext);
+                    [x0, y0, x1, y1]
+                };
+                pb.push_rect(tiny_skia::Rect::from_ltrb(
+                    r[0] as f32,
+                    r[1] as f32,
+                    r[2] as f32,
+                    r[3] as f32,
+                )?);
+            }
+            (4, true) => {
+                // Miter joins at right angles (a miter limit below √2
+                // bevels them).
+                if gs.line_join != 0 || gs.miter_limit < std::f64::consts::SQRT_2 {
+                    return None;
+                }
+                let [bx0, by0, bx1, by1] = device_box(&d)?;
+                // Side widths from the user-space sides.
+                let mut wx = None;
+                let mut wy = None;
+                for i in 0..4 {
+                    let (p, q) = (pts[i], pts[(i + 1) % 4]);
+                    let horizontal = d[i].1 == d[(i + 1) % 4].1;
+                    let (across, _) = halves(p, q, horizontal)?;
+                    if horizontal {
+                        wy = Some(across);
+                    } else {
+                        wx = Some(across);
+                    }
+                }
+                let (wx, wy) = (wx?, wy?);
+                let (l0, l1) = adjust_edges(bx0 - wx, bx0 + wx);
+                let (r0, r1) = adjust_edges(bx1 - wx, bx1 + wx);
+                let (t0, t1) = adjust_edges(by0 - wy, by0 + wy);
+                let (b0, b1) = adjust_edges(by1 - wy, by1 + wy);
+                for [x0, y0, x1, y1] in [
+                    [l0, t0, r1, t1],
+                    [l0, b0, r1, b1],
+                    [l0, t0, l1, b1],
+                    [r0, t0, r1, b1],
+                ] {
+                    pb.push_rect(tiny_skia::Rect::from_ltrb(
+                        x0 as f32, y0 as f32, x1 as f32, y1 as f32,
+                    )?);
+                }
+            }
+            _ => return None,
+        }
+    }
+    pb.finish()
 }
 
 /// How a form's transparency group is rendered (see `do_form`).
