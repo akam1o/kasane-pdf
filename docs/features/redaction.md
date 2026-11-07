@@ -33,7 +33,7 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 
 | content inside a rect | handling |
 |---|---|
-| text shown with `Tr 0`–`3` in an embedded font (fill, stroke, both, invisible) (rotated, scaled, `Ts`/`Tz`/`Tc`/`Tw`, `TJ` kerning) | the codes whose glyph ink hits a rect are deleted — whole glyphs, so a glyph straddling a rect's edge goes entirely; advances are preserved so the rest of the line keeps its position. Content whose clip keeps it out of every rect is not a hit |
+| text shown with `Tr 0`–`3` in an embedded font (fill, stroke, both, invisible) (rotated, scaled, `Ts`/`Tz`/`Tc`/`Tw`, `TJ` kerning) | the codes whose glyph ink hits a rect are deleted — whole glyphs, so a glyph straddling a rect's edge goes entirely; advances are preserved so the rest of the line keeps its position. A clip hides ink, not text: a code is a hit wherever its box meets a rect, clipped or not (paths and images clipped away from every rect are not hits). Text under a text matrix stretching one axis over 16 times the other is refused (readers disagree where it is drawn) |
 | image XObjects, 8-bit DeviceGray/RGB, unfiltered / Flate / one DCT, axis-aligned | a copy with the covered samples set to 0 replaces the call; the original is not carried (next section) |
 | painted paths wholly inside one rect | the path and its painting op are deleted |
 | painted paths crossing a rect's edge | cut there (`paths_cut`): filled axis-aligned rectangles become their difference with the rects (exact; several only when they do not overlap); stroked straight segments are cut, in user space where the stroke is defined, at the centreline positions whose cross-section (and cap) would reach the rect — exact for butt caps; for square and round caps the cut end is pulled back by the cap's square: a square cap then ends the band exactly at the rect, and a round-capped piece whose both ends are cuts is stroked with square caps for the same result, while a round-capped piece keeping one of the path's own ends keeps its round caps and loses the two corners of the cut cap's square (≈ 0.21 × the squared half width each). A crossing that is not perpendicular also loses the sliver of band beyond the perpendicular cut; a corner kept near a rect must clear it by its join (the exact miter, or the bevel/round extent). A dashed stroke's pieces each restart the pattern at the phase where they start on the original subpath (an odd array written out in full, the phase reduced into one period), so the dashes outside fall where they did (a closed dashed outline is not rejoined at its start); each piece is its own stroke, so a dashed stroke that is not opaque in the Normal blend mode (`/CA` < 1, another `/BM`) is refused when cut into pieces. Stroked curves are cut by subdivision: a sub-curve (an exact de Casteljau piece of the original) is kept when its control points' bounds, grown by √2 × half the width under the CTM's largest stretch, clear every rect, and a part still near a rect after 14 halvings is removed — so up to that reach plus the last piece's length of band next to the rect is lost, and nothing reaches inside. Dashed curves cut at a rect, curved fills, degenerate dash patterns, other fill shapes and overlapping rectangles near a rect are refused |
@@ -120,9 +120,8 @@ NoZoom, NoRotate or `/FixedPrint` annotations and Text annotations
 than 16 deep or cyclic, inline images meeting a rect
 (or whose data length is not fixed by their dictionary), `sh` that may paint inside a rect,
 ExtGState with a soft mask, `/Font` or `/SA true`, `/ActualText` marked content,
-text in any mode but `Tr 0` (invisible OCR text, stroked, clipping),
-non-embedded fonts (glyph extent unknown; except under a clip that is
-exactly a rectangle meeting no rect), Type 3 fonts (a CharProc
+text in a clipping mode (`Tr` 4–7),
+non-embedded fonts (glyph extent unknown; see `embed_substitute_fonts`), Type 3 fonts (a CharProc
 may paint anywhere), vertical writing, images with masks, soft masks,
 `/Alternates` or OPI, `/Decode`, other colour spaces or filter chains, rotated or
 sheared images, `/UserUnit` ≠ 1, a path crossing a rect's edge that
@@ -169,11 +168,14 @@ Each of these is refused with a typed error, not approximated:
 - **Text in a non-embedded font.** A reader draws it with a font of its
   own choosing, so where its glyphs reach is not known; keeping any of
   it next to a rect could keep data drawn inside the rect. Accepted
-  under a clip that is exactly a rectangle meeting no rect, and for the
-  Latin Standard 14 fonts after `embed_substitute_fonts` embeds their
-  substitutes. Type 3
-  and vertical fonts, and text in any mode but `Tr 0` (invisible OCR
-  text included), are refused too.
+  for the Latin Standard 14 fonts after `embed_substitute_fonts` embeds
+  their substitutes (a clip does not help: it hides ink, not the code).
+  Type 3 and vertical fonts, text in a clipping mode (`Tr` 4–7) and
+  text under a text matrix stretching one axis over 16 times the other
+  are refused too. Invisible text (`Tr 3`, OCR layers) is taken by a
+  generous box around its advance (0.15 em each side, 0.5 em below the
+  baseline to 1.2 em above) united with its outline; stroked text by
+  its outline grown by the stroke's reach.
 - **Geometry**: curved fills, dashed curves cut at a rect,
   non-rectangular or overlapping fills crossing a rect, a corner whose join reaches a rect, a translucent or blended
   dashed stroke cut into pieces, clips that are not rectangles meeting

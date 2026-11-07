@@ -643,18 +643,20 @@ fn norotate_links_are_refused() {
     assert!(e.contains("NoRotate"), "{e}");
 }
 
-/// Text clipped away from the rect shows only outside it: kept.
+/// A clip hides ink, not text: a code standing in the rect is removed
+/// even when clipped away there (extraction would still find it);
+/// a path clipped away from the rect is kept.
 #[test]
-fn text_clipped_away_from_the_rect_is_kept() {
+fn clipped_text_in_the_rect_is_removed_clipped_paths_kept() {
     let pdf = one_page(
-        "q 65 0 100 200 re W n BT /F1 40 Tf 50 100 Td (M) Tj ET Q",
+        "q 65 0 100 200 re W n BT /F1 40 Tf 50 100 Td (M) Tj ET 50 100 10 30 re f Q",
         "",
         "",
         vec![],
     );
     let r = run(&pdf, vec![(50.0, 100.0, 60.0, 140.0)]).unwrap();
-    assert_eq!(r.codes_removed, 0);
-    assert_eq!(page_text(&r.output, 0), "M");
+    assert_eq!((r.codes_removed, r.paths_removed), (1, 0));
+    assert_eq!(page_text(&r.output, 0), "");
 }
 
 /// A `cm` inside a path object is placed differently by different
@@ -722,7 +724,7 @@ fn numbers_survive_the_rewrite() {
 #[test]
 fn non_rectangular_clip_is_refused() {
     let pdf = one_page(
-        "q 0 0 m 200 0 l 50 150 l h W n BT /F1 40 Tf 50 100 Td (M) Tj ET Q",
+        "q 0 0 m 200 0 l 50 150 l h W n 52 102 30 30 re f Q",
         "",
         "",
         vec![],
@@ -1947,28 +1949,16 @@ fn non_embedded_text_is_refused() {
     }
 }
 
-/// Under a clip that is exactly a rectangle meeting no rect, a
-/// non-embedded glyph cannot paint inside one whatever font draws it.
+/// A clip hides a non-embedded glyph's ink, not its code: still
+/// refused (the code could stand in a rect).
 #[test]
-fn non_embedded_text_clipped_away_from_the_rects_is_kept() {
+fn non_embedded_text_is_refused_even_clipped_away() {
     let mut objs = font_objs();
     objs.push(helv());
     let pdf = doc_with(
         HELV,
         &[
             format!("{SECRET} q 0 0 200 60 re W n BT /H 12 Tf 20 20 Td (FARAWAY) Tj ET Q")
-                .as_bytes(),
-        ],
-        objs.clone(),
-    );
-    let r = run(&pdf, vec![RECT]).unwrap();
-    assert_eq!(r.codes_removed, 10);
-    assert!(page_text(&r.output, 0).contains("FARAWAY"));
-    // A clip that meets the rect decides nothing: refused.
-    let pdf = doc_with(
-        HELV,
-        &[
-            format!("{SECRET} q 0 0 200 95 re W n BT /H 12 Tf 20 20 Td (FARAWAY) Tj ET Q")
                 .as_bytes(),
         ],
         objs,
@@ -2418,7 +2408,7 @@ fn missing_width_places_what_follows() {
         "{}",
         t.chars[4].origin.0
     );
-    let r = run(&pdf, vec![(55.0, 90.0, 80.0, 115.0)]).unwrap();
+    let r = embed_run(&pdf, vec![(55.0, 90.0, 80.0, 115.0)]).unwrap();
     assert_eq!(r.codes_removed, 1, "the W in the rect is removed");
 }
 
@@ -2818,4 +2808,38 @@ fn interpolated_and_optional_images_are_edited() {
         assert_eq!(r.pixels_changed, 256, "{extra}");
         assert!(!contains(&r.output, &secret_samples()), "{extra}");
     }
+}
+
+/// Under a strongly anisotropic text matrix readers disagree where a
+/// glyph is drawn: refused.
+#[test]
+fn strongly_anisotropic_text_is_refused() {
+    let pdf = one_page(
+        "BT /F1 20 Tf .1 0 0 10 100 100 Tm (W) Tj ET",
+        "",
+        "",
+        vec![],
+    );
+    let e = unsupported(run(&pdf, vec![(150.0, 150.0, 160.0, 160.0)]));
+    assert!(e.contains("anisotropic"), "{e}");
+    let ok = one_page(
+        "BT /F1 20 Tf .25 0 0 4 100 100 Tm (W) Tj ET",
+        "",
+        "",
+        vec![],
+    );
+    run(&ok, vec![(150.0, 150.0, 160.0, 160.0)]).unwrap();
+}
+
+/// Invisible text clipped away from a rect is still removed.
+#[test]
+fn clipped_invisible_text_in_the_rect_is_removed() {
+    let pdf = one_page(
+        "q 0 0 10 10 re W n BT /F1 12 Tf 3 Tr 50 100 Td (SECRETTEXT) Tj ET Q",
+        "",
+        "",
+        vec![],
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.codes_removed, 10);
 }

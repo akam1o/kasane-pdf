@@ -1818,6 +1818,20 @@ impl<'a> DiagWalker<'a> {
             return Ok(());
         }
         let origin = trm.transform(0.0, 0.0);
+        // Readers place glyphs under a strongly anisotropic text matrix
+        // unreliably (Poppler draws a 0.1 × 10 scaled glyph far from
+        // where its outline lies): redaction refuses beyond 16:1.
+        if self.redaction_mode && anisotropy(&trm) > 16.0 {
+            return self.glyph_error(
+                code,
+                Error::Unsupported {
+                    feature: "strongly anisotropic text",
+                    detail: "the text matrix stretches one axis over 16 times the other; \
+                             readers do not agree where such glyphs are drawn"
+                        .into(),
+                },
+            );
+        }
         // A Type 3 glyph is a content stream that may paint anywhere
         // (and draw images); its extent is not evaluated, so it is not
         // estimated either.
@@ -1846,14 +1860,6 @@ impl<'a> DiagWalker<'a> {
         // file names. For redaction the real ink extent is unknown, so
         // the glyph is reported as uncertain exactly as a font with no
         // outlines was before substitution existed.
-        //
-        // One exception needs no extent: under a clip that is exactly a
-        // rectangle meeting no rect, the glyph cannot paint inside a
-        // rect whatever font draws it — it is not a hit.
-        if font.substitution().is_some() && render_mode < 4 && self.clipped_away_from_rects() {
-            self.advance_glyph(font, code, font_size, h_scale, char_spacing, word_spacing);
-            return Ok(());
-        }
         if let Some(s) = font.substitution() {
             return self.glyph_error(
                 code,
@@ -2013,7 +2019,14 @@ impl<'a> DiagWalker<'a> {
             // Already reported as a blocker + uncertain above — do not
             // also emit a normal Target for clip-mode text.
         } else {
-            let hits = self.visible_hits(&bounds);
+            // Redaction: a clip hides ink, not text — extraction and
+            // selection still find a code where it stands, so text is a
+            // hit wherever its box meets a rect, clipped or not.
+            let hits = if self.redaction_mode {
+                hits_for(&bounds, self.rects)
+            } else {
+                self.visible_hits(&bounds)
+            };
             let (unicode, _via) = crate::text_extract::resolve_unicode(font, code);
             self.bump_reported()?;
             self.targets.push(Target {
@@ -2539,6 +2552,20 @@ impl<'a> DiagWalker<'a> {
 /// `sqrt(|det|)` — the geometric mean of the singular values — is
 /// *not* conservative: under `10 0 0 0.1` it returns 1 while the
 /// actual stretch is 10.
+/// The ratio of a 2×2 matrix's singular values (∞ when singular).
+fn anisotropy(m: &crate::matrix::Matrix) -> f64 {
+    let (a, b, c, d) = (m.a, m.b, m.c, m.d);
+    let s = a * a + b * b + c * c + d * d;
+    let det = (a * d - b * c).abs();
+    let r = (s * s - 4.0 * det * det).max(0.0).sqrt();
+    let (big, small) = (((s + r) / 2.0).sqrt(), ((s - r) / 2.0).max(0.0).sqrt());
+    if small > 0.0 {
+        big / small
+    } else {
+        f64::INFINITY
+    }
+}
+
 fn ctm_max_scale(m: &crate::matrix::Matrix) -> f64 {
     let c1 = (m.a * m.a + m.c * m.c).sqrt();
     let c2 = (m.b * m.b + m.d * m.d).sqrt();
