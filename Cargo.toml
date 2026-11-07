@@ -70,7 +70,7 @@ hayro-jbig2 = { version = "0.3", default-features = false }
 # windows, RFC 9841). BSD-3-Clause OR MIT, pure Rust; without its
 # `unsafe`/`ffi-api` features it is `#![forbid(unsafe_code)]`.
 brotli-decompressor = { version = "6.3", default-features = false, features = ["std"] }
-hayro-ccitt = { version = "0.4", default-features = false }
+hayro-ccitt = { version = "0.5", default-features = false }
 hayro-jpeg2000 = { version = "0.4", default-features = false }
 
 # Standard security handler (encrypted documents, decryption only).
