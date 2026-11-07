@@ -4318,7 +4318,35 @@ impl<'a> Renderer<'a> {
         let mut mask = Mask::new(self.pixmap.width(), self.pixmap.height())
             .ok_or_else(|| Error::Structure("stencil mask allocation failed".into()))?;
         let data = mask.data_mut();
-        for py in y0..y1 {
+        // Area-averaged when minified without rotation or skew, as in
+        // `composite_image`.
+        let area = ts.kx == 0.0 && ts.ky == 0.0 && density > 1.0 && density <= MAX_AREA_DENSITY;
+        let (cols, rows) = if area {
+            (
+                footprints(x0, x1, inv.sx, inv.tx, w, false),
+                footprints(y0, y1, inv.sy, inv.ty, h, true),
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        for (yi, py) in (y0..y1).enumerate().filter(|_| area) {
+            let (sy0, wys) = &rows[yi];
+            for (xi, px) in (x0..x1).enumerate() {
+                let (sx0, wxs) = &cols[xi];
+                let mut c = 0.0f64;
+                for (j, wy) in wys.iter().enumerate() {
+                    let row = (sy0 + j) * w;
+                    for (i, wx) in wxs.iter().enumerate() {
+                        c += src.rgba[(row + sx0 + i) * 4 + 3] as f64 / 255.0 * wx * wy;
+                    }
+                }
+                if c > 0.0 {
+                    data[(py as u64 * pw as u64 + px as u64) as usize] =
+                        (c.min(1.0) * 255.0).round() as u8;
+                }
+            }
+        }
+        for py in (y0..y1).filter(|_| !area) {
             for px in x0..x1 {
                 let mut covered = 0u32;
                 for j in 0..k {
@@ -5464,6 +5492,56 @@ impl<'a> Renderer<'a> {
         let kk = (k * k) as f64;
         let fill_alpha = clamp01(self.gs.fill_alpha);
         let bm = self.gs.blend_mode;
+        // A minified image without rotation or skew is area-averaged
+        // exactly: each device pixel is the mean of the source samples
+        // its footprint covers, weighted by the covered fraction, so
+        // fine patterns (dithered scans, halftones) do not alias. Up to
+        // MAX_AREA_DENSITY samples per pixel and axis, which bounds the
+        // work per device pixel; denser images keep the k × k grid.
+        if ts.kx == 0.0 && ts.ky == 0.0 && density > 1.0 && density <= MAX_AREA_DENSITY {
+            let cols = footprints(x0, x1, inv.sx, inv.tx, w, false);
+            let rows = footprints(y0, y1, inv.sy, inv.ty, h, true);
+            let clip = self.gs.clip.take();
+            for (py, (sy0, wys)) in (y0..y1).zip(&rows) {
+                for (px, (sx0, wxs)) in (x0..x1).zip(&cols) {
+                    let coverage = match &clip {
+                        Some(mask) => {
+                            let idx = (py as u64 * mask.width() as u64 + px as u64) as usize;
+                            mask.data().get(idx).copied().unwrap_or(0) as f64 / 255.0
+                        }
+                        None => 1.0,
+                    };
+                    if coverage <= 0.0 {
+                        continue;
+                    }
+                    let (mut sr, mut sg, mut sb, mut sa) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+                    for (j, wy) in wys.iter().enumerate() {
+                        let row = (sy0 + j) * w;
+                        for (i, wx) in wxs.iter().enumerate() {
+                            let si = (row + sx0 + i) * 4;
+                            let a = src.rgba[si + 3] as f64 / 255.0 * wx * wy;
+                            if a == 0.0 {
+                                continue;
+                            }
+                            sr += src.rgba[si] as f64 / 255.0 * a;
+                            sg += src.rgba[si + 1] as f64 / 255.0 * a;
+                            sb += src.rgba[si + 2] as f64 / 255.0 * a;
+                            sa += a;
+                        }
+                    }
+                    if sa <= 0.0 {
+                        continue;
+                    }
+                    let rgb = [sr / sa, sg / sa, sb / sa];
+                    let alpha = sa.min(1.0) * fill_alpha * coverage;
+                    let i = (py as u64 * pw as u64 + px as u64) as usize * 4;
+                    let buf = self.pixmap.data_mut();
+                    composite_px(&mut buf[i..i + 4], rgb, alpha, bm);
+                }
+            }
+            self.gs.clip = clip;
+            return Ok(());
+        }
         let clip = self.gs.clip.take();
         for py in y0..y1 {
             for px in x0..x1 {
@@ -7295,6 +7373,42 @@ enum PaintKind {
     Stroke,
     Fill(FillRule),
     FillStroke(FillRule),
+}
+
+/// The largest minification (source samples per device pixel and
+/// axis) that images are area-averaged at: at most (8 + 1)² samples
+/// per device pixel.
+const MAX_AREA_DENSITY: f32 = 8.0;
+
+/// For each device pixel `d` in `d0..d1` along one axis of an image
+/// drawn without rotation or skew, the source samples its footprint
+/// covers: the first index and each one's share of the pixel. The
+/// footprint is `[scale·d + off, scale·(d+1) + off]` in the unit square
+/// (flipped for y, §8.9.4), times `n` samples; shares outside the image
+/// are left out, so they sum to the fraction of the pixel it covers.
+fn footprints(
+    d0: i32,
+    d1: i32,
+    scale: f32,
+    off: f32,
+    n: usize,
+    flip: bool,
+) -> Vec<(usize, Vec<f64>)> {
+    (d0..d1)
+        .map(|d| {
+            let a = (scale as f64) * d as f64 + off as f64;
+            let b = (scale as f64) * (d + 1) as f64 + off as f64;
+            let (a, b) = if flip { (1.0 - a, 1.0 - b) } else { (a, b) };
+            let (s0, s1) = (a.min(b) * n as f64, a.max(b) * n as f64);
+            let span = (s1 - s0).max(1e-9);
+            let first = (s0.floor().max(0.0) as usize).min(n);
+            let last = (s1.ceil().max(0.0) as usize).min(n);
+            let w = (first..last.max(first))
+                .map(|i| (s1.min(i as f64 + 1.0) - s0.max(i as f64)).max(0.0) / span)
+                .collect();
+            (first, w)
+        })
+        .collect()
 }
 
 /// Stroke adjustment of two parallel device-space edges (§10.7.5): each
