@@ -6558,17 +6558,18 @@ impl<'a> Renderer<'a> {
                 // first for points. Pipeline order glyph → Trm → page
                 // → pixmap therefore wants `trm.post_concat(upx)`.
                 let full = trm_ts.post_concat(self.user_to_pix);
-                // Unrotated, unskewed glyphs filled with a colour sit on
-                // a whole device row (the origin's device y floored),
-                // as Splash places the glyphs it caches: no change of
-                // shape or advance. Splash draws stroked, clipping and
-                // pattern-filled text as exact paths, and so does this:
-                // they, and rotated or skewed text, stay where they fall.
+                // Unrotated, unskewed glyphs only filled with a colour
+                // (Tr 0, and the fill of Tr 4) sit on a whole device row
+                // (the origin's device y floored), as Splash places the
+                // glyphs it caches: no change of shape or advance.
+                // Splash draws stroked, clip and pattern-filled outlines
+                // as exact paths, and so does this: they, and rotated or
+                // skewed text, stay where they fall.
                 // The origin is placed in f64, as Splash computes it: a
                 // baseline a hair above a row boundary must not round to
                 // it in f32.
                 let ty = trm.concat(self.user_to_pix_exact).f;
-                let snap = if t.render_mode == 0
+                let snap = if matches!(t.render_mode, 0 | 4)
                     && !gs.fill_space.is_pattern()
                     && full.kx == 0.0
                     && full.ky == 0.0
@@ -6578,6 +6579,7 @@ impl<'a> Renderer<'a> {
                 } else {
                     0.0
                 };
+                let exact = full;
                 let full = full.post_translate(0.0, snap);
                 match t.render_mode {
                     0 | 2 | 4 | 6 if gs.fill_space.is_pattern() => {
@@ -6675,7 +6677,7 @@ impl<'a> Renderer<'a> {
                 if t.render_mode >= 4 {
                     // Clipping modes 4–7: the outline joins the text
                     // clip (device space) applied at ET.
-                    if let Some(dev) = path.clone().transform(full) {
+                    if let Some(dev) = path.clone().transform(exact) {
                         self.text_clip
                             .get_or_insert_with(PathBuilder::new)
                             .push_path(&dev);

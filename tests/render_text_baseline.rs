@@ -2,8 +2,9 @@
 //! with a colour sits on a whole device row (the glyph origin's device y
 //! floored, as Poppler's Splash places the glyphs it caches), so a line
 //! drawn a fraction of a pixel lower renders exactly like the line at
-//! the row above it; x keeps its exact position. Stroked, clipping,
-//! pattern-filled and rotated text is drawn where it falls. Text
+//! the row above it; x keeps its exact position. Stroked, clip (the
+//! outline of Tr 4–7; Tr 4 still fills snapped), pattern-filled and
+//! rotated text is drawn where it falls. Text
 //! extraction coordinates are not snapped.
 
 mod common;
@@ -66,6 +67,15 @@ fn horizontal_text_snaps_to_the_row_above() {
         ))
     };
     assert!(clipped("40.5") != clipped("41"));
+    // Tr 4 fills like Tr 0 (snapped); its clip is the exact outline.
+    let fill_clip = |y: &str, after: &str| {
+        pixels(&format!(
+            "1 0 0 rg BT /F1 24 Tf 4 Tr 20 {y} Td (Hxg) Tj ET {after}"
+        ))
+    };
+    assert!(fill_clip("40.5", "") == fill_clip("41", ""));
+    let blue = "0 0 1 rg 0 0 200 100 re f";
+    assert!(fill_clip("40.5", blue) != fill_clip("41", blue));
     let patterned = |y: &str| {
         pixels(&format!(
             "/Pattern cs /P1 scn BT /F1 24 Tf 20 {y} Td (Hxg) Tj ET"
