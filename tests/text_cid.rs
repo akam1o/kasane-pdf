@@ -1746,3 +1746,32 @@ fn simple_font_regression() {
     assert_eq!(t.chars[0].unicode.as_deref(), Some("A"));
     assert_eq!(t.chars[0].resolved_via, ResolveKind::EncodingFallback);
 }
+
+/// Vertical writing is not positioned by the redaction walker: a
+/// redaction on a page with vertical text is refused, not run with
+/// horizontal positions (independent review, P0).
+#[test]
+fn redaction_refuses_vertical_text() {
+    let pdf = pdf_type0_with_ttf(
+        b"BT /F1 20 Tf 100 80 Td <00010001> Tj ET",
+        "Identity-V",
+        "CIDFontType2",
+        Some(None),
+        Some(600),
+        None,
+        None,
+        "",
+        TTF,
+        "KasaneCIDTest",
+    );
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let r = kasane_pdf::redact(
+        &doc,
+        &[(0, vec![(85.0, 45.0, 105.0, 65.0)])],
+        &kasane_pdf::RedactOptions::new(),
+    );
+    assert!(
+        matches!(&r, Err(Error::Unsupported { detail, .. }) if detail.contains("vertical")),
+        "{r:?}"
+    );
+}

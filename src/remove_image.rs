@@ -598,6 +598,10 @@ pub(crate) fn validate_image(
         b"OC".as_slice(),
         b"ImageMask".as_slice(),
         b"Interpolate".as_slice(),
+        // Alternate versions of the image (§8.9.5.4) and OPI
+        // proxies hold the same picture elsewhere.
+        b"Alternates".as_slice(),
+        b"OPI".as_slice(),
     ] {
         if let Some(v) = dict.get(key) {
             if key == b"SMaskInData" && v.as_i64() == Some(0) {

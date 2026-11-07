@@ -1141,7 +1141,11 @@ impl<'a> DiagWalker<'a> {
                 self.path_point(*x2, *y2);
             }
             O::Rectangle(x, y, w, h) => {
+                // All four corners: under a rotated or skewed CTM two
+                // opposite corners do not bound the rectangle.
                 self.path_point(*x, *y);
+                self.path_point(*x + *w, *y);
+                self.path_point(*x, *y + *h);
                 self.path_point(*x + *w, *y + *h);
                 self.path_has_point = false; // re is a complete subpath
             }
@@ -1518,6 +1522,29 @@ impl<'a> DiagWalker<'a> {
             return Ok(());
         }
         let origin = trm.transform(0.0, 0.0);
+        // A Type 3 glyph is a content stream that may paint anywhere
+        // (and draw images); its extent is not evaluated, so it is not
+        // estimated either.
+        if font.as_type3().is_some() {
+            return self.glyph_error(
+                code,
+                Error::Unsupported {
+                    feature: "Type 3 glyph",
+                    detail: "its CharProc may paint anywhere; the extent is not evaluated".into(),
+                },
+            );
+        }
+        // Vertical writing places glyphs by vertical origins and
+        // advances this walker does not model.
+        if font.vertical() {
+            return self.glyph_error(
+                code,
+                Error::Unsupported {
+                    feature: "vertical writing mode",
+                    detail: "vertical glyph positions are not evaluated".into(),
+                },
+            );
+        }
         // A non-embedded font drawn with a bundled *substitute* has
         // outlines — but they are the substitute's, not the font the
         // file names. For redaction the real ink extent is unknown, so
@@ -1793,6 +1820,10 @@ impl<'a> DiagWalker<'a> {
             b"OC".as_slice(),
             b"ImageMask".as_slice(),
             b"Interpolate".as_slice(),
+            // Alternate versions of the image (§8.9.5.4) and OPI
+            // proxies hold the same picture elsewhere.
+            b"Alternates".as_slice(),
+            b"OPI".as_slice(),
         ] {
             if let Some(v) = dict.get(key) {
                 if key == b"SMaskInData" && v.as_i64() == Some(0) {

@@ -70,8 +70,9 @@ failed verification", .. }`), never a returned PDF.
 On an edited page: annotations other than links, Form XObjects, inline images, `sh`,
 ExtGState (`gs`), optional content and `/ActualText` marked content,
 text in any mode but `Tr 0` (invisible OCR text, stroked, clipping),
-non-embedded fonts (glyph extent unknown), images with masks, soft
-masks, `/Decode`, other colour spaces or filter chains, rotated or
+non-embedded fonts (glyph extent unknown), Type 3 fonts (a CharProc
+may paint anywhere), vertical writing, images with masks, soft masks,
+`/Alternates` or OPI, `/Decode`, other colour spaces or filter chains, rotated or
 sheared images, `/UserUnit` ≠ 1, a path crossing a rect's edge, a path
 that also clips. Anywhere: an edited image drawn unredacted, an
 undecidable resource use, a structure tree with alternate text (by

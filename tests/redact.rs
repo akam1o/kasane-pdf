@@ -496,3 +496,70 @@ fn links() {
     .unwrap();
     assert!(!contains(&r.output, b"SECRETLINK"));
 }
+
+// Independent review (P0s, all fixed): content the walker placed
+// wrongly was kept while verification, using the same walker, agreed.
+
+/// A rectangle under a rotated CTM is bounded by all four corners.
+#[test]
+fn rotated_rectangle_path_is_located() {
+    let pdf = one_page("q 1 1 -1 1 100 20 cm 0 0 40 40 re f Q", "", "", vec![]);
+    let e = unsupported(run(&pdf, vec![(70.0, 50.0, 80.0, 60.0)]));
+    assert!(e.contains("crossing a rect's edge"), "{e}");
+    let r = run(&pdf, vec![(40.0, 0.0, 160.0, 120.0)]).unwrap();
+    assert_eq!(r.paths_removed, 1);
+}
+
+/// A Type 3 glyph may paint anywhere: refused, not estimated.
+#[test]
+fn type3_text_is_refused() {
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F0 5 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"BT /F0 20 Tf 50 100 Td (a) Tj ET")),
+        (
+            5,
+            b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 3000 1000] \
+              /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /a 6 0 R >> \
+              /Encoding << /Differences [97 /a] >> /FirstChar 97 /LastChar 97 \
+              /Widths [600] /Resources << >> >>"
+                .to_vec(),
+        ),
+        (6, stream_obj("", b"600 0 d0 2000 0 1000 1000 re f")),
+    ]);
+    let e = unsupported(run(&pdf, vec![(90.0, 100.0, 110.0, 120.0)]));
+    assert!(e.contains("Type 3"), "{e}");
+}
+
+/// An image's `/Alternates` hold the same picture: refused.
+#[test]
+fn image_alternates_are_refused() {
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"q 100 0 0 100 50 50 cm /Im1 Do Q")),
+        (
+            5,
+            stream_obj(
+                "/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace /DeviceRGB \
+                 /BitsPerComponent 8 /Alternates [<< /Image 6 0 R >>]",
+                &secret_samples(),
+            ),
+        ),
+        (6, image_obj()),
+    ]);
+    let e = unsupported(run(&pdf, vec![(50.0, 50.0, 150.0, 150.0)]));
+    assert!(e.contains("Alternates"), "{e}");
+}
