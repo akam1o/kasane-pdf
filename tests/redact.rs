@@ -1694,3 +1694,39 @@ fn annotations_clear_of_the_rects_are_kept() {
         assert!(unsupported(run(&pdf, vec![RECT])).contains("NoZoom or NoRotate"));
     }
 }
+
+// Patterns: a shading pattern fill is cut like any fill; a tiling
+// pattern (its cell is content) is refused.
+
+const PATTERN_RES: &str = "/Pattern << /Sh << /PatternType 2 /Shading << /ShadingType 2 \
+    /ColorSpace /DeviceRGB /Coords [0 0 200 0] /Function << /FunctionType 2 /Domain [0 1] \
+    /C0 [1 0 0] /C1 [0 0 1] /N 1 >> >> >> /Ti 40 0 R >>";
+
+#[test]
+fn a_shading_pattern_fill_is_cut() {
+    let pdf = doc_with(
+        PATTERN_RES,
+        &[b"/Pattern cs /Sh scn 30 60 60 30 re f"],
+        vec![],
+    );
+    let r = run(&pdf, vec![(40.0, 40.0, 160.0, 160.0)]).unwrap();
+    assert_eq!(r.paths_cut, 1);
+    assert_eq!(at(&r.output, 50, 75), 255);
+    assert_ne!(at(&r.output, 35, 75), 255, "outside: kept");
+}
+
+#[test]
+fn a_tiling_pattern_is_refused() {
+    let tile = stream_obj(
+        "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10 \
+         /Resources << >>",
+        b"0 0 5 5 re f",
+    );
+    let pdf = doc_with(
+        PATTERN_RES,
+        &[b"/Pattern cs /Ti scn 30 60 60 30 re f"],
+        vec![(40, tile)],
+    );
+    let e = unsupported(run(&pdf, vec![(40.0, 40.0, 160.0, 160.0)]));
+    assert!(e.contains("tiling pattern"), "{e}");
+}

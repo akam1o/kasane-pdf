@@ -1199,6 +1199,43 @@ impl<'a> DiagWalker<'a> {
                 // d0/d1 only appear inside a Type3 CharProc; at page
                 // level they carry no geometry → ignore.
             }
+            // Redaction: a pattern paints only inside the path or glyph
+            // it fills (§8.7.2), so a Pattern colour space moves
+            // nothing; the selected pattern is checked at `scn`.
+            O::SetColorSpaceStroke(_) | O::SetColorSpaceFill(_) if self.redaction_mode => {}
+            O::SetColorStroke(ops) | O::SetColorFill(ops)
+                if self.redaction_mode && matches!(ops.last(), Some(Object::Name(_))) =>
+            {
+                let Some(Object::Name(n)) = ops.last() else {
+                    unreachable!("matched above")
+                };
+                // A shading pattern carries colours only. A tiling
+                // pattern's cell is content of its own — what it shows
+                // inside a rect would stay in the file — so it is not
+                // handled.
+                let pattern = self.doc.resolve_resource(&self.resources, "Pattern", n)?;
+                let shading = pattern.as_ref().is_some_and(|p| {
+                    let d = match p {
+                        Object::Dict(d) => Some(d),
+                        Object::Stream { dict, .. } => Some(dict),
+                        _ => None,
+                    };
+                    d.and_then(|d| d.get(b"PatternType".as_slice()))
+                        .and_then(|t| t.as_i64())
+                        == Some(2)
+                });
+                if !shading {
+                    self.push_blocker(Blocker {
+                        site: Some(self.site()),
+                        what: "tiling pattern".into(),
+                        detail: format!(
+                            "/{} — a tiling pattern's cell content is not edited",
+                            String::from_utf8_lossy(n)
+                        ),
+                    })?;
+                    self.uncertain_state = true;
+                }
+            }
             O::SetColorSpaceStroke(n) | O::SetColorSpaceFill(n) => {
                 // A Pattern colour space means subsequent SC/sc paints
                 // a *pattern* — its extent is whatever the pattern

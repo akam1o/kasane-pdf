@@ -50,6 +50,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   or `/Font` is still refused), and keeps annotations of any kind that
   are clear of the rects (one meeting a rect, other than a link, and
   NoZoom/NoRotate annotations are refused).
+- `redact` accepts shading patterns as fill or stroke colour (the path
+  or glyph is removed or cut as with any colour); tiling patterns are
+  still refused.
 - `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
   RFC 7932 data including large windows, Flate predictors, refused on
   inline images. Output and decoder memory are bounded by

@@ -39,6 +39,7 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 | painted paths crossing a rect's edge | cut there (`paths_cut`): filled axis-aligned rectangles become their difference with the rects (exact; several only when they do not overlap); stroked straight segments are cut, in user space where the stroke is defined, at the centreline positions whose cross-section (and cap) would reach the rect — exact for butt caps, the cap's square for square and round caps — so nothing reaches inside and nothing outside is lost; a corner kept near a rect must clear it by its join (the exact miter, or the bevel/round extent). Curves, dashed strokes, other fill shapes and overlapping rectangles near a rect are refused |
 | `/Link` annotations whose `/Rect` meets a rect | removed with their action or destination (`links_removed`); links outside every rect are kept. A removed link the structure tree refers to (`/StructParent`) is refused unless the tree is removed |
 | other annotations clear of every rect | kept as they are (their appearance is drawn into `/Rect`); their text is still searched for `elsewhere` |
+| shading patterns as fill or stroke colour | a pattern paints only inside what it fills, so the path or glyph is removed or cut as with any colour; tiling patterns (whose cell is content of its own) are refused |
 | ExtGState (`gs`) | stroke parameters (`/LW`, `/LC`, `/LJ`, `/ML`, `/D`) are applied; colour and compositing parameters (alpha, blend mode, overprint, transfer, halftone, `/SMask /None` …) are passed through, since removal and cutting are by geometry |
 | Form XObjects, nested up to 16 deep (transparency groups included) | their text, paths and images inside the rects are removed, cut or zeroed in copies along the invocation chain — each copy drawn by that one invocation only (`forms_edited`), its `/Resources` naming only what it draws. Other invocations and pages keep the originals; an original still drawn is reported in `elsewhere` (`Removed::Form` / `Removed::Image`); otherwise it is not carried. A form cycle is refused |
 | document `/Info`, catalog XMP `/Metadata` | always removed |
@@ -154,7 +155,7 @@ document text in `Debug` output.
 ## Not covered
 
 Annotations other than links meeting a rect, forms nested more than
-16 deep, patterns, inline images meeting a rect, soft masks and fonts
+16 deep, tiling patterns, inline images meeting a rect, soft masks and fonts
 set by ExtGState, shadings, curves and dashed strokes
 crossing a rect, masked, CMYK or indexed images, invisible OCR text.
 Each is refused, not approximated.
