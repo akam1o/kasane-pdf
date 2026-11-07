@@ -36,20 +36,36 @@ versions follow [Semantic Versioning](https://semver.org/).
   optional content do not change which samples are drawn where).
 
 ### Fixed
-- `redact` treated content clipped away from every rect as not a hit,
-  and accepted non-embedded text under a rectangular clip clear of the
-  rects (0.6.0). A clip hides ink, not data: text is still extracted,
-  image samples and path coordinates still read, where they stand
-  inside the rect. Text, images and paths are now hits wherever they
-  meet a rect, clipped or not, and the non-embedded exception is
-  withdrawn; content under a clip that is not a rectangle is no longer
-  refused for that reason (a shading, which carries no data, is still
-  accepted clipped away from the rects).
-- `redact` refuses text whose text matrix, CTM or their product stretches one axis over 16
-  times the other: Poppler draws such glyphs far from their outlines.
 - `diagnose_redaction` and the editors grew stroked text by the stroke's
   reach under the text matrix (font size included) instead of the CTM,
   reporting it far larger than drawn.
+
+## [0.6.1] - 2026-11-08
+
+A security fix for `redact`; no public API change (`cargo
+semver-checks` against 0.6.0: no semver update required). Release
+notes: `docs/releases/v0.6.1.md`.
+
+### Security
+- **Content hidden by a clip inside a rect was kept (0.6.0,
+  GHSA-x455-j82p-6jmv).** `redact` treated text, images and
+  paths that a clip kept from showing inside every rect as not hits,
+  and accepted text in a non-embedded font under a rectangular clip
+  clear of the rects. A clip hides ink, not data: such text is still
+  extracted and selected, such image samples and path coordinates still
+  read, where they stand inside the rect. Text, images and paths are
+  now hits wherever they meet a rect, clipped or not (removed, zeroed
+  or cut); the non-embedded exception is withdrawn; content under a
+  clip that is not a rectangle is no longer refused for that reason.
+  The one deliberate exception is a shading (`sh`), still accepted
+  under a rectangular clip meeting no rect (its resource is kept as it
+  is).
+- **Strongly anisotropic text could be kept where it is drawn inside a
+  rect (0.6.0, GHSA-frr2-h56x-mr4h).** Under a text matrix stretching one axis far more than
+  the other, Poppler draws glyphs away from where their outlines lie,
+  so a code this crate placed outside a rect could be drawn inside it.
+  `redact` refuses text whose text matrix, CTM or their product
+  stretches one axis over 16 times the other.
 
 ## [0.6.0] - 2026-11-07
 
