@@ -53,6 +53,7 @@ pub struct RedactOptions {
     remove_structure_tree: bool,
     refuse_copies_elsewhere: bool,
     unembedded_text_by_cell: bool,
+    remove_annotations: bool,
 }
 
 impl RedactOptions {
@@ -108,6 +109,25 @@ impl RedactOptions {
         self.unembedded_text_by_cell = accept;
         self
     }
+
+    /// Remove a markup annotation (Text, FreeText, Line, Square,
+    /// Circle, Polygon, PolyLine, Highlight, Underline, Squiggly,
+    /// StrikeOut, Caret, Stamp, Ink, Popup) whose `/Rect` meets a rect
+    /// instead of refusing it. The annotation is removed **whole** —
+    /// its appearance and text (`/Contents`, `/T`, `/RC`, `/Subj`) go
+    /// even where they lie outside the rect — together with what
+    /// belongs to it on the page: its popup, the annotation a removed
+    /// popup belongs to, and replies to it (`/IRT`), transitively.
+    /// Other subtypes meeting a rect (widgets, signatures, media,
+    /// file attachments …) stay refused. Its appearance streams may not
+    /// stay in the output unless something still draws them (checked
+    /// like an edited image's original), and its text is searched for
+    /// in `elsewhere`. One the structure tree refers to is refused
+    /// unless the tree is removed.
+    pub fn remove_annotations(mut self, remove: bool) -> Self {
+        self.remove_annotations = remove;
+        self
+    }
 }
 
 /// The result of [`redact`]: a verified single-revision PDF.
@@ -131,6 +151,10 @@ pub struct Redaction {
     /// `/Link` annotations removed because their `/Rect` met a rect
     /// (with their action or destination); links outside are kept.
     pub links_removed: u64,
+    /// Annotations other than links removed whole
+    /// ([`RedactOptions::remove_annotations`]), with the popups and
+    /// replies tied to them.
+    pub annotations_removed: u64,
     /// `/XObject` names of edited images' originals removed from
     /// pages that did not draw them.
     pub original_names_removed: u64,
@@ -216,6 +240,7 @@ impl std::fmt::Debug for Redaction {
             .field("paths_removed", &self.paths_removed)
             .field("paths_cut", &self.paths_cut)
             .field("links_removed", &self.links_removed)
+            .field("annotations_removed", &self.annotations_removed)
             .field("original_names_removed", &self.original_names_removed)
             .field("info_removed", &self.info_removed)
             .field("metadata_removed", &self.metadata_removed)
@@ -258,13 +283,14 @@ pub fn redact(
 
     let session = crate::remove_region::SessionOptions {
         unembedded_by_cell: options.unembedded_text_by_cell,
+        remove_annotations: options.remove_annotations,
     };
     let mut s = regions_edit_session_with(doc, specs, limits, SessionMode::Redact, session)?;
     let structure_tree_removed = tree && options.remove_structure_tree;
     if tree && !structure_tree_removed && s.tagged_links_removed_total > 0 {
         return Err(Error::Unsupported {
-            feature: "redaction of a link the structure tree refers to",
-            detail: "the tree's /OBJR would keep the removed link (and its action) \
+            feature: "redaction of an annotation the structure tree refers to",
+            detail: "the tree's /OBJR would keep the removed link or annotation \
                      reachable; RedactOptions::remove_structure_tree removes the tree"
                 .into(),
         });
@@ -327,6 +353,7 @@ pub fn redact(
         paths_removed: s.paths_removed_total,
         paths_cut: s.paths_cut_total,
         links_removed: s.links_removed_total,
+        annotations_removed: s.annots_removed_total,
         original_names_removed: s.names_pruned_total,
         per_page: s.per_page,
         info_removed: info_present,
@@ -365,15 +392,18 @@ fn verify(
         + again.paths_removed_total
         + again.paths_cut_total
         + again.links_removed_total
+        + again.annots_removed_total
         != 0
     {
         return Err(fail(format!(
-            "the rects still hit {} codes, {} nonzero pixels, {} paths, {} paths to cut, {} links",
+            "the rects still hit {} codes, {} nonzero pixels, {} paths, {} paths to cut, {} links, \
+             {} annotations",
             again.codes_removed_total,
             again.pixels_changed_total,
             again.paths_removed_total,
             again.paths_cut_total,
-            again.links_removed_total
+            again.links_removed_total,
+            again.annots_removed_total
         )));
     }
     drop(again);

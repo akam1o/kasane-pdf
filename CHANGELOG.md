@@ -66,6 +66,14 @@ versions follow [Semantic Versioning](https://semver.org/).
   font a reader substitutes. Positions must be defined by the document
   (`/Widths`, `/W`, Standard 14 metrics); fill text only. A clip of that
   shape found in the input is ignored by the hit test, never trusted.
+- `RedactOptions::remove_annotations` (CLI `--remove-annotations`):
+  markup annotations (Text, FreeText, Line, Square, Circle, Polygon,
+  PolyLine, Highlight, Underline, Squiggly, StrikeOut, Caret, Stamp,
+  Ink, Popup) meeting a rect are removed whole — appearance and text,
+  outside the rect too — with their popups and replies, instead of
+  refused (`annotations_removed`). Their appearance streams may not
+  stay unless still drawn; their text is searched for in `elsewhere`.
+  Widgets and other subtypes stay refused.
 - `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
   RFC 7932 data including large windows, Flate predictors, refused on
   inline images. Output and decoder memory are bounded by

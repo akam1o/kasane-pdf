@@ -1995,3 +1995,105 @@ fn an_exclusion_clip_in_the_input_hides_nothing() {
     assert_eq!(r.codes_removed, 10);
     assert!(!contains(&r.output, b"SECRETTEXT"));
 }
+
+// Annotations meeting a rect: refused by default; with
+// remove_annotations, markup annotations removed whole with their
+// popups and replies.
+
+fn annots_run(pdf: &[u8]) -> Result<kasane_pdf::Redaction, Error> {
+    let doc = Document::from_bytes(pdf).unwrap();
+    redact(
+        &doc,
+        &[(0, vec![RECT])],
+        &RedactOptions::new().remove_annotations(true),
+    )
+}
+
+fn annot_page(annots: &str, objs: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+    one_page(SECRET, &format!("/Annots [{annots}]"), "", objs)
+}
+
+#[test]
+fn a_markup_annotation_meeting_a_rect_is_removed_whole_on_request() {
+    let pdf = annot_page(
+        "30 0 R",
+        vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /FreeText /Rect [100 100 190 140] /Contents (SECRETNOTE) \
+                  /DA (/Helv 10 Tf 0 g) /AP << /N 31 0 R >> >>"
+                    .to_vec(),
+            ),
+            (
+                31,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 90 40]",
+                    b"0 0 1 rg 0 0 90 40 re f % APPEARANCEMARK",
+                ),
+            ),
+        ],
+    );
+    let e = unsupported(run(&pdf, vec![RECT]));
+    assert!(e.contains("remove_annotations"), "{e}");
+    let r = annots_run(&pdf).unwrap();
+    assert_eq!(r.annotations_removed, 1);
+    assert!(!contains(&r.output, b"SECRETNOTE"));
+    assert!(!contains(&r.output, b"APPEARANCEMARK"));
+    assert_eq!(
+        at(&r.output, 180, 130),
+        255,
+        "its part outside the rect goes too"
+    );
+}
+
+#[test]
+fn popups_and_replies_go_with_a_removed_annotation() {
+    let pdf = annot_page(
+        "30 0 R 31 0 R 32 0 R 33 0 R",
+        vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Text /Rect [60 95 70 105] /Contents (SECRETNOTE) /Popup 31 0 R >>"
+                    .to_vec(),
+            ),
+            (31, b"<< /Type /Annot /Subtype /Popup /Rect [150 150 190 190] /Parent 30 0 R >>".to_vec()),
+            (
+                32,
+                b"<< /Type /Annot /Subtype /Text /Rect [170 10 180 20] /Contents (REPLYNOTE) /IRT 30 0 R >>"
+                    .to_vec(),
+            ),
+            (33, b"<< /Type /Annot /Subtype /Text /Rect [10 170 20 180] /Contents (OTHERNOTE) >>".to_vec()),
+        ],
+    );
+    let r = annots_run(&pdf).unwrap();
+    assert_eq!(r.annotations_removed, 3);
+    assert!(!contains(&r.output, b"SECRETNOTE") && !contains(&r.output, b"REPLYNOTE"));
+    assert!(contains(&r.output, b"OTHERNOTE"));
+}
+
+#[test]
+fn widgets_and_tagged_annotations_stay_refused() {
+    let widget = annot_page(
+        "30 0 R",
+        vec![(
+            30,
+            b"<< /Type /Annot /Subtype /Widget /FT /Tx /Rect [60 95 70 105] /V (SECRET) >>"
+                .to_vec(),
+        )],
+    );
+    assert!(unsupported(annots_run(&widget)).contains("other than a link"));
+    let tagged = one_page(
+        SECRET,
+        "/Annots [30 0 R] /StructParents 1",
+        "/StructTreeRoot 40 0 R",
+        vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Square /Rect [60 95 70 105] /StructParent 0 >>"
+                    .to_vec(),
+            ),
+            (40, b"<< /Type /StructTreeRoot >>".to_vec()),
+        ],
+    );
+    assert!(unsupported(annots_run(&tagged)).contains("structure tree"));
+}

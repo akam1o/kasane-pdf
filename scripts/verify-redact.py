@@ -114,6 +114,9 @@ CASES = [
         9: IMAGE})), [], "ok"),
     ("text-annotation", build(page(TEXT, page_extra=b"/Annots [8 0 R]", more={
         8: b"<< /Type /Annot /Subtype /Text /Rect [50 95 60 105] /Contents (SECRETTEXT) >>"})), [], "refused"),
+    ("text-annotation-removed", build(page(TEXT, page_extra=b"/Annots [8 0 R]", more={
+        8: b"<< /Type /Annot /Subtype /Text /Rect [50 95 60 105] /Contents (SECRETTEXT) >>"})),
+     ["--remove-annotations"], "ok"),
     ("annotation-outside", build(page(TEXT, page_extra=b"/Annots [8 0 R]", more={
         8: b"<< /Type /Annot /Subtype /Square /Rect [170 170 190 190] /Contents (Reviewed) >>"})), [], "ok"),
     # Structures common in real documents.

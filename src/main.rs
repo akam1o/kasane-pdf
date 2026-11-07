@@ -1928,7 +1928,8 @@ fn run_remove_regions(args: &[String]) -> Result<(), Error> {
 fn redact_usage() -> &'static str {
     "usage: kasane-pdf redact <file.pdf> --page <n> --rect <llx> <lly> <urx> <ury> \
      [--rect …] [--page <m> --rect …] [--remove-structure-tree] \
-     [--refuse-copies-elsewhere] [--unembedded-text-by-cell] --output <out.pdf>\n\
+     [--refuse-copies-elsewhere] [--unembedded-text-by-cell] [--remove-annotations] \
+     --output <out.pdf>\n\
      Removes the text, image samples and paths drawn inside the rects (page \
      default user space; --page is 1-based, each --rect belongs to the nearest \
      preceding --page), removes /Info and XMP metadata, leaves no route to an \
@@ -1940,7 +1941,9 @@ fn redact_usage() -> &'static str {
      another page) are listed, not removed; --refuse-copies-elsewhere \
      refuses instead when any is found. --unembedded-text-by-cell accepts \
      text in non-embedded fonts: codes whose cell meets a rect are removed \
-     and the page is clipped so nothing left paints inside the rects."
+     and the page is clipped so nothing left paints inside the rects. \
+     --remove-annotations removes markup annotations meeting a rect whole \
+     (with their popups and replies) instead of refusing."
 }
 
 /// `redact` subcommand.
@@ -1952,6 +1955,7 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
     let mut remove_tree = false;
     let mut refuse_copies = false;
     let mut by_cell = false;
+    let mut remove_annots = false;
     let mut i = 1;
     let num = |s: &String| -> Result<f64, Error> {
         s.parse::<f64>()
@@ -2000,6 +2004,10 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
                 by_cell = true;
                 i += 1;
             }
+            "--remove-annotations" => {
+                remove_annots = true;
+                i += 1;
+            }
             other => {
                 return Err(Error::Structure(format!(
                     "unknown option '{other}'\n{}",
@@ -2028,7 +2036,8 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
         &kasane_pdf::RedactOptions::new()
             .remove_structure_tree(remove_tree)
             .refuse_copies_elsewhere(refuse_copies)
-            .unembedded_text_by_cell(by_cell),
+            .unembedded_text_by_cell(by_cell)
+            .remove_annotations(remove_annots),
     )?;
     write_atomic(
         &r.output,
@@ -2048,6 +2057,7 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
     println!("paths removed: {}", r.paths_removed);
     println!("paths cut at a rect: {}", r.paths_cut);
     println!("links removed: {}", r.links_removed);
+    println!("annotations removed: {}", r.annotations_removed);
     println!("original image names removed: {}", r.original_names_removed);
     println!("/Info removed: {}", r.info_removed);
     println!("XMP /Metadata removed: {}", r.metadata_removed);

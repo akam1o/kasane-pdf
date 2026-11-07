@@ -707,6 +707,10 @@ pub(crate) struct RegionsEdit<'a> {
     /// Of those, links a structure tree refers to (`/StructParent`):
     /// the tree would keep them reachable.
     pub(crate) tagged_links_removed_total: u64,
+    /// Redaction mode only: annotations other than links removed
+    /// whole (`remove_annotations`), with the popups and replies tied
+    /// to them.
+    pub(crate) annots_removed_total: u64,
     /// Redaction mode only: paths crossing a rect's edge, cut there.
     pub(crate) paths_cut_total: u64,
     /// Redaction mode only: form invocations drawn from an edited copy.
@@ -751,6 +755,65 @@ pub(crate) struct SessionOptions {
     /// such page's content away from its rects (`redact`'s
     /// `RedactOptions::unembedded_text_by_cell`).
     pub(crate) unembedded_by_cell: bool,
+    /// Remove markup annotations meeting a rect whole
+    /// (`RedactOptions::remove_annotations`).
+    pub(crate) remove_annotations: bool,
+}
+
+/// The annotation subtypes `remove_annotations` removes whole: markup
+/// annotations whose content is their own dictionary and appearance
+/// (§12.5.6). Widgets (form fields), signatures, media, 3D, file
+/// attachments and others tied to more of the document are refused.
+const REMOVABLE_ANNOTS: &[&[u8]] = &[
+    b"Text",
+    b"FreeText",
+    b"Line",
+    b"Square",
+    b"Circle",
+    b"Polygon",
+    b"PolyLine",
+    b"Highlight",
+    b"Underline",
+    b"Squiggly",
+    b"StrikeOut",
+    b"Caret",
+    b"Stamp",
+    b"Ink",
+    b"Popup",
+];
+
+/// An annotation's appearance streams (`/AP` `/N`, `/R`, `/D`, each a
+/// stream or a dictionary of states).
+fn annotation_appearances(doc: &Document, d: &Dict) -> Result<Vec<IndirectRef>, Error> {
+    let mut refs = Vec::new();
+    let Some(ap) = d.get(b"AP".as_slice()) else {
+        return Ok(refs);
+    };
+    let ap = doc.deref(ap)?;
+    let Some(ap) = ap.as_dict() else {
+        return Ok(refs);
+    };
+    for v in [b"N".as_slice(), b"R", b"D"]
+        .iter()
+        .filter_map(|k| ap.get(*k))
+    {
+        let states = match v {
+            Object::Ref(r) => match doc.resolve(*r)? {
+                Object::Dict(states) => states,
+                _ => {
+                    refs.push(*r);
+                    continue;
+                }
+            },
+            Object::Dict(states) => states.clone(),
+            _ => continue,
+        };
+        refs.extend(states.values().filter_map(|s| match s {
+            Object::Ref(r) => Some(*r),
+            _ => None,
+        }));
+    }
+    Ok(refs)
 }
 
 pub(crate) fn regions_edit_session_with<'a>(
@@ -829,6 +892,7 @@ pub(crate) fn regions_edit_session_with<'a>(
     let mut links_removed_total: u64 = 0;
     let mut paths_cut_total: u64 = 0;
     let mut tagged_links_removed_total: u64 = 0;
+    let mut annots_removed_total: u64 = 0;
     let mut original_digests: Vec<[u8; 32]> = Vec::new();
     // Redaction: the refs of edited images, and per page the names
     // still drawn after the edit.
@@ -870,6 +934,7 @@ pub(crate) fn regions_edit_session_with<'a>(
         let mut kept_annots: Option<Vec<Object>> = None;
         let mut links_removed: u64 = 0;
         let mut tagged_links_removed: u64 = 0;
+        let mut annots_removed: u64 = 0;
         if let Some(a) = page_dict_entry(doc, page, b"Annots")? {
             if mode != SessionMode::Redact {
                 return Err(Error::Unsupported {
@@ -883,13 +948,14 @@ pub(crate) fn regions_edit_session_with<'a>(
             let a = a
                 .as_array()
                 .ok_or_else(|| Error::Structure("/Annots is not an array".into()))?;
-            let mut kept = Vec::new();
+            // First pass: each annotation, and whether it meets a rect.
+            let mut entries: Vec<(Option<IndirectRef>, Dict, bool)> = Vec::with_capacity(a.len());
             for (i, item) in a.iter().enumerate() {
                 let annot = doc.deref(item)?;
                 let d = annot
                     .as_dict()
-                    .ok_or_else(|| Error::Structure(format!("/Annots[{i}] is not a dictionary")))?;
-                let link = d.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Link");
+                    .ok_or_else(|| Error::Structure(format!("/Annots[{i}] is not a dictionary")))?
+                    .clone();
                 // NoZoom / NoRotate (§12.5.3) draw the appearance away
                 // from /Rect on a rotated or zoomed page.
                 let flags = d
@@ -922,19 +988,113 @@ pub(crate) fn regions_edit_session_with<'a>(
                 let hit = validated
                     .iter()
                     .any(|v| x0 <= v.urx && x1 >= v.llx && y0 <= v.ury && y1 >= v.lly);
-                if hit && !link {
+                let r = match item {
+                    Object::Ref(r) => Some(*r),
+                    _ => None,
+                };
+                entries.push((r, d, hit));
+            }
+            // Second pass: what is removed. A link meeting a rect, and
+            // with `remove_annotations`, a markup annotation meeting
+            // one — then also what belongs to it on the page: its
+            // /Popup, the annotation a removed popup belongs to, and
+            // replies (/IRT) to a removed annotation, transitively.
+            let subtype = |d: &Dict| {
+                d.get(b"Subtype".as_slice())
+                    .and_then(|s| s.as_name())
+                    .map(|s| s.to_vec())
+                    .unwrap_or_default()
+            };
+            let mut removed = vec![false; entries.len()];
+            for (k, (_, d, hit)) in entries.iter().enumerate() {
+                if !*hit {
+                    continue;
+                }
+                let st = subtype(d);
+                if st == b"Link"
+                    || opts.remove_annotations && REMOVABLE_ANNOTS.contains(&st.as_slice())
+                {
+                    removed[k] = true;
+                } else {
                     return Err(Error::Unsupported {
                         feature: "redaction of an annotation other than a link meeting a rect",
-                        detail: format!("/Annots[{i}] — its content is not edited"),
+                        detail: format!(
+                            "/Annots[{k}] (/{}) — its content is not edited{}",
+                            String::from_utf8_lossy(&st),
+                            if REMOVABLE_ANNOTS.contains(&st.as_slice()) {
+                                "; RedactOptions::remove_annotations removes it whole"
+                            } else {
+                                ""
+                            }
+                        ),
                     });
                 }
-                if hit {
-                    links_removed += 1;
-                    if d.contains_key(b"StructParent".as_slice()) {
-                        tagged_links_removed += 1;
+            }
+            let refers = |d: &Dict, key: &[u8], to: Option<IndirectRef>| {
+                to.is_some() && matches!(d.get(key), Some(Object::Ref(r)) if Some(*r) == to)
+            };
+            loop {
+                let mut changed = false;
+                for k in 0..entries.len() {
+                    if removed[k] {
+                        continue;
                     }
-                } else {
+                    let (kr, kd, _) = &entries[k];
+                    let tied = entries.iter().zip(&removed).any(|((rr, rd, _), &gone)| {
+                        gone && (refers(rd, b"Popup", *kr)
+                            || refers(kd, b"Parent", *rr)
+                            || refers(kd, b"IRT", *rr)
+                            || refers(rd, b"Parent", *kr) && subtype(rd) == b"Popup")
+                    });
+                    if tied {
+                        let st = subtype(kd);
+                        if st != b"Link" && !REMOVABLE_ANNOTS.contains(&st.as_slice()) {
+                            return Err(Error::Unsupported {
+                                feature: "redaction of an annotation tied to a removed one",
+                                detail: format!(
+                                    "/Annots[{k}] (/{}) is its popup, parent or reply",
+                                    String::from_utf8_lossy(&st)
+                                ),
+                            });
+                        }
+                        removed[k] = true;
+                        changed = true;
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+            let mut kept = Vec::new();
+            for (k, item) in a.iter().enumerate() {
+                let (_, d, _) = &entries[k];
+                if !removed[k] {
                     kept.push(item.clone());
+                    continue;
+                }
+                if subtype(d) == b"Link" {
+                    links_removed += 1;
+                } else {
+                    annots_removed += 1;
+                    // Its appearance streams may not stay unless still
+                    // invoked (checked by digest on the output), and
+                    // its text is searched for elsewhere.
+                    for r in annotation_appearances(doc, d)? {
+                        if let Object::Stream { dict, data } = doc.resolve(r)? {
+                            original_digests
+                                .extend([sha256(&doc.decode_stream(&dict, &data)?), sha256(&data)]);
+                        }
+                    }
+                    for key in [b"Contents".as_slice(), b"T", b"RC", b"Subj"] {
+                        if let Some(Object::String(t)) =
+                            d.get(key).map(|o| doc.deref(o)).transpose()?
+                        {
+                            removed_text.push(crate::annot_text::text_string(&t));
+                        }
+                    }
+                }
+                if d.contains_key(b"StructParent".as_slice()) {
+                    tagged_links_removed += 1;
                 }
             }
             kept_annots = Some(kept);
@@ -1723,6 +1883,7 @@ pub(crate) fn regions_edit_session_with<'a>(
         paths_removed_total += paths_removed;
         paths_cut_total += paths_cut;
         links_removed_total += links_removed;
+        annots_removed_total += annots_removed;
         tagged_links_removed_total += tagged_links_removed;
         invocations_edited_total += (do_renames.len() - form_names.len() + images_in_forms) as u64;
         forms_edited_total += forms_copied;
@@ -1801,6 +1962,7 @@ pub(crate) fn regions_edit_session_with<'a>(
         removed_text,
         links_removed_total,
         tagged_links_removed_total,
+        annots_removed_total,
         paths_cut_total,
         forms_edited_total,
     })
