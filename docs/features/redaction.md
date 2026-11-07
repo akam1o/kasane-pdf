@@ -41,6 +41,8 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 | other annotations clear of every rect | kept as they are (their appearance is drawn into `/Rect`; without one, a reader draws it from its geometry, which must lie inside `/Rect`, and the border width is added to `/Rect` for the test); their text is still searched for `elsewhere` |
 | markup annotations meeting a rect, with `remove_annotations(true)` (CLI `--remove-annotations`) | refused by default. On request a Text, FreeText, Line, Square, Circle, Polygon, PolyLine, Highlight, Underline, Squiggly, StrikeOut, Caret, Stamp, Ink or Popup annotation whose `/Rect` meets a rect is removed **whole** — its appearance and text go even where they lie outside the rect (`annotations_removed`) — with its popup, the annotation a removed popup belongs to, and replies to it (`/IRT`), transitively. Its appearance streams and the forms and images they draw may not stay unless still drawn (checked by digest); its `/Contents`, `/T`, `/RC` (string or stream), `/Subj` are searched for in `elsewhere`. A removed link or annotation may not stay in the output by any route — an action, another page's annotation or reply, a kept annotation's popup, the form, an outline, the structure tree: verification compares every dictionary written with each removed one (by content, references aside) and fails on a match. Widgets, signatures, media, file attachments and other subtypes meeting a rect stay refused, as does one the structure tree refers to unless the tree is removed |
 | shading patterns as fill or stroke colour | a pattern paints only inside what it fills, so the path or glyph is removed or cut as with any colour; tiling patterns (whose cell is content of its own) and shading patterns with their own `/ExtGState` (which may carry a soft mask) are refused |
+| optional content (`BDC /OC`, a form's or image's `/OC`) | taken as drawn whether a viewer shows it or not: what meets a rect is removed — hidden content too — and the rest kept |
+| shadings (`sh`) | a shading fills the clip: kept under a clip that is exactly a rectangle meeting no rect, refused otherwise |
 | ExtGState (`gs`) | stroke parameters (`/LW`, `/LC`, `/LJ`, `/ML`, `/D`) are applied; colour and compositing parameters (alpha, blend mode, overprint, transfer, halftone, `/SMask /None` …) are passed through, since removal and cutting are by geometry. A soft mask, `/Font` and stroke adjustment (`/SA true`, device-dependent stroke edges) are refused |
 | Form XObjects, nested up to 16 deep (transparency groups included) | their text, paths and images inside the rects are removed, cut or zeroed in copies along the invocation chain — each copy drawn by that one invocation only (`forms_edited`), its `/Resources` naming only what it draws. Other invocations and pages keep the originals; an original still drawn is reported in `elsewhere` (`Removed::Form` / `Removed::Image`); otherwise it is not carried. A form cycle is refused |
 | document `/Info`, catalog XMP `/Metadata` | always removed |
@@ -115,8 +117,8 @@ On an edited page: annotations other than links meeting a rect,
 NoZoom, NoRotate or `/FixedPrint` annotations and Text annotations
 (whose icon behaves as NoZoom and NoRotate) not removed, forms nested more
 than 16 deep or cyclic, inline images meeting a rect
-(or whose data length is not fixed by their dictionary), `sh`,
-ExtGState with a soft mask, `/Font` or `/SA true`, optional content and `/ActualText` marked content,
+(or whose data length is not fixed by their dictionary), `sh` that may paint inside a rect,
+ExtGState with a soft mask, `/Font` or `/SA true`, `/ActualText` marked content,
 text in any mode but `Tr 0` (invisible OCR text, stroked, clipping),
 non-embedded fonts (glyph extent unknown; except under a clip that is
 exactly a rectangle meeting no rect), Type 3 fonts (a CharProc

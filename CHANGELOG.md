@@ -58,6 +58,10 @@ versions follow [Semantic Versioning](https://semver.org/).
   original subpath (odd arrays written out in full), so the dashes
   outside the rect are unchanged; a translucent or blended dashed
   stroke cut into pieces is refused.
+- `redact` takes optional content as drawn (`BDC /OC`, a form's or an
+  image's `/OC`): what meets a rect is removed whether a viewer shows it
+  or not, the rest is kept. A shading (`sh`) is kept under a clip that
+  is exactly a rectangle meeting no rect.
 - `redact`: text in a non-embedded font is refused (a reader draws it
   with a font of its own choosing, so where its glyphs reach is not
   known), except under a clip that is exactly a rectangle meeting no

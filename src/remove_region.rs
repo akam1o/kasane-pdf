@@ -1375,10 +1375,12 @@ pub(crate) fn regions_edit_session_with<'a>(
                 detail: u.reason.clone(),
             });
         }
+        // (Redaction leaves `sh` to the walker, which accepts one only
+        // under a rectangular clip meeting no rect.)
         if let Some((i, _)) = ops
             .iter()
             .enumerate()
-            .find(|(_, o)| matches!(o, Operation::Shading(_)))
+            .find(|(_, o)| matches!(o, Operation::Shading(_)) && mode == SessionMode::Edit)
         {
             return Err(Error::Unsupported {
                 feature: "region removal on a page with sh",

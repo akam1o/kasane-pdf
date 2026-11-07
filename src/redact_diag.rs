@@ -1505,6 +1505,9 @@ impl<'a> DiagWalker<'a> {
                     detail: "inline image data cannot be addressed by name for removal".into(),
                 })?;
             }
+            // Redaction: a shading fills the clip; under a clip that is
+            // exactly a rectangle meeting no rect it paints none of them.
+            O::Shading(_) if self.redaction_mode && self.clipped_away_from_rects() => {}
             O::Shading(n) => {
                 self.push_blocker(Blocker {
                     site: Some(self.site()),
@@ -2130,6 +2133,10 @@ impl<'a> DiagWalker<'a> {
                 if key == b"SMaskInData" && v.as_i64() == Some(0) {
                     continue;
                 }
+                // Redaction takes optional content as drawn.
+                if key == b"OC" && self.redaction_mode {
+                    continue;
+                }
                 if key == b"ImageMask" && v.as_bool() == Some(false) {
                     continue;
                 }
@@ -2246,7 +2253,10 @@ impl<'a> DiagWalker<'a> {
         }
         // Blocking attributes that change what's painted.
         for key in [b"Group".as_slice(), b"OC".as_slice(), b"Ref".as_slice()] {
-            if key == b"Group" && self.redaction_mode {
+            // Redaction: a group composites the rest the same way; an
+            // optional content form is taken as drawn (see
+            // `marked_content`).
+            if (key == b"Group" || key == b"OC") && self.redaction_mode {
                 continue;
             }
             if dict.contains_key(key) {
@@ -2450,7 +2460,10 @@ impl<'a> DiagWalker<'a> {
         let dict = resolved.as_dict().ok_or_else(|| {
             Error::Structure("marked-content properties is not a dictionary".into())
         })?;
-        if tag == b"OC" {
+        // Redaction treats content in an optional content group as
+        // drawn, whether a viewer shows it or not: what meets a rect is
+        // removed (hidden content too), the rest kept.
+        if tag == b"OC" && !self.redaction_mode {
             match dict.get(b"Type".as_slice()).and_then(|t| t.as_name()) {
                 Some(b"OCG") | Some(b"OCMD") => self.push_blocker(Blocker {
                     site: Some(self.site()),

@@ -2331,3 +2331,53 @@ fn removed_annotation_prints_survive_normalisation_and_depth() {
     );
     assert!(unsupported(annots_run(&pdf)).contains("refers to"));
 }
+
+// Optional content: redaction takes it as drawn — what meets a rect is
+// removed whether a viewer shows it or not.
+
+#[test]
+fn optional_content_is_taken_as_drawn() {
+    let ocg = (40, b"<< /Type /OCG /Name (Hidden layer) >>".to_vec());
+    let pdf = one_page(
+        "/OC /L BDC BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET EMC \
+         /OC /L BDC BT /F1 12 Tf 10 20 Td (PUBLICWORD) Tj ET EMC",
+        "/Resources << /Font << /F1 20 0 R >> /Properties << /L 40 0 R >> >>",
+        "/OCProperties << /OCGs [40 0 R] /D << /OFF [40 0 R] >> >>",
+        vec![ocg.clone()],
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(
+        r.codes_removed, 10,
+        "hidden content in the rect is removed too"
+    );
+    assert!(!contains(&r.output, b"SECRETTEXT"));
+    assert!(contains(&r.output, b"PUBLICWORD"));
+    // An optional content form is edited like any form.
+    let form = form_page("/Fm Do", "/OC 40 0 R", SECRET, vec![ocg]);
+    let r = run(&form, vec![RECT]).unwrap();
+    assert_eq!(r.codes_removed, 10);
+}
+
+/// A shading fills the clip: accepted under a rectangular clip clear of
+/// the rects, refused otherwise.
+#[test]
+fn a_shading_clipped_away_from_the_rects_is_kept() {
+    let sh = "/Shading << /Sh << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 200 0] \
+              /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >> >> >>";
+    let mut objs = font_objs();
+    objs.push((99, b"<< >>".to_vec()));
+    let ok = doc_with(
+        &format!("/Font << /F1 20 0 R >> {sh}"),
+        &[format!("{SECRET} q 0 0 200 40 re W n /Sh sh Q").as_bytes()],
+        objs.clone(),
+    );
+    let r = run(&ok, vec![RECT]).unwrap();
+    assert_eq!(r.codes_removed, 10);
+    assert_ne!(at(&r.output, 100, 20), 255, "the shading is kept");
+    let refused = doc_with(
+        &format!("/Font << /F1 20 0 R >> {sh}"),
+        &[format!("{SECRET} q 0 0 200 100 re W n /Sh sh Q").as_bytes()],
+        objs,
+    );
+    assert!(unsupported(run(&refused, vec![RECT])).contains("shading"));
+}
