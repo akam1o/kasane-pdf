@@ -107,7 +107,8 @@ CASES = [
     ("structure-alt-text-removed", build(page(b"/P <</MCID 0>> BDC " + TEXT + b" EMC", page_extra=b"/StructParents 0",
         cat=b"/StructTreeRoot 8 0 R", more={8: b"<< /Type /StructTreeRoot /K 9 0 R >>",
         9: b"<< /Type /StructElem /S /P /P 8 0 R /Pg 3 0 R /K 0 /ActualText (SECRETTEXT) >>"})), ["--remove-structure-tree"], "ok"),
-    ("invisible-ocr-text", build(page(b"BT /F1 12 Tf 3 Tr 50 100 Td (SECRETTEXT) Tj ET")), [], "ok"),
+    ("invisible-ocr-text", build(page(b"BT /F1 12 Tf 3 Tr 50 100 Td (SECRETTEXT) Tj ET "
+                                       b"BT /F1 12 Tf 3 Tr 10 20 Td (PUBLICWORD) Tj ET")), [], "ok"),
     ("form-xobject", build(page(b"/Fm Do", res=b"/XObject << /Fm 8 0 R >>", more={
         8: stream(b"/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 5 0 R >> >>", TEXT)})), [], "ok"),
     ("form-in-form", build(page(b"/Fm Do", res=b"/XObject << /Fm 8 0 R >>", more={
