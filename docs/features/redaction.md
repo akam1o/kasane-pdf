@@ -84,8 +84,10 @@ non-embedded fonts (glyph extent unknown), Type 3 fonts (a CharProc
 may paint anywhere), vertical writing, images with masks, soft masks,
 `/Alternates` or OPI, `/Decode`, other colour spaces or filter chains, rotated or
 sheared images, `/UserUnit` ≠ 1, a path crossing a rect's edge, a path
-that also clips, an operator other than path construction inside a
-path object (§8.2), a NoZoom or NoRotate link. Anywhere: an edited image drawn unredacted, an
+that also clips, content meeting a rect under a clip that is not an
+axis-aligned rectangle (whether it shows there is not decided), an
+operator other than path construction inside a path object (§8.2), a
+NoZoom or NoRotate link. Anywhere: an edited image drawn unredacted, an
 undecidable resource use, a structure tree with alternate text (by
 default). Rewrite refusals (signed or encrypted documents, …) apply.
 
@@ -106,6 +108,15 @@ information elsewhere is not removed:
 Neither is a guarantee of absence: text inside a font program, in an
 image's pixels or encoded differently is not found. Reports carry no
 document text in `Debug` output.
+
+## Known limits of exactness
+
+- Image samples are selected by mapping the rect into image space in
+  floating point; a rect edge within about 1e-16 of a sample boundary
+  may leave that boundary sample (review P2, accepted: the overlap is
+  below any rendering resolution).
+- Glyphs are removed whole: a glyph straddling a rect's edge goes
+  entirely, including its part outside.
 
 ## Not covered
 

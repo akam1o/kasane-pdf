@@ -668,3 +668,97 @@ fn numbers_survive_the_rewrite() {
     assert_eq!(pixel(&pdf, 145, 80), 0);
     assert_eq!(pixel(&r.output, 145, 80), 0);
 }
+
+// Third independent review (P0, fixed).
+
+/// A clip that is not a rectangle: its bounds meeting a rect does not
+/// mean anything shows there. Refused rather than guessed.
+#[test]
+fn non_rectangular_clip_is_refused() {
+    let pdf = one_page(
+        "q 0 0 200 200 re 50 100 15 40 re W* n BT /F1 40 Tf 50 100 Td (M) Tj ET Q",
+        "",
+        "",
+        vec![],
+    );
+    let e = unsupported(run(&pdf, vec![(50.0, 100.0, 60.0, 140.0)]));
+    assert!(e.contains("not a rectangle"), "{e}");
+    // Rectangular clips, restored by Q and set under changed CTMs,
+    // stay exact.
+    let ok = one_page(
+        "q 2 0 0 2 0 0 cm 0 0 20 20 re W n Q q 1 0 0 1 50 50 cm 0 0 100 100 re W n \
+         0 0 50 50 re W n BT /F1 12 Tf 10 10 Td (SECRET) Tj ET Q",
+        "",
+        "",
+        vec![],
+    );
+    assert_eq!(
+        run(&ok, vec![(50.0, 50.0, 100.0, 100.0)])
+            .unwrap()
+            .codes_removed,
+        6
+    );
+}
+
+/// In a CMap with one- and two-byte codes, `Tw` applies to the
+/// one-byte code 32 only, not to `<0020>` (§9.3.3): the second glyph is
+/// placed without word spacing — where the renderer draws it.
+#[test]
+fn word_spacing_skips_two_byte_space_codes() {
+    let cmap = b"begincmap 2 begincodespacerange <20> <7F> <0000> <00FF> endcodespacerange \
+                 2 begincidchar <0020> 32 <0021> 33 endcidchar endcmap";
+    let ff = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/KasaneCIDTest.ttf"
+    ))
+    .unwrap();
+    let mut map = vec![0u8; 68];
+    map[65] = 1;
+    map[67] = 2;
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (
+            4,
+            stream_obj("", b"BT /F1 20 Tf 10 Tw 50 100 Td <00200021> Tj ET"),
+        ),
+        (
+            5,
+            b"<< /Type /Font /Subtype /Type0 /BaseFont /KasaneCIDTest /Encoding 8 0 R \
+              /DescendantFonts [6 0 R] >>"
+                .to_vec(),
+        ),
+        (
+            6,
+            b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /KasaneCIDTest \
+              /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+              /FontDescriptor 7 0 R /DW 600 /CIDToGIDMap 9 0 R >>"
+                .to_vec(),
+        ),
+        (
+            7,
+            b"<< /Type /FontDescriptor /FontName /KasaneCIDTest /Flags 4 \
+              /FontBBox [0 -200 600 800] /ItalicAngle 0 /Ascent 800 /Descent -200 \
+              /CapHeight 700 /StemV 80 /FontFile2 10 0 R >>"
+                .to_vec(),
+        ),
+        (
+            8,
+            stream_obj(
+                "/Type /CMap /CMapName /Mixed /CIDSystemInfo << /Registry (Adobe) \
+                 /Ordering (Identity) /Supplement 0 >>",
+                cmap,
+            ),
+        ),
+        (9, stream_obj("", &map)),
+        (10, stream_obj(&format!("/Length1 {}", ff.len()), &ff)),
+    ]);
+    let r = run(&pdf, vec![(61.0, 99.0, 70.0, 116.0)]).unwrap();
+    assert_eq!(r.codes_removed, 1);
+}

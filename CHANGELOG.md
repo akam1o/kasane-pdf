@@ -54,6 +54,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   values such as `.00100000005`.
 
 ### Fixed
+- Word spacing (`Tw`) no longer applies to a two-byte code `<0020>` in
+  a CMap that also has one-byte codes (§9.3.3: single-byte code 32
+  only) — in rendering, extraction and the editors.
 - Content rewritten by the region, text and image editors (and
   `redact`) keeps its exact numbers and names: numbers were rounded to
   four decimals (`.00014 cm` became `.0001`, moving content outside

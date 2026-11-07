@@ -730,6 +730,10 @@ pub(crate) struct DiagGs {
     /// reported bounds stay the *whole* object (a conservative
     /// candidate, never a "safe outside" verdict).
     clip: Option<(f64, f64, f64, f64)>,
+    /// `true` while every clip so far is an axis-aligned rectangle in
+    /// page space, so `clip` is the clip region itself, not just its
+    /// bounds.
+    clip_exact: bool,
     /// Stroke state — saved/restored by `q`/`Q`.
     stroke: StrokeState,
     /// Text state — `Tc`/`Tw`/`Tz`/`TL`/`Ts`/`Tr`/`Tf`/`Tmode` are
@@ -766,6 +770,12 @@ pub(crate) struct DiagWalker<'a> {
     path_bounds: Option<(f64, f64, f64, f64)>,
     path_has_point: bool,
     pending_clip: Option<()>,
+    /// The path being built is one `re` under an axis-aligned CTM.
+    path_single_rect: bool,
+    /// Targets that meet a rect only through the *bounds* of a clip
+    /// that is not a rectangle: whether they show inside the rect is
+    /// not decided. `redact` refuses them.
+    pub(crate) clip_undecided_hits: u64,
     /// Position of the next shown character inside the current
     /// `Tj`/`TJ` string — reset per string operand so `Site::code_index`
     /// distinguishes 'A' from 'B' from 'C' in one `Tj`.
@@ -910,6 +920,7 @@ impl<'a> DiagWalker<'a> {
             gs: DiagGs {
                 ctm: crate::matrix::Matrix::IDENTITY,
                 clip: None,
+                clip_exact: true,
                 stroke: StrokeState {
                     width: 1.0,
                     cap: 0,
@@ -931,6 +942,8 @@ impl<'a> DiagWalker<'a> {
             path_bounds: None,
             path_has_point: false,
             pending_clip: None,
+            path_single_rect: false,
+            clip_undecided_hits: 0,
             code_index: 0,
             text_tm: crate::matrix::Matrix::IDENTITY,
             text_tlm: crate::matrix::Matrix::IDENTITY,
@@ -1133,10 +1146,12 @@ impl<'a> DiagWalker<'a> {
             | O::SetCmykStroke(..)
             | O::SetCmykFill(..) => {}
             O::MoveTo(x, y) => {
+                self.path_single_rect = false;
                 self.path_point(*x, *y);
                 self.path_has_point = true;
             }
             O::LineTo(x, y) => {
+                self.path_single_rect = false;
                 if !self.path_has_point {
                     return Err(Error::Structure(
                         "l without a preceding m/re (no current point)".into(),
@@ -1145,6 +1160,7 @@ impl<'a> DiagWalker<'a> {
                 self.path_point(*x, *y);
             }
             O::CurveTo(x1, y1, x2, y2, x3, y3) => {
+                self.path_single_rect = false;
                 if !self.path_has_point {
                     return Err(Error::Structure(
                         "c without a preceding m/re (no current point)".into(),
@@ -1173,6 +1189,9 @@ impl<'a> DiagWalker<'a> {
                 self.path_point(*x2, *y2);
             }
             O::Rectangle(x, y, w, h) => {
+                let m = self.gs.ctm;
+                self.path_single_rect = self.path_bounds.is_none()
+                    && ((m.b == 0.0 && m.c == 0.0) || (m.a == 0.0 && m.d == 0.0));
                 // All four corners: under a rotated or skewed CTM two
                 // opposite corners do not bound the rectangle.
                 self.path_point(*x, *y);
@@ -1366,7 +1385,11 @@ impl<'a> DiagWalker<'a> {
     /// rect). Content clipped away from every rect is not a hit — its
     /// visible part is outside them, and removing it would damage
     /// content outside the rects.
-    fn visible_hits(&self, b: &(f64, f64, f64, f64)) -> Vec<usize> {
+    ///
+    /// When the clip is not a rectangle its bounds can still meet a
+    /// rect where nothing shows; such a hit is counted in
+    /// `clip_undecided_hits`.
+    fn visible_hits(&mut self, b: &(f64, f64, f64, f64)) -> Vec<usize> {
         match self.gs.clip {
             None => hits_for(b, self.rects),
             Some(c) => {
@@ -1374,7 +1397,11 @@ impl<'a> DiagWalker<'a> {
                 if v.0 > v.2 || v.1 > v.3 {
                     Vec::new()
                 } else {
-                    hits_for(&v, self.rects)
+                    let hits = hits_for(&v, self.rects);
+                    if !hits.is_empty() && !self.gs.clip_exact {
+                        self.clip_undecided_hits += 1;
+                    }
+                    hits
                 }
             }
         }
@@ -1468,6 +1495,9 @@ impl<'a> DiagWalker<'a> {
         }
         // Install a pending clip as the *path's* bounds (approximation).
         if self.pending_clip.take().is_some() {
+            if !self.path_single_rect {
+                self.gs.clip_exact = false;
+            }
             if let Some(b) = self.path_bounds {
                 self.gs.clip = Some(match self.gs.clip {
                     None => b,
@@ -1477,6 +1507,7 @@ impl<'a> DiagWalker<'a> {
         }
         self.path_bounds = None;
         self.path_has_point = false;
+        self.path_single_rect = false;
         Ok(())
     }
 
@@ -2123,6 +2154,12 @@ impl<'a> DiagWalker<'a> {
         self.gs_stack.push(self.gs.clone());
         let saved_uncertain = self.uncertain_state;
         self.gs.ctm = self.gs.ctm.concat(form_matrix);
+        {
+            let m = self.gs.ctm;
+            if !((m.b == 0.0 && m.c == 0.0) || (m.a == 0.0 && m.d == 0.0)) {
+                self.gs.clip_exact = false;
+            }
+        }
         // The form's BBox is its clip in *form space* — record it as
         // the current clip rect mapped to page space.
         self.gs.clip = Some(match self.gs.clip {

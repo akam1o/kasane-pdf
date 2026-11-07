@@ -2387,7 +2387,12 @@ impl Font {
     pub(crate) fn is_space_code(&self, code: u32) -> bool {
         match self {
             Font::Simple(f) => f.is_space_code(code),
-            Font::Composite(f) => f.is_space_code(unpack_code(code).0),
+            // The single-byte code 32 only: a two-byte <0020> in a
+            // mixed-width CMap is not a space (§9.3.3).
+            Font::Composite(f) => {
+                let (c, len) = unpack_code(code);
+                len == 1 && f.is_space_code(c)
+            }
             Font::Type1(f) => f.is_space_code(code),
             Font::Type3(f) => f.is_space_code(code),
         }

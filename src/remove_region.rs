@@ -1018,6 +1018,17 @@ pub(crate) fn regions_edit_session<'a>(
             }
         }
 
+        if mode == SessionMode::Redact && walker.clip_undecided_hits > 0 {
+            return Err(Error::Unsupported {
+                feature: "redaction under a clip that is not a rectangle",
+                detail: format!(
+                    "{} occurrence(s) meet a rect only through the clip's bounds; \
+                     whether they show inside it is not decided",
+                    walker.clip_undecided_hits
+                ),
+            });
+        }
+
         // ---- redaction: painted paths inside the rects ---------------
         // A path entirely inside one rect is removed with its
         // construction ops; one that crosses a rect's edge is refused
