@@ -1408,12 +1408,15 @@ pub(crate) fn regions_edit_session_with<'a>(
                     })
                 }
                 TargetKind::Text => {
+                    // Redaction removes codes by where they stand: fill,
+                    // stroke, fill + stroke and invisible text (`Tr` 0–3)
+                    // alike; clipping modes are blockers of the walk.
                     if let TargetDetail::Text { render_mode, .. } = &t.detail {
-                        if *render_mode != 0u8 {
+                        if *render_mode > 3u8 {
                             return Err(Error::Unsupported {
                                 feature: "region removal on a page with non-fill text",
                                 detail: format!(
-                                    "Tr {render_mode} text is out of scope — only Tr 0 fill \
+                                    "Tr {render_mode} text is out of scope — Tr 0–3 \
                                      is rewritten (op #{}, code #{:?})",
                                     t.site.op_index, t.site.code_index
                                 ),

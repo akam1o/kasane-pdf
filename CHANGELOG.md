@@ -27,6 +27,16 @@ versions follow [Semantic Versioning](https://semver.org/).
   by subdivision into exact sub-curves, keeping each whose control
   points' bounds grown by the stroke's reach clear the rects. Curved
   fills and dashed curves cut at a rect stay refused.
+- `redact` removes stroked, fill-and-stroke and invisible text
+  (`Tr` 1–3, OCR layers included) instead of refusing it: invisible
+  codes by a generous box around their advance united with their
+  outline, stroked ones by their outline grown by the stroke. Clipping
+  text modes stay refused.
+
+### Fixed
+- `diagnose_redaction` and the editors grew stroked text by the stroke's
+  reach under the text matrix (font size included) instead of the CTM,
+  reporting it far larger than drawn.
 
 ## [0.6.0] - 2026-11-07
 

@@ -359,7 +359,14 @@ pub(crate) fn cut_path(
                 // removed.
                 let reach = half * std::f64::consts::SQRT_2 * max_stretch(&m);
                 let cut_boxes: Vec<Rect> = rects.iter().map(|r| grow(r, 2.0 * SLACK)).collect();
-                let mut segs = s.segs.clone();
+                // A segment of zero length draws nothing and readers
+                // skip it: the joins are between the segments around it.
+                let mut segs: Vec<USeg> = s
+                    .segs
+                    .iter()
+                    .copied()
+                    .filter(|g| g.points().iter().any(|q| *q != g.start()))
+                    .collect();
                 let start = s.upts[0];
                 let last = segs.last().map(|g| g.end()).unwrap_or(start);
                 if s.closed && last != start {
@@ -562,10 +569,13 @@ pub(crate) fn cut_path(
                     // the cuts were pulled back by the cap's square, so a
                     // square cap ends the band exactly where the rect
                     // begins (a round one would leave its corners out).
-                    // Original ends keep their round caps.
-                    let original_end =
-                        !s.closed && (p[0] == pts[0] || p[p.len() - 1] == pts[n - 1]);
-                    let square = st.cap == 1 && st.dash.is_none() && !original_end;
+                    // Only when both ends are cuts strictly inside a
+                    // segment: an original end keeps its round cap, and a
+                    // piece starting or ending at an original vertex (the
+                    // segment beyond it cut away) would put a square cap
+                    // where the original had a join.
+                    let at_vertex = pts.contains(&p[0]) || pts.contains(&p[p.len() - 1]);
+                    let square = st.cap == 1 && st.dash.is_none() && !at_vertex;
                     out.push((p, false, at, square));
                 }
             }

@@ -449,13 +449,6 @@ fn refusals() {
         )],
     );
     assert!(unsupported(run(&annots, vec![RECT])).contains("other than a link meeting a rect"));
-    let invisible = one_page(
-        "BT /F1 12 Tf 3 Tr 50 100 Td (SECRETTEXT) Tj ET",
-        "",
-        "",
-        vec![],
-    );
-    assert!(unsupported(run(&invisible, vec![RECT])).contains("non-fill text"));
     let clip_text = one_page(
         "BT /F1 12 Tf 7 Tr 50 100 Td (SECRETTEXT) Tj ET",
         "",
@@ -2717,4 +2710,81 @@ fn curved_fills_and_dashed_curves_are_refused() {
         vec![],
     );
     assert!(unsupported(run(&dashed, vec![(85.0, 80.0, 115.0, 175.0)])).contains("dashed curve"));
+}
+
+/// Invisible (OCR) and stroked text are removed by where they stand —
+/// invisible codes by a generous box around their advance, stroked
+/// ones by their outline grown by the stroke — the rest kept.
+#[test]
+fn invisible_and_stroked_text_are_redacted() {
+    for mode in [3, 1, 2] {
+        let pdf = one_page(
+            &format!(
+                "BT /F1 12 Tf {mode} Tr 50 100 Td (SECRETTEXT) Tj ET \
+                 BT /F1 12 Tf {mode} Tr 10 20 Td (PUBLICWORD) Tj ET"
+            ),
+            "",
+            "",
+            vec![],
+        );
+        let r = run(&pdf, vec![RECT]).unwrap();
+        assert_eq!(r.codes_removed, 10, "Tr {mode}");
+        let doc = Document::from_bytes(&r.output).unwrap();
+        let t = extract_text(
+            &doc,
+            &doc.pages()[0],
+            &TextOptions::default().with_hidden_content(true),
+        )
+        .unwrap();
+        let text: String = t.chars.iter().filter_map(|c| c.unicode.clone()).collect();
+        assert!(
+            !text.contains("SECRET") && text.contains("PUBLICWORD"),
+            "Tr {mode}: {text}"
+        );
+    }
+}
+
+// Review of the cap and curve cuts (fixed).
+
+/// A zero-length segment does not hide the join of the segments around
+/// it.
+#[test]
+fn zero_length_curve_segments_do_not_hide_joins() {
+    for c in [
+        "10 w 0 j 20 M 50 50 m 100 50 l 100 50 100 50 100 50 c 50 60 l S",
+        "10 w 0 j 20 M 50 50 m 100 50 l 100 50 l 50 60 0 0 50 60 c S",
+    ] {
+        let pdf = one_page(c, "", "", vec![]);
+        let e = unsupported(run(&pdf, vec![(125.0, 44.0, 130.0, 46.0)]));
+        assert!(e.contains("join"), "{c}: {e}");
+    }
+}
+
+/// A piece starting at an original corner keeps round caps: a square
+/// cap there would paint where the original had a join.
+#[test]
+fn square_caps_only_between_cuts_inside_segments() {
+    let pdf = one_page(
+        "10 w 1 J 1 j 50 50 m 100 50 l 150 100 l 250 100 l S",
+        "",
+        "",
+        vec![],
+    );
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let r = redact(
+        &doc,
+        &[(
+            0,
+            vec![(104.0, 45.0, 105.0, 46.0), (180.0, 90.0, 190.0, 110.0)],
+        )],
+        &RedactOptions::new(),
+    )
+    .unwrap();
+    let ops = Document::from_bytes(&r.output).unwrap();
+    let ops = ops.page_operations(&ops.pages()[0]).unwrap();
+    assert!(
+        !ops.iter()
+            .any(|o| matches!(o, kasane_pdf::Operation::SetLineCap(2))),
+        "no square caps"
+    );
 }

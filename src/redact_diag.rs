@@ -1962,8 +1962,32 @@ impl<'a> DiagWalker<'a> {
             // determined by the width table, not the bounds.
             self.advance_glyph(font, code, font_size, h_scale, char_spacing, word_spacing);
             return Ok(());
+        } else if render_mode == 3 && self.redaction_mode {
+            // Invisible text (OCR layers) paints nothing; what places it
+            // is where text selection and extraction find it. Its box is
+            // the outline's (or cell's) united with a generous cell: the
+            // advance widened by 0.15 em each side, 0.5 em below the
+            // baseline to 1.2 em above.
+            let w = font.width(code) / 1000.0;
+            let c = [
+                trm.transform(w.min(0.0) - 0.15, -0.5),
+                trm.transform(w.max(0.0) + 0.15, -0.5),
+                trm.transform(w.min(0.0) - 0.15, 1.2),
+                trm.transform(w.max(0.0) + 0.15, 1.2),
+            ];
+            let mut b = bounds;
+            for p in c {
+                b.0 = b.0.min(p.0);
+                b.1 = b.1.min(p.1);
+                b.2 = b.2.max(p.0);
+                b.3 = b.3.max(p.1);
+            }
+            (b, bounds_kind)
         } else if is_stroked_text {
-            let inflate = stroke_reach(&self.gs.stroke) * ctm_max_scale(&trm);
+            // The line width is in user space (§9.4.4 / §8.4.3.2), so
+            // the stroke reaches past the outline by its reach under the
+            // CTM, not under the text matrix (which scales by the size).
+            let inflate = stroke_reach(&self.gs.stroke) * ctm_max_scale(&self.gs.ctm);
             let mut b = bounds;
             b.0 -= inflate;
             b.1 -= inflate;
