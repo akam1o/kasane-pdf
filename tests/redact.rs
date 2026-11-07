@@ -2451,3 +2451,82 @@ fn afm_widths_follow_the_name() {
         t.chars[4].origin.0
     );
 }
+
+// Non-embedded Standard 14 fonts, with embed_substitute_fonts: the
+// substitute is embedded first, so every reader draws exactly its
+// glyphs and redaction decides by their ink.
+
+fn embed_run(pdf: &[u8], rects: Vec<(f64, f64, f64, f64)>) -> Result<kasane_pdf::Redaction, Error> {
+    let doc = Document::from_bytes(pdf).unwrap();
+    redact(
+        &doc,
+        &[(0, rects)],
+        &RedactOptions::new().embed_substitute_fonts(true),
+    )
+}
+
+#[test]
+fn non_embedded_standard_14_text_is_redacted_after_embedding() {
+    for base in ["Helvetica", "Times-Roman", "Courier-Bold", "Arial,Italic"] {
+        let pdf = doc_with(
+            "/Font << /H 50 0 R >>",
+            &[b"BT /H 12 Tf 20 100 Td (PUBLIC SECRETWORD MORE) Tj ET BT /H 12 Tf 20 40 Td [(KEEP) -250 (LINE)] TJ ET"],
+            vec![(
+                50,
+                format!("<< /Type /Font /Subtype /Type1 /BaseFont /{base} /Encoding /WinAnsiEncoding >>")
+                    .into_bytes(),
+            )],
+        );
+        assert!(
+            unsupported(run(&pdf, vec![RECT])).contains("non-embedded"),
+            "{base}"
+        );
+        // Locate SECRETWORD from the input's extracted positions.
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
+        let x0 = t.chars[7].origin.0;
+        let x1 = t.chars[17].origin.0;
+        let rect = (x0 + 0.5, 95.0, x1 - 0.5, 112.0);
+        let r = embed_run(&pdf, vec![rect]).unwrap();
+        assert_eq!(r.fonts_embedded, 1, "{base}");
+        // SECRETWORD, and a space whose (empty) cell meets the rect.
+        assert!(
+            (10..=12).contains(&r.codes_removed),
+            "{base}: {}",
+            r.codes_removed
+        );
+        let text = page_text(&r.output, 0);
+        assert!(
+            !text.contains("SECRET") && text.contains("PUBLIC") && text.contains("MORE"),
+            "{base}: {text}"
+        );
+        assert!(!contains(&r.output, b"SECRETWORD"));
+        // Outside the rect the page draws exactly what this crate drew
+        // for the non-embedded font (same glyphs, same positions).
+        let (a, b) = (reds(&pdf), reds(&r.output));
+        for y in 0..200u32 {
+            for x in 0..200u32 {
+                let (xf, yf) = (x as f64 + 0.5, 199.5 - y as f64);
+                if xf < rect.0 - 2.0 || xf > rect.2 + 2.0 || yf < rect.1 - 2.0 || yf > rect.3 + 2.0
+                {
+                    let i = (y * 200 + x) as usize;
+                    assert_eq!(a[i], b[i], "{base}: ({x}, {y})");
+                }
+            }
+        }
+    }
+}
+
+/// Fonts this mode does not embed stay refused.
+#[test]
+fn fonts_not_embedded_by_the_option_stay_refused() {
+    let pdf = doc_with(
+        "/Font << /H 50 0 R >>",
+        &[b"BT /H 12 Tf 50 100 Td (SECRETTEXT) Tj ET"],
+        vec![(
+            50,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>".to_vec(),
+        )],
+    );
+    assert!(embed_run(&pdf, vec![RECT]).is_err());
+}

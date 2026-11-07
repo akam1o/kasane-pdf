@@ -53,6 +53,7 @@ pub struct RedactOptions {
     remove_structure_tree: bool,
     refuse_copies_elsewhere: bool,
     remove_annotations: bool,
+    embed_substitute_fonts: bool,
 }
 
 impl RedactOptions {
@@ -105,12 +106,36 @@ impl RedactOptions {
         self.remove_annotations = remove;
         self
     }
+
+    /// Before redacting, replace each non-embedded Latin Standard 14
+    /// font (Times, Helvetica, Courier and their metric-compatible
+    /// aliases such as Arial) — document-wide — by a TrueType font
+    /// embedding the bundled substitute (Liberation), with every code's
+    /// glyph name and advance written out, so that every reader draws
+    /// exactly the embedded glyphs at the same positions. The glyphs'
+    /// extent is then known and such text is redacted like any embedded
+    /// font's; without this option it is refused, because a reader
+    /// draws it with a font of its own choosing.
+    ///
+    /// The output then shows Liberation's glyph shapes wherever those
+    /// fonts are used (metric-compatible: the same advances, slightly
+    /// different shapes) and is larger by the embedded programs (about
+    /// 0.3–0.4 MB per face). Symbol, ZapfDingbats, other non-embedded
+    /// fonts and CID fonts are not embedded and stay refused.
+    /// [`Redaction::fonts_embedded`] counts the fonts replaced.
+    pub fn embed_substitute_fonts(mut self, embed: bool) -> Self {
+        self.embed_substitute_fonts = embed;
+        self
+    }
 }
 
 /// The result of [`redact`]: a verified single-revision PDF.
 pub struct Redaction {
     /// The redacted PDF.
     pub output: Vec<u8>,
+    /// Non-embedded fonts replaced by their embedded substitutes before
+    /// redacting ([`RedactOptions::embed_substitute_fonts`]).
+    pub fonts_embedded: u64,
     /// Character codes removed.
     pub codes_removed: u64,
     /// Image invocations whose samples inside the rects were zeroed.
@@ -210,6 +235,7 @@ impl std::fmt::Debug for Redaction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Redaction")
             .field("output_bytes", &self.output.len())
+            .field("fonts_embedded", &self.fonts_embedded)
             .field("codes_removed", &self.codes_removed)
             .field("images_edited", &self.images_edited)
             .field("forms_edited", &self.forms_edited)
@@ -240,8 +266,23 @@ pub fn redact(
     specs: &[PageSpec],
     options: &RedactOptions,
 ) -> Result<Redaction, Error> {
+    options.limits.validate()?;
+    if options.embed_substitute_fonts {
+        if let Some((bytes, n)) = crate::redact_fonts::embed_substitutes(doc, &options.limits)? {
+            let normalized = Document::from_bytes_with_limits(&bytes, options.limits.clone())?;
+            return redact_doc(&normalized, specs, options, n);
+        }
+    }
+    redact_doc(doc, specs, options, 0)
+}
+
+fn redact_doc(
+    doc: &Document,
+    specs: &[PageSpec],
+    options: &RedactOptions,
+    fonts_embedded: u64,
+) -> Result<Redaction, Error> {
     let limits = &options.limits;
-    limits.validate()?;
     let info_present = doc.trailer().contains_key(b"Info".as_slice());
     let metadata_present = doc.catalog().contains_key(b"Metadata".as_slice());
 
@@ -329,6 +370,7 @@ pub fn redact(
 
     Ok(Redaction {
         output,
+        fonts_embedded,
         codes_removed: s.codes_removed_total,
         images_edited: s.invocations_edited_total,
         forms_edited: s.forms_edited_total,

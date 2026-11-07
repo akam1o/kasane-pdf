@@ -143,6 +143,10 @@ CASES = [
     ("non-embedded-font", build(page(TEXT, res=b"/Font << /F1 8 0 R >>", more={
         8: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 90 /Widths ["
         + HELVETICA_32_90 + b"] >>"})), [], "refused"),
+    # … unless its substitute is embedded first: then every reader draws
+    # exactly the embedded glyphs.
+    ("non-embedded-font-embedded", build(page(TEXT, res=b"/Font << /F1 8 0 R >>", more={
+        8: b"<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>"})), ["--embed-substitute-fonts"], "ok"),
 ]
 # The same file with the document-wide option: the original still drawn
 # on page 2 is a copy elsewhere, so refused.

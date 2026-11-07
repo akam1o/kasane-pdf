@@ -6,6 +6,17 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `RedactOptions::embed_substitute_fonts` (CLI
+  `--embed-substitute-fonts`): before redacting, each non-embedded Latin
+  Standard 14 Type 1 font (Times, Helvetica, Courier, and aliases such
+  as Arial) is replaced document-wide by a TrueType font embedding the
+  bundled Liberation face, with every code's glyph name and advance
+  written out, so every reader draws exactly those glyphs at the same
+  positions and the text is redacted by ink (`Redaction::fonts_embedded`).
+  The output shows Liberation's glyph shapes for those fonts. Without
+  the option such text stays refused.
+
 ## [0.6.0] - 2026-11-07
 
 The first release of `redact`, positional redaction that removes what

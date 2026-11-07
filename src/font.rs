@@ -255,6 +255,25 @@ pub(crate) enum Font {
 /// Resolve `name` in `/Resources /Font` — dispatch on `/Subtype`:
 /// `/TrueType` → [`SimpleFont`], `/Type0` → [`CompositeFont`]
 /// (CIDFontType2 + Identity-H only).
+/// A substitute to embed, each code's glyph name, each code's advance.
+pub(crate) type EmbeddableSubstitute<'a> = (
+    &'a crate::fontsubst::SubstFace,
+    Vec<Option<String>>,
+    Vec<f64>,
+);
+
+/// The [`Type1Font`] behind a font dictionary, when it is one.
+pub(crate) fn load_type1_dict(
+    doc: &Document,
+    dict: &Dict,
+    limits: &Limits,
+) -> Result<Option<Rc<Type1Font>>, Error> {
+    match load_font_dict(doc, dict, b"", limits)? {
+        Font::Type1(f) => Ok(Some(f)),
+        _ => Ok(None),
+    }
+}
+
 pub(crate) fn load_font(
     doc: &Document,
     resources: &Object,
@@ -1369,6 +1388,27 @@ impl Type1Font {
         let s = self.subst.as_ref()?;
         let name = self.subst_glyph_name(code)?;
         s.glyph_for_name(&name)
+    }
+
+    /// For a non-embedded Latin Standard 14 font (or a metric-compatible
+    /// alias) drawn with a bundled substitute: the substitute, and per
+    /// code the glyph name it draws (`None`: no glyph — drawn as
+    /// `.notdef`) and the advance. What `redact` needs to embed the
+    /// substitute so every reader draws exactly those glyphs.
+    pub(crate) fn substitute_for_embedding(&self) -> Option<EmbeddableSubstitute<'_>> {
+        use crate::fontsubst::SubstKind as K;
+        let s = self.subst.as_ref()?;
+        if !matches!(s.kind, K::Standard14 | K::Alias) || s.builtin_encoding.is_some() {
+            return None;
+        }
+        let names = (0..=255u8)
+            .map(|c| {
+                self.subst_glyph_name(c)
+                    .filter(|n| s.glyph_for_name(n).is_some_and(|g| g.0 != 0))
+            })
+            .collect();
+        let widths = (0..=255u8).map(|c| self.width(c)).collect();
+        Some((s, names, widths))
     }
 
     /// The glyph name a substituted code stands for: the PDF
