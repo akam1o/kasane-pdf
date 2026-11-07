@@ -711,7 +711,7 @@ pub(crate) struct RegionsEdit<'a> {
     pub(crate) paths_cut_total: u64,
     /// Redaction mode only: pages that still draw an edited image's
     /// original outside the rects, with the original's digests.
-    pub(crate) originals_shown: Vec<(usize, [[u8; 32]; 2], bool)>,
+    pub(crate) originals_shown: Vec<(usize, IndirectRef, [[u8; 32]; 2], bool)>,
     /// Redaction mode only: form invocations drawn from an edited copy.
     pub(crate) forms_edited_total: u64,
 }
@@ -1709,7 +1709,7 @@ pub(crate) fn regions_edit_session<'a>(
         forms_edited_total,
         originals_shown: originals_shown
             .into_iter()
-            .map(|(i, r)| (i, edited_originals[&r].0, edited_originals[&r].1))
+            .map(|(i, r)| (i, r, edited_originals[&r].0, edited_originals[&r].1))
             .collect(),
     })
 }

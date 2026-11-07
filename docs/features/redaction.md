@@ -101,7 +101,8 @@ secret; the rest must be refused with no file written.
 ## Refused (typed error, no output)
 
 On an edited page: annotations other than links, nested forms or
-images inside a form that meet a rect, inline images, `sh`,
+images inside a form that meet a rect, inline images meeting a rect
+(or whose data length is not fixed by their dictionary), `sh`,
 ExtGState (`gs`), optional content and `/ActualText` marked content,
 text in any mode but `Tr 0` (invisible OCR text, stroked, clipping),
 non-embedded fonts (glyph extent unknown), Type 3 fonts (a CharProc

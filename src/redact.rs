@@ -271,9 +271,16 @@ pub fn redact(
 
     // An original another page still draws stays in the file once, as
     // the object those displays use; every other copy must be gone.
-    let mut kept: Vec<[[u8; 32]; 2]> = s.originals_shown.iter().map(|(_, d, _)| *d).collect();
-    kept.sort_unstable();
-    kept.dedup();
+    // One entry per distinct original object (two objects with equal
+    // bytes are two entries, each allowed once).
+    let mut by_ref: Vec<(crate::object::IndirectRef, [[u8; 32]; 2])> = s
+        .originals_shown
+        .iter()
+        .map(|(_, r, d, _)| (*r, *d))
+        .collect();
+    by_ref.sort_unstable_by_key(|(r, _)| (r.number, r.generation));
+    by_ref.dedup_by_key(|(r, _)| *r);
+    let kept: Vec<[[u8; 32]; 2]> = by_ref.into_iter().map(|(_, d)| d).collect();
     let must_be_gone: Vec<[u8; 32]> = s
         .original_digests
         .iter()
@@ -283,8 +290,11 @@ pub fn redact(
     let (out, residual) = verify(&output, specs, limits, &must_be_gone, &kept)?;
     let (mut elsewhere, elsewhere_unsearched_pages) =
         find_elsewhere(&out, &s.removed_text, limits)?;
-    let mut shown_at: Vec<(usize, bool)> =
-        s.originals_shown.iter().map(|(p, _, f)| (*p, *f)).collect();
+    let mut shown_at: Vec<(usize, bool)> = s
+        .originals_shown
+        .iter()
+        .map(|(p, _, _, f)| (*p, *f))
+        .collect();
     shown_at.sort_unstable();
     shown_at.dedup();
     elsewhere.extend(shown_at.into_iter().map(|(p, form)| Elsewhere {
@@ -383,9 +393,16 @@ fn verify(
                     "object {r} holds an edited image's or form's original data"
                 )));
             }
-            if let Some(i) = kept.iter().position(|k| k.iter().any(is)) {
-                kept_seen[i] += 1;
-                if kept_seen[i] > 1 {
+            // The first kept entry with these bytes not yet matched.
+            let matching: Vec<usize> = (0..kept.len())
+                .filter(|&i| kept[i].iter().any(is))
+                .collect();
+            if let Some(&first) = matching.first() {
+                match matching.iter().find(|&&i| kept_seen[i] == 0) {
+                    Some(&i) => kept_seen[i] += 1,
+                    None => kept_seen[first] += 1,
+                }
+                if matching.iter().all(|&i| kept_seen[i] >= 1) && kept_seen[first] > 1 {
                     return Err(fail(format!(
                         "object {r} is a second copy of an original that is kept only \
                          for its displays elsewhere"

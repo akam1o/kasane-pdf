@@ -1201,3 +1201,73 @@ fn a_second_copy_of_a_kept_original_is_caught() {
     let e = unsupported(run(&pdf, vec![(50.0, 50.0, 150.0, 150.0)]));
     assert!(e.contains("second copy"), "{e}");
 }
+
+// Final review (P0/P2, fixed).
+
+/// An inline image whose sample bytes spell `EI` and whose length the
+/// dictionary does not fix (a named colour space) may have been cut
+/// short by the parser: refused, not rewritten.
+#[test]
+fn an_inline_image_of_uncertain_length_is_refused() {
+    let content =
+        "q 20 0 0 20 10 10 cm BI /W 19 /H 1 /CS /MyGray /BPC 8 ID \u{0} EI 2 4 1 1 re f % EI Q";
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 20 0 R >> /ColorSpace << /MyGray /DeviceGray >> >> \
+              /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", format!("{SECRET} {content}").as_bytes())),
+    ];
+    objs.extend(font_objs());
+    let pdf = build_pdf(&objs);
+    let e = unsupported(run(&pdf, vec![RECT]));
+    assert!(e.contains("inline image"), "{e}");
+}
+
+/// Two distinct originals with equal bytes, both still drawn on page
+/// 2: each may stay once.
+#[test]
+fn equal_originals_shown_elsewhere_each_stay_once() {
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (
+            2,
+            b"<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>".to_vec(),
+        ),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /A 5 0 R /B 8 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (
+            4,
+            stream_obj(
+                "",
+                b"q 50 0 0 50 50 50 cm /A Do Q q 50 0 0 50 100 100 cm /B Do Q",
+            ),
+        ),
+        (5, image_obj()),
+        (
+            6,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /A 5 0 R /B 8 0 R >> >> /Contents 7 0 R >>"
+                .to_vec(),
+        ),
+        (
+            7,
+            stream_obj(
+                "",
+                b"q 50 0 0 50 0 0 cm /A Do Q q 50 0 0 50 60 0 cm /B Do Q",
+            ),
+        ),
+        (8, image_obj()),
+    ]);
+    let r = run(&pdf, vec![(40.0, 40.0, 160.0, 160.0)]).unwrap();
+    assert_eq!(r.images_edited, 2);
+}

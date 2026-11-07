@@ -1325,7 +1325,11 @@ impl<'a> DiagWalker<'a> {
                 self.show_text(text)?;
             }
             O::Do(n) => self.do_xobject(n)?,
-            O::InlineImage { .. } if self.redaction_mode && !self.uncertain_state => {
+            O::InlineImage { dict, data }
+                if self.redaction_mode
+                    && !self.uncertain_state
+                    && inline_length_exact(dict, data) =>
+            {
                 // Paints the unit square under the CTM.
                 let m = self.gs.ctm;
                 let c = [
@@ -2376,6 +2380,51 @@ fn hits_for(b: &(f64, f64, f64, f64), rects: &[Rect]) -> Vec<usize> {
         .filter(|(_, r)| intersects(b, r))
         .map(|(i, _)| i)
         .collect()
+}
+
+/// Whether an inline image's data is exactly the samples its
+/// dictionary declares — unfiltered, a device colour space named
+/// directly (or an image mask), and `ID … EI` holding precisely
+/// `H × ceil(W × components × BPC / 8)` bytes. Only then is the
+/// parser's `EI` boundary certain; otherwise sample bytes that spell
+/// `EI` could have ended the image early and the rest been read as
+/// operators.
+fn inline_length_exact(dict: &Dict, data: &[u8]) -> bool {
+    let get = |full: &[u8], abbr: &[u8]| dict.get(abbr).or_else(|| dict.get(full));
+    if get(b"Filter", b"F").is_some_and(|f| !matches!(f, Object::Null))
+        && !matches!(get(b"Filter", b"F"), Some(Object::Array(a)) if a.is_empty())
+    {
+        return false;
+    }
+    let mask = matches!(get(b"ImageMask", b"IM"), Some(Object::Bool(true)));
+    let comps = if mask {
+        1
+    } else {
+        match get(b"ColorSpace", b"CS").and_then(|c| c.as_name()) {
+            Some(b"G" | b"DeviceGray") => 1,
+            Some(b"RGB" | b"DeviceRGB") => 3,
+            Some(b"CMYK" | b"DeviceCMYK") => 4,
+            _ => return false,
+        }
+    };
+    let bpc = if mask {
+        1
+    } else {
+        get(b"BitsPerComponent", b"BPC")
+            .and_then(|b| b.as_i64())
+            .unwrap_or(0)
+    };
+    let (Some(w), Some(h)) = (
+        get(b"Width", b"W").and_then(|v| v.as_i64()),
+        get(b"Height", b"H").and_then(|v| v.as_i64()),
+    ) else {
+        return false;
+    };
+    if !matches!(bpc, 1 | 2 | 4 | 8 | 16) || w <= 0 || h <= 0 {
+        return false;
+    }
+    let row = (w as u128 * comps as u128 * bpc as u128).div_ceil(8);
+    row.checked_mul(h as u128) == Some(data.len() as u128)
 }
 
 /// Whether `n` names a pattern-type colour space entry in the current
