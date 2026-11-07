@@ -779,11 +779,6 @@ pub(crate) struct DiagWalker<'a> {
     pending_clip: Option<()>,
     /// The path being built is one `re` under an axis-aligned CTM.
     path_single_rect: bool,
-    /// The page-space boxes of the path being built while it is only
-    /// `re`s under axis-aligned CTMs; `None` once anything else joins.
-    path_rects: Option<Vec<(f64, f64, f64, f64)>>,
-    /// The pending clip is even-odd (`W*`).
-    pending_clip_eo: bool,
     /// Targets that meet a rect only through the *bounds* of a clip
     /// that is not a rectangle: whether they show inside the rect is
     /// not decided. `redact` refuses them.
@@ -831,12 +826,6 @@ pub(crate) struct DiagWalker<'a> {
     /// same way, so it is not a blocker; an inline image is a blocker
     /// only when it meets a rect (one elsewhere is kept as it is).
     pub(crate) redaction_mode: bool,
-    /// Redaction: take a non-embedded font's glyph by its cell
-    /// (`unembedded_cell`) instead of reporting it as uncertain.
-    pub(crate) unembedded_by_cell: bool,
-    /// Such a glyph was shown: the page's content must be clipped away
-    /// from the rects.
-    pub(crate) unembedded_seen: bool,
     /// object ref → (kind, sites) for sharing analysis.
     site_map: BTreeMap<(u32, u16), (String, Vec<Site>)>,
     /// Counting budget for reported items.
@@ -971,8 +960,6 @@ impl<'a> DiagWalker<'a> {
             path_has_point: false,
             pending_clip: None,
             path_single_rect: false,
-            path_rects: Some(Vec::new()),
-            pending_clip_eo: false,
             clip_undecided_hits: 0,
             code_index: 0,
             text_tm: crate::matrix::Matrix::IDENTITY,
@@ -986,8 +973,6 @@ impl<'a> DiagWalker<'a> {
             path_states: BTreeMap::new(),
             record_show_states,
             redaction_mode: false,
-            unembedded_by_cell: false,
-            unembedded_seen: false,
             site_map: BTreeMap::new(),
             reported: 0,
             text_codes: 0,
@@ -1099,6 +1084,16 @@ impl<'a> DiagWalker<'a> {
         }
         self.gs.stroke = st;
         Ok(None)
+    }
+
+    /// The clip in force is exactly a rectangle (`clip_exact`) that
+    /// meets no rect: nothing drawn now can paint inside one.
+    fn clipped_away_from_rects(&self) -> bool {
+        self.gs.clip_exact
+            && self
+                .gs
+                .clip
+                .is_some_and(|c| hits_for(&c, self.rects).is_empty())
     }
 
     fn bump_reported(&mut self) -> Result<(), Error> {
@@ -1310,7 +1305,6 @@ impl<'a> DiagWalker<'a> {
             | O::SetCmykFill(..) => {}
             O::MoveTo(x, y) => {
                 self.path_single_rect = false;
-                self.path_rects = None;
                 self.path_point(*x, *y);
                 self.path_has_point = true;
             }
@@ -1354,15 +1348,8 @@ impl<'a> DiagWalker<'a> {
             }
             O::Rectangle(x, y, w, h) => {
                 let m = self.gs.ctm;
-                let axis = (m.b == 0.0 && m.c == 0.0) || (m.a == 0.0 && m.d == 0.0);
-                self.path_single_rect = self.path_bounds.is_none() && axis;
-                match (&mut self.path_rects, axis) {
-                    (Some(v), true) => {
-                        let (a, b) = (m.transform(*x, *y), m.transform(*x + *w, *y + *h));
-                        v.push((a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1)));
-                    }
-                    _ => self.path_rects = None,
-                }
+                self.path_single_rect = self.path_bounds.is_none()
+                    && ((m.b == 0.0 && m.c == 0.0) || (m.a == 0.0 && m.d == 0.0));
                 // All four corners: under a rotated or skewed CTM two
                 // opposite corners do not bound the rectangle.
                 self.path_point(*x, *y);
@@ -1371,16 +1358,12 @@ impl<'a> DiagWalker<'a> {
                 self.path_point(*x + *w, *y + *h);
                 self.path_has_point = false; // re is a complete subpath
             }
-            O::ClosePath => {
-                self.path_has_point = false;
-                self.path_rects = None;
-            }
+            O::ClosePath => self.path_has_point = false,
             O::Clip | O::ClipEvenOdd => {
                 // A clip path constrains later painting — record its
                 // bounds as the clip rect (conservative: the *path*
                 // bounds, exact intersection is not computed).
                 self.pending_clip = Some(());
-                self.pending_clip_eo = matches!(op, O::ClipEvenOdd);
             }
             O::Stroke
             | O::CloseAndStroke
@@ -1720,18 +1703,6 @@ impl<'a> DiagWalker<'a> {
                 }
             }
         }
-        // `redact`'s own clip — a box holding disjoint holes, even-odd:
-        // it only takes the holes away. Ignoring a clip only adds hits,
-        // so it is ignored, never trusted to hide anything.
-        let exclusion = self.redaction_mode
-            && self.pending_clip_eo
-            && self
-                .path_rects
-                .as_ref()
-                .is_some_and(|v| is_exclusion_clip(v));
-        if exclusion {
-            self.pending_clip = None;
-        }
         // Install a pending clip as the *path's* bounds (approximation).
         if self.pending_clip.take().is_some() {
             if !self.path_single_rect {
@@ -1747,8 +1718,6 @@ impl<'a> DiagWalker<'a> {
         self.path_bounds = None;
         self.path_has_point = false;
         self.path_single_rect = false;
-        self.path_rects = Some(Vec::new());
-        self.pending_clip_eo = false;
         Ok(())
     }
 
@@ -1875,19 +1844,14 @@ impl<'a> DiagWalker<'a> {
         // the glyph is reported as uncertain exactly as a font with no
         // outlines was before substitution existed.
         //
-        // `redact` may instead take such a glyph's *cell* (below) when
-        // asked: it removes every code whose cell meets a rect and
-        // clips the page's content so nothing left paints inside the
-        // rects, whatever font a reader substitutes.
-        let cell_instead = font.substitution().is_some()
-            && self.redaction_mode
-            && self.unembedded_by_cell
-            && render_mode == 0
-            && font.advance_defined(code);
-        if cell_instead {
-            self.unembedded_seen = true;
+        // One exception needs no extent: under a clip that is exactly a
+        // rectangle meeting no rect, the glyph cannot paint inside a
+        // rect whatever font draws it — it is not a hit.
+        if font.substitution().is_some() && render_mode < 4 && self.clipped_away_from_rects() {
+            self.advance_glyph(font, code, font_size, h_scale, char_spacing, word_spacing);
+            return Ok(());
         }
-        if let (Some(s), false) = (font.substitution(), cell_instead) {
+        if let Some(s) = font.substitution() {
             return self.glyph_error(
                 code,
                 Error::Unsupported {
@@ -1904,10 +1868,6 @@ impl<'a> DiagWalker<'a> {
         // failed" (broken font, limit, unsupported → uncertain). An
         // error is never silently swapped for a cell estimate.
         let (bounds, bounds_kind) = match font.glyph_id(code) {
-            _ if cell_instead => (
-                unembedded_cell(&trm, font.width(code) / 1000.0),
-                TextBounds::Cell,
-            ),
             Ok(gid) => {
                 let m = match font.glyph_matrix(gid) {
                     Ok(m) => m,
@@ -2558,46 +2518,6 @@ fn stroke_reach(s: &StrokeState) -> f64 {
 /// .notdef): an *estimate* labelled `TextBounds::Cell`, never an ink
 /// extent, and *not* the same thing as the advance vector — the cell
 /// exists so a space or missing glyph inside the rects still reports.
-/// The cell `redact` takes for a glyph of a non-embedded font (its
-/// outlines are a reader's choice): the advance box widened by 0.15 em
-/// each side, from 0.3 em below the baseline to 1 em above, in glyph
-/// space, mapped by `trm`. A definition of where the code stands, not
-/// an ink extent — what a reader paints outside it is clipped away
-/// from the rects.
-/// Boxes `v` are an outer box followed by holes inside it that do not
-/// overlap one another (they may touch): an even-odd clip of them
-/// shows the outer box minus the holes.
-fn is_exclusion_clip(v: &[(f64, f64, f64, f64)]) -> bool {
-    let Some((o, holes)) = v.split_first() else {
-        return false;
-    };
-    !holes.is_empty()
-        && holes
-            .iter()
-            .all(|h| h.0 >= o.0 && h.1 >= o.1 && h.2 <= o.2 && h.3 <= o.3)
-        && holes.iter().enumerate().all(|(i, a)| {
-            holes[i + 1..]
-                .iter()
-                .all(|b| a.2 <= b.0 || b.2 <= a.0 || a.3 <= b.1 || b.3 <= a.1)
-        })
-}
-
-fn unembedded_cell(trm: &crate::matrix::Matrix, advance: f64) -> (f64, f64, f64, f64) {
-    let (x0, x1) = (advance.min(0.0) - 0.15, advance.max(0.0) + 0.15);
-    let c = [
-        trm.transform(x0, -0.3),
-        trm.transform(x1, -0.3),
-        trm.transform(x0, 1.0),
-        trm.transform(x1, 1.0),
-    ];
-    (
-        c.iter().map(|p| p.0).fold(f64::INFINITY, f64::min),
-        c.iter().map(|p| p.1).fold(f64::INFINITY, f64::min),
-        c.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max),
-        c.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max),
-    )
-}
-
 fn cell_estimate(trm: &crate::matrix::Matrix) -> (f64, f64, f64, f64) {
     let origin = trm.transform(0.0, 0.0);
     // Advance point: same displacement the matrix advance uses.

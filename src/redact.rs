@@ -52,7 +52,6 @@ pub struct RedactOptions {
     limits: Limits,
     remove_structure_tree: bool,
     refuse_copies_elsewhere: bool,
-    unembedded_text_by_cell: bool,
     remove_annotations: bool,
 }
 
@@ -85,30 +84,6 @@ impl RedactOptions {
     /// not searched.
     pub fn refuse_copies_elsewhere(mut self, refuse: bool) -> Self {
         self.refuse_copies_elsewhere = refuse;
-        self
-    }
-
-    /// Accept text in fonts whose outlines are not in the file (a
-    /// reader draws them with a font of its own choosing, so their ink
-    /// extent is unknown) instead of refusing it. Each such code is
-    /// taken by its *cell* — its advance box widened by 0.15 em each
-    /// side, from 0.3 em below the baseline to 1 em above — and
-    /// removed when the cell meets a rect; the page's content is then
-    /// clipped so that nothing left on it paints inside the rects,
-    /// whatever font draws it. Each code's advance must be given by the
-    /// document — a `/Widths` entry (not a reader's `/MissingWidth`), a
-    /// CID font's `/W` / `/DW`, or the Adobe widths of Symbol and
-    /// ZapfDingbats — else the text is still refused (a Standard 14
-    /// font without `/Widths` included); only fill text (`Tr` 0) is
-    /// taken this way.
-    ///
-    /// What changes with it: statement 1 of a success holds for such
-    /// codes by their cells (none left meets a rect), and the clip —
-    /// not their removal — keeps their ink out of the rects. A code
-    /// whose cell is clear of every rect stays, even if some font
-    /// would draw part of it inside one (that part is clipped).
-    pub fn unembedded_text_by_cell(mut self, accept: bool) -> Self {
-        self.unembedded_text_by_cell = accept;
         self
     }
 
@@ -284,7 +259,6 @@ pub fn redact(
     }
 
     let session = crate::remove_region::SessionOptions {
-        unembedded_by_cell: options.unembedded_text_by_cell,
         remove_annotations: options.remove_annotations,
     };
     let mut s = regions_edit_session_with(doc, specs, limits, SessionMode::Redact, session)?;

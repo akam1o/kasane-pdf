@@ -50,6 +50,13 @@ licence (not OFL, not Apache):
     substitute for non-embedded Symbol and ZapfDingbats fonts; the
     substitution is always reported.
 
+Font metrics tables (src/core14_metrics.rs, src/symbol_fonts.rs) are
+generated from the Adobe Core 14 AFM metrics as transcribed in the
+pdf.js project (src/core/metrics.js, encodings.js, glyphlist.js),
+Copyright 2012 Mozilla Foundation, Apache License 2.0. The Core 14 AFM
+files' ReadMe permits their use, copying and distribution for any
+purpose, with or without modification.
+
 With the optional `cjk-fallback` Cargo feature, the build additionally
 embeds the assets under assets/cjk/ (committed, taken from pinned
 upstream commits and verified against scripts/cjk-assets.sha256):

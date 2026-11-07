@@ -489,6 +489,40 @@ fn name_has(name: &str, words: &[&str]) -> bool {
     words.iter().any(|w| name.contains(w))
 }
 
+/// The Adobe AFM width of glyph `name` in the Standard 14 font the
+/// bundled `face` stands in for (Liberation Sans → Helvetica, Serif →
+/// Times, Mono → Courier, by style); `None` for another face or a name
+/// the font does not have.
+pub(crate) fn core14_width(face: &str, name: &str) -> Option<f64> {
+    use crate::core14_metrics as m;
+    let table: &[(&str, u16)] = match face {
+        "LiberationSans-Regular" => m::HELVETICA,
+        "LiberationSans-Bold" => m::HELVETICA_BOLD,
+        "LiberationSans-Italic" => m::HELVETICA_OBLIQUE,
+        "LiberationSans-BoldItalic" => m::HELVETICA_BOLDOBLIQUE,
+        "LiberationSerif-Regular" => m::TIMES_ROMAN,
+        "LiberationSerif-Bold" => m::TIMES_BOLD,
+        "LiberationSerif-Italic" => m::TIMES_ITALIC,
+        "LiberationSerif-BoldItalic" => m::TIMES_BOLDITALIC,
+        // Courier: every glyph of the font is 600 wide; a name it does
+        // not have is still left to the caller.
+        "LiberationMono-Regular"
+        | "LiberationMono-Bold"
+        | "LiberationMono-Italic"
+        | "LiberationMono-BoldItalic" => {
+            return m::HELVETICA
+                .binary_search_by(|(n, _)| (*n).cmp(name))
+                .ok()
+                .map(|_| 600.0);
+        }
+        _ => return None,
+    };
+    table
+        .binary_search_by(|(n, _)| (*n).cmp(name))
+        .ok()
+        .map(|i| table[i].1 as f64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

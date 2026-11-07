@@ -39,7 +39,7 @@ CropBox, a MediaBox not at the origin) are skipped: the generated rects
 would not map 1:1. Usage:
 
     scripts/eval-redact-corpus.py <kasane-pdf> [--per-category N] [--json out.json]
-        [--redact-arg ARG …]   (passed to `redact`, e.g. --unembedded-text-by-cell)
+        [--redact-arg ARG …]   (passed to `redact`, e.g. --remove-annotations)
 """
 
 import collections

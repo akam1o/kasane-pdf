@@ -58,15 +58,10 @@ versions follow [Semantic Versioning](https://semver.org/).
   original subpath (odd arrays written out in full), so the dashes
   outside the rect are unchanged; a translucent or blended dashed
   stroke cut into pieces is refused.
-- `RedactOptions::unembedded_text_by_cell` (CLI
-  `--unembedded-text-by-cell`): text in a non-embedded font is taken by
-  each code's cell (advance box ± 0.15 em, −0.3 to 1 em) instead of
-  refused — codes whose cell meets a rect are removed and the page's
-  content is clipped so nothing left paints inside the rects, whatever
-  font a reader substitutes. Each code's advance must be given by the
-  document (a `/Widths` entry, `/W` / `/DW`, Symbol / ZapfDingbats AFM
-  widths); fill text only. A clip of that
-  shape found in the input is ignored by the hit test, never trusted.
+- `redact`: text in a non-embedded font is refused (a reader draws it
+  with a font of its own choosing, so where its glyphs reach is not
+  known), except under a clip that is exactly a rectangle meeting no
+  rect, where nothing can paint inside one whatever font draws it.
 - `RedactOptions::remove_annotations` (CLI `--remove-annotations`):
   markup annotations (Text, FreeText, Line, Square, Circle, Polygon,
   PolyLine, Highlight, Underline, Squiggly, StrikeOut, Caret, Stamp,
@@ -92,6 +87,13 @@ versions follow [Semantic Versioning](https://semver.org/).
   The default (`/SA false`) is unchanged.
 
 ### Changed
+- A non-embedded Standard 14 font without `/Widths` (or a
+  metric-compatible alias such as Arial) is laid out with the Adobe
+  Core 14 AFM widths, as readers lay it out (§9.6.2.2), instead of the
+  bundled substitute's advances, which only approximated them (by up
+  to about 0.002 em per glyph). Rendering, text extraction and the
+  editors place such text where Poppler and pdf.js do. Glyph shapes
+  are still the substitute's.
 - A page's pixel size is rounded up instead of to nearest, so the whole
   page box is drawn (595 × 842 pt at 96 dpi: 794 × 1123 px, was
   793 × 1123), as pdftoppm sizes it. Exact sizes do not change.

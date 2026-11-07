@@ -67,9 +67,6 @@ pub(crate) struct SimpleFont {
     symbolic: bool,
     /// Glyph advances in PDF 1/1000-em units, indexed by char code.
     widths: [f64; 256],
-    /// Codes whose advance a `/Widths` entry gives (others are 0 here,
-    /// `/MissingWidth` or a font's own advance in a reader).
-    width_set: [bool; 256],
     /// `/ToUnicode` CMap — `None` if the font lacks one.
     tounicode: Option<crate::tounicode::ToUnicode>,
     /// `Face` built over `program`. `Face<'a>` borrows, so we keep
@@ -122,11 +119,9 @@ pub(crate) struct Type1Font {
     /// `t1_program` are `None` and a sound substitute exists.
     subst: Option<crate::fontsubst::SubstFace>,
     /// Whether the PDF supplied `/Widths`. Without it a substituted
-    /// Standard 14 font takes advances from the (metric-compatible)
-    /// substitute's `hmtx`.
+    /// Standard 14 font takes the Adobe AFM widths (`core14_metrics`),
+    /// a name they lack its substitute's advance.
     has_widths: bool,
-    /// Codes whose advance a `/Widths` entry gives.
-    width_set: [bool; 256],
 }
 
 /// The resolved font behind a `Tf` selection — a simple TrueType
@@ -382,7 +377,6 @@ pub(crate) fn load_simple_font_dict(
         .unwrap_or(255);
     let widths_obj = dict.get(b"Widths".as_slice());
     let mut widths = [0.0f64; 256];
-    let mut width_set = [false; 256];
     if let Some(w) = widths_obj {
         // `/Widths 12 0 R` is common (pdfTeX, many generators) — the
         // array itself may be indirect, not just its entries.
@@ -409,7 +403,6 @@ pub(crate) fn load_simple_font_dict(
             }
             if let Some(slot) = width_slot(first_char, i) {
                 widths[slot] = w;
-                width_set[slot] = true;
             }
         }
     } else {
@@ -496,7 +489,6 @@ pub(crate) fn load_simple_font_dict(
         encoding,
         symbolic,
         widths,
-        width_set,
         tounicode,
         face: RefCell::new(None),
         reverse_cmap: RefCell::new(None),
@@ -525,7 +517,6 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         .and_then(|o| o.as_i64())
         .unwrap_or(255);
     let mut widths = [0.0f64; 256];
-    let mut width_set = [false; 256];
     let has_widths = dict.contains_key(b"Widths".as_slice());
     if let Some(w_obj) = dict.get(b"Widths".as_slice()) {
         let w = doc.deref(w_obj)?;
@@ -539,7 +530,6 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
             if let Some(v) = e.as_number() {
                 if let (true, Some(slot)) = (v.is_finite() && v >= 0.0, width_slot(first_char, i)) {
                     widths[slot] = v;
-                    width_set[slot] = true;
                 }
             }
         }
@@ -639,7 +629,6 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         cff_matrices: RefCell::new(None),
         subst,
         has_widths,
-        width_set,
     }))
 }
 
@@ -1325,6 +1314,20 @@ impl Type1Font {
                         return w;
                     }
                     return 0.0;
+                }
+                // A Latin Standard 14 font (or a metric-compatible alias):
+                // the Adobe AFM widths readers use (§9.6.2.2), not the
+                // substitute's own advances, which only approximate them.
+                if matches!(
+                    s.kind,
+                    crate::fontsubst::SubstKind::Standard14 | crate::fontsubst::SubstKind::Alias
+                ) {
+                    if let Some(w) = self
+                        .subst_glyph_name(code)
+                        .and_then(|n| crate::fontsubst::core14_width(s.name, &n))
+                    {
+                        return w;
+                    }
                 }
                 if let Some(gid) = self.subst_glyph(code) {
                     if let Some(w) = s.advance_1000(gid) {
@@ -2492,40 +2495,6 @@ impl Font {
             Font::Type1(f) => f.substitution(),
             Font::Composite(f) => f.fallback.as_ref().map(|(_, s)| s.clone()),
             Font::Type3(_) => None,
-        }
-    }
-
-    /// Whether `code`'s advance is given by the document exactly, so
-    /// any conforming reader places the glyph where this crate does: a
-    /// `/Widths` entry for it, the Adobe AFM width of a non-embedded
-    /// Symbol or ZapfDingbats (tables this crate carries), or a CID
-    /// font's `/W` / `/DW` (default 1000). A code outside `/FirstChar` ..
-    /// `/LastChar` (a reader's `/MissingWidth`), and a Standard 14 font
-    /// without `/Widths` (this crate approximates those metrics with
-    /// its substitute's advances), are not.
-    pub(crate) fn advance_defined(&self, code: u32) -> bool {
-        use crate::fontsubst::SubstKind as K;
-        let Ok(c) = u8::try_from(code) else {
-            return matches!(self, Font::Composite(_));
-        };
-        match self {
-            Font::Simple(f) => f.width_set[c as usize],
-            Font::Type1(f) => {
-                if f.has_widths {
-                    f.width_set[c as usize]
-                } else {
-                    f.subst.as_ref().is_some_and(|s| {
-                        s.kind == K::SymbolFallback
-                            && s.afm_widths.is_some_and(|afm| {
-                                f.subst_glyph_name(c)
-                                    .and_then(|n| crate::symbol_fonts::afm_width(afm, &n))
-                                    .is_some()
-                            })
-                    })
-                }
-            }
-            Font::Composite(_) => true,
-            Font::Type3(_) => false,
         }
     }
 

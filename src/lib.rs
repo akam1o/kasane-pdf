@@ -85,6 +85,7 @@ mod cjk;
 mod cmap;
 mod colorspace;
 mod content;
+mod core14_metrics;
 mod crypt;
 pub mod dests;
 mod document;
