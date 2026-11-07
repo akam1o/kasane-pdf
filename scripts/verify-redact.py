@@ -78,6 +78,10 @@ def page(content, res=b"/Font << /F1 5 0 R >>", page_extra=b"", cat=b"", more=No
     return objs
 
 
+# Helvetica's AFM widths, codes 32 … 90.
+HELVETICA_32_90 = (b"278 278 355 556 556 889 667 191 333 333 389 584 278 333 278 278 556 556 556 556 556 "
+                   b"556 556 556 556 556 278 278 584 584 584 556 1015 667 667 722 722 667 611 778 722 278 "
+                   b"500 667 556 833 722 778 667 778 722 667 611 722 667 944 667 667 611")
 TEXT = b"BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET BT /F1 12 Tf 10 20 Td (PUBLICWORD) Tj ET"
 IMAGE = stream(b"/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace /DeviceRGB /BitsPerComponent 8", SAMPLES, flate=True)
 
@@ -138,8 +142,11 @@ CASES = [
     # cell, with the page clipped away from the rect, on request.
     ("non-embedded-font", build(page(TEXT, res=b"/Font << /F1 8 0 R >>", more={
         8: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"})), [], "refused"),
+    ("non-embedded-font-no-widths-by-cell", build(page(TEXT, res=b"/Font << /F1 8 0 R >>", more={
+        8: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"})), ["--unembedded-text-by-cell"], "refused"),
     ("non-embedded-font-by-cell", build(page(TEXT, res=b"/Font << /F1 8 0 R >>", more={
-        8: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"})), ["--unembedded-text-by-cell"], "ok"),
+        8: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 90 /Widths ["
+        + HELVETICA_32_90 + b"] >>"})), ["--unembedded-text-by-cell"], "ok"),
 ]
 # The same file with the document-wide option: the original still drawn
 # on page 2 is a copy elsewhere, so refused.

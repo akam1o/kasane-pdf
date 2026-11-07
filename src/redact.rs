@@ -95,10 +95,12 @@ impl RedactOptions {
     /// side, from 0.3 em below the baseline to 1 em above — and
     /// removed when the cell meets a rect; the page's content is then
     /// clipped so that nothing left on it paints inside the rects,
-    /// whatever font draws it. The positions must be defined by the
-    /// document (`/Widths`, a CID font's `/W`, or the Standard 14
-    /// metrics), else the text is still refused; only fill text (`Tr`
-    /// 0) is taken this way.
+    /// whatever font draws it. Each code's advance must be given by the
+    /// document — a `/Widths` entry (not a reader's `/MissingWidth`), a
+    /// CID font's `/W` / `/DW`, or the Adobe widths of Symbol and
+    /// ZapfDingbats — else the text is still refused (a Standard 14
+    /// font without `/Widths` included); only fill text (`Tr` 0) is
+    /// taken this way.
     ///
     /// What changes with it: statement 1 of a success holds for such
     /// codes by their cells (none left meets a rect), and the clip —

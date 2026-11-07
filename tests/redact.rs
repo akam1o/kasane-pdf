@@ -1922,10 +1922,18 @@ fn an_unknown_appearance_key_is_not_a_display() {
 
 const HELV: &str = "/Font << /H 50 0 R >>";
 
+/// Non-embedded Helvetica with its AFM widths for codes 32 … 90.
 fn helv() -> (u32, Vec<u8>) {
+    let w = "278 278 355 556 556 889 667 191 333 333 389 584 278 333 278 278 556 556 556 556 556 \
+             556 556 556 556 556 278 278 584 584 584 556 1015 667 667 722 722 667 611 778 722 278 \
+             500 667 556 833 722 778 667 778 722 667 611 722 667 944 667 667 611";
     (
         50,
-        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+        format!(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 32 /LastChar 90 \
+             /Widths [{w}] >>"
+        )
+        .into_bytes(),
     )
 }
 
@@ -1966,19 +1974,45 @@ fn non_embedded_text_is_taken_by_cell_on_request() {
     }
 }
 
-/// Without positions defined by the document (a non-standard font with
-/// no /Widths), the text is still refused.
+/// Without each code's advance given by the document — no /Widths
+/// (even for a Standard 14 font, whose metrics this crate only
+/// approximates), or a code outside /FirstChar … /LastChar (a reader's
+/// /MissingWidth) — the text is still refused.
 #[test]
 fn non_embedded_text_without_widths_is_refused() {
-    let pdf = doc_with(
-        HELV,
-        &[b"BT /H 12 Tf 20 100 Td (SECRETWORD) Tj ET"],
+    for font in [
+        "<< /Type /Font /Subtype /Type1 /BaseFont /SomeUnknownFont >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 65 /LastChar 65 \
+         /Widths [500] /FontDescriptor << /Type /FontDescriptor /FontName /Helvetica /Flags 32 \
+         /MissingWidth 1000 >> >>",
+    ] {
+        let pdf = doc_with(
+            HELV,
+            &[b"BT /H 12 Tf 10 100 Td (BBBBSECRETTEXT) Tj ET"],
+            vec![(50, font.as_bytes().to_vec())],
+        );
+        assert!(
+            by_cell(&pdf, vec![(55.0, 90.0, 180.0, 115.0)]).is_err(),
+            "{font}"
+        );
+    }
+}
+
+/// A Text annotation's icon is drawn away from /Rect at other zooms:
+/// kept anywhere on an edited page it is refused; removed, it is not.
+#[test]
+fn a_text_annotation_icon_is_never_kept() {
+    let pdf = one_page(
+        SECRET,
+        "/Annots [30 0 R]",
+        "",
         vec![(
-            50,
-            b"<< /Type /Font /Subtype /Type1 /BaseFont /SomeUnknownFont >>".to_vec(),
+            30,
+            b"<< /Type /Annot /Subtype /Text /Rect [40 100 41 101] /F 4 /Name /Note >>".to_vec(),
         )],
     );
-    assert!(by_cell(&pdf, vec![(10.0, 90.0, 190.0, 115.0)]).is_err());
+    assert!(unsupported(run(&pdf, vec![RECT])).contains("NoZoom"));
 }
 
 /// A clip of the exclusion shape already in the input is ignored, not
@@ -2062,7 +2096,7 @@ fn popups_and_replies_go_with_a_removed_annotation() {
                 b"<< /Type /Annot /Subtype /Text /Rect [170 10 180 20] /Contents (REPLYNOTE) /IRT 30 0 R >>"
                     .to_vec(),
             ),
-            (33, b"<< /Type /Annot /Subtype /Text /Rect [10 170 20 180] /Contents (OTHERNOTE) >>".to_vec()),
+            (33, b"<< /Type /Annot /Subtype /Square /Rect [10 170 20 180] /Contents (OTHERNOTE) >>".to_vec()),
         ],
     );
     let r = annots_run(&pdf).unwrap();

@@ -950,6 +950,7 @@ pub(crate) fn regions_edit_session_with<'a>(
                 .ok_or_else(|| Error::Structure("/Annots is not an array".into()))?;
             // First pass: each annotation, and whether it meets a rect.
             let mut entries: Vec<(Option<IndirectRef>, Dict, bool)> = Vec::with_capacity(a.len());
+            let mut off_rects: Vec<bool> = Vec::with_capacity(a.len());
             for (i, item) in a.iter().enumerate() {
                 let annot = doc.deref(item)?;
                 let d = annot
@@ -964,12 +965,11 @@ pub(crate) fn regions_edit_session_with<'a>(
                     .transpose()?
                     .and_then(|f| f.as_i64())
                     .unwrap_or(0);
-                if flags & (8 | 16) != 0 {
-                    return Err(Error::Unsupported {
-                        feature: "redaction on a page with a NoZoom or NoRotate annotation",
-                        detail: format!("/Annots[{i}] — its appearance is not placed by /Rect"),
-                    });
-                }
+                // A Text annotation's icon behaves as NoZoom and NoRotate
+                // whatever its flags (§12.5.6.4).
+                let text_icon =
+                    d.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Text");
+                let off_rect = flags & (8 | 16) != 0 || text_icon;
                 // A watermark's /FixedPrint matrix moves it when printed.
                 if d.contains_key(b"FixedPrint".as_slice()) {
                     return Err(Error::Unsupported {
@@ -993,6 +993,7 @@ pub(crate) fn regions_edit_session_with<'a>(
                     _ => None,
                 };
                 entries.push((r, d, hit));
+                off_rects.push(off_rect);
             }
             // Second pass: what is removed. A link meeting a rect, and
             // with `remove_annotations`, a markup annotation meeting
@@ -1064,6 +1065,18 @@ pub(crate) fn regions_edit_session_with<'a>(
                 if !changed {
                     break;
                 }
+            }
+            // One drawn away from /Rect at other zooms and rotations
+            // (NoZoom, NoRotate; a Text annotation's icon always) may
+            // only be removed, not kept.
+            if let Some(k) = (0..entries.len()).find(|&k| off_rects[k] && !removed[k]) {
+                return Err(Error::Unsupported {
+                    feature: "redaction on a page with a NoZoom or NoRotate annotation",
+                    detail: format!(
+                        "/Annots[{k}] — its appearance is not placed by /Rect (a Text \
+                         annotation's icon always behaves so)"
+                    ),
+                });
             }
             let mut kept = Vec::new();
             for (k, item) in a.iter().enumerate() {

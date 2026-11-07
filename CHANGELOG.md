@@ -63,8 +63,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   each code's cell (advance box ± 0.15 em, −0.3 to 1 em) instead of
   refused — codes whose cell meets a rect are removed and the page's
   content is clipped so nothing left paints inside the rects, whatever
-  font a reader substitutes. Positions must be defined by the document
-  (`/Widths`, `/W`, Standard 14 metrics); fill text only. A clip of that
+  font a reader substitutes. Each code's advance must be given by the
+  document (a `/Widths` entry, `/W` / `/DW`, Symbol / ZapfDingbats AFM
+  widths); fill text only. A clip of that
   shape found in the input is ignored by the hit test, never trusted.
 - `RedactOptions::remove_annotations` (CLI `--remove-annotations`):
   markup annotations (Text, FreeText, Line, Square, Circle, Polygon,
@@ -73,7 +74,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   outside the rect too — with their popups and replies, instead of
   refused (`annotations_removed`). Their appearance streams may not
   stay unless still drawn; their text is searched for in `elsewhere`.
-  Widgets and other subtypes stay refused.
+  Widgets and other subtypes stay refused. A Text annotation (whose
+  icon behaves as NoZoom and NoRotate) on an edited page is refused
+  unless it is removed.
 - `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
   RFC 7932 data including large windows, Flate predictors, refused on
   inline images. Output and decoder memory are bounded by

@@ -1883,7 +1883,7 @@ impl<'a> DiagWalker<'a> {
             && self.redaction_mode
             && self.unembedded_by_cell
             && render_mode == 0
-            && font.widths_defined();
+            && font.advance_defined(code);
         if cell_instead {
             self.unembedded_seen = true;
         }
