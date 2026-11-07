@@ -15,8 +15,9 @@ Each run is classified:
 
 - ok:          redact succeeded and the independent checks passed;
 - refused:     redact refused with a typed error and wrote nothing —
-               an unsupported feature, or the input itself (malformed,
-               over a limit); the reason is tallied;
+               an unsupported feature, or another typed error (malformed
+               input, a limit, a signature policy); the reason is
+               tallied;
 - unexpected:  any other error, or a success that fails a check.
 
 Checks on a success (tools that share no code with kasane):
@@ -188,11 +189,11 @@ def run_one(kasane, pdf, kind, rect, size, in_words, tmp):
                 # The blocker kind: the text before its own detail.
                 reason += ": " + re.split(r"[:—(]", detail, maxsplit=1)[0].strip()
             res.update(outcome="refused", reason=reason, detail=detail[:200])
-        elif (k := re.match(r"error \[(parse error|invalid document structure|missing reference|limit exceeded)\]", msg)) \
+        elif (k := re.match(r"error \[([^\]]+)\]", msg)) \
                 and r.returncode == 1 and not os.path.exists(out):
-            # A typed refusal of the input itself (malformed, or over a
-            # limit): no output, nothing claimed.
-            res.update(outcome="refused", reason="input: " + k.group(1), detail=msg[:200])
+            # Any other typed error (malformed input, a limit, a
+            # signature or encryption policy): no output, nothing claimed.
+            res.update(outcome="refused", reason="other: " + k.group(1), detail=msg[:200])
         else:
             res.update(outcome="unexpected", reason=msg[:200])
         return res

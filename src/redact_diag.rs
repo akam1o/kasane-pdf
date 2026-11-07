@@ -996,6 +996,70 @@ impl<'a> DiagWalker<'a> {
     /// `targets`/`uncertain`/`blockers` inside the walk goes through
     /// `bump_reported` so an adversarial stream cannot grow the report
     /// without bound (e.g. thousands of `gs` blockers).
+    /// Redaction mode: apply the ExtGState `name` (§8.4.5) to the
+    /// state the walk tracks, or say why it cannot be. The stroke
+    /// parameters are applied; parameters that only change colour or
+    /// compositing (blend mode, alpha, overprint, transfer, halftone,
+    /// rendering intent, flatness, smoothness, stroke adjustment …) do
+    /// not move what is painted where, and redaction only removes or
+    /// cuts by geometry, so they are passed through. A soft mask other
+    /// than `/None` (its group's content shapes what shows) and `/Font`
+    /// are not handled.
+    fn apply_ext_gstate(&mut self, name: &[u8]) -> Result<Option<&'static str>, Error> {
+        let Some(gs) = self
+            .doc
+            .resolve_resource(&self.resources, "ExtGState", name)?
+        else {
+            return Ok(Some("not defined in the current resources"));
+        };
+        let Some(d) = gs.as_dict() else {
+            return Ok(Some("not a dictionary"));
+        };
+        let mut st = self.gs.stroke.clone();
+        for (k, v) in d {
+            let v = self.doc.deref(v)?;
+            match k.as_slice() {
+                b"LW" => match v.as_number() {
+                    Some(w) if w.is_finite() => st.width = w,
+                    _ => return Ok(Some("/LW is not a finite number")),
+                },
+                b"LC" => match v.as_i64() {
+                    Some(c @ 0..=2) => st.cap = c,
+                    _ => return Ok(Some("/LC is not 0, 1 or 2")),
+                },
+                b"LJ" => match v.as_i64() {
+                    Some(j @ 0..=2) => st.join = j,
+                    _ => return Ok(Some("/LJ is not 0, 1 or 2")),
+                },
+                b"ML" => match v.as_number() {
+                    Some(m) if m.is_finite() => st.miter_limit = m,
+                    _ => return Ok(Some("/ML is not a finite number")),
+                },
+                b"D" => {
+                    let dashes = v
+                        .as_array()
+                        .and_then(|a| a.first())
+                        .map(|a| self.doc.deref(a))
+                        .transpose()?;
+                    match dashes.as_ref().and_then(|a| a.as_array()) {
+                        Some(a) => st.dashed = !a.is_empty(),
+                        None => return Ok(Some("/D is not [array phase]")),
+                    }
+                }
+                b"SMask" => {
+                    if v.as_name() != Some(b"None".as_slice()) {
+                        return Ok(Some("a soft mask is not handled"));
+                    }
+                }
+                b"Font" => return Ok(Some("/Font is not handled")),
+                // Colour and compositing only (and keys readers ignore).
+                _ => {}
+            }
+        }
+        self.gs.stroke = st;
+        Ok(None)
+    }
+
     fn bump_reported(&mut self) -> Result<(), Error> {
         self.reported += 1;
         if self.reported > self.limits.max_diag_items {
@@ -1372,6 +1436,16 @@ impl<'a> DiagWalker<'a> {
                     ),
                 })?;
                 self.uncertain_state = true;
+            }
+            O::SetExtGState(n) if self.redaction_mode => {
+                if let Some(why) = self.apply_ext_gstate(n)? {
+                    self.push_blocker(Blocker {
+                        site: Some(self.site()),
+                        what: "ExtGState (gs)".into(),
+                        detail: format!("/{} — {why}", String::from_utf8_lossy(n)),
+                    })?;
+                    self.uncertain_state = true;
+                }
             }
             O::SetExtGState(n) => {
                 // An uninterpreted `gs` may change the line width,

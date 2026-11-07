@@ -45,6 +45,11 @@ versions follow [Semantic Versioning](https://semver.org/).
   the output still draws (from a page, directly or through forms); each
   display is reported. It replaces the per-original "one kept copy"
   rule.
+- `redact` applies ExtGState stroke parameters and passes colour and
+  compositing ones through instead of refusing every `gs` (a soft mask
+  or `/Font` is still refused), and keeps annotations of any kind that
+  are clear of the rects (one meeting a rect, other than a link, and
+  NoZoom/NoRotate annotations are refused).
 - `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
   RFC 7932 data including large windows, Flate predictors, refused on
   inline images. Output and decoder memory are bounded by

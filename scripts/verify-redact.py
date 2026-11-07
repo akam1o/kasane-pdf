@@ -114,6 +114,8 @@ CASES = [
         9: IMAGE})), [], "ok"),
     ("text-annotation", build(page(TEXT, page_extra=b"/Annots [8 0 R]", more={
         8: b"<< /Type /Annot /Subtype /Text /Rect [50 95 60 105] /Contents (SECRETTEXT) >>"})), [], "refused"),
+    ("annotation-outside", build(page(TEXT, page_extra=b"/Annots [8 0 R]", more={
+        8: b"<< /Type /Annot /Subtype /Square /Rect [170 170 190 190] /Contents (Reviewed) >>"})), [], "ok"),
     # Structures common in real documents.
     ("table-rules-crossing", build(page(TEXT + b" 0.5 w 10 92 m 190 92 l 10 112 m 190 112 l 100 80 m 100 130 l S")), [], "ok"),
     ("background-box-crossing", build(page(b"0.9 g 20 85 170 35 re f 0 g " + TEXT)), [], "ok"),

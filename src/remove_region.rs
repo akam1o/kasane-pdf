@@ -843,9 +843,11 @@ pub(crate) fn regions_edit_session<'a>(
         for (i, r) in raw_rects.iter().enumerate() {
             validated.push(check_rect(i, r.0, r.1, r.2, r.3)?);
         }
-        // Redaction keeps /Link annotations outside every rect and
-        // removes those whose /Rect meets one (with their action or
-        // destination); any other annotation is still refused.
+        // Redaction keeps annotations outside every rect and removes
+        // /Link annotations whose /Rect meets one (with their action or
+        // destination); any other annotation meeting a rect is refused.
+        // An appearance is drawn into /Rect (§12.5.5) unless NoZoom or
+        // NoRotate place it elsewhere — those are refused.
         let mut kept_annots: Option<Vec<Object>> = None;
         let mut links_removed: u64 = 0;
         let mut tagged_links_removed: u64 = 0;
@@ -868,12 +870,7 @@ pub(crate) fn regions_edit_session<'a>(
                 let d = annot
                     .as_dict()
                     .ok_or_else(|| Error::Structure(format!("/Annots[{i}] is not a dictionary")))?;
-                if d.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) != Some(b"Link") {
-                    return Err(Error::Unsupported {
-                        feature: "redaction on a page with annotations other than links",
-                        detail: format!("/Annots[{i}] — their content is not evaluated"),
-                    });
-                }
+                let link = d.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Link");
                 // NoZoom / NoRotate (§12.5.3) draw the appearance away
                 // from /Rect on a rotated or zoomed page.
                 let flags = d
@@ -884,7 +881,7 @@ pub(crate) fn regions_edit_session<'a>(
                     .unwrap_or(0);
                 if flags & (8 | 16) != 0 {
                     return Err(Error::Unsupported {
-                        feature: "redaction on a page with a NoZoom or NoRotate link",
+                        feature: "redaction on a page with a NoZoom or NoRotate annotation",
                         detail: format!("/Annots[{i}] — its appearance is not placed by /Rect"),
                     });
                 }
@@ -899,6 +896,12 @@ pub(crate) fn regions_edit_session<'a>(
                 let hit = validated
                     .iter()
                     .any(|v| x0 <= v.urx && x1 >= v.llx && y0 <= v.ury && y1 >= v.lly);
+                if hit && !link {
+                    return Err(Error::Unsupported {
+                        feature: "redaction of an annotation other than a link meeting a rect",
+                        detail: format!("/Annots[{i}] — its content is not edited"),
+                    });
+                }
                 if hit {
                     links_removed += 1;
                     if d.contains_key(b"StructParent".as_slice()) {

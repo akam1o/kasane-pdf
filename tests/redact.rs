@@ -445,10 +445,10 @@ fn refusals() {
         "",
         vec![(
             30,
-            b"<< /Type /Annot /Subtype /Text /Rect [180 180 190 190] >>".to_vec(),
+            b"<< /Type /Annot /Subtype /Text /Rect [100 100 110 110] >>".to_vec(),
         )],
     );
-    assert!(unsupported(run(&annots, vec![RECT])).contains("other than links"));
+    assert!(unsupported(run(&annots, vec![RECT])).contains("other than a link meeting a rect"));
     let invisible = one_page(
         "BT /F1 12 Tf 3 Tr 50 100 Td (SECRETTEXT) Tj ET",
         "",
@@ -1610,4 +1610,87 @@ fn trimmed_resources_keep_names_an_inheriting_child_uses() {
         50,
         "the inheriting child still draws /Other"
     );
+}
+
+// ExtGState in redaction: stroke parameters applied, colour and
+// compositing passed through, soft masks and fonts refused.
+
+const GS_RES: &str = "/Font << /F1 20 0 R >> /ExtGState << /Wide << /LW 10 /LC 0 >> \
+    /Alpha << /Type /ExtGState /ca 0.5 /CA 0.5 /BM /Multiply /SMask /None /OP false /SA true >> \
+    /Masked << /SMask << /S /Luminosity /G 40 0 R >> >> /F << /Font [20 0 R 12] >> >>";
+
+/// A line width set by `gs` decides where the stroke reaches.
+#[test]
+fn a_gs_line_width_is_applied() {
+    let pdf = doc_with(GS_RES, &[b"/Wide gs 10 118 m 190 118 l S"], vec![]);
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.paths_cut, 1, "the 10-wide band reaches into the rect");
+    assert_eq!(at(&r.output, 100, 114), 255);
+    assert_eq!(at(&r.output, 20, 118), 0);
+}
+
+/// Alpha, blend mode and other colour parameters do not stop redaction.
+#[test]
+fn compositing_gs_is_passed_through() {
+    let pdf = doc_with(GS_RES, &[format!("/Alpha gs {SECRET}").as_bytes()], vec![]);
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.codes_removed, 10);
+    assert!(!page_text(&r.output, 0).contains("SECRET"));
+}
+
+#[test]
+fn a_gs_soft_mask_or_font_is_refused() {
+    let mask = stream_obj(
+        "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Group << /S /Transparency /CS /DeviceGray >>",
+        b"1 g 0 0 200 200 re f",
+    );
+    for g in ["Masked", "F"] {
+        let pdf = doc_with(
+            GS_RES,
+            &[format!("/{g} gs {SECRET}").as_bytes()],
+            vec![(40, mask.clone())],
+        );
+        let e = unsupported(run(&pdf, vec![RECT]));
+        assert!(e.contains("ExtGState"), "{g}: {e}");
+    }
+}
+
+/// Annotations clear of every rect are kept as they are; NoZoom and
+/// NoRotate ones (drawn away from /Rect) are refused anywhere.
+#[test]
+fn annotations_clear_of_the_rects_are_kept() {
+    let ap = stream_obj(
+        "/Type /XObject /Subtype /Form /BBox [0 0 10 10]",
+        b"0 g 0 0 10 10 re f",
+    );
+    let annot = |f: u32| {
+        format!(
+            "<< /Type /Annot /Subtype /Square /Rect [170 170 180 180] /F {f} /Contents (Note) \
+             /AP << /N 31 0 R >> >>"
+        )
+        .into_bytes()
+    };
+    let pdf = one_page(
+        SECRET,
+        "/Annots [30 0 R]",
+        "",
+        vec![(30, annot(4)), (31, ap.clone())],
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.codes_removed, 10);
+    let doc = Document::from_bytes(&r.output).unwrap();
+    let page = doc.resolve(doc.pages()[0].object_ref().unwrap()).unwrap();
+    let annots = page.as_dict().unwrap().get(b"Annots".as_slice()).cloned();
+    let annots = doc.deref(&annots.expect("the square is kept")).unwrap();
+    assert_eq!(annots.as_array().unwrap().len(), 1);
+    assert_eq!(at(&r.output, 175, 175), 0, "and still drawn");
+    for f in [4 | 8, 4 | 16] {
+        let pdf = one_page(
+            SECRET,
+            "/Annots [30 0 R]",
+            "",
+            vec![(30, annot(f)), (31, ap.clone())],
+        );
+        assert!(unsupported(run(&pdf, vec![RECT])).contains("NoZoom or NoRotate"));
+    }
 }

@@ -38,6 +38,8 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 | painted paths wholly inside one rect | the path and its painting op are deleted |
 | painted paths crossing a rect's edge | cut there (`paths_cut`): filled axis-aligned rectangles become their difference with the rects (exact; several only when they do not overlap); stroked straight segments are cut, in user space where the stroke is defined, at the centreline positions whose cross-section (and cap) would reach the rect — exact for butt caps, the cap's square for square and round caps — so nothing reaches inside and nothing outside is lost; a corner kept near a rect must clear it by its join (the exact miter, or the bevel/round extent). Curves, dashed strokes, other fill shapes and overlapping rectangles near a rect are refused |
 | `/Link` annotations whose `/Rect` meets a rect | removed with their action or destination (`links_removed`); links outside every rect are kept. A removed link the structure tree refers to (`/StructParent`) is refused unless the tree is removed |
+| other annotations clear of every rect | kept as they are (their appearance is drawn into `/Rect`); their text is still searched for `elsewhere` |
+| ExtGState (`gs`) | stroke parameters (`/LW`, `/LC`, `/LJ`, `/ML`, `/D`) are applied; colour and compositing parameters (alpha, blend mode, overprint, transfer, halftone, `/SMask /None` …) are passed through, since removal and cutting are by geometry |
 | Form XObjects, nested up to 16 deep (transparency groups included) | their text, paths and images inside the rects are removed, cut or zeroed in copies along the invocation chain — each copy drawn by that one invocation only (`forms_edited`), its `/Resources` naming only what it draws. Other invocations and pages keep the originals; an original still drawn is reported in `elsewhere` (`Removed::Form` / `Removed::Image`); otherwise it is not carried. A form cycle is refused |
 | document `/Info`, catalog XMP `/Metadata` | always removed |
 | structure tree | refused when it carries `/Alt`, `/ActualText` or `/E`; with `remove_structure_tree(true)` the tree and `/MarkInfo` are removed |
@@ -103,10 +105,11 @@ secret; the rest must be refused with no file written.
 
 ## Refused (typed error, no output)
 
-On an edited page: annotations other than links, forms nested more
+On an edited page: annotations other than links meeting a rect,
+NoZoom or NoRotate annotations, forms nested more
 than 16 deep or cyclic, inline images meeting a rect
 (or whose data length is not fixed by their dictionary), `sh`,
-ExtGState (`gs`), optional content and `/ActualText` marked content,
+ExtGState with a soft mask or `/Font`, optional content and `/ActualText` marked content,
 text in any mode but `Tr 0` (invisible OCR text, stroked, clipping),
 non-embedded fonts (glyph extent unknown), Type 3 fonts (a CharProc
 may paint anywhere), vertical writing, images with masks, soft masks,
@@ -116,8 +119,8 @@ cannot be cut exactly (curves, dashes, non-rectangular fills,
 overlapping filled rectangles, a corner whose join reaches a rect), a
 path that also clips, content meeting a rect under a clip that is not an
 axis-aligned rectangle (whether it shows there is not decided), an
-operator other than path construction inside a path object (§8.2), a
-NoZoom or NoRotate link. Anywhere: an
+operator other than path construction inside a path object (§8.2).
+Anywhere: an
 undecidable resource use, a structure tree with alternate text (by
 default); with `refuse_copies_elsewhere`, any copy found elsewhere. Rewrite refusals (signed or encrypted documents, …) apply.
 
@@ -150,8 +153,8 @@ document text in `Debug` output.
 
 ## Not covered
 
-Annotations other than links and form fields on an edited page, forms
-nested more than 16 deep, patterns, inline images
-meeting a rect, ExtGState (`gs`), shadings, curves and dashed strokes
+Annotations other than links meeting a rect, forms nested more than
+16 deep, patterns, inline images meeting a rect, soft masks and fonts
+set by ExtGState, shadings, curves and dashed strokes
 crossing a rect, masked, CMYK or indexed images, invisible OCR text.
 Each is refused, not approximated.
