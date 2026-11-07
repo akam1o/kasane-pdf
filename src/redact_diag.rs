@@ -1064,7 +1064,8 @@ impl<'a> DiagWalker<'a> {
                         "non-finite cm operands — cannot continue diagnosis".into(),
                     ));
                 }
-                self.gs.ctm = self.gs.ctm.concat(*m);
+                // CTM' = cm × CTM: the operand applies first.
+                self.gs.ctm = m.concat(self.gs.ctm);
             }
             O::SetLineWidth(w) => self.gs.stroke.width = *w,
             O::SetLineCap(c) => self.gs.stroke.cap = *c,
@@ -1956,7 +1957,7 @@ impl<'a> DiagWalker<'a> {
             (bbox.llx, bbox.ury),
             (bbox.urx, bbox.ury),
         ]
-        .map(|(x, y)| self.gs.ctm.concat(form_matrix).transform(x, y));
+        .map(|(x, y)| form_matrix.concat(self.gs.ctm).transform(x, y));
         let bounds = (
             corners[0]
                 .0
@@ -2039,7 +2040,8 @@ impl<'a> DiagWalker<'a> {
         };
         self.gs_stack.push(self.gs.clone());
         let saved_uncertain = self.uncertain_state;
-        self.gs.ctm = self.gs.ctm.concat(form_matrix);
+        // Form space → the caller's user space (/Matrix) → page.
+        self.gs.ctm = form_matrix.concat(self.gs.ctm);
         // The form's BBox is its clip in *form space* — record it as
         // the current clip rect mapped to page space.
         self.gs.clip = Some(match self.gs.clip {
