@@ -12,9 +12,10 @@
 //! 2. **The edited originals (verified, with stated exceptions).** No
 //!    live object of the output — every stream, stored or decoded —
 //!    equals an edited image's or form's original, except an object
-//!    the output still draws — a `Do` on a page or, transitively, in
-//!    a form a page draws (another page, the same page outside the
-//!    rects): those displays are listed in [`Redaction::elsewhere`].
+//!    the output still invokes — a `Do` on a page, in an annotation's
+//!    appearance, or transitively in a form those draw (another page,
+//!    the same page outside the rects): those invocations, visible or
+//!    hidden by a clip, are listed in [`Redaction::elsewhere`].
 //!    Names of an original on pages that do not draw it are removed.
 //!    The output is a single revision (no incremental history, no
 //!    unreachable objects carried). Equal digests are the test: the
@@ -383,25 +384,83 @@ fn verify(
     Ok((out, residual, shown))
 }
 
-/// Every XObject a page of `out` draws — by a `Do` in its content or,
-/// transitively, in the forms it draws — with the pages drawing it.
+/// Every XObject a page of `out` invokes — by a `Do` in its content or
+/// in an annotation's appearance stream (`/AP`, every state), or
+/// transitively in the forms those draw — with the pages invoking it.
 /// Names resolve as a reader resolves them: against the form's own
-/// `/Resources`, else the resources it inherits.
+/// `/Resources`, else the resources it inherits. An invocation counts
+/// whether or not a clip or `/BBox` hides what it draws: this is what
+/// the output still *uses*, not what is visible.
 fn drawn_xobjects(
     out: &Document,
     limits: &Limits,
 ) -> Result<HashMap<IndirectRef, BTreeSet<usize>>, Error> {
+    type Frame = (
+        Vec<crate::content::Operation>,
+        Object,
+        Option<IndirectRef>,
+        usize,
+    );
+    // Enter form or image `r`, invoked under `res` (owned by `owner`,
+    // None for the page) at `depth`: record it, and return a form's
+    // content to walk — once per resources it resolves against.
+    let enter = |r: IndirectRef,
+                 res: &Object,
+                 owner: Option<IndirectRef>,
+                 depth: usize,
+                 page: usize,
+                 drawn: &mut HashMap<IndirectRef, BTreeSet<usize>>,
+                 seen: &mut HashSet<(IndirectRef, Option<IndirectRef>)>|
+     -> Result<Option<Frame>, Error> {
+        drawn.entry(r).or_default().insert(page);
+        let obj = out.resolve(r)?;
+        let Object::Stream { dict, data } = &obj else {
+            return Ok(None);
+        };
+        if dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Image") {
+            return Ok(None);
+        }
+        let own = dict
+            .get(b"Resources".as_slice())
+            .filter(|o| !matches!(o, Object::Null))
+            .cloned();
+        if !seen.insert((r, if own.is_some() { None } else { owner })) {
+            return Ok(None);
+        }
+        if depth + 1 > limits.max_xobject_depth as usize {
+            return Err(Error::LimitExceeded {
+                limit: "max_xobject_depth",
+                max: limits.max_xobject_depth as u64,
+            });
+        }
+        let decoded = out.decode_stream(dict, data)?;
+        let mut warnings = Vec::new();
+        let ops = crate::content::parse_content_stream(
+            &[decoded],
+            limits,
+            out.recovery_mode(),
+            &mut warnings,
+        )?;
+        Ok(Some(match own {
+            Some(own) => (ops, own, Some(r), depth + 1),
+            None => (ops, res.clone(), owner, depth + 1),
+        }))
+    };
     let mut drawn: HashMap<IndirectRef, BTreeSet<usize>> = HashMap::new();
     for (i, page) in out.pages().iter().enumerate() {
-        let Some(res) = page.resources().cloned() else {
-            continue;
-        };
-        // (ops, resources in effect, the form owning them — None for
-        // the page —, depth). A form is walked once per resources it
-        // resolves against: its own, or for a form without them, the
-        // owner's.
+        let res = page
+            .resources()
+            .cloned()
+            .unwrap_or(Object::Dict(Dict::new()));
         let mut seen: HashSet<(IndirectRef, Option<IndirectRef>)> = HashSet::new();
-        let mut stack = vec![(out.page_operations(page)?, res, None::<IndirectRef>, 0usize)];
+        let mut stack: Vec<Frame> = vec![(out.page_operations(page)?, res.clone(), None, 0)];
+        // Annotation appearances: their own resources, else none.
+        for r in appearance_streams(out, page)? {
+            let empty = Object::Dict(Dict::new());
+            if let Some(f) = enter(r, &empty, Some(r), 0, i, &mut drawn, &mut seen)? {
+                stack.push(f);
+            }
+        }
         while let Some((ops, res, owner, depth)) = stack.pop() {
             for op in &ops {
                 let crate::content::Operation::Do(name) = op else {
@@ -410,44 +469,48 @@ fn drawn_xobjects(
                 let Some(Object::Ref(r)) = out.resolve_resource_raw(&res, "XObject", name)? else {
                     continue;
                 };
-                drawn.entry(r).or_default().insert(i);
-                let obj = out.resolve(r)?;
-                let Object::Stream { dict, data } = &obj else {
-                    continue;
-                };
-                if dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) != Some(b"Form") {
-                    continue;
-                }
-                let own = dict
-                    .get(b"Resources".as_slice())
-                    .filter(|o| !matches!(o, Object::Null))
-                    .cloned();
-                let key = (r, if own.is_some() { None } else { owner });
-                if !seen.insert(key) {
-                    continue;
-                }
-                if depth + 1 > limits.max_xobject_depth as usize {
-                    return Err(Error::LimitExceeded {
-                        limit: "max_xobject_depth",
-                        max: limits.max_xobject_depth as u64,
-                    });
-                }
-                let decoded = out.decode_stream(dict, data)?;
-                let mut warnings = Vec::new();
-                let fops = crate::content::parse_content_stream(
-                    &[decoded],
-                    limits,
-                    out.recovery_mode(),
-                    &mut warnings,
-                )?;
-                match own {
-                    Some(own) => stack.push((fops, own, Some(r), depth + 1)),
-                    None => stack.push((fops, res.clone(), owner, depth + 1)),
+                if let Some(f) = enter(r, &res, owner, depth, i, &mut drawn, &mut seen)? {
+                    stack.push(f);
                 }
             }
         }
     }
     Ok(drawn)
+}
+
+/// The appearance streams (`/AP` `/N`, `/R`, `/D`, each a stream or a
+/// dictionary of states) of a page's annotations.
+fn appearance_streams(out: &Document, page: &crate::page::Page) -> Result<Vec<IndirectRef>, Error> {
+    let mut refs = Vec::new();
+    let Some(annots) = crate::redact_diag::page_dict_entry(out, page, b"Annots")? else {
+        return Ok(refs);
+    };
+    let annots = out.deref(&annots)?;
+    for a in annots.as_array().unwrap_or(&[]) {
+        let a = out.deref(a)?;
+        let Some(ap) = a.as_dict().and_then(|d| d.get(b"AP".as_slice())) else {
+            continue;
+        };
+        let ap = out.deref(ap)?;
+        let Some(ap) = ap.as_dict() else { continue };
+        for v in ap.values() {
+            match v {
+                Object::Ref(r) => match out.resolve(*r)? {
+                    Object::Dict(states) => refs.extend(states.values().filter_map(|s| match s {
+                        Object::Ref(r) => Some(*r),
+                        _ => None,
+                    })),
+                    _ => refs.push(*r),
+                },
+                Object::Dict(states) => refs.extend(states.values().filter_map(|s| match s {
+                    Object::Ref(r) => Some(*r),
+                    _ => None,
+                })),
+                _ => {}
+            }
+        }
+    }
+    Ok(refs)
 }
 
 /// Where the removed `texts` (runs of four or more non-whitespace

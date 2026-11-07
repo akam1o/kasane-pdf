@@ -885,6 +885,13 @@ pub(crate) fn regions_edit_session<'a>(
                         detail: format!("/Annots[{i}] — its appearance is not placed by /Rect"),
                     });
                 }
+                // A watermark's /FixedPrint matrix moves it when printed.
+                if d.contains_key(b"FixedPrint".as_slice()) {
+                    return Err(Error::Unsupported {
+                        feature: "redaction on a page with a /FixedPrint annotation",
+                        detail: format!("/Annots[{i}] — printed away from /Rect"),
+                    });
+                }
                 let r = d
                     .get(b"Rect".as_slice())
                     .map(|r| doc.deref(r))

@@ -40,7 +40,7 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 | `/Link` annotations whose `/Rect` meets a rect | removed with their action or destination (`links_removed`); links outside every rect are kept. A removed link the structure tree refers to (`/StructParent`) is refused unless the tree is removed |
 | other annotations clear of every rect | kept as they are (their appearance is drawn into `/Rect`); their text is still searched for `elsewhere` |
 | shading patterns as fill or stroke colour | a pattern paints only inside what it fills, so the path or glyph is removed or cut as with any colour; tiling patterns (whose cell is content of its own) are refused |
-| ExtGState (`gs`) | stroke parameters (`/LW`, `/LC`, `/LJ`, `/ML`, `/D`) are applied; colour and compositing parameters (alpha, blend mode, overprint, transfer, halftone, `/SMask /None` …) are passed through, since removal and cutting are by geometry |
+| ExtGState (`gs`) | stroke parameters (`/LW`, `/LC`, `/LJ`, `/ML`, `/D`) are applied; colour and compositing parameters (alpha, blend mode, overprint, transfer, halftone, `/SMask /None` …) are passed through, since removal and cutting are by geometry. A soft mask, `/Font` and stroke adjustment (`/SA true`, device-dependent stroke edges) are refused |
 | Form XObjects, nested up to 16 deep (transparency groups included) | their text, paths and images inside the rects are removed, cut or zeroed in copies along the invocation chain — each copy drawn by that one invocation only (`forms_edited`), its `/Resources` naming only what it draws. Other invocations and pages keep the originals; an original still drawn is reported in `elsewhere` (`Removed::Form` / `Removed::Image`); otherwise it is not carried. A form cycle is refused |
 | document `/Info`, catalog XMP `/Metadata` | always removed |
 | structure tree | refused when it carries `/Alt`, `/ActualText` or `/E`; with `remove_structure_tree(true)` the tree and `/MarkInfo` are removed |
@@ -86,10 +86,13 @@ Three separate statements; none implies the next:
 - No live object's stream — stored bytes or decoded — equals an edited
   image's or form's original (SHA-256 over every xref entry,
   object-stream members included), except an object the output still
-  draws — by a `Do` on a page or, transitively, in a form a page draws
-  (names resolved as a reader does, inherited resources included).
-  Those displays are reported in `elsewhere`; any other copy — one only
-  named in some resources, or reachable otherwise — fails.
+  invokes — by a `Do` on a page, in an annotation's appearance, or
+  transitively in a form those draw (names resolved as a reader does,
+  inherited resources included). Whether that invocation is visible
+  (a clip or `/BBox` may hide it) is not decided: it is reported in
+  `elsewhere` either way, and `refuse_copies_elsewhere` refuses it. Any
+  other copy — one only named in some resources, or reachable
+  otherwise — fails.
 
 A failed check is an error (`Unsupported { feature: "redaction output
 failed verification", .. }`), never a returned PDF.
@@ -107,10 +110,10 @@ secret; the rest must be refused with no file written.
 ## Refused (typed error, no output)
 
 On an edited page: annotations other than links meeting a rect,
-NoZoom or NoRotate annotations, forms nested more
+NoZoom, NoRotate or `/FixedPrint` annotations, forms nested more
 than 16 deep or cyclic, inline images meeting a rect
 (or whose data length is not fixed by their dictionary), `sh`,
-ExtGState with a soft mask or `/Font`, optional content and `/ActualText` marked content,
+ExtGState with a soft mask, `/Font` or `/SA true`, optional content and `/ActualText` marked content,
 text in any mode but `Tr 0` (invisible OCR text, stroked, clipping),
 non-embedded fonts (glyph extent unknown), Type 3 fonts (a CharProc
 may paint anywhere), vertical writing, images with masks, soft masks,

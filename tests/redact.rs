@@ -1616,7 +1616,8 @@ fn trimmed_resources_keep_names_an_inheriting_child_uses() {
 // compositing passed through, soft masks and fonts refused.
 
 const GS_RES: &str = "/Font << /F1 20 0 R >> /ExtGState << /Wide << /LW 10 /LC 0 >> \
-    /Alpha << /Type /ExtGState /ca 0.5 /CA 0.5 /BM /Multiply /SMask /None /OP false /SA true >> \
+    /Alpha << /Type /ExtGState /ca 0.5 /CA 0.5 /BM /Multiply /SMask /None /OP false /SA false >> \
+    /Adjust << /SA true >> \
     /Masked << /SMask << /S /Luminosity /G 40 0 R >> >> /F << /Font [20 0 R 12] >> >>";
 
 /// A line width set by `gs` decides where the stroke reaches.
@@ -1644,7 +1645,7 @@ fn a_gs_soft_mask_or_font_is_refused() {
         "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Group << /S /Transparency /CS /DeviceGray >>",
         b"1 g 0 0 200 200 re f",
     );
-    for g in ["Masked", "F"] {
+    for g in ["Masked", "F", "Adjust"] {
         let pdf = doc_with(
             GS_RES,
             &[format!("/{g} gs {SECRET}").as_bytes()],
@@ -1729,4 +1730,57 @@ fn a_tiling_pattern_is_refused() {
     );
     let e = unsupported(run(&pdf, vec![(40.0, 40.0, 160.0, 160.0)]));
     assert!(e.contains("tiling pattern"), "{e}");
+}
+
+/// A watermark's /FixedPrint moves it away from /Rect when printed.
+#[test]
+fn a_fixed_print_watermark_is_refused() {
+    let pdf = one_page(
+        SECRET,
+        "/Annots [30 0 R]",
+        "",
+        vec![(
+            30,
+            b"<< /Type /Annot /Subtype /Watermark /Rect [10 10 30 30] /F 4 \
+              /FixedPrint << /Type /FixedPrint /Matrix [1 0 0 1 40 80] >> >>"
+                .to_vec(),
+        )],
+    );
+    assert!(unsupported(run(&pdf, vec![RECT])).contains("FixedPrint"));
+}
+
+/// An original an annotation's appearance still draws is a display:
+/// kept, reported.
+#[test]
+fn an_original_drawn_by_an_annotation_appearance_is_reported() {
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R /Annots [6 0 R] >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"q 40 0 0 40 50 50 cm /Im1 Do Q")),
+        (5, image_obj()),
+        (
+            6,
+            b"<< /Type /Annot /Subtype /Square /Rect [150 150 190 190] /AP << /N 7 0 R >> >>"
+                .to_vec(),
+        ),
+        (
+            7,
+            stream_obj(
+                "/Type /XObject /Subtype /Form /BBox [0 0 40 40] /Resources << /XObject << /I 5 0 R >> >>",
+                b"q 40 0 0 40 0 0 cm /I Do Q",
+            ),
+        ),
+    ]);
+    let r = run(&pdf, vec![(40.0, 40.0, 100.0, 100.0)]).unwrap();
+    assert_eq!(r.images_edited, 1);
+    assert!(r
+        .elsewhere
+        .iter()
+        .any(|e| e.removed == kasane_pdf::Removed::Image));
 }

@@ -1000,11 +1000,11 @@ impl<'a> DiagWalker<'a> {
     /// state the walk tracks, or say why it cannot be. The stroke
     /// parameters are applied; parameters that only change colour or
     /// compositing (blend mode, alpha, overprint, transfer, halftone,
-    /// rendering intent, flatness, smoothness, stroke adjustment …) do
-    /// not move what is painted where, and redaction only removes or
-    /// cuts by geometry, so they are passed through. A soft mask other
-    /// than `/None` (its group's content shapes what shows) and `/Font`
-    /// are not handled.
+    /// rendering intent, flatness, smoothness …) do not move what is
+    /// painted where, and redaction only removes or cuts by geometry,
+    /// so they are passed through. A soft mask other than `/None` (its
+    /// group's content shapes what shows), `/Font` and stroke
+    /// adjustment (`/SA true`, device-dependent edges) are not handled.
     fn apply_ext_gstate(&mut self, name: &[u8]) -> Result<Option<&'static str>, Error> {
         let Some(gs) = self
             .doc
@@ -1052,6 +1052,11 @@ impl<'a> DiagWalker<'a> {
                     }
                 }
                 b"Font" => return Ok(Some("/Font is not handled")),
+                // Stroke adjustment moves stroke edges to device pixels
+                // (§10.7.5) — beyond the geometry the cut works on.
+                b"SA" if !matches!(v, Object::Bool(false)) => {
+                    return Ok(Some("stroke adjustment (/SA true) is not handled"));
+                }
                 // Colour and compositing only (and keys readers ignore).
                 _ => {}
             }

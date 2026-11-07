@@ -42,12 +42,12 @@ versions follow [Semantic Versioning](https://semver.org/).
   copies call each other, and each copy's `/Resources` names only what
   it draws (and what forms inheriting them draw).
 - `redact` verification: an edited original may stay only as an object
-  the output still draws (from a page, directly or through forms); each
-  display is reported. It replaces the per-original "one kept copy"
+  the output still invokes (from a page or an annotation appearance,
+  directly or through forms); each invocation is reported. It replaces the per-original "one kept copy"
   rule.
 - `redact` applies ExtGState stroke parameters and passes colour and
-  compositing ones through instead of refusing every `gs` (a soft mask
-  or `/Font` is still refused), and keeps annotations of any kind that
+  compositing ones through instead of refusing every `gs` (a soft mask,
+  `/Font` or `/SA true` is still refused), and keeps annotations of any kind that
   are clear of the rects (one meeting a rect, other than a link, and
   NoZoom/NoRotate annotations are refused).
 - `redact` accepts shading patterns as fill or stroke colour (the path
