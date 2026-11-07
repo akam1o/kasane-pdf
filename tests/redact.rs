@@ -2661,3 +2661,60 @@ fn embedded_substitutes_use_canonical_glyph_names() {
         .to_vec();
     assert_eq!(diffs[1 + 73].as_name(), Some(b"uni00AD".as_slice()));
 }
+
+// Curves crossing a rect: stroked curves are cut by subdivision into
+// exact sub-curves; fills and dashed curves stay refused.
+
+#[test]
+fn stroked_curves_crossing_a_rect_are_cut() {
+    let circle = "100 160 m 133.1 160 160 133.1 160 100 c 160 66.9 133.1 40 100 40 c \
+                  66.9 40 40 66.9 40 100 c 40 133.1 66.9 160 100 160 c h";
+    for c in [
+        "4 w 20 100 m 60 180 140 20 180 100 c S".to_string(),
+        format!("3 w 1 J {circle} S"),
+        "q 1.5 0.5 -0.5 1 0 0 cm 3 w 10 60 m 40 120 80 0 110 60 c S Q".to_string(),
+        "2 w 10 10 m 60 60 l 90 150 120 150 150 60 c 190 10 l S".to_string(),
+    ] {
+        let pdf = one_page(&c, "", "", vec![]);
+        let rect = (85.0, 80.0, 115.0, 175.0);
+        let r = run(&pdf, vec![rect]).unwrap();
+        assert!(r.paths_cut >= 1, "{c}");
+        let lost = lost_outside(&reds(&pdf), &reds(&r.output), rect);
+        // The band within the stroke's reach (√2 × half width, plus the
+        // subdivision's last step) of the rect may go; far away nothing.
+        let (a, b) = (reds(&pdf), reds(&r.output));
+        for y in 0..200u32 {
+            for x in 0..200u32 {
+                let (xf, yf) = (x as f64 + 0.5, 199.5 - y as f64);
+                if xf < rect.0 - 8.0 || xf > rect.2 + 8.0 || yf < rect.1 - 8.0 || yf > rect.3 + 8.0
+                {
+                    // The kept sub-curves are the original geometry; a
+                    // rasteriser flattens them a little differently, so
+                    // edge anti-aliasing may shift — but no ink is lost.
+                    let i = (y * 200 + x) as usize;
+                    assert!(
+                        !(a[i] < 64 && b[i] > 192),
+                        "{c}: far outside ({x}, {y}) {} → {}",
+                        a[i],
+                        b[i]
+                    );
+                }
+            }
+        }
+        assert!(lost < 200, "{c}: {lost} pixels lost next to the rect");
+    }
+}
+
+#[test]
+fn curved_fills_and_dashed_curves_are_refused() {
+    let fill = one_page("0 0 1 rg 30 60 m 90 60 90 90 30 90 c f", "", "", vec![]);
+    assert!(unsupported(run(&fill, vec![(40.0, 40.0, 160.0, 160.0)]))
+        .contains("crossing a rect's edge"));
+    let dashed = one_page(
+        "[4 2] 0 d 2 w 20 100 m 60 180 140 20 180 100 c S",
+        "",
+        "",
+        vec![],
+    );
+    assert!(unsupported(run(&dashed, vec![(85.0, 80.0, 115.0, 175.0)])).contains("dashed curve"));
+}

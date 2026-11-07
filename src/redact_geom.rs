@@ -61,8 +61,74 @@ struct Subpath {
     pts: Vec<(f64, f64)>,
     /// The same points in user space.
     upts: Vec<(f64, f64)>,
+    /// The segments in user space (the closing one not included).
+    segs: Vec<USeg>,
     closed: bool,
     curved: bool,
+}
+
+type P2 = (f64, f64);
+
+/// User-space curved subpaths (or pieces of them) with their closed flag.
+type Curves = Vec<(Vec<USeg>, bool)>;
+
+/// A user-space segment of a subpath.
+#[derive(Clone, Copy, Debug)]
+enum USeg {
+    Line(P2, P2),
+    Cubic(P2, P2, P2, P2),
+}
+
+impl USeg {
+    fn start(&self) -> P2 {
+        match *self {
+            USeg::Line(a, _) | USeg::Cubic(a, _, _, _) => a,
+        }
+    }
+    fn end(&self) -> P2 {
+        match *self {
+            USeg::Line(_, b) | USeg::Cubic(_, _, _, b) => b,
+        }
+    }
+    fn points(&self) -> Vec<P2> {
+        match *self {
+            USeg::Line(a, b) => vec![a, b],
+            USeg::Cubic(a, b, c, d) => vec![a, b, c, d],
+        }
+    }
+    /// The two halves at t = ½ (de Casteljau; exact sub-curves).
+    fn split(&self) -> (USeg, USeg) {
+        let mid = |p: P2, q: P2| ((p.0 + q.0) / 2.0, (p.1 + q.1) / 2.0);
+        match *self {
+            USeg::Line(a, b) => {
+                let m = mid(a, b);
+                (USeg::Line(a, m), USeg::Line(m, b))
+            }
+            USeg::Cubic(a, b, c, d) => {
+                let (ab, bc, cd) = (mid(a, b), mid(b, c), mid(c, d));
+                let (abc, bcd) = (mid(ab, bc), mid(bc, cd));
+                let m = mid(abc, bcd);
+                (USeg::Cubic(a, ab, abc, m), USeg::Cubic(m, bcd, cd, d))
+            }
+        }
+    }
+    /// The direction leaving the start and arriving at the end (the
+    /// first and last distinct control points).
+    fn tangents(&self) -> (Option<P2>, Option<P2>) {
+        let p = self.points();
+        let first = p
+            .iter()
+            .skip(1)
+            .find(|q| **q != p[0])
+            .map(|q| (q.0 - p[0].0, q.1 - p[0].1));
+        let n = p.len() - 1;
+        let last = p[..n]
+            .iter()
+            .rev()
+            .find(|q| **q != p[n])
+            .map(|q| (p[n].0 - q.0, p[n].1 - q.1));
+        (first, last)
+    }
 }
 
 fn unsupported(detail: impl Into<String>) -> Error {
@@ -92,31 +158,39 @@ pub(crate) fn cut_path(
             O::MoveTo(x, y) => subs.push(Subpath {
                 pts: vec![tp(*x, *y)],
                 upts: vec![(*x, *y)],
+                segs: Vec::new(),
                 closed: false,
                 curved: false,
             }),
             O::LineTo(x, y) => match subs.last_mut() {
                 Some(s) if !s.closed => {
+                    let cur = s.segs.last().map(|g| g.end()).unwrap_or(s.upts[0]);
+                    s.segs.push(USeg::Line(cur, (*x, *y)));
                     s.pts.push(tp(*x, *y));
                     s.upts.push((*x, *y));
                 }
                 _ => return Err(unsupported("a segment without a current point")),
             },
-            O::CurveTo(x1, y1, x2, y2, x3, y3) => {
-                let s = subs
-                    .last_mut()
-                    .ok_or_else(|| unsupported("a curve without a current point"))?;
+            O::CurveTo(..) | O::CurveToV(..) | O::CurveToY(..) => {
+                let s = match subs.last_mut() {
+                    Some(s) if !s.closed => s,
+                    _ => return Err(unsupported("a curve without a current point")),
+                };
+                let cur = s.segs.last().map(|g| g.end()).unwrap_or(s.upts[0]);
+                let seg = match *op {
+                    O::CurveTo(x1, y1, x2, y2, x3, y3) => {
+                        USeg::Cubic(cur, (x1, y1), (x2, y2), (x3, y3))
+                    }
+                    O::CurveToV(x2, y2, x3, y3) => USeg::Cubic(cur, cur, (x2, y2), (x3, y3)),
+                    O::CurveToY(x1, y1, x3, y3) => USeg::Cubic(cur, (x1, y1), (x3, y3), (x3, y3)),
+                    _ => unreachable!("matched above"),
+                };
                 s.curved = true;
-                s.pts.extend([tp(*x1, *y1), tp(*x2, *y2), tp(*x3, *y3)]);
-                s.upts.extend([(*x1, *y1), (*x2, *y2), (*x3, *y3)]);
-            }
-            O::CurveToV(x2, y2, x3, y3) | O::CurveToY(x2, y2, x3, y3) => {
-                let s = subs
-                    .last_mut()
-                    .ok_or_else(|| unsupported("a curve without a current point"))?;
-                s.curved = true;
-                s.pts.extend([tp(*x2, *y2), tp(*x3, *y3)]);
-                s.upts.extend([(*x2, *y2), (*x3, *y3)]);
+                for q in seg.points().into_iter().skip(1) {
+                    s.pts.push(tp(q.0, q.1));
+                    s.upts.push(q);
+                }
+                s.segs.push(seg);
             }
             O::ClosePath => {
                 if let Some(s) = subs.last_mut() {
@@ -131,6 +205,11 @@ pub(crate) fn cut_path(
                     tp(*x, *y + *h),
                 ],
                 upts: vec![(*x, *y), (*x + *w, *y), (*x + *w, *y + *h), (*x, *y + *h)],
+                segs: vec![
+                    USeg::Line((*x, *y), (*x + *w, *y)),
+                    USeg::Line((*x + *w, *y), (*x + *w, *y + *h)),
+                    USeg::Line((*x + *w, *y + *h), (*x, *y + *h)),
+                ],
                 closed: true,
                 curved: false,
             }),
@@ -215,7 +294,7 @@ pub(crate) fn cut_path(
     // Worked in user space, where the stroke is defined (§8.5.3.2):
     // each rect maps to a parallelogram there, the band, caps and
     // joins are exact.
-    let mut stroke_lines: Option<Lines> = None;
+    let mut stroke_lines: Option<(Lines, Curves)> = None;
     if stroke {
         let half = st.width.abs() / 2.0;
         if !(half.is_finite() && half > 0.0) {
@@ -267,19 +346,92 @@ pub(crate) fn cut_path(
         };
         let clear_of = |p: (f64, f64), r: f64| quads_exact.iter().all(|q| poly_dist(p, q) >= r);
         let mut out: Lines = Vec::new();
+        let mut curves_out: Vec<(Vec<USeg>, bool)> = Vec::new();
         let mut changed = false;
         for s in &subs {
             if s.curved {
-                // Keep it only when everything it can paint (the page
-                // hull of its control points, grown by the largest reach)
-                // clears every rect.
-                let r = half * limit.max(std::f64::consts::SQRT_2) * max_stretch(&m);
-                let h = bbox(&s.pts);
-                let grown_hull = [h[0] - r, h[1] - r, h[2] + r, h[3] + r];
-                if rects.iter().any(|q| overlaps_open(&grown_hull, q)) {
-                    return Err(unsupported("a curve near a rect"));
+                // Curves are cut by subdivision: a sub-curve is kept, as
+                // an exact de Casteljau piece of the original, when its
+                // control points' page bounds grown by the stroke's
+                // reach clear every rect (the curve lies inside its
+                // control hull, its band and caps within the reach);
+                // pieces still near a rect after MAX_SPLIT halvings are
+                // removed.
+                let reach = half * std::f64::consts::SQRT_2 * max_stretch(&m);
+                let cut_boxes: Vec<Rect> = rects.iter().map(|r| grow(r, 2.0 * SLACK)).collect();
+                let mut segs = s.segs.clone();
+                let start = s.upts[0];
+                let last = segs.last().map(|g| g.end()).unwrap_or(start);
+                if s.closed && last != start {
+                    segs.push(USeg::Line(last, start));
                 }
-                out.push((s.upts.clone(), s.closed, 0.0, false));
+                let mut kept: Vec<Option<USeg>> = Vec::new();
+                let mut budget = MAX_CURVE_PIECES;
+                for g in &segs {
+                    keep_clear(*g, &m, reach, &cut_boxes, 0, &mut kept, &mut budget)?;
+                }
+                let cut = kept.iter().any(|k| k.is_none());
+                let mut pieces: Vec<Vec<USeg>> = Vec::new();
+                let mut cur: Vec<USeg> = Vec::new();
+                for k in kept {
+                    match k {
+                        Some(g) => cur.push(g),
+                        None if !cur.is_empty() => pieces.push(std::mem::take(&mut cur)),
+                        None => {}
+                    }
+                }
+                if !cur.is_empty() {
+                    pieces.push(cur);
+                }
+                // A closed subpath cut somewhere: the last piece runs on
+                // into the first through the start point.
+                let closed_whole = s.closed && !cut;
+                if s.closed && cut && pieces.len() >= 2 {
+                    let first_starts = pieces[0][0].start() == start;
+                    let last_ends =
+                        pieces.last().and_then(|p| p.last()).map(|g| g.end()) == Some(start);
+                    if first_starts && last_ends {
+                        let mut merged = pieces.pop().expect("two or more");
+                        merged.extend(pieces[0].iter().copied());
+                        pieces[0] = merged;
+                    }
+                }
+                // Every join kept (between consecutive pieces of the
+                // original, and at a closed subpath's start) must clear
+                // the rects by its own reach.
+                for p in &pieces {
+                    let mut joins: Vec<(USeg, USeg)> = p.windows(2).map(|w| (w[0], w[1])).collect();
+                    if closed_whole {
+                        joins.push((*p.last().expect("non-empty"), p[0]));
+                    }
+                    for (a, b) in joins {
+                        let v = a.end();
+                        let (Some(tin), Some(tout)) = (a.tangents().1, b.tangents().0) else {
+                            if !clear_of(v, half) {
+                                return Err(unsupported("a corner whose join reaches a rect"));
+                            }
+                            continue;
+                        };
+                        let r =
+                            join_reach((v.0 - tin.0, v.1 - tin.1), v, (v.0 + tout.0, v.1 + tout.1));
+                        if !clear_of(v, r) {
+                            return Err(unsupported("a corner whose join reaches a rect"));
+                        }
+                    }
+                }
+                if closed_whole && s.segs.last().map(|g| g.end()) != Some(start) {
+                    // Drop the closing line added above: `h` draws it.
+                    pieces[0].pop();
+                }
+                if cut {
+                    changed = true;
+                    if st.dash.is_some() {
+                        return Err(unsupported("a dashed curve cut at a rect"));
+                    }
+                    curves_out.extend(pieces.into_iter().map(|p| (p, false)));
+                } else {
+                    curves_out.extend(pieces.into_iter().map(|p| (p, s.closed)));
+                }
                 continue;
             }
             // Repeated points draw nothing and hide the real joins:
@@ -418,9 +570,6 @@ pub(crate) fn cut_path(
                 }
             }
         }
-        if changed && subs.iter().any(|s| s.curved) {
-            return Err(unsupported("a curve in a path cut at a rect"));
-        }
         if changed {
             if let Some((d, phase)) = &st.dash {
                 // Each piece restarts the pattern at its own phase:
@@ -440,7 +589,7 @@ pub(crate) fn cut_path(
                     ));
                 }
             }
-            stroke_lines = Some(out);
+            stroke_lines = Some((out, curves_out));
         }
     }
 
@@ -480,11 +629,14 @@ pub(crate) fn cut_path(
     }
     if stroke {
         match &stroke_lines {
-            Some(lines) => match &st.dash {
+            Some((lines, curves)) => match &st.dash {
                 None => {
                     let before = ops.len();
                     for (pts, closed, _, _) in lines.iter().filter(|l| !l.3) {
                         push_polyline(&mut ops, pts, *closed);
+                    }
+                    for (segs, closed) in curves {
+                        push_segments(&mut ops, segs, *closed);
                     }
                     if ops.len() > before {
                         ops.push(O::Stroke);
@@ -522,6 +674,14 @@ pub(crate) fn cut_path(
                         ops.push(O::Stroke);
                         ops.push(O::RestoreState);
                     }
+                    // Curves reach here only uncut: their own subpaths,
+                    // the pattern from its phase as before.
+                    if !curves.is_empty() {
+                        for (segs, closed) in curves {
+                            push_segments(&mut ops, segs, *closed);
+                        }
+                        ops.push(O::Stroke);
+                    }
                 }
             },
             None => {
@@ -532,6 +692,71 @@ pub(crate) fn cut_path(
         }
     }
     Ok(Cut::Replace(ops))
+}
+
+fn push_segments(ops: &mut Vec<Operation>, segs: &[USeg], closed: bool) {
+    let Some(first) = segs.first() else { return };
+    let s = first.start();
+    ops.push(Operation::MoveTo(s.0, s.1));
+    for g in segs {
+        match *g {
+            USeg::Line(_, b) => ops.push(Operation::LineTo(b.0, b.1)),
+            USeg::Cubic(_, b, c, d) => ops.push(Operation::CurveTo(b.0, b.1, c.0, c.1, d.0, d.1)),
+        }
+    }
+    if closed {
+        ops.push(Operation::ClosePath);
+    }
+}
+
+/// The halvings after which a sub-curve still near a rect is removed
+/// (a 2^-14 part of the segment).
+const MAX_SPLIT: u32 = 14;
+
+/// The most sub-curves one path is split into.
+const MAX_CURVE_PIECES: u64 = 100_000;
+
+/// Push `g` when its control points' page bounds, grown by `reach`,
+/// clear every box; else halve it (up to `MAX_SPLIT` times) or, at the
+/// limit, push `None` (the part is removed).
+fn keep_clear(
+    g: USeg,
+    m: &Matrix,
+    reach: f64,
+    boxes: &[Rect],
+    depth: u32,
+    out: &mut Vec<Option<USeg>>,
+    budget: &mut u64,
+) -> Result<(), Error> {
+    if *budget == 0 {
+        return Err(unsupported("a curve that would split into too many pieces"));
+    }
+    *budget -= 1;
+    let pts: Vec<P2> = g.points().iter().map(|p| m.transform(p.0, p.1)).collect();
+    let b = bbox(&pts);
+    let grown = [b[0] - reach, b[1] - reach, b[2] + reach, b[3] + reach];
+    if !grown.iter().all(|v| v.is_finite()) {
+        return Err(unsupported("non-finite curve"));
+    }
+    if boxes.iter().all(|r| !overlaps_open(&grown, r)) {
+        out.push(Some(g));
+        return Ok(());
+    }
+    if depth >= MAX_SPLIT {
+        out.push(None);
+        return Ok(());
+    }
+    let (a, c) = g.split();
+    let at = out.len();
+    keep_clear(a, m, reach, boxes, depth + 1, out, budget)?;
+    keep_clear(c, m, reach, boxes, depth + 1, out, budget)?;
+    // Both halves kept whole: keep `g` itself instead (the same curve,
+    // without a split a rasteriser would flatten differently).
+    if out[at..].iter().all(|k| k.is_some()) {
+        out.truncate(at);
+        out.push(Some(g));
+    }
+    Ok(())
 }
 
 fn push_polyline(ops: &mut Vec<Operation>, pts: &[(f64, f64)], closed: bool) {

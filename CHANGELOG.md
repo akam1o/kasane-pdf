@@ -23,6 +23,10 @@ versions follow [Semantic Versioning](https://semver.org/).
   rects (it lost the round caps' corners). Square caps were already
   exact; a round-capped piece keeping one of the path's own ends still
   loses its cut cap's corners.
+- `redact` cuts stroked curves crossing a rect instead of refusing them:
+  by subdivision into exact sub-curves, keeping each whose control
+  points' bounds grown by the stroke's reach clear the rects. Curved
+  fills and dashed curves cut at a rect stay refused.
 
 ## [0.6.0] - 2026-11-07
 
