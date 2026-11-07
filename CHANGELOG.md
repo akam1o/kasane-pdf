@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.5.2] - 2026-11-07
+
+A security fix for the content editors and the redaction diagnosis;
+no public API change (`cargo semver-checks` against 0.5.1: no semver
+update required). Release notes: `docs/releases/v0.5.2.md`.
+
+### Security
+- **The content editors and `diagnose_redaction` located content drawn
+  under nested transforms at the wrong coordinates (0.1.0 – 0.5.1,
+  GHSA-2337-4h5g-jqwx).** Their content walker composed a nested `cm`,
+  and a Form XObject's `/Matrix`, as CTM × M instead of M × CTM
+  (ISO 32000-2 §8.4.4, §8.10.1). For such content `remove_text`,
+  `remove_image_region`, `remove_region`, `remove_regions` and
+  `remove_regions_and_document_metadata` (CLI `experimental-remove-*`)
+  could leave content inside the caller's rectangles in place while
+  returning `Ok`, and could edit content outside them;
+  `diagnose_redaction` (CLI `preflight-redaction`) could report no
+  target in a rectangle that contains painted text or images. These
+  APIs are documented as content editors and a diagnosis without a
+  "safe" verdict, not as redaction tools; the fix makes them locate
+  content where it is drawn. Rendering and text extraction compose
+  transforms correctly and were not affected.
+
 ## [0.5.1] - 2026-11-07
 
 Rendering robustness and
