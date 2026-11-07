@@ -93,9 +93,10 @@ versions follow [Semantic Versioning](https://semver.org/).
 ### Changed
 - A non-embedded Standard 14 font without `/Widths` (or a
   metric-compatible alias such as Arial) is laid out with the Adobe
-  Core 14 AFM widths, as readers lay it out (§9.6.2.2), instead of the
-  bundled substitute's advances, which only approximated them (by up
-  to about 0.002 em per glyph). Rendering, text extraction and the
+  Core 14 AFM widths of the font its name spells (style from the name,
+  not the descriptor's flags), as readers lay it out (§9.6.2.2),
+  instead of the bundled substitute's advances, which only approximated
+  them (by up to about 0.002 em per glyph). Rendering, text extraction and the
   editors place such text where Poppler and pdf.js do. Glyph shapes
   are still the substitute's.
 - A page's pixel size is rounded up instead of to nearest, so the whole
@@ -123,6 +124,13 @@ versions follow [Semantic Versioning](https://semver.org/).
   values such as `.00100000005`.
 
 ### Fixed
+- A simple font's code without a `/Widths` entry (outside `/FirstChar`
+  … `/LastChar`) takes the descriptor's `/MissingWidth` (Table 120); it
+  was advanced by 0, so the text after it was placed too far left — in
+  rendering, extraction, the editors and the diagnosis.
+- `/ActualText` replacement text is a blocker on any marked-content
+  tag, not only `/Span`; in redaction, `/Alt` and `/E` on marked
+  content are too.
 - Word spacing (`Tw`) no longer applies to a two-byte code `<0020>` in
   a CMap that also has one-byte codes (§9.3.3: single-byte code 32
   only) — in rendering, extraction and the editors.

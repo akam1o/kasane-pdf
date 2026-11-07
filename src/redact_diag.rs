@@ -2438,14 +2438,15 @@ impl<'a> DiagWalker<'a> {
     fn marked_content(&mut self, tag: &[u8], properties: &Object) -> Result<(), Error> {
         let resolved = match properties {
             Object::Name(n) => {
-                if tag != b"OC" && tag != b"Span" {
-                    return Ok(());
-                }
                 match self
                     .doc
                     .resolve_resource(&self.resources, "Properties", n)?
                 {
                     Some(o) => o,
+                    // Any tag's properties may carry replacement text; an
+                    // undefined entry carries none (an error only where
+                    // its meaning matters: /OC, /Span).
+                    None if tag != b"OC" && tag != b"Span" => return Ok(()),
                     None => {
                         return Err(Error::Structure(format!(
                             "marked-content /Properties entry /{} is undefined",
@@ -2457,9 +2458,14 @@ impl<'a> DiagWalker<'a> {
             obj @ Object::Dict(_) => obj.clone(),
             _ => return Ok(()),
         };
-        let dict = resolved.as_dict().ok_or_else(|| {
-            Error::Structure("marked-content properties is not a dictionary".into())
-        })?;
+        let Some(dict) = resolved.as_dict() else {
+            if tag != b"OC" && tag != b"Span" {
+                return Ok(());
+            }
+            return Err(Error::Structure(
+                "marked-content properties is not a dictionary".into(),
+            ));
+        };
         // Redaction treats content in an optional content group as
         // drawn, whether a viewer shows it or not: what meets a rect is
         // removed (hidden content too), the rest kept.
@@ -2473,12 +2479,27 @@ impl<'a> DiagWalker<'a> {
                 _ => {}
             }
         }
-        if tag == b"Span" && dict.contains_key(b"ActualText".as_slice()) {
+        // Replacement text (§14.9.4) — on any tag, not only /Span —
+        // and, for redaction, alternate descriptions and expansions
+        // (§14.9.3, §14.9.5) may repeat what the rects remove.
+        if dict.contains_key(b"ActualText".as_slice()) {
             self.push_blocker(Blocker {
                 site: Some(self.site()),
                 what: "ActualText".into(),
                 detail: "replacement text substitutes the shown characters".into(),
             })?;
+        }
+        if self.redaction_mode {
+            for key in [b"Alt".as_slice(), b"E"] {
+                if dict.contains_key(key) {
+                    self.push_blocker(Blocker {
+                        site: Some(self.site()),
+                        what: format!("marked content /{}", String::from_utf8_lossy(key)),
+                        detail: "an alternate description or expansion may repeat removed text"
+                            .into(),
+                    })?;
+                }
+            }
         }
         Ok(())
     }

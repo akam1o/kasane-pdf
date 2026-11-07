@@ -165,6 +165,23 @@ fn widths_span(first_char: i64, last_char: i64) -> usize {
         .clamp(0, i64::from(u32::MAX)) as usize
 }
 
+/// The `/FontDescriptor /MissingWidth` of a simple font (0 when absent
+/// or not a finite non-negative number).
+fn missing_width(doc: &Document, dict: &Dict) -> Result<f64, Error> {
+    let Some(fd) = dict.get(b"FontDescriptor".as_slice()) else {
+        return Ok(0.0);
+    };
+    let fd = doc.deref(fd)?;
+    let Some(mw) = fd.as_dict().and_then(|d| d.get(b"MissingWidth".as_slice())) else {
+        return Ok(0.0);
+    };
+    Ok(doc
+        .deref(mw)?
+        .as_number()
+        .filter(|w| w.is_finite() && *w >= 0.0)
+        .unwrap_or(0.0))
+}
+
 /// The `/Widths` slot of entry `i`: code `first_char + i` when it is a
 /// single-byte code (0–255). A simple font shows no other code, so a
 /// width outside that range (a `/LastChar` above 255, a negative
@@ -376,7 +393,9 @@ pub(crate) fn load_simple_font_dict(
         .and_then(|o| o.as_i64())
         .unwrap_or(255);
     let widths_obj = dict.get(b"Widths".as_slice());
-    let mut widths = [0.0f64; 256];
+    // A code without a /Widths entry (outside FirstChar … LastChar)
+    // takes the descriptor's /MissingWidth (Table 120, default 0).
+    let mut widths = [missing_width(doc, dict)?; 256];
     if let Some(w) = widths_obj {
         // `/Widths 12 0 R` is common (pdfTeX, many generators) — the
         // array itself may be indirect, not just its entries.
@@ -516,7 +535,9 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         .get(b"LastChar".as_slice())
         .and_then(|o| o.as_i64())
         .unwrap_or(255);
-    let mut widths = [0.0f64; 256];
+    // A code without a /Widths entry (outside FirstChar … LastChar)
+    // takes the descriptor's /MissingWidth (Table 120, default 0).
+    let mut widths = [missing_width(doc, dict)?; 256];
     let has_widths = dict.contains_key(b"Widths".as_slice());
     if let Some(w_obj) = dict.get(b"Widths".as_slice()) {
         let w = doc.deref(w_obj)?;
@@ -1125,7 +1146,9 @@ fn load_type3_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         .get(b"LastChar".as_slice())
         .and_then(|o| o.as_i64())
         .unwrap_or(255);
-    let mut widths = [0.0f64; 256];
+    // A code without a /Widths entry (outside FirstChar … LastChar)
+    // takes the descriptor's /MissingWidth (Table 120, default 0).
+    let mut widths = [missing_width(doc, dict)?; 256];
     if let Some(w_obj) = dict.get(b"Widths".as_slice()) {
         let w = doc.deref(w_obj)?;
         let arr = w
@@ -1324,7 +1347,7 @@ impl Type1Font {
                 ) {
                     if let Some(w) = self
                         .subst_glyph_name(code)
-                        .and_then(|n| crate::fontsubst::core14_width(s.name, &n))
+                        .and_then(|n| crate::fontsubst::core14_width(&s.base_font, &n))
                     {
                         return w;
                     }

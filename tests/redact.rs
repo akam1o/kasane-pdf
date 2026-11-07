@@ -2381,3 +2381,73 @@ fn a_shading_clipped_away_from_the_rects_is_kept() {
     );
     assert!(unsupported(run(&refused, vec![RECT])).contains("shading"));
 }
+
+// Pre-release review (P0s, fixed).
+
+/// /ActualText on any tag replaces the shown text: refused, as on
+/// /Span. Alternate descriptions and expansions likewise.
+#[test]
+fn replacement_text_on_any_tag_is_refused() {
+    for props in [
+        "/P << /ActualText (SECRETTEXT) >>",
+        "/Figure << /Alt (SECRETTEXT) >>",
+        "/Span << /E (SECRETTEXT) >>",
+    ] {
+        let pdf = one_page(&format!("{props} BDC {SECRET} EMC"), "", "", vec![]);
+        let e = unsupported(run(&pdf, vec![RECT]));
+        assert!(e.contains("blockers"), "{props}: {e}");
+    }
+}
+
+/// A code without a /Widths entry takes /MissingWidth, so what follows
+/// it is placed where readers place it.
+#[test]
+fn missing_width_places_what_follows() {
+    let pdf = doc_with(
+        "/Font << /F1 20 0 R /H 50 0 R >>",
+        &[b"BT /H 12 Tf 10 100 Td q 0 0 20 20 re W n (BBBB) Tj Q /F1 12 Tf (W) Tj ET"],
+        {
+            let mut o = font_objs();
+            o.push((
+                50,
+                b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 65 /LastChar 65 \
+                  /Widths [500] /FontDescriptor << /Type /FontDescriptor /FontName /Helvetica \
+                  /Flags 32 /MissingWidth 1000 >> >>"
+                    .to_vec(),
+            ));
+            o
+        },
+    );
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
+    assert!(
+        (t.chars[4].origin.0 - 58.0).abs() < 1e-9,
+        "{}",
+        t.chars[4].origin.0
+    );
+    let r = run(&pdf, vec![(55.0, 90.0, 80.0, 115.0)]).unwrap();
+    assert_eq!(r.codes_removed, 1, "the W in the rect is removed");
+}
+
+/// Metrics follow the font's name, not its descriptor's flags:
+/// Helvetica with ForceBold is still Helvetica's A (667).
+#[test]
+fn afm_widths_follow_the_name() {
+    let pdf = doc_with(
+        "/Font << /H 50 0 R >>",
+        &[b"BT /H 10 Tf 0 100 Td (AAAAX) Tj ET"],
+        vec![(
+            50,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FontDescriptor << \
+              /Type /FontDescriptor /FontName /Helvetica /Flags 262176 >> >>"
+                .to_vec(),
+        )],
+    );
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
+    assert!(
+        (t.chars[4].origin.0 - 26.68).abs() < 1e-9,
+        "{}",
+        t.chars[4].origin.0
+    );
+}

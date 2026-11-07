@@ -489,36 +489,55 @@ fn name_has(name: &str, words: &[&str]) -> bool {
     words.iter().any(|w| name.contains(w))
 }
 
-/// The Adobe AFM width of glyph `name` in the Standard 14 font the
-/// bundled `face` stands in for (Liberation Sans → Helvetica, Serif →
-/// Times, Mono → Courier, by style); `None` for another face or a name
-/// the font does not have.
-pub(crate) fn core14_width(face: &str, name: &str) -> Option<f64> {
+/// The Adobe AFM width of glyph `name` in the Latin Standard 14 font
+/// that `base_font` names — Helvetica, Times or Courier, or the
+/// metric-compatible Arial, Times New Roman and Courier New, with the
+/// style its name spells (`Bold`, `Italic` / `Oblique`), as readers
+/// choose metrics: by name, not by the descriptor's flags. `None` for
+/// another name or a glyph the font does not have.
+pub(crate) fn core14_width(base_font: &str, name: &str) -> Option<f64> {
     use crate::core14_metrics as m;
-    let table: &[(&str, u16)] = match face {
-        "LiberationSans-Regular" => m::HELVETICA,
-        "LiberationSans-Bold" => m::HELVETICA_BOLD,
-        "LiberationSans-Italic" => m::HELVETICA_OBLIQUE,
-        "LiberationSans-BoldItalic" => m::HELVETICA_BOLDOBLIQUE,
-        "LiberationSerif-Regular" => m::TIMES_ROMAN,
-        "LiberationSerif-Bold" => m::TIMES_BOLD,
-        "LiberationSerif-Italic" => m::TIMES_ITALIC,
-        "LiberationSerif-BoldItalic" => m::TIMES_BOLDITALIC,
+    let n: String = base_font
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    let bold = n.contains("bold");
+    let italic = n.contains("italic") || n.contains("oblique");
+    // The family is what remains without the style words; only the
+    // exact names count (Helvetica-Narrow, Arial Black … do not).
+    let mut fam = n.clone();
+    for w in [
+        "bold", "italic", "oblique", "roman", "regular", "psmt", "mt", "ps",
+    ] {
+        fam = fam.replace(w, "");
+    }
+    let family = match fam.as_str() {
+        "helvetica" | "arial" => 0,
+        "times" | "timesnew" => 1,
+        "courier" | "couriernew" => 2,
+        _ => return None,
+    };
+    let table: &[(&str, u16)] = match (family, bold, italic) {
+        (0, false, false) => m::HELVETICA,
+        (0, true, false) => m::HELVETICA_BOLD,
+        (0, false, true) => m::HELVETICA_OBLIQUE,
+        (0, true, true) => m::HELVETICA_BOLDOBLIQUE,
+        (1, false, false) => m::TIMES_ROMAN,
+        (1, true, false) => m::TIMES_BOLD,
+        (1, false, true) => m::TIMES_ITALIC,
+        (1, true, true) => m::TIMES_BOLDITALIC,
         // Courier: every glyph of the font is 600 wide; a name it does
-        // not have is still left to the caller.
-        "LiberationMono-Regular"
-        | "LiberationMono-Bold"
-        | "LiberationMono-Italic"
-        | "LiberationMono-BoldItalic" => {
+        // not have (the Latin set is shared) is left to the caller.
+        _ => {
             return m::HELVETICA
-                .binary_search_by(|(n, _)| (*n).cmp(name))
+                .binary_search_by(|(g, _)| (*g).cmp(name))
                 .ok()
                 .map(|_| 600.0);
         }
-        _ => return None,
     };
     table
-        .binary_search_by(|(n, _)| (*n).cmp(name))
+        .binary_search_by(|(g, _)| (*g).cmp(name))
         .ok()
         .map(|i| table[i].1 as f64)
 }
