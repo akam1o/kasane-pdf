@@ -286,6 +286,7 @@ pub fn redact(
     let session = crate::remove_region::SessionOptions {
         unembedded_by_cell: options.unembedded_text_by_cell,
         remove_annotations: options.remove_annotations,
+        structure_tree_removed: options.remove_structure_tree,
     };
     let mut s = regions_edit_session_with(doc, specs, limits, SessionMode::Redact, session)?;
     let structure_tree_removed = tree && options.remove_structure_tree;

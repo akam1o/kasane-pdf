@@ -2131,3 +2131,102 @@ fn widgets_and_tagged_annotations_stay_refused() {
     );
     assert!(unsupported(annots_run(&tagged)).contains("structure tree"));
 }
+
+// Review of annotation removal (fixed).
+
+/// Something else referring to a removed annotation (an action, a
+/// kept annotation's popup) would carry it into the output: refused.
+#[test]
+fn a_removed_annotation_referred_to_elsewhere_is_refused() {
+    let open_action = one_page(
+        SECRET,
+        "/Annots [30 0 R]",
+        "/OpenAction << /S /Hide /T 30 0 R >>",
+        vec![(
+            30,
+            b"<< /Type /Annot /Subtype /Square /Rect [60 95 70 105] /Contents (PIN) >>".to_vec(),
+        )],
+    );
+    assert!(unsupported(annots_run(&open_action)).contains("refers to"));
+    let popup = annot_page(
+        "30 0 R 31 0 R",
+        vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Popup /Rect [60 95 70 105] >>".to_vec(),
+            ),
+            (
+                31,
+                b"<< /Type /Annot /Subtype /Square /Rect [150 150 160 160] /Popup 30 0 R >>"
+                    .to_vec(),
+            ),
+        ],
+    );
+    assert!(unsupported(annots_run(&popup)).contains("refers to"));
+}
+
+/// What a removed annotation's appearance draws is an original too.
+#[test]
+fn a_removed_appearance_keeps_no_image() {
+    let pdf = one_page(
+        SECRET,
+        "/Annots [30 0 R] /Resources << /Font << /F1 20 0 R >> /XObject << /Unused 32 0 R >> >>",
+        "",
+        vec![
+            (30, b"<< /Type /Annot /Subtype /Stamp /Rect [60 95 100 105] /AP << /N 31 0 R >> >>".to_vec()),
+            (
+                31,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 40 10] /Resources << /XObject << /I 32 0 R >> >>",
+                    b"q 40 0 0 10 0 0 cm /I Do Q",
+                ),
+            ),
+            (32, image_obj()),
+        ],
+    );
+    match annots_run(&pdf) {
+        Ok(r) => assert!(!contains(&r.output, &secret_samples())),
+        Err(e) => assert!(e.to_string().contains("original data"), "{e}"),
+    }
+}
+
+/// An annotation without an appearance stream whose geometry lies
+/// outside its /Rect is drawn there by readers: refused.
+#[test]
+fn appearance_less_geometry_outside_rect_is_refused() {
+    let pdf = annot_page(
+        "30 0 R",
+        vec![(
+            30,
+            b"<< /Type /Annot /Subtype /Ink /Rect [150 150 190 180] /C [1 0 0] \
+              /InkList [[60 100 100 100]] /BS << /W 2 >> >>"
+                .to_vec(),
+        )],
+    );
+    assert!(unsupported(annots_run(&pdf)).contains("outside its /Rect"));
+}
+
+/// A rich-text /RC stream is searched like a string.
+#[test]
+fn a_removed_rich_text_stream_is_searched() {
+    let pdf = one_page(
+        SECRET,
+        "/Annots [30 0 R]",
+        "/Outlines 40 0 R",
+        vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /FreeText /Rect [60 95 100 105] /DA (/Helv 10 Tf) /RC 31 0 R >>"
+                    .to_vec(),
+            ),
+            (31, stream_obj("", b"RICHSECRETNOTE")),
+            (40, b"<< /Type /Outlines /First 41 0 R /Last 41 0 R /Count 1 >>".to_vec()),
+            (41, b"<< /Title (RICHSECRETNOTE) /Parent 40 0 R >>".to_vec()),
+        ],
+    );
+    let r = annots_run(&pdf).unwrap();
+    assert!(r
+        .elsewhere
+        .iter()
+        .any(|e| e.removed == kasane_pdf::Removed::Text("RICHSECRETNOTE".into())));
+}

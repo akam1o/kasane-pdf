@@ -758,6 +758,62 @@ pub(crate) struct SessionOptions {
     /// Remove markup annotations meeting a rect whole
     /// (`RedactOptions::remove_annotations`).
     pub(crate) remove_annotations: bool,
+    /// The structure tree is removed with the output: its /OBJR and
+    /// elements do not keep a removed annotation.
+    pub(crate) structure_tree_removed: bool,
+}
+
+/// The first live object, other than `targets` themselves and
+/// `holders`, that refers to one of `targets`, and whether it is part
+/// of the structure tree. With `tree_removed`, structure elements and
+/// object references (which go with the tree) do not count.
+fn referrer_of(
+    doc: &Document,
+    targets: &HashSet<IndirectRef>,
+    holders: &HashSet<IndirectRef>,
+    tree_removed: bool,
+    limits: &Limits,
+) -> Result<Option<(IndirectRef, bool)>, Error> {
+    fn refers(o: &Object, t: &HashSet<IndirectRef>, budget: &mut u64) -> bool {
+        *budget = budget.saturating_sub(1);
+        match o {
+            Object::Ref(r) => t.contains(r),
+            Object::Array(a) => a.iter().any(|x| refers(x, t, budget)),
+            Object::Dict(d) => d.values().any(|x| refers(x, t, budget)),
+            Object::Stream { dict, .. } => dict.values().any(|x| refers(x, t, budget)),
+            _ => false,
+        }
+    }
+    let refs: Vec<IndirectRef> = doc
+        .xref_entries()
+        .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
+        .map(|(r, _)| r)
+        .collect();
+    let mut budget = limits.max_diag_items.saturating_mul(16);
+    for r in refs {
+        if targets.contains(&r) || holders.contains(&r) {
+            continue;
+        }
+        let Ok(o) = doc.resolve(r) else { continue };
+        let ty = match &o {
+            Object::Dict(d) => d.get(b"Type".as_slice()).and_then(|t| t.as_name()),
+            _ => None,
+        };
+        let structure = matches!(ty, Some(b"OBJR" | b"StructElem" | b"StructTreeRoot"));
+        if structure && tree_removed {
+            continue;
+        }
+        if refers(&o, targets, &mut budget) {
+            return Ok(Some((r, structure)));
+        }
+        if budget == 0 {
+            return Err(Error::LimitExceeded {
+                limit: "max_diag_items",
+                max: limits.max_diag_items,
+            });
+        }
+    }
+    Ok(None)
 }
 
 /// The annotation subtypes `remove_annotations` removes whole: markup
@@ -781,6 +837,125 @@ const REMOVABLE_ANNOTS: &[&[u8]] = &[
     b"Ink",
     b"Popup",
 ];
+
+/// Whether the annotation has a normal appearance stream (`/AP /N`).
+fn has_normal_appearance(doc: &Document, d: &Dict) -> Result<bool, Error> {
+    let Some(ap) = d.get(b"AP".as_slice()) else {
+        return Ok(false);
+    };
+    let ap = doc.deref(ap)?;
+    Ok(ap
+        .as_dict()
+        .and_then(|a| a.get(b"N".as_slice()))
+        .is_some_and(|n| !matches!(n, Object::Null)))
+}
+
+/// The page-space bounds of an annotation's geometry keys (`/L`,
+/// `/InkList`, `/Vertices`, `/QuadPoints`, `/CL`), from which a reader
+/// draws an annotation that has no appearance stream.
+fn annotation_geometry_bounds(
+    doc: &Document,
+    d: &Dict,
+) -> Result<Option<(f64, f64, f64, f64)>, Error> {
+    let mut b: Option<(f64, f64, f64, f64)> = None;
+    let mut add = |nums: &[f64]| {
+        for &[x, y] in nums.as_chunks::<2>().0 {
+            b = Some(match b {
+                None => (x, y, x, y),
+                Some(c) => (c.0.min(x), c.1.min(y), c.2.max(x), c.3.max(y)),
+            });
+        }
+    };
+    let numbers = |o: &Object| -> Result<Vec<f64>, Error> {
+        let o = doc.deref(o)?;
+        let a = o
+            .as_array()
+            .ok_or_else(|| Error::Structure("annotation geometry is not an array".into()))?;
+        a.iter()
+            .map(|x| {
+                doc.deref(x)?
+                    .as_number()
+                    .filter(|v| v.is_finite())
+                    .ok_or_else(|| Error::Structure("annotation geometry is not numbers".into()))
+            })
+            .collect()
+    };
+    for key in [b"L".as_slice(), b"Vertices", b"QuadPoints", b"CL"] {
+        if let Some(o) = d.get(key) {
+            add(&numbers(o)?);
+        }
+    }
+    if let Some(ink) = d.get(b"InkList".as_slice()) {
+        let ink = doc.deref(ink)?;
+        for path in ink.as_array().unwrap_or(&[]) {
+            add(&numbers(path)?);
+        }
+    }
+    Ok(b)
+}
+
+/// The border width a reader strokes an annotation without an
+/// appearance stream with: `/BS /W`, else `/Border [h v w]`, else 1.
+fn border_width(doc: &Document, d: &Dict) -> Result<f64, Error> {
+    if let Some(bs) = d.get(b"BS".as_slice()) {
+        if let Some(w) = doc
+            .deref(bs)?
+            .as_dict()
+            .and_then(|b| b.get(b"W".as_slice()))
+        {
+            return Ok(doc.deref(w)?.as_number().unwrap_or(1.0).abs());
+        }
+    }
+    if let Some(b) = d.get(b"Border".as_slice()) {
+        if let Some(w) = doc.deref(b)?.as_array().and_then(|a| a.get(2)) {
+            return Ok(doc.deref(w)?.as_number().unwrap_or(1.0).abs());
+        }
+    }
+    Ok(1.0)
+}
+
+/// `roots` and every XObject their `/Resources` name, transitively.
+fn appearance_closure(
+    doc: &Document,
+    roots: &[IndirectRef],
+    limits: &Limits,
+) -> Result<Vec<IndirectRef>, Error> {
+    let mut seen: Vec<IndirectRef> = roots.to_vec();
+    let mut k = 0;
+    while k < seen.len() {
+        if seen.len() as u64 > limits.max_diag_items {
+            return Err(Error::LimitExceeded {
+                limit: "max_diag_items",
+                max: limits.max_diag_items,
+            });
+        }
+        let obj = doc.resolve(seen[k])?;
+        k += 1;
+        let Object::Stream { dict, .. } = &obj else {
+            continue;
+        };
+        let Some(res) = dict.get(b"Resources".as_slice()) else {
+            continue;
+        };
+        let res = doc.deref(res)?;
+        let Some(x) = res.as_dict().and_then(|r| r.get(b"XObject".as_slice())) else {
+            continue;
+        };
+        let x = doc.deref(x)?;
+        for v in x
+            .as_dict()
+            .map(|d| d.values().collect::<Vec<_>>())
+            .unwrap_or_default()
+        {
+            if let Object::Ref(r) = v {
+                if !seen.contains(r) {
+                    seen.push(*r);
+                }
+            }
+        }
+    }
+    Ok(seen)
+}
 
 /// An annotation's appearance streams (`/AP` `/N`, `/R`, `/D`, each a
 /// stream or a dictionary of states).
@@ -893,6 +1068,10 @@ pub(crate) fn regions_edit_session_with<'a>(
     let mut paths_cut_total: u64 = 0;
     let mut tagged_links_removed_total: u64 = 0;
     let mut annots_removed_total: u64 = 0;
+    // Removed links and annotations, and the objects holding the
+    // /Annots arrays they were removed from.
+    let mut removed_annot_refs: HashSet<IndirectRef> = HashSet::new();
+    let mut annot_holders: HashSet<IndirectRef> = HashSet::new();
     let mut original_digests: Vec<[u8; 32]> = Vec::new();
     // Redaction: the refs of edited images, and per page the names
     // still drawn after the edit.
@@ -983,8 +1162,31 @@ pub(crate) fn regions_edit_session_with<'a>(
                     .transpose()?
                     .and_then(|r| crate::page::Rect::from_object(&r))
                     .ok_or_else(|| Error::Structure(format!("/Annots[{i}] has no valid /Rect")))?;
-                let (x0, x1) = (r.llx.min(r.urx), r.llx.max(r.urx));
-                let (y0, y1) = (r.lly.min(r.ury), r.lly.max(r.ury));
+                let (mut x0, mut x1) = (r.llx.min(r.urx), r.llx.max(r.urx));
+                let (mut y0, mut y1) = (r.lly.min(r.ury), r.lly.max(r.ury));
+                // Without an appearance stream a reader draws one from
+                // the annotation's geometry: refuse geometry outside
+                // /Rect, and allow for the border reaching past it.
+                if !has_normal_appearance(doc, &d)? {
+                    if let Some(g) = annotation_geometry_bounds(doc, &d)? {
+                        let eps = 1e-6;
+                        if g.0 < x0 - eps || g.1 < y0 - eps || g.2 > x1 + eps || g.3 > y1 + eps {
+                            return Err(Error::Unsupported {
+                                feature:
+                                    "redaction on a page with an annotation drawn outside its /Rect",
+                                detail: format!(
+                                    "/Annots[{i}] has no appearance stream and geometry outside \
+                                     /Rect"
+                                ),
+                            });
+                        }
+                    }
+                    let w = border_width(doc, &d)?;
+                    x0 -= w;
+                    y0 -= w;
+                    x1 += w;
+                    y1 += w;
+                }
                 let hit = validated
                     .iter()
                     .any(|v| x0 <= v.urx && x1 >= v.llx && y0 <= v.ury && y1 >= v.lly);
@@ -1085,6 +1287,9 @@ pub(crate) fn regions_edit_session_with<'a>(
                     kept.push(item.clone());
                     continue;
                 }
+                if let Object::Ref(r) = item {
+                    removed_annot_refs.insert(*r);
+                }
                 if subtype(d) == b"Link" {
                     links_removed += 1;
                 } else {
@@ -1092,17 +1297,24 @@ pub(crate) fn regions_edit_session_with<'a>(
                     // Its appearance streams may not stay unless still
                     // invoked (checked by digest on the output), and
                     // its text is searched for elsewhere.
-                    for r in annotation_appearances(doc, d)? {
+                    // The appearance streams and the forms and images they
+                    // draw, transitively.
+                    for r in appearance_closure(doc, &annotation_appearances(doc, d)?, limits)? {
                         if let Object::Stream { dict, data } = doc.resolve(r)? {
                             original_digests
                                 .extend([sha256(&doc.decode_stream(&dict, &data)?), sha256(&data)]);
                         }
                     }
                     for key in [b"Contents".as_slice(), b"T", b"RC", b"Subj"] {
-                        if let Some(Object::String(t)) =
-                            d.get(key).map(|o| doc.deref(o)).transpose()?
-                        {
-                            removed_text.push(crate::annot_text::text_string(&t));
+                        match d.get(key).map(|o| doc.deref(o)).transpose()? {
+                            Some(Object::String(t)) => {
+                                removed_text.push(crate::annot_text::text_string(&t))
+                            }
+                            // `/RC` may be a text stream.
+                            Some(Object::Stream { dict, data }) => removed_text.push(
+                                crate::annot_text::text_string(&doc.decode_stream(&dict, &data)?),
+                            ),
+                            _ => {}
                         }
                     }
                 }
@@ -1111,6 +1323,14 @@ pub(crate) fn regions_edit_session_with<'a>(
                 }
             }
             kept_annots = Some(kept);
+            annot_holders.insert(page_ref);
+            if let Some(Object::Ref(ar)) = doc
+                .resolve(page_ref)?
+                .as_dict()
+                .and_then(|p| p.get(b"Annots".as_slice()).cloned())
+            {
+                annot_holders.insert(ar);
+            }
         }
         if let Some(uu) = page_dict_entry(doc, page, b"UserUnit")? {
             match uu.as_number() {
@@ -1953,6 +2173,35 @@ pub(crate) fn regions_edit_session_with<'a>(
             (page_ref.number, page_ref.generation),
             Object::Dict(page_dict),
         );
+    }
+    // A removed annotation must not stay reachable: anything else that
+    // refers to it (an action, another page's annotation, a kept
+    // popup, the form, an outline …) would carry it into the output.
+    if !removed_annot_refs.is_empty() {
+        if let Some((holder, structure)) = referrer_of(
+            doc,
+            &removed_annot_refs,
+            &annot_holders,
+            opts.structure_tree_removed,
+            limits,
+        )? {
+            return Err(Error::Unsupported {
+                feature: if structure {
+                    "redaction of an annotation the structure tree refers to"
+                } else {
+                    "redaction of an annotation something else refers to"
+                },
+                detail: format!(
+                    "object {holder} refers to a removed link or annotation, which would stay \
+                     in the output{}",
+                    if structure {
+                        "; RedactOptions::remove_structure_tree removes the tree"
+                    } else {
+                        ""
+                    }
+                ),
+            });
+        }
     }
     let names_pruned_total = if mode == SessionMode::Redact && !edited_originals.is_empty() {
         let refs: HashSet<IndirectRef> = edited_originals.keys().copied().collect();

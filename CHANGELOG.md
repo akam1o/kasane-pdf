@@ -74,7 +74,10 @@ versions follow [Semantic Versioning](https://semver.org/).
   outside the rect too — with their popups and replies, instead of
   refused (`annotations_removed`). Their appearance streams may not
   stay unless still drawn; their text is searched for in `elsewhere`.
-  Widgets and other subtypes stay refused. A Text annotation (whose
+  Widgets and other subtypes stay refused. A removed link or annotation
+  something else still refers to (an action, another page's
+  annotation, a kept popup, the form, an outline) is refused; what a
+  removed appearance draws is checked like its appearance. A Text annotation (whose
   icon behaves as NoZoom and NoRotate) on an edited page is refused
   unless it is removed.
 - `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
