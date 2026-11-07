@@ -25,8 +25,11 @@ Checks on a success (tools that share no code with kasane):
 - removal: no Poppler word lies wholly inside the rect, and no pixel
   strictly inside it (2 px margin, 100 dpi) is non-white *and*
   unchanged from the input render — content left in place shows up as
-  unchanged ink (zeroed image samples change; a sample already black
-  is indistinguishable and is not counted);
+  unchanged ink. Zeroed image samples turn black, so a sample that was
+  already black looks unchanged and is counted too: such a run is
+  reported unexpected and must be checked by hand (the check is not
+  relaxed, since black content left over a zeroed image would look the
+  same);
 - preservation: words of the input clear of the rect (by 1 pt) are
   still extracted, and pixels outside the rect (2 px margin) are
   unchanged — the count is reported, not failed (a glyph straddling
