@@ -6659,27 +6659,37 @@ impl<'a> Renderer<'a> {
                 let full = trm_ts.post_concat(self.user_to_pix);
                 // Unrotated, unskewed glyphs only filled with a colour
                 // (Tr 0, and the fill of Tr 4) sit on a whole device row
-                // (the origin's device y floored), as Splash places the
-                // glyphs it caches: no change of shape or advance.
+                // (the origin's device y floored) and on a quarter-pixel
+                // column (x floored to 1/4 px; to a whole pixel for a
+                // glyph over 50 px high), as Splash places the glyphs it
+                // caches: no change of shape or advance.
                 // Splash draws stroked, clip and pattern-filled outlines
                 // as exact paths, and so does this: they, and rotated or
                 // skewed text, stay where they fall.
                 // The origin is placed in f64, as Splash computes it: a
                 // baseline a hair above a row boundary must not round to
                 // it in f32.
-                let ty = trm.concat(self.user_to_pix_exact).f;
-                let snap = if matches!(t.render_mode, 0 | 4)
+                let origin = trm.concat(self.user_to_pix_exact);
+                let (tx, ty) = (origin.e, origin.f);
+                let (snap_x, snap) = if matches!(t.render_mode, 0 | 4)
                     && !gs.fill_space.is_pattern()
                     && full.kx == 0.0
                     && full.ky == 0.0
+                    && tx.is_finite()
                     && ty.is_finite()
                 {
-                    ty.floor() as f32 - full.ty
+                    let tall = path
+                        .clone()
+                        .transform(full)
+                        .is_some_and(|p| p.bounds().height() > 50.0);
+                    let step = if tall { 1.0 } else { 0.25 };
+                    let x = tx.floor() + ((tx - tx.floor()) / step).floor() * step;
+                    (x as f32 - full.tx, ty.floor() as f32 - full.ty)
                 } else {
-                    0.0
+                    (0.0, 0.0)
                 };
                 let exact = full;
-                let full = full.post_translate(0.0, snap);
+                let full = full.post_translate(snap_x, snap);
                 match t.render_mode {
                     0 | 2 | 4 | 6 if gs.fill_space.is_pattern() => {
                         // Filled with the pattern once the gs borrow ends.

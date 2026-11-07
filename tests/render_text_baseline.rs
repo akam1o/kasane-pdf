@@ -2,7 +2,8 @@
 //! with a colour sits on a whole device row (the glyph origin's device y
 //! floored, as Poppler's Splash places the glyphs it caches), so a line
 //! drawn a fraction of a pixel lower renders exactly like the line at
-//! the row above it; x keeps its exact position. Stroked, clip (the
+//! the row above it; x is floored to a quarter pixel (a whole pixel
+//! for glyphs over 50 px high). Stroked, clip (the
 //! outline of Tr 4–7; Tr 4 still fills snapped), pattern-filled and
 //! rotated text is drawn where it falls. Text
 //! extraction coordinates are not snapped.
@@ -55,8 +56,15 @@ fn horizontal_text_snaps_to_the_row_above() {
     for y in ["40.2", "40.5", "40.9"] {
         assert!(at(y) == row, "baseline {y} differs from baseline 41");
     }
-    // x is not snapped.
-    assert!(pixels("BT /F1 24 Tf 20.5 41 Td (Hxg) Tj ET") != row);
+    // x is floored to a quarter pixel: 20.2 draws like 20, 20.3 like
+    // 20.25 — not like 20.
+    let h = |x: &str| pixels(&format!("BT /F1 24 Tf {x} 41 Td (H) Tj ET"));
+    assert!(h("20.2") == h("20"));
+    assert!(h("20.3") != h("20"));
+    assert!(h("20.3") == h("20.25"));
+    // A glyph over 50 px high goes to a whole pixel.
+    let big = |x: &str| pixels(&format!("BT /F1 90 Tf {x} 20 Td (H) Tj ET"));
+    assert!(big("20.6") == big("20"));
     // Stroked, clipping and pattern-filled text are exact paths, as in
     // Splash: not snapped.
     let stroked = |y: &str| pixels(&format!("BT /F1 24 Tf 1 Tr 20 {y} Td (Hxg) Tj ET"));
