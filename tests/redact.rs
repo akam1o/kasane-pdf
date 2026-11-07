@@ -912,11 +912,11 @@ fn uncuttable_paths_are_refused() {
     let dashed = one_page("[4 2] 0 d 2 w 10 100 m 190 100 l S", "", "", vec![]);
     let e = unsupported(run(&dashed, vec![(50.0, 90.0, 100.0, 110.0)]));
     assert!(e.contains("dashed"), "{e}");
-    // A right-angle corner at (100, 100) whose miter tip, 2.83 out,
-    // points at a rect 2.5 away: the segments clear it, the join may
-    // not.
+    // A right-angle corner at (100, 100) whose miter tip, at (102, 102),
+    // lies inside a rect from (101.5, 101.5): the segments clear it (2
+    // is half the width, 1.5 the gap), the join does not.
     let sharp = one_page("4 w 10 M 50 100 m 100 100 l 100 50 l S", "", "", vec![]);
-    let e = unsupported(run(&sharp, vec![(102.5, 102.5, 150.0, 150.0)]));
+    let e = unsupported(run(&sharp, vec![(101.5, 101.5, 150.0, 150.0)]));
     assert!(e.contains("join"), "{e}");
 }
 
@@ -948,4 +948,47 @@ fn cuts_under_a_flipped_scaled_ctm() {
     assert_eq!(r.paths_cut, 2);
     assert_eq!(at(&r.output, 75, 100), 255);
     assert_eq!(at(&r.output, 30, 100), 0);
+}
+
+// Review of the path cut (P0s, fixed): joins decided in user space,
+// repeated points normalised, the cut exact at the stroke's edge.
+
+/// Under an anisotropic CTM a join that is a bevel in page-space
+/// angles is a miter in user space, where the stroke is drawn.
+#[test]
+fn joins_are_decided_in_user_space() {
+    let pdf = one_page(
+        "q 10 0 0 1 100 100 cm 10 w 0 J 0 j 2 M -10 -10 m 0 0 l -10 10 l S Q",
+        "",
+        "",
+        vec![],
+    );
+    let e = unsupported(run(&pdf, vec![(160.0, 99.5, 165.0, 100.5)]));
+    assert!(e.contains("join"), "{e}");
+}
+
+/// A repeated point does not hide the join of the segments around it.
+#[test]
+fn repeated_points_do_not_hide_joins() {
+    for c in [
+        "10 w 0 J 0 j 20 M 0 90 m 100 100 l 100 100 l 0 110 l S",
+        "10 w 0 J 0 j 20 M 100 100 m 0 110 l 0 90 l 100 100 l h S",
+    ] {
+        let pdf = one_page(c, "", "", vec![]);
+        let e = unsupported(run(&pdf, vec![(130.0, 99.5, 140.0, 100.5)]));
+        assert!(e.contains("join"), "{c}: {e}");
+    }
+}
+
+/// A butt-capped stroke is cut exactly where its band meets the rect:
+/// nothing outside is lost.
+#[test]
+fn a_butt_cut_keeps_everything_outside() {
+    let pdf = one_page("10 w 0 J 20 100 m 200 100 l S", "", "", vec![]);
+    let r = run(&pdf, vec![(90.0, 90.0, 110.0, 110.0)]).unwrap();
+    assert_eq!(r.paths_cut, 1);
+    for x in [86, 88, 89, 111, 112] {
+        assert_eq!(at(&r.output, x, 100), 0, "x = {x} is outside and kept");
+    }
+    assert_eq!(at(&r.output, 100, 100), 255);
 }

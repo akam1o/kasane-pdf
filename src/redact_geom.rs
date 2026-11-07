@@ -48,12 +48,11 @@ pub(crate) enum Cut {
 /// Page-space polylines with their closed flag.
 type Lines = Vec<(Vec<(f64, f64)>, bool)>;
 
-/// A segment's ends and its kept parameter intervals.
-type Segment = ((f64, f64), (f64, f64), Vec<(f64, f64)>);
-
 struct Subpath {
     /// Page-space points.
     pts: Vec<(f64, f64)>,
+    /// The same points in user space.
+    upts: Vec<(f64, f64)>,
     closed: bool,
     curved: bool,
 }
@@ -84,11 +83,15 @@ pub(crate) fn cut_path(
         match op {
             O::MoveTo(x, y) => subs.push(Subpath {
                 pts: vec![tp(*x, *y)],
+                upts: vec![(*x, *y)],
                 closed: false,
                 curved: false,
             }),
             O::LineTo(x, y) => match subs.last_mut() {
-                Some(s) if !s.closed => s.pts.push(tp(*x, *y)),
+                Some(s) if !s.closed => {
+                    s.pts.push(tp(*x, *y));
+                    s.upts.push((*x, *y));
+                }
                 _ => return Err(unsupported("a segment without a current point")),
             },
             O::CurveTo(x1, y1, x2, y2, x3, y3) => {
@@ -97,6 +100,7 @@ pub(crate) fn cut_path(
                     .ok_or_else(|| unsupported("a curve without a current point"))?;
                 s.curved = true;
                 s.pts.extend([tp(*x1, *y1), tp(*x2, *y2), tp(*x3, *y3)]);
+                s.upts.extend([(*x1, *y1), (*x2, *y2), (*x3, *y3)]);
             }
             O::CurveToV(x2, y2, x3, y3) | O::CurveToY(x2, y2, x3, y3) => {
                 let s = subs
@@ -104,6 +108,7 @@ pub(crate) fn cut_path(
                     .ok_or_else(|| unsupported("a curve without a current point"))?;
                 s.curved = true;
                 s.pts.extend([tp(*x2, *y2), tp(*x3, *y3)]);
+                s.upts.extend([(*x2, *y2), (*x3, *y3)]);
             }
             O::ClosePath => {
                 if let Some(s) = subs.last_mut() {
@@ -117,12 +122,17 @@ pub(crate) fn cut_path(
                     tp(*x + *w, *y + *h),
                     tp(*x, *y + *h),
                 ],
+                upts: vec![(*x, *y), (*x + *w, *y), (*x + *w, *y + *h), (*x, *y + *h)],
                 closed: true,
                 curved: false,
             }),
             _ => return Err(unsupported(format!("{} in a path", op.name()))),
         }
     }
+    let closes = matches!(
+        paint,
+        O::CloseAndStroke | O::CloseFillAndStroke | O::CloseFillAndStrokeEvenOdd
+    );
     let (fill, even_odd, stroke) = match paint {
         O::Stroke => (false, false, true),
         O::CloseAndStroke => {
@@ -194,145 +204,178 @@ pub(crate) fn cut_path(
     }
 
     // ---- stroke --------------------------------------------------------
+    // Worked in user space, where the stroke is defined (§8.5.3.2):
+    // each rect maps to a parallelogram there, the band, caps and
+    // joins are exact.
     let mut stroke_lines: Option<Lines> = None;
     if stroke {
-        let half = st.width.abs() / 2.0 * max_stretch(&m);
+        let half = st.width.abs() / 2.0;
         if !(half.is_finite() && half > 0.0) {
             return Err(unsupported("a hairline or non-finite line width"));
         }
-        let reach = if st.cap == 2 {
-            half * std::f64::consts::SQRT_2
-        } else {
-            half
-        };
-        let join_reach = |pts: &[(f64, f64)], i: usize, n: usize, closed: bool| -> f64 {
-            // The join at vertex i between the segments into and out
-            // of it.
-            let prev = if i == 0 {
-                if closed {
-                    n - 1
-                } else {
-                    return reach;
-                }
-            } else {
-                i - 1
-            };
-            let next = if i + 1 == n {
-                if closed {
-                    0
-                } else {
-                    return reach;
-                }
-            } else {
-                i + 1
-            };
-            if st.join != 0 {
-                return half.max(reach);
-            }
-            let (a, b, c) = (pts[prev], pts[i], pts[next]);
-            let u = norm((b.0 - a.0, b.1 - a.1));
-            let v = norm((c.0 - b.0, c.1 - b.1));
-            match (u, v) {
-                (Some(u), Some(v)) => {
-                    // Angle between the incoming and outgoing directions.
-                    let cos = -(u.0 * v.0 + u.1 * v.1);
-                    let sin_half = ((1.0 - cos) / 2.0).max(0.0).sqrt();
-                    let miter = if sin_half > 0.0 {
-                        half / sin_half
-                    } else {
-                        f64::INFINITY
-                    };
-                    let limit = if st.miter_limit.is_finite() && st.miter_limit >= 1.0 {
-                        st.miter_limit
-                    } else {
-                        1.0
-                    };
-                    if miter <= limit * half {
-                        miter.max(reach)
-                    } else {
-                        half.max(reach)
-                    }
-                }
-                _ => half.max(reach),
-            }
-        };
-        let box_of = |r: &Rect, d: f64| [r.llx - d, r.lly - d, r.urx + d, r.ury + d];
-        let grown_test: Vec<[f64; 4]> = rects.iter().map(|r| box_of(r, reach + SLACK)).collect();
-        let grown: Vec<[f64; 4]> = rects
-            .iter()
-            .map(|r| box_of(r, reach + 2.0 * SLACK))
-            .collect();
-        let mut out: Lines = Vec::new();
-        let mut changed = false;
+        // How far a cap reaches past an end along the segment: none for
+        // butt; a square's half side for square; a round cap is bounded
+        // by that square.
+        let ext = if st.cap == 0 { 0.0 } else { half };
         let limit = if st.miter_limit.is_finite() && st.miter_limit >= 1.0 {
             st.miter_limit
         } else {
             1.0
         };
+        let quad = |r: &Rect| -> Vec<(f64, f64)> {
+            [
+                (r.llx, r.lly),
+                (r.urx, r.lly),
+                (r.urx, r.ury),
+                (r.llx, r.ury),
+            ]
+            .iter()
+            .map(|&(x, y)| inv.transform(x, y))
+            .collect()
+        };
+        let quads_test: Vec<Vec<(f64, f64)>> = tested.iter().map(quad).collect();
+        let quads_cut: Vec<Vec<(f64, f64)>> =
+            rects.iter().map(|r| quad(&grow(r, 2.0 * SLACK))).collect();
+        let quads_exact: Vec<Vec<(f64, f64)>> = rects.iter().map(quad).collect();
+        // The reach of the join at `pts[i]` between its neighbours, as a
+        // distance from the vertex: the miter tip when within the limit,
+        // else the bevel / round extent (half the width).
+        let join_reach = |a: (f64, f64), b: (f64, f64), c: (f64, f64)| -> f64 {
+            if st.join != 0 {
+                return half;
+            }
+            match (norm((b.0 - a.0, b.1 - a.1)), norm((c.0 - b.0, c.1 - b.1))) {
+                (Some(u), Some(v)) => {
+                    let cos = -(u.0 * v.0 + u.1 * v.1);
+                    let sin_half = ((1.0 - cos) / 2.0).max(0.0).sqrt();
+                    if sin_half > 0.0 && 1.0 / sin_half <= limit {
+                        half / sin_half
+                    } else {
+                        half
+                    }
+                }
+                _ => half,
+            }
+        };
+        let clear_of = |p: (f64, f64), r: f64| quads_exact.iter().all(|q| poly_dist(p, q) >= r);
+        let mut out: Lines = Vec::new();
+        let mut changed = false;
         for s in &subs {
-            let n = s.pts.len();
-            if s.curved || n < 2 {
-                // Keep it only when everything it can paint (control
-                // hull grown by the largest join or cap reach) clears.
-                let r = half * limit.max(std::f64::consts::SQRT_2);
+            if s.curved {
+                // Keep it only when everything it can paint (the page
+                // hull of its control points, grown by the largest reach)
+                // clears every rect.
+                let r = half * limit.max(std::f64::consts::SQRT_2) * max_stretch(&m);
                 let h = bbox(&s.pts);
                 let grown_hull = [h[0] - r, h[1] - r, h[2] + r, h[3] + r];
                 if rects.iter().any(|q| overlaps_open(&grown_hull, q)) {
-                    return Err(unsupported(if s.curved {
-                        "a curve near a rect"
-                    } else {
-                        "a degenerate subpath near a rect"
-                    }));
+                    return Err(unsupported("a curve near a rect"));
                 }
-                out.push((s.pts.clone(), s.closed));
+                out.push((s.upts.clone(), s.closed));
                 continue;
             }
-            // Segments, with the closing one for a closed subpath.
+            // Repeated points draw nothing and hide the real joins:
+            // drop them, and a closing point equal to the start.
+            let mut pts: Vec<(f64, f64)> = Vec::with_capacity(s.upts.len());
+            for &p in &s.upts {
+                if pts.last() != Some(&p) {
+                    pts.push(p);
+                }
+            }
+            if s.closed && pts.len() > 1 && pts.first() == pts.last() {
+                pts.pop();
+            }
+            let n = pts.len();
+            if n < 2 {
+                // A dot (round or square caps): within the cap reach.
+                if !clear_of(pts[0], half * std::f64::consts::SQRT_2) {
+                    return Err(unsupported("a degenerate subpath near a rect"));
+                }
+                out.push((s.upts.clone(), s.closed));
+                continue;
+            }
             let seg_count = if s.closed { n } else { n - 1 };
-            let segs: Vec<Segment> = (0..seg_count)
-                .map(|k| {
-                    let (a, b) = (s.pts[k], s.pts[(k + 1) % n]);
-                    (a, b, kept_intervals(a, b, &grown))
-                })
-                .collect();
-            let cut_here = segs
-                .iter()
-                .any(|(a, b, _)| kept_intervals(*a, *b, &grown_test).as_slice() != [(0.0, 1.0)]);
+            let seg = |k: usize| (pts[k], pts[(k + 1) % n]);
+            // The centreline positions whose stroke cross-section (and
+            // cap) would reach into a rect: the rect's parallelogram
+            // grown by the cross-section, a convex polygon.
+            let forbidden = |a: (f64, f64), b: (f64, f64), quads: &[Vec<(f64, f64)>]| {
+                let u = norm((b.0 - a.0, b.1 - a.1)).expect("no repeated points");
+                let nrm = (-u.1, u.0);
+                let k: Vec<(f64, f64)> = [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+                    .iter()
+                    .map(|&(sa, sb)| {
+                        (
+                            sa * ext * u.0 + sb * half * nrm.0,
+                            sa * ext * u.1 + sb * half * nrm.1,
+                        )
+                    })
+                    .collect();
+                quads
+                    .iter()
+                    .map(|q| {
+                        let sum: Vec<(f64, f64)> = q
+                            .iter()
+                            .flat_map(|p| k.iter().map(move |d| (p.0 + d.0, p.1 + d.1)))
+                            .collect();
+                        convex_hull(sum)
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let cut_here = (0..seg_count).any(|k| {
+                let (a, b) = seg(k);
+                kept_intervals_poly(a, b, &forbidden(a, b, &quads_test)).as_slice() != [(0.0, 1.0)]
+            });
             if !cut_here {
-                // Untouched, but every join must clear the rects by
-                // its own reach.
+                // Untouched, but every join must clear the rects.
                 for i in 0..n {
-                    let r = join_reach(&s.pts, i, n, s.closed);
-                    if rects.iter().any(|q| linf_dist(s.pts[i], q) < r) {
+                    let prev = if i == 0 {
+                        if s.closed {
+                            n - 1
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        i - 1
+                    };
+                    let next = if i + 1 == n {
+                        if s.closed {
+                            0
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        i + 1
+                    };
+                    if !clear_of(pts[i], join_reach(pts[prev], pts[i], pts[next])) {
                         return Err(unsupported("a corner whose join reaches a rect"));
                     }
                 }
-                out.push((s.pts.clone(), s.closed));
+                out.push((s.upts.clone(), s.closed));
                 continue;
             }
             changed = true;
             let mut pieces: Vec<Vec<(f64, f64)>> = Vec::new();
             let mut cur: Vec<(f64, f64)> = Vec::new();
-            for (a, b, kept) in &segs {
-                for &(t0, t1) in kept {
-                    let p1 = lerp(*a, *b, t1);
-                    if t0 == 0.0 && cur.last() == Some(a) {
+            for k in 0..seg_count {
+                let (a, b) = seg(k);
+                for (t0, t1) in kept_intervals_poly(a, b, &forbidden(a, b, &quads_cut)) {
+                    let p1 = lerp(a, b, t1);
+                    if t0 == 0.0 && cur.last() == Some(&a) {
                         cur.push(p1);
                     } else {
                         if cur.len() >= 2 {
                             pieces.push(std::mem::take(&mut cur));
                         }
-                        cur = vec![lerp(*a, *b, t0), p1];
+                        cur = vec![lerp(a, b, t0), p1];
                     }
                 }
             }
             if cur.len() >= 2 {
                 pieces.push(cur);
             }
-            // A closed subpath: a last piece ending at the start vertex
-            // runs on into a first piece starting there.
             if s.closed && pieces.len() >= 2 {
-                let start = s.pts[0];
+                let start = pts[0];
                 if pieces[0][0] == start && pieces.last().and_then(|p| p.last()) == Some(&start) {
                     let last = pieces.pop().expect("two or more");
                     let mut merged = last;
@@ -341,11 +384,8 @@ pub(crate) fn cut_path(
                 }
             }
             for p in pieces {
-                // Interior vertices of a piece are original corners
-                // with their joins: each must clear the rects.
                 for i in 1..p.len() - 1 {
-                    let r = join_reach(&p, i, p.len(), false);
-                    if rects.iter().any(|q| linf_dist(p[i], q) < r) {
+                    if !clear_of(p[i], join_reach(p[i - 1], p[i], p[i + 1])) {
                         return Err(unsupported("a corner whose join reaches a rect"));
                     }
                 }
@@ -400,30 +440,27 @@ pub(crate) fn cut_path(
         }
     }
     if stroke {
-        let lines: Lines = match stroke_lines {
-            Some(l) => l,
-            None => subs.iter().map(|s| (s.pts.clone(), s.closed)).collect(),
-        };
-        if lines.iter().any(|_| true) && subs.iter().all(|s| !s.curved) {
-            let before = ops.len();
-            for (pts, closed) in &lines {
-                let p0 = back(pts[0]);
-                ops.push(O::MoveTo(p0.0, p0.1));
-                for p in &pts[1..] {
-                    let q = back(*p);
-                    ops.push(O::LineTo(q.0, q.1));
+        match &stroke_lines {
+            Some(lines) => {
+                let before = ops.len();
+                for (pts, closed) in lines {
+                    ops.push(O::MoveTo(pts[0].0, pts[0].1));
+                    for p in &pts[1..] {
+                        ops.push(O::LineTo(p.0, p.1));
+                    }
+                    if *closed {
+                        ops.push(O::ClosePath);
+                    }
                 }
-                if *closed {
-                    ops.push(O::ClosePath);
+                if ops.len() > before {
+                    ops.push(O::Stroke);
                 }
             }
-            if ops.len() > before {
-                ops.push(O::Stroke);
+            None => {
+                // The stroke is untouched: paint it as before.
+                ops.extend(construction.iter().cloned());
+                ops.push(if closes { O::CloseAndStroke } else { O::Stroke });
             }
-        } else if !lines.is_empty() {
-            // Untouched curved stroke: as before.
-            ops.extend(construction.iter().cloned());
-            ops.push(O::Stroke);
         }
     }
     Ok(Cut::Replace(ops))
@@ -528,12 +565,41 @@ fn subtract(b: [f64; 4], r: &Rect) -> Vec<[f64; 4]> {
     out
 }
 
-/// The parameter intervals of segment `a`→`b` outside every box of
-/// `grown` (each box's interior removed), in order.
-fn kept_intervals(a: (f64, f64), b: (f64, f64), grown: &[[f64; 4]]) -> Vec<(f64, f64)> {
+/// Convex hull (counter-clockwise, Andrew's monotone chain).
+fn convex_hull(mut p: Vec<(f64, f64)>) -> Vec<(f64, f64)> {
+    p.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    p.dedup();
+    if p.len() < 3 {
+        return p;
+    }
+    let cross = |o: (f64, f64), a: (f64, f64), b: (f64, f64)| {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    };
+    let mut h: Vec<(f64, f64)> = Vec::new();
+    for pass in 0..2 {
+        let start = h.len();
+        let iter: Box<dyn Iterator<Item = &(f64, f64)>> = if pass == 0 {
+            Box::new(p.iter())
+        } else {
+            Box::new(p.iter().rev())
+        };
+        for &q in iter {
+            while h.len() >= start + 2 && cross(h[h.len() - 2], h[h.len() - 1], q) <= 0.0 {
+                h.pop();
+            }
+            h.push(q);
+        }
+        h.pop();
+    }
+    h
+}
+
+/// The parameter intervals of `a`→`b` outside the interior of every
+/// convex polygon in `polys` (counter-clockwise), in order.
+fn kept_intervals_poly(a: (f64, f64), b: (f64, f64), polys: &[Vec<(f64, f64)>]) -> Vec<(f64, f64)> {
     let mut kept = vec![(0.0f64, 1.0f64)];
-    for g in grown {
-        let Some((t0, t1)) = clip_segment(a, b, g) else {
+    for poly in polys {
+        let Some((t0, t1)) = clip_convex(a, b, poly) else {
             continue;
         };
         let mut next = Vec::new();
@@ -555,32 +621,69 @@ fn kept_intervals(a: (f64, f64), b: (f64, f64), grown: &[[f64; 4]]) -> Vec<(f64,
     kept
 }
 
-/// The parameter range of `a`→`b` inside box `g` (Liang–Barsky), or
-/// `None` when the segment misses its interior.
-fn clip_segment(a: (f64, f64), b: (f64, f64), g: &[f64; 4]) -> Option<(f64, f64)> {
-    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
-    let mut t0 = 0.0f64;
-    let mut t1 = 1.0f64;
-    for (p, q) in [
-        (-dx, a.0 - g[0]),
-        (dx, g[2] - a.0),
-        (-dy, a.1 - g[1]),
-        (dy, g[3] - a.1),
-    ] {
-        if p == 0.0 {
-            if q <= 0.0 {
+/// The parameter range of `a`→`b` inside a convex polygon's interior
+/// (Cyrus–Beck), or `None`.
+fn clip_convex(a: (f64, f64), b: (f64, f64), poly: &[(f64, f64)]) -> Option<(f64, f64)> {
+    if poly.len() < 3 {
+        return None;
+    }
+    let d = (b.0 - a.0, b.1 - a.1);
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    for i in 0..poly.len() {
+        let p = poly[i];
+        let q = poly[(i + 1) % poly.len()];
+        // Inward normal of a counter-clockwise edge.
+        let nrm = (-(q.1 - p.1), q.0 - p.0);
+        let num = nrm.0 * (a.0 - p.0) + nrm.1 * (a.1 - p.1);
+        let den = nrm.0 * d.0 + nrm.1 * d.1;
+        if den == 0.0 {
+            if num <= 0.0 {
                 return None;
             }
         } else {
-            let r = q / p;
-            if p < 0.0 {
-                t0 = t0.max(r);
+            let t = -num / den;
+            if den > 0.0 {
+                t0 = t0.max(t);
             } else {
-                t1 = t1.min(r);
+                t1 = t1.min(t);
             }
         }
     }
     (t0 < t1).then_some((t0, t1))
+}
+
+/// Euclidean distance from `p` to a convex polygon (0 inside).
+fn poly_dist(p: (f64, f64), poly: &[(f64, f64)]) -> f64 {
+    let n = poly.len();
+    let mut inside = n >= 3;
+    let mut best = f64::INFINITY;
+    for i in 0..n {
+        let a = poly[i];
+        let b = poly[(i + 1) % n];
+        let e = (b.0 - a.0, b.1 - a.1);
+        let w = (p.0 - a.0, p.1 - a.1);
+        let cross = e.0 * w.1 - e.1 * w.0;
+        let orient = {
+            // The polygon may be clockwise (a mirroring CTM).
+            let c = poly[(i + 2) % n];
+            e.0 * (c.1 - a.1) - e.1 * (c.0 - a.0)
+        };
+        if cross * orient < 0.0 {
+            inside = false;
+        }
+        let len2 = e.0 * e.0 + e.1 * e.1;
+        let t = if len2 > 0.0 {
+            ((w.0 * e.0 + w.1 * e.1) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        best = best.min(dist(p, (a.0 + e.0 * t, a.1 + e.1 * t)));
+    }
+    if inside {
+        0.0
+    } else {
+        best
+    }
 }
 
 fn lerp(a: (f64, f64), b: (f64, f64), t: f64) -> (f64, f64) {
@@ -600,11 +703,4 @@ fn dist(a: (f64, f64), b: (f64, f64)) -> f64 {
 fn norm(v: (f64, f64)) -> Option<(f64, f64)> {
     let l = (v.0 * v.0 + v.1 * v.1).sqrt();
     (l > 0.0 && l.is_finite()).then(|| (v.0 / l, v.1 / l))
-}
-
-/// L∞ distance from `p` to rect `r` (0 inside).
-fn linf_dist(p: (f64, f64), r: &Rect) -> f64 {
-    let dx = (r.llx - p.0).max(p.0 - r.urx).max(0.0);
-    let dy = (r.lly - p.1).max(p.1 - r.ury).max(0.0);
-    dx.max(dy)
 }
