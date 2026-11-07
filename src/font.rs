@@ -151,6 +151,9 @@ pub(crate) struct Type3Font {
     /// `/Resources` the CharProcs resolve against (`None` → inherit
     /// the page's). Stored unresolved; the renderer derefs per use.
     resources: Option<Object>,
+    /// `/FontBBox` in glyph space; `None` when absent, malformed or
+    /// all zero (§9.6.5: "unspecified").
+    font_bbox: Option<[f64; 4]>,
 }
 
 /// `/LastChar − /FirstChar + 1` as an entry count: 0 when reversed,
@@ -1142,6 +1145,19 @@ fn load_type3_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
     // ---- /Resources the CharProcs resolve against ---------------
     let resources = dict.get(b"Resources".as_slice()).cloned();
 
+    let font_bbox = dict
+        .get(b"FontBBox".as_slice())
+        .and_then(|o| doc.deref(o).ok())
+        .and_then(|o| {
+            let a = o.as_array()?;
+            let n: Vec<f64> = a
+                .iter()
+                .map(|e| doc.deref(e).ok()?.as_number())
+                .collect::<Option<_>>()?;
+            <[f64; 4]>::try_from(n).ok()
+        })
+        .filter(|b| b.iter().all(|v| v.is_finite()) && b.iter().any(|v| *v != 0.0));
+
     let tounicode = crate::tounicode::load_tounicode(doc, dict, limits)?;
 
     Ok(Rc::new(Type3Font {
@@ -1151,10 +1167,16 @@ fn load_type3_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         widths,
         tounicode,
         resources,
+        font_bbox,
     }))
 }
 
 impl Type3Font {
+    /// `/FontBBox` in glyph space, if specified.
+    pub(crate) fn font_bbox(&self) -> Option<[f64; 4]> {
+        self.font_bbox
+    }
+
     /// `/FontMatrix` — glyph space → text space.
     pub(crate) fn font_matrix(&self) -> crate::matrix::Matrix {
         self.font_matrix

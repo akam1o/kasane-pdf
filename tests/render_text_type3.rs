@@ -357,3 +357,42 @@ fn a_text_object_inside_a_charproc_keeps_the_outer_text_position() {
     assert!(!dark(72, 110), "gap between the glyphs");
     assert_eq!(inked(&r), 2 * 20 * 20, "nothing painted elsewhere");
 }
+
+// --------------------------------------------------------------------
+// Placement on the device grid
+// --------------------------------------------------------------------
+
+/// An uncoloured (`d1`) glyph whose box fits the font's `/FontBBox` is
+/// drawn with its origin on whole device pixels, x and y floored, as
+/// Splash draws the Type 3 glyphs it caches. At 72 dpi on a 200 pt page
+/// device (x, y) = (x, 200 − y): (50.3, 100.6) floors to the device
+/// position of (50, 101).
+#[test]
+fn type3_cached_glyph_origin_is_floored() {
+    let tri = "600 0 0 0 750 750 d1 0 0 m 750 0 l 375 750 l f";
+    let at = |cp: &str, pos: &str| {
+        let s = format!("BT /F0 40 Tf {pos} Tj ET");
+        render(&pdf_type3(s.as_bytes(), &[("g", cp)], &[]))
+            .unwrap()
+            .pixels()
+            .to_vec()
+    };
+    let snapped = at(tri, "50 101 Td (a)");
+    assert!(at(tri, "50.3 100.6 Td (a)") == snapped);
+    // Not cached by Splash, so drawn where they fall: a coloured
+    // glyph, a q before d1, a d1 box outside /FontBBox, rotated text.
+    for cp in [
+        "600 0 d0 0 0 m 750 0 l 375 750 l f",
+        "q Q 600 0 0 0 750 750 d1 0 0 m 750 0 l 375 750 l f",
+        "600 0 0 0 900 2000 d1 0 0 m 750 0 l 375 750 l f",
+    ] {
+        assert!(
+            at(cp, "50.3 100.6 Td (a)") != at(cp, "50 101 Td (a)"),
+            "{cp}"
+        );
+    }
+    assert!(
+        at(tri, "0.9659 0.2588 -0.2588 0.9659 50.3 100.6 Tm (a)")
+            != at(tri, "0.9659 0.2588 -0.2588 0.9659 50 101 Tm (a)")
+    );
+}

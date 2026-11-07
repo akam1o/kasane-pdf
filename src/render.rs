@@ -593,6 +593,7 @@ pub fn render_page(
         dash_work: 0.0,
         pattern_base: Matrix::IDENTITY,
         pattern_depth: 0,
+        type3_depth: 0,
         pattern_stack: Vec::new(),
         pattern_tiles: 0,
         uncolored_depth: 0,
@@ -1516,6 +1517,8 @@ pub(crate) struct Renderer<'a> {
     pattern_base: Matrix,
     /// Nesting depth of tiling-pattern cells being painted.
     pattern_depth: u32,
+    /// Nesting depth of Type 3 glyphs being run.
+    type3_depth: u32,
     /// Tiling patterns (by indirect reference) whose cells are being
     /// painted — a cell that paints with its own pattern is a cycle.
     pattern_stack: Vec<IndirectRef>,
@@ -1787,6 +1790,7 @@ impl<'a> Renderer<'a> {
             dash_work: 0.0,
             pattern_base: Matrix::IDENTITY,
             pattern_depth: 0,
+            type3_depth: 0,
             pattern_stack: Vec::new(),
             pattern_tiles: 0,
             uncolored_depth: 0,
@@ -6777,6 +6781,74 @@ impl<'a> Renderer<'a> {
         Ok(())
     }
 
+    /// The user-space shift that puts a Type 3 glyph's origin on whole
+    /// device pixels, as Splash places the glyphs it caches: an
+    /// uncoloured glyph (`d1`, no `q`/`Q` before it) whose `d1` box fits
+    /// the cache cell Splash sizes from `/FontBBox` is rasterised once
+    /// with its origin on a pixel and drawn at the floored device
+    /// origin, x and y. Other glyphs are drawn where they fall, as are
+    /// rotated or skewed, pattern-filled, nested and pattern-cell ones.
+    /// `self.gs.ctm` is the glyph-space → user-space matrix.
+    fn type3_snap(&self, t3: &crate::font::Type3Font, ops: &[Operation]) -> Option<(f64, f64)> {
+        if self.type3_depth > 0 || self.pattern_depth > 0 || self.gs.fill_space.is_pattern() {
+            return None;
+        }
+        let [llx, lly, urx, ury] = ops.iter().find_map(|op| match op {
+            Operation::Type3SetWidthAndBox {
+                llx, lly, urx, ury, ..
+            } => Some(Some([*llx, *lly, *urx, *ury])),
+            Operation::Type3SetWidth { .. } | Operation::SaveState | Operation::RestoreState => {
+                Some(None)
+            }
+            _ => None,
+        })??;
+        let u = self.user_to_pix;
+        let u = Matrix::new(
+            u.sx as f64,
+            u.ky as f64,
+            u.kx as f64,
+            u.sy as f64,
+            u.tx as f64,
+            u.ty as f64,
+        );
+        let d = self.gs.ctm.concat(u);
+        if d.b != 0.0 || d.c != 0.0 || !d.is_finite() {
+            return None;
+        }
+        let (xt, yt) = d.transform(0.0, 0.0);
+        let bounds = |b: [f64; 4]| {
+            let (x0, y0) = d.transform(b[0], b[1]);
+            let (x1, y1) = d.transform(b[2], b[3]);
+            (x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1))
+        };
+        // The cache cell (SplashOutputDev::beginType3Char).
+        let (x_min, y_min, x_max, y_max) = match t3.font_bbox() {
+            Some(b) => bounds(b),
+            None => (xt - 5.0, yt + 15.0 - 45.0, xt + 25.0, yt + 15.0),
+        };
+        let gx = (x_min - xt).floor() - 2.0;
+        let gy = (y_min - yt).floor() - 2.0;
+        let (mut gw, mut gh) = (
+            x_max.ceil() - x_min.floor() + 4.0,
+            y_max.ceil() - y_min.floor() + 4.0,
+        );
+        if gw <= 0.0 || gh <= 0.0 || gw * gh > 100_000.0 {
+            (gw, gh) = (100.0, 100.0);
+        }
+        let (x_min, y_min, x_max, y_max) = bounds([llx, lly, urx, ury]);
+        if x_min - xt < gx || y_min - yt < gy || x_max - xt > gx + gw || y_max - yt > gy + gh {
+            return None;
+        }
+        // Device shift → user shift through the inverse of the linear
+        // part of user → device.
+        let (sx, sy) = (xt.floor() - xt, yt.floor() - yt);
+        let det = u.a * u.d - u.b * u.c;
+        if det == 0.0 || !det.is_finite() {
+            return None;
+        }
+        Some(((sx * u.d - sy * u.c) / det, (sy * u.a - sx * u.b) / det))
+    }
+
     /// Show a `/Type3` glyph — execute its `/CharProcs` content stream
     /// like a miniature Form XObject (§9.6.4).
     ///
@@ -6890,8 +6962,15 @@ impl<'a> Renderer<'a> {
                         }
                         ops
                     };
+                    if let Some((dx, dy)) = self.type3_snap(t3, &ops) {
+                        self.gs.ctm.e += dx;
+                        self.gs.ctm.f += dy;
+                        self.pattern_base = self.gs.ctm;
+                    }
                     self.xobject_depth += 1;
+                    self.type3_depth += 1;
                     let r = self.run(&ops);
+                    self.type3_depth -= 1;
                     self.xobject_depth -= 1;
                     r
                 })();
