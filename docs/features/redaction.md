@@ -161,9 +161,34 @@ document text in `Debug` output.
 - Glyphs are removed whole: a glyph straddling a rect's edge goes
   entirely, including its part outside.
 
-## Not covered
+## Not covered (known limitations of 0.6)
 
-Annotations other than links meeting a rect, forms nested more than
-16 deep, tiling patterns, inline images meeting a rect, soft masks and fonts
-set by ExtGState, shadings, curves crossing a rect, masked, CMYK or indexed images, invisible OCR text.
-Each is refused, not approximated.
+Each of these is refused with a typed error, not approximated:
+
+- **Text in a non-embedded font.** A reader draws it with a font of its
+  own choosing, so where its glyphs reach is not known; keeping any of
+  it next to a rect could keep data drawn inside the rect. Accepted
+  only under a clip that is exactly a rectangle meeting no rect. Type 3
+  and vertical fonts, and text in any mode but `Tr 0` (invisible OCR
+  text included), are refused too.
+- **Geometry**: curves, non-rectangular or overlapping fills crossing a
+  rect, a corner whose join reaches a rect, a translucent or blended
+  dashed stroke cut into pieces, clips that are not rectangles meeting
+  a rect, `/UserUnit` ≠ 1. Square and round caps cut at a rect lose up
+  to half a line width of the band next to it (accepted, documented).
+- **Images**: masked, CMYK, indexed, other bit depths or filter chains,
+  rotated or sheared, with `/Alternates` or OPI, with `/OC` meeting a
+  rect, and inline images meeting a rect.
+- **Paint**: tiling patterns, shading patterns with their own
+  ExtGState, shadings (`sh`) that may paint inside a rect, soft masks,
+  `/Font` and `/SA true` set by ExtGState.
+- **Annotations**: other than links meeting a rect unless
+  `remove_annotations` removes them (markup subtypes only); widgets,
+  signatures, media, file attachments and 3D meeting a rect; NoZoom,
+  NoRotate and `/FixedPrint` annotations and Text annotations not
+  removed; appearance-less annotations whose geometry leaves `/Rect`.
+- **Text substitutes**: `/ActualText` (any tag), `/Alt` and `/E` on
+  marked content; a structure tree carrying alternate text unless it is
+  removed.
+- **Documents**: signed or encrypted; forms nested more than 16 deep or
+  cyclic.

@@ -21,6 +21,7 @@ patch release.
 | writing | `rewrite`, `rewrite_with_limits`; since 0.5 `rewrite_with(&Document, &RewriteOptions) -> RewriteOutput` with `RewriteOptions` (`#[non_exhaustive]`, `pub` fields, `with_*`), `ExecutableContentPolicy`, `MultimediaPolicy`, `UsageRightsPolicy` (`#[non_exhaustive]`; `Refuse`, `Remove`), `RewriteOutput::{bytes, into_bytes, report, into_parts}` (`#[must_use]`), `RewriteReport` (accessors, `usage_rights()`, `signatures_removed()`), `UsageRightsOutcome`, `UsageRightsRemoval`, `RemovedSignature`, `SigFlagsChange`, `UsageRightsKey`, `SubFilterKind`, `UsageRight`, `OutputCheck` (`#[non_exhaustive]`, read-only fields), `ExecutableItem`, `ExecutableSummary`, `ActionClass`, `ActionKind`, `ActionOwner`, `Trigger`, `ScriptSize`, `MultimediaSubtype`, `UnclassifiedStructure`, `UnclassifiedReason`, `VersionChange`, `VersionReason` (`#[non_exhaustive]`); `Document::edit*() -> Edit`, `Edit::{add_square, set_info, remove_annotation, set_annotation_entries, set_field_value, rewrite, save_incremental}` | `Edit<'a>` borrows the document; the save methods consume it |
 | signatures | `signatures() -> Vec<SignatureInfo>`, `ChangeKind`, `SignatureRule` | detection and policy only; nothing is verified |
 | diagnostics / editors | `diagnose_redaction`, `audit_residuals`, `remove_text`, `remove_image_region`, `remove_region(s)`, `remove_document_metadata` and their report types; `named_destinations`, `substitution_for` | experimental editors are documented as such |
+| redaction | since 0.6 `redact(&Document, &[PageSpec], &RedactOptions) -> Result<Redaction, Error>`; `RedactOptions::{new, with_limits, remove_structure_tree, refuse_copies_elsewhere, remove_annotations}`; `Redaction` (`pub` counts, `output`, `elsewhere`, `residual`); `Elsewhere`, `ElsewhereLocation`, `Removed` | the guarantee is the three statements in `docs/features/redaction.md` |
 | errors | `Error` (12 variants) + `Error::kind() -> ErrorKind`; `ErrorKind::{as_str, is_malformed_input}`; `MissingReference`; `SignatureRule`; since 0.5 `Error::refusal_reason() -> Option<RefusalReason>` | `std::error::Error + Send + Sync` |
 | limits | `Limits` (49 `pub` fields, `Default`, `Clone`, `new`, `validate`, one `with_<field>` each) | |
 | features | `cjk-fallback` (off), `tiny-skia-interop` (on) | `cjk_fallback_enabled()` reports the first at run time |
@@ -103,7 +104,18 @@ patch release.
   class of input is refused with `max_pattern_tiles`, and `rewrite`
   carries `/OCProperties`.
 
-## 0.5.1 (unreleased; no API change)
+## 0.6.0
+
+- Added: `redact`, `RedactOptions`, `Redaction`, `Elsewhere`,
+  `ElsewhereLocation`, `Removed` (above). Nothing removed or changed;
+  `cargo semver-checks` against 0.5.2: no semver update required.
+- Behaviour: glyph placement on the device grid, page pixel size
+  rounded up, area-averaged minified images, real numbers written
+  exactly, Standard 14 fonts without `/Widths` laid out with the AFM
+  widths, `/MissingWidth` applied, `/ActualText` refused on any tag by
+  the editors and the diagnosis (CHANGELOG, 0.6.0).
+
+## 0.5.1 / 0.5.2 (no API change)
 
 - No public item added, removed or changed. `Limits::default()`
   raises `max_xobject_depth` from 32 to 48: a loosening (a file nested

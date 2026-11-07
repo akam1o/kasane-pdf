@@ -8,7 +8,7 @@ rasteriser and writer are implemented in this repository, and the
 only external code is a handful of permissively licensed codec and
 raster crates.
 
-Status: 0.5 on [crates.io](https://crates.io/crates/kasane-pdf),
+Status: 0.6 on [crates.io](https://crates.io/crates/kasane-pdf),
 documented on [docs.rs](https://docs.rs/kasane-pdf). The API is 0.x:
 additions arrive in minor releases, breaking changes are recorded in
 [`CHANGELOG.md`](CHANGELOG.md), classified in
@@ -39,9 +39,13 @@ mechanical migration ([`docs/migration-0.2.md`](docs/migration-0.2.md)).
 - **Verified against other implementations.** A compatibility runner
   renders, extracts and rewrites a real-world corpus and compares the
   results with Poppler and qpdf on every page.
-- **Not a redaction tool, not a sanitizer.** The editing APIs rewrite
-  content; they do not prove the old data is gone. See
-  [`docs/security.md`](docs/security.md).
+- **Redaction that removes, and says what it proves.** `redact`
+  removes what is drawn inside page rectangles — never paints over it
+  — checks the written bytes, and refuses what it cannot process
+  exactly. Its guarantee is positional and stated in three parts
+  ([`docs/features/redaction.md`](docs/features/redaction.md)). The
+  other editing APIs are content editors, not redaction, and nothing
+  here is a sanitizer ([`docs/security.md`](docs/security.md)).
 
 ## Features
 
@@ -92,6 +96,19 @@ refused (see Limitations). `rewrite_with` takes explicit policies for
 executable content and usage-rights signatures and reports what it
 carried or removed (below).
 
+**Redaction** — `redact` (CLI `redact`): inside the given page
+rectangles, text codes in embedded fonts are deleted, image samples
+zeroed, paths removed or cut at the rect's edge, links (and on request
+markup annotations) removed; forms and shared images are edited in
+per-use copies; `/Info` and XMP are removed. Before returning, the
+output is parsed again and checked: the same rects find nothing left,
+no edited original or removed annotation is still in the file unless
+the output still uses it elsewhere (reported), one revision only. What
+it cannot process exactly — non-embedded or Type 3 fonts, curves
+crossing a rect, masked images, widgets meeting a rect and more — is a
+typed error and no output. Copies of the information elsewhere in the
+document are reported, not removed.
+
 **Inspection and audit** — `inspect` structural dumps,
 `diagnose_redaction` (what is painted inside a rectangle, with
 blockers and uncertainties, deliberately without a "safe" verdict),
@@ -106,14 +123,14 @@ experimental scoped content editors (`remove_text`,
 
 ```toml
 [dependencies]
-kasane-pdf = "0.5"
+kasane-pdf = "0.6"
 ```
 
 Or track the repository directly:
 
 ```toml
 [dependencies]
-kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.5.2" }
+kasane-pdf = { git = "https://github.com/akam1o/kasane-pdf", tag = "v0.6.0" }
 ```
 
 Supported Rust versions: 1.92 or newer (`rust-version` in
@@ -283,6 +300,7 @@ kasane-pdf text <pdf> <page> [--format json|lines]
 kasane-pdf rewrite <in.pdf> --output <out.pdf>
 kasane-pdf annotate-rect <in> <page> --rect llx lly urx ury --color r g b --width w --output <out>
 kasane-pdf inspect <pdf> <page>                         structural dump
+kasane-pdf redact <in> --page N --rect … [--page M --rect …] [--remove-annotations] --output <out>
 kasane-pdf preflight-redaction <pdf> <page> --rect … [--format text|json]
 kasane-pdf audit-residuals <pdf> [--format text|json]
 kasane-pdf experimental-remove-text <in> <page> --rect … --output <out>
@@ -379,6 +397,13 @@ and the remaining blockers are in
   structures verbatim — it is not a sanitizer. The incremental writer
   cannot delete bytes, refuses recovered documents and non-zero
   generation references.
+- **`redact` is positional**: it removes what is drawn inside the
+  rects and reports — does not remove — copies elsewhere (other pages,
+  annotations, attachments, metadata it does not own). It refuses
+  non-embedded, Type 3 and vertical fonts, curves crossing a rect,
+  masked/CMYK/indexed images, widgets and media meeting a rect, tiling
+  patterns, soft masks and more (`docs/features/redaction.md`); square
+  and round caps cut at a rect lose up to half a line width next to it.
 - **The experimental `remove_*` editors are content editors**, not
   redaction: they report what they changed, not that data is gone.
 - `Document` is single-threaded (interior caches); use one instance
@@ -495,9 +520,9 @@ matters. [`docs/security.md`](docs/security.md) has the full posture.
   and empty user passwords protect nothing, and `/P` permissions are a
   request to the reader, not access control. kasane-pdf reports them
   and never writes encrypted output.
-- **Not a redaction tool.** The `remove_*` editors and
-  `diagnose_redaction` report what they changed or found; they do not
-  prove data is gone.
+- **Only `redact` is meant for redaction**, and only within its stated
+  guarantee. The `remove_*` editors and `diagnose_redaction` report
+  what they changed or found; they do not prove data is gone.
 
 ## Documentation
 

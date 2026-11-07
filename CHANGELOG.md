@@ -6,80 +6,83 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-07
+
+The first release of `redact`, positional redaction that removes what
+is drawn inside page rectangles and checks the written bytes; and
+rendering fidelity work since 0.5.1. No public item is removed or
+changed (`cargo semver-checks` against 0.5.2: no semver update
+required); the minor bump is for the new API and for observable
+behaviour (glyph placement, page size, image minification, widths).
+Release notes: `docs/releases/v0.6.0.md`.
+
 ### Added
-- `redact` / CLI `redact`: positional redaction. Removes text codes,
-  image samples and painted paths inside page rects; removes `/Info`
-  and XMP; leaves no route to an edited image's original (names on
-  pages that do not draw it are removed; a page still drawing it is
-  refused); refuses a structure tree with alternate text unless asked
-  to remove it; verifies the written bytes (one revision, nothing left
-  in the rects, no stream equal to an original) before returning them;
-  reports where removed text still appears (`elsewhere`) and the
-  output's residual audit. `/Link` annotations meeting a rect are
-  removed, others kept. Everything else the region editor refuses
-  stays refused. See `docs/features/redaction.md`.
-- `redact` cuts paths that cross a rect's edge (`paths_cut`) instead of
-  refusing them: filled axis-aligned rectangles exactly, stroked
-  straight segments along their centreline with the stroke's reach
-  (line width, caps, joins, CTM) kept clear of the rect. Curves,
-  dashed strokes and other fills near a rect are still refused.
-- `redact`: an image whose original another page (or the same page
-  outside the rects) still draws is redacted on the edited page's copy
-  instead of refused; the other display is kept and reported in
-  `elsewhere` (`Removed::Image`). `Elsewhere` now carries `removed:
-  Removed` (text or image) instead of `text`.
-  `RedactOptions::refuse_copies_elsewhere` (CLI
-  `--refuse-copies-elsewhere`) refuses whenever removed content is
-  found elsewhere.
-- `redact` edits Form XObjects the page draws directly (transparency
-  groups included): text and paths in the rects are removed or cut in a
-  per-invocation copy (`forms_edited`); an original still drawn
-  elsewhere is reported (`Removed::Form`), otherwise not carried.
-- `redact` keeps an inline image that meets no rect (one meeting a rect
-  is still refused).
-- `redact` edits nested forms (up to 16 deep) and images inside forms:
-  every form on the invocation chain is copied for that invocation, the
-  copies call each other, and each copy's `/Resources` names only what
-  it draws (and what forms inheriting them draw).
-- `redact` verification: an edited original may stay only as an object
-  the output still invokes (from a page or an annotation appearance,
-  directly or through forms); each invocation is reported. It replaces the per-original "one kept copy"
-  rule.
-- `redact` applies ExtGState stroke parameters and passes colour and
-  compositing ones through instead of refusing every `gs` (a soft mask,
-  `/Font` or `/SA true` is still refused), and keeps annotations of any kind that
-  are clear of the rects (one meeting a rect, other than a link, and
-  NoZoom/NoRotate annotations are refused).
-- `redact` accepts shading patterns as fill or stroke colour (the path
-  or glyph is removed or cut as with any colour); tiling patterns are
-  still refused.
-- `redact` cuts dashed strokes crossing a rect: each remaining piece
-  is stroked with the pattern's phase set to where it starts on the
-  original subpath (odd arrays written out in full), so the dashes
-  outside the rect are unchanged; a translucent or blended dashed
-  stroke cut into pieces is refused.
-- `redact` takes optional content as drawn (`BDC /OC`, a form's or an
-  image's `/OC`): what meets a rect is removed whether a viewer shows it
-  or not, the rest is kept. A shading (`sh`) is kept under a clip that
-  is exactly a rectangle meeting no rect.
-- `redact`: text in a non-embedded font is refused (a reader draws it
-  with a font of its own choosing, so where its glyphs reach is not
-  known), except under a clip that is exactly a rectangle meeting no
-  rect, where nothing can paint inside one whatever font draws it.
-- `RedactOptions::remove_annotations` (CLI `--remove-annotations`):
-  markup annotations (Text, FreeText, Line, Square, Circle, Polygon,
-  PolyLine, Highlight, Underline, Squiggly, StrikeOut, Caret, Stamp,
-  Ink, Popup) meeting a rect are removed whole — appearance and text,
-  outside the rect too — with their popups and replies, instead of
-  refused (`annotations_removed`). Their appearance streams may not
-  stay unless still drawn; their text is searched for in `elsewhere`.
-  Widgets and other subtypes stay refused. A removed link or annotation
-  still written by any route (an action, another page's annotation, a
-  kept popup, the form, an outline, the structure tree) fails
-  verification; what a
-  removed appearance draws is checked like its appearance. A Text annotation (whose
-  icon behaves as NoZoom and NoRotate) on an edited page is refused
-  unless it is removed.
+- **`redact` / CLI `redact`: positional redaction**, separate from
+  the experimental editors. Inside the caller's page rectangles it
+  removes text codes, zeroes image samples, removes or cuts painted
+  paths and removes links — never painting over anything — and checks
+  the written bytes before returning them; anything it cannot process
+  exactly is a typed error and no PDF. A success makes three separate
+  statements (`docs/features/redaction.md`, module docs of `redact`):
+  1. **the rects** (verified): the same rects, run again on the
+     output, find nothing left to remove or cut;
+  2. **the edited originals** (verified): no live stream of the
+     output, stored or decoded, equals an edited image's or form's
+     original or a removed annotation's appearance, and no dictionary
+     equals a removed link or annotation — except an object the output
+     still invokes elsewhere (another page, the same page outside the
+     rects, an annotation appearance), which is reported. Equal digests
+     are the test: a re-encoded copy of the same picture is not
+     detected. The output is a single revision with no unreachable
+     objects;
+  3. **the rest of the document** (reported, not guaranteed):
+     `elsewhere` lists removed text found again (other pages' text,
+     object strings) and originals still invoked; `residual` audits
+     what else the output carries.
+  `/Info` and XMP metadata are always removed.
+- What `redact` edits: text in an embedded font shown in fill mode
+  (`Tr 0`), whole glyphs whose ink meets a rect; 8-bit DeviceGray/RGB
+  images (unfiltered, Flate or one DCT, axis-aligned, unmasked), per
+  page when shared; Form XObjects nested up to 16 deep, in
+  per-invocation copies whose resources name only what they draw;
+  paths wholly inside a rect (removed) or crossing its edge (filled
+  axis-aligned rectangles cut exactly; straight strokes cut in user
+  space accounting for width, caps, joins, miter limit, dash pattern
+  and phase, and the CTM); `/Link` annotations meeting a rect; inline
+  images, annotations and anything else clear of every rect (kept as
+  written); ExtGState stroke parameters (applied) and colour or
+  compositing parameters (passed through); shading patterns as colour;
+  optional content (taken as drawn, hidden or not); content under a
+  clip that is exactly a rectangle meeting no rect (not a hit, whatever
+  it is).
+- `RedactOptions`: `remove_structure_tree` (remove a structure tree
+  carrying alternate text instead of refusing), `refuse_copies_elsewhere`
+  (refuse whenever anything is found elsewhere), `remove_annotations`
+  (remove Text, FreeText, Line, Square, Circle, Polygon, PolyLine,
+  Highlight, Underline, Squiggly, StrikeOut, Caret, Stamp, Ink and
+  Popup annotations meeting a rect **whole** — outside the rect too —
+  with their popups and replies). `Redaction` reports the counts,
+  `elsewhere` (`Elsewhere`, `ElsewhereLocation`, `Removed`) and the
+  residual audit.
+- Refused (typed error, no output), among others: text in a
+  non-embedded font (a reader draws it with a font of its own choosing,
+  so where its glyphs reach is not known), Type 3 and vertical fonts,
+  text in any mode but `Tr 0`; curves, non-rectangular fills and
+  corners whose join reaches a rect crossing a rect; a translucent or
+  blended dashed stroke cut into pieces; non-link annotations meeting a
+  rect (without `remove_annotations`), widgets, signatures and media
+  meeting a rect, NoZoom / NoRotate / `/FixedPrint` annotations and
+  Text annotations not removed, appearance-less annotations whose
+  geometry leaves their `/Rect`; tiling patterns, shadings that may
+  paint inside a rect, soft masks, `/Font` and `/SA true` set by
+  ExtGState; masked, CMYK or indexed images and inline images meeting a
+  rect; non-rectangular clips meeting a rect; `/ActualText`; signed or
+  encrypted documents. Square and round caps cut at a rect lose up to
+  half a line width of the band next to it.
+- `scripts/verify-redact.py` (run on every pull request) checks
+  `redact` with qpdf, pdftotext and pdftoppm;
+  `scripts/eval-redact-corpus.py` evaluates it on a slice of the
+  compatibility corpus.
 - `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
   RFC 7932 data including large windows, Flate predictors, refused on
   inline images. Output and decoder memory are bounded by
