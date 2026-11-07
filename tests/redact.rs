@@ -1641,7 +1641,7 @@ fn a_gs_soft_mask_or_font_is_refused() {
         "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Group << /S /Transparency /CS /DeviceGray >>",
         b"1 g 0 0 200 200 re f",
     );
-    for g in ["Masked", "F", "Adjust"] {
+    for g in ["Masked", "F"] {
         let pdf = doc_with(
             GS_RES,
             &[format!("/{g} gs {SECRET}").as_bytes()],
@@ -3002,6 +3002,8 @@ fn type3_page(
         (61, stream_obj("", proc_a.as_bytes())),
         (62, stream_obj("", proc_b.as_bytes())),
     ];
+    // An object in `extra` replaces the one of the same number.
+    objs.retain(|(n, _)| !extra.iter().any(|(m, _)| m == n));
     objs.extend(extra);
     build_pdf(&objs)
 }
@@ -3402,6 +3404,125 @@ fn type3_glyphs_are_not_inflated_by_stroke_modes() {
 #[test]
 fn type3_charprocs_count_against_the_execution_budget() {
     let proc = format!("1000 0 d0 {} 0 0 10 10 re f", "q Q ".repeat(2000));
+    let pdf = type3_page(T3_TEXT, &proc, T3_FILL, "", vec![]);
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let opts = RedactOptions::new()
+        .with_limits(kasane_pdf::Limits::default().with_max_diag_exec_ops(1000));
+    let e = redact(&doc, &[(0, vec![(41.5, 99.0, 55.0, 108.0)])], &opts).unwrap_err();
+    assert!(e.to_string().contains("max_diag_exec_ops"), "{e}");
+}
+
+/// Stroke adjustment (/SA true) moves stroke edges — and, in Splash,
+/// a rectangle fill's — by a device-dependent amount. Under it, text
+/// fills, fills removed whole and fills clear of the rects are
+/// accepted; any stroke, stroked text, a fill cut at a rect and a Type 3
+/// CharProc stroke are refused. `Q` and `/SA false` end it.
+#[test]
+fn stroke_adjustment_refuses_only_what_it_can_move() {
+    let ok = [
+        format!("/Adjust gs {SECRET} 60 95 20 10 re f 10 10 30 30 re f"),
+        format!("q /Adjust gs {SECRET} Q 1 w 10 10 m 40 40 l S"),
+        format!("/Adjust gs /Alpha gs {SECRET} 1 w 10 10 m 40 40 l S"),
+    ];
+    for c in &ok {
+        let pdf = doc_with(GS_RES, &[c.as_bytes()], vec![]);
+        let r = run(&pdf, vec![RECT]).unwrap_or_else(|e| panic!("{c}: {e}"));
+        assert_eq!(r.codes_removed, 10, "{c}");
+        assert!(!page_text(&r.output, 0).contains("SECRET"));
+    }
+    let refused = [
+        format!("/Adjust gs {SECRET} 1 w 10 10 m 40 40 l S"),
+        format!("/Adjust gs {SECRET} 1 w 50 100 m 60 100 l S"),
+        format!("/Adjust gs {SECRET} 30 95 50 10 re f"),
+        format!("/Adjust gs {SECRET} BT /F1 12 Tf 1 Tr 10 20 Td (PUBLICWORD) Tj ET"),
+    ];
+    for c in &refused {
+        let pdf = doc_with(GS_RES, &[c.as_bytes()], vec![]);
+        let e = unsupported(run(&pdf, vec![RECT]));
+        assert!(e.contains("stroke adjustment"), "{c}: {e}");
+    }
+    // Type 3: a CharProc fill is accepted, a CharProc stroke refused.
+    let page = (
+        3,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << \
+          /Font << /T3 60 0 R >> /ExtGState << /Adjust << /SA true >> >> >> /Contents 4 0 R >>"
+            .to_vec(),
+    );
+    for (proc, ok) in [(T3_FILL, true), ("1000 0 d0 50 w 0 0 m 500 500 l S", false)] {
+        let pdf = type3_page(
+            "/Adjust gs BT /T3 10 Tf 20 100 Td (AAAAAA) Tj ET",
+            proc,
+            proc,
+            "",
+            vec![page.clone()],
+        );
+        match run(&pdf, vec![(41.5, 99.0, 55.0, 108.0)]) {
+            Ok(r) => assert!(ok && r.codes_removed == 2, "{proc}"),
+            Err(e) => assert!(
+                !ok && e.to_string().contains("stroke adjustment"),
+                "{proc}: {e}"
+            ),
+        }
+    }
+}
+
+/// Chains of references are refused wherever a colour space is read in
+/// redaction: inside an Indexed space's ICC base, and as a named
+/// /ColorSpace resource.
+#[test]
+fn colour_space_chains_are_refused_everywhere() {
+    let samples = [9u8; 256];
+    let pdf = image_page(
+        "/ColorSpace [/Indexed [/ICCBased 44 0 R] 255 41 0 R]",
+        &samples,
+        vec![
+            ramp_palette(),
+            (44, b"45 0 R".to_vec()),
+            (45, stream_obj("/N 3 /Alternate /DeviceRGB", b"profile")),
+        ],
+    );
+    let e = unsupported(run(&pdf, vec![(50.0, 50.0, 100.0, 150.0)]));
+    assert!(e.contains("chain of references"), "{e}");
+    // The same base without the chain is accepted.
+    let pdf = image_page(
+        "/ColorSpace [/Indexed [/ICCBased 45 0 R] 255 41 0 R]",
+        &samples,
+        vec![
+            ramp_palette(),
+            (45, stream_obj("/N 3 /Alternate /DeviceRGB", b"profile")),
+        ],
+    );
+    run(&pdf, vec![(50.0, 50.0, 100.0, 150.0)]).unwrap();
+    // A named resource reached through a chain.
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << \
+              /XObject << /Im1 5 0 R >> /ColorSpace << /CS0 43 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"q 100 0 0 100 50 50 cm /Im1 Do Q")),
+        (
+            5,
+            stream_obj(
+                "/Type /XObject /Subtype /Image /Width 16 /Height 16 /BitsPerComponent 8 /ColorSpace /CS0",
+                &samples,
+            ),
+        ),
+        (43, b"44 0 R".to_vec()),
+        (44, b"[/Indexed /DeviceRGB 255 41 0 R]".to_vec()),
+        ramp_palette(),
+    ]);
+    let e = unsupported(run(&pdf, vec![(50.0, 50.0, 100.0, 150.0)]));
+    assert!(e.contains("chain of references"), "{e}");
+}
+
+/// A refused CharProc's ops count against the budget too.
+#[test]
+fn refused_type3_charprocs_count_against_the_execution_budget() {
+    let proc = format!("1000 0 d0 {} /X Do", "q Q ".repeat(2000));
     let pdf = type3_page(T3_TEXT, &proc, T3_FILL, "", vec![]);
     let doc = Document::from_bytes(&pdf).unwrap();
     let opts = RedactOptions::new()

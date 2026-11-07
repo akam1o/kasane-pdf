@@ -51,13 +51,19 @@ versions follow [Semantic Versioning](https://semver.org/).
   hairline strokes stay refused, as do FontMatrices stretching one axis
   over 16:1. A CharProc starts from the line state it is shown with;
   stroke text modes do not inflate Type 3 glyphs; CharProc ops count
-  against `max_diag_exec_ops`. Removed glyphs' CharProcs stay in the
+  against `max_diag_exec_ops`, refused CharProcs included. Removed glyphs' CharProcs stay in the
   font, as an embedded font program keeps its glyphs.
+- `redact` accepts stroke adjustment (`/SA true`) where it cannot move
+  ink into a rect: while it is on, any stroke (paths, stroked text, a
+  Type 3 CharProc's) and any fill that would be cut at a rect are
+  refused; text fills, images, fills removed whole and fills clear of
+  every rect are accepted. It was refused wherever set.
 - `redact` edits Indexed images with their default `/Decode [0 255]`
   and images whose `/ColorSpace` is a reference to an array (Indexed,
   ICCBased) or to `/DeviceCMYK`; a reference to a reference is refused
-  (Poppler does not follow such a chain, so readers would disagree on
-  what is drawn).
+  wherever a colour space is read (the space, an Indexed base and its
+  ICC profile, a named resource): Poppler does not follow such a chain,
+  so readers would disagree on what is drawn.
 
 ### Fixed
 - `diagnose_redaction` and the editors grew stroked text by the stroke's

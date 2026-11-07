@@ -566,6 +566,28 @@ fn deref_unchained(doc: &Document, o: &Object) -> Result<Object, Error> {
 /// selects the palette's first colour) and `[/ICCBased stream]` with
 /// `/N` 1, 3 or 4 — else `None`. Zeroed samples carry no information
 /// whatever colour they show.
+/// Redaction: refuse a named colour space whose `/ColorSpace` resource
+/// entry (or that dictionary) is reached through a chain of references
+/// (see `deref_unchained`); `resolve_colorspace_name` follows chains.
+fn named_space_unchained(
+    doc: &Document,
+    resources: Option<&Object>,
+    name: &[u8],
+) -> Result<(), Error> {
+    let Some(res) = resources else {
+        return Ok(());
+    };
+    let res = deref_unchained(doc, res)?;
+    let Some(cs) = res.as_dict().and_then(|d| d.get(b"ColorSpace".as_slice())) else {
+        return Ok(());
+    };
+    let cs = deref_unchained(doc, cs)?;
+    if let Some(entry) = cs.as_dict().and_then(|d| d.get(name)) {
+        deref_unchained(doc, entry)?;
+    }
+    Ok(())
+}
+
 fn redaction_components(
     doc: &Document,
     cs: &Object,
@@ -585,23 +607,19 @@ fn redaction_components(
             let hival = deref_unchained(doc, &a[2])?.as_i64();
             let base = deref_unchained(doc, &a[1])?;
             deref_unchained(doc, &a[3])?;
-            let base_name = match &base {
-                Object::Name(n) => Some(n.clone()),
-                Object::Array(b) => b.first().and_then(|f| f.as_name()).map(|n| n.to_vec()),
-                _ => None,
+            // An ICC base passes the same checks as an ICC image
+            // space (its stream and /Alternate, no chains).
+            let base_ok = match &base {
+                Object::Name(n) => matches!(
+                    n.as_slice(),
+                    b"DeviceGray" | b"DeviceRGB" | b"DeviceCMYK" | b"G" | b"RGB" | b"CMYK"
+                ),
+                Object::Array(b) => {
+                    b.first().and_then(|f| f.as_name()) == Some(b"ICCBased".as_slice())
+                        && redaction_components(doc, &base, redaction)?.is_some()
+                }
+                _ => false,
             };
-            let base_ok = matches!(
-                base_name.as_deref(),
-                Some(
-                    b"DeviceGray"
-                        | b"DeviceRGB"
-                        | b"DeviceCMYK"
-                        | b"G"
-                        | b"RGB"
-                        | b"CMYK"
-                        | b"ICCBased"
-                )
-            );
             Ok((matches!(hival, Some(0..=255)) && base_ok).then_some(1))
         }
         Some(b"ICCBased") if a.len() == 2 => {
@@ -747,6 +765,9 @@ pub(crate) fn validate_image(
             //      checked against Default* substitution — if the
             //      resource dict has /DefaultGray or /DefaultRGB,
             //      that entry overrides the device space.
+            if redaction {
+                named_space_unchained(doc, resources, n)?;
+            }
             let resolved = resolve_colorspace_name(doc, resources, n)?;
             let final_obj = apply_default_substitution(doc, resources, resolved)?;
             match final_obj.as_name() {
@@ -789,6 +810,9 @@ pub(crate) fn validate_image(
                     }
                 },
                 Some(name) => {
+                    if redaction {
+                        named_space_unchained(doc, resources, name)?;
+                    }
                     let resolved2 = resolve_colorspace_name(doc, resources, name)?;
                     let final_obj = apply_default_substitution(doc, resources, resolved2)?;
                     match final_obj.as_name() {

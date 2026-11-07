@@ -45,7 +45,7 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 | text in a non-embedded Times, Helvetica or Courier font (or a metric-compatible alias such as Arial), with `embed_substitute_fonts(true)` (CLI `--embed-substitute-fonts`) | refused by default. On request each such font is first replaced, document-wide, by a non-symbolic TrueType font embedding the bundled Liberation face, with every code's glyph name (`/Differences`) and advance (`/Widths`) written out, so every reader draws exactly those glyphs at the same positions; the text is then redacted by ink like any embedded font's (`fonts_embedded`). The output shows Liberation's shapes wherever those fonts are used and carries the programs (≈ 0.3–0.4 MB per face). Symbol, ZapfDingbats, other non-embedded and CID fonts stay refused |
 | optional content (`BDC /OC`, a form's or image's `/OC`) | taken as drawn whether a viewer shows it or not: what meets a rect is removed — hidden content too — and the rest kept |
 | shadings (`sh`) | a shading fills the clip: kept under a clip that is exactly a rectangle meeting no rect, refused otherwise |
-| ExtGState (`gs`) | stroke parameters (`/LW`, `/LC`, `/LJ`, `/ML`, `/D`) are applied; colour and compositing parameters (alpha, blend mode, overprint, transfer, halftone, `/SMask /None` …) are passed through, since removal and cutting are by geometry. A soft mask, `/Font` and stroke adjustment (`/SA true`, device-dependent stroke edges) are refused |
+| ExtGState (`gs`) | stroke parameters (`/LW`, `/LC`, `/LJ`, `/ML`, `/D`) are applied; colour and compositing parameters (alpha, blend mode, overprint, transfer, halftone, `/SMask /None` …) are passed through, since removal and cutting are by geometry. A soft mask and `/Font` are refused. Stroke adjustment (`/SA true`) moves edges to device pixels by an amount no user-space bound covers (and Splash snaps a rectangle fill's edges too), so while it is on any stroke (paths, stroked text, a Type 3 CharProc's), and any fill meeting a rect without lying wholly inside one (which would be cut), is refused; text fills, images, fills removed whole and fills clear of every rect are accepted — their kept ink is the input's, unchanged |
 | Form XObjects, nested up to 16 deep (transparency groups included) | their text, paths and images inside the rects are removed, cut or zeroed in copies along the invocation chain — each copy drawn by that one invocation only (`forms_edited`), its `/Resources` naming only what it draws. Other invocations and pages keep the originals; an original still drawn is reported in `elsewhere` (`Removed::Form` / `Removed::Image`); otherwise it is not carried. A form cycle is refused |
 | document `/Info`, catalog XMP `/Metadata` | always removed |
 | structure tree | refused when it carries `/Alt`, `/ActualText` or `/E`; with `remove_structure_tree(true)` the tree and `/MarkInfo` are removed |
@@ -120,7 +120,8 @@ NoZoom, NoRotate or `/FixedPrint` annotations and Text annotations
 (whose icon behaves as NoZoom and NoRotate) not removed, forms nested more
 than 16 deep or cyclic, inline images meeting a rect
 (or whose data length is not fixed by their dictionary), `sh` that may paint inside a rect,
-ExtGState with a soft mask, `/Font` or `/SA true`, `/ActualText` marked content,
+ExtGState with a soft mask or `/Font`, strokes and cut fills under
+`/SA true`, `/ActualText` marked content,
 text in a clipping mode (`Tr` 4–7),
 non-embedded fonts (glyph extent unknown; see `embed_substitute_fonts`), Type 3 glyphs whose CharProc is not
 paths only (see the table), vertical writing, images with masks, soft masks,
@@ -192,7 +193,8 @@ Each of these is refused with a typed error, not approximated:
   they do not change which samples are drawn where.)
 - **Paint**: tiling patterns, shading patterns with their own
   ExtGState, shadings (`sh`) that may paint inside a rect, soft masks,
-  `/Font` and `/SA true` set by ExtGState.
+  `/Font` set by ExtGState; under `/SA true`, strokes and fills cut at
+  a rect.
 - **Annotations**: other than links meeting a rect unless
   `remove_annotations` removes them (markup subtypes only); widgets,
   signatures, media, file attachments and 3D meeting a rect; NoZoom,

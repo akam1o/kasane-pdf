@@ -722,6 +722,8 @@ struct StrokeState {
     /// `/BM` Normal or Compatible): painting a spot twice shows the
     /// same as once.
     opaque: (bool, bool),
+    /// `/SA` — automatic stroke adjustment (§10.7.5) is on.
+    adjust: bool,
 }
 
 /// The *whole* graphics state a diagnosis tracks — saved and restored
@@ -945,6 +947,7 @@ impl<'a> DiagWalker<'a> {
                     miter_limit: 10.0,
                     dash: None,
                     opaque: (true, true),
+                    adjust: false,
                 },
                 text: TextState {
                     h_scale: 1.0,
@@ -1012,8 +1015,8 @@ impl<'a> DiagWalker<'a> {
     /// rendering intent, flatness, smoothness …) do not move what is
     /// painted where, and redaction only removes or cuts by geometry,
     /// so they are passed through. A soft mask other than `/None` (its
-    /// group's content shapes what shows), `/Font` and stroke
-    /// adjustment (`/SA true`, device-dependent edges) are not handled.
+    /// group's content shapes what shows) and `/Font` are not handled;
+    /// stroke adjustment is tracked (see `paint_path_target`).
     fn apply_ext_gstate(&mut self, name: &[u8]) -> Result<Option<&'static str>, Error> {
         let Some(gs) = self
             .doc
@@ -1077,10 +1080,13 @@ impl<'a> DiagWalker<'a> {
                 }
                 b"Font" => return Ok(Some("/Font is not handled")),
                 // Stroke adjustment moves stroke edges to device pixels
-                // (§10.7.5) — beyond the geometry the cut works on.
-                b"SA" if !matches!(v, Object::Bool(false)) => {
-                    return Ok(Some("stroke adjustment (/SA true) is not handled"));
-                }
+                // (§10.7.5) by an amount no user-space bound covers; it
+                // is tracked, and what it may move near a rect refused
+                // where it is painted (strokes; fills that are cut).
+                b"SA" => match v {
+                    Object::Bool(b) => st.adjust = b,
+                    _ => return Ok(Some("/SA is not a boolean")),
+                },
                 // Colour and compositing only (and keys readers ignore).
                 _ => {}
             }
@@ -1665,6 +1671,35 @@ impl<'a> DiagWalker<'a> {
                                  extent cannot be bounded in user space"
                             .into(),
                     })?;
+                } else if self.redaction_mode && self.gs.stroke.adjust && stroked {
+                    // Stroke adjustment moves stroke edges by a device-
+                    // dependent amount (readers also widen thin strokes
+                    // to a pixel): no stroke under it is accepted.
+                    self.push_uncertain(Uncertain {
+                        kind: TargetKind::Path,
+                        site: self.site(),
+                        reason: "stroke under stroke adjustment (/SA true) — device-dependent \
+                                 extent cannot be bounded in user space"
+                            .into(),
+                    })?;
+                } else if self.redaction_mode
+                    && self.gs.stroke.adjust
+                    && !hits_for(&b, self.rects).is_empty()
+                    && !self
+                        .rects
+                        .iter()
+                        .any(|r| b.0 >= r.llx && b.1 >= r.lly && b.2 <= r.urx && b.3 <= r.ury)
+                {
+                    // A fill meeting a rect but not wholly inside one is
+                    // cut, and readers snap a rectangle fill's edges to
+                    // pixels under stroke adjustment (Splash does).
+                    self.push_uncertain(Uncertain {
+                        kind: TargetKind::Path,
+                        site: self.site(),
+                        reason: "fill cut at a rect under stroke adjustment (/SA true) — \
+                                 readers move its edges by a device-dependent amount"
+                            .into(),
+                    })?;
                 } else {
                     let inflate = if stroked {
                         stroke_reach(&self.gs.stroke) * ctm_max_scale(&self.gs.ctm)
@@ -1876,7 +1911,7 @@ impl<'a> DiagWalker<'a> {
             // The CharProc inherits the line state it is shown with
             // (§9.6.4: it runs in the graphics state of the show).
             let s = &self.gs.stroke;
-            let inherited = (s.width, s.cap, s.join, s.miter_limit);
+            let inherited = (s.width, s.cap, s.join, s.miter_limit, s.adjust);
             // Keyed by the CharProc object and that state: the bounds
             // depend on nothing else.
             let key = match t3.charproc_entry(code as u8) {
@@ -1887,6 +1922,7 @@ impl<'a> DiagWalker<'a> {
                         inherited.1 as u64,
                         inherited.2 as u64,
                         inherited.3.to_bits(),
+                        inherited.4 as u64,
                     ],
                 )),
                 _ => None,
@@ -1899,24 +1935,24 @@ impl<'a> DiagWalker<'a> {
                         Err(e @ Error::LimitExceeded { .. }) => return Err(e),
                         Err(e) => return self.glyph_error(code, e),
                     };
+                    // Its ops count against the page's budget, whether
+                    // the evaluation succeeds or not.
+                    let mut ops = 0;
                     let g = match &charproc {
                         Some((d, raw)) => {
-                            type3_glyph_bounds(self.doc, d, raw, self.limits, inherited)
+                            type3_glyph_bounds(self.doc, d, raw, self.limits, inherited, &mut ops)
                         }
-                        None => Ok((None, 0)),
+                        None => Ok(None),
                     };
+                    self.exec_ops = self.exec_ops.saturating_add(ops.max(1));
+                    if self.exec_ops > self.limits.max_diag_exec_ops {
+                        return Err(Error::LimitExceeded {
+                            limit: "max_diag_exec_ops",
+                            max: self.limits.max_diag_exec_ops,
+                        });
+                    }
                     let g = match g {
-                        Ok((b, ops)) => {
-                            // Its ops count against the page's budget.
-                            self.exec_ops = self.exec_ops.saturating_add(ops.max(1));
-                            if self.exec_ops > self.limits.max_diag_exec_ops {
-                                return Err(Error::LimitExceeded {
-                                    limit: "max_diag_exec_ops",
-                                    max: self.limits.max_diag_exec_ops,
-                                });
-                            }
-                            Ok(b)
-                        }
+                        Ok(b) => Ok(b),
                         Err(e @ Error::LimitExceeded { .. }) => return Err(e),
                         Err(e) => Err(e.to_string()),
                     };
@@ -2094,6 +2130,14 @@ impl<'a> DiagWalker<'a> {
                 reason: format!("Tr {render_mode} — clip-mode text extent is not implemented"),
             })?;
             (bounds, bounds_kind)
+        } else if is_stroked_text && self.redaction_mode && self.gs.stroke.adjust {
+            return self.glyph_error(
+                code,
+                Error::Unsupported {
+                    feature: "stroke adjustment",
+                    detail: "stroked text under /SA true — device-dependent extent".into(),
+                },
+            );
         } else if is_stroked_text && self.gs.stroke.width == 0.0 {
             self.push_uncertain(Uncertain {
                 kind: TargetKind::Text,
@@ -2841,8 +2885,8 @@ fn matrix_from_array(o: &Object) -> Option<crate::matrix::Matrix> {
 use crate::object::Dict;
 
 /// A CharProc object and the line state it is shown with (bits of
-/// width, cap, join, miter limit).
-type Type3Key = (crate::object::IndirectRef, [u64; 4]);
+/// width, cap, join, miter limit, stroke adjustment).
+type Type3Key = (crate::object::IndirectRef, [u64; 5]);
 
 /// The glyph-space bounds of everything a Type 3 CharProc paints —
 /// `None` when it paints nothing — for `redact`, which accepts the
@@ -2855,15 +2899,18 @@ type Type3Key = (crate::object::IndirectRef, [u64; 4]);
 /// images, XObjects, text, shadings, ExtGState, patterns, marked
 /// content with properties, a hairline (`0 w`) stroke — is refused: its
 /// extent or the data it carries is not evaluated. The line state
-/// starts as `inherited` (width, cap, join, miter limit of the show);
-/// the op count is returned for the caller's execution budget.
+/// starts as `inherited` (width, cap, join, miter limit and stroke
+/// adjustment of the show; a stroke under adjustment is refused);
+/// the parsed op count is set in `ops_parsed` for the caller's
+/// execution budget, also when the CharProc is refused.
 pub(crate) fn type3_glyph_bounds(
     doc: &Document,
     dict: &crate::object::Dict,
     raw: &[u8],
     limits: &Limits,
-    inherited: (f64, i64, i64, f64),
-) -> Result<(Option<[f64; 4]>, u64), Error> {
+    inherited: (f64, i64, i64, f64, bool),
+    ops_parsed: &mut u64,
+) -> Result<Option<[f64; 4]>, Error> {
     use crate::content::Operation as O;
     let refuse = |what: &str| Error::Unsupported {
         feature: "Type 3 glyph",
@@ -2872,6 +2919,7 @@ pub(crate) fn type3_glyph_bounds(
     let decoded = doc.decode_stream(dict, raw)?;
     let mut warnings = Vec::new();
     let ops = crate::content::parse_content_stream(&[decoded], limits, false, &mut warnings)?;
+    *ops_parsed = ops.len() as u64;
     #[derive(Clone)]
     struct Gs {
         ctm: crate::matrix::Matrix,
@@ -2983,6 +3031,9 @@ pub(crate) fn type3_glyph_bounds(
                 if !(gs.w.is_finite() && gs.w > 0.0) {
                     return Err(refuse("a hairline or non-finite stroke"));
                 }
+                if inherited.4 {
+                    return Err(refuse("a stroke under stroke adjustment (/SA true)"));
+                }
                 let miter = if gs.join == 0 && gs.miter.is_finite() {
                     gs.miter.max(1.0)
                 } else {
@@ -3000,7 +3051,7 @@ pub(crate) fn type3_glyph_bounds(
     if out.is_some_and(|b| !b.iter().all(|v| v.is_finite())) {
         return Err(Error::Structure("non-finite Type 3 glyph bounds".into()));
     }
-    Ok((out, ops.len() as u64))
+    Ok(out)
 }
 
 #[cfg(test)]
