@@ -54,6 +54,17 @@ versions follow [Semantic Versioning](https://semver.org/).
   values such as `.00100000005`.
 
 ### Fixed
+- Content rewritten by the region, text and image editors (and
+  `redact`) keeps its exact numbers and names: numbers were rounded to
+  four decimals (`.00014 cm` became `.0001`, moving content outside
+  the edited area) and names were written unescaped (`/Im#2331` read
+  back as `/Im1`, another resource).
+- `diagnose_redaction` and the editors: rectangles under a rotated CTM
+  are bounded by all four corners; Type 3 glyphs and vertical text are
+  reported as uncertain (their extent was estimated); images with
+  `/Alternates` or OPI block; content clipped away from every rect is
+  not a hit; an operator other than path construction inside a path
+  object is refused (§8.2).
 - A `null` appearance state of an annotation is absent (§7.3.7): with
   no `/AS`, only the other states count, and none means nothing to draw
   instead of a refusal.
