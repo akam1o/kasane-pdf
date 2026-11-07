@@ -32,6 +32,8 @@ versions follow [Semantic Versioning](https://semver.org/).
   codes by a generous box around their advance united with their
   outline, stroked ones by their outline grown by the stroke. Clipping
   text modes stay refused.
+- `redact` edits images with `/Interpolate true` or `/OC` (smoothing and
+  optional content do not change which samples are drawn where).
 
 ### Fixed
 - `diagnose_redaction` and the editors grew stroked text by the stroke's

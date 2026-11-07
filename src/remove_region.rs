@@ -314,7 +314,7 @@ pub fn remove_region(
             .as_stream()
             .ok_or_else(|| Error::Structure("image XObject is not a stream".into()))?;
 
-        let (width, height, ncomps) = validate_image(dict, page.resources(), doc, limits)?;
+        let (width, height, ncomps) = validate_image(dict, page.resources(), doc, limits, false)?;
 
         let ranges = image_pixel_ranges(ctm, width, height, &validated)?;
         if ranges.is_empty() {
@@ -1683,7 +1683,13 @@ pub(crate) fn regions_edit_session_with<'a>(
                 .as_stream()
                 .ok_or_else(|| Error::Structure("image XObject is not a stream".into()))?;
 
-            let (width, height, ncomps) = validate_image(dict, scope_res.as_ref(), doc, limits)?;
+            let (width, height, ncomps) = validate_image(
+                dict,
+                scope_res.as_ref(),
+                doc,
+                limits,
+                mode == SessionMode::Redact,
+            )?;
 
             let ranges = image_pixel_ranges(ctm, width, height, &validated)?;
             if ranges.is_empty() {

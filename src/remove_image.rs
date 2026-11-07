@@ -329,7 +329,7 @@ pub fn remove_image_region(
             .ok_or_else(|| Error::Structure("image XObject is not a stream".into()))?;
 
         // ---- validate the image ----------------------------
-        let (width, height, ncomps) = validate_image(dict, page.resources(), doc, limits)?;
+        let (width, height, ncomps) = validate_image(dict, page.resources(), doc, limits, false)?;
 
         // ---- compute the pixel ranges to blacken -------------------
         // Each rect produces its own (x0,y0,x1,y1) — the union of
@@ -555,6 +555,7 @@ pub(crate) fn validate_image(
     resources: Option<&Object>,
     doc: &Document,
     limits: &Limits,
+    redaction: bool,
 ) -> Result<(u32, u32, usize), Error> {
     let width = dict
         .get(b"Width".as_slice())
@@ -611,6 +612,13 @@ pub(crate) fn validate_image(
                 continue;
             }
             if key == b"Interpolate" && v.as_bool() == Some(false) {
+                continue;
+            }
+            // Redaction zeroes samples by where they are drawn: smoothing
+            // between samples (it blends only neighbours' colours across
+            // the rect's edge) and optional content (taken as drawn) do
+            // not change which samples those are.
+            if redaction && (key == b"Interpolate" || key == b"OC") {
                 continue;
             }
             return Err(Error::Unsupported {

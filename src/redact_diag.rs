@@ -2157,8 +2157,9 @@ impl<'a> DiagWalker<'a> {
                 if key == b"SMaskInData" && v.as_i64() == Some(0) {
                     continue;
                 }
-                // Redaction takes optional content as drawn.
-                if key == b"OC" && self.redaction_mode {
+                // Redaction takes optional content as drawn, and
+                // zeroes samples whether or not they are smoothed.
+                if (key == b"OC" || key == b"Interpolate") && self.redaction_mode {
                     continue;
                 }
                 if key == b"ImageMask" && v.as_bool() == Some(false) {

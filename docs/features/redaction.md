@@ -181,8 +181,9 @@ Each of these is refused with a typed error, not approximated:
   cut cap's corners, and an oblique crossing the sliver of band beyond
   the perpendicular cut (accepted, documented).
 - **Images**: masked, CMYK, indexed, other bit depths or filter chains,
-  rotated or sheared, with `/Alternates` or OPI, with `/OC` meeting a
-  rect, and inline images meeting a rect.
+  rotated or sheared, with `/Alternates` or OPI, and inline images
+  meeting a rect. (`/Interpolate` and `/OC` on an image are accepted:
+  they do not change which samples are drawn where.)
 - **Paint**: tiling patterns, shading patterns with their own
   ExtGState, shadings (`sh`) that may paint inside a rect, soft masks,
   `/Font` and `/SA true` set by ExtGState.

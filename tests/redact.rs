@@ -2788,3 +2788,34 @@ fn square_caps_only_between_cuts_inside_segments() {
         "no square caps"
     );
 }
+
+/// Smoothing (`/Interpolate true`) and optional content do not change
+/// which samples are drawn inside a rect: such images are edited.
+#[test]
+fn interpolated_and_optional_images_are_edited() {
+    for extra in ["/Interpolate true", "/OC 40 0 R"] {
+        let img = stream_obj(
+            &format!(
+                "/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace /DeviceRGB \
+                 /BitsPerComponent 8 {extra}"
+            ),
+            &secret_samples(),
+        );
+        let pdf = build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", b"q 100 0 0 100 50 50 cm /Im1 Do Q")),
+            (5, img),
+            (40, b"<< /Type /OCG /Name (L) >>".to_vec()),
+        ]);
+        let r = run(&pdf, vec![(50.0, 50.0, 150.0, 150.0)]).unwrap();
+        assert_eq!(r.pixels_changed, 256, "{extra}");
+        assert!(!contains(&r.output, &secret_samples()), "{extra}");
+    }
+}
