@@ -258,7 +258,8 @@ fn paths() {
         .collect();
     assert_eq!(rects.len(), 1, "the rect outside stays");
 
-    let crossing = one_page("0 0 1 rg 30 60 60 30 re f", "", "", vec![]);
+    // A curve crossing a rect's edge is refused.
+    let crossing = one_page("0 0 1 rg 30 60 m 90 60 90 90 30 90 c f", "", "", vec![]);
     let e = unsupported(run(&crossing, vec![(40.0, 40.0, 160.0, 160.0)]));
     assert!(e.contains("crossing a rect's edge"), "{e}");
     let clipping = one_page("q 60 60 30 30 re W f Q", "", "", vec![]);
@@ -761,4 +762,138 @@ fn word_spacing_skips_two_byte_space_codes() {
     ]);
     let r = run(&pdf, vec![(61.0, 99.0, 70.0, 116.0)]).unwrap();
     assert_eq!(r.codes_removed, 1);
+}
+
+// Paths crossing a rect's edge are cut there.
+
+/// Gray level at page point (x, y) at 72 dpi on a 200 pt page.
+fn at(pdf: &[u8], x: u32, y: u32) -> u8 {
+    pixel(pdf, x, 200 - y)
+}
+
+/// Whether any path point of page 1 lies strictly inside `r`.
+fn path_points_inside(pdf: &[u8], r: (f64, f64, f64, f64)) -> bool {
+    use kasane_pdf::Operation as O;
+    let doc = Document::from_bytes(pdf).unwrap();
+    let inside = |x: f64, y: f64| x > r.0 && x < r.2 && y > r.1 && y < r.3;
+    doc.page_operations(&doc.pages()[0])
+        .unwrap()
+        .iter()
+        .any(|o| match o {
+            O::MoveTo(x, y) | O::LineTo(x, y) => inside(*x, *y),
+            O::Rectangle(x, y, w, h) => {
+                inside(*x, *y)
+                    || inside(*x + *w, *y + *h)
+                    || inside(*x + *w, *y)
+                    || inside(*x, *y + *h)
+            }
+            _ => false,
+        })
+}
+
+#[test]
+fn a_filled_rectangle_crossing_a_rect_is_cut() {
+    let pdf = one_page("0 0 1 rg 30 60 60 30 re f", "", "", vec![]);
+    let rect = (40.0, 40.0, 160.0, 160.0);
+    let r = run(&pdf, vec![rect]).unwrap();
+    assert_eq!((r.paths_cut, r.paths_removed), (1, 0));
+    assert_eq!(at(&r.output, 50, 75), 255, "inside: gone");
+    assert_eq!(at(&r.output, 35, 75), 0, "outside: kept (blue has no red)");
+    assert!(!path_points_inside(&r.output, rect));
+}
+
+/// A table rule through a rect: the two outer parts stay, butt-ended
+/// half a line width clear of the rect.
+#[test]
+fn a_stroked_line_crossing_a_rect_is_cut() {
+    let pdf = one_page("2 w 10 100 m 190 100 l S", "", "", vec![]);
+    let rect = (50.0, 90.0, 100.0, 110.0);
+    let r = run(&pdf, vec![rect]).unwrap();
+    assert_eq!(r.paths_cut, 1);
+    assert_eq!(at(&r.output, 75, 100), 255);
+    assert_eq!(
+        at(&r.output, 50, 100),
+        255,
+        "the band stops at the rect's edge"
+    );
+    assert_eq!(at(&r.output, 30, 100), 0);
+    assert_eq!(at(&r.output, 150, 100), 0);
+    assert!(!path_points_inside(&r.output, rect));
+}
+
+/// A rectangle's outline crossing a rect keeps its far corners (with
+/// their joins) and loses the part inside.
+#[test]
+fn a_stroked_outline_crossing_a_rect_is_cut() {
+    let pdf = one_page("4 w 20 20 160 160 re S", "", "", vec![]);
+    let rect = (60.0, 170.0, 100.0, 190.0);
+    let r = run(&pdf, vec![rect]).unwrap();
+    assert_eq!(r.paths_cut, 1);
+    assert_eq!(at(&r.output, 80, 180), 255);
+    for (x, y) in [(40, 180), (150, 180), (20, 100), (180, 100), (100, 20)] {
+        assert_eq!(at(&r.output, x, y), 0, "({x}, {y}) kept");
+    }
+    // The bottom-left and top-right corners keep their miter joins.
+    assert_eq!(at(&r.output, 19, 19), 0);
+    assert!(!path_points_inside(&r.output, rect));
+}
+
+/// Fill and stroke together: both are cut.
+#[test]
+fn fill_and_stroke_crossing_a_rect_are_cut() {
+    let pdf = one_page("1 0 0 rg 2 w 30 60 60 30 re B", "", "", vec![]);
+    let r = run(&pdf, vec![(40.0, 40.0, 160.0, 160.0)]).unwrap();
+    assert_eq!(r.paths_cut, 1);
+    assert_eq!(at(&r.output, 60, 75), 255);
+    assert_eq!(
+        at(&r.output, 35, 75),
+        255,
+        "red fill (red channel 255) kept"
+    );
+    assert_eq!(at(&r.output, 30, 75), 0, "black stroke kept");
+}
+
+/// What cannot be cut exactly is refused: a dashed stroke, a corner
+/// whose miter reaches into the rect.
+#[test]
+fn uncuttable_paths_are_refused() {
+    let dashed = one_page("[4 2] 0 d 2 w 10 100 m 190 100 l S", "", "", vec![]);
+    let e = unsupported(run(&dashed, vec![(50.0, 90.0, 100.0, 110.0)]));
+    assert!(e.contains("dashed"), "{e}");
+    // A right-angle corner at (100, 100) whose miter tip, 2.83 out,
+    // points at a rect 2.5 away: the segments clear it, the join may
+    // not.
+    let sharp = one_page("4 w 10 M 50 100 m 100 100 l 100 50 l S", "", "", vec![]);
+    let e = unsupported(run(&sharp, vec![(102.5, 102.5, 150.0, 150.0)]));
+    assert!(e.contains("join"), "{e}");
+}
+
+/// A path whose conservative bounds meet a rect but whose paint keeps
+/// clear of it is left exactly as it was.
+#[test]
+fn a_path_clear_of_the_rect_is_unchanged() {
+    // Bounds are inflated by the miter limit (10 × 1): they reach the
+    // rect, the straight line itself stays 1 unit away.
+    let pdf = one_page("2 w 10 100 m 190 100 l S", "", "", vec![]);
+    let r = run(&pdf, vec![(50.0, 102.0, 100.0, 110.0)]).unwrap();
+    assert_eq!((r.paths_cut, r.paths_removed), (0, 0));
+    assert_eq!(at(&r.output, 75, 100), 0);
+}
+
+/// Cuts survive the round trip through a scaled, flipped CTM (as
+/// Chrome writes): verification re-runs the cut and finds nothing.
+#[test]
+fn cuts_under_a_flipped_scaled_ctm() {
+    let pdf = one_page(
+        "q .23999999 0 0 -.23999999 0 200 cm 4.1666 w 41.6 416.7 m 791.7 416.7 l S \
+         0 0 1 rg 125 375 333.3 83.3 re f Q",
+        "",
+        "",
+        vec![],
+    );
+    let rect = (50.0, 90.0, 100.0, 110.0);
+    let r = run(&pdf, vec![rect]).unwrap();
+    assert_eq!(r.paths_cut, 2);
+    assert_eq!(at(&r.output, 75, 100), 255);
+    assert_eq!(at(&r.output, 30, 100), 0);
 }

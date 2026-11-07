@@ -2027,6 +2027,7 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
         r.images_edited, r.pixels_changed
     );
     println!("paths removed: {}", r.paths_removed);
+    println!("paths cut at a rect: {}", r.paths_cut);
     println!("links removed: {}", r.links_removed);
     println!("original image names removed: {}", r.original_names_removed);
     println!("/Info removed: {}", r.info_removed);

@@ -715,6 +715,8 @@ struct StrokeState {
     join: i64,
     /// `M` — miter limit, applied to the join extension.
     miter_limit: f64,
+    /// `d` — a dash pattern is set (non-empty array).
+    dashed: bool,
 }
 
 /// The *whole* graphics state a diagnosis tracks — saved and restored
@@ -807,6 +809,9 @@ pub(crate) struct DiagWalker<'a> {
     /// the diagnosis (and renderer) saw, not the state at end of
     /// stream.
     pub(crate) show_states: BTreeMap<(Vec<FormFrame>, usize), ShowTextState>,
+    /// The stroke state and CTM at each painted path target, keyed
+    /// like `show_states` — what `redact` needs to cut a path.
+    pub(crate) path_states: BTreeMap<(Vec<FormFrame>, usize), crate::redact_geom::PathPaintState>,
     /// Whether `capture_show_state` records — `false` for
     /// `diagnose_redaction` (the diagnosis reports targets and never
     /// rewrites ops, so it doesn't pay the map's memory).
@@ -926,6 +931,7 @@ impl<'a> DiagWalker<'a> {
                     cap: 0,
                     join: 0,
                     miter_limit: 10.0,
+                    dashed: false,
                 },
                 text: TextState {
                     h_scale: 1.0,
@@ -953,6 +959,7 @@ impl<'a> DiagWalker<'a> {
             uncertain: Vec::new(),
             blockers: Vec::new(),
             show_states: BTreeMap::new(),
+            path_states: BTreeMap::new(),
             record_show_states,
             site_map: BTreeMap::new(),
             reported: 0,
@@ -1115,7 +1122,8 @@ impl<'a> DiagWalker<'a> {
             O::SetLineCap(c) => self.gs.stroke.cap = *c,
             O::SetLineJoin(j) => self.gs.stroke.join = *j,
             O::SetMiterLimit(m) => self.gs.stroke.miter_limit = *m,
-            O::SetDash { .. } | O::SetFlatness(_) | O::SetRenderingIntent(_) => {}
+            O::SetDash { dashes, .. } => self.gs.stroke.dashed = !dashes.is_empty(),
+            O::SetFlatness(_) | O::SetRenderingIntent(_) => {}
             O::Type3SetWidth { .. } | O::Type3SetWidthAndBox { .. } => {
                 // d0/d1 only appear inside a Type3 CharProc; at page
                 // level they carry no geometry → ignore.
@@ -1479,6 +1487,20 @@ impl<'a> DiagWalker<'a> {
                     } else {
                         let hits = self.visible_hits(&b);
                         self.bump_reported()?;
+                        if !hits.is_empty() {
+                            let s = &self.gs.stroke;
+                            self.path_states.insert(
+                                (self.form_path.clone(), self.op_index),
+                                crate::redact_geom::PathPaintState {
+                                    ctm: self.gs.ctm,
+                                    width: s.width,
+                                    cap: s.cap,
+                                    join: s.join,
+                                    miter_limit: s.miter_limit,
+                                    dashed: s.dashed,
+                                },
+                            );
+                        }
                         self.targets.push(Target {
                             kind: TargetKind::Path,
                             site: self.site(),

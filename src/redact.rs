@@ -81,6 +81,9 @@ pub struct Redaction {
     pub pixels_changed: u64,
     /// Painted paths removed (each wholly inside a rect).
     pub paths_removed: u64,
+    /// Painted paths crossing a rect's edge, cut there: what they
+    /// painted inside the rect is gone, the rest is kept.
+    pub paths_cut: u64,
     /// `/Link` annotations removed because their `/Rect` met a rect
     /// (with their action or destination); links outside are kept.
     pub links_removed: u64,
@@ -148,6 +151,7 @@ impl std::fmt::Debug for Redaction {
             .field("images_edited", &self.images_edited)
             .field("pixels_changed", &self.pixels_changed)
             .field("paths_removed", &self.paths_removed)
+            .field("paths_cut", &self.paths_cut)
             .field("links_removed", &self.links_removed)
             .field("original_names_removed", &self.original_names_removed)
             .field("info_removed", &self.info_removed)
@@ -235,6 +239,7 @@ pub fn redact(
         images_edited: s.invocations_edited_total,
         pixels_changed: s.pixels_changed_total,
         paths_removed: s.paths_removed_total,
+        paths_cut: s.paths_cut_total,
         links_removed: s.links_removed_total,
         original_names_removed: s.names_pruned_total,
         per_page: s.per_page,
@@ -268,14 +273,16 @@ fn verify(
     if again.codes_removed_total
         + again.pixels_changed_total
         + again.paths_removed_total
+        + again.paths_cut_total
         + again.links_removed_total
         != 0
     {
         return Err(fail(format!(
-            "the rects still hit {} codes, {} nonzero pixels, {} paths, {} links",
+            "the rects still hit {} codes, {} nonzero pixels, {} paths, {} paths to cut, {} links",
             again.codes_removed_total,
             again.pixels_changed_total,
             again.paths_removed_total,
+            again.paths_cut_total,
             again.links_removed_total
         )));
     }

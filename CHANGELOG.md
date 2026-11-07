@@ -18,6 +18,11 @@ versions follow [Semantic Versioning](https://semver.org/).
   output's residual audit. `/Link` annotations meeting a rect are
   removed, others kept. Everything else the region editor refuses
   stays refused. See `docs/features/redaction.md`.
+- `redact` cuts paths that cross a rect's edge (`paths_cut`) instead of
+  refusing them: filled axis-aligned rectangles exactly, stroked
+  straight segments along their centreline with the stroke's reach
+  (line width, caps, joins, CTM) kept clear of the rect. Curves,
+  dashed strokes and other fills near a rect are still refused.
 - `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
   RFC 7932 data including large windows, Flate predictors, refused on
   inline images. Output and decoder memory are bounded by

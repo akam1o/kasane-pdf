@@ -9,7 +9,9 @@ tools that share no code with kasane-pdf:
   --decode-level=all, after which every object and every decodable
   stream is plain bytes: the secret text and the secret image samples
   must not occur anywhere;
-- pdftotext: the secret must not be extracted; the public text must be.
+- pdftotext: the secret must not be extracted; the public text must be;
+- pdftoppm: nothing is drawn inside the rect (cases without images,
+  whose zeroed samples are black by design).
 
 A case may instead be refused (non-zero exit, no output file) — the
 expected outcome for the structures `redact` does not process. Exit 0
@@ -106,11 +108,47 @@ CASES = [
         8: stream(b"/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 5 0 R >> >>", TEXT)})), [], "refused"),
     ("text-annotation", build(page(TEXT, page_extra=b"/Annots [8 0 R]", more={
         8: b"<< /Type /Annot /Subtype /Text /Rect [50 95 60 105] /Contents (SECRETTEXT) >>"})), [], "refused"),
+    # Structures common in real documents.
+    ("table-rules-crossing", build(page(TEXT + b" 0.5 w 10 92 m 190 92 l 10 112 m 190 112 l 100 80 m 100 130 l S")), [], "ok"),
+    ("background-box-crossing", build(page(b"0.9 g 20 85 170 35 re f 0 g " + TEXT)), [], "ok"),
+    ("rotated-ctm-rule", build(page(TEXT + b" q 0 1 -1 0 200 0 cm 1 w 10 100 m 190 100 l S Q")), [], "ok"),
+    ("curve-crossing", build(page(TEXT + b" 1 w 30 100 m 80 130 120 70 170 100 c S")), [], "refused"),
+    ("dashed-rule-crossing", build(page(TEXT + b" [3 2] 0 d 1 w 10 100 m 190 100 l S")), [], "refused"),
+    ("inline-image", build(page(TEXT + b" q 20 0 0 20 60 95 cm BI /W 2 /H 1 /CS /G /BPC 8 ID \x10\x20 EI Q")), [], "refused"),
+    ("image-shown-on-two-pages", build({
+        **page(TEXT + b" q 100 0 0 30 50 90 cm /Im1 Do Q", res=b"/Font << /F1 5 0 R >> /XObject << /Im1 8 0 R >>",
+               kids=b"[3 0 R 9 0 R]", count=2),
+        8: IMAGE,
+        9: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /XObject << /Im1 8 0 R >> >> /Contents 10 0 R >>",
+        10: stream(b"", b"q 50 0 0 50 0 0 cm /Im1 Do Q"),
+    }), [], "refused"),
 ]
 
 
+def rects_custom(args):
+    return "--rect" in args
+
+
+def ink_inside(pdf, tmp):
+    """Non-white pixels Poppler draws strictly inside RECT (72 dpi, a
+    one-pixel margin for anti-aliasing at the edges)."""
+    base = os.path.join(tmp, "render")
+    subprocess.run(["pdftoppm", "-r", "72", "-gray", "-singlefile", pdf, base], capture_output=True, check=True)
+    data = open(base + ".pgm", "rb").read()
+    parts = data.split(maxsplit=4)
+    w, h = int(parts[1]), int(parts[2])
+    pix = parts[4]
+    llx, lly, urx, ury = (float(v) for v in RECT)
+    count = 0
+    for y in range(int(h - ury) + 1, int(h - lly) - 1):
+        for x in range(int(llx) + 1, int(urx) - 1):
+            if pix[y * w + x] != 255:
+                count += 1
+    return count
+
+
 def run():
-    for tool in ("qpdf", "pdftotext"):
+    for tool in ("qpdf", "pdftotext", "pdftoppm"):
         if shutil.which(tool) is None:
             print(f"SKIP: {tool} not found")
             return 2
@@ -143,6 +181,10 @@ def run():
                     problems.append("secret text bytes present after full decode")
                 if SAMPLES[:96] in data:
                     problems.append("original image samples present after full decode")
+                if "image" not in name and not rects_custom(args):
+                    ink = ink_inside(out, tmp)
+                    if ink:
+                        problems.append(f"{ink} non-white pixels inside the rect (Poppler render)")
                 text = subprocess.run(["pdftotext", out, "-"], capture_output=True).stdout
                 if SECRET in text:
                     problems.append("pdftotext extracts the secret")
@@ -151,7 +193,9 @@ def run():
             status = "ok  " if not problems else "FAIL"
             print(f"{status} {name}: {got}" + ("" if not problems else " — " + "; ".join(problems)))
             failed += bool(problems)
-    print(f"{len(CASES) - failed}/{len(CASES)} cases as expected")
+    oks = sum(1 for c in CASES if c[3] == "ok")
+    print(f"{len(CASES) - failed}/{len(CASES)} cases as expected; "
+          f"declared succeeding: {oks}, refused: {len(CASES) - oks}")
     return 1 if failed else 0
 
 

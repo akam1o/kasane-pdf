@@ -707,6 +707,8 @@ pub(crate) struct RegionsEdit<'a> {
     /// Of those, links a structure tree refers to (`/StructParent`):
     /// the tree would keep them reachable.
     pub(crate) tagged_links_removed_total: u64,
+    /// Redaction mode only: paths crossing a rect's edge, cut there.
+    pub(crate) paths_cut_total: u64,
 }
 
 /// What `regions_edit_session` does beyond the content editor.
@@ -804,6 +806,7 @@ pub(crate) fn regions_edit_session<'a>(
     let mut orphaned_names_removed_total: u64 = 0;
     let mut paths_removed_total: u64 = 0;
     let mut links_removed_total: u64 = 0;
+    let mut paths_cut_total: u64 = 0;
     let mut tagged_links_removed_total: u64 = 0;
     let mut original_digests: Vec<[u8; 32]> = Vec::new();
     // Redaction: the refs of edited images, and per page the names
@@ -1036,7 +1039,9 @@ pub(crate) fn regions_edit_session<'a>(
         // and so is one that also sets a clip (removing it would
         // change what later content shows).
         let mut removed_op_set: BTreeSet<usize> = BTreeSet::new();
+        let mut replacements: BTreeMap<usize, Vec<Operation>> = BTreeMap::new();
         let mut paths_removed: u64 = 0;
+        let mut paths_cut: u64 = 0;
         if mode == SessionMode::Redact {
             for t in walker.targets.iter().filter(|t| t.kind == TargetKind::Path) {
                 if t.hits.is_empty() {
@@ -1048,16 +1053,7 @@ pub(crate) fn regions_edit_session<'a>(
                         detail: format!("op #{}", t.site.op_index),
                     });
                 }
-                if !validated.iter().any(|r| rect_contains(r, t.bounds)) {
-                    return Err(Error::Unsupported {
-                        feature: "redaction of a path crossing a rect's edge",
-                        detail: format!(
-                            "op #{}: the path's bounds ({:.2} {:.2} {:.2} {:.2}) are not \
-                             inside one redaction rect",
-                            t.site.op_index, t.bounds.0, t.bounds.1, t.bounds.2, t.bounds.3
-                        ),
-                    });
-                }
+                let inside = validated.iter().any(|r| rect_contains(r, t.bounds));
                 let paint = t.site.op_index;
                 let mut start = paint;
                 while start > 0 {
@@ -1078,8 +1074,33 @@ pub(crate) fn regions_edit_session<'a>(
                         _ => break,
                     }
                 }
-                removed_op_set.extend(start..=paint);
-                paths_removed += 1;
+                if inside {
+                    removed_op_set.extend(start..=paint);
+                    paths_removed += 1;
+                    continue;
+                }
+                // Crossing a rect's edge: cut it there, or refuse.
+                let st = walker
+                    .path_states
+                    .get(&(t.site.form_path.clone(), paint))
+                    .ok_or_else(|| {
+                        Error::Structure("path target without its paint state".into())
+                    })?;
+                match crate::redact_geom::cut_path(&ops[start..paint], &ops[paint], st, &validated)
+                    .map_err(|e| match e {
+                        Error::Unsupported { feature, detail } => Error::Unsupported {
+                            feature,
+                            detail: format!("op #{paint}: {detail}"),
+                        },
+                        e => e,
+                    })? {
+                    crate::redact_geom::Cut::Unchanged => {}
+                    crate::redact_geom::Cut::Replace(new) => {
+                        removed_op_set.extend(start..=paint);
+                        replacements.insert(start, new);
+                        paths_cut += 1;
+                    }
+                }
             }
         }
 
@@ -1276,6 +1297,9 @@ pub(crate) fn regions_edit_session<'a>(
         // ---- rewrite this page's content stream ---------------------
         let mut new_ops: Vec<Operation> = Vec::with_capacity(ops.len());
         for (op_index, op) in ops.iter().enumerate() {
+            if let Some(new) = replacements.get(&op_index) {
+                new_ops.extend(new.iter().cloned());
+            }
             if removed_op_set.contains(&op_index) {
                 continue;
             }
@@ -1406,6 +1430,7 @@ pub(crate) fn regions_edit_session<'a>(
 
         codes_removed_total += codes_removed;
         paths_removed_total += paths_removed;
+        paths_cut_total += paths_cut;
         links_removed_total += links_removed;
         tagged_links_removed_total += tagged_links_removed;
         invocations_edited_total += do_renames.len() as u64;
@@ -1483,6 +1508,7 @@ pub(crate) fn regions_edit_session<'a>(
         removed_text,
         links_removed_total,
         tagged_links_removed_total,
+        paths_cut_total,
     })
 }
 
