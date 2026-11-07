@@ -19,11 +19,14 @@ is used under the Apache-2.0 or MIT option.
 |---|---|---|---|
 | `adler2` | 2.0.1 | 0BSD OR MIT OR Apache-2.0 | <https://github.com/oyvindln/adler2> |
 | `aes` | 0.9.3 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/block-ciphers> |
+| `alloc-no-stdlib` | 3.0.0 | BSD-3-Clause | <https://github.com/dropbox/rust-alloc-no-stdlib> |
+| `alloc-stdlib` | 0.3.0 | BSD-3-Clause | <https://github.com/dropbox/rust-alloc-no-stdlib> |
 | `arrayref` | 0.3.9 | BSD-2-Clause | <https://github.com/droundy/arrayref> |
 | `arrayvec` | 0.7.8 | MIT OR Apache-2.0 | <https://github.com/bluss/arrayvec> |
 | `bitflags` | 2.13.2 | MIT OR Apache-2.0 | <https://github.com/bitflags/bitflags> |
 | `block-buffer` | 0.12.1 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/utils> |
 | `block-padding` | 0.4.2 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/utils> |
+| `brotli-decompressor` | 6.3.0 | BSD-3-Clause/MIT | <https://github.com/dropbox/rust-brotli-decompressor> |
 | `bytemuck` | 1.25.2 | Zlib OR Apache-2.0 OR MIT | <https://github.com/Lokathor/bytemuck> |
 | `cbc` | 0.2.1 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/block-modes> |
 | `cfg-if` | 1.0.5 | MIT OR Apache-2.0 | <https://github.com/rust-lang/cfg-if> |
@@ -64,10 +67,13 @@ is used under the Apache-2.0 or MIT option.
 | `zeroize` | 1.9.1 | Apache-2.0 OR MIT | <https://github.com/RustCrypto/utils> |
 | `zlib-rs` | 0.6.8 | Zlib | <https://github.com/trifectatechfoundation/zlib-rs> |
 
-`tiny-skia` / `tiny-skia-path` (BSD-3-Clause) and `arrayref`
-(BSD-2-Clause) require their copyright notices to be reproduced in
-binary distributions; a binary built from this repository must carry
-them (the crate sources include the texts).
+`tiny-skia` / `tiny-skia-path` (BSD-3-Clause), `arrayref`
+(BSD-2-Clause) and `alloc-no-stdlib` / `alloc-stdlib` (BSD-3-Clause)
+require their copyright notices to be reproduced in binary
+distributions; a binary built from this repository must carry them
+(the crate sources include the texts). `brotli-decompressor` (the
+`/BrotliDecode` filter) is used under its MIT option; its
+`unsafe`/`ffi-api` features stay off, so it is `#![forbid(unsafe_code)]`.
 
 The compatibility runner `compat/runner` (`kasane-compat`, a
 development tool that is not part of the engine) additionally uses

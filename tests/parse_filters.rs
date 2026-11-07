@@ -444,3 +444,51 @@ fn image_only_filters_are_refused_on_content_streams() {
         assert!(matches!(err, Error::Unsupported { .. }), "{f}: {err:?}");
     }
 }
+
+// ---- Brotli (PDF Association EXTN-BROTLI-1) --------------------------
+
+/// `1 0 0 rg 0 0 50 50 re f`, from the reference `brotli` 1.x tool: the
+/// default window, and `--large_window=26` (RFC 9841).
+const BROTLI: &[u8] = &[
+    0x21, 0x58, 0x00, 0x04, 0x31, 0x20, 0x30, 0x20, 0x30, 0x20, 0x72, 0x67, 0x20, 0x30, 0x20, 0x30,
+    0x20, 0x35, 0x30, 0x20, 0x35, 0x30, 0x20, 0x72, 0x65, 0x20, 0x66, 0x03,
+];
+const BROTLI_LARGE_WINDOW: &[u8] = &[
+    0x11, 0x1a, 0x2c, 0x00, 0x02, 0x31, 0x20, 0x30, 0x20, 0x30, 0x20, 0x72, 0x67, 0x20, 0x30, 0x20,
+    0x30, 0x20, 0x35, 0x30, 0x20, 0x35, 0x30, 0x20, 0x72, 0x65, 0x20, 0x66, 0x03,
+];
+/// 20 000 zero bytes in 13 bytes.
+const BROTLI_ZEROS: &[u8] = &[
+    0xf1, 0xf8, 0x70, 0xc2, 0x3f, 0x01, 0x10, 0x8f, 0x05, 0x02, 0xd9, 0x45, 0x00,
+];
+
+#[test]
+fn brotli_decodes_with_default_and_large_windows() {
+    for data in [BROTLI, BROTLI_LARGE_WINDOW] {
+        assert_eq!(
+            decode("/Filter /BrotliDecode", data).unwrap(),
+            b"1 0 0 rg 0 0 50 50 re f"
+        );
+    }
+    assert_eq!(
+        decode("/Filter /BrotliDecode", BROTLI_ZEROS).unwrap(),
+        vec![0; 20_000]
+    );
+}
+
+#[test]
+fn brotli_rejects_truncated_and_corrupt_data() {
+    let err = decode("/Filter /BrotliDecode", &BROTLI[..BROTLI.len() - 1]).unwrap_err();
+    assert!(matches!(err, Error::Parse(_)), "{err:?}");
+    let err = decode("/Filter /BrotliDecode", b"\xff\xff\xff\xff").unwrap_err();
+    assert!(matches!(err, Error::Parse(_)), "{err:?}");
+}
+
+/// The output, and the ring buffer sized from the declared meta-block
+/// length, are both bounded by `max_stream_bytes`.
+#[test]
+fn brotli_output_is_capped() {
+    let limits = Limits::default().with_max_stream_bytes(1024);
+    let err = decode_with("/Filter /BrotliDecode", BROTLI_ZEROS, limits).unwrap_err();
+    assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
+}

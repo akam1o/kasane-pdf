@@ -156,3 +156,15 @@ fn invalid_inline_images_are_typed_errors() {
     .unwrap_err();
     assert!(matches!(err, Error::Parse(_)), "{err:?}");
 }
+
+/// EXTN-BROTLI-1 §5.2: `/BrotliDecode` shall not be used on an inline
+/// image.
+#[test]
+fn brotli_inline_image_is_refused() {
+    let content = b"q 10 0 0 10 0 0 cm BI /W 1 /H 1 /CS /G /BPC 8 /F /BrotliDecode ID \x0b\x00\x80\x00\x03 EI Q";
+    let err = render(&page(content, "")).unwrap_err();
+    assert!(
+        matches!(err, Error::Structure(ref m) if m.contains("Brotli")),
+        "{err:?}"
+    );
+}

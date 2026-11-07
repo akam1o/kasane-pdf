@@ -66,6 +66,10 @@ ttf-parser = { version = "0.25", default-features = false, features = ["std", "g
 # refinement, symbol/text, halftone and pattern regions; MMR through
 # hayro-ccitt, which also serves /CCITTFaxDecode (G3 1D/2D, G4).
 hayro-jbig2 = { version = "0.3", default-features = false }
+# /BrotliDecode (PDF Association EXTN-BROTLI-1, RFC 7932 with large
+# windows, RFC 9841). BSD-3-Clause OR MIT, pure Rust; without its
+# `unsafe`/`ffi-api` features it is `#![forbid(unsafe_code)]`.
+brotli-decompressor = { version = "6.3", default-features = false, features = ["std"] }
 hayro-ccitt = { version = "0.4", default-features = false }
 hayro-jpeg2000 = { version = "0.4", default-features = false }
 

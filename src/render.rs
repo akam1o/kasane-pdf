@@ -4410,6 +4410,17 @@ impl<'a> Renderer<'a> {
             };
             full.insert(key.to_vec(), value);
         }
+        let brotli = match full.get(b"Filter".as_slice()) {
+            Some(Object::Name(n)) => n == b"BrotliDecode",
+            Some(Object::Array(a)) => a.iter().any(|o| o.as_name() == Some(b"BrotliDecode")),
+            _ => false,
+        };
+        if brotli {
+            // EXTN-BROTLI-1 §5.2: "SHALL NOT be used with inline images".
+            return Err(Error::Structure(
+                "/BrotliDecode is not allowed on an inline image".into(),
+            ));
+        }
         self.paint_image(&full, data, b"inline image")
     }
 

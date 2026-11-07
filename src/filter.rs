@@ -155,6 +155,7 @@ pub(crate) fn apply_one_filter(
 ) -> Result<Vec<u8>, Error> {
     match name {
         b"FlateDecode" | b"Fl" => flate_decode(buf, parms, limits, warnings),
+        b"BrotliDecode" => brotli_decode(buf, parms, limits),
         b"LZWDecode" | b"LZW" => lzw_decode(buf, parms, limits),
         b"ASCII85Decode" | b"A85" => ascii85_decode(buf, limits, warnings),
         b"ASCIIHexDecode" | b"AHx" => asciihex_decode(buf, limits),
@@ -548,6 +549,103 @@ fn flate_decode(
         }
     }
 
+    apply_predictor(out, parms, limits)
+}
+
+/// `/BrotliDecode` (PDF Association EXTN-BROTLI-1 §5): RFC 7932 data,
+/// large windows (RFC 9841) allowed, no framing, no shared dictionary;
+/// the Flate predictor parameters apply. The output is bounded by
+/// `max_stream_bytes`, and so is the decoder's byte memory: its ring
+/// buffer is sized from the meta-block lengths the stream *declares*
+/// (up to 16 MiB each, within a window of up to 1 GiB), so an
+/// allocation beyond what an output of `max_stream_bytes` can need is
+/// refused before it is made. A stream that ends before its last
+/// meta-block is refused, as for Flate.
+fn brotli_decode(buf: &[u8], parms: Option<&Dict>, limits: &Limits) -> Result<Vec<u8>, Error> {
+    use brotli_decompressor::{
+        Allocator, BrotliDecoderParameter, BrotliDecompressStream, BrotliResult, BrotliState,
+        StandardAlloc,
+    };
+    /// `StandardAlloc` for bytes, refusing (with an empty cell, which
+    /// the decoder reports as an allocation failure) any cell over
+    /// `max`.
+    struct Bounded {
+        max: usize,
+        refused: bool,
+    }
+    impl Allocator<u8> for Bounded {
+        type AllocatedMemory = <StandardAlloc as Allocator<u8>>::AllocatedMemory;
+        fn alloc_cell(&mut self, len: usize) -> Self::AllocatedMemory {
+            if len > self.max {
+                self.refused = true;
+                return StandardAlloc::default().alloc_cell(0);
+            }
+            StandardAlloc::default().alloc_cell(len)
+        }
+        fn free_cell(&mut self, data: Self::AllocatedMemory) {
+            StandardAlloc::default().free_cell(data)
+        }
+    }
+    // A ring buffer is a power of two plus a little slack; an honest
+    // stream's never exceeds the next power of two above its output.
+    let max = (limits.max_stream_bytes as usize)
+        .checked_next_power_of_two()
+        .unwrap_or(usize::MAX)
+        .saturating_add(4096);
+    let mut s = BrotliState::new(
+        Bounded {
+            max,
+            refused: false,
+        },
+        StandardAlloc::default(),
+        StandardAlloc::default(),
+    );
+    s.set_parameter(BrotliDecoderParameter::BROTLI_DECODER_PARAM_LARGE_WINDOW, 1);
+    let cap = limits.max_stream_bytes as usize;
+    let mut out: Vec<u8> = Vec::new();
+    let mut chunk = vec![0u8; 64 * 1024];
+    let (mut avail_in, mut in_off) = (buf.len(), 0usize);
+    let mut total = 0usize;
+    loop {
+        let (mut avail_out, mut out_off) = (chunk.len(), 0usize);
+        let r = BrotliDecompressStream(
+            &mut avail_in,
+            &mut in_off,
+            buf,
+            &mut avail_out,
+            &mut out_off,
+            &mut chunk,
+            &mut total,
+            &mut s,
+        );
+        out.extend_from_slice(&chunk[..out_off]);
+        if out.len() > cap {
+            return Err(Error::LimitExceeded {
+                limit: "max_stream_bytes (decoded)",
+                max: limits.max_stream_bytes,
+            });
+        }
+        match r {
+            BrotliResult::ResultSuccess => break,
+            BrotliResult::NeedsMoreOutput => continue,
+            BrotliResult::NeedsMoreInput => {
+                return Err(Error::Parse(
+                    "BrotliDecode failed: the stream ends before its last meta-block".into(),
+                ))
+            }
+            BrotliResult::ResultFailure if s.alloc_u8.refused => {
+                return Err(Error::LimitExceeded {
+                    limit: "max_stream_bytes (decoded)",
+                    max: limits.max_stream_bytes,
+                })
+            }
+            BrotliResult::ResultFailure => {
+                return Err(Error::Parse(
+                    "BrotliDecode failed: corrupt Brotli stream".into(),
+                ))
+            }
+        }
+    }
     apply_predictor(out, parms, limits)
 }
 
