@@ -273,8 +273,9 @@ reviewed for a period, as for the placement rules.
 | flag | files | reason |
 |---|---:|---|
 | ink ratio 0.25 | 1 | a grid of hairlines Poppler draws darker; hairline / thin-stroke fidelity (`v0.4.0.md` § 2, P2). The page is otherwise right. |
+| ink ratio 0.37 (`vertical`) | 1 | two 0.1 pt hairlines along the top and bottom page edges: Poppler stroke-adjusts them to full black rows (it applies stroke adjustment whatever `/SA` says; this file has none), kasane anti-aliases them (0.13 px of coverage). Flagged since page sizes round up (`f824302`): before, the reference's 429th row was resampled away to our 428 rows, ink ratio 0.51 (ours 0.00253 / Poppler 0.00495, nightly 42205684264); now both are 333 × 429, 0.37 (0.00265 / 0.00727, nightly 42334496045). The two hairline rows are pixel-identical to before; nothing in the render regressed. |
 
-`reviewed_known_flags` = 1.
+`reviewed_known_flags` = 2.
 
 ## Environment
 

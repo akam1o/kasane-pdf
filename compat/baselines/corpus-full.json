@@ -31481,11 +31481,11 @@
     "inventory_agree": true,
     "version_agrees": true
    },
-   "quality": "report:content_ssim_shift",
+   "quality": "flag:ink_ratio",
    "quality_pages": 3,
-   "quality_pages_flagged": 0,
+   "quality_pages_flagged": 1,
    "quality_report_rules": [
-    "content_ssim_shift"
+    "ink_ratio_band"
    ],
    "recovery_notes": 0,
    "render_approximate": false,
