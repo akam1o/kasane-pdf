@@ -39,6 +39,7 @@ CropBox, a MediaBox not at the origin) are skipped: the generated rects
 would not map 1:1. Usage:
 
     scripts/eval-redact-corpus.py <kasane-pdf> [--per-category N] [--json out.json]
+        [--redact-arg ARG …]   (passed to `redact`, e.g. --unembedded-text-by-cell)
 """
 
 import collections
@@ -172,11 +173,11 @@ def clear_of(word, r, pad):
     return word[3] < r[0] - pad or word[1] > r[2] + pad or word[4] < r[1] - pad or word[2] > r[3] + pad
 
 
-def run_one(kasane, pdf, kind, rect, size, in_words, tmp):
+def run_one(kasane, pdf, kind, rect, size, in_words, tmp, extra_args=()):
     out = os.path.join(tmp, "out.pdf")
     if os.path.exists(out):
         os.remove(out)
-    args = [kasane, "redact", pdf, "--page", "1", "--rect"] + [f"{v:.3f}" for v in rect] + ["--output", out]
+    args = [kasane, "redact", pdf, "--page", "1", "--rect"] + [f"{v:.3f}" for v in rect] + list(extra_args) + ["--output", out]
     r = subprocess.run(args, capture_output=True, text=True, timeout=600)
     res = {"kind": kind, "rect": [round(v, 2) for v in rect]}
     if r.returncode != 0:
@@ -241,12 +242,15 @@ def main():
     kasane = os.path.abspath(sys.argv[1])
     per_category = 4
     out_json = None
+    extra_args = []
     a = sys.argv[2:]
     while a:
         if a[0] == "--per-category":
             per_category = int(a[1]); a = a[2:]
         elif a[0] == "--json":
             out_json = a[1]; a = a[2:]
+        elif a[0] == "--redact-arg":
+            extra_args.append(a[1]); a = a[2:]
         else:
             sys.exit(f"unknown argument {a[0]}")
     for tool in ("qpdf", "pdftotext", "pdftoppm", "pdfinfo"):
@@ -266,7 +270,7 @@ def main():
         rects, in_words = rects_for(pdf, size)
         for kind, rect in rects:
             with tempfile.TemporaryDirectory() as tmp:
-                res = run_one(kasane, pdf, kind, rect, size, in_words, tmp)
+                res = run_one(kasane, pdf, kind, rect, size, in_words, tmp, extra_args)
             res.update(id=f["id"], category=f["category"], producer=f.get("producer"))
             results.append(res)
             extra = res.get("reason", "")
