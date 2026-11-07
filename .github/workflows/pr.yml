@@ -244,6 +244,10 @@ jobs:
         run: |
           pip3 install --quiet pypdf==6.21.4
           python3 scripts/usage-rights-audit.py --self-test
+      - name: redaction checked by qpdf and pdftotext (synthetic cases, no corpus)
+        run: |
+          cargo build --release --bin kasane-pdf
+          python3 scripts/verify-redact.py target/release/kasane-pdf
       - name: regression check vs committed baseline
         run: |
           python3 scripts/ci-regression.py check /tmp/smoke/latest.json compat/baselines/fixtures-smoke.json \

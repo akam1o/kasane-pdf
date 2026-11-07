@@ -65,6 +65,16 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 A failed check is an error (`Unsupported { feature: "redaction output
 failed verification", .. }`), never a returned PDF.
 
+These checks use kasane's own parser. `scripts/verify-redact.py` (run
+by the PR workflow) checks the CLI with tools that share no code with
+it: each synthetic case puts a secret inside a rect in a different way
+(text, metadata, an inherited image, a path, a link, structure
+alternate text, invisible text, a form, a text annotation); a
+successful output must pass `qpdf --check`, contain neither the secret
+text nor the image samples after `qpdf --qdf --object-streams=disable
+--decode-level=all`, and give `pdftotext` the public text but not the
+secret; the rest must be refused with no file written.
+
 ## Refused (typed error, no output)
 
 On an edited page: annotations other than links, Form XObjects, inline images, `sh`,
