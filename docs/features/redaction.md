@@ -38,7 +38,7 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 | painted paths wholly inside one rect | the path and its painting op are deleted |
 | painted paths crossing a rect's edge | cut there (`paths_cut`): filled axis-aligned rectangles become their difference with the rects (exact; several only when they do not overlap); stroked straight segments are cut, in user space where the stroke is defined, at the centreline positions whose cross-section (and cap) would reach the rect — exact for butt caps, the cap's square for square and round caps — so nothing reaches inside and nothing outside is lost; a corner kept near a rect must clear it by its join (the exact miter, or the bevel/round extent). Curves, dashed strokes, other fill shapes and overlapping rectangles near a rect are refused |
 | `/Link` annotations whose `/Rect` meets a rect | removed with their action or destination (`links_removed`); links outside every rect are kept. A removed link the structure tree refers to (`/StructParent`) is refused unless the tree is removed |
-| Form XObjects, nested up to 16 deep (transparency groups included) | their text, paths and images inside the rects are removed, cut or zeroed in copies along the invocation chain — each copy drawn by that one invocation only (`forms_edited`), its `/Resources` naming only what it draws. Other invocations and pages keep the originals; an original form still drawn is reported in `elsewhere` (`Removed::Form`), and edited originals reachable from it stay with it (once each); otherwise they are not carried. A form cycle is refused |
+| Form XObjects, nested up to 16 deep (transparency groups included) | their text, paths and images inside the rects are removed, cut or zeroed in copies along the invocation chain — each copy drawn by that one invocation only (`forms_edited`), its `/Resources` naming only what it draws. Other invocations and pages keep the originals; an original still drawn is reported in `elsewhere` (`Removed::Form` / `Removed::Image`); otherwise it is not carried. A form cycle is refused |
 | document `/Info`, catalog XMP `/Metadata` | always removed |
 | structure tree | refused when it carries `/Alt`, `/ActualText` or `/E`; with `remove_structure_tree(true)` the tree and `/MarkInfo` are removed |
 
@@ -49,9 +49,10 @@ Three separate statements; none implies the next:
 1. **The rects** — verified: the same rects find no text, sample,
    path or link left to remove.
 2. **The edited originals** — verified: no live object equals an edited
-   image's original (stored or decoded digest), except originals that
-   another page, or the same page outside the rects, still draws; those
-   displays are kept and listed in `elsewhere` as `Removed::Image`. The
+   image's or form's original (stored or decoded digest), except an
+   object the output still draws (another page, or the same page
+   outside the rects, directly or through forms); those displays are
+   kept and listed in `elsewhere` as `Removed::Image` / `Removed::Form`. The
    same picture re-encoded differently is not detected by a digest.
 3. **The rest of the document** — reported, not guaranteed:
    `elsewhere` (removed text found again; originals still drawn) and
@@ -81,9 +82,11 @@ Three separate statements; none implies the next:
   sample, path or link left to remove, and no path left to cut.
 - No live object's stream — stored bytes or decoded — equals an edited
   image's or form's original (SHA-256 over every xref entry,
-  object-stream members included), except an original still drawn
-  elsewhere: that one may stay as exactly one object (the one its
-  displays use, reported in `elsewhere`); a second copy fails.
+  object-stream members included), except an object the output still
+  draws — by a `Do` on a page or, transitively, in a form a page draws
+  (names resolved as a reader does, inherited resources included).
+  Those displays are reported in `elsewhere`; any other copy — one only
+  named in some resources, or reachable otherwise — fails.
 
 A failed check is an error (`Unsupported { feature: "redaction output
 failed verification", .. }`), never a returned PDF.

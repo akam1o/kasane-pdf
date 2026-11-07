@@ -11,10 +11,10 @@
 //!    same rects find nothing left to remove.
 //! 2. **The edited originals (verified, with stated exceptions).** No
 //!    live object of the output — every stream, stored or decoded —
-//!    equals an edited image's or form's original, except where
-//!    another page (or the same page outside the rects) still draws
-//!    that original: it stays as exactly one object, the one those
-//!    displays use, listed in [`Redaction::elsewhere`].
+//!    equals an edited image's or form's original, except an object
+//!    the output still draws — a `Do` on a page or, transitively, in
+//!    a form a page draws (another page, the same page outside the
+//!    rects): those displays are listed in [`Redaction::elsewhere`].
 //!    Names of an original on pages that do not draw it are removed.
 //!    The output is a single revision (no incremental history, no
 //!    unreachable objects carried). Equal digests are the test: the
@@ -40,10 +40,10 @@ use crate::audit::{audit_residuals, ResidualAudit};
 use crate::document::Document;
 use crate::error::Error;
 use crate::limits::Limits;
-use crate::object::{Dict, Object};
+use crate::object::{Dict, IndirectRef, Object};
 use crate::redact_diag::Site;
 use crate::remove_region::{regions_edit_session, sha256, PageSpec, SessionMode};
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Options for [`redact`].
 #[derive(Debug, Clone, Default)]
@@ -269,35 +269,12 @@ pub fn redact(
             strip_metadata: true,
         })?;
 
-    // An original another page still draws stays in the file once, as
-    // the object those displays use; every other copy must be gone.
-    // One entry per distinct original object (two objects with equal
-    // bytes are two entries, each allowed once).
-    let mut by_ref: Vec<(crate::object::IndirectRef, [[u8; 32]; 2])> = s
-        .originals_shown
-        .iter()
-        .map(|(_, r, d, _)| (*r, *d))
-        .collect();
-    by_ref.sort_unstable_by_key(|(r, _)| (r.number, r.generation));
-    by_ref.dedup_by_key(|(r, _)| *r);
-    let kept: Vec<[[u8; 32]; 2]> = by_ref.into_iter().map(|(_, d)| d).collect();
-    let must_be_gone: Vec<[u8; 32]> = s
-        .original_digests
-        .iter()
-        .copied()
-        .filter(|d| !kept.iter().any(|k| k.contains(d)))
-        .collect();
-    let (out, residual) = verify(&output, specs, limits, &must_be_gone, &kept)?;
+    // An original may stay only as an object the output still draws
+    // (from a page, through forms); each such display is reported.
+    let (out, residual, shown) = verify(&output, specs, limits, &s.original_digests)?;
     let (mut elsewhere, elsewhere_unsearched_pages) =
         find_elsewhere(&out, &s.removed_text, limits)?;
-    let mut shown_at: Vec<(usize, bool)> = s
-        .originals_shown
-        .iter()
-        .map(|(p, _, _, f)| (*p, *f))
-        .collect();
-    shown_at.sort_unstable();
-    shown_at.dedup();
-    elsewhere.extend(shown_at.into_iter().map(|(p, form)| Elsewhere {
+    elsewhere.extend(shown.into_iter().map(|(p, form)| Elsewhere {
         removed: if form { Removed::Form } else { Removed::Image },
         location: ElsewhereLocation::Page(p),
     }));
@@ -336,13 +313,15 @@ pub fn redact(
 
 /// Check the written bytes; on success return the output's residual
 /// audit.
+/// Pages still drawing an original, and whether it is a form.
+type Shown = BTreeSet<(usize, bool)>;
+
 fn verify(
     output: &[u8],
     specs: &[PageSpec],
     limits: &Limits,
     originals: &[[u8; 32]],
-    kept: &[[[u8; 32]; 2]],
-) -> Result<(Document, ResidualAudit), Error> {
+) -> Result<(Document, ResidualAudit, Shown), Error> {
     let fail = |detail: String| Error::Unsupported {
         feature: "redaction output failed verification",
         detail,
@@ -370,11 +349,12 @@ fn verify(
         )));
     }
     drop(again);
-    // No stream equals an original, stored or decoded — except one
-    // object per original still drawn elsewhere.
+    // No stream equals an original, stored or decoded — except an
+    // object the output still draws: a display elsewhere, reported.
     let originals: HashSet<[u8; 32]> = originals.iter().copied().collect();
-    let mut kept_seen = vec![0u32; kept.len()];
-    if !originals.is_empty() || !kept.is_empty() {
+    let mut shown: BTreeSet<(usize, bool)> = BTreeSet::new();
+    if !originals.is_empty() {
+        let drawn = drawn_xobjects(&out, limits)?;
         let refs: Vec<_> = out
             .xref_entries()
             .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
@@ -387,32 +367,87 @@ fn verify(
             };
             let stored = sha256(data);
             let decoded = out.decode_stream(dict, data).ok().map(|d| sha256(&d));
-            let is = |d: &[u8; 32]| stored == *d || decoded == Some(*d);
-            if originals.iter().any(is) {
+            if !(originals.contains(&stored) || decoded.is_some_and(|d| originals.contains(&d))) {
+                continue;
+            }
+            let Some(pages) = drawn.get(&r) else {
                 return Err(fail(format!(
                     "object {r} holds an edited image's or form's original data"
                 )));
-            }
-            // The first kept entry with these bytes not yet matched.
-            let matching: Vec<usize> = (0..kept.len())
-                .filter(|&i| kept[i].iter().any(is))
-                .collect();
-            if let Some(&first) = matching.first() {
-                match matching.iter().find(|&&i| kept_seen[i] == 0) {
-                    Some(&i) => kept_seen[i] += 1,
-                    None => kept_seen[first] += 1,
+            };
+            let form = dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Form");
+            shown.extend(pages.iter().map(|p| (*p, form)));
+        }
+    }
+    let residual = audit_residuals(&out, limits)?;
+    Ok((out, residual, shown))
+}
+
+/// Every XObject a page of `out` draws — by a `Do` in its content or,
+/// transitively, in the forms it draws — with the pages drawing it.
+/// Names resolve as a reader resolves them: against the form's own
+/// `/Resources`, else the resources it inherits.
+fn drawn_xobjects(
+    out: &Document,
+    limits: &Limits,
+) -> Result<HashMap<IndirectRef, BTreeSet<usize>>, Error> {
+    let mut drawn: HashMap<IndirectRef, BTreeSet<usize>> = HashMap::new();
+    for (i, page) in out.pages().iter().enumerate() {
+        let Some(res) = page.resources().cloned() else {
+            continue;
+        };
+        // (ops, resources in effect, the form owning them — None for
+        // the page —, depth). A form is walked once per resources it
+        // resolves against: its own, or for a form without them, the
+        // owner's.
+        let mut seen: HashSet<(IndirectRef, Option<IndirectRef>)> = HashSet::new();
+        let mut stack = vec![(out.page_operations(page)?, res, None::<IndirectRef>, 0usize)];
+        while let Some((ops, res, owner, depth)) = stack.pop() {
+            for op in &ops {
+                let crate::content::Operation::Do(name) = op else {
+                    continue;
+                };
+                let Some(Object::Ref(r)) = out.resolve_resource_raw(&res, "XObject", name)? else {
+                    continue;
+                };
+                drawn.entry(r).or_default().insert(i);
+                let obj = out.resolve(r)?;
+                let Object::Stream { dict, data } = &obj else {
+                    continue;
+                };
+                if dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) != Some(b"Form") {
+                    continue;
                 }
-                if matching.iter().all(|&i| kept_seen[i] >= 1) && kept_seen[first] > 1 {
-                    return Err(fail(format!(
-                        "object {r} is a second copy of an original that is kept only \
-                         for its displays elsewhere"
-                    )));
+                let own = dict
+                    .get(b"Resources".as_slice())
+                    .filter(|o| !matches!(o, Object::Null))
+                    .cloned();
+                let key = (r, if own.is_some() { None } else { owner });
+                if !seen.insert(key) {
+                    continue;
+                }
+                if depth + 1 > limits.max_xobject_depth as usize {
+                    return Err(Error::LimitExceeded {
+                        limit: "max_xobject_depth",
+                        max: limits.max_xobject_depth as u64,
+                    });
+                }
+                let decoded = out.decode_stream(dict, data)?;
+                let mut warnings = Vec::new();
+                let fops = crate::content::parse_content_stream(
+                    &[decoded],
+                    limits,
+                    out.recovery_mode(),
+                    &mut warnings,
+                )?;
+                match own {
+                    Some(own) => stack.push((fops, own, Some(r), depth + 1)),
+                    None => stack.push((fops, res.clone(), owner, depth + 1)),
                 }
             }
         }
     }
-    let residual = audit_residuals(&out, limits)?;
-    Ok((out, residual))
+    Ok(drawn)
 }
 
 /// Where the removed `texts` (runs of four or more non-whitespace

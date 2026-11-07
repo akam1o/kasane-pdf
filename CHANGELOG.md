@@ -40,8 +40,11 @@ versions follow [Semantic Versioning](https://semver.org/).
 - `redact` edits nested forms (up to 16 deep) and images inside forms:
   every form on the invocation chain is copied for that invocation, the
   copies call each other, and each copy's `/Resources` names only what
-  it draws. Originals reachable from an original form still drawn
-  elsewhere stay with it and are reported.
+  it draws (and what forms inheriting them draw).
+- `redact` verification: an edited original may stay only as an object
+  the output still draws (from a page, directly or through forms); each
+  display is reported. It replaces the per-original "one kept copy"
+  rule.
 - `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
   RFC 7932 data including large windows, Flate predictors, refused on
   inline images. Output and decoder memory are bounded by

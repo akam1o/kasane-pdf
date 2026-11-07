@@ -709,9 +709,6 @@ pub(crate) struct RegionsEdit<'a> {
     pub(crate) tagged_links_removed_total: u64,
     /// Redaction mode only: paths crossing a rect's edge, cut there.
     pub(crate) paths_cut_total: u64,
-    /// Redaction mode only: pages that still draw an edited image's
-    /// original outside the rects, with the original's digests.
-    pub(crate) originals_shown: Vec<(usize, IndirectRef, [[u8; 32]; 2], bool)>,
     /// Redaction mode only: form invocations drawn from an edited copy.
     pub(crate) forms_edited_total: u64,
 }
@@ -1413,6 +1410,8 @@ pub(crate) fn regions_edit_session<'a>(
                 }
             }
             let mut order: Vec<Vec<crate::redact_diag::FormFrame>> = chains.into_iter().collect();
+            let mut inherit_needs: BTreeMap<Vec<crate::redact_diag::FormFrame>, BTreeSet<Vec<u8>>> =
+                BTreeMap::new();
             order.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
             for fp in order {
                 if !form_streams.contains_key(&fp) {
@@ -1456,14 +1455,22 @@ pub(crate) fn regions_edit_session<'a>(
                 // those it would inherit), with the copies' names added
                 // and the replaced originals' names removed.
                 let adds = inner_entries.get(&fp).cloned().unwrap_or_default();
+                // The names this copy's content resolves here: its own
+                // `Do`s, those of forms it draws that inherit these
+                // resources, and those of such copies below.
+                let mut still_used = names_drawn(doc, &new_form_ops, node.res.as_ref(), limits)?;
+                still_used.extend(inherit_needs.remove(&fp).unwrap_or_default());
+                let inherits = node
+                    .dict
+                    .get(b"Resources".as_slice())
+                    .is_none_or(|o| matches!(o, Object::Null));
+                if adds.is_empty() && renamed_from.is_empty() && inherits && fp.len() > 1 {
+                    inherit_needs
+                        .entry(fp[..fp.len() - 1].to_vec())
+                        .or_default()
+                        .extend(still_used.iter().cloned());
+                }
                 if !adds.is_empty() || !renamed_from.is_empty() {
-                    let still_used: BTreeSet<Vec<u8>> = new_form_ops
-                        .iter()
-                        .filter_map(|o| match o {
-                            Operation::Do(n) => Some(n.clone()),
-                            _ => None,
-                        })
-                        .collect();
                     let mut res = match &node.res {
                         Some(r) => doc.deref(r)?.as_dict().cloned().ok_or_else(|| {
                             Error::Structure("/Resources is not a dictionary".into())
@@ -1729,23 +1736,9 @@ pub(crate) fn regions_edit_session<'a>(
             Object::Dict(page_dict),
         );
     }
-    let mut originals_shown: Vec<(usize, IndirectRef)> = Vec::new();
     let names_pruned_total = if mode == SessionMode::Redact && !edited_originals.is_empty() {
         let refs: HashSet<IndirectRef> = edited_originals.keys().copied().collect();
-        let n = prune_original_names(doc, &mut edit, &refs, &drawn_after, &mut originals_shown)?;
-        // An original form still drawn keeps what its resources name:
-        // edited originals reachable from it stay with it.
-        let mut k = 0;
-        while k < originals_shown.len() {
-            let (page_index, r) = originals_shown[k];
-            for inner in xobjects_named_by(doc, r, limits)? {
-                if refs.contains(&inner) && !originals_shown.contains(&(page_index, inner)) {
-                    originals_shown.push((page_index, inner));
-                }
-            }
-            k += 1;
-        }
-        n
+        prune_original_names(doc, &mut edit, &refs, &drawn_after)?
     } else {
         0
     };
@@ -1766,10 +1759,6 @@ pub(crate) fn regions_edit_session<'a>(
         tagged_links_removed_total,
         paths_cut_total,
         forms_edited_total,
-        originals_shown: originals_shown
-            .into_iter()
-            .map(|(i, r)| (i, r, edited_originals[&r].0, edited_originals[&r].1))
-            .collect(),
     })
 }
 
@@ -1838,46 +1827,55 @@ fn load_form_node(
     Err(Error::Structure("empty form chain".into()))
 }
 
-/// The XObjects named in the `/Resources` of form `r` and of the forms
-/// those name, transitively (each object once).
-fn xobjects_named_by(
+/// The `/XObject` names `ops` draw that resolve in `res`: their own
+/// `Do`s and, transitively, those of the forms they draw that have no
+/// `/Resources` of their own (and so resolve in `res` too).
+fn names_drawn(
     doc: &Document,
-    r: IndirectRef,
+    ops: &[Operation],
+    res: Option<&Object>,
     limits: &Limits,
-) -> Result<Vec<IndirectRef>, Error> {
-    let mut seen: Vec<IndirectRef> = vec![r];
-    let mut k = 0;
-    while k < seen.len() {
-        if seen.len() as u64 > limits.max_diag_items {
-            return Err(Error::LimitExceeded {
-                limit: "max_diag_items",
-                max: limits.max_diag_items,
-            });
-        }
-        let obj = doc.resolve(seen[k])?;
-        k += 1;
-        let Object::Stream { dict, .. } = &obj else {
-            continue;
-        };
-        let Some(res) = dict.get(b"Resources".as_slice()) else {
-            continue;
-        };
-        let res = doc.deref(res)?;
-        let Some(x) = res.as_dict().and_then(|d| d.get(b"XObject".as_slice())) else {
-            continue;
-        };
-        let x = doc.deref(x)?;
-        let Some(x) = x.as_dict() else { continue };
-        for v in x.values() {
-            if let Object::Ref(inner) = v {
-                if !seen.contains(inner) {
-                    seen.push(*inner);
-                }
+) -> Result<BTreeSet<Vec<u8>>, Error> {
+    let mut names = BTreeSet::new();
+    let mut seen: HashSet<IndirectRef> = HashSet::new();
+    let mut stack: Vec<(Vec<Operation>, usize)> = vec![(ops.to_vec(), 0)];
+    while let Some((ops, depth)) = stack.pop() {
+        for op in &ops {
+            let Operation::Do(n) = op else { continue };
+            names.insert(n.clone());
+            let Some(r) = res else { continue };
+            let Some(Object::Ref(xr)) = doc.resolve_resource_raw(r, "XObject", n)? else {
+                continue;
+            };
+            let obj = doc.resolve(xr)?;
+            let Object::Stream { dict, data } = &obj else {
+                continue;
+            };
+            let form = dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Form");
+            let inherits = dict
+                .get(b"Resources".as_slice())
+                .is_none_or(|o| matches!(o, Object::Null));
+            if !form || !inherits || !seen.insert(xr) {
+                continue;
             }
+            if depth + 1 > limits.max_xobject_depth as usize {
+                return Err(Error::LimitExceeded {
+                    limit: "max_xobject_depth",
+                    max: limits.max_xobject_depth as u64,
+                });
+            }
+            let decoded = doc.decode_stream(dict, data)?;
+            let mut warnings = Vec::new();
+            let fops = crate::content::parse_content_stream(
+                &[decoded],
+                limits,
+                doc.recovery_mode(),
+                &mut warnings,
+            )?;
+            stack.push((fops, depth + 1));
         }
     }
-    seen.remove(0);
-    Ok(seen)
+    Ok(names)
 }
 
 /// A `/XObject` name (`KasIm{n}`) absent from `res` and `taken`.
@@ -1919,7 +1917,6 @@ fn prune_original_names(
     edit: &mut Edit,
     originals: &HashSet<IndirectRef>,
     drawn_after: &HashMap<IndirectRef, BTreeSet<Vec<u8>>>,
-    shown: &mut Vec<(usize, IndirectRef)>,
 ) -> Result<u64, Error> {
     let mut pruned = 0u64;
     for (index, page) in doc.pages().iter().enumerate() {
@@ -1979,20 +1976,7 @@ fn prune_original_names(
                 .collect(),
         };
         // A page that still draws an original shows it unredacted:
-        // the name stays, and the display is reported (the caller may
-        // refuse it).
-        let xobjects = doc
-            .deref(res.get(b"XObject".as_slice()).expect("named above"))?
-            .as_dict()
-            .cloned()
-            .expect("checked above");
-        for n in named.iter().filter(|n| drawn.contains(*n)) {
-            if let Some(Object::Ref(r)) = xobjects.get(n) {
-                if !shown.contains(&(index, *r)) {
-                    shown.push((index, *r));
-                }
-            }
-        }
+        // the name stays (verification finds the display and reports it).
         let named: Vec<Vec<u8>> = named.into_iter().filter(|n| !drawn.contains(n)).collect();
         if named.is_empty() {
             continue;

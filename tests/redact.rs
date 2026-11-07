@@ -1232,7 +1232,7 @@ fn a_second_copy_of_a_kept_original_is_caught() {
         (8, image_obj()),
     ]);
     let e = unsupported(run(&pdf, vec![(50.0, 50.0, 150.0, 150.0)]));
-    assert!(e.contains("second copy"), "{e}");
+    assert!(e.contains("original data"), "{e}");
 }
 
 // Final review (P0/P2, fixed).
@@ -1478,4 +1478,136 @@ fn a_form_cycle_is_refused() {
         )],
     );
     assert!(run(&pdf, vec![RECT]).is_err());
+}
+
+// Review of nested form editing (fixed): what may stay is decided from
+// what the output draws; trimmed resources keep inherited names.
+
+/// An original only *named* by a form still drawn — not drawn by it —
+/// is not a display: it may not stay.
+#[test]
+fn an_original_only_named_by_a_kept_form_does_not_stay() {
+    let pdf = doc_with(
+        "/XObject << /Fm 30 0 R /I 31 0 R >>",
+        &[b"/Fm Do q 1 0 0 1 0 -80 cm /Fm Do Q q 40 0 0 20 50 90 cm /I Do Q"],
+        vec![
+            (
+                30,
+                stream_obj(
+                    &format!("{FORM} /Resources << /XObject << /Unused 31 0 R >> >>"),
+                    b"50 90 30 20 re f",
+                ),
+            ),
+            (31, image_obj()),
+        ],
+    );
+    match run(&pdf, vec![RECT]) {
+        Ok(r) => {
+            assert!(!contains(&r.output, &secret_samples()));
+            assert!(!r
+                .elsewhere
+                .iter()
+                .any(|e| e.removed == kasane_pdf::Removed::Image));
+        }
+        Err(e) => assert!(e.to_string().contains("original data"), "{e}"),
+    }
+}
+
+/// A child drawn twice by its parent, once in the rect: the other
+/// drawing keeps the original child.
+#[test]
+fn a_child_drawn_twice_by_its_parent() {
+    let pdf = doc_with(
+        "/XObject << /Fm 30 0 R >>",
+        &[b"/Fm Do"],
+        vec![
+            (
+                30,
+                stream_obj(
+                    &format!("{FORM} /Resources << /XObject << /In 31 0 R >> >>"),
+                    b"/In Do q 1 0 0 1 0 -80 cm /In Do Q",
+                ),
+            ),
+            (
+                31,
+                stream_obj(&format!("{FORM} /Resources << >>"), b"50 90 30 20 re f"),
+            ),
+        ],
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(at(&r.output, 60, 100), 255);
+    assert_eq!(at(&r.output, 60, 20), 0, "the other drawing is kept");
+    assert!(r
+        .elsewhere
+        .iter()
+        .any(|e| e.removed == kasane_pdf::Removed::Form));
+}
+
+/// Two parents share a child; only one parent's drawing meets the rect.
+#[test]
+fn two_parents_share_a_child() {
+    let pdf = doc_with(
+        "/XObject << /A 30 0 R /B 32 0 R >>",
+        &[b"/A Do q 1 0 0 1 0 -80 cm /B Do Q"],
+        vec![
+            (
+                30,
+                stream_obj(
+                    &format!("{FORM} /Resources << /XObject << /In 31 0 R >> >>"),
+                    b"/In Do",
+                ),
+            ),
+            (
+                32,
+                stream_obj(
+                    &format!("{FORM} /Resources << /XObject << /In 31 0 R >> >>"),
+                    b"q /In Do Q",
+                ),
+            ),
+            (
+                31,
+                stream_obj(&format!("{FORM} /Resources << >>"), b"50 90 30 20 re f"),
+            ),
+        ],
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(at(&r.output, 60, 100), 255);
+    assert_eq!(at(&r.output, 60, 20), 0);
+}
+
+/// A copy's trimmed resources keep what an untouched child without
+/// /Resources draws through them.
+#[test]
+fn trimmed_resources_keep_names_an_inheriting_child_uses() {
+    let pdf = doc_with(
+        "/XObject << /Fm 30 0 R >>",
+        &[b"/Fm Do"],
+        vec![
+            (
+                30,
+                stream_obj(
+                    &format!(
+                        "{FORM} /Resources << /XObject << /I 31 0 R /Child 32 0 R /Other 33 0 R >> >>"
+                    ),
+                    b"q 40 0 0 40 50 80 cm /I Do Q /Child Do",
+                ),
+            ),
+            (31, image_obj()),
+            (32, stream_obj(FORM, b"q 20 0 0 20 10 10 cm /Other Do Q")),
+            (
+                33,
+                stream_obj(
+                    "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray \
+                     /BitsPerComponent 8",
+                    &[50],
+                ),
+            ),
+        ],
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(
+        at(&r.output, 20, 20),
+        50,
+        "the inheriting child still draws /Other"
+    );
 }
