@@ -422,16 +422,23 @@ fn verify(
     // an outline …): every dictionary written is compared.
     if !removed_annots.is_empty() {
         let prints: HashSet<[u8; 32]> = removed_annots.iter().copied().collect();
-        fn find(o: &Object, prints: &HashSet<[u8; 32]>, depth: usize) -> bool {
-            match o {
-                Object::Dict(d) => {
-                    prints.contains(&crate::remove_region::annotation_print(d))
-                        || depth < 64 && d.values().any(|v| find(v, prints, depth + 1))
+        // Every nested dictionary, at any depth (iteratively).
+        fn find(o: &Object, prints: &HashSet<[u8; 32]>) -> bool {
+            let mut stack = vec![o];
+            while let Some(o) = stack.pop() {
+                match o {
+                    Object::Dict(d) => {
+                        if prints.contains(&crate::remove_region::annotation_print(d)) {
+                            return true;
+                        }
+                        stack.extend(d.values());
+                    }
+                    Object::Array(a) => stack.extend(a.iter()),
+                    Object::Stream { dict, .. } => stack.extend(dict.values()),
+                    _ => {}
                 }
-                Object::Array(a) => depth < 64 && a.iter().any(|v| find(v, prints, depth + 1)),
-                Object::Stream { dict, .. } => dict.values().any(|v| find(v, prints, depth + 1)),
-                _ => false,
             }
+            false
         }
         let refs: Vec<_> = out
             .xref_entries()
@@ -439,7 +446,7 @@ fn verify(
             .map(|(r, _)| r)
             .collect();
         for r in refs {
-            if find(&out.resolve(r)?, &prints, 0) {
+            if find(&out.resolve(r)?, &prints) {
                 return Err(fail(format!(
                     "object {r} still holds a removed link or annotation (something refers to it)"
                 )));

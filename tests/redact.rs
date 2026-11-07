@@ -2304,3 +2304,34 @@ fn a_removed_annotation_kept_reachable_is_refused() {
     let r = annots_run(&unreachable).unwrap();
     assert!(!contains(&r.output, b"(PIN)"));
 }
+
+/// A removed annotation whose numbers the writer normalises (−0, a
+/// tiny real), or kept deep inside arrays, is still found.
+#[test]
+fn removed_annotation_prints_survive_normalisation_and_depth() {
+    let square = |r: &str| {
+        (
+            30,
+            format!("<< /Type /Annot /Subtype /Square /Rect [{r} 95 70 105] /Contents (PIN) >>")
+                .into_bytes(),
+        )
+    };
+    for r in ["-0.0", "0.00000000001"] {
+        let pdf = one_page(
+            SECRET,
+            "/Annots [30 0 R] /AA << /O << /S /Hide /T 30 0 R >> >>",
+            "",
+            vec![square(r)],
+        );
+        assert!(unsupported(annots_run(&pdf)).contains("refers to"), "{r}");
+    }
+    let annot = "<< /Type /Annot /Subtype /Square /Rect [60 95 70 105] /Contents (PIN) >>";
+    let deep = format!("{}{annot}{}", "[".repeat(70), "]".repeat(70));
+    let pdf = one_page(
+        SECRET,
+        &format!("/Annots [{annot}]"),
+        &format!("/Deep {deep}"),
+        vec![],
+    );
+    assert!(unsupported(annots_run(&pdf)).contains("refers to"));
+}

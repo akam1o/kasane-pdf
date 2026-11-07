@@ -786,9 +786,9 @@ const REMOVABLE_ANNOTS: &[&[u8]] = &[
 ];
 
 /// A digest of an annotation dictionary's own content — every key and
-/// direct value, with indirect references written as a placeholder (a
-/// rewrite renumbers them). The same annotation in the output has the
-/// same print.
+/// direct value (scalars as the writer writes them), with indirect
+/// references written as a placeholder (a rewrite renumbers them). The
+/// same annotation in the output has the same print.
 pub(crate) fn annotation_print(d: &Dict) -> [u8; 32] {
     fn put(o: &Object, out: &mut Vec<u8>) {
         match o {
@@ -812,7 +812,14 @@ pub(crate) fn annotation_print(d: &Dict) -> [u8; 32] {
             }
             Object::Ref(_) => out.extend_from_slice(b"@R"),
             Object::Stream { .. } => out.extend_from_slice(b"@S"),
-            other => out.extend_from_slice(format!("{other:?}").as_bytes()),
+            // Scalars as the writer writes them (it normalises reals),
+            // so the print of what was read equals that of what is
+            // written and read back.
+            other => {
+                if crate::serialize::write_object(other, &|_| Some(0), out, 0).is_err() {
+                    out.extend_from_slice(format!("{other:?}").as_bytes());
+                }
+            }
         }
         out.push(0);
     }
