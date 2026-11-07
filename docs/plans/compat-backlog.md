@@ -1,8 +1,9 @@
 # Compatibility backlog
 
-The corpus failures left after 0.5.1, ranked for the next work. Source:
-the macOS full run at `4e9cf5e` (same library code as 0.5.1); 425
-`expect: pass` files, 346 Full PASS in the default configuration.
+The corpus failures left, ranked for the next work. Source: the macOS
+full run at `928dbfd` (all four rewrite configurations); 425
+`expect: pass` files, Full PASS 346 / 352 / 346 / 379 (default / carry
+/ remove-usage-rights / both), Semantic fail 0, crash and timeout 0.
 
 ## Not engine work (79 − 44 = 35 files)
 
@@ -27,24 +28,26 @@ with the recovery-rule work (phase E).
 
 | item | files | notes |
 |---|---:|---|
-| non-embedded Chinese fonts (TrueType and CID, GB1 / Identity) | 4 + 2 `any` | needs a bundled GB1 fallback (like `cjk-fallback` for Japan1); Identity-ordering CID fonts cannot be substituted |
-| ~~annotation `/AP /N` states that are all `null`~~ | 0 | done for real null entries (§7.3.7); the suspected file, `issue15557`, has the *name* `/null` as its state values — malformed, still refused |
-| FreeText / field values outside Latin with the fallback font | 1 | needs a Unicode field font |
-| `/BrotliDecode` | 1 | not in ISO 32000; pdfium-only |
+| non-embedded fonts named for Chinese system fonts (`simfang-variant`, `xiaobiaosong`, `issue20489`) | 3 | not a missing GB1 fallback: simple TrueType fonts, `/WinAnsiEncoding`, GBK-encoded names (宋体, 仿宋_GB2312), the strings GBK bytes. Per the spec they are single-byte Latin codes; Poppler draws them as mojibake with a substitute. Only an OS font lookup with Windows-style charset behaviour would show the intended text — a policy decision, not adopted |
+| non-embedded `Identity-H` CID TrueType (`issue11578_reduced`, `issue12418_reduced`: Times New Roman) | 2 | CIDs are glyph ids of the exact system font; no bundled font can stand in. Needs an opt-in OS / user font source (exact font required) |
+| CIDFontType0 with a Type 1 `/FontFile` (`issue11740_reduced`) | 1 | malformed (needs `/FontFile3`); reported as non-embedded; recovery-rule work |
+| GB1 / CNS1 / Korea1 fallback fonts | 0 | no corpus file needs one. Noto Sans SC/TC/KR (SIL OFL 1.1) may be bundled, but each is several MB and the crate already carries 4.5 MB of Noto Sans JP (crates.io limit 10 MB): a companion crate or a user-supplied font path |
+| ~~annotation `/AP /N` states that are all `null`~~ | 0 | done for real null entries (§7.3.7); `issue15557` has the *name* `/null` as its state values — malformed, still refused |
+| FreeText / field values outside Latin with the fallback font | 1 | `freetext_no_appearance` (Arabic): needs a Unicode field font |
+| `/BrotliDecode` | 1 | Poppler and pdfium decode it; one file, a new decompressor dependency on untrusted input |
 
 ## Fidelity (pages rendered as exact but differing from Poppler)
 
 | item | files | status |
 |---|---:|---|
-| `/Link` borders without `/AP` | 7 | done: missing ink 0 on the 3 measured files (`file_url_link` SSIM 0.615 → 0.673); open: a border wider than its `/Rect` (`bug1552113`, Poppler strokes outside the rect) |
-| Chrome-printed and text pages, glyph baselines | 15 improved | done: Splash floors each glyph origin's device y; kasane now does for unrotated text (35 text files: mean SSIM 0.8035 → 0.8268, none worse) |
-| Chrome pages, glyph weight | ~10 | the largest remaining gap on `chrome-wiki-*` (SSIM 0.6–0.7, same ink, no offset): FreeType draws stems thinner and lighter than tiny-skia's coverage. A gamma or hinting choice, not a placement error; no exact fix |
-| `bug1844583` (form fields, no fonts of its own) | 1 | SSIM 0.680 → 0.664 with the baseline snap; synthesised field text with the Helvetica fallback, to look at |
-| Type 3 glyph baselines | 3 + (`chrome-japanese-vertical-*` use Type 3 only) | Type 3 glyphs are run as content and not snapped; extending the snap to their origin is the next small step |
+| glyph placement on the device grid | 140 improved | done: Tr 0 / Tr 4 fill y floored, cached Type 3 glyphs x and y floored, origins in f64 (`chrome-wiki-*` 0.60–0.70 → 0.85–0.96). The "glyph weight" gap once blamed for `chrome-wiki-*` was this offset |
+| `bug1844583` | 1 | 0.680 → 0.664. Not the snap's fault: the widget has `/MK /BC` but no `/BS` or `/Border`; Poppler draws no border then (AnnotWidget only builds a border from `/BS`), kasane draws the 1 pt default (§12.5.2). Text position then differs too. Kept: the spec default |
+| `bug1552113` (`/Border [0 0 112]` on a 20 pt high link) | 1 | Poppler strokes far outside `/Rect` and covers the page text the file says "should be visible"; pdf.js falls back to width 1; kasane draws nothing. A degenerate border — not adopted |
+| `/Link` borders without `/AP` | 7 | done |
 | axis-aligned rectangles | many, small | Splash snaps rectangle edges to whole pixels (stroke adjustment); kasane anti-aliases them exactly. Not adopted: a heuristic, not a PDF rule (only `/SA` strokes) |
-| `jbig2_file_header`, `issue21878`, `devicen-none-zero-domain`, `bug1844583` | 4 | low SSIM; to investigate one by one |
+| `jbig2_file_header`, `issue21878`, `devicen-none-zero-domain` | 3 | low SSIM; to investigate one by one |
 
-Next: Type 3 glyph baselines (small, extends the snap), then the
-non-embedded Chinese fonts (largest Full PASS gain left, needs a GB1
-fallback font and its licensing) and the wide link border. Lower: the
-FreeText non-Latin font, `/BrotliDecode`.
+Next: the lowest-SSIM files of the latest run, one by one; `/BrotliDecode`
+(one file, a dependency decision); an opt-in font source (system or
+user-supplied fonts) would serve the Identity CID and GBK-named fonts
+but changes what strict rendering means and needs a decision.

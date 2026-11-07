@@ -7,14 +7,21 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
-- Unrotated text filled with a colour is placed on a whole device row:
-  each glyph origin's device y is floored, as Poppler's Splash places
-  the glyphs it caches (x keeps its exact position; stroked, clipping
-  and pattern-filled text, shapes, advances and extracted coordinates
-  do not change). Lines no longer fall up to a pixel below where
-  Poppler draws them: across the corpus, SSIM against Poppler improves
-  on 119 files (mean +0.015; `issue4061` 0.77 → 0.99, `irs-fw9`
-  0.74 → 0.91), with one small loss (`bug1844583` 0.680 → 0.664).
+- Glyphs are placed on the device grid as Poppler's Splash places the
+  glyphs it caches. Unrotated text only filled with a colour (`Tr` 0,
+  and the fill of `Tr` 4) has its origin's device y floored, x exact;
+  an uncoloured (`d1`) Type 3 glyph that fits its font's `/FontBBox`
+  has x and y floored. The origin is computed in f64. Stroked, clip,
+  pattern-filled, rotated and coloured Type 3 glyphs, shapes, advances
+  and extracted coordinates do not change. Across the corpus SSIM
+  against Poppler improves on 140 files (mean +0.027, MAE −0.006):
+  Chrome prints text as Type 3 glyphs (`chrome-wiki-en-pdf`
+  0.61 → 0.94, `chrome-wiki-ko-hangul` 0.60 → 0.94), `issue4061`
+  0.77 → 0.99, `irs-fw9` 0.74 → 0.91; one small loss (`bug1844583`
+  0.680 → 0.664, a widget border Poppler omits).
+- A rewrite writes each real number as the shortest decimal that reads
+  back as the same value; it rounded to 10 decimals, which changed
+  values such as `.00100000005`.
 
 ### Fixed
 - A `null` appearance state of an annotation is absent (§7.3.7): with
