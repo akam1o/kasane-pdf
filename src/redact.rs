@@ -81,6 +81,9 @@ pub struct Redaction {
     pub pixels_changed: u64,
     /// Painted paths removed (each wholly inside a rect).
     pub paths_removed: u64,
+    /// `/Link` annotations removed because their `/Rect` met a rect
+    /// (with their action or destination); links outside are kept.
+    pub links_removed: u64,
     /// `/XObject` names of edited images' originals removed from
     /// pages that did not draw them.
     pub original_names_removed: u64,
@@ -145,6 +148,7 @@ impl std::fmt::Debug for Redaction {
             .field("images_edited", &self.images_edited)
             .field("pixels_changed", &self.pixels_changed)
             .field("paths_removed", &self.paths_removed)
+            .field("links_removed", &self.links_removed)
             .field("original_names_removed", &self.original_names_removed)
             .field("info_removed", &self.info_removed)
             .field("metadata_removed", &self.metadata_removed)
@@ -187,6 +191,14 @@ pub fn redact(
 
     let mut s = regions_edit_session(doc, specs, limits, SessionMode::Redact)?;
     let structure_tree_removed = tree && options.remove_structure_tree;
+    if tree && !structure_tree_removed && s.tagged_links_removed_total > 0 {
+        return Err(Error::Unsupported {
+            feature: "redaction of a link the structure tree refers to",
+            detail: "the tree's /OBJR would keep the removed link (and its action) \
+                     reachable; RedactOptions::remove_structure_tree removes the tree"
+                .into(),
+        });
+    }
     if structure_tree_removed {
         let root = match doc.trailer().get(b"Root".as_slice()) {
             Some(Object::Ref(r)) => *r,
@@ -223,6 +235,7 @@ pub fn redact(
         images_edited: s.invocations_edited_total,
         pixels_changed: s.pixels_changed_total,
         paths_removed: s.paths_removed_total,
+        links_removed: s.links_removed_total,
         original_names_removed: s.names_pruned_total,
         per_page: s.per_page,
         info_removed: info_present,
@@ -252,10 +265,18 @@ fn verify(
     }
     // The same rects find nothing left to remove.
     let again = regions_edit_session(&out, specs, limits, SessionMode::Redact)?;
-    if again.codes_removed_total + again.pixels_changed_total + again.paths_removed_total != 0 {
+    if again.codes_removed_total
+        + again.pixels_changed_total
+        + again.paths_removed_total
+        + again.links_removed_total
+        != 0
+    {
         return Err(fail(format!(
-            "the rects still hit {} codes, {} nonzero pixels, {} paths",
-            again.codes_removed_total, again.pixels_changed_total, again.paths_removed_total
+            "the rects still hit {} codes, {} nonzero pixels, {} paths, {} links",
+            again.codes_removed_total,
+            again.pixels_changed_total,
+            again.paths_removed_total,
+            again.links_removed_total
         )));
     }
     drop(again);

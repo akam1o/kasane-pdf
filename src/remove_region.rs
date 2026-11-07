@@ -701,6 +701,12 @@ pub(crate) struct RegionsEdit<'a> {
     /// Redaction mode only: the Unicode text removed, one string per
     /// edited show operation.
     pub(crate) removed_text: Vec<String>,
+    /// Redaction mode only: `/Link` annotations removed because their
+    /// `/Rect` met a rect.
+    pub(crate) links_removed_total: u64,
+    /// Of those, links a structure tree refers to (`/StructParent`):
+    /// the tree would keep them reachable.
+    pub(crate) tagged_links_removed_total: u64,
 }
 
 /// What `regions_edit_session` does beyond the content editor.
@@ -797,6 +803,8 @@ pub(crate) fn regions_edit_session<'a>(
     let mut pixels_changed_total: u64 = 0;
     let mut orphaned_names_removed_total: u64 = 0;
     let mut paths_removed_total: u64 = 0;
+    let mut links_removed_total: u64 = 0;
+    let mut tagged_links_removed_total: u64 = 0;
     let mut original_digests: Vec<[u8; 32]> = Vec::new();
     // Redaction: the refs of edited images, and per page the names
     // still drawn after the edit.
@@ -828,13 +836,58 @@ pub(crate) fn regions_edit_session<'a>(
         for (i, r) in raw_rects.iter().enumerate() {
             validated.push(check_rect(i, r.0, r.1, r.2, r.3)?);
         }
-        if page_dict_entry(doc, page, b"Annots")?.is_some() {
-            return Err(Error::Unsupported {
-                feature: "region removal on a page with /Annots",
-                detail: "annotations are out of scope — their content is \
-                         not evaluated"
-                    .into(),
-            });
+        // Redaction keeps /Link annotations outside every rect and
+        // removes those whose /Rect meets one (with their action or
+        // destination); any other annotation is still refused.
+        let mut kept_annots: Option<Vec<Object>> = None;
+        let mut links_removed: u64 = 0;
+        let mut tagged_links_removed: u64 = 0;
+        if let Some(a) = page_dict_entry(doc, page, b"Annots")? {
+            if mode != SessionMode::Redact {
+                return Err(Error::Unsupported {
+                    feature: "region removal on a page with /Annots",
+                    detail: "annotations are out of scope — their content is \
+                             not evaluated"
+                        .into(),
+                });
+            }
+            let a = doc.deref(&a)?;
+            let a = a
+                .as_array()
+                .ok_or_else(|| Error::Structure("/Annots is not an array".into()))?;
+            let mut kept = Vec::new();
+            for (i, item) in a.iter().enumerate() {
+                let annot = doc.deref(item)?;
+                let d = annot
+                    .as_dict()
+                    .ok_or_else(|| Error::Structure(format!("/Annots[{i}] is not a dictionary")))?;
+                if d.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) != Some(b"Link") {
+                    return Err(Error::Unsupported {
+                        feature: "redaction on a page with annotations other than links",
+                        detail: format!("/Annots[{i}] — their content is not evaluated"),
+                    });
+                }
+                let r = d
+                    .get(b"Rect".as_slice())
+                    .map(|r| doc.deref(r))
+                    .transpose()?
+                    .and_then(|r| crate::page::Rect::from_object(&r))
+                    .ok_or_else(|| Error::Structure(format!("/Annots[{i}] has no valid /Rect")))?;
+                let (x0, x1) = (r.llx.min(r.urx), r.llx.max(r.urx));
+                let (y0, y1) = (r.lly.min(r.ury), r.lly.max(r.ury));
+                let hit = validated
+                    .iter()
+                    .any(|v| x0 <= v.urx && x1 >= v.llx && y0 <= v.ury && y1 >= v.lly);
+                if hit {
+                    links_removed += 1;
+                    if d.contains_key(b"StructParent".as_slice()) {
+                        tagged_links_removed += 1;
+                    }
+                } else {
+                    kept.push(item.clone());
+                }
+            }
+            kept_annots = Some(kept);
         }
         if let Some(uu) = page_dict_entry(doc, page, b"UserUnit")? {
             match uu.as_number() {
@@ -1280,6 +1333,15 @@ pub(crate) fn regions_edit_session<'a>(
         // Rule: never write Contents separately from the
         // materialised Resources.
         page_dict.insert(b"Contents".to_vec(), Object::Ref(stream_ref));
+        match kept_annots {
+            Some(k) if k.is_empty() => {
+                page_dict.remove(b"Annots".as_slice());
+            }
+            Some(k) => {
+                page_dict.insert(b"Annots".to_vec(), Object::Array(k));
+            }
+            None => {}
+        }
         if let Some(res) = page.resources() {
             page_dict.insert(b"Resources".to_vec(), res.clone());
         }
@@ -1319,6 +1381,8 @@ pub(crate) fn regions_edit_session<'a>(
 
         codes_removed_total += codes_removed;
         paths_removed_total += paths_removed;
+        links_removed_total += links_removed;
+        tagged_links_removed_total += tagged_links_removed;
         invocations_edited_total += do_renames.len() as u64;
         pixels_changed_total += pixels_changed;
         orphaned_names_removed_total += orphaned_names_removed;
@@ -1392,6 +1456,8 @@ pub(crate) fn regions_edit_session<'a>(
         original_digests,
         names_pruned_total,
         removed_text,
+        links_removed_total,
+        tagged_links_removed_total,
     })
 }
 

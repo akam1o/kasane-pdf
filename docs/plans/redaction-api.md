@@ -1,10 +1,18 @@
-# Plan — a distribution-safe redaction API (memo, not scheduled)
+# Plan — a distribution-safe redaction API
 
 Recorded after an external integration evaluation of
-`experimental-remove-region` (2026-10). Nothing here is implemented;
-the existing `remove_*` editors keep their content-editing contract
-(`docs/security.md` § What the engine is *not*). The decision whether
-this becomes a 0.3.0 public API is open.
+`experimental-remove-region` (2026-10). The `remove_*` editors keep
+their content-editing contract. **Status (2026-11):** `redact` exists
+([`features/redaction.md`](../features/redaction.md)): requirement 1
+(no route to edited originals — unused names pruned, a page still
+drawing one refused, output verified by digest over every object),
+requirement 2 for text, page-level images and paths wholly inside a
+rect, requirement 4 for `/Info`, XMP and the structure tree,
+requirement 5 (`elsewhere`, `residual`) and requirement 6 (verification
+of the written bytes) are met. Links (requirement 3): done — intersecting links removed, the rest
+kept. Open: other annotations on an edited page, per-page copies of an image drawn on
+other pages, filter chains, forms, inline images, paths crossing a
+rect.
 
 ## What the evaluation found
 

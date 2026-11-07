@@ -98,8 +98,53 @@ fn page_text(pdf: &[u8], page: usize) -> String {
         .collect()
 }
 
-fn contains(hay: &[u8], needle: &[u8]) -> bool {
+fn raw_contains(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
+}
+
+/// Whether `needle` occurs in the output once parsed: in any string of
+/// any object (object-stream members included), any stream's stored
+/// bytes, or any page's decoded content. Byte search over the file
+/// alone misses compressed object streams.
+fn contains(pdf: &[u8], needle: &[u8]) -> bool {
+    fn walk(o: &kasane_pdf::Object, needle: &[u8]) -> bool {
+        use kasane_pdf::Object as O;
+        match o {
+            O::String(b) => raw_contains(b, needle),
+            O::Array(a) => a.iter().any(|v| walk(v, needle)),
+            O::Dict(d) => d.values().any(|v| walk(v, needle)),
+            O::Stream { dict, data } => {
+                raw_contains(data, needle) || dict.values().any(|v| walk(v, needle))
+            }
+            _ => false,
+        }
+    }
+    if raw_contains(pdf, needle) {
+        return true;
+    }
+    let doc = Document::from_bytes(pdf).unwrap();
+    let size = doc
+        .trailer()
+        .get(b"Size".as_slice())
+        .and_then(|s| s.as_i64())
+        .unwrap();
+    for n in 1..size as u32 {
+        let r = kasane_pdf::IndirectRef {
+            number: n,
+            generation: 0,
+        };
+        if let Ok(o) = doc.resolve(r) {
+            if walk(&o, needle) {
+                return true;
+            }
+        }
+    }
+    doc.pages().iter().any(|p| {
+        doc.page_contents(p)
+            .unwrap()
+            .iter()
+            .any(|c| raw_contains(c, needle))
+    })
 }
 
 fn unsupported(r: Result<kasane_pdf::Redaction, Error>) -> String {
@@ -350,7 +395,7 @@ fn refusals() {
             b"<< /Type /Annot /Subtype /Text /Rect [180 180 190 190] >>".to_vec(),
         )],
     );
-    assert!(unsupported(run(&annots, vec![RECT])).contains("/Annots"));
+    assert!(unsupported(run(&annots, vec![RECT])).contains("other than links"));
     let invisible = one_page(
         "BT /F1 12 Tf 3 Tr 50 100 Td (SECRETTEXT) Tj ET",
         "",
@@ -380,4 +425,74 @@ fn output_is_one_clean_revision() {
     let doc = Document::from_bytes(&r.output).unwrap();
     assert_eq!(r.residual.history.xref_sections, 1);
     kasane_pdf::render_page(&doc, &doc.pages()[0], &kasane_pdf::RenderOptions::default()).unwrap();
+}
+
+/// A link whose `/Rect` meets a rect is removed with its action; one
+/// outside is kept. A link the structure tree refers to would stay
+/// reachable through it: refused unless the tree is removed.
+#[test]
+fn links() {
+    let pdf = one_page(
+        SECRET,
+        "/Annots [30 0 R 31 0 R]",
+        "",
+        vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Link /Rect [50 95 120 110] \
+                  /A << /S /URI /URI (https://example.com/SECRETLINK) >> >>"
+                    .to_vec(),
+            ),
+            (
+                31,
+                b"<< /Type /Annot /Subtype /Link /Rect [10 10 40 20] \
+                  /A << /S /URI /URI (https://example.com/public) >> >>"
+                    .to_vec(),
+            ),
+        ],
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.links_removed, 1);
+    assert!(!contains(&r.output, b"SECRETLINK"));
+    assert!(
+        contains(&r.output, b"example.com/public"),
+        "the search sees object streams"
+    );
+    let doc = Document::from_bytes(&r.output).unwrap();
+    let page = doc.resolve(doc.pages()[0].object_ref().unwrap()).unwrap();
+    let annots = page.as_dict().unwrap().get(b"Annots".as_slice()).cloned();
+    let annots = doc
+        .deref(&annots.expect("the outside link is kept"))
+        .unwrap();
+    assert_eq!(annots.as_array().unwrap().len(), 1);
+
+    let tagged = one_page(
+        SECRET,
+        "/Annots [30 0 R] /StructParents 0",
+        "/StructTreeRoot 32 0 R",
+        vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Link /Rect [50 95 120 110] /StructParent 1 \
+                  /A << /S /URI /URI (https://example.com/SECRETLINK) >> >>"
+                    .to_vec(),
+            ),
+            (32, b"<< /Type /StructTreeRoot /K 33 0 R >>".to_vec()),
+            (
+                33,
+                b"<< /Type /StructElem /S /Link /P 32 0 R /K << /Type /OBJR /Obj 30 0 R >> >>"
+                    .to_vec(),
+            ),
+        ],
+    );
+    let e = unsupported(run(&tagged, vec![RECT]));
+    assert!(e.contains("structure tree refers to"), "{e}");
+    let doc = Document::from_bytes(&tagged).unwrap();
+    let r = redact(
+        &doc,
+        &[(0, vec![RECT])],
+        &RedactOptions::new().remove_structure_tree(true),
+    )
+    .unwrap();
+    assert!(!contains(&r.output, b"SECRETLINK"));
 }

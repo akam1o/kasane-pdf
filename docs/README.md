@@ -47,6 +47,7 @@ PDFium / MuPDF / Poppler. The documentation is split into
 | [`features/rewriting.md`](features/rewriting.md) | the full rewrite: what is carried, what is refused, save guarantees, external validation |
 | [`features/editing-annotations.md`](features/editing-annotations.md) | `/Square` annotation editing |
 | [`features/inspect.md`](features/inspect.md) | the `inspect` structural dump |
+| [`features/redaction.md`](features/redaction.md) | `redact` / CLI `redact`: positional redaction with refusals and verification of the written bytes |
 | [`features/diagnosis.md`](features/diagnosis.md) | `diagnose_redaction` / `preflight-redaction` (read-only) |
 | [`features/audit.md`](features/audit.md) | residual-information audit (`audit-residuals`) |
 | [`features/metadata.md`](features/metadata.md) | document-metadata entry removal |

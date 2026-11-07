@@ -219,13 +219,17 @@ arguments. See [`encryption.md`](encryption.md) and
 
 ## What the engine is **not**
 
-- **Not a redaction tool.** The `experimental-remove-*` commands and
-  `remove_*` APIs are *content editors*: they rewrite selected
-  operations/pixels into a new object but do **not** prove the
+- **The editors are not redaction tools.** The `experimental-remove-*`
+  commands and `remove_*` APIs are *content editors*: they rewrite
+  selected operations/pixels into a new object but do **not** prove the
   removed data is gone. The original stream may survive via sharing;
   `pixels_changed`/`codes_removed` report what was edited, not a
-  removal guarantee. See [`features/editing-*.md`](features/) and
-  [`redaction-design.md`](redaction-design.md).
+  removal guarantee. See [`features/editing-*.md`](features/).
+  `redact` (CLI `redact`) is the redaction entry point: it removes
+  what is drawn inside the rects, leaves no route to an edited image's
+  original, refuses what it cannot process exactly, and verifies the
+  written bytes — positionally: the same information elsewhere is
+  reported, not removed. See [`features/redaction.md`](features/redaction.md).
 - **Not a sanitizer.** `rewrite`/`rewrite_with_limits` carry every
   *reachable* object verbatim — including keys and payloads the
   engine does not interpret. "Preserved" ≠ "validated" ≠ "safe".

@@ -7,6 +7,17 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `redact` / CLI `redact`: positional redaction. Removes text codes,
+  image samples and painted paths inside page rects; removes `/Info`
+  and XMP; leaves no route to an edited image's original (names on
+  pages that do not draw it are removed; a page still drawing it is
+  refused); refuses a structure tree with alternate text unless asked
+  to remove it; verifies the written bytes (one revision, nothing left
+  in the rects, no stream equal to an original) before returning them;
+  reports where removed text still appears (`elsewhere`) and the
+  output's residual audit. `/Link` annotations meeting a rect are
+  removed, others kept. Everything else the region editor refuses
+  stays refused. See `docs/features/redaction.md`.
 - `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
   RFC 7932 data including large windows, Flate predictors, refused on
   inline images. Output and decoder memory are bounded by
