@@ -67,6 +67,9 @@ pub(crate) struct SimpleFont {
     symbolic: bool,
     /// Glyph advances in PDF 1/1000-em units, indexed by char code.
     widths: [f64; 256],
+    /// The font dictionary has `/Widths` (else the advances are 0 and
+    /// a reader takes its own font's).
+    has_widths: bool,
     /// `/ToUnicode` CMap — `None` if the font lacks one.
     tounicode: Option<crate::tounicode::ToUnicode>,
     /// `Face` built over `program`. `Face<'a>` borrows, so we keep
@@ -489,6 +492,7 @@ pub(crate) fn load_simple_font_dict(
         encoding,
         symbolic,
         widths,
+        has_widths: widths_obj.is_some(),
         tounicode,
         face: RefCell::new(None),
         reverse_cmap: RefCell::new(None),
@@ -2481,6 +2485,27 @@ impl Font {
             Font::Type1(f) => f.substitution(),
             Font::Composite(f) => f.fallback.as_ref().map(|(_, s)| s.clone()),
             Font::Type3(_) => None,
+        }
+    }
+
+    /// Whether every code's advance is defined by the document, so
+    /// any conforming reader places each glyph where this crate does:
+    /// `/Widths` (with `/MissingWidth`), a CID font's `/W` and `/DW`
+    /// (default 1000), or for a non-embedded Standard 14 font (or a
+    /// metric-compatible alias, or Symbol / ZapfDingbats) without
+    /// `/Widths`, the Standard 14 metrics readers are required to use.
+    pub(crate) fn widths_defined(&self) -> bool {
+        use crate::fontsubst::SubstKind as K;
+        match self {
+            Font::Simple(f) => f.has_widths,
+            Font::Type1(f) => {
+                f.has_widths
+                    || f.subst.as_ref().is_some_and(|s| {
+                        matches!(s.kind, K::Standard14 | K::Alias | K::SymbolFallback)
+                    })
+            }
+            Font::Composite(_) => true,
+            Font::Type3(_) => false,
         }
     }
 

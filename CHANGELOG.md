@@ -58,6 +58,14 @@ versions follow [Semantic Versioning](https://semver.org/).
   original subpath (odd arrays written out in full), so the dashes
   outside the rect are unchanged; a translucent or blended dashed
   stroke cut into pieces is refused.
+- `RedactOptions::unembedded_text_by_cell` (CLI
+  `--unembedded-text-by-cell`): text in a non-embedded font is taken by
+  each code's cell (advance box ± 0.15 em, −0.3 to 1 em) instead of
+  refused — codes whose cell meets a rect are removed and the page's
+  content is clipped so nothing left paints inside the rects, whatever
+  font a reader substitutes. Positions must be defined by the document
+  (`/Widths`, `/W`, Standard 14 metrics); fill text only. A clip of that
+  shape found in the input is ignored by the hit test, never trusted.
 - `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
   RFC 7932 data including large windows, Flate predictors, refused on
   inline images. Output and decoder memory are bounded by

@@ -729,7 +729,7 @@ fn numbers_survive_the_rewrite() {
 #[test]
 fn non_rectangular_clip_is_refused() {
     let pdf = one_page(
-        "q 0 0 200 200 re 50 100 15 40 re W* n BT /F1 40 Tf 50 100 Td (M) Tj ET Q",
+        "q 0 0 m 200 0 l 50 150 l h W n BT /F1 40 Tf 50 100 Td (M) Tj ET Q",
         "",
         "",
         vec![],
@@ -1915,4 +1915,83 @@ fn an_unknown_appearance_key_is_not_a_display() {
         Ok(r) => assert!(!contains(&r.output, &secret_samples())),
         Err(e) => assert!(e.to_string().contains("original data"), "{e}"),
     }
+}
+
+// Non-embedded fonts: refused by default; with unembedded_text_by_cell,
+// codes taken by their cell and the page clipped away from the rects.
+
+const HELV: &str = "/Font << /H 50 0 R >>";
+
+fn helv() -> (u32, Vec<u8>) {
+    (
+        50,
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+    )
+}
+
+fn by_cell(pdf: &[u8], rects: Vec<(f64, f64, f64, f64)>) -> Result<kasane_pdf::Redaction, Error> {
+    let doc = Document::from_bytes(pdf).unwrap();
+    redact(
+        &doc,
+        &[(0, rects)],
+        &RedactOptions::new().unembedded_text_by_cell(true),
+    )
+}
+
+#[test]
+fn non_embedded_text_is_taken_by_cell_on_request() {
+    let pdf = doc_with(
+        HELV,
+        &[b"BT /H 12 Tf 20 100 Td (PUBLIC SECRETWORD MORE) Tj ET BT /H 12 Tf 20 40 Td (KEEPLINE) Tj ET"],
+        vec![helv()],
+    );
+    // SECRETWORD starts after "PUBLIC " (Helvetica widths): x ≈ 64.
+    let rect = (66.0, 95.0, 120.0, 112.0);
+    let e = unsupported(run(&pdf, vec![rect]));
+    assert!(e.contains("uncertain"), "{e}");
+    let r = by_cell(&pdf, vec![rect]).unwrap();
+    let text = page_text(&r.output, 0);
+    assert!(!text.contains("SECRET") && !text.contains("WORD"), "{text}");
+    assert!(
+        text.contains("PUBLIC") && text.contains("KEEPLINE"),
+        "{text}"
+    );
+    assert!(!contains(&r.output, b"SECRETWORD"));
+    // Nothing painted inside the rect.
+    let img = reds(&r.output);
+    for y in 96..112u32 {
+        for x in 67..120u32 {
+            assert_eq!(img[((200 - y) * 200 + x) as usize], 255, "({x}, {y})");
+        }
+    }
+}
+
+/// Without positions defined by the document (a non-standard font with
+/// no /Widths), the text is still refused.
+#[test]
+fn non_embedded_text_without_widths_is_refused() {
+    let pdf = doc_with(
+        HELV,
+        &[b"BT /H 12 Tf 20 100 Td (SECRETWORD) Tj ET"],
+        vec![(
+            50,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /SomeUnknownFont >>".to_vec(),
+        )],
+    );
+    assert!(by_cell(&pdf, vec![(10.0, 90.0, 190.0, 115.0)]).is_err());
+}
+
+/// A clip of the exclusion shape already in the input is ignored, not
+/// trusted to hide anything: content under it in the rect is removed.
+#[test]
+fn an_exclusion_clip_in_the_input_hides_nothing() {
+    let pdf = one_page(
+        &format!("q -1 -1 202 202 re 45 90 115 25 re W* n {SECRET} Q"),
+        "",
+        "",
+        vec![],
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.codes_removed, 10);
+    assert!(!contains(&r.output, b"SECRETTEXT"));
 }

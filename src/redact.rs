@@ -43,7 +43,7 @@ use crate::error::Error;
 use crate::limits::Limits;
 use crate::object::{Dict, IndirectRef, Object};
 use crate::redact_diag::Site;
-use crate::remove_region::{regions_edit_session, sha256, PageSpec, SessionMode};
+use crate::remove_region::{regions_edit_session_with, sha256, PageSpec, SessionMode};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Options for [`redact`].
@@ -52,6 +52,7 @@ pub struct RedactOptions {
     limits: Limits,
     remove_structure_tree: bool,
     refuse_copies_elsewhere: bool,
+    unembedded_text_by_cell: bool,
 }
 
 impl RedactOptions {
@@ -83,6 +84,28 @@ impl RedactOptions {
     /// not searched.
     pub fn refuse_copies_elsewhere(mut self, refuse: bool) -> Self {
         self.refuse_copies_elsewhere = refuse;
+        self
+    }
+
+    /// Accept text in fonts whose outlines are not in the file (a
+    /// reader draws them with a font of its own choosing, so their ink
+    /// extent is unknown) instead of refusing it. Each such code is
+    /// taken by its *cell* — its advance box widened by 0.15 em each
+    /// side, from 0.3 em below the baseline to 1 em above — and
+    /// removed when the cell meets a rect; the page's content is then
+    /// clipped so that nothing left on it paints inside the rects,
+    /// whatever font draws it. The positions must be defined by the
+    /// document (`/Widths`, a CID font's `/W`, or the Standard 14
+    /// metrics), else the text is still refused; only fill text (`Tr`
+    /// 0) is taken this way.
+    ///
+    /// What changes with it: statement 1 of a success holds for such
+    /// codes by their cells (none left meets a rect), and the clip —
+    /// not their removal — keeps their ink out of the rects. A code
+    /// whose cell is clear of every rect stays, even if some font
+    /// would draw part of it inside one (that part is clipped).
+    pub fn unembedded_text_by_cell(mut self, accept: bool) -> Self {
+        self.unembedded_text_by_cell = accept;
         self
     }
 }
@@ -233,7 +256,10 @@ pub fn redact(
         }
     }
 
-    let mut s = regions_edit_session(doc, specs, limits, SessionMode::Redact)?;
+    let session = crate::remove_region::SessionOptions {
+        unembedded_by_cell: options.unembedded_text_by_cell,
+    };
+    let mut s = regions_edit_session_with(doc, specs, limits, SessionMode::Redact, session)?;
     let structure_tree_removed = tree && options.remove_structure_tree;
     if tree && !structure_tree_removed && s.tagged_links_removed_total > 0 {
         return Err(Error::Unsupported {
@@ -272,7 +298,7 @@ pub fn redact(
 
     // An original may stay only as an object the output still draws
     // (from a page, through forms); each such display is reported.
-    let (out, residual, shown) = verify(&output, specs, limits, &s.original_digests)?;
+    let (out, residual, shown) = verify(&output, specs, limits, &s.original_digests, session)?;
     let (mut elsewhere, elsewhere_unsearched_pages) =
         find_elsewhere(&out, &s.removed_text, limits)?;
     elsewhere.extend(shown.into_iter().map(|(p, form)| Elsewhere {
@@ -322,6 +348,7 @@ fn verify(
     specs: &[PageSpec],
     limits: &Limits,
     originals: &[[u8; 32]],
+    session: crate::remove_region::SessionOptions,
 ) -> Result<(Document, ResidualAudit, Shown), Error> {
     let fail = |detail: String| Error::Unsupported {
         feature: "redaction output failed verification",
@@ -332,7 +359,7 @@ fn verify(
         return Err(fail("the output has more than one revision".into()));
     }
     // The same rects find nothing left to remove.
-    let again = regions_edit_session(&out, specs, limits, SessionMode::Redact)?;
+    let again = regions_edit_session_with(&out, specs, limits, SessionMode::Redact, session)?;
     if again.codes_removed_total
         + again.pixels_changed_total
         + again.paths_removed_total

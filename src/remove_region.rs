@@ -741,6 +741,25 @@ pub(crate) fn regions_edit_session<'a>(
     limits: &Limits,
     mode: SessionMode,
 ) -> Result<RegionsEdit<'a>, Error> {
+    regions_edit_session_with(doc, specs, limits, mode, SessionOptions::default())
+}
+
+/// Redaction choices that change what the session accepts.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct SessionOptions {
+    /// Take a non-embedded font's glyphs by their cell and clip each
+    /// such page's content away from its rects (`redact`'s
+    /// `RedactOptions::unembedded_text_by_cell`).
+    pub(crate) unembedded_by_cell: bool,
+}
+
+pub(crate) fn regions_edit_session_with<'a>(
+    doc: &'a Document,
+    specs: &[PageSpec],
+    limits: &Limits,
+    mode: SessionMode,
+    opts: SessionOptions,
+) -> Result<RegionsEdit<'a>, Error> {
     // ---- input validation (all before any edit work) --------------
     if specs.is_empty() {
         return Err(Error::Structure(
@@ -968,6 +987,7 @@ pub(crate) fn regions_edit_session<'a>(
         };
         let mut walker = DiagWalker::new(doc, page, &page_limits, &validated);
         walker.redaction_mode = mode == SessionMode::Redact;
+        walker.unembedded_by_cell = opts.unembedded_by_cell;
         walker.run(&ops)?;
         // Carry this page's spend forward — the next page gets the
         // remaining budget, not a fresh one.
@@ -1578,6 +1598,20 @@ pub(crate) fn regions_edit_session<'a>(
                     &mut removed_sites,
                 )?),
             }
+        }
+
+        // Text of a non-embedded font was taken by its cell: whatever a
+        // reader draws for what is kept, nothing of the page's content
+        // may paint inside the rects.
+        if mode == SessionMode::Redact && walker.unembedded_seen {
+            let mut wrapped = vec![Operation::SaveState];
+            wrapped.extend(crate::redact_geom::exclusion_clip(
+                page.media_box(),
+                &validated,
+            ));
+            wrapped.append(&mut new_ops);
+            wrapped.push(Operation::RestoreState);
+            new_ops = wrapped;
         }
 
         if mode == SessionMode::Redact {

@@ -131,6 +131,12 @@ CASES = [
         9: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /XObject << /Im1 8 0 R >> >> /Contents 10 0 R >>",
         10: stream(b"", b"q 50 0 0 50 0 0 cm /Im1 Do Q"),
     }), [], "ok"),
+    # A non-embedded Standard 14 font: refused by default; taken by
+    # cell, with the page clipped away from the rect, on request.
+    ("non-embedded-font", build(page(TEXT, res=b"/Font << /F1 8 0 R >>", more={
+        8: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"})), [], "refused"),
+    ("non-embedded-font-by-cell", build(page(TEXT, res=b"/Font << /F1 8 0 R >>", more={
+        8: b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"})), ["--unembedded-text-by-cell"], "ok"),
 ]
 # The same file with the document-wide option: the original still drawn
 # on page 2 is a copy elsewhere, so refused.

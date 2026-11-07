@@ -1928,7 +1928,7 @@ fn run_remove_regions(args: &[String]) -> Result<(), Error> {
 fn redact_usage() -> &'static str {
     "usage: kasane-pdf redact <file.pdf> --page <n> --rect <llx> <lly> <urx> <ury> \
      [--rect …] [--page <m> --rect …] [--remove-structure-tree] \
-     [--refuse-copies-elsewhere] --output <out.pdf>\n\
+     [--refuse-copies-elsewhere] [--unembedded-text-by-cell] --output <out.pdf>\n\
      Removes the text, image samples and paths drawn inside the rects (page \
      default user space; --page is 1-based, each --rect belongs to the nearest \
      preceding --page), removes /Info and XMP metadata, leaves no route to an \
@@ -1938,7 +1938,9 @@ fn redact_usage() -> &'static str {
      of refusing. The redaction is positional: copies of the information \
      elsewhere (other pages, annotations, an image's original drawn on \
      another page) are listed, not removed; --refuse-copies-elsewhere \
-     refuses instead when any is found."
+     refuses instead when any is found. --unembedded-text-by-cell accepts \
+     text in non-embedded fonts: codes whose cell meets a rect are removed \
+     and the page is clipped so nothing left paints inside the rects."
 }
 
 /// `redact` subcommand.
@@ -1949,6 +1951,7 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
     let mut output: Option<&str> = None;
     let mut remove_tree = false;
     let mut refuse_copies = false;
+    let mut by_cell = false;
     let mut i = 1;
     let num = |s: &String| -> Result<f64, Error> {
         s.parse::<f64>()
@@ -1993,6 +1996,10 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
                 refuse_copies = true;
                 i += 1;
             }
+            "--unembedded-text-by-cell" => {
+                by_cell = true;
+                i += 1;
+            }
             other => {
                 return Err(Error::Structure(format!(
                     "unknown option '{other}'\n{}",
@@ -2020,7 +2027,8 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
         &specs,
         &kasane_pdf::RedactOptions::new()
             .remove_structure_tree(remove_tree)
-            .refuse_copies_elsewhere(refuse_copies),
+            .refuse_copies_elsewhere(refuse_copies)
+            .unembedded_text_by_cell(by_cell),
     )?;
     write_atomic(
         &r.output,
