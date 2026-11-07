@@ -711,6 +711,9 @@ pub(crate) struct RegionsEdit<'a> {
     /// whole (`remove_annotations`), with the popups and replies tied
     /// to them.
     pub(crate) annots_removed_total: u64,
+    /// Redaction mode only: `annotation_print` of each removed link and
+    /// annotation.
+    pub(crate) removed_annot_prints: Vec<[u8; 32]>,
     /// Redaction mode only: paths crossing a rect's edge, cut there.
     pub(crate) paths_cut_total: u64,
     /// Redaction mode only: form invocations drawn from an edited copy.
@@ -758,62 +761,6 @@ pub(crate) struct SessionOptions {
     /// Remove markup annotations meeting a rect whole
     /// (`RedactOptions::remove_annotations`).
     pub(crate) remove_annotations: bool,
-    /// The structure tree is removed with the output: its /OBJR and
-    /// elements do not keep a removed annotation.
-    pub(crate) structure_tree_removed: bool,
-}
-
-/// The first live object, other than `targets` themselves and
-/// `holders`, that refers to one of `targets`, and whether it is part
-/// of the structure tree. With `tree_removed`, structure elements and
-/// object references (which go with the tree) do not count.
-fn referrer_of(
-    doc: &Document,
-    targets: &HashSet<IndirectRef>,
-    holders: &HashSet<IndirectRef>,
-    tree_removed: bool,
-    limits: &Limits,
-) -> Result<Option<(IndirectRef, bool)>, Error> {
-    fn refers(o: &Object, t: &HashSet<IndirectRef>, budget: &mut u64) -> bool {
-        *budget = budget.saturating_sub(1);
-        match o {
-            Object::Ref(r) => t.contains(r),
-            Object::Array(a) => a.iter().any(|x| refers(x, t, budget)),
-            Object::Dict(d) => d.values().any(|x| refers(x, t, budget)),
-            Object::Stream { dict, .. } => dict.values().any(|x| refers(x, t, budget)),
-            _ => false,
-        }
-    }
-    let refs: Vec<IndirectRef> = doc
-        .xref_entries()
-        .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
-        .map(|(r, _)| r)
-        .collect();
-    let mut budget = limits.max_diag_items.saturating_mul(16);
-    for r in refs {
-        if targets.contains(&r) || holders.contains(&r) {
-            continue;
-        }
-        let Ok(o) = doc.resolve(r) else { continue };
-        let ty = match &o {
-            Object::Dict(d) => d.get(b"Type".as_slice()).and_then(|t| t.as_name()),
-            _ => None,
-        };
-        let structure = matches!(ty, Some(b"OBJR" | b"StructElem" | b"StructTreeRoot"));
-        if structure && tree_removed {
-            continue;
-        }
-        if refers(&o, targets, &mut budget) {
-            return Ok(Some((r, structure)));
-        }
-        if budget == 0 {
-            return Err(Error::LimitExceeded {
-                limit: "max_diag_items",
-                max: limits.max_diag_items,
-            });
-        }
-    }
-    Ok(None)
 }
 
 /// The annotation subtypes `remove_annotations` removes whole: markup
@@ -837,6 +784,42 @@ const REMOVABLE_ANNOTS: &[&[u8]] = &[
     b"Ink",
     b"Popup",
 ];
+
+/// A digest of an annotation dictionary's own content — every key and
+/// direct value, with indirect references written as a placeholder (a
+/// rewrite renumbers them). The same annotation in the output has the
+/// same print.
+pub(crate) fn annotation_print(d: &Dict) -> [u8; 32] {
+    fn put(o: &Object, out: &mut Vec<u8>) {
+        match o {
+            Object::Dict(d) => {
+                let mut keys: Vec<&Vec<u8>> = d.keys().collect();
+                keys.sort();
+                out.extend_from_slice(b"<<");
+                for k in keys {
+                    out.extend_from_slice(k);
+                    out.push(0);
+                    put(&d[k.as_slice()], out);
+                }
+                out.extend_from_slice(b">>");
+            }
+            Object::Array(a) => {
+                out.push(b'[');
+                for x in a {
+                    put(x, out);
+                }
+                out.push(b']');
+            }
+            Object::Ref(_) => out.extend_from_slice(b"@R"),
+            Object::Stream { .. } => out.extend_from_slice(b"@S"),
+            other => out.extend_from_slice(format!("{other:?}").as_bytes()),
+        }
+        out.push(0);
+    }
+    let mut out = Vec::new();
+    put(&Object::Dict(d.clone()), &mut out);
+    sha256(&out)
+}
 
 /// Whether the annotation has a normal appearance stream (`/AP /N`).
 fn has_normal_appearance(doc: &Document, d: &Dict) -> Result<bool, Error> {
@@ -1068,10 +1051,9 @@ pub(crate) fn regions_edit_session_with<'a>(
     let mut paths_cut_total: u64 = 0;
     let mut tagged_links_removed_total: u64 = 0;
     let mut annots_removed_total: u64 = 0;
-    // Removed links and annotations, and the objects holding the
-    // /Annots arrays they were removed from.
-    let mut removed_annot_refs: HashSet<IndirectRef> = HashSet::new();
-    let mut annot_holders: HashSet<IndirectRef> = HashSet::new();
+    // Removed links and annotations, by content (`annotation_print`):
+    // verification fails if the output still holds one.
+    let mut removed_annot_prints: Vec<[u8; 32]> = Vec::new();
     let mut original_digests: Vec<[u8; 32]> = Vec::new();
     // Redaction: the refs of edited images, and per page the names
     // still drawn after the edit.
@@ -1287,9 +1269,7 @@ pub(crate) fn regions_edit_session_with<'a>(
                     kept.push(item.clone());
                     continue;
                 }
-                if let Object::Ref(r) = item {
-                    removed_annot_refs.insert(*r);
-                }
+                removed_annot_prints.push(annotation_print(d));
                 if subtype(d) == b"Link" {
                     links_removed += 1;
                 } else {
@@ -1323,14 +1303,6 @@ pub(crate) fn regions_edit_session_with<'a>(
                 }
             }
             kept_annots = Some(kept);
-            annot_holders.insert(page_ref);
-            if let Some(Object::Ref(ar)) = doc
-                .resolve(page_ref)?
-                .as_dict()
-                .and_then(|p| p.get(b"Annots".as_slice()).cloned())
-            {
-                annot_holders.insert(ar);
-            }
         }
         if let Some(uu) = page_dict_entry(doc, page, b"UserUnit")? {
             match uu.as_number() {
@@ -2174,35 +2146,6 @@ pub(crate) fn regions_edit_session_with<'a>(
             Object::Dict(page_dict),
         );
     }
-    // A removed annotation must not stay reachable: anything else that
-    // refers to it (an action, another page's annotation, a kept
-    // popup, the form, an outline …) would carry it into the output.
-    if !removed_annot_refs.is_empty() {
-        if let Some((holder, structure)) = referrer_of(
-            doc,
-            &removed_annot_refs,
-            &annot_holders,
-            opts.structure_tree_removed,
-            limits,
-        )? {
-            return Err(Error::Unsupported {
-                feature: if structure {
-                    "redaction of an annotation the structure tree refers to"
-                } else {
-                    "redaction of an annotation something else refers to"
-                },
-                detail: format!(
-                    "object {holder} refers to a removed link or annotation, which would stay \
-                     in the output{}",
-                    if structure {
-                        "; RedactOptions::remove_structure_tree removes the tree"
-                    } else {
-                        ""
-                    }
-                ),
-            });
-        }
-    }
     let names_pruned_total = if mode == SessionMode::Redact && !edited_originals.is_empty() {
         let refs: HashSet<IndirectRef> = edited_originals.keys().copied().collect();
         prune_original_names(doc, &mut edit, &refs, &drawn_after)?
@@ -2225,6 +2168,7 @@ pub(crate) fn regions_edit_session_with<'a>(
         links_removed_total,
         tagged_links_removed_total,
         annots_removed_total,
+        removed_annot_prints,
         paths_cut_total,
         forms_edited_total,
     })

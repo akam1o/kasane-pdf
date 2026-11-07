@@ -286,7 +286,6 @@ pub fn redact(
     let session = crate::remove_region::SessionOptions {
         unembedded_by_cell: options.unembedded_text_by_cell,
         remove_annotations: options.remove_annotations,
-        structure_tree_removed: options.remove_structure_tree,
     };
     let mut s = regions_edit_session_with(doc, specs, limits, SessionMode::Redact, session)?;
     let structure_tree_removed = tree && options.remove_structure_tree;
@@ -327,7 +326,14 @@ pub fn redact(
 
     // An original may stay only as an object the output still draws
     // (from a page, through forms); each such display is reported.
-    let (out, residual, shown) = verify(&output, specs, limits, &s.original_digests, session)?;
+    let (out, residual, shown) = verify(
+        &output,
+        specs,
+        limits,
+        &s.original_digests,
+        &s.removed_annot_prints,
+        session,
+    )?;
     let (mut elsewhere, elsewhere_unsearched_pages) =
         find_elsewhere(&out, &s.removed_text, limits)?;
     elsewhere.extend(shown.into_iter().map(|(p, form)| Elsewhere {
@@ -378,6 +384,7 @@ fn verify(
     specs: &[PageSpec],
     limits: &Limits,
     originals: &[[u8; 32]],
+    removed_annots: &[[u8; 32]],
     session: crate::remove_region::SessionOptions,
 ) -> Result<(Document, ResidualAudit, Shown), Error> {
     let fail = |detail: String| Error::Unsupported {
@@ -410,6 +417,35 @@ fn verify(
         )));
     }
     drop(again);
+    // No removed link or annotation is still in the output, whatever
+    // refers to it (an action, another annotation, the structure tree,
+    // an outline …): every dictionary written is compared.
+    if !removed_annots.is_empty() {
+        let prints: HashSet<[u8; 32]> = removed_annots.iter().copied().collect();
+        fn find(o: &Object, prints: &HashSet<[u8; 32]>, depth: usize) -> bool {
+            match o {
+                Object::Dict(d) => {
+                    prints.contains(&crate::remove_region::annotation_print(d))
+                        || depth < 64 && d.values().any(|v| find(v, prints, depth + 1))
+                }
+                Object::Array(a) => depth < 64 && a.iter().any(|v| find(v, prints, depth + 1)),
+                Object::Stream { dict, .. } => dict.values().any(|v| find(v, prints, depth + 1)),
+                _ => false,
+            }
+        }
+        let refs: Vec<_> = out
+            .xref_entries()
+            .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
+            .map(|(r, _)| r)
+            .collect();
+        for r in refs {
+            if find(&out.resolve(r)?, &prints, 0) {
+                return Err(fail(format!(
+                    "object {r} still holds a removed link or annotation (something refers to it)"
+                )));
+            }
+        }
+    }
     // No stream equals an original, stored or decoded — except an
     // object the output still draws: a display elsewhere, reported.
     let originals: HashSet<[u8; 32]> = originals.iter().copied().collect();

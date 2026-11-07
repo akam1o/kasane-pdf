@@ -2230,3 +2230,77 @@ fn a_removed_rich_text_stream_is_searched() {
         .iter()
         .any(|e| e.removed == kasane_pdf::Removed::Text("RICHSECRETNOTE".into())));
 }
+
+/// Whatever keeps a removed annotation reachable — the page's own /AA,
+/// a kept direct annotation, an /Annots array referred to elsewhere,
+/// a structure element an outline keeps — fails verification; an
+/// unreachable object referring to it does not matter.
+#[test]
+fn a_removed_annotation_kept_reachable_is_refused() {
+    let square = || {
+        (
+            30,
+            b"<< /Type /Annot /Subtype /Square /Rect [60 95 70 105] /Contents (PIN) >>".to_vec(),
+        )
+    };
+    let cases = [
+        one_page(SECRET, "/Annots [30 0 R] /AA << /O << /S /Hide /T 30 0 R >> >>", "", vec![square()]),
+        one_page(
+            SECRET,
+            "/Annots [30 0 R << /Type /Annot /Subtype /Square /Rect [150 150 160 160] /Popup 30 0 R >>]",
+            "",
+            vec![square()],
+        ),
+        one_page(
+            SECRET,
+            "/Annots 35 0 R",
+            "/OpenAction << /S /Hide /T 35 0 R >>",
+            vec![square(), (35, b"[30 0 R]".to_vec())],
+        ),
+    ];
+    for pdf in &cases {
+        let e = unsupported(annots_run(pdf));
+        assert!(e.contains("refers to"), "{e}");
+    }
+    let outline_se = one_page(
+        SECRET,
+        "/Annots [30 0 R]",
+        "/StructTreeRoot 40 0 R /Outlines 42 0 R",
+        vec![
+            square(),
+            (40, b"<< /Type /StructTreeRoot /K 41 0 R >>".to_vec()),
+            (
+                41,
+                b"<< /Type /StructElem /S /Annot /P 40 0 R /K << /Type /OBJR /Obj 30 0 R >> >>"
+                    .to_vec(),
+            ),
+            (
+                42,
+                b"<< /Type /Outlines /First 43 0 R /Last 43 0 R /Count 1 >>".to_vec(),
+            ),
+            (43, b"<< /Title (x) /Parent 42 0 R /SE 41 0 R >>".to_vec()),
+        ],
+    );
+    let doc = Document::from_bytes(&outline_se).unwrap();
+    let r = redact(
+        &doc,
+        &[(0, vec![RECT])],
+        &RedactOptions::new()
+            .remove_annotations(true)
+            .remove_structure_tree(true),
+    );
+    match r {
+        Ok(r) => assert!(!contains(&r.output, b"(PIN)")),
+        Err(e) => assert!(e.to_string().contains("refers to"), "{e}"),
+    }
+    // Unreachable: object 36 refers to the annotation but nothing
+    // refers to object 36.
+    let unreachable = one_page(
+        SECRET,
+        "/Annots [30 0 R]",
+        "",
+        vec![square(), (36, b"<< /S /Hide /T 30 0 R >>".to_vec())],
+    );
+    let r = annots_run(&unreachable).unwrap();
+    assert!(!contains(&r.output, b"(PIN)"));
+}
