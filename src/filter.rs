@@ -588,10 +588,15 @@ fn brotli_decode(buf: &[u8], parms: Option<&Dict>, limits: &Limits) -> Result<Ve
     }
     // A ring buffer is a power of two plus a little slack; an honest
     // stream's never exceeds the next power of two above its output.
+    // The other byte cells are context maps, at most 256 block types ×
+    // 64 = 16 KiB whatever the output; 64 KiB covers them and the slack.
+    // (Huffman tables, in u32 / HuffmanCode cells, are bounded by the
+    // format — under 1 MiB per stream — and left to the default
+    // allocator.)
     let max = (limits.max_stream_bytes as usize)
         .checked_next_power_of_two()
         .unwrap_or(usize::MAX)
-        .saturating_add(4096);
+        .saturating_add(64 * 1024);
     let mut s = BrotliState::new(
         Bounded {
             max,

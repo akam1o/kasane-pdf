@@ -492,3 +492,16 @@ fn brotli_output_is_capped() {
     let err = decode_with("/Filter /BrotliDecode", BROTLI_ZEROS, limits).unwrap_err();
     assert!(matches!(err, Error::LimitExceeded { .. }), "{err:?}");
 }
+
+/// A valid 77-byte stream decoding to `A` that declares 256 literal
+/// block types, so the decoder allocates a 16 KiB context map: decoded
+/// under a 1 KiB output cap (the context map is not output).
+#[test]
+fn brotli_context_maps_do_not_count_as_output() {
+    let mut data = vec![2, 0, 224, 255, 1, 32];
+    data.extend_from_slice(&[0; 66]);
+    data.extend_from_slice(&[68, 80, 32, 16, 0]);
+    assert_eq!(data.len(), 77);
+    let limits = Limits::default().with_max_stream_bytes(1024);
+    assert_eq!(decode_with("/Filter /BrotliDecode", &data, limits).unwrap(), b"A");
+}
