@@ -2852,3 +2852,67 @@ fn clipped_invisible_text_in_the_rect_is_removed() {
     let r = run(&pdf, vec![RECT]).unwrap();
     assert_eq!(r.codes_removed, 10);
 }
+
+/// /UserUnit sets the physical size of a unit; redaction rects are in
+/// the page's user space, so it changes nothing.
+#[test]
+fn user_unit_pages_are_redacted_in_user_space() {
+    let pdf = one_page(SECRET_AND_PUBLIC, "/UserUnit 3", "", vec![]);
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.codes_removed, 10);
+    let text = page_text(&r.output, 0);
+    assert!(
+        text.contains("PUBLICWORD") && !text.contains("SECRET"),
+        "{text}"
+    );
+}
+
+const SECRET_AND_PUBLIC: &str =
+    "BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET BT /F1 12 Tf 10 20 Td (PUBLICWORD) Tj ET";
+
+/// CMYK, Indexed and ICCBased images are edited by zeroing their
+/// samples (a zeroed index selects the palette's first colour; zeroed
+/// samples carry nothing whatever colour they show).
+#[test]
+fn cmyk_indexed_and_icc_images_are_edited() {
+    type Case = (&'static str, usize, Vec<(u32, Vec<u8>)>);
+    let cases: [Case; 3] = [
+        ("/DeviceCMYK", 4, vec![]),
+        (
+            "[/Indexed /DeviceRGB 255 41 0 R]",
+            1,
+            vec![(41, stream_obj("", &[7u8; 768]))],
+        ),
+        (
+            "[/ICCBased 42 0 R]",
+            3,
+            vec![(42, stream_obj("/N 3 /Alternate /DeviceRGB", b"profile"))],
+        ),
+    ];
+    for (cs, n, extra) in cases {
+        let samples: Vec<u8> = (0..16 * 16 * n)
+            .map(|i| ((i * 37 + 11) % 251 + 1) as u8)
+            .collect();
+        let img = stream_obj(
+            &format!("/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace {cs} /BitsPerComponent 8"),
+            &samples,
+        );
+        let mut objs = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", b"q 100 0 0 100 50 50 cm /Im1 Do Q")),
+            (5, img),
+        ];
+        objs.extend(extra);
+        let pdf = build_pdf(&objs);
+        let r = run(&pdf, vec![(50.0, 50.0, 150.0, 150.0)]).unwrap();
+        assert_eq!(r.pixels_changed, 256, "{cs}");
+        assert!(!contains(&r.output, &samples[..64]), "{cs}");
+    }
+}

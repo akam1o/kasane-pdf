@@ -550,6 +550,42 @@ pub fn remove_image_region(
 /// resolve named colour spaces (`/CS1`) and `Default*` substitutions.
 ///
 /// Shared with `remove_region.rs`.
+/// Redaction: the components per sample of an array colour space it
+/// edits — `[/Indexed base hival lookup]` (1: an index; zeroing it
+/// selects the palette's first colour) and `[/ICCBased stream]` with
+/// `/N` 1, 3 or 4 — else `None`. Zeroed samples carry no information
+/// whatever colour they show.
+fn redaction_components(
+    doc: &Document,
+    cs: &Object,
+    redaction: bool,
+) -> Result<Option<usize>, Error> {
+    if !redaction {
+        return Ok(None);
+    }
+    let cs = doc.deref(cs)?;
+    let Some(a) = cs.as_array() else {
+        return Ok(None);
+    };
+    match a.first().and_then(|f| f.as_name()) {
+        Some(b"Indexed" | b"I") if a.len() == 4 => Ok(Some(1)),
+        Some(b"ICCBased") if a.len() == 2 => {
+            let s = doc.deref(&a[1])?;
+            let n = match &s {
+                Object::Stream { dict, .. } => dict.get(b"N".as_slice()).and_then(|v| v.as_i64()),
+                _ => None,
+            };
+            Ok(match n {
+                Some(1) => Some(1),
+                Some(3) => Some(3),
+                Some(4) => Some(4),
+                _ => None,
+            })
+        }
+        _ => Ok(None),
+    }
+}
+
 pub(crate) fn validate_image(
     dict: &Dict,
     resources: Option<&Object>,
@@ -658,15 +694,19 @@ pub(crate) fn validate_image(
             match final_obj.as_name() {
                 Some(b"DeviceGray") => 1,
                 Some(b"DeviceRGB") => 3,
-                _ => {
-                    return Err(Error::Unsupported {
-                        feature: "image colour space",
-                        detail: format!(
-                            "/{} resolves to non-device space",
-                            String::from_utf8_lossy(n)
-                        ),
-                    })
-                }
+                Some(b"DeviceCMYK") if redaction => 4,
+                _ => match redaction_components(doc, &final_obj, redaction)? {
+                    Some(n) => n,
+                    None => {
+                        return Err(Error::Unsupported {
+                            feature: "image colour space",
+                            detail: format!(
+                                "/{} resolves to non-device space",
+                                String::from_utf8_lossy(n)
+                            ),
+                        })
+                    }
+                },
             }
         }
         Object::Ref(r) => {
@@ -694,12 +734,15 @@ pub(crate) fn validate_image(
                 }
             }
         }
-        _ => {
-            return Err(Error::Unsupported {
-                feature: "image colour space",
-                detail: "non-name colour space is not supported for image removal".into(),
-            })
-        }
+        other => match redaction_components(doc, other, redaction)? {
+            Some(n) => n,
+            None => {
+                return Err(Error::Unsupported {
+                    feature: "image colour space",
+                    detail: "non-name colour space is not supported for image removal".into(),
+                })
+            }
+        },
     };
 
     // Filter must be absent, or a *single* FlateDecode or DCTDecode.
@@ -707,6 +750,14 @@ pub(crate) fn validate_image(
     // first filter anyway, so a chain would silently ignore part of
     // the encoding.
     let filters = crate::filter::normalize_filters(dict.get(b"Filter".as_slice()))?;
+    // A four-component JPEG may be stored inverted (Adobe's APP14
+    // convention); decoding and writing it back raw is not exact.
+    if ncomps == 4 && filters.iter().any(|f| f == b"DCTDecode" || f == b"DCT") {
+        return Err(Error::Unsupported {
+            feature: "image stream filter",
+            detail: "a four-component DCTDecode image is not rewritten".into(),
+        });
+    }
     match filters.len() {
         0 => {}
         1 if filters[0] == b"FlateDecode"

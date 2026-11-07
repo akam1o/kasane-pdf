@@ -1309,6 +1309,10 @@ pub(crate) fn regions_edit_session_with<'a>(
         }
         if let Some(uu) = page_dict_entry(doc, page, b"UserUnit")? {
             match uu.as_number() {
+                // Redaction works in the page's user space, the space
+                // its rects are given in (/UserUnit only sets the
+                // physical size of a unit, §14.11.2).
+                Some(v) if v.is_finite() && v > 0.0 && mode == SessionMode::Redact => {}
                 Some(v) if (v - 1.0).abs() > f64::EPSILON => {
                     return Err(Error::Unsupported {
                         feature: "/UserUnit other than 1",
