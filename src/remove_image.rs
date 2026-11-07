@@ -568,7 +568,30 @@ fn redaction_components(
         return Ok(None);
     };
     match a.first().and_then(|f| f.as_name()) {
-        Some(b"Indexed" | b"I") if a.len() == 4 => Ok(Some(1)),
+        Some(b"Indexed" | b"I") if a.len() == 4 => {
+            // hival 0…255; a base that is itself a device or ICC space
+            // (not Indexed or Pattern, §8.6.6.3).
+            let hival = doc.deref(&a[2])?.as_i64();
+            let base = doc.deref(&a[1])?;
+            let base_name = match &base {
+                Object::Name(n) => Some(n.clone()),
+                Object::Array(b) => b.first().and_then(|f| f.as_name()).map(|n| n.to_vec()),
+                _ => None,
+            };
+            let base_ok = matches!(
+                base_name.as_deref(),
+                Some(
+                    b"DeviceGray"
+                        | b"DeviceRGB"
+                        | b"DeviceCMYK"
+                        | b"G"
+                        | b"RGB"
+                        | b"CMYK"
+                        | b"ICCBased"
+                )
+            );
+            Ok((matches!(hival, Some(0..=255)) && base_ok).then_some(1))
+        }
         Some(b"ICCBased") if a.len() == 2 => {
             let s = doc.deref(&a[1])?;
             let n = match &s {
@@ -752,10 +775,23 @@ pub(crate) fn validate_image(
     let filters = crate::filter::normalize_filters(dict.get(b"Filter".as_slice()))?;
     // A four-component JPEG may be stored inverted (Adobe's APP14
     // convention); decoding and writing it back raw is not exact.
-    if ncomps == 4 && filters.iter().any(|f| f == b"DCTDecode" || f == b"DCT") {
+    // Nor a JPEG whose samples are palette indices: a decoder's
+    // rounding by one changes an index — any colour — outside the rects.
+    let cs_resolved = match doc.deref(cs_obj)? {
+        Object::Name(n) => resolve_colorspace_name(doc, resources, &n)?,
+        other => other,
+    };
+    let indexed = matches!(
+        cs_resolved
+            .as_array()
+            .and_then(|a| a.first())
+            .and_then(|f| f.as_name()),
+        Some(b"Indexed" | b"I")
+    );
+    if (ncomps == 4 || indexed) && filters.iter().any(|f| f == b"DCTDecode" || f == b"DCT") {
         return Err(Error::Unsupported {
             feature: "image stream filter",
-            detail: "a four-component DCTDecode image is not rewritten".into(),
+            detail: "a four-component or Indexed DCTDecode image is not rewritten".into(),
         });
     }
     match filters.len() {

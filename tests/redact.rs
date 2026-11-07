@@ -2916,3 +2916,51 @@ fn cmyk_indexed_and_icc_images_are_edited() {
         assert!(!contains(&r.output, &samples[..64]), "{cs}");
     }
 }
+
+/// A JPEG of palette indices is not rewritten (a decoder's rounding by
+/// one changes an index — any colour — outside the rects); an Indexed
+/// space with an invalid hival or an Indexed base is refused.
+#[test]
+fn indexed_jpegs_and_invalid_indexed_spaces_are_refused() {
+    for (cs, filter, res) in [
+        ("[/Indexed /DeviceRGB 255 41 0 R]", "/Filter /DCTDecode", ""),
+        (
+            "/CS0",
+            "/Filter /DCTDecode",
+            "/ColorSpace << /CS0 [/Indexed /DeviceRGB 255 41 0 R] >>",
+        ),
+        ("[/Indexed /DeviceRGB -1 41 0 R]", "", ""),
+        (
+            "[/Indexed [/Indexed /DeviceRGB 255 41 0 R] 255 41 0 R]",
+            "",
+            "",
+        ),
+    ] {
+        let img = stream_obj(
+            &format!(
+                "/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace {cs} \
+                 /BitsPerComponent 8 {filter}"
+            ),
+            &[1u8; 256],
+        );
+        let pdf = build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                     /Resources << /XObject << /Im1 5 0 R >> {res} >> /Contents 4 0 R >>"
+                )
+                .into_bytes(),
+            ),
+            (4, stream_obj("", b"q 100 0 0 100 50 50 cm /Im1 Do Q")),
+            (5, img),
+            (41, stream_obj("", &[7u8; 768])),
+        ]);
+        assert!(
+            run(&pdf, vec![(50.0, 50.0, 150.0, 150.0)]).is_err(),
+            "{cs} {filter}"
+        );
+    }
+}

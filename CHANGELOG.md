@@ -36,7 +36,7 @@ versions follow [Semantic Versioning](https://semver.org/).
   optional content do not change which samples are drawn where).
 - `redact` edits DeviceCMYK, Indexed and ICCBased (N 1, 3, 4) images
   (zeroed samples carry nothing whatever colour they show; a zeroed
-  index selects the palette's first colour); four-component JPEGs stay
+  index selects the palette's first colour); four-component and Indexed JPEGs stay
   refused. Pages with `/UserUnit` are redacted in their user space,
   the space the rects are given in.
 
