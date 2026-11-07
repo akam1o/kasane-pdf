@@ -33,7 +33,7 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 
 | content inside a rect | handling |
 |---|---|
-| text shown with `Tr 0` in an embedded font (rotated, scaled, `Ts`/`Tz`/`Tc`/`Tw`, `TJ` kerning) | the codes whose glyph ink hits a rect are deleted; advances are preserved so the rest of the line keeps its position |
+| text shown with `Tr 0` in an embedded font (rotated, scaled, `Ts`/`Tz`/`Tc`/`Tw`, `TJ` kerning) | the codes whose glyph ink hits a rect are deleted — whole glyphs, so a glyph straddling a rect's edge goes entirely; advances are preserved so the rest of the line keeps its position. Content whose clip keeps it out of every rect is not a hit |
 | image XObjects, 8-bit DeviceGray/RGB, unfiltered / Flate / one DCT, axis-aligned | a copy with the covered samples set to 0 replaces the call; the original is not carried (next section) |
 | painted paths wholly inside one rect | the path and its painting op are deleted |
 | `/Link` annotations whose `/Rect` meets a rect | removed with their action or destination (`links_removed`); links outside every rect are kept. A removed link the structure tree refers to (`/StructParent`) is refused unless the tree is removed |
@@ -84,7 +84,8 @@ non-embedded fonts (glyph extent unknown), Type 3 fonts (a CharProc
 may paint anywhere), vertical writing, images with masks, soft masks,
 `/Alternates` or OPI, `/Decode`, other colour spaces or filter chains, rotated or
 sheared images, `/UserUnit` ≠ 1, a path crossing a rect's edge, a path
-that also clips. Anywhere: an edited image drawn unredacted, an
+that also clips, an operator other than path construction inside a
+path object (§8.2), a NoZoom or NoRotate link. Anywhere: an edited image drawn unredacted, an
 undecidable resource use, a structure tree with alternate text (by
 default). Rewrite refusals (signed or encrypted documents, …) apply.
 

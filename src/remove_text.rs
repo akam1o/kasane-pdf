@@ -1169,8 +1169,7 @@ fn write_op(op: &Operation, out: &mut BoundedWriter<'_>) -> Result<(), Error> {
             out.extend_from_slice(b" d")?;
         }
         Operation::SetRenderingIntent(n) => {
-            out.push(b'/')?;
-            out.extend_from_slice(n)?;
+            write_name(n, out)?;
             out.extend_from_slice(b" ri")?;
         }
         Operation::SetFlatness(i) => {
@@ -1226,8 +1225,7 @@ fn write_op(op: &Operation, out: &mut BoundedWriter<'_>) -> Result<(), Error> {
             out.extend_from_slice(b" k")?;
         }
         Operation::SetColorSpaceStroke(n) => {
-            out.push(b'/')?;
-            out.extend_from_slice(n)?;
+            write_name(n, out)?;
             out.extend_from_slice(b" CS")?;
         }
         Operation::Type3SetWidth { wx, wy } => {
@@ -1253,8 +1251,7 @@ fn write_op(op: &Operation, out: &mut BoundedWriter<'_>) -> Result<(), Error> {
             out.extend_from_slice(b" d1")?;
         }
         Operation::SetColorSpaceFill(n) => {
-            out.push(b'/')?;
-            out.extend_from_slice(n)?;
+            write_name(n, out)?;
             out.extend_from_slice(b" cs")?;
         }
         Operation::SetColorStroke(ops) => {
@@ -1282,8 +1279,7 @@ fn write_op(op: &Operation, out: &mut BoundedWriter<'_>) -> Result<(), Error> {
             }
         }
         Operation::SetExtGState(n) => {
-            out.push(b'/')?;
-            out.extend_from_slice(n)?;
+            write_name(n, out)?;
             out.extend_from_slice(b" gs")?;
         }
         Operation::MoveTo(x, y) => {
@@ -1349,8 +1345,7 @@ fn write_op(op: &Operation, out: &mut BoundedWriter<'_>) -> Result<(), Error> {
         Operation::BeginText => out.extend_from_slice(b"BT")?,
         Operation::EndText => out.extend_from_slice(b"ET")?,
         Operation::SetTextFont { font, size } => {
-            out.push(b'/')?;
-            out.extend_from_slice(font)?;
+            write_name(font, out)?;
             out.push(b' ')?;
             out.extend_from_slice(fmt_num(*size).as_bytes())?;
             out.extend_from_slice(b" Tf")?;
@@ -1435,21 +1430,18 @@ fn write_op(op: &Operation, out: &mut BoundedWriter<'_>) -> Result<(), Error> {
             out.extend_from_slice(b" \"")?;
         }
         Operation::Do(n) => {
-            out.push(b'/')?;
-            out.extend_from_slice(n)?;
+            write_name(n, out)?;
             out.extend_from_slice(b" Do")?;
         }
         Operation::Shading(n) => {
-            out.push(b'/')?;
-            out.extend_from_slice(n)?;
+            write_name(n, out)?;
             out.extend_from_slice(b" sh")?;
         }
         Operation::InlineImage { dict, data } => {
             out.extend_from_slice(b"BI")?;
             for (k, v) in dict {
                 out.push(b' ')?;
-                out.push(b'/')?;
-                out.extend_from_slice(k)?;
+                write_name(k, out)?;
                 out.push(b' ')?;
                 write_object_shallow(v, out)?;
             }
@@ -1458,25 +1450,21 @@ fn write_op(op: &Operation, out: &mut BoundedWriter<'_>) -> Result<(), Error> {
             out.extend_from_slice(b" EI")?;
         }
         Operation::MarkedContentPoint(n) => {
-            out.push(b'/')?;
-            out.extend_from_slice(n)?;
+            write_name(n, out)?;
             out.extend_from_slice(b" MP")?;
         }
         Operation::DesignatedMarkedContentPoint { tag, properties } => {
-            out.push(b'/')?;
-            out.extend_from_slice(tag)?;
+            write_name(tag, out)?;
             out.push(b' ')?;
             write_object_shallow(properties, out)?;
             out.extend_from_slice(b" DP")?;
         }
         Operation::BeginMarkedContent(n) => {
-            out.push(b'/')?;
-            out.extend_from_slice(n)?;
+            write_name(n, out)?;
             out.extend_from_slice(b" BMC")?;
         }
         Operation::BeginMarkedContentWithProps { tag, properties } => {
-            out.push(b'/')?;
-            out.extend_from_slice(tag)?;
+            write_name(tag, out)?;
             out.push(b' ')?;
             write_object_shallow(properties, out)?;
             out.extend_from_slice(b" BDC")?;
@@ -1530,8 +1518,7 @@ fn write_object_shallow(o: &Object, out: &mut BoundedWriter<'_>) -> Result<(), E
         Object::Integer(n) => out.extend_from_slice(n.to_string().as_bytes())?,
         Object::Real(n) => out.extend_from_slice(fmt_num(*n).as_bytes())?,
         Object::Name(n) => {
-            out.push(b'/')?;
-            out.extend_from_slice(n)?;
+            write_name(n, out)?;
         }
         Object::String(s) => write_literal_string(s, out)?,
         Object::Array(a) => {
@@ -1548,8 +1535,7 @@ fn write_object_shallow(o: &Object, out: &mut BoundedWriter<'_>) -> Result<(), E
             out.extend_from_slice(b"<<")?;
             for (k, v) in d {
                 out.push(b' ')?;
-                out.push(b'/')?;
-                out.extend_from_slice(k)?;
+                write_name(k, out)?;
                 out.push(b' ')?;
                 write_object_shallow(v, out)?;
             }
@@ -1566,19 +1552,41 @@ fn write_object_shallow(o: &Object, out: &mut BoundedWriter<'_>) -> Result<(), E
     Ok(())
 }
 
-/// Format a content-stream number: integer when exact, else fixed-
-/// point trimmed to 4 decimals — the same convention `edit.rs` uses
-/// for annotation coordinates. `NaN`/`inf` never reach here (every
-/// caller validates finite upstream; `write_op` on `ConcatMatrix`
-/// re-validates because a `cm` operand could carry them).
+/// Format a content-stream number losslessly: integer when exact,
+/// else the shortest decimal that reads back as the same value (Rust's
+/// float `Display` never uses an exponent). Rounding would move
+/// content outside the edited area (`.00014 cm` → `.0001`). `NaN`/`inf`
+/// never reach here (every caller validates finite upstream; `write_op`
+/// on `ConcatMatrix` re-validates because a `cm` operand could carry
+/// them).
 fn fmt_num(n: f64) -> String {
     debug_assert!(n.is_finite(), "non-finite operand {n} leaked to writer");
     if n.fract() == 0.0 && n.abs() < 1e15 {
         format!("{}", n as i64)
     } else {
-        let s = format!("{n:.4}");
-        s.trim_end_matches('0').trim_end_matches('.').to_string()
+        format!("{n}")
     }
+}
+
+/// A name operand with `#xx` escapes (§7.3.5): the parsed name bytes
+/// are decoded, so a name read as `/Im#2331` (bytes `Im#31`) must be
+/// written escaped, or it would read back as `/Im1`.
+fn write_name(n: &[u8], out: &mut BoundedWriter<'_>) -> Result<(), Error> {
+    out.push(b'/')?;
+    for &b in n {
+        let regular = !(b <= 0x20
+            || b >= 0x7F
+            || matches!(
+                b,
+                b'(' | b')' | b'<' | b'>' | b'[' | b']' | b'{' | b'}' | b'/' | b'%' | b'#'
+            ));
+        if regular {
+            out.push(b)?;
+        } else {
+            out.extend_from_slice(format!("#{b:02X}").as_bytes())?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3389,7 +3397,10 @@ mod tests {
         let out = String::from_utf8_lossy(&r.output).into_owned();
         // 'B' kern at Tc=7: -(600 + 7·1000/24) = -891.6667.
         // 'C' kern at restored Tc=0: -(600 + 0) = -600.
-        assert!(out.contains("[(A) -891.6667] TJ"), "Tc=7 kern: {out}");
+        assert!(
+            out.contains("[(A) -891.6666666666667] TJ"),
+            "Tc=7 kern: {out}"
+        );
         assert!(out.contains("[-600] TJ"), "restored Tc=0 kern: {out}");
     }
 
@@ -3407,7 +3418,10 @@ mod tests {
         let out = String::from_utf8_lossy(&r.output).into_owned();
         // Kern at Tc=2: -(600 + 2·1000/24) = -683.3333 — the trailing
         // `9 Tc`/`50 Tz`/`10 Tf` must not alter it.
-        assert!(out.contains("[(A) -683.3333] TJ"), "op-time state: {out}");
+        assert!(
+            out.contains("[(A) -683.3333333333334] TJ"),
+            "op-time state: {out}"
+        );
     }
 
     /// Multiple `BT`/`ET`: each `Tj` uses the state inside
@@ -3429,8 +3443,14 @@ mod tests {
         assert_eq!(r.codes_removed, 2);
         let out = String::from_utf8_lossy(&r.output).into_owned();
         // 'B': -(600 + 4·1000/24) = -766.6667. 'C': -(600 + 8·1000/24) = -933.3333.
-        assert!(out.contains("[(A) -766.6667] TJ"), "BT1 Tc=4: {out}");
-        assert!(out.contains("[-933.3333 (D)] TJ"), "BT2 Tc=8: {out}");
+        assert!(
+            out.contains("[(A) -766.6666666666666] TJ"),
+            "BT1 Tc=4: {out}"
+        );
+        assert!(
+            out.contains("[-933.3333333333333 (D)] TJ"),
+            "BT2 Tc=8: {out}"
+        );
     }
 
     /// `'` runs under the *current* text state like any
@@ -3462,10 +3482,10 @@ mod tests {
         let r = remove_text(&d, 0, &[(15.0, 40.0, 36.0, 55.0)], &Limits::default()).unwrap();
         assert_eq!(r.codes_removed, 1);
         let out = String::from_utf8_lossy(&r.output).into_owned();
-        // `"` → Tw + Tc + T* + [-683.3333] TJ where
+        // `"` → Tw + Tc + T* + [-683.3333333333334] TJ where
         // -(600 + 2·1000/24) = -683.3333 (Tw applies to spaces only).
         assert!(
-            out.contains("4 Tw\n2 Tc\nT*\n[-683.3333] TJ"),
+            out.contains("4 Tw\n2 Tc\nT*\n[-683.3333333333334] TJ"),
             "\" kern must use its own Tc=2: {out}"
         );
     }
@@ -3632,7 +3652,7 @@ mod tests {
         // Kern must carry the op-time `Tc=5`: -(600 + 5·1000/24)
         // = -808.3333. The buggy end-of-stream Tc=0 would give -600.
         assert!(
-            out.contains("[(A) -808.3333] TJ"),
+            out.contains("[(A) -808.3333333333334] TJ"),
             "kern must reflect the op's Tc=5, not the stream-end Tc=0: {out}"
         );
     }
@@ -3674,7 +3694,7 @@ mod tests {
             "first Tj kern must use its own Tc=9: {out}"
         );
         assert!(
-            out.contains("[-641.6667 (D)] TJ"),
+            out.contains("[-641.6666666666666 (D)] TJ"),
             "second Tj kern must use its own Tc=1: {out}"
         );
     }

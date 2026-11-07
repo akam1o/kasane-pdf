@@ -867,6 +867,20 @@ pub(crate) fn regions_edit_session<'a>(
                         detail: format!("/Annots[{i}] — their content is not evaluated"),
                     });
                 }
+                // NoZoom / NoRotate (§12.5.3) draw the appearance away
+                // from /Rect on a rotated or zoomed page.
+                let flags = d
+                    .get(b"F".as_slice())
+                    .map(|f| doc.deref(f))
+                    .transpose()?
+                    .and_then(|f| f.as_i64())
+                    .unwrap_or(0);
+                if flags & (8 | 16) != 0 {
+                    return Err(Error::Unsupported {
+                        feature: "redaction on a page with a NoZoom or NoRotate link",
+                        detail: format!("/Annots[{i}] — its appearance is not placed by /Rect"),
+                    });
+                }
                 let r = d
                     .get(b"Rect".as_slice())
                     .map(|r| doc.deref(r))

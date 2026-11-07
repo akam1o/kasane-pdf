@@ -563,3 +563,108 @@ fn image_alternates_are_refused() {
     let e = unsupported(run(&pdf, vec![(50.0, 50.0, 150.0, 150.0)]));
     assert!(e.contains("Alternates"), "{e}");
 }
+
+// Second independent review (P0/P1, fixed).
+
+fn pixel(pdf: &[u8], x: u32, y: u32) -> u8 {
+    let doc = Document::from_bytes(pdf).unwrap();
+    let p = kasane_pdf::render_page(&doc, &doc.pages()[0], &kasane_pdf::RenderOptions::default())
+        .unwrap();
+    p.pixmap().pixel(x, y).unwrap().red()
+}
+
+/// A NoRotate link's appearance is not placed by its /Rect: refused.
+#[test]
+fn norotate_links_are_refused() {
+    let pdf =
+        one_page(
+            "",
+            "/Rotate 90 /Annots [30 0 R]",
+            "",
+            vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Link /Rect [10 10 100 30] /F 16 /AP << /N 31 0 R >> >>"
+                    .to_vec(),
+            ),
+            (
+                31,
+                stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 90 20]", b"0 0 90 20 re f"),
+            ),
+        ],
+        );
+    let e = unsupported(run(&pdf, vec![(15.0, 50.0, 25.0, 60.0)]));
+    assert!(e.contains("NoRotate"), "{e}");
+}
+
+/// Text clipped away from the rect shows only outside it: kept.
+#[test]
+fn text_clipped_away_from_the_rect_is_kept() {
+    let pdf = one_page(
+        "q 65 0 100 200 re W n BT /F1 40 Tf 50 100 Td (M) Tj ET Q",
+        "",
+        "",
+        vec![],
+    );
+    let r = run(&pdf, vec![(50.0, 100.0, 60.0, 140.0)]).unwrap();
+    assert_eq!(r.codes_removed, 0);
+    assert_eq!(page_text(&r.output, 0), "M");
+}
+
+/// A `cm` inside a path object is placed differently by different
+/// readers: refused (§8.2).
+#[test]
+fn an_op_inside_a_path_object_is_refused() {
+    let pdf = one_page("0 0 20 20 re 1 0 0 1 100 100 cm f", "", "", vec![]);
+    assert!(matches!(
+        run(&pdf, vec![(100.0, 100.0, 120.0, 120.0)]),
+        Err(Error::Structure(m)) if m.contains("inside a path object")
+    ));
+}
+
+/// Names are written escaped: `/Im#2331` must not become `/Im1`.
+#[test]
+fn escaped_names_survive_the_rewrite() {
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im#2331 5 0 R /Im1 6 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"q 50 0 0 50 100 100 cm /Im#2331 Do Q")),
+        (
+            5,
+            stream_obj(
+                "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8",
+                &[0, 0, 0],
+            ),
+        ),
+        (
+            6,
+            stream_obj(
+                "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8",
+                &[255, 255, 255],
+            ),
+        ),
+    ]);
+    let r = run(&pdf, vec![(0.0, 0.0, 10.0, 10.0)]).unwrap();
+    assert_eq!(pixel(&pdf, 125, 75), 0);
+    assert_eq!(pixel(&r.output, 125, 75), 0);
+}
+
+/// Numbers are written losslessly: content outside keeps its geometry.
+#[test]
+fn numbers_survive_the_rewrite() {
+    let pdf = one_page(
+        "q .00014 0 0 .00014 100 100 cm 0 0 400000 400000 re f Q",
+        "",
+        "",
+        vec![],
+    );
+    let r = run(&pdf, vec![(0.0, 0.0, 10.0, 10.0)]).unwrap();
+    assert_eq!(pixel(&pdf, 145, 80), 0);
+    assert_eq!(pixel(&r.output, 145, 80), 0);
+}

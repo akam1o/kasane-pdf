@@ -1035,6 +1035,38 @@ impl<'a> DiagWalker<'a> {
 
     fn exec(&mut self, op: &crate::content::Operation) -> Result<(), Error> {
         use crate::content::Operation as O;
+        // §8.2 Figure 9: inside a path object only construction, clip
+        // and painting ops may appear. Another op there (a `cm`
+        // between `re` and `f`) is placed differently by different
+        // readers — refused, as the renderer does.
+        if (self.path_bounds.is_some() || self.path_has_point || self.pending_clip.is_some())
+            && !matches!(
+                op,
+                O::MoveTo(..)
+                    | O::LineTo(..)
+                    | O::CurveTo(..)
+                    | O::CurveToV(..)
+                    | O::CurveToY(..)
+                    | O::ClosePath
+                    | O::Rectangle(..)
+                    | O::Clip
+                    | O::ClipEvenOdd
+                    | O::Stroke
+                    | O::CloseAndStroke
+                    | O::Fill
+                    | O::FillEvenOdd
+                    | O::FillAndStroke
+                    | O::FillAndStrokeEvenOdd
+                    | O::CloseFillAndStroke
+                    | O::CloseFillAndStrokeEvenOdd
+                    | O::EndPath
+            )
+        {
+            return Err(Error::Structure(format!(
+                "{} is not allowed inside a path object (§8.2 Figure 9)",
+                op.name()
+            )));
+        }
         match op {
             O::SaveState => {
                 if self.gs_stack.len() >= self.limits.max_gsave_depth {
@@ -1328,6 +1360,26 @@ impl<'a> DiagWalker<'a> {
         Ok(())
     }
 
+    /// The rects that `b` meets where it can be visible: `b` is
+    /// first intersected with the active clip's bounds (a superset of
+    /// the clip region, so a miss means nothing of `b` shows inside a
+    /// rect). Content clipped away from every rect is not a hit — its
+    /// visible part is outside them, and removing it would damage
+    /// content outside the rects.
+    fn visible_hits(&self, b: &(f64, f64, f64, f64)) -> Vec<usize> {
+        match self.gs.clip {
+            None => hits_for(b, self.rects),
+            Some(c) => {
+                let v = (b.0.max(c.0), b.1.max(c.1), b.2.min(c.2), b.3.min(c.3));
+                if v.0 > v.2 || v.1 > v.3 {
+                    Vec::new()
+                } else {
+                    hits_for(&v, self.rects)
+                }
+            }
+        }
+    }
+
     fn path_point(&mut self, x: f64, y: f64) {
         let (ux, uy) = self.gs.ctm.transform(x, y);
         match &mut self.path_bounds {
@@ -1398,7 +1450,7 @@ impl<'a> DiagWalker<'a> {
                             reason: "graphics state was changed by an unhandled construct".into(),
                         })?;
                     } else {
-                        let hits = hits_for(&b, self.rects);
+                        let hits = self.visible_hits(&b);
                         self.bump_reported()?;
                         self.targets.push(Target {
                             kind: TargetKind::Path,
@@ -1685,7 +1737,7 @@ impl<'a> DiagWalker<'a> {
             // Already reported as a blocker + uncertain above — do not
             // also emit a normal Target for clip-mode text.
         } else {
-            let hits = hits_for(&bounds, self.rects);
+            let hits = self.visible_hits(&bounds);
             let (unicode, _via) = crate::text_extract::resolve_unicode(font, code);
             self.bump_reported()?;
             self.targets.push(Target {
@@ -1899,7 +1951,7 @@ impl<'a> DiagWalker<'a> {
                 reason: "non-finite image placement".into(),
             })?;
         } else {
-            let hits = hits_for(&bounds, self.rects);
+            let hits = self.visible_hits(&bounds);
             self.bump_reported()?;
             self.targets.push(Target {
                 kind: TargetKind::Image,
@@ -2023,7 +2075,7 @@ impl<'a> DiagWalker<'a> {
                 reason: "graphics state was changed by an unhandled construct".into(),
             })?;
         } else {
-            let hits = hits_for(&bounds, self.rects);
+            let hits = self.visible_hits(&bounds);
             self.bump_reported()?;
             self.targets.push(Target {
                 kind: TargetKind::Form,

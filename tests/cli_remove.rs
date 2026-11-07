@@ -310,7 +310,7 @@ fn cli_remove_text_op_state_change() {
     );
     let raw = String::from_utf8_lossy(&fs::read(&dst).unwrap()).into_owned();
     assert!(
-        raw.contains("[(A) -808.3333] TJ"),
+        raw.contains("[(A) -808.3333333333334] TJ"),
         "kern must use the op-time Tc=5: {raw}"
     );
 }
