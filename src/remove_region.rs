@@ -960,7 +960,7 @@ pub(crate) fn regions_edit_session<'a>(
             ..limits.clone()
         };
         let mut walker = DiagWalker::new(doc, page, &page_limits, &validated);
-        walker.allow_group_forms = mode == SessionMode::Redact;
+        walker.redaction_mode = mode == SessionMode::Redact;
         walker.run(&ops)?;
         // Carry this page's spend forward — the next page gets the
         // remaining budget, not a fresh one.

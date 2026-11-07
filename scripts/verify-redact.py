@@ -118,6 +118,7 @@ CASES = [
     ("curve-crossing", build(page(TEXT + b" 1 w 30 100 m 80 130 120 70 170 100 c S")), [], "refused"),
     ("dashed-rule-crossing", build(page(TEXT + b" [3 2] 0 d 1 w 10 100 m 190 100 l S")), [], "refused"),
     ("inline-image", build(page(TEXT + b" q 20 0 0 20 60 95 cm BI /W 2 /H 1 /CS /G /BPC 8 ID \x10\x20 EI Q")), [], "refused"),
+    ("inline-image-outside", build(page(TEXT + b" q 20 0 0 20 150 20 cm BI /W 2 /H 1 /CS /G /BPC 8 ID \x10\x20 EI Q")), [], "ok"),
     ("image-shown-on-two-pages", build({
         **page(TEXT + b" q 100 0 0 30 50 90 cm /Im1 Do Q", res=b"/Font << /F1 5 0 R >> /XObject << /Im1 8 0 R >>",
                kids=b"[3 0 R 9 0 R]", count=2),

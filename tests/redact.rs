@@ -1113,3 +1113,91 @@ fn nested_forms_and_form_images_are_refused() {
     let e = unsupported(run(&image, vec![RECT]));
     assert!(e.contains("image inside a form"), "{e}");
 }
+
+/// An inline image away from the rects is kept as it is; one meeting a
+/// rect is refused (its samples are not edited).
+#[test]
+fn inline_images() {
+    let outside = one_page(
+        &format!("{SECRET} q 20 0 0 20 10 10 cm BI /W 1 /H 1 /CS /G /BPC 8 ID \u{0} EI Q"),
+        "",
+        "",
+        vec![],
+    );
+    let r = run(&outside, vec![RECT]).unwrap();
+    assert_eq!(r.codes_removed, 10);
+    assert_eq!(at(&r.output, 20, 20), 0, "the inline image is kept");
+    let inside = one_page(
+        &format!("{SECRET} q 20 0 0 20 60 95 cm BI /W 1 /H 1 /CS /G /BPC 8 ID \u{0} EI Q"),
+        "",
+        "",
+        vec![],
+    );
+    let e = unsupported(run(&inside, vec![RECT]));
+    assert!(e.contains("inline image"), "{e}");
+}
+
+// Review of forms and shared images (P0/P1, fixed).
+
+/// Nested transforms compose as CTM' = M × CTM (cm and a form's
+/// /Matrix): content is located where it is drawn.
+#[test]
+fn nested_transforms_locate_content() {
+    // Drawn at (70, 20)–(90, 40): 1 0 0 1 50 0 cm, then a form scaled 2×.
+    let pdf = form_page(
+        "q 1 0 0 1 50 0 cm /Fm Do Q",
+        "/Matrix [2 0 0 2 0 0]",
+        "10 10 10 10 re f",
+        vec![],
+    );
+    let r = run(&pdf, vec![(65.0, 15.0, 95.0, 45.0)]).unwrap();
+    assert_eq!(r.paths_removed, 1);
+    assert_eq!(at(&r.output, 80, 30), 255);
+    // An empty area where the reversed order would place it.
+    let r = run(&pdf, vec![(119.0, 19.0, 141.0, 41.0)]).unwrap();
+    assert_eq!(r.paths_removed + r.paths_cut, 0);
+    assert_eq!(at(&r.output, 80, 30), 0, "outside the rect: kept");
+    // Two cm on the page.
+    let page = one_page(
+        "q 1 0 0 1 50 0 cm 2 0 0 2 0 0 cm 10 10 10 10 re f Q",
+        "",
+        "",
+        vec![],
+    );
+    let r = run(&page, vec![(65.0, 15.0, 95.0, 45.0)]).unwrap();
+    assert_eq!(r.paths_removed, 1);
+}
+
+/// An original kept for its display on another page may stay once —
+/// not as a second, undisplayed copy.
+#[test]
+fn a_second_copy_of_a_kept_original_is_caught() {
+    let pdf = build_pdf(&[
+        (
+            1,
+            b"<< /Type /Catalog /Pages 2 0 R /Extra 8 0 R >>".to_vec(),
+        ),
+        (
+            2,
+            b"<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>".to_vec(),
+        ),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"q 100 0 0 100 50 50 cm /Im1 Do Q")),
+        (5, image_obj()),
+        (
+            6,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 5 0 R >> >> /Contents 7 0 R >>"
+                .to_vec(),
+        ),
+        (7, stream_obj("", b"q 100 0 0 100 50 50 cm /Im1 Do Q")),
+        (8, image_obj()),
+    ]);
+    let e = unsupported(run(&pdf, vec![(50.0, 50.0, 150.0, 150.0)]));
+    assert!(e.contains("second copy"), "{e}");
+}

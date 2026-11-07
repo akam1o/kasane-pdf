@@ -11,9 +11,10 @@
 //!    same rects find nothing left to remove.
 //! 2. **The edited originals (verified, with stated exceptions).** No
 //!    live object of the output — every stream, stored or decoded —
-//!    equals an edited image's original, except where another page
-//!    (or the same page outside the rects) still draws that original:
-//!    those displays are kept and listed in [`Redaction::elsewhere`].
+//!    equals an edited image's or form's original, except where
+//!    another page (or the same page outside the rects) still draws
+//!    that original: it stays as exactly one object, the one those
+//!    displays use, listed in [`Redaction::elsewhere`].
 //!    Names of an original on pages that do not draw it are removed.
 //!    The output is a single revision (no incremental history, no
 //!    unreachable objects carried). Equal digests are the test: the
@@ -268,16 +269,18 @@ pub fn redact(
             strip_metadata: true,
         })?;
 
-    // Originals another page still draws stay in the file by design;
-    // every other copy must be gone.
-    let shown: HashSet<[u8; 32]> = s.originals_shown.iter().flat_map(|(_, d, _)| *d).collect();
+    // An original another page still draws stays in the file once, as
+    // the object those displays use; every other copy must be gone.
+    let mut kept: Vec<[[u8; 32]; 2]> = s.originals_shown.iter().map(|(_, d, _)| *d).collect();
+    kept.sort_unstable();
+    kept.dedup();
     let must_be_gone: Vec<[u8; 32]> = s
         .original_digests
         .iter()
         .copied()
-        .filter(|d| !shown.contains(d))
+        .filter(|d| !kept.iter().any(|k| k.contains(d)))
         .collect();
-    let (out, residual) = verify(&output, specs, limits, &must_be_gone)?;
+    let (out, residual) = verify(&output, specs, limits, &must_be_gone, &kept)?;
     let (mut elsewhere, elsewhere_unsearched_pages) =
         find_elsewhere(&out, &s.removed_text, limits)?;
     let mut shown_at: Vec<(usize, bool)> =
@@ -328,6 +331,7 @@ fn verify(
     specs: &[PageSpec],
     limits: &Limits,
     originals: &[[u8; 32]],
+    kept: &[[[u8; 32]; 2]],
 ) -> Result<(Document, ResidualAudit), Error> {
     let fail = |detail: String| Error::Unsupported {
         feature: "redaction output failed verification",
@@ -356,9 +360,11 @@ fn verify(
         )));
     }
     drop(again);
-    // No stream equals an original, stored or decoded.
+    // No stream equals an original, stored or decoded — except one
+    // object per original still drawn elsewhere.
     let originals: HashSet<[u8; 32]> = originals.iter().copied().collect();
-    if !originals.is_empty() {
+    let mut kept_seen = vec![0u32; kept.len()];
+    if !originals.is_empty() || !kept.is_empty() {
         let refs: Vec<_> = out
             .xref_entries()
             .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
@@ -369,13 +375,22 @@ fn verify(
             let Object::Stream { dict, data } = &obj else {
                 continue;
             };
-            let decoded = out.decode_stream(dict, data).ok();
-            if originals.contains(&sha256(data))
-                || decoded.is_some_and(|d| originals.contains(&sha256(&d)))
-            {
+            let stored = sha256(data);
+            let decoded = out.decode_stream(dict, data).ok().map(|d| sha256(&d));
+            let is = |d: &[u8; 32]| stored == *d || decoded == Some(*d);
+            if originals.iter().any(is) {
                 return Err(fail(format!(
-                    "object {r} holds an edited image's original data"
+                    "object {r} holds an edited image's or form's original data"
                 )));
+            }
+            if let Some(i) = kept.iter().position(|k| k.iter().any(is)) {
+                kept_seen[i] += 1;
+                if kept_seen[i] > 1 {
+                    return Err(fail(format!(
+                        "object {r} is a second copy of an original that is kept only \
+                         for its displays elsewhere"
+                    )));
+                }
             }
         }
     }

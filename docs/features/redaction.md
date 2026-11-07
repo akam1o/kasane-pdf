@@ -78,10 +78,12 @@ Three separate statements; none implies the next:
 - The output parses and has exactly one revision (a full rewrite: no
   incremental history, no superseded objects).
 - Running the same rects again finds no character code, nonzero image
-  sample or path left to remove.
+  sample, path or link left to remove, and no path left to cut.
 - No live object's stream — stored bytes or decoded — equals an edited
-  image's original stored bytes or decoded samples (SHA-256 over every
-  xref entry, object-stream members included).
+  image's or form's original (SHA-256 over every xref entry,
+  object-stream members included), except an original still drawn
+  elsewhere: that one may stay as exactly one object (the one its
+  displays use, reported in `elsewhere`); a second copy fails.
 
 A failed check is an error (`Unsupported { feature: "redaction output
 failed verification", .. }`), never a returned PDF.
@@ -145,6 +147,7 @@ document text in `Debug` output.
 ## Not covered
 
 Annotations other than links and form fields on an edited page, nested
-forms, images inside forms, patterns, inline images, transparency, shadings, partial paths
-(table rules crossing a rect), masked, CMYK or indexed images,
-invisible OCR text. Each is refused, not approximated.
+forms or images inside forms meeting a rect, patterns, inline images
+meeting a rect, ExtGState (`gs`), shadings, curves and dashed strokes
+crossing a rect, masked, CMYK or indexed images, invisible OCR text.
+Each is refused, not approximated.

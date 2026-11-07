@@ -35,6 +35,8 @@ versions follow [Semantic Versioning](https://semver.org/).
   groups included): text and paths in the rects are removed or cut in a
   per-invocation copy (`forms_edited`); an original still drawn
   elsewhere is reported (`Removed::Form`), otherwise not carried.
+- `redact` keeps an inline image that meets no rect (one meeting a rect
+  is still refused).
 - `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
   RFC 7932 data including large windows, Flate predictors, refused on
   inline images. Output and decoder memory are bounded by
@@ -71,6 +73,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   values such as `.00100000005`.
 
 ### Fixed
+- `diagnose_redaction` and the region editors composed a nested `cm`,
+  and a form's `/Matrix`, in the wrong order (CTM × M instead of
+  M × CTM), so content under nested transforms was located wrongly.
 - Word spacing (`Tw`) no longer applies to a two-byte code `<0020>` in
   a CMap that also has one-byte codes (§9.3.3: single-byte code 32
   only) — in rendering, extraction and the editors.

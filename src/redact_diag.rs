@@ -816,10 +816,11 @@ pub(crate) struct DiagWalker<'a> {
     /// `diagnose_redaction` (the diagnosis reports targets and never
     /// rewrites ops, so it doesn't pay the map's memory).
     record_show_states: bool,
-    /// Accept a form's `/Group` (transparency group) instead of
-    /// reporting it as a blocker — `redact` only removes or cuts
-    /// content, which the group composites the same way either way.
-    pub(crate) allow_group_forms: bool,
+    /// The walk serves `redact`, which only removes or cuts content:
+    /// a form's `/Group` (transparency group) composites the rest the
+    /// same way, so it is not a blocker; an inline image is a blocker
+    /// only when it meets a rect (one elsewhere is kept as it is).
+    pub(crate) redaction_mode: bool,
     /// object ref → (kind, sites) for sharing analysis.
     site_map: BTreeMap<(u32, u16), (String, Vec<Site>)>,
     /// Counting budget for reported items.
@@ -965,7 +966,7 @@ impl<'a> DiagWalker<'a> {
             show_states: BTreeMap::new(),
             path_states: BTreeMap::new(),
             record_show_states,
-            allow_group_forms: false,
+            redaction_mode: false,
             site_map: BTreeMap::new(),
             reported: 0,
             text_codes: 0,
@@ -1121,7 +1122,8 @@ impl<'a> DiagWalker<'a> {
                         "non-finite cm operands — cannot continue diagnosis".into(),
                     ));
                 }
-                self.gs.ctm = self.gs.ctm.concat(*m);
+                // CTM' = cm × CTM: the operand applies first.
+                self.gs.ctm = m.concat(self.gs.ctm);
             }
             O::SetLineWidth(w) => self.gs.stroke.width = *w,
             O::SetLineCap(c) => self.gs.stroke.cap = *c,
@@ -1323,6 +1325,29 @@ impl<'a> DiagWalker<'a> {
                 self.show_text(text)?;
             }
             O::Do(n) => self.do_xobject(n)?,
+            O::InlineImage { .. } if self.redaction_mode && !self.uncertain_state => {
+                // Paints the unit square under the CTM.
+                let m = self.gs.ctm;
+                let c = [
+                    m.transform(0.0, 0.0),
+                    m.transform(1.0, 0.0),
+                    m.transform(0.0, 1.0),
+                    m.transform(1.0, 1.0),
+                ];
+                let b = (
+                    c.iter().map(|p| p.0).fold(f64::INFINITY, f64::min),
+                    c.iter().map(|p| p.1).fold(f64::INFINITY, f64::min),
+                    c.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max),
+                    c.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max),
+                );
+                if !b.0.is_finite() || !self.visible_hits(&b).is_empty() {
+                    self.push_blocker(Blocker {
+                        site: Some(self.site()),
+                        what: "inline image (BI/ID/EI) meeting a rect".into(),
+                        detail: "inline image samples are not edited".into(),
+                    })?;
+                }
+            }
             O::InlineImage { .. } => {
                 // Paints the unit square under the CTM like an image
                 // XObject, but carries no resource name the removal
@@ -2055,7 +2080,7 @@ impl<'a> DiagWalker<'a> {
         }
         // Blocking attributes that change what's painted.
         for key in [b"Group".as_slice(), b"OC".as_slice(), b"Ref".as_slice()] {
-            if key == b"Group" && self.allow_group_forms {
+            if key == b"Group" && self.redaction_mode {
                 continue;
             }
             if dict.contains_key(key) {
@@ -2100,7 +2125,7 @@ impl<'a> DiagWalker<'a> {
             (bbox.llx, bbox.ury),
             (bbox.urx, bbox.ury),
         ]
-        .map(|(x, y)| self.gs.ctm.concat(form_matrix).transform(x, y));
+        .map(|(x, y)| form_matrix.concat(self.gs.ctm).transform(x, y));
         let bounds = (
             corners[0]
                 .0
@@ -2183,7 +2208,8 @@ impl<'a> DiagWalker<'a> {
         };
         self.gs_stack.push(self.gs.clone());
         let saved_uncertain = self.uncertain_state;
-        self.gs.ctm = self.gs.ctm.concat(form_matrix);
+        // Form space → the caller's user space (/Matrix) → page.
+        self.gs.ctm = form_matrix.concat(self.gs.ctm);
         {
             let m = self.gs.ctm;
             if !((m.b == 0.0 && m.c == 0.0) || (m.a == 0.0 && m.d == 0.0)) {
