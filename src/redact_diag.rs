@@ -718,6 +718,10 @@ struct StrokeState {
     /// `d` — the dash array and phase, `None` for a solid line (an
     /// empty array).
     dash: Option<(Vec<f64>, f64)>,
+    /// Stroking paints opaquely in the Normal blend mode (`/CA` 1,
+    /// `/BM` Normal or Compatible): painting a spot twice shows the
+    /// same as once.
+    opaque: (bool, bool),
 }
 
 /// The *whole* graphics state a diagnosis tracks — saved and restored
@@ -938,6 +942,7 @@ impl<'a> DiagWalker<'a> {
                     join: 0,
                     miter_limit: 10.0,
                     dash: None,
+                    opaque: (true, true),
                 },
                 text: TextState {
                     h_scale: 1.0,
@@ -1053,6 +1058,14 @@ impl<'a> DiagWalker<'a> {
                         }
                         _ => return Ok(Some("/D is not [array phase]")),
                     }
+                }
+                b"CA" => st.opaque.0 = v.as_number() == Some(1.0),
+                b"BM" => {
+                    let first = match &v {
+                        Object::Array(a) => a.first().and_then(|x| x.as_name()),
+                        o => o.as_name(),
+                    };
+                    st.opaque.1 = matches!(first, Some(b"Normal" | b"Compatible"));
                 }
                 b"SMask" => {
                     if v.as_name() != Some(b"None".as_slice()) {
@@ -1224,7 +1237,8 @@ impl<'a> DiagWalker<'a> {
                 let Some(Object::Name(n)) = ops.last() else {
                     unreachable!("matched above")
                 };
-                // A shading pattern carries colours only. A tiling
+                // A shading pattern (without its own ExtGState) carries
+                // colours only. A tiling
                 // pattern's cell is content of its own — what it shows
                 // inside a rect would stay in the file — so it is not
                 // handled.
@@ -1235,9 +1249,12 @@ impl<'a> DiagWalker<'a> {
                         Object::Stream { dict, .. } => Some(dict),
                         _ => None,
                     };
-                    d.and_then(|d| d.get(b"PatternType".as_slice()))
-                        .and_then(|t| t.as_i64())
-                        == Some(2)
+                    d.is_some_and(|d| {
+                        d.get(b"PatternType".as_slice()).and_then(|t| t.as_i64()) == Some(2)
+                            // Its own graphics state may carry a soft
+                            // mask (content); not evaluated.
+                            && !d.contains_key(b"ExtGState".as_slice())
+                    })
                 });
                 if !shading {
                     self.push_blocker(Blocker {
@@ -1658,6 +1675,7 @@ impl<'a> DiagWalker<'a> {
                                     join: s.join,
                                     miter_limit: s.miter_limit,
                                     dash: s.dash.clone(),
+                                    opaque: s.opaque.0 && s.opaque.1,
                                 },
                             );
                         }

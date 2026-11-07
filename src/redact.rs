@@ -493,7 +493,11 @@ fn appearance_streams(out: &Document, page: &crate::page::Page) -> Result<Vec<In
         };
         let ap = out.deref(ap)?;
         let Some(ap) = ap.as_dict() else { continue };
-        for v in ap.values() {
+        // Only the defined appearances; readers ignore other keys.
+        for v in [b"N".as_slice(), b"R", b"D"]
+            .iter()
+            .filter_map(|k| ap.get(*k))
+        {
             match v {
                 Object::Ref(r) => match out.resolve(*r)? {
                     Object::Dict(states) => refs.extend(states.values().filter_map(|s| match s {

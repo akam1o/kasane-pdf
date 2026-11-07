@@ -1835,3 +1835,84 @@ fn reds(pdf: &[u8]) -> Vec<u8> {
     }
     v
 }
+
+// Review of the dash cut and patterns (fixed).
+
+/// Pieces of a translucent dashed stroke would each be painted: where
+/// they overlap the paint would show twice. Refused.
+#[test]
+fn a_translucent_dashed_stroke_is_not_cut_into_pieces() {
+    let pdf = doc_with(
+        "/ExtGState << /T << /CA 0.5 >> >>",
+        &[b"/T gs [1000 1] 0 d 10 w 10 50 m 190 50 l 50 10 m 50 190 l S"],
+        vec![],
+    );
+    let e = unsupported(run(&pdf, vec![(140.0, 40.0, 160.0, 60.0)]));
+    assert!(e.contains("not opaque"), "{e}");
+}
+
+/// An odd dash array is written out in full, its phase reduced into
+/// one period, so every reader places the dashes alike.
+#[test]
+fn an_odd_dash_array_is_written_in_full() {
+    use kasane_pdf::Operation as O;
+    let pdf = one_page("[7 3 2] 35 d 2 w 10 100 m 190 100 l S", "", "", vec![]);
+    let r = run(&pdf, vec![(50.0, 90.0, 100.0, 110.0)]).unwrap();
+    let doc = Document::from_bytes(&r.output).unwrap();
+    let ops = doc.page_operations(&doc.pages()[0]).unwrap();
+    let dashes: Vec<_> = ops
+        .iter()
+        .filter_map(|o| match o {
+            O::SetDash { dashes, phase } => Some((dashes.clone(), *phase)),
+            _ => None,
+        })
+        .collect();
+    assert!(dashes.len() >= 2);
+    for (d, p) in dashes.iter().skip(1) {
+        assert_eq!(d, &vec![7.0, 3.0, 2.0, 7.0, 3.0, 2.0]);
+        assert!((0.0..24.0).contains(p), "{p}");
+    }
+}
+
+/// A shading pattern with its own ExtGState (which may carry a soft
+/// mask with content) is refused.
+#[test]
+fn a_shading_pattern_with_its_own_gstate_is_refused() {
+    let pdf = doc_with(
+        "/Pattern << /Sh << /PatternType 2 /ExtGState << /CA 1 >> /Shading << /ShadingType 2 \
+         /ColorSpace /DeviceRGB /Coords [0 0 200 0] /Function << /FunctionType 2 /Domain [0 1] \
+         /C0 [1 0 0] /C1 [0 0 1] /N 1 >> >> >> >>",
+        &[b"/Pattern cs /Sh scn 30 60 60 30 re f"],
+        vec![],
+    );
+    let e = unsupported(run(&pdf, vec![(40.0, 40.0, 160.0, 160.0)]));
+    assert!(e.contains("tiling pattern") || e.contains("pattern"), "{e}");
+}
+
+/// An /AP key other than /N, /R, /D is not an appearance: an original
+/// it names may not stay.
+#[test]
+fn an_unknown_appearance_key_is_not_a_display() {
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R /Annots [6 0 R] >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"q 40 0 0 40 50 50 cm /Im1 Do Q")),
+        (5, image_obj()),
+        (
+            6,
+            b"<< /Type /Annot /Subtype /Square /Rect [150 150 190 190] /AP << /N 7 0 R /Unused 5 0 R >> >>"
+                .to_vec(),
+        ),
+        (7, stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 40 40]", b"0 0 10 10 re f")),
+    ]);
+    match run(&pdf, vec![(40.0, 40.0, 100.0, 100.0)]) {
+        Ok(r) => assert!(!contains(&r.output, &secret_samples())),
+        Err(e) => assert!(e.to_string().contains("original data"), "{e}"),
+    }
+}

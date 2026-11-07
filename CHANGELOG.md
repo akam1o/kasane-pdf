@@ -55,7 +55,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   still refused.
 - `redact` cuts dashed strokes crossing a rect: each remaining piece
   is stroked with the pattern's phase set to where it starts on the
-  original subpath, so the dashes outside the rect are unchanged.
+  original subpath (odd arrays written out in full), so the dashes
+  outside the rect are unchanged; a translucent or blended dashed
+  stroke cut into pieces is refused.
 - `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
   RFC 7932 data including large windows, Flate predictors, refused on
   inline images. Output and decoder memory are bounded by

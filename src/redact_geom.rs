@@ -35,6 +35,9 @@ pub(crate) struct PathPaintState {
     pub(crate) miter_limit: f64,
     /// The dash array and phase; `None` for a solid line.
     pub(crate) dash: Option<(Vec<f64>, f64)>,
+    /// Stroking is opaque in the Normal blend mode: stroking two
+    /// overlapping pieces separately shows the same as one stroke.
+    pub(crate) opaque: bool,
 }
 
 /// The outcome of [`cut_path`].
@@ -414,10 +417,18 @@ pub(crate) fn cut_path(
                 // Each piece restarts the pattern at its own phase:
                 // only a well-formed pattern is followed exactly.
                 let ok = phase.is_finite()
+                    && *phase >= 0.0
                     && d.iter().all(|x| x.is_finite() && *x >= 0.0)
                     && d.iter().sum::<f64>() > 0.0;
                 if !ok {
                     return Err(unsupported("a dashed stroke with a degenerate pattern"));
+                }
+                // Each piece is its own stroke: where two overlap,
+                // translucent or blended paint would show twice.
+                if out.len() > 1 && !st.opaque {
+                    return Err(unsupported(
+                        "a dashed stroke that is not opaque (/CA, /BM) cut into pieces",
+                    ));
                 }
             }
             stroke_lines = Some(out);
@@ -474,11 +485,20 @@ pub(crate) fn cut_path(
                 // where its start stood on the original subpath, inside
                 // q … Q so the dash state after it is the original's.
                 Some((d, phase)) => {
+                    // An odd-length array runs through twice per period
+                    // (on and off swap); written out in full, with the
+                    // phase reduced into one period, so every reader
+                    // places the dashes alike.
+                    let mut full = d.clone();
+                    if full.len() % 2 == 1 {
+                        full.extend_from_slice(d);
+                    }
+                    let period: f64 = full.iter().sum();
                     for (pts, closed, at) in lines {
                         ops.push(O::SaveState);
                         ops.push(O::SetDash {
-                            dashes: d.clone(),
-                            phase: phase + at,
+                            dashes: full.clone(),
+                            phase: (phase + at) % period,
                         });
                         push_polyline(&mut ops, pts, *closed);
                         ops.push(O::Stroke);
