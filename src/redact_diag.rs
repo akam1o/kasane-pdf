@@ -1588,6 +1588,12 @@ impl<'a> DiagWalker<'a> {
     /// rect where nothing shows; such a hit is counted in
     /// `clip_undecided_hits`.
     fn visible_hits(&mut self, b: &(f64, f64, f64, f64)) -> Vec<usize> {
+        // Redaction: a clip hides ink, not data — text is extracted,
+        // image samples and path coordinates read, wherever they stand.
+        // Whatever meets a rect is a hit, clipped or not.
+        if self.redaction_mode {
+            return hits_for(b, self.rects);
+        }
         match self.gs.clip {
             None => hits_for(b, self.rects),
             Some(c) => {
@@ -2019,14 +2025,7 @@ impl<'a> DiagWalker<'a> {
             // Already reported as a blocker + uncertain above — do not
             // also emit a normal Target for clip-mode text.
         } else {
-            // Redaction: a clip hides ink, not text — extraction and
-            // selection still find a code where it stands, so text is a
-            // hit wherever its box meets a rect, clipped or not.
-            let hits = if self.redaction_mode {
-                hits_for(&bounds, self.rects)
-            } else {
-                self.visible_hits(&bounds)
-            };
+            let hits = self.visible_hits(&bounds);
             let (unicode, _via) = crate::text_extract::resolve_unicode(font, code);
             self.bump_reported()?;
             self.targets.push(Target {

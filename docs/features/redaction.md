@@ -33,7 +33,7 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 
 | content inside a rect | handling |
 |---|---|
-| text shown with `Tr 0`–`3` in an embedded font (fill, stroke, both, invisible) (rotated, scaled, `Ts`/`Tz`/`Tc`/`Tw`, `TJ` kerning) | the codes whose glyph ink hits a rect are deleted — whole glyphs, so a glyph straddling a rect's edge goes entirely; advances are preserved so the rest of the line keeps its position. A clip hides ink, not text: a code is a hit wherever its box meets a rect, clipped or not (paths and images clipped away from every rect are not hits). Text under a text matrix stretching one axis over 16 times the other is refused (readers disagree where it is drawn) |
+| text shown with `Tr 0`–`3` in an embedded font (fill, stroke, both, invisible) (rotated, scaled, `Ts`/`Tz`/`Tc`/`Tw`, `TJ` kerning) | the codes whose glyph ink hits a rect are deleted — whole glyphs, so a glyph straddling a rect's edge goes entirely; advances are preserved so the rest of the line keeps its position. A clip hides ink, not data: text, images and paths are hits wherever they meet a rect, clipped or not (only a shading, which carries no data, is accepted when clipped away from the rects). Text under a text matrix stretching one axis over 16 times the other is refused (readers disagree where it is drawn) |
 | image XObjects, 8-bit DeviceGray/RGB, unfiltered / Flate / one DCT, axis-aligned | a copy with the covered samples set to 0 replaces the call; the original is not carried (next section) |
 | painted paths wholly inside one rect | the path and its painting op are deleted |
 | painted paths crossing a rect's edge | cut there (`paths_cut`): filled axis-aligned rectangles become their difference with the rects (exact; several only when they do not overlap); stroked straight segments are cut, in user space where the stroke is defined, at the centreline positions whose cross-section (and cap) would reach the rect — exact for butt caps; for square and round caps the cut end is pulled back by the cap's square: a square cap then ends the band exactly at the rect, and a round-capped piece whose both ends are cuts is stroked with square caps for the same result, while a round-capped piece keeping one of the path's own ends keeps its round caps and loses the two corners of the cut cap's square (≈ 0.21 × the squared half width each). A crossing that is not perpendicular also loses the sliver of band beyond the perpendicular cut; a corner kept near a rect must clear it by its join (the exact miter, or the bevel/round extent). A dashed stroke's pieces each restart the pattern at the phase where they start on the original subpath (an odd array written out in full, the phase reduced into one period), so the dashes outside fall where they did (a closed dashed outline is not rejoined at its start); each piece is its own stroke, so a dashed stroke that is not opaque in the Normal blend mode (`/CA` < 1, another `/BM`) is refused when cut into pieces. Stroked curves are cut by subdivision: a sub-curve (an exact de Casteljau piece of the original) is kept when its control points' bounds, grown by √2 × half the width under the CTM's largest stretch, clear every rect, and a part still near a rect after 14 halvings is removed — so up to that reach plus the last piece's length of band next to the rect is lost, and nothing reaches inside. Dashed curves cut at a rect, curved fills, degenerate dash patterns, other fill shapes and overlapping rectangles near a rect are refused |
@@ -127,8 +127,7 @@ may paint anywhere), vertical writing, images with masks, soft masks,
 sheared images, `/UserUnit` ≠ 1, a path crossing a rect's edge that
 cannot be cut exactly (curves, degenerate dash patterns, non-rectangular fills,
 overlapping filled rectangles, a corner whose join reaches a rect), a
-path that also clips, content meeting a rect under a clip that is not an
-axis-aligned rectangle (whether it shows there is not decided), an
+path that also clips, an
 operator other than path construction inside a path object (§8.2).
 Anywhere: an
 undecidable resource use, a structure tree with alternate text (by
@@ -178,8 +177,7 @@ Each of these is refused with a typed error, not approximated:
   its outline grown by the stroke's reach.
 - **Geometry**: curved fills, dashed curves cut at a rect,
   non-rectangular or overlapping fills crossing a rect, a corner whose join reaches a rect, a translucent or blended
-  dashed stroke cut into pieces, clips that are not rectangles meeting
-  a rect, `/UserUnit` ≠ 1. A round-capped piece that keeps one of the path's own ends loses its
+  dashed stroke cut into pieces, `/UserUnit` ≠ 1. A round-capped piece that keeps one of the path's own ends loses its
   cut cap's corners, and an oblique crossing the sliver of band beyond
   the perpendicular cut (accepted, documented).
 - **Images**: masked, CMYK, indexed, other bit depths or filter chains,

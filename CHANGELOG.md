@@ -36,13 +36,15 @@ versions follow [Semantic Versioning](https://semver.org/).
   optional content do not change which samples are drawn where).
 
 ### Fixed
-- `redact` treated text clipped away from every rect as not a hit, and
-  accepted non-embedded text under a rectangular clip clear of the
-  rects (0.6.0). A clip hides ink, not text: extraction and selection
-  still find such a code where it stands, inside the rect. Text is now
-  a hit wherever its box meets a rect, clipped or not, and the
-  non-embedded exception is withdrawn (paths, images and shadings
-  clipped away from the rects are still not hits).
+- `redact` treated content clipped away from every rect as not a hit,
+  and accepted non-embedded text under a rectangular clip clear of the
+  rects (0.6.0). A clip hides ink, not data: text is still extracted,
+  image samples and path coordinates still read, where they stand
+  inside the rect. Text, images and paths are now hits wherever they
+  meet a rect, clipped or not, and the non-embedded exception is
+  withdrawn; content under a clip that is not a rectangle is no longer
+  refused for that reason (a shading, which carries no data, is still
+  accepted clipped away from the rects).
 - `redact` refuses text whose text matrix stretches one axis over 16
   times the other: Poppler draws such glyphs far from their outlines.
 - `diagnose_redaction` and the editors grew stroked text by the stroke's

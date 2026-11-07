@@ -643,11 +643,11 @@ fn norotate_links_are_refused() {
     assert!(e.contains("NoRotate"), "{e}");
 }
 
-/// A clip hides ink, not text: a code standing in the rect is removed
-/// even when clipped away there (extraction would still find it);
-/// a path clipped away from the rect is kept.
+/// A clip hides ink, not data: a code or path standing in the rect is
+/// removed even when clipped away there (extraction and readers of the
+/// file still find it).
 #[test]
-fn clipped_text_in_the_rect_is_removed_clipped_paths_kept() {
+fn clipped_content_in_the_rect_is_removed() {
     let pdf = one_page(
         "q 65 0 100 200 re W n BT /F1 40 Tf 50 100 Td (M) Tj ET 50 100 10 30 re f Q",
         "",
@@ -655,7 +655,7 @@ fn clipped_text_in_the_rect_is_removed_clipped_paths_kept() {
         vec![],
     );
     let r = run(&pdf, vec![(50.0, 100.0, 60.0, 140.0)]).unwrap();
-    assert_eq!((r.codes_removed, r.paths_removed), (1, 0));
+    assert_eq!((r.codes_removed, r.paths_removed), (1, 1));
     assert_eq!(page_text(&r.output, 0), "");
 }
 
@@ -719,18 +719,18 @@ fn numbers_survive_the_rewrite() {
 
 // Third independent review (P0, fixed).
 
-/// A clip that is not a rectangle: its bounds meeting a rect does not
-/// mean anything shows there. Refused rather than guessed.
+/// Clips decide nothing in redaction: whatever meets a rect is removed
+/// or cut, under any clip.
 #[test]
-fn non_rectangular_clip_is_refused() {
+fn clips_do_not_decide_hits() {
     let pdf = one_page(
         "q 0 0 m 200 0 l 50 150 l h W n 52 102 30 30 re f Q",
         "",
         "",
         vec![],
     );
-    let e = unsupported(run(&pdf, vec![(50.0, 100.0, 60.0, 140.0)]));
-    assert!(e.contains("not a rectangle"), "{e}");
+    let r = run(&pdf, vec![(50.0, 100.0, 60.0, 140.0)]).unwrap();
+    assert_eq!(r.paths_cut, 1);
     // Rectangular clips, restored by Q and set under changed CTMs,
     // stay exact.
     let ok = one_page(
