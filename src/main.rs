@@ -1927,7 +1927,8 @@ fn run_remove_regions(args: &[String]) -> Result<(), Error> {
 
 fn redact_usage() -> &'static str {
     "usage: kasane-pdf redact <file.pdf> --page <n> --rect <llx> <lly> <urx> <ury> \
-     [--rect …] [--page <m> --rect …] [--remove-structure-tree] --output <out.pdf>\n\
+     [--rect …] [--page <m> --rect …] [--remove-structure-tree] \
+     [--refuse-copies-elsewhere] --output <out.pdf>\n\
      Removes the text, image samples and paths drawn inside the rects (page \
      default user space; --page is 1-based, each --rect belongs to the nearest \
      preceding --page), removes /Info and XMP metadata, leaves no route to an \
@@ -1935,7 +1936,9 @@ fn redact_usage() -> &'static str {
      Structures it cannot process exactly are refused and nothing is written. \
      --remove-structure-tree drops a structure tree with alternate text instead \
      of refusing. The redaction is positional: copies of the information \
-     elsewhere (other pages, annotations, attachments) are listed, not removed."
+     elsewhere (other pages, annotations, an image's original drawn on \
+     another page) are listed, not removed; --refuse-copies-elsewhere \
+     refuses instead when any is found."
 }
 
 /// `redact` subcommand.
@@ -1945,6 +1948,7 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
     let mut specs: Vec<kasane_pdf::PageSpec> = Vec::new();
     let mut output: Option<&str> = None;
     let mut remove_tree = false;
+    let mut refuse_copies = false;
     let mut i = 1;
     let num = |s: &String| -> Result<f64, Error> {
         s.parse::<f64>()
@@ -1985,6 +1989,10 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
                 remove_tree = true;
                 i += 1;
             }
+            "--refuse-copies-elsewhere" => {
+                refuse_copies = true;
+                i += 1;
+            }
             other => {
                 return Err(Error::Structure(format!(
                     "unknown option '{other}'\n{}",
@@ -2010,7 +2018,9 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
     let r = kasane_pdf::redact(
         &doc,
         &specs,
-        &kasane_pdf::RedactOptions::new().remove_structure_tree(remove_tree),
+        &kasane_pdf::RedactOptions::new()
+            .remove_structure_tree(remove_tree)
+            .refuse_copies_elsewhere(refuse_copies),
     )?;
     write_atomic(
         &r.output,
@@ -2034,12 +2044,16 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
     println!("XMP /Metadata removed: {}", r.metadata_removed);
     println!("structure tree removed: {}", r.structure_tree_removed);
     for e in &r.elsewhere {
+        let what = match e.removed {
+            kasane_pdf::Removed::Text(_) => "removed text",
+            kasane_pdf::Removed::Image => "an edited image's original",
+        };
         match &e.location {
             kasane_pdf::ElsewhereLocation::Page(i) => {
-                println!("removed text also shown on page {}", i + 1)
+                println!("{what} also shown on page {}", i + 1)
             }
             kasane_pdf::ElsewhereLocation::Object(o) => {
-                println!("removed text also stored in object {o}")
+                println!("{what} also stored in object {o}")
             }
         }
     }

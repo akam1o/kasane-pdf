@@ -709,6 +709,9 @@ pub(crate) struct RegionsEdit<'a> {
     pub(crate) tagged_links_removed_total: u64,
     /// Redaction mode only: paths crossing a rect's edge, cut there.
     pub(crate) paths_cut_total: u64,
+    /// Redaction mode only: pages that still draw an edited image's
+    /// original outside the rects, with the original's digests.
+    pub(crate) originals_shown: Vec<(usize, [[u8; 32]; 2])>,
 }
 
 /// What `regions_edit_session` does beyond the content editor.
@@ -811,7 +814,7 @@ pub(crate) fn regions_edit_session<'a>(
     let mut original_digests: Vec<[u8; 32]> = Vec::new();
     // Redaction: the refs of edited images, and per page the names
     // still drawn after the edit.
-    let mut edited_originals: HashSet<IndirectRef> = HashSet::new();
+    let mut edited_originals: HashMap<IndirectRef, [[u8; 32]; 2]> = HashMap::new();
     let mut drawn_after: HashMap<IndirectRef, BTreeSet<Vec<u8>>> = HashMap::new();
     let mut removed_text: Vec<String> = Vec::new();
     let mut per_page: Vec<(usize, Vec<Site>)> = Vec::new();
@@ -1254,7 +1257,7 @@ pub(crate) fn regions_edit_session<'a>(
             if let Some(d) = digests {
                 original_digests.extend(d);
                 if let Object::Ref(r) = &entry {
-                    edited_originals.insert(*r);
+                    edited_originals.insert(*r, d);
                 }
             }
 
@@ -1488,8 +1491,10 @@ pub(crate) fn regions_edit_session<'a>(
             Object::Dict(page_dict),
         );
     }
+    let mut originals_shown: Vec<(usize, IndirectRef)> = Vec::new();
     let names_pruned_total = if mode == SessionMode::Redact && !edited_originals.is_empty() {
-        prune_original_names(doc, &mut edit, &edited_originals, &drawn_after)?
+        let refs: HashSet<IndirectRef> = edited_originals.keys().copied().collect();
+        prune_original_names(doc, &mut edit, &refs, &drawn_after, &mut originals_shown)?
     } else {
         0
     };
@@ -1509,6 +1514,10 @@ pub(crate) fn regions_edit_session<'a>(
         links_removed_total,
         tagged_links_removed_total,
         paths_cut_total,
+        originals_shown: originals_shown
+            .into_iter()
+            .map(|(i, r)| (i, edited_originals[&r]))
+            .collect(),
     })
 }
 
@@ -1526,6 +1535,7 @@ fn prune_original_names(
     edit: &mut Edit,
     originals: &HashSet<IndirectRef>,
     drawn_after: &HashMap<IndirectRef, BTreeSet<Vec<u8>>>,
+    shown: &mut Vec<(usize, IndirectRef)>,
 ) -> Result<u64, Error> {
     let mut pruned = 0u64;
     for (index, page) in doc.pages().iter().enumerate() {
@@ -1584,16 +1594,24 @@ fn prune_original_names(
                 })
                 .collect(),
         };
-        if let Some(n) = named.iter().find(|n| drawn.contains(*n)) {
-            return Err(Error::Unsupported {
-                feature: "redaction of an image that is also drawn unredacted",
-                detail: format!(
-                    "page {} draws /{} outside the redaction rects; its original \
-                     samples would stay in the output",
-                    page_label(index),
-                    String::from_utf8_lossy(n)
-                ),
-            });
+        // A page that still draws an original shows it unredacted:
+        // the name stays, and the display is reported (the caller may
+        // refuse it).
+        let xobjects = doc
+            .deref(res.get(b"XObject".as_slice()).expect("named above"))?
+            .as_dict()
+            .cloned()
+            .expect("checked above");
+        for n in named.iter().filter(|n| drawn.contains(*n)) {
+            if let Some(Object::Ref(r)) = xobjects.get(n) {
+                if !shown.contains(&(index, *r)) {
+                    shown.push((index, *r));
+                }
+            }
+        }
+        let named: Vec<Vec<u8>> = named.into_iter().filter(|n| !drawn.contains(n)).collect();
+        if named.is_empty() {
+            continue;
         }
         if let Some(why) = inherits_page_resources(doc, &res)? {
             return Err(Error::Unsupported {

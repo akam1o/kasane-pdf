@@ -121,8 +121,14 @@ CASES = [
         8: IMAGE,
         9: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /XObject << /Im1 8 0 R >> >> /Contents 10 0 R >>",
         10: stream(b"", b"q 50 0 0 50 0 0 cm /Im1 Do Q"),
-    }), [], "refused"),
+    }), [], "ok"),
 ]
+# The same file with the document-wide option: the original still drawn
+# on page 2 is a copy elsewhere, so refused.
+CASES.append(("image-shown-on-two-pages-refuse-copies", CASES[-1][1], ["--refuse-copies-elsewhere"], "refused"))
+# Cases whose original image samples legitimately stay (another page
+# draws the original; the redaction is positional and reports it).
+ORIGINAL_STAYS = {"image-shown-on-two-pages"}
 
 
 def rects_custom(args):
@@ -179,7 +185,7 @@ def run():
                 data = open(plain, "rb").read()
                 if SECRET in data:
                     problems.append("secret text bytes present after full decode")
-                if SAMPLES[:96] in data:
+                if SAMPLES[:96] in data and name not in ORIGINAL_STAYS:
                     problems.append("original image samples present after full decode")
                 if "image" not in name and not rects_custom(args):
                     ink = ink_inside(out, tmp)

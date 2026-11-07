@@ -41,14 +41,33 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 | document `/Info`, catalog XMP `/Metadata` | always removed |
 | structure tree | refused when it carries `/Alt`, `/ActualText` or `/E`; with `remove_structure_tree(true)` the tree and `/MarkInfo` are removed |
 
+## What a success states
+
+Three separate statements; none implies the next:
+
+1. **The rects** — verified: the same rects find no text, sample,
+   path or link left to remove.
+2. **The edited originals** — verified: no live object equals an edited
+   image's original (stored or decoded digest), except originals that
+   another page, or the same page outside the rects, still draws; those
+   displays are kept and listed in `elsewhere` as `Removed::Image`. The
+   same picture re-encoded differently is not detected by a digest.
+3. **The rest of the document** — reported, not guaranteed:
+   `elsewhere` (removed text found again; originals still drawn) and
+   `residual` (the output's audit). `refuse_copies_elsewhere(true)`
+   (CLI `--refuse-copies-elsewhere`) refuses when anything is found or a
+   page could not be searched — narrower, still not a proof of erasure.
+
 ## No route back to the original
 
 - On every page, an `/XObject` name of an edited image's original that
   the page does not draw is removed — otherwise an inherited
   `/Resources` keeps the original reachable from pages that never
   showed it (`original_names_removed`).
-- A page that still draws the original outside the rects is refused:
-  its unredacted samples would stay in the output.
+- A page that still draws the original outside the rects keeps it:
+  the rects are redacted on the edited page's copy, the other display
+  is reported (`Removed::Image` in `elsewhere`), or refused with
+  `refuse_copies_elsewhere`.
 - When a form, Type 3 font or tiling pattern without `/Resources` would
   resolve names in the page's resources, the use is undecidable:
   refused.
@@ -90,9 +109,9 @@ overlapping filled rectangles, a corner whose join reaches a rect), a
 path that also clips, content meeting a rect under a clip that is not an
 axis-aligned rectangle (whether it shows there is not decided), an
 operator other than path construction inside a path object (§8.2), a
-NoZoom or NoRotate link. Anywhere: an edited image drawn unredacted, an
+NoZoom or NoRotate link. Anywhere: an
 undecidable resource use, a structure tree with alternate text (by
-default). Rewrite refusals (signed or encrypted documents, …) apply.
+default); with `refuse_copies_elsewhere`, any copy found elsewhere. Rewrite refusals (signed or encrypted documents, …) apply.
 
 ## Positional, not semantic
 

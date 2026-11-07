@@ -212,11 +212,12 @@ fn an_inherited_unused_original_is_not_carried() {
     assert!(!contains(&r.output, &secret_samples()[..96]));
 }
 
-/// The same image drawn unredacted elsewhere keeps its samples in the
-/// output: refused.
+/// The same image drawn unredacted elsewhere — here the same page,
+/// outside the rect — keeps its original in the file: the redaction of
+/// the rect succeeds, the display is reported, and refused on request.
 #[test]
-fn an_image_also_drawn_elsewhere_is_refused() {
-    let objs_pdf = build_pdf(&[
+fn an_image_also_drawn_elsewhere_is_reported() {
+    let pdf = build_pdf(&[
         (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
         (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
         (
@@ -234,8 +235,56 @@ fn an_image_also_drawn_elsewhere_is_refused() {
         ),
         (5, image_obj()),
     ]);
-    let e = unsupported(run(&objs_pdf, vec![(40.0, 40.0, 100.0, 100.0)]));
-    assert!(e.contains("also drawn unredacted"), "{e}");
+    let r = run(&pdf, vec![(40.0, 40.0, 100.0, 100.0)]).unwrap();
+    assert_eq!(r.images_edited, 1);
+    assert!(r.elsewhere.iter().any(
+        |e| e.removed == kasane_pdf::Removed::Image && e.location == ElsewhereLocation::Page(0)
+    ));
+    assert!(
+        contains(&r.output, &secret_samples()),
+        "the other display keeps it"
+    );
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let e = unsupported(redact(
+        &doc,
+        &[(0, vec![(40.0, 40.0, 100.0, 100.0)])],
+        &RedactOptions::new().refuse_copies_elsewhere(true),
+    ));
+    assert!(e.contains("remains elsewhere"), "{e}");
+}
+
+/// An image shared by two pages: the redacted page draws an edited
+/// copy, the other page keeps the original (reported).
+#[test]
+fn a_shared_image_is_redacted_on_one_page_only() {
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (
+            2,
+            b"<< /Type /Pages /Kids [3 0 R 6 0 R] /Count 2 >>".to_vec(),
+        ),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"q 100 0 0 100 50 50 cm /Im1 Do Q")),
+        (5, image_obj()),
+        (
+            6,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /XObject << /Im1 5 0 R >> >> /Contents 7 0 R >>"
+                .to_vec(),
+        ),
+        (7, stream_obj("", b"q 100 0 0 100 50 50 cm /Im1 Do Q")),
+    ]);
+    let r = run(&pdf, vec![(50.0, 50.0, 150.0, 150.0)]).unwrap();
+    assert_eq!(r.pixels_changed, 256);
+    assert_eq!(pixel(&r.output, 100, 100), 0, "page 1: blackened");
+    assert!(r.elsewhere.iter().any(
+        |e| e.removed == kasane_pdf::Removed::Image && e.location == ElsewhereLocation::Page(1)
+    ));
 }
 
 /// A painted path inside a rect is removed; one crossing a rect's edge,
@@ -347,7 +396,10 @@ fn removed_text_elsewhere_is_reported() {
             .any(|l| matches!(l, ElsewhereLocation::Object(_))),
         "{locs:?}"
     );
-    assert!(r.elsewhere.iter().all(|e| e.text == "SECRETTEXT"));
+    assert!(r
+        .elsewhere
+        .iter()
+        .all(|e| e.removed == kasane_pdf::Removed::Text("SECRETTEXT".into())));
     assert!(
         !format!("{r:?}").contains("SECRET"),
         "Debug carries no text"

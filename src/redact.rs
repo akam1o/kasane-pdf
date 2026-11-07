@@ -1,35 +1,39 @@
-//! Redaction: remove what is drawn inside page rectangles, and prove
+//! Redaction: remove what is drawn inside page rectangles, and check
 //! on the written bytes that it is gone.
 //!
-//! [`redact`] builds on the region editor (`remove_regions`) and adds
-//! what makes the result fit for distribution:
+//! [`redact`] builds on the region editor (`remove_regions`). Its
+//! result makes three separate statements — do not read one as
+//! another:
 //!
-//! - **Removal, not covering.** Text codes and image samples inside
-//!   the rects are removed or zeroed as by the editor; painted paths
-//!   inside a rect are removed too. Nothing is painted over anything.
-//! - **No route back to the original.** An edited image's original
-//!   may not stay reachable: names of it on pages that do not draw it
-//!   are removed, and a page that still draws it unredacted is
-//!   refused. The trailer `/Info` and catalog `/Metadata` (XMP) are
-//!   removed. A structure tree carrying alternate text (`/Alt`,
-//!   `/ActualText`, `/E`), which may repeat the removed text, is
-//!   refused unless the caller asks for the tree to be removed.
-//! - **Verified output.** The written PDF is parsed again and checked
-//!   before it is returned: one revision only; the same rects find no
-//!   text, path or nonzero image sample to remove; and no stream —
-//!   every live object, decoded — equals an edited image's original
-//!   samples or stored bytes. A failed check is an error, never a
-//!   returned PDF.
+//! 1. **The rects (verified).** Text codes, image samples and painted
+//!    paths inside the rects are removed (paths crossing a rect's edge
+//!    are cut there), never painted over. Checked on the output: the
+//!    same rects find nothing left to remove.
+//! 2. **The edited originals (verified, with stated exceptions).** No
+//!    live object of the output — every stream, stored or decoded —
+//!    equals an edited image's original, except where another page
+//!    (or the same page outside the rects) still draws that original:
+//!    those displays are kept and listed in [`Redaction::elsewhere`].
+//!    Names of an original on pages that do not draw it are removed.
+//!    The output is a single revision (no incremental history, no
+//!    unreachable objects carried). Equal digests are the test: the
+//!    same picture re-encoded differently is *not* detected here.
+//! 3. **The rest of the document (reported, not guaranteed).**
+//!    [`Redaction::elsewhere`] lists where removed text (runs of four
+//!    or more characters) is found again — other pages' extracted
+//!    text, objects' strings — and originals still drawn;
+//!    [`Redaction::residual`] audits what else the output carries
+//!    (attachments, annotations, form values, actions …). Not finding
+//!    text by extraction does not mean it is absent (text in images or
+//!    fonts, other encodings). [`RedactOptions::refuse_copies_elsewhere`]
+//!    turns any finding into a refusal.
 //!
-//! Everything the editor refuses stays refused (annotations on an
-//! edited page, forms, masks, non-fill text, …): a structure that
-//! cannot be processed exactly is an error, not a best-effort result.
-//!
-//! The redaction is **positional**: what is drawn inside the rects is
-//! removed. The same information elsewhere — another occurrence of the
-//! text on another page, an outline title, an attachment, a form
-//! value — is not searched for; [`Redaction::residual`] lists the
-//! surfaces the output still carries for the caller to review.
+//! Always: `/Info` and catalog XMP are removed; a structure tree with
+//! alternate text (`/Alt`, `/ActualText`, `/E`) is refused unless the
+//! caller asks for it to be removed. Everything the editor refuses
+//! stays refused: a structure that cannot be processed exactly is an
+//! error, never a best-effort result, and a failed check returns no
+//! PDF.
 
 use crate::audit::{audit_residuals, ResidualAudit};
 use crate::document::Document;
@@ -45,6 +49,7 @@ use std::collections::HashSet;
 pub struct RedactOptions {
     limits: Limits,
     remove_structure_tree: bool,
+    refuse_copies_elsewhere: bool,
 }
 
 impl RedactOptions {
@@ -65,6 +70,17 @@ impl RedactOptions {
     /// text. The output is then untagged.
     pub fn remove_structure_tree(mut self, remove: bool) -> Self {
         self.remove_structure_tree = remove;
+        self
+    }
+
+    /// Refuse instead of reporting when the removed content is found
+    /// again in the output ([`Redaction::elsewhere`] not empty) or a
+    /// page could not be searched for it. This narrows the result to
+    /// "not found elsewhere by these searches" — still not a proof of
+    /// erasure: text inside images, fonts or differently encoded is
+    /// not searched.
+    pub fn refuse_copies_elsewhere(mut self, refuse: bool) -> Self {
+        self.refuse_copies_elsewhere = refuse;
         self
     }
 }
@@ -99,11 +115,14 @@ pub struct Redaction {
     /// The input's structure tree was removed (only with
     /// [`RedactOptions::remove_structure_tree`]).
     pub structure_tree_removed: bool,
-    /// Text removed from the rects (runs of at least four
-    /// non-whitespace characters) that the output still shows or
-    /// stores elsewhere — another page's content, an outline title, an
-    /// annotation's contents … The redaction is positional; these are
-    /// for the caller to decide on.
+    /// What was removed from the rects that the output still shows or
+    /// stores elsewhere: removed text (runs of at least four
+    /// non-whitespace characters) in another page's text or an
+    /// object's strings (an outline title, an annotation's contents …),
+    /// and edited images whose original another page — or the same
+    /// page outside the rects — still draws. The redaction is
+    /// positional; these are for the caller to decide on, or to refuse
+    /// with [`RedactOptions::refuse_copies_elsewhere`].
     pub elsewhere: Vec<Elsewhere>,
     /// Pages whose text could not be extracted for that search (an
     /// unsupported construct or a limit): not searched, not clean.
@@ -125,22 +144,33 @@ pub enum ElsewhereLocation {
     Object(crate::object::IndirectRef),
 }
 
-/// One finding of [`Redaction::elsewhere`].
-#[derive(Clone)]
-pub struct Elsewhere {
-    /// The removed text that was found.
-    pub text: String,
-    /// Where.
-    pub location: ElsewhereLocation,
+/// What of the removed content a finding of [`Redaction::elsewhere`]
+/// is about.
+#[derive(Clone, PartialEq, Eq)]
+pub enum Removed {
+    /// Removed text, found again.
+    Text(String),
+    /// An image edited in the rects whose original is still drawn
+    /// unredacted at the location ([`ElsewhereLocation::Page`]).
+    Image,
 }
 
-impl std::fmt::Debug for Elsewhere {
+impl std::fmt::Debug for Removed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Elsewhere")
-            .field("text_chars", &self.text.chars().count())
-            .field("location", &self.location)
-            .finish()
+        match self {
+            Removed::Text(t) => write!(f, "Text({} chars)", t.chars().count()),
+            Removed::Image => f.write_str("Image"),
+        }
     }
+}
+
+/// One finding of [`Redaction::elsewhere`].
+#[derive(Debug, Clone)]
+pub struct Elsewhere {
+    /// What was found again.
+    pub removed: Removed,
+    /// Where.
+    pub location: ElsewhereLocation,
 }
 
 impl std::fmt::Debug for Redaction {
@@ -230,8 +260,37 @@ pub fn redact(
             strip_metadata: true,
         })?;
 
-    let (out, residual) = verify(&output, specs, limits, &s.original_digests)?;
-    let (elsewhere, elsewhere_unsearched_pages) = find_elsewhere(&out, &s.removed_text, limits)?;
+    // Originals another page still draws stay in the file by design;
+    // every other copy must be gone.
+    let shown: HashSet<[u8; 32]> = s.originals_shown.iter().flat_map(|(_, d)| *d).collect();
+    let must_be_gone: Vec<[u8; 32]> = s
+        .original_digests
+        .iter()
+        .copied()
+        .filter(|d| !shown.contains(d))
+        .collect();
+    let (out, residual) = verify(&output, specs, limits, &must_be_gone)?;
+    let (mut elsewhere, elsewhere_unsearched_pages) =
+        find_elsewhere(&out, &s.removed_text, limits)?;
+    let mut pages: Vec<usize> = s.originals_shown.iter().map(|(p, _)| *p).collect();
+    pages.sort_unstable();
+    pages.dedup();
+    elsewhere.extend(pages.into_iter().map(|p| Elsewhere {
+        removed: Removed::Image,
+        location: ElsewhereLocation::Page(p),
+    }));
+    if options.refuse_copies_elsewhere
+        && (!elsewhere.is_empty() || !elsewhere_unsearched_pages.is_empty())
+    {
+        return Err(Error::Unsupported {
+            feature: "redaction: removed content remains elsewhere",
+            detail: format!(
+                "{} finding(s) of removed text or images elsewhere, {} page(s) not searched",
+                elsewhere.len(),
+                elsewhere_unsearched_pages.len()
+            ),
+        });
+    }
 
     Ok(Redaction {
         output,
@@ -350,7 +409,7 @@ fn find_elsewhere(
         for t in &texts {
             if shown.contains(t) {
                 found.push(Elsewhere {
-                    text: t.to_string(),
+                    removed: Removed::Text(t.to_string()),
                     location: ElsewhereLocation::Page(i),
                 });
             }
@@ -371,7 +430,7 @@ fn find_elsewhere(
         for t in &texts {
             if strings.iter().any(|s| s.contains(t)) {
                 found.push(Elsewhere {
-                    text: t.to_string(),
+                    removed: Removed::Text(t.to_string()),
                     location: ElsewhereLocation::Object(r),
                 });
             }

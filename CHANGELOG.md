@@ -23,6 +23,14 @@ versions follow [Semantic Versioning](https://semver.org/).
   straight segments along their centreline with the stroke's reach
   (line width, caps, joins, CTM) kept clear of the rect. Curves,
   dashed strokes and other fills near a rect are still refused.
+- `redact`: an image whose original another page (or the same page
+  outside the rects) still draws is redacted on the edited page's copy
+  instead of refused; the other display is kept and reported in
+  `elsewhere` (`Removed::Image`). `Elsewhere` now carries `removed:
+  Removed` (text or image) instead of `text`.
+  `RedactOptions::refuse_copies_elsewhere` (CLI
+  `--refuse-copies-elsewhere`) refuses whenever removed content is
+  found elsewhere.
 - `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
   RFC 7932 data including large windows, Flate predictors, refused on
   inline images. Output and decoder memory are bounded by
