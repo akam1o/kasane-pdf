@@ -6,7 +6,11 @@
 # default query suite) on the exact release commit without uploading,
 # and fails if any result is not one of the repository's reviewed
 # (dismissed) alerts — the same condition under which the default
-# setup's check is green on the default branch.
+# setup's check is green on the default branch. A result matches a
+# dismissed alert by rule, file and the text of the flagged line and
+# two lines either side (at
+# the commit the alert was last seen on), so the same code on a
+# shifted line still matches, as GitHub's own line-hash matching does.
 name: codeql-release
 
 on:
@@ -28,6 +32,8 @@ jobs:
         language: [actions, python, rust]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: ${{ matrix.language }}
@@ -42,19 +48,35 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh api --paginate "repos/${GITHUB_REPOSITORY}/code-scanning/alerts?state=dismissed&per_page=100" \
-            --jq '.[] | [.rule.id, .most_recent_instance.location.path, (.most_recent_instance.location.start_line | tostring)] | @tsv' \
+            --jq '.[] | [.rule.id, .most_recent_instance.location.path, (.most_recent_instance.location.start_line | tostring), .most_recent_instance.commit_sha] | @tsv' \
             > dismissed.tsv
           python3 - <<'EOF'
-          import glob, json
-          dismissed = {tuple(line.rstrip("\n").split("\t")) for line in open("dismissed.tsv") if line.strip()}
+          import glob, json, subprocess
+          def line_at(rev, path, n):
+              r = subprocess.run(["git", "show", f"{rev}:{path}"], capture_output=True, text=True)
+              lines = r.stdout.splitlines() if r.returncode == 0 else []
+              # The flagged line with two lines of context either side.
+              if not 0 < n <= len(lines):
+                  return None
+              return "\n".join(l.strip() for l in lines[max(0, n - 3):n + 2])
+          dismissed = set()
+          for line in open("dismissed.tsv"):
+              if line.strip():
+                  rule, path, n, sha = line.rstrip("\n").split("\t")
+                  dismissed.add((rule, path, n))
+                  text = line_at(sha, path, int(n))
+                  if text:
+                      dismissed.add((rule, path, text))
           new, total = [], 0
           for path in glob.glob("sarif/*.sarif"):
               for run in json.load(open(path))["runs"]:
                   for r in run.get("results", []):
                       total += 1
                       loc = r["locations"][0]["physicalLocation"]
-                      key = (r["ruleId"], loc["artifactLocation"]["uri"], str(loc["region"]["startLine"]))
-                      if key not in dismissed:
+                      uri, n = loc["artifactLocation"]["uri"], loc["region"]["startLine"]
+                      key = (r["ruleId"], uri, str(n))
+                      text = line_at("HEAD", uri, n)
+                      if key not in dismissed and (r["ruleId"], uri, text) not in dismissed:
                           new.append(key)
           print(f"{total} result(s); {len(new)} not among the {len(dismissed)} reviewed alerts")
           for k in new:
