@@ -37,6 +37,11 @@ versions follow [Semantic Versioning](https://semver.org/).
   elsewhere is reported (`Removed::Form`), otherwise not carried.
 - `redact` keeps an inline image that meets no rect (one meeting a rect
   is still refused).
+- `redact` edits nested forms (up to 16 deep) and images inside forms:
+  every form on the invocation chain is copied for that invocation, the
+  copies call each other, and each copy's `/Resources` names only what
+  it draws. Originals reachable from an original form still drawn
+  elsewhere stay with it and are reported.
 - `/BrotliDecode` (PDF Association extension EXTN-BROTLI-1 to PDF 2.0):
   RFC 7932 data including large windows, Flate predictors, refused on
   inline images. Output and decoder memory are bounded by

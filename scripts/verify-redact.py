@@ -108,7 +108,10 @@ CASES = [
         8: stream(b"/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 5 0 R >> >>", TEXT)})), [], "ok"),
     ("form-in-form", build(page(b"/Fm Do", res=b"/XObject << /Fm 8 0 R >>", more={
         8: stream(b"/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /XObject << /In 9 0 R >> >>", b"/In Do"),
-        9: stream(b"/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 5 0 R >> >>", TEXT)})), [], "refused"),
+        9: stream(b"/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 5 0 R >> >>", TEXT)})), [], "ok"),
+    ("image-in-form", build(page(TEXT + b" /Fm Do", res=b"/Font << /F1 5 0 R >> /XObject << /Fm 8 0 R >>", more={
+        8: stream(b"/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /XObject << /Im1 9 0 R >> >>", b"q 100 0 0 20 50 92 cm /Im1 Do Q"),
+        9: IMAGE})), [], "ok"),
     ("text-annotation", build(page(TEXT, page_extra=b"/Annots [8 0 R]", more={
         8: b"<< /Type /Annot /Subtype /Text /Rect [50 95 60 105] /Contents (SECRETTEXT) >>"})), [], "refused"),
     # Structures common in real documents.

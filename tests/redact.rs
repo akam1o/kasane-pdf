@@ -1087,31 +1087,64 @@ fn a_form_drawn_again_elsewhere_is_reported() {
         .any(|e| matches!(e.removed, kasane_pdf::Removed::Text(_))));
 }
 
-/// Nested forms and images inside a form that meet a rect are refused.
+/// A form drawn by a form, and images inside forms, are edited in
+/// copies along the whole invocation chain.
 #[test]
-fn nested_forms_and_form_images_are_refused() {
-    let nested = form_page(
-        "/Fm Do",
-        "/Resources << /XObject << /In 31 0 R >> /Font << /F1 20 0 R >> >>",
-        "/In Do",
-        vec![(
-            31,
-            stream_obj(
-                "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 20 0 R >> >>",
-                b"BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET",
+fn nested_forms_and_form_images_are_redacted() {
+    let nested = build_pdf(&{
+        let mut o = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /XObject << /Fm 30 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
             ),
-        )],
+            (4, stream_obj("", b"q 1 0 0 1 0 10 cm /Fm Do Q")),
+            (
+                30,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+                     /Resources << /XObject << /In 31 0 R >> >>",
+                    b"q 1 0 0 1 0 -10 cm /In Do Q",
+                ),
+            ),
+            (
+                31,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 20 0 R >> >>",
+                    b"BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET BT /F1 12 Tf 10 20 Td (PUBLICWORD) Tj ET",
+                ),
+            ),
+        ];
+        o.extend(font_objs());
+        o
+    });
+    let r = run(&nested, vec![RECT]).unwrap();
+    assert_eq!((r.codes_removed, r.forms_edited), (10, 2));
+    let text = page_text(&r.output, 0);
+    assert!(
+        text.contains("PUBLICWORD") && !text.contains("SECRET"),
+        "{text}"
     );
-    let e = unsupported(run(&nested, vec![RECT]));
-    assert!(e.contains("nested form"), "{e}");
+    assert!(!contains(&r.output, b"SECRETTEXT"));
+
+    // An image inside a form, half inside the rect.
     let image = form_page(
         "/Fm Do",
         "/Resources << /XObject << /I 31 0 R >> >>",
-        "q 100 0 0 30 50 90 cm /I Do Q",
+        "q 100 0 0 100 0 50 cm /I Do Q",
         vec![(31, image_obj())],
     );
-    let e = unsupported(run(&image, vec![RECT]));
-    assert!(e.contains("image inside a form"), "{e}");
+    let r = run(&image, vec![(50.0, 0.0, 200.0, 200.0)]).unwrap();
+    assert_eq!((r.images_edited, r.forms_edited), (1, 1));
+    assert_eq!(r.pixels_changed, 128);
+    assert_eq!(at(&r.output, 75, 100), 0, "redacted half: black");
+    assert!(
+        !contains(&r.output, &secret_samples()[..96]),
+        "the original is not carried"
+    );
 }
 
 /// An inline image away from the rects is kept as it is; one meeting a
@@ -1270,4 +1303,179 @@ fn equal_originals_shown_elsewhere_each_stay_once() {
     ]);
     let r = run(&pdf, vec![(40.0, 40.0, 160.0, 160.0)]).unwrap();
     assert_eq!(r.images_edited, 2);
+}
+
+// Forms: nesting, sharing, inheritance, cycles.
+
+fn doc_with(page_res: &str, pages: &[&[u8]], extra: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+    let kids: Vec<String> = (0..pages.len())
+        .map(|i| format!("{} 0 R", 100 + 2 * i))
+        .collect();
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (
+            2,
+            format!(
+                "<< /Type /Pages /Kids [{}] /Count {} >>",
+                kids.join(" "),
+                pages.len()
+            )
+            .into_bytes(),
+        ),
+    ];
+    for (i, c) in pages.iter().enumerate() {
+        let n = 100 + 2 * i as u32;
+        objs.push((
+            n,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << {page_res} >> \
+                 /Contents {} 0 R >>",
+                n + 1
+            )
+            .into_bytes(),
+        ));
+        objs.push((n + 1, stream_obj("", c)));
+    }
+    objs.extend(font_objs());
+    objs.extend(extra);
+    build_pdf(&objs)
+}
+
+const FORM: &str = "/Type /XObject /Subtype /Form /BBox [0 0 200 200]";
+
+#[test]
+fn an_image_in_a_nested_form_is_redacted() {
+    let pdf = doc_with(
+        "/XObject << /Fm 30 0 R >>",
+        &[b"/Fm Do"],
+        vec![
+            (
+                30,
+                stream_obj(
+                    &format!("{FORM} /Resources << /XObject << /In 31 0 R >> >>"),
+                    b"/In Do",
+                ),
+            ),
+            (
+                31,
+                stream_obj(
+                    &format!(
+                        "{FORM} /Matrix [1 0 0 1 0 50] /Resources << /XObject << /I 32 0 R >> >>"
+                    ),
+                    b"q 100 0 0 100 0 0 cm /I Do Q",
+                ),
+            ),
+            (32, image_obj()),
+        ],
+    );
+    let r = run(&pdf, vec![(50.0, 0.0, 200.0, 200.0)]).unwrap();
+    assert_eq!(
+        (r.images_edited, r.forms_edited, r.pixels_changed),
+        (1, 2, 128)
+    );
+    assert_eq!(at(&r.output, 75, 100), 0);
+    assert_ne!(at(&r.output, 25, 100), 0, "the half outside is kept");
+    assert!(!contains(&r.output, &secret_samples()[..96]));
+}
+
+/// A form (with an image inside) shared by two pages: page 1 draws
+/// edited copies, page 2 the originals — kept once and reported.
+#[test]
+fn a_shared_form_with_an_image_is_redacted_on_one_page() {
+    let pdf = doc_with(
+        "/XObject << /Fm 30 0 R >>",
+        &[b"/Fm Do", b"/Fm Do"],
+        vec![
+            (
+                30,
+                stream_obj(
+                    &format!("{FORM} /Resources << /XObject << /I 32 0 R >> >>"),
+                    b"q 100 0 0 100 50 50 cm /I Do Q",
+                ),
+            ),
+            (32, image_obj()),
+        ],
+    );
+    let r = run(&pdf, vec![(50.0, 50.0, 150.0, 150.0)]).unwrap();
+    assert_eq!(
+        (r.images_edited, r.forms_edited, r.pixels_changed),
+        (1, 1, 256)
+    );
+    assert_eq!(pixel(&r.output, 100, 100), 0);
+    assert!(r.elsewhere.iter().any(
+        |e| e.removed == kasane_pdf::Removed::Form && e.location == ElsewhereLocation::Page(1)
+    ));
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let e = unsupported(redact(
+        &doc,
+        &[(0, vec![(50.0, 50.0, 150.0, 150.0)])],
+        &RedactOptions::new().refuse_copies_elsewhere(true),
+    ));
+    assert!(e.contains("remains elsewhere"), "{e}");
+}
+
+/// A form without /Resources draws an image named by the page.
+#[test]
+fn an_image_in_a_form_inheriting_page_resources_is_redacted() {
+    let pdf = doc_with(
+        "/XObject << /Fm 30 0 R /I 32 0 R >>",
+        &[b"/Fm Do"],
+        vec![
+            (30, stream_obj(FORM, b"q 100 0 0 100 50 50 cm /I Do Q")),
+            (32, image_obj()),
+        ],
+    );
+    let r = run(&pdf, vec![(50.0, 50.0, 150.0, 150.0)]).unwrap();
+    assert_eq!((r.images_edited, r.forms_edited), (1, 1));
+    assert!(!contains(&r.output, &secret_samples()[..96]));
+}
+
+/// One of two invocations of a form meets the rect: only it is edited.
+#[test]
+fn only_the_invocation_in_the_rect_is_edited() {
+    let pdf = doc_with(
+        "/XObject << /Fm 30 0 R >>",
+        &[b"q 1 0 0 1 0 50 cm /Fm Do Q q 1 0 0 1 0 -40 cm /Fm Do Q"],
+        vec![
+            (
+                30,
+                stream_obj(
+                    &format!("{FORM} /Resources << /XObject << /I 32 0 R >> >>"),
+                    b"q 40 0 0 40 60 50 cm /I Do Q",
+                ),
+            ),
+            (32, image_obj()),
+        ],
+    );
+    let r = run(&pdf, vec![(50.0, 90.0, 110.0, 150.0)]).unwrap();
+    assert_eq!((r.images_edited, r.forms_edited), (1, 1));
+    assert_eq!(at(&r.output, 80, 120), 0, "edited: black");
+    assert_ne!(
+        at(&r.output, 80, 30),
+        0,
+        "the other invocation keeps the original"
+    );
+    assert!(r
+        .elsewhere
+        .iter()
+        .any(|e| e.removed == kasane_pdf::Removed::Form));
+}
+
+/// A form that draws itself is refused, not followed.
+#[test]
+fn a_form_cycle_is_refused() {
+    let pdf = doc_with(
+        "/XObject << /Fm 30 0 R >> /Font << /F1 20 0 R >>",
+        &[b"/Fm Do"],
+        vec![(
+            30,
+            stream_obj(
+                &format!(
+                    "{FORM} /Resources << /XObject << /Fm 30 0 R >> /Font << /F1 20 0 R >> >>"
+                ),
+                format!("{SECRET} /Fm Do").as_bytes(),
+            ),
+        )],
+    );
+    assert!(run(&pdf, vec![RECT]).is_err());
 }

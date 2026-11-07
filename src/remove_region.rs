@@ -1005,25 +1005,10 @@ pub(crate) fn regions_edit_session<'a>(
             let depth = t.site.form_path.len();
             let hit = !t.hits.is_empty();
             match t.kind {
-                _ if depth > 1 && hit => {
+                _ if depth as u64 > MAX_REDACT_FORM_DEPTH && hit => {
                     return Err(Error::Unsupported {
-                        feature: "redaction inside a nested form",
+                        feature: "redaction inside forms nested too deeply",
                         detail: format!("op #{} at form depth {depth}", t.site.op_index),
-                    })
-                }
-                TargetKind::Form if depth == 1 && hit => {
-                    return Err(Error::Unsupported {
-                        feature: "redaction inside a nested form",
-                        detail: format!(
-                            "a form drawn by a form meets a rect (op #{})",
-                            t.site.op_index
-                        ),
-                    })
-                }
-                TargetKind::Image if depth == 1 && hit => {
-                    return Err(Error::Unsupported {
-                        feature: "redaction of an image inside a form",
-                        detail: format!("op #{}", t.site.op_index),
                     })
                 }
                 TargetKind::Text => {
@@ -1108,44 +1093,10 @@ pub(crate) fn regions_edit_session<'a>(
         type FrameKey = (Vec<crate::redact_diag::FormFrame>, usize);
         let mut removed_op_set: BTreeSet<FrameKey> = BTreeSet::new();
         let mut replacements: BTreeMap<FrameKey, Vec<Operation>> = BTreeMap::new();
-        // The ops (and stream) of each form invocation the page draws
-        // directly, loaded once.
-        let mut form_streams: BTreeMap<
-            Vec<crate::redact_diag::FormFrame>,
-            (Vec<Operation>, Dict, Object),
-        > = BTreeMap::new();
-        let load_form = |fp: &[crate::redact_diag::FormFrame]| -> Result<(Vec<Operation>, Dict, Object), Error> {
-            let frame = &fp[0];
-            let entry = doc
-                .resolve_resource_raw(
-                    page.resources()
-                        .ok_or_else(|| Error::Structure("page has no /Resources".into()))?,
-                    "XObject",
-                    &frame.name,
-                )?
-                .ok_or_else(|| {
-                    Error::Structure(format!(
-                        "/XObject /{} no longer resolves",
-                        String::from_utf8_lossy(&frame.name)
-                    ))
-                })?;
-            let obj = doc.deref(&entry)?;
-            let (fdict, fraw) = obj
-                .as_stream()
-                .ok_or_else(|| Error::Structure("form XObject is not a stream".into()))?;
-            let decoded = doc.decode_stream(fdict, fraw)?;
-            let mut warnings = Vec::new();
-            let fops = crate::content::parse_content_stream(
-                &[decoded],
-                limits,
-                doc.recovery_mode(),
-                &mut warnings,
-            )?;
-            for w in warnings {
-                doc.push_warning(w);
-            }
-            Ok((fops, fdict.clone(), entry))
-        };
+        // Each form invocation chain's ops, stream dict, entry and
+        // effective resources, loaded once.
+        let mut form_streams: BTreeMap<Vec<crate::redact_diag::FormFrame>, FormNode> =
+            BTreeMap::new();
         let mut paths_removed: u64 = 0;
         let mut paths_cut: u64 = 0;
         if mode == SessionMode::Redact {
@@ -1154,20 +1105,14 @@ pub(crate) fn regions_edit_session<'a>(
                     continue;
                 }
                 let fp = t.site.form_path.clone();
-                if fp.len() > 1 {
-                    return Err(Error::Unsupported {
-                        feature: "redaction inside a nested form",
-                        detail: format!("op #{}", t.site.op_index),
-                    });
-                }
                 if !fp.is_empty() && !form_streams.contains_key(&fp) {
-                    let f = load_form(&fp)?;
+                    let f = load_form_node(doc, page, &fp, limits)?;
                     form_streams.insert(fp.clone(), f);
                 }
                 let these: &[Operation] = if fp.is_empty() {
                     &ops
                 } else {
-                    &form_streams[&fp].0
+                    &form_streams[&fp].ops
                 };
                 let inside = validated.iter().any(|r| rect_contains(r, t.bounds));
                 let paint = t.site.op_index;
@@ -1230,7 +1175,7 @@ pub(crate) fn regions_edit_session<'a>(
             BTreeMap::new();
         let mut site_lookup: BTreeMap<(Vec<crate::redact_diag::FormFrame>, usize, usize), Site> =
             BTreeMap::new();
-        let mut to_edit_image: BTreeMap<usize, (Site, Matrix, Option<IndirectRef>, Vec<u8>)> =
+        let mut to_edit_image: BTreeMap<FrameKey, (Site, Matrix, Option<IndirectRef>, Vec<u8>)> =
             BTreeMap::new();
         for t in &walker.targets {
             match t.kind {
@@ -1245,13 +1190,18 @@ pub(crate) fn regions_edit_session<'a>(
                         .or_insert_with(|| t.site.clone());
                     to_remove_text.entry(key).or_default().push(ci);
                 }
-                TargetKind::Image if t.site.form_path.is_empty() && !t.hits.is_empty() => {
+                TargetKind::Image
+                    if !t.hits.is_empty()
+                        && (t.site.form_path.is_empty() || mode == SessionMode::Redact) =>
+                {
                     if let TargetDetail::Image {
                         xobj, name, ctm, ..
                     } = &t.detail
                     {
-                        to_edit_image
-                            .insert(t.site.op_index, (t.site.clone(), *ctm, *xobj, name.clone()));
+                        to_edit_image.insert(
+                            (t.site.form_path.clone(), t.site.op_index),
+                            (t.site.clone(), *ctm, *xobj, name.clone()),
+                        );
                     }
                 }
                 _ => {}
@@ -1295,12 +1245,31 @@ pub(crate) fn regions_edit_session<'a>(
         let mut codes_removed: u64 = 0;
         let mut pixels_changed: u64 = 0;
         let mut new_xobject_entries: Vec<(Vec<u8>, IndirectRef)> = Vec::new();
+        let mut images_in_forms: usize = 0;
+        let mut forms_copied: u64 = 0;
 
-        for (op_index, (site, ctm, _xobj_ref, name)) in &to_edit_image {
+        // Renames and new `/XObject` entries inside form copies, keyed by
+        // the form invocation chain.
+        let mut inner_renames: BTreeMap<FrameKey, Vec<u8>> = BTreeMap::new();
+        let mut inner_entries: BTreeMap<
+            Vec<crate::redact_diag::FormFrame>,
+            Vec<(Vec<u8>, IndirectRef)>,
+        > = BTreeMap::new();
+        for ((img_fp, op_index), (site, ctm, _xobj_ref, name)) in &to_edit_image {
+            if !img_fp.is_empty() && !form_streams.contains_key(img_fp) {
+                let f = load_form_node(doc, page, img_fp, limits)?;
+                form_streams.insert(img_fp.clone(), f);
+            }
+            let scope_res: Option<Object> = if img_fp.is_empty() {
+                page.resources().cloned()
+            } else {
+                form_streams[img_fp].res.clone()
+            };
             let entry = doc
                 .resolve_resource_raw(
-                    page.resources()
-                        .ok_or_else(|| Error::Structure("page has no /Resources".into()))?,
+                    scope_res
+                        .as_ref()
+                        .ok_or_else(|| Error::Structure("no /Resources for an image".into()))?,
                     "XObject",
                     name.as_slice(),
                 )?
@@ -1315,7 +1284,7 @@ pub(crate) fn regions_edit_session<'a>(
                 .as_stream()
                 .ok_or_else(|| Error::Structure("image XObject is not a stream".into()))?;
 
-            let (width, height, ncomps) = validate_image(dict, page.resources(), doc, limits)?;
+            let (width, height, ncomps) = validate_image(dict, scope_res.as_ref(), doc, limits)?;
 
             let ranges = image_pixel_ranges(ctm, width, height, &validated)?;
             if ranges.is_empty() {
@@ -1407,36 +1376,63 @@ pub(crate) fn regions_edit_session<'a>(
                 },
             );
 
-            let allocated: Vec<Vec<u8>> =
-                new_xobject_entries.iter().map(|(n, _)| n.clone()).collect();
-            let new_name = fresh_xobject_name(page, doc, do_renames.len() as u64, &allocated)?;
-            do_renames.insert(*op_index, new_name.clone());
-            new_xobject_entries.push((new_name, clone_ref));
+            if img_fp.is_empty() {
+                let allocated: Vec<Vec<u8>> =
+                    new_xobject_entries.iter().map(|(n, _)| n.clone()).collect();
+                let new_name = fresh_xobject_name(page, doc, do_renames.len() as u64, &allocated)?;
+                do_renames.insert(*op_index, new_name.clone());
+                new_xobject_entries.push((new_name, clone_ref));
+            } else {
+                let entries = inner_entries.entry(img_fp.clone()).or_default();
+                let new_name = fresh_name_in(doc, scope_res.as_ref(), entries)?;
+                inner_renames.insert((img_fp.clone(), *op_index), new_name.clone());
+                entries.push((new_name, clone_ref));
+                images_in_forms += 1;
+            }
             removed_sites.push(site.clone());
         }
 
         // ---- redaction: per-invocation copies of edited forms --------
+        // Every form invocation chain with an edit inside it — and each
+        // of its ancestors, whose copy must call the copy below — is
+        // copied, deepest first: the copy's ops are rewritten, its `Do`s
+        // renamed to the copies below, its `/Resources` given their
+        // names (and stripped of names its ops no longer use).
         let mut form_names: Vec<Vec<u8>> = Vec::new();
         if mode == SessionMode::Redact {
-            let mut invocations: BTreeSet<Vec<crate::redact_diag::FormFrame>> = BTreeSet::new();
-            for (fp, _) in to_remove_text.keys().chain(removed_op_set.iter()) {
-                if fp.len() == 1 {
-                    invocations.insert(fp.clone());
+            let mut chains: BTreeSet<Vec<crate::redact_diag::FormFrame>> = BTreeSet::new();
+            let edited = to_remove_text
+                .keys()
+                .chain(removed_op_set.iter())
+                .map(|(fp, _)| fp.clone())
+                .chain(inner_entries.keys().cloned())
+                .collect::<Vec<_>>();
+            for fp in edited {
+                for k in 1..=fp.len() {
+                    chains.insert(fp[..k].to_vec());
                 }
             }
-            for fp in invocations {
+            let mut order: Vec<Vec<crate::redact_diag::FormFrame>> = chains.into_iter().collect();
+            order.sort_by(|a, b| b.len().cmp(&a.len()).then(a.cmp(b)));
+            for fp in order {
                 if !form_streams.contains_key(&fp) {
-                    let f = load_form(&fp)?;
+                    let f = load_form_node(doc, page, &fp, limits)?;
                     form_streams.insert(fp.clone(), f);
                 }
-                let (fops, fdict, entry) = &form_streams[&fp];
-                let mut new_form_ops: Vec<Operation> = Vec::with_capacity(fops.len());
-                for (inner, fop) in fops.iter().enumerate() {
+                let node = &form_streams[&fp];
+                let mut new_form_ops: Vec<Operation> = Vec::with_capacity(node.ops.len());
+                let mut renamed_from: BTreeSet<Vec<u8>> = BTreeSet::new();
+                for (inner, fop) in node.ops.iter().enumerate() {
                     let key = (fp.clone(), inner);
                     if let Some(new) = replacements.get(&key) {
                         new_form_ops.extend(new.iter().cloned());
                     }
                     if removed_op_set.contains(&key) {
+                        continue;
+                    }
+                    if let (Operation::Do(old), Some(new)) = (fop, inner_renames.get(&key)) {
+                        renamed_from.insert(old.clone());
+                        new_form_ops.push(Operation::Do(new.clone()));
                         continue;
                     }
                     new_form_ops.extend(rewrite_ops_for(
@@ -1452,17 +1448,51 @@ pub(crate) fn regions_edit_session<'a>(
                 }
                 let new_body = serialize_ops(&new_form_ops, limits, generated_bytes)?;
                 generated_bytes = charge_generated(generated_bytes, new_body.len(), limits)?;
-                let mut new_dict = fdict.clone();
+                let mut new_dict = node.dict.clone();
                 new_dict.remove(b"Filter".as_slice());
                 new_dict.remove(b"DecodeParms".as_slice());
                 new_dict.insert(b"Length".to_vec(), Object::Integer(new_body.len() as i64));
+                // The copy's resources: its own (or, when it inherits,
+                // those it would inherit), with the copies' names added
+                // and the replaced originals' names removed.
+                let adds = inner_entries.get(&fp).cloned().unwrap_or_default();
+                if !adds.is_empty() || !renamed_from.is_empty() {
+                    let still_used: BTreeSet<Vec<u8>> = new_form_ops
+                        .iter()
+                        .filter_map(|o| match o {
+                            Operation::Do(n) => Some(n.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    let mut res = match &node.res {
+                        Some(r) => doc.deref(r)?.as_dict().cloned().ok_or_else(|| {
+                            Error::Structure("/Resources is not a dictionary".into())
+                        })?,
+                        None => Dict::new(),
+                    };
+                    let mut xobjects = match res.get(b"XObject".as_slice()) {
+                        Some(o) => doc.deref(o)?.as_dict().cloned().ok_or_else(|| {
+                            Error::Structure("/Resources /XObject is not a dictionary".into())
+                        })?,
+                        None => Dict::new(),
+                    };
+                    // Only what the copy draws: a name it no longer
+                    // uses (a replaced original, or one inherited from
+                    // the page) would keep that object reachable.
+                    xobjects.retain(|n, _| still_used.contains(n));
+                    for (n, r) in &adds {
+                        xobjects.insert(n.clone(), Object::Ref(*r));
+                    }
+                    res.insert(b"XObject".to_vec(), Object::Dict(xobjects));
+                    new_dict.insert(b"Resources".to_vec(), Object::Dict(res));
+                }
                 // The original must not stay reachable from where it
                 // was edited (checked by digest on the output).
-                let obj = doc.deref(entry)?;
+                let obj = doc.deref(&node.entry)?;
                 if let Some((d, raw)) = obj.as_stream() {
                     let digests = [sha256(&doc.decode_stream(d, raw)?), sha256(raw)];
                     original_digests.extend(digests);
-                    if let Object::Ref(r) = entry {
+                    if let Object::Ref(r) = &node.entry {
                         edited_originals.insert(*r, (digests, true));
                     }
                 }
@@ -1478,12 +1508,28 @@ pub(crate) fn regions_edit_session<'a>(
                         data: new_body,
                     },
                 );
-                let allocated: Vec<Vec<u8>> =
-                    new_xobject_entries.iter().map(|(n, _)| n.clone()).collect();
-                let new_name = fresh_xobject_name(page, doc, do_renames.len() as u64, &allocated)?;
-                do_renames.insert(fp[0].op_index, new_name.clone());
-                new_xobject_entries.push((new_name, clone_ref));
-                form_names.push(fp[0].name.clone());
+                let frame = fp.last().expect("non-empty chain");
+                let parent = fp[..fp.len() - 1].to_vec();
+                if parent.is_empty() {
+                    let allocated: Vec<Vec<u8>> =
+                        new_xobject_entries.iter().map(|(n, _)| n.clone()).collect();
+                    let new_name =
+                        fresh_xobject_name(page, doc, do_renames.len() as u64, &allocated)?;
+                    do_renames.insert(frame.op_index, new_name.clone());
+                    new_xobject_entries.push((new_name, clone_ref));
+                    form_names.push(frame.name.clone());
+                } else {
+                    if !form_streams.contains_key(&parent) {
+                        let f = load_form_node(doc, page, &parent, limits)?;
+                        form_streams.insert(parent.clone(), f);
+                    }
+                    let parent_res = form_streams[&parent].res.clone();
+                    let entries = inner_entries.entry(parent.clone()).or_default();
+                    let new_name = fresh_name_in(doc, parent_res.as_ref(), entries)?;
+                    inner_renames.insert((parent.clone(), frame.op_index), new_name.clone());
+                    entries.push((new_name, clone_ref));
+                }
+                forms_copied += 1;
             }
         }
 
@@ -1627,8 +1673,8 @@ pub(crate) fn regions_edit_session<'a>(
         paths_cut_total += paths_cut;
         links_removed_total += links_removed;
         tagged_links_removed_total += tagged_links_removed;
-        invocations_edited_total += (do_renames.len() - form_names.len()) as u64;
-        forms_edited_total += form_names.len() as u64;
+        invocations_edited_total += (do_renames.len() - form_names.len() + images_in_forms) as u64;
+        forms_edited_total += forms_copied;
         pixels_changed_total += pixels_changed;
         orphaned_names_removed_total += orphaned_names_removed;
         per_page.push((*page_index, removed_sites));
@@ -1686,7 +1732,20 @@ pub(crate) fn regions_edit_session<'a>(
     let mut originals_shown: Vec<(usize, IndirectRef)> = Vec::new();
     let names_pruned_total = if mode == SessionMode::Redact && !edited_originals.is_empty() {
         let refs: HashSet<IndirectRef> = edited_originals.keys().copied().collect();
-        prune_original_names(doc, &mut edit, &refs, &drawn_after, &mut originals_shown)?
+        let n = prune_original_names(doc, &mut edit, &refs, &drawn_after, &mut originals_shown)?;
+        // An original form still drawn keeps what its resources name:
+        // edited originals reachable from it stay with it.
+        let mut k = 0;
+        while k < originals_shown.len() {
+            let (page_index, r) = originals_shown[k];
+            for inner in xobjects_named_by(doc, r, limits)? {
+                if refs.contains(&inner) && !originals_shown.contains(&(page_index, inner)) {
+                    originals_shown.push((page_index, inner));
+                }
+            }
+            k += 1;
+        }
+        n
     } else {
         0
     };
@@ -1712,6 +1771,138 @@ pub(crate) fn regions_edit_session<'a>(
             .map(|(i, r)| (i, r, edited_originals[&r].0, edited_originals[&r].1))
             .collect(),
     })
+}
+
+/// The deepest form chain `redact` edits inside.
+const MAX_REDACT_FORM_DEPTH: u64 = 16;
+
+/// A form invocation chain resolved from the page: the innermost
+/// form's ops, stream dict, resource entry, and the resources its
+/// content resolves names against (its own, else inherited).
+pub(crate) struct FormNode {
+    ops: Vec<Operation>,
+    dict: Dict,
+    entry: Object,
+    res: Option<Object>,
+}
+
+fn load_form_node(
+    doc: &Document,
+    page: &crate::page::Page,
+    fp: &[crate::redact_diag::FormFrame],
+    limits: &Limits,
+) -> Result<FormNode, Error> {
+    let mut res: Option<Object> = page.resources().cloned();
+    for (k, frame) in fp.iter().enumerate() {
+        let r = res
+            .as_ref()
+            .ok_or_else(|| Error::Structure("a form drawn without /Resources".into()))?;
+        let entry = doc
+            .resolve_resource_raw(r, "XObject", &frame.name)?
+            .ok_or_else(|| {
+                Error::Structure(format!(
+                    "/XObject /{} no longer resolves",
+                    String::from_utf8_lossy(&frame.name)
+                ))
+            })?;
+        let obj = doc.deref(&entry)?;
+        let (fdict, fraw) = obj
+            .as_stream()
+            .ok_or_else(|| Error::Structure("form XObject is not a stream".into()))?;
+        let own = fdict
+            .get(b"Resources".as_slice())
+            .filter(|o| !matches!(o, Object::Null))
+            .cloned();
+        let eff = own.or(res);
+        if k + 1 == fp.len() {
+            let decoded = doc.decode_stream(fdict, fraw)?;
+            let mut warnings = Vec::new();
+            let ops = crate::content::parse_content_stream(
+                &[decoded],
+                limits,
+                doc.recovery_mode(),
+                &mut warnings,
+            )?;
+            for w in warnings {
+                doc.push_warning(w);
+            }
+            return Ok(FormNode {
+                ops,
+                dict: fdict.clone(),
+                entry,
+                res: eff,
+            });
+        }
+        res = eff;
+    }
+    Err(Error::Structure("empty form chain".into()))
+}
+
+/// The XObjects named in the `/Resources` of form `r` and of the forms
+/// those name, transitively (each object once).
+fn xobjects_named_by(
+    doc: &Document,
+    r: IndirectRef,
+    limits: &Limits,
+) -> Result<Vec<IndirectRef>, Error> {
+    let mut seen: Vec<IndirectRef> = vec![r];
+    let mut k = 0;
+    while k < seen.len() {
+        if seen.len() as u64 > limits.max_diag_items {
+            return Err(Error::LimitExceeded {
+                limit: "max_diag_items",
+                max: limits.max_diag_items,
+            });
+        }
+        let obj = doc.resolve(seen[k])?;
+        k += 1;
+        let Object::Stream { dict, .. } = &obj else {
+            continue;
+        };
+        let Some(res) = dict.get(b"Resources".as_slice()) else {
+            continue;
+        };
+        let res = doc.deref(res)?;
+        let Some(x) = res.as_dict().and_then(|d| d.get(b"XObject".as_slice())) else {
+            continue;
+        };
+        let x = doc.deref(x)?;
+        let Some(x) = x.as_dict() else { continue };
+        for v in x.values() {
+            if let Object::Ref(inner) = v {
+                if !seen.contains(inner) {
+                    seen.push(*inner);
+                }
+            }
+        }
+    }
+    seen.remove(0);
+    Ok(seen)
+}
+
+/// A `/XObject` name (`KasIm{n}`) absent from `res` and `taken`.
+fn fresh_name_in(
+    doc: &Document,
+    res: Option<&Object>,
+    taken: &[(Vec<u8>, IndirectRef)],
+) -> Result<Vec<u8>, Error> {
+    let existing = match res {
+        Some(r) => match doc.deref(r)?.as_dict() {
+            Some(d) => match d.get(b"XObject".as_slice()) {
+                Some(o) => doc.deref(o)?.as_dict().cloned().unwrap_or_default(),
+                None => Dict::new(),
+            },
+            None => return Err(Error::Structure("/Resources is not a dictionary".into())),
+        },
+        None => Dict::new(),
+    };
+    for n in 0u64.. {
+        let name = format!("KasIm{n}").into_bytes();
+        if !existing.contains_key(name.as_slice()) && !taken.iter().any(|(t, _)| *t == name) {
+            return Ok(name);
+        }
+    }
+    unreachable!("names are unbounded")
 }
 
 /// Redaction: remove every page's `/XObject` name for an edited

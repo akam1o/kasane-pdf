@@ -38,7 +38,7 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 | painted paths wholly inside one rect | the path and its painting op are deleted |
 | painted paths crossing a rect's edge | cut there (`paths_cut`): filled axis-aligned rectangles become their difference with the rects (exact; several only when they do not overlap); stroked straight segments are cut, in user space where the stroke is defined, at the centreline positions whose cross-section (and cap) would reach the rect — exact for butt caps, the cap's square for square and round caps — so nothing reaches inside and nothing outside is lost; a corner kept near a rect must clear it by its join (the exact miter, or the bevel/round extent). Curves, dashed strokes, other fill shapes and overlapping rectangles near a rect are refused |
 | `/Link` annotations whose `/Rect` meets a rect | removed with their action or destination (`links_removed`); links outside every rect are kept. A removed link the structure tree refers to (`/StructParent`) is refused unless the tree is removed |
-| Form XObjects the page draws directly (transparency groups included) | their text and paths inside the rects are removed or cut in a copy of the form drawn by that invocation only (`forms_edited`); other invocations and pages keep the original, which is reported in `elsewhere` (`Removed::Form`) when still drawn and otherwise not carried. A nested form or an image inside a form that meets a rect is refused |
+| Form XObjects, nested up to 16 deep (transparency groups included) | their text, paths and images inside the rects are removed, cut or zeroed in copies along the invocation chain — each copy drawn by that one invocation only (`forms_edited`), its `/Resources` naming only what it draws. Other invocations and pages keep the originals; an original form still drawn is reported in `elsewhere` (`Removed::Form`), and edited originals reachable from it stay with it (once each); otherwise they are not carried. A form cycle is refused |
 | document `/Info`, catalog XMP `/Metadata` | always removed |
 | structure tree | refused when it carries `/Alt`, `/ActualText` or `/E`; with `remove_structure_tree(true)` the tree and `/MarkInfo` are removed |
 
@@ -100,8 +100,8 @@ secret; the rest must be refused with no file written.
 
 ## Refused (typed error, no output)
 
-On an edited page: annotations other than links, nested forms or
-images inside a form that meet a rect, inline images meeting a rect
+On an edited page: annotations other than links, forms nested more
+than 16 deep or cyclic, inline images meeting a rect
 (or whose data length is not fixed by their dictionary), `sh`,
 ExtGState (`gs`), optional content and `/ActualText` marked content,
 text in any mode but `Tr 0` (invisible OCR text, stroked, clipping),
@@ -147,8 +147,8 @@ document text in `Debug` output.
 
 ## Not covered
 
-Annotations other than links and form fields on an edited page, nested
-forms or images inside forms meeting a rect, patterns, inline images
+Annotations other than links and form fields on an edited page, forms
+nested more than 16 deep, patterns, inline images
 meeting a rect, ExtGState (`gs`), shadings, curves and dashed strokes
 crossing a rect, masked, CMYK or indexed images, invisible OCR text.
 Each is refused, not approximated.
