@@ -7,12 +7,14 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Changed
-- Unrotated text is placed on a whole device row: each glyph origin's
-  device y is floored, as Poppler's Splash places it (x keeps its
-  exact position; shapes, advances and extracted coordinates do not
-  change). Lines no longer fall up to a pixel below where Poppler draws
-  them; on 35 text and Chrome-printed corpus files SSIM against Poppler
-  rises from 0.80 to 0.83 on average, none lower.
+- Unrotated text filled with a colour is placed on a whole device row:
+  each glyph origin's device y is floored, as Poppler's Splash places
+  the glyphs it caches (x keeps its exact position; stroked, clipping
+  and pattern-filled text, shapes, advances and extracted coordinates
+  do not change). Lines no longer fall up to a pixel below where
+  Poppler draws them: across the corpus, SSIM against Poppler improves
+  on 119 files (mean +0.015; `issue4061` 0.77 → 0.99, `irs-fw9`
+  0.74 → 0.91), with one small loss (`bug1844583` 0.680 → 0.664).
 
 ### Fixed
 - A `null` appearance state of an annotation is absent (§7.3.7): with

@@ -6533,12 +6533,18 @@ impl<'a> Renderer<'a> {
                 // first for points. Pipeline order glyph → Trm → page
                 // → pixmap therefore wants `trm.post_concat(upx)`.
                 let full = trm_ts.post_concat(self.user_to_pix);
-                // Unrotated, unskewed glyphs sit on a whole device row
-                // (the origin's y rounded), as Splash and Skia place
-                // horizontal text: crisper baselines, no change of
-                // shape or advance. Rotated or skewed text is drawn
-                // at its exact position.
-                let snap = if full.kx == 0.0 && full.ky == 0.0 && full.ty.is_finite() {
+                // Unrotated, unskewed glyphs filled with a colour sit on
+                // a whole device row (the origin's device y floored),
+                // as Splash places the glyphs it caches: no change of
+                // shape or advance. Splash draws stroked, clipping and
+                // pattern-filled text as exact paths, and so does this:
+                // they, and rotated or skewed text, stay where they fall.
+                let snap = if t.render_mode == 0
+                    && !gs.fill_space.is_pattern()
+                    && full.kx == 0.0
+                    && full.ky == 0.0
+                    && full.ty.is_finite()
+                {
                     full.ty.floor() - full.ty
                 } else {
                     0.0

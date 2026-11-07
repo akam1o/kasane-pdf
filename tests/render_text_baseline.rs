@@ -1,8 +1,9 @@
-//! Glyph placement on the device grid: unrotated, unskewed text sits
-//! on a whole device row (the glyph origin's device y floored, as
-//! Poppler's Splash places it), so a line drawn a fraction of a pixel
-//! lower renders exactly like the line at the row above it; x keeps its
-//! exact position. Rotated text is drawn where it falls. Text
+//! Glyph placement on the device grid: unrotated, unskewed text filled
+//! with a colour sits on a whole device row (the glyph origin's device y
+//! floored, as Poppler's Splash places the glyphs it caches), so a line
+//! drawn a fraction of a pixel lower renders exactly like the line at
+//! the row above it; x keeps its exact position. Stroked, clipping,
+//! pattern-filled and rotated text is drawn where it falls. Text
 //! extraction coordinates are not snapped.
 
 mod common;
@@ -48,15 +49,16 @@ fn horizontal_text_snaps_to_the_row_above() {
     }
     // x is not snapped.
     assert!(pixels("BT /F1 24 Tf 20.5 41 Td (Hxg) Tj ET") != row);
-    // Stroked and clipping modes follow the same placement.
+    // Stroked, clipping and pattern-filled text are exact paths, as in
+    // Splash: not snapped.
     let stroked = |y: &str| pixels(&format!("BT /F1 24 Tf 1 Tr 20 {y} Td (Hxg) Tj ET"));
-    assert!(stroked("40.5") == stroked("41"));
+    assert!(stroked("40.5") != stroked("41"));
     let clipped = |y: &str| {
         pixels(&format!(
             "BT /F1 24 Tf 7 Tr 20 {y} Td (Hxg) Tj ET 0 0 1 rg 0 0 200 100 re f"
         ))
     };
-    assert!(clipped("40.5") == clipped("41"));
+    assert!(clipped("40.5") != clipped("41"));
 }
 
 /// Rotated text keeps its exact position.

@@ -39,6 +39,7 @@ with the recovery-rule work (phase E).
 | `/Link` borders without `/AP` | 7 | done: missing ink 0 on the 3 measured files (`file_url_link` SSIM 0.615 → 0.673); open: a border wider than its `/Rect` (`bug1552113`, Poppler strokes outside the rect) |
 | Chrome-printed and text pages, glyph baselines | 15 improved | done: Splash floors each glyph origin's device y; kasane now does for unrotated text (35 text files: mean SSIM 0.8035 → 0.8268, none worse) |
 | Chrome pages, glyph weight | ~10 | the largest remaining gap on `chrome-wiki-*` (SSIM 0.6–0.7, same ink, no offset): FreeType draws stems thinner and lighter than tiny-skia's coverage. A gamma or hinting choice, not a placement error; no exact fix |
+| `bug1844583` (form fields, no fonts of its own) | 1 | SSIM 0.680 → 0.664 with the baseline snap; synthesised field text with the Helvetica fallback, to look at |
 | Type 3 glyph baselines | 3 + (`chrome-japanese-vertical-*` use Type 3 only) | Type 3 glyphs are run as content and not snapped; extending the snap to their origin is the next small step |
 | axis-aligned rectangles | many, small | Splash snaps rectangle edges to whole pixels (stroke adjustment); kasane anti-aliases them exactly. Not adopted: a heuristic, not a PDF rule (only `/SA` strokes) |
 | `jbig2_file_header`, `issue21878`, `devicen-none-zero-domain`, `bug1844583` | 4 | low SSIM; to investigate one by one |
