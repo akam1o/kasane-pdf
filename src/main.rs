@@ -195,6 +195,17 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("redact") => {
+            // redact <file.pdf> --page <n> --rect llx lly urx ury [--rect …]
+            //   [--page <m> --rect …] [--remove-structure-tree] --output <out.pdf>
+            match run_redact(&args[2..]) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("error [{}]: {e}", e.kind());
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("remove-document-metadata") => {
             // remove-document-metadata <file.pdf> --output <out.pdf>
             // Removes the trailer /Info and catalog /Metadata
@@ -269,6 +280,9 @@ fn main() -> ExitCode {
             eprintln!("       {prog} inspect <file.pdf> <page-number>");
             eprintln!(
                 "       {prog} preflight-redaction <file.pdf> <page-number> --rect llx lly urx ury [--rect …] [--format text|json]"
+            );
+            eprintln!(
+                "       {prog} redact <file.pdf> --page <n> --rect llx lly urx ury [--rect …] [--page …] [--remove-structure-tree] --output <out.pdf>"
             );
             eprintln!(
                 "       {prog} experimental-remove-text <file.pdf> <page-number> --rect llx lly urx ury [--rect …] --output <out.pdf>"
@@ -1908,6 +1922,150 @@ fn run_remove_regions(args: &[String]) -> Result<(), Error> {
             println!("  {s}");
         }
     }
+    Ok(())
+}
+
+fn redact_usage() -> &'static str {
+    "usage: kasane-pdf redact <file.pdf> --page <n> --rect <llx> <lly> <urx> <ury> \
+     [--rect …] [--page <m> --rect …] [--remove-structure-tree] --output <out.pdf>\n\
+     Removes the text, image samples and paths drawn inside the rects (page \
+     default user space; --page is 1-based, each --rect belongs to the nearest \
+     preceding --page), removes /Info and XMP metadata, leaves no route to an \
+     edited image's original, and verifies the written PDF before saving it. \
+     Structures it cannot process exactly are refused and nothing is written. \
+     --remove-structure-tree drops a structure tree with alternate text instead \
+     of refusing. The redaction is positional: copies of the information \
+     elsewhere (other pages, annotations, attachments) are listed, not removed."
+}
+
+/// `redact` subcommand.
+fn run_redact(args: &[String]) -> Result<(), Error> {
+    let usage = || Error::Structure(redact_usage().to_string());
+    let input = args.first().ok_or_else(usage)?;
+    let mut specs: Vec<kasane_pdf::PageSpec> = Vec::new();
+    let mut output: Option<&str> = None;
+    let mut remove_tree = false;
+    let mut i = 1;
+    let num = |s: &String| -> Result<f64, Error> {
+        s.parse::<f64>()
+            .map_err(|_| Error::Structure(format!("expected a number, got '{s}'")))
+    };
+    while i < args.len() {
+        let rest = &args[i + 1..];
+        match args[i].as_str() {
+            "--page" => {
+                let p = rest
+                    .first()
+                    .and_then(|s| s.parse::<usize>().ok())
+                    .filter(|&n| n >= 1)
+                    .ok_or_else(usage)?;
+                specs.push((p - 1, Vec::new()));
+                i += 2;
+            }
+            "--rect" => {
+                if rest.len() < 4 {
+                    return Err(usage());
+                }
+                let spec = specs.last_mut().ok_or_else(|| {
+                    Error::Structure(format!("--rect must follow a --page\n{}", redact_usage()))
+                })?;
+                spec.1.push((
+                    num(&rest[0])?,
+                    num(&rest[1])?,
+                    num(&rest[2])?,
+                    num(&rest[3])?,
+                ));
+                i += 5;
+            }
+            "--output" => {
+                output = Some(rest.first().ok_or_else(usage)?);
+                i += 2;
+            }
+            "--remove-structure-tree" => {
+                remove_tree = true;
+                i += 1;
+            }
+            other => {
+                return Err(Error::Structure(format!(
+                    "unknown option '{other}'\n{}",
+                    redact_usage()
+                )))
+            }
+        }
+    }
+    if specs.is_empty() {
+        return Err(usage());
+    }
+    if let Some((p, _)) = specs.iter().find(|(_, r)| r.is_empty()) {
+        return Err(Error::Structure(format!(
+            "page {} has no --rect\n{}",
+            p + 1,
+            redact_usage()
+        )));
+    }
+    let output = output.ok_or_else(usage)?;
+    refuse_same_file(input, output)?;
+    let data = std::fs::read(input)?;
+    let doc = open_document(&data)?;
+    let r = kasane_pdf::redact(
+        &doc,
+        &specs,
+        &kasane_pdf::RedactOptions::new().remove_structure_tree(remove_tree),
+    )?;
+    write_atomic(
+        &r.output,
+        &format!("{output}.kasane-tmp-{}", std::process::id()),
+        output,
+    )?;
+    println!(
+        "redact {input} -> {output} ({} bytes, verified)",
+        r.output.len()
+    );
+    println!("codes removed: {}", r.codes_removed);
+    println!(
+        "images edited: {} ({} pixels)",
+        r.images_edited, r.pixels_changed
+    );
+    println!("paths removed: {}", r.paths_removed);
+    println!("original image names removed: {}", r.original_names_removed);
+    println!("/Info removed: {}", r.info_removed);
+    println!("XMP /Metadata removed: {}", r.metadata_removed);
+    println!("structure tree removed: {}", r.structure_tree_removed);
+    for e in &r.elsewhere {
+        match &e.location {
+            kasane_pdf::ElsewhereLocation::Page(i) => {
+                println!("removed text also shown on page {}", i + 1)
+            }
+            kasane_pdf::ElsewhereLocation::Object(o) => {
+                println!("removed text also stored in object {o}")
+            }
+        }
+    }
+    if !r.elsewhere_unsearched_pages.is_empty() {
+        println!(
+            "pages not searched for removed text: {:?}",
+            r.elsewhere_unsearched_pages
+                .iter()
+                .map(|i| i + 1)
+                .collect::<Vec<_>>()
+        );
+    }
+    let mut kinds: std::collections::BTreeMap<String, usize> = Default::default();
+    for f in &r.residual.findings {
+        *kinds.entry(format!("{:?}", f.kind)).or_default() += 1;
+    }
+    println!(
+        "residual surfaces to review (not positional; see audit-residuals): {}",
+        if kinds.is_empty() {
+            "none found".to_string()
+        } else {
+            kinds
+                .iter()
+                .map(|(k, n)| format!("{k} ×{n}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    );
     Ok(())
 }
 

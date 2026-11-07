@@ -679,21 +679,57 @@ fn page_label(page_index: usize) -> String {
 /// calls `edit.rewrite()`; the combined entry point calls
 /// `edit.rewrite_with_overrides` so the trailer `/Info` and catalog
 /// `/Metadata` entries are stripped in the *same* rewrite.
-struct RegionsEdit<'a> {
-    edit: Edit<'a>,
-    codes_removed_total: u64,
-    invocations_edited_total: u64,
-    pixels_changed_total: u64,
-    orphaned_names_removed_total: u64,
-    per_page: Vec<(usize, Vec<Site>)>,
+pub(crate) struct RegionsEdit<'a> {
+    pub(crate) edit: Edit<'a>,
+    pub(crate) codes_removed_total: u64,
+    pub(crate) invocations_edited_total: u64,
+    pub(crate) pixels_changed_total: u64,
+    pub(crate) orphaned_names_removed_total: u64,
+    pub(crate) per_page: Vec<(usize, Vec<Site>)>,
     /// Number of distinct pages edited (for the scope line).
     page_count: usize,
+    /// Redaction mode only: paths removed (each a construction run
+    /// plus its painting op).
+    pub(crate) paths_removed_total: u64,
+    /// Redaction mode only: SHA-256 of each edited image's original
+    /// decoded samples and of its stored stream bytes — what must not
+    /// be found in the output.
+    pub(crate) original_digests: Vec<[u8; 32]>,
+    /// Redaction mode only: `/XObject` names of edited images removed
+    /// from pages that did not draw them.
+    pub(crate) names_pruned_total: u64,
+    /// Redaction mode only: the Unicode text removed, one string per
+    /// edited show operation.
+    pub(crate) removed_text: Vec<String>,
 }
 
-fn regions_edit_session<'a>(
+/// What `regions_edit_session` does beyond the content editor.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionMode {
+    /// `remove_region(s)`: text and image samples only.
+    Edit,
+    /// `redact`: also removes painted paths inside a rect (refusing
+    /// one that crosses a rect's edge), and leaves no route to an
+    /// edited image's original: names of it on pages that do not draw
+    /// it are removed, and a page that does draw it is refused.
+    Redact,
+}
+
+pub(crate) fn sha256(data: &[u8]) -> [u8; 32] {
+    use sha2::Digest;
+    sha2::Sha256::digest(data).into()
+}
+
+/// Whether `inner` lies inside `outer` (both `(llx, lly, urx, ury)`).
+fn rect_contains(outer: &crate::page::Rect, inner: (f64, f64, f64, f64)) -> bool {
+    inner.0 >= outer.llx && inner.1 >= outer.lly && inner.2 <= outer.urx && inner.3 <= outer.ury
+}
+
+pub(crate) fn regions_edit_session<'a>(
     doc: &'a Document,
     specs: &[PageSpec],
     limits: &Limits,
+    mode: SessionMode,
 ) -> Result<RegionsEdit<'a>, Error> {
     // ---- input validation (all before any edit work) --------------
     if specs.is_empty() {
@@ -760,6 +796,13 @@ fn regions_edit_session<'a>(
     let mut invocations_edited_total: u64 = 0;
     let mut pixels_changed_total: u64 = 0;
     let mut orphaned_names_removed_total: u64 = 0;
+    let mut paths_removed_total: u64 = 0;
+    let mut original_digests: Vec<[u8; 32]> = Vec::new();
+    // Redaction: the refs of edited images, and per page the names
+    // still drawn after the edit.
+    let mut edited_originals: HashSet<IndirectRef> = HashSet::new();
+    let mut drawn_after: HashMap<IndirectRef, BTreeSet<Vec<u8>>> = HashMap::new();
+    let mut removed_text: Vec<String> = Vec::new();
     let mut per_page: Vec<(usize, Vec<Site>)> = Vec::new();
     let mut page_dicts: Vec<(IndirectRef, Dict)> = Vec::new();
     let mut pages_with_resources: HashSet<IndirectRef> = HashSet::new();
@@ -908,6 +951,60 @@ fn regions_edit_session<'a>(
             }
         }
 
+        // ---- redaction: painted paths inside the rects ---------------
+        // A path entirely inside one rect is removed with its
+        // construction ops; one that crosses a rect's edge is refused
+        // (its geometry inside the rect cannot be cut out exactly),
+        // and so is one that also sets a clip (removing it would
+        // change what later content shows).
+        let mut removed_op_set: BTreeSet<usize> = BTreeSet::new();
+        let mut paths_removed: u64 = 0;
+        if mode == SessionMode::Redact {
+            for t in walker.targets.iter().filter(|t| t.kind == TargetKind::Path) {
+                if t.hits.is_empty() {
+                    continue;
+                }
+                if !t.site.form_path.is_empty() {
+                    return Err(Error::Unsupported {
+                        feature: "redaction of a path inside a form",
+                        detail: format!("op #{}", t.site.op_index),
+                    });
+                }
+                if !validated.iter().any(|r| rect_contains(r, t.bounds)) {
+                    return Err(Error::Unsupported {
+                        feature: "redaction of a path crossing a rect's edge",
+                        detail: format!(
+                            "op #{}: the path's bounds ({:.2} {:.2} {:.2} {:.2}) are not \
+                             inside one redaction rect",
+                            t.site.op_index, t.bounds.0, t.bounds.1, t.bounds.2, t.bounds.3
+                        ),
+                    });
+                }
+                let paint = t.site.op_index;
+                let mut start = paint;
+                while start > 0 {
+                    match &ops[start - 1] {
+                        Operation::MoveTo(..)
+                        | Operation::LineTo(..)
+                        | Operation::CurveTo(..)
+                        | Operation::CurveToV(..)
+                        | Operation::CurveToY(..)
+                        | Operation::ClosePath
+                        | Operation::Rectangle(..) => start -= 1,
+                        Operation::Clip | Operation::ClipEvenOdd => {
+                            return Err(Error::Unsupported {
+                                feature: "redaction of a path that also clips",
+                                detail: format!("op #{paint}"),
+                            })
+                        }
+                        _ => break,
+                    }
+                }
+                removed_op_set.extend(start..=paint);
+                paths_removed += 1;
+            }
+        }
+
         // ---- collect this page's removal plan -----------------------
         let mut to_remove_text: BTreeMap<(Vec<crate::redact_diag::FormFrame>, usize), Vec<usize>> =
             BTreeMap::new();
@@ -942,6 +1039,34 @@ fn regions_edit_session<'a>(
         }
         for v in to_remove_text.values_mut() {
             v.sort_unstable();
+        }
+        if mode == SessionMode::Redact {
+            let mut run: Option<((Vec<crate::redact_diag::FormFrame>, usize), String)> = None;
+            for t in walker
+                .targets
+                .iter()
+                .filter(|t| t.kind == TargetKind::Text && !t.hits.is_empty())
+            {
+                let key = (t.site.form_path.clone(), t.site.op_index);
+                let u = match &t.detail {
+                    TargetDetail::Text {
+                        unicode: Some(u), ..
+                    } => u.as_str(),
+                    _ => "",
+                };
+                match &mut run {
+                    Some((k, s)) if *k == key => s.push_str(u),
+                    _ => {
+                        if let Some((_, s)) = run.take() {
+                            removed_text.push(s);
+                        }
+                        run = Some((key, u.to_string()));
+                    }
+                }
+            }
+            if let Some((_, s)) = run {
+                removed_text.push(s);
+            }
         }
 
         // ---- clone images for this page's edited invocations -------
@@ -1002,6 +1127,7 @@ fn regions_edit_session<'a>(
                     expected
                 )));
             }
+            let digests = (mode == SessionMode::Redact).then(|| [sha256(&decoded), sha256(raw)]);
             let mut new_data = decoded;
             let mut changed_here: u64 = 0;
             for &(x0, y0, x1, y1) in &ranges {
@@ -1026,6 +1152,12 @@ fn regions_edit_session<'a>(
                 continue;
             }
             pixels_changed += changed_here;
+            if let Some(d) = digests {
+                original_digests.extend(d);
+                if let Object::Ref(r) = &entry {
+                    edited_originals.insert(*r);
+                }
+            }
 
             let mut new_dict = dict.clone();
             new_dict.remove(b"Filter".as_slice());
@@ -1066,6 +1198,9 @@ fn regions_edit_session<'a>(
         // ---- rewrite this page's content stream ---------------------
         let mut new_ops: Vec<Operation> = Vec::with_capacity(ops.len());
         for (op_index, op) in ops.iter().enumerate() {
+            if removed_op_set.contains(&op_index) {
+                continue;
+            }
             match op {
                 Operation::Do(_) => {
                     if let Some(new_name) = do_renames.get(&op_index) {
@@ -1085,6 +1220,17 @@ fn regions_edit_session<'a>(
                     &mut removed_sites,
                 )?),
             }
+        }
+
+        if mode == SessionMode::Redact {
+            let drawn = new_ops
+                .iter()
+                .filter_map(|op| match op {
+                    Operation::Do(n) => Some(n.clone()),
+                    _ => None,
+                })
+                .collect();
+            drawn_after.insert(page_ref, drawn);
         }
 
         // ---- orphaned XObject names for this page --------------
@@ -1172,6 +1318,7 @@ fn regions_edit_session<'a>(
         page_dicts.push((page_ref, page_dict));
 
         codes_removed_total += codes_removed;
+        paths_removed_total += paths_removed;
         invocations_edited_total += do_renames.len() as u64;
         pixels_changed_total += pixels_changed;
         orphaned_names_removed_total += orphaned_names_removed;
@@ -1227,6 +1374,11 @@ fn regions_edit_session<'a>(
             Object::Dict(page_dict),
         );
     }
+    let names_pruned_total = if mode == SessionMode::Redact && !edited_originals.is_empty() {
+        prune_original_names(doc, &mut edit, &edited_originals, &drawn_after)?
+    } else {
+        0
+    };
 
     Ok(RegionsEdit {
         edit,
@@ -1236,7 +1388,157 @@ fn regions_edit_session<'a>(
         orphaned_names_removed_total,
         per_page,
         page_count: by_page.len(),
+        paths_removed_total,
+        original_digests,
+        names_pruned_total,
+        removed_text,
     })
+}
+
+/// Redaction: remove every page's `/XObject` name for an edited
+/// image's original (`originals`) when the page does not draw it — an
+/// inherited `/Resources` otherwise keeps the original reachable from
+/// pages that never showed it. A page that still draws an original is
+/// refused: its unredacted pixels would stay in the output. So is a
+/// page where the name's use cannot be decided (a form, Type 3 font
+/// or tiling pattern without its own `/Resources` runs against the
+/// page's). Pages are read from the session's overlay — every page
+/// with resources has been materialised there.
+fn prune_original_names(
+    doc: &Document,
+    edit: &mut Edit,
+    originals: &HashSet<IndirectRef>,
+    drawn_after: &HashMap<IndirectRef, BTreeSet<Vec<u8>>>,
+) -> Result<u64, Error> {
+    let mut pruned = 0u64;
+    for (index, page) in doc.pages().iter().enumerate() {
+        let names_original = |res: &Dict| -> Result<Vec<Vec<u8>>, Error> {
+            let Some(x) = res.get(b"XObject".as_slice()) else {
+                return Ok(Vec::new());
+            };
+            let x = doc.deref(x)?;
+            let Some(x) = x.as_dict() else {
+                return Err(Error::Structure(
+                    "/Resources /XObject is not a dictionary".into(),
+                ));
+            };
+            Ok(x.iter()
+                .filter(|(_, v)| matches!(v, Object::Ref(r) if originals.contains(r)))
+                .map(|(k, _)| k.clone())
+                .collect())
+        };
+        let Some(pr) = page.object_ref() else {
+            if let Some(r) = page.resources() {
+                if let Some(d) = doc.deref(r)?.as_dict() {
+                    if !names_original(d)?.is_empty() {
+                        return Err(Error::Unsupported {
+                            feature: "redaction with an edited image named on a direct page",
+                            detail: page_label(index),
+                        });
+                    }
+                }
+            }
+            continue;
+        };
+        let Some(Object::Dict(mut pd)) = edit.overlay.get(&(pr.number, pr.generation)).cloned()
+        else {
+            continue;
+        };
+        let Some(res_obj) = pd.get(b"Resources".as_slice()).cloned() else {
+            continue;
+        };
+        let mut res = doc
+            .deref(&res_obj)?
+            .as_dict()
+            .cloned()
+            .ok_or_else(|| Error::Structure("/Resources is not a dictionary".into()))?;
+        let named = names_original(&res)?;
+        if named.is_empty() {
+            continue;
+        }
+        let drawn: BTreeSet<Vec<u8>> = match drawn_after.get(&pr) {
+            Some(d) => d.clone(),
+            None => doc
+                .page_operations(page)?
+                .into_iter()
+                .filter_map(|op| match op {
+                    Operation::Do(n) => Some(n),
+                    _ => None,
+                })
+                .collect(),
+        };
+        if let Some(n) = named.iter().find(|n| drawn.contains(*n)) {
+            return Err(Error::Unsupported {
+                feature: "redaction of an image that is also drawn unredacted",
+                detail: format!(
+                    "page {} draws /{} outside the redaction rects; its original \
+                     samples would stay in the output",
+                    page_label(index),
+                    String::from_utf8_lossy(n)
+                ),
+            });
+        }
+        if let Some(why) = inherits_page_resources(doc, &res)? {
+            return Err(Error::Unsupported {
+                feature: "redaction: cannot tell whether a page uses an edited image",
+                detail: format!("page {}: {why}", page_label(index)),
+            });
+        }
+        let mut x = doc
+            .deref(res.get(b"XObject".as_slice()).expect("named above"))?
+            .as_dict()
+            .cloned()
+            .expect("checked above");
+        for n in &named {
+            x.remove(n);
+            pruned += 1;
+        }
+        res.insert(b"XObject".to_vec(), Object::Dict(x));
+        pd.insert(b"Resources".to_vec(), Object::Dict(res));
+        edit.overlay
+            .insert((pr.number, pr.generation), Object::Dict(pd));
+    }
+    Ok(pruned)
+}
+
+/// Why content other than the page's own may resolve names in `res`:
+/// a Form XObject, Type 3 font or tiling pattern without `/Resources`
+/// uses the page's (§7.8.3, §9.6.4, §8.7.3.3 — the PDF 1.1
+/// convention readers still honour). `None` when nothing does.
+fn inherits_page_resources(doc: &Document, res: &Dict) -> Result<Option<String>, Error> {
+    for (cat, what) in [
+        (b"XObject".as_slice(), "form"),
+        (b"Font", "Type 3 font"),
+        (b"Pattern", "pattern"),
+    ] {
+        let Some(d) = res.get(cat) else { continue };
+        let d = doc.deref(d)?;
+        let Some(d) = d.as_dict() else { continue };
+        for (name, v) in d {
+            let o = doc.deref(v)?;
+            let dict = match &o {
+                Object::Stream { dict, .. } => dict,
+                Object::Dict(dict) => dict,
+                _ => continue,
+            };
+            let applies = match what {
+                "form" => {
+                    dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Form")
+                }
+                "Type 3 font" => {
+                    dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Type3")
+                }
+                _ => dict.get(b"PatternType".as_slice()).and_then(|s| s.as_i64()) == Some(1),
+            };
+            if applies && !dict.contains_key(b"Resources".as_slice()) {
+                return Ok(Some(format!(
+                    "{what} /{} has no /Resources of its own",
+                    String::from_utf8_lossy(name)
+                )));
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Experimental scoped region removal over **multiple pages**
@@ -1264,7 +1566,7 @@ pub fn remove_regions(
     limits: &Limits,
 ) -> Result<RegionsRemoval, Error> {
     limits.validate()?;
-    let s = regions_edit_session(doc, specs, limits)?;
+    let s = regions_edit_session(doc, specs, limits, SessionMode::Edit)?;
     let output = s.edit.rewrite()?;
     Ok(RegionsRemoval {
         output,
@@ -1370,7 +1672,7 @@ pub fn remove_regions_and_document_metadata(
     let info_present = doc.trailer().contains_key(b"Info".as_slice());
     let metadata_present = doc.catalog().contains_key(b"Metadata".as_slice());
 
-    let s = regions_edit_session(doc, specs, limits)?;
+    let s = regions_edit_session(doc, specs, limits, SessionMode::Edit)?;
     // One rewrite for everything: the region edits accumulated in
     // `s.edit.overlay` plus the trailer/catalog overrides. The
     // metadata-strip runs against the *effective* overlay — an
