@@ -18,13 +18,20 @@ fn pdf(content: &str) -> Vec<u8> {
         (
             3,
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R \
-              /Resources << /Font << /F1 5 0 R >> >> >>"
+              /Resources << /Font << /F1 5 0 R >> /Pattern << /P1 6 0 R >> >> >>"
                 .to_vec(),
         ),
         (4, stream_obj("", content.as_bytes())),
         (
             5,
             b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+        ),
+        (
+            6,
+            b"<< /PatternType 2 /Shading << /ShadingType 2 /ColorSpace /DeviceRGB \
+              /Coords [0 0 200 0] /Function << /FunctionType 2 /Domain [0 1] \
+              /C0 [1 0 0] /C1 [0 0 1] /N 1 >> >> >>"
+                .to_vec(),
         ),
     ])
 }
@@ -59,6 +66,12 @@ fn horizontal_text_snaps_to_the_row_above() {
         ))
     };
     assert!(clipped("40.5") != clipped("41"));
+    let patterned = |y: &str| {
+        pixels(&format!(
+            "/Pattern cs /P1 scn BT /F1 24 Tf 20 {y} Td (Hxg) Tj ET"
+        ))
+    };
+    assert!(patterned("40.5") != patterned("41"));
 }
 
 /// Rotated text keeps its exact position.
