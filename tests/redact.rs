@@ -4500,6 +4500,17 @@ fn tiling_patterns_follow_their_uses() {
         !contains(&r.output, b"0.321 0.654 0.987"),
         "the cell is gone"
     );
+    // Nor is it still selected by name (kept content follows).
+    let pdf = doc_with(
+        res,
+        &[b"/Pattern cs /P1 scn 60 95 20 10 re f 0 g 10 10 20 20 re f"],
+        objs.clone(),
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    let doc = Document::from_bytes(&r.output).unwrap();
+    let ops = doc.page_operations(&doc.pages()[0]).unwrap();
+    let shown: Vec<String> = ops.iter().map(|o| o.to_string()).collect();
+    assert!(!shown.iter().any(|o| o.contains("/P1")), "{shown:?}");
     // Crossing, and text painted with it meeting the rect: refused.
     for c in [
         format!("{SECRET} /Pattern cs /P1 scn 30 95 50 10 re f"),

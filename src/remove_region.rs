@@ -2148,6 +2148,19 @@ pub(crate) fn regions_edit_session_with<'a>(
             if !walker.tiling_removed.is_empty() {
                 // Still used: by what the walk kept painting with it.
                 let still = walker.tiling_kept.clone();
+                // A pattern nothing kept paints with leaves the page: so
+                // does its `scn`, which then selects it for nothing.
+                let gone: BTreeSet<&Vec<u8>> = walker
+                    .tiling_removed
+                    .iter()
+                    .filter(|n| !still.contains(*n))
+                    .collect();
+                new_ops.retain(|op| match op {
+                    Operation::SetColorFill(v) | Operation::SetColorStroke(v) => {
+                        !matches!(v.last(), Some(Object::Name(n)) if gone.contains(n))
+                    }
+                    _ => true,
+                });
                 pattern_removals.push((page_ref, walker.tiling_removed.clone(), still));
             }
             if !shadings_here.is_empty() {
