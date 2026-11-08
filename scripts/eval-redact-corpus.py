@@ -153,19 +153,24 @@ def rects_for(pdf, size):
     return rects, ws
 
 
-def mupdf_chars(pdf, height):
+def mupdf_chars(pdf, size):
     """Page-1 characters as (char, origin x, origin y, llx, lly, urx, ury)
-    in PDF space, from MuPDF (`mutool draw -F stext`) — a second text
-    engine, character by character. None when mutool is not installed."""
+    in the page space Poppler reports (`size`), from MuPDF (`mutool draw
+    -F stext`) — a second text engine, character by character. MuPDF
+    applies /UserUnit, so its coordinates are scaled back. None when
+    mutool is not installed."""
     r = subprocess.run(["mutool", "draw", "-q", "-F", "stext", "-o", "-", pdf, "1"],
                        capture_output=True, text=True)
     if r.returncode != 0:
         return None
+    m = re.search(r'<page id="[^"]*" width="([^"]+)" height="([^"]+)"', r.stdout)
+    k = size[0] / float(m.group(1)) if m and float(m.group(1)) > 0 else 1.0
+    height = size[1]
     out = []
     for m in re.finditer(r'<char c="([^"]*)" quad="([^"]+)" x="([^"]+)" y="([^"]+)"', r.stdout):
-        q = [float(v) for v in m.group(2).split()]
+        q = [float(v) * k for v in m.group(2).split()]
         xs, ys = q[0::2], q[1::2]
-        out.append((html.unescape(m.group(1)), float(m.group(3)), height - float(m.group(4)),
+        out.append((html.unescape(m.group(1)), float(m.group(3)) * k, height - float(m.group(4)) * k,
                     min(xs), height - max(ys), max(xs), height - min(ys)))
     return out
 
@@ -276,8 +281,8 @@ def run_one(kasane, pdf, kind, rect, size, in_words, tmp, extra_args=()):
     # rect must be found again at the same origin (to 0.01 pt) — a
     # word regrouped by pdftotext is not a loss, a character gone or
     # moved is; no character may be extracted inside the rect.
-    cin = mupdf_chars(pdf, size[1])
-    cout = mupdf_chars(out, size[1]) if cin is not None else None
+    cin = mupdf_chars(pdf, size)
+    cout = mupdf_chars(out, size) if cin is not None else None
     if cin is not None and cout is not None:
         boxed = lambda c: (c[0], c[3], c[4], c[5], c[6])
         kept = [c for c in cin if c[0].strip() and clear_of(boxed(c), rect, 1.0)]
