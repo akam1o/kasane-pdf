@@ -165,7 +165,17 @@ impl Folder {
     fn flush(&mut self, before_show: bool) -> Result<(), Error> {
         let run = std::mem::take(&mut self.run);
         // `T*` moves of unknown leading come before anything that sets
-        // the leading (they came before any in the run).
+        // the leading (they came before any in the run) — but not
+        // before a `Q`, which may restore the leading they read.
+        if before_show
+            && run.unknown_tstar > 0
+            && run
+                .kept
+                .iter()
+                .any(|o| matches!(o, Operation::SaveState | Operation::RestoreState))
+        {
+            return Err(unsupported("a T* of unknown leading among q/Q"));
+        }
         if before_show {
             for _ in 0..run.unknown_tstar {
                 self.out.push(Operation::NextLine);
@@ -538,5 +548,19 @@ mod tests {
             // The T* of known leading folds too, so nothing reads it.
             "BT /F1 10 Tf 0 0 Td (A) Tj 0 -22 Td (C) Tj 0 -12 Td (D) Tj ET"
         );
+        // A T* of unknown leading after a Q (which restores the
+        // leading it reads): refused, not reordered.
+        let mut w = Vec::new();
+        let ops = crate::content::parse_content_stream(
+            &[
+                b"BT /F 10 Tf 100 Tz q 30 TL 50 100 Td (A) Tj 100 0 Td [-500] TJ Q T* (C) Tj ET"
+                    .to_vec(),
+            ],
+            &crate::limits::Limits::default(),
+            false,
+            &mut w,
+        )
+        .unwrap();
+        assert!(fold_removed_positions(&ops, TextStart::FORM).is_err());
     }
 }
