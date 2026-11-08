@@ -4405,9 +4405,8 @@ fn shadings_inside_a_rect_are_removed() {
     assert!(!raw_contains(&r.output, b"0.456"));
 }
 
-/// A shading crossing a rect, unbounded, shared with another page or
-/// drawn in a form is refused; one still painted elsewhere on the page
-/// keeps its resource.
+/// A shading crossing a rect, unbounded, shared with another page,
+/// drawn in a form or also painted elsewhere on the page is refused.
 #[test]
 fn shadings_that_cannot_be_removed_alone() {
     let page_res = "/Font << /F1 20 0 R >> /Shading << /S1 30 0 R >>";
@@ -4450,15 +4449,14 @@ fn shadings_that_cannot_be_removed_alone() {
         o2,
     );
     assert!(unsupported(run(&pdf, vec![RECT])).contains("shading"));
-    // Still painted elsewhere on the page: the resource stays.
+    // Still painted elsewhere on the page: refused — the kept use would
+    // keep the function over the part painted inside.
     let pdf = doc_with(
         page_res,
         &[format!("{SECRET} q 60 95 20 10 re W n /S1 sh Q q 0 0 5 5 re W n /S1 sh Q").as_bytes()],
         objs,
     );
-    let r = run(&pdf, vec![RECT]).unwrap();
-    assert_eq!(r.shadings_removed, 1);
-    assert!(raw_contains(&r.output, b"0.456") || contains(&r.output, b"0.456"));
+    assert!(unsupported(run(&pdf, vec![RECT])).contains("also outside"));
 }
 
 // Tiling patterns: what a pattern paints is decided where it is used —
@@ -4541,4 +4539,114 @@ fn tiling_patterns_follow_their_uses() {
         e.contains("tiling pattern used elsewhere") || e.contains("shared"),
         "{e}"
     );
+}
+
+/// What a removed shading or tiling pattern uses must go with it: data
+/// it shares with anything else, a shading or pattern also painted
+/// outside the rects, and patterns read only by images carrying their
+/// own colours (review of 0.7.0).
+#[test]
+fn removed_shadings_and_patterns_take_their_data() {
+    let page_res = "/Font << /F1 20 0 R >> /Shading << /S1 30 0 R >>";
+    let inside = format!("{SECRET} q 60 95 20 10 re W n /S1 sh Q 0 g 10 10 20 20 re f");
+    let shading = |f: &str| {
+        format!(
+            "<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 1 0] /Extend [true true] \
+             /Function {f} >>"
+        )
+        .into_bytes()
+    };
+    let func = b"<< /FunctionType 2 /Domain [0 1] /C0 [0.123 0.456 0.789] /C1 [1 1 1] /N 1 >>";
+    // Its function an object of its own: removed with it.
+    let mut objs = font_objs();
+    objs.push((30, shading("31 0 R")));
+    objs.push((31, func.to_vec()));
+    let pdf = doc_with(page_res, &[inside.as_bytes()], objs.clone());
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.shadings_removed, 1);
+    assert!(!raw_contains(&r.output, b"0.456") && !contains(&r.output, b"0.456"));
+    // The function also held by another object (here an unused
+    // annotation-free dictionary the page refers to): refused.
+    let mut o2 = objs.clone();
+    o2.push((32, b"<< /Cache 31 0 R >>".to_vec()));
+    let page_res2 = format!("{page_res} /Properties << /X 32 0 R >>");
+    let pdf = doc_with(&page_res2, &[inside.as_bytes()], o2);
+    let e = unsupported(run(&pdf, vec![RECT]));
+    assert!(e.contains("also referred to"), "{e}");
+    // Painted inside and also outside: refused.
+    let c = format!("{inside} q 0 0 5 5 re W n /S1 sh Q");
+    let pdf = doc_with(page_res, &[c.as_bytes()], objs.clone());
+    let e = unsupported(run(&pdf, vec![RECT]));
+    assert!(e.contains("also outside"), "{e}");
+    // Two names for one shading, one of them kept: refused.
+    let pdf = doc_with(
+        "/Font << /F1 20 0 R >> /Shading << /S1 30 0 R /S2 30 0 R >>",
+        &[format!("{inside} q 0 0 5 5 re W n /S2 sh Q").as_bytes()],
+        objs,
+    );
+    assert!(unsupported(run(&pdf, vec![RECT])).contains("shading"));
+
+    // A tiling pattern followed by an RGB image: the image carries its
+    // own colours, so the cell goes; an image mask paints with it.
+    let res = "/Font << /F1 20 0 R >> /Pattern << /P1 30 0 R >> /XObject << /Im 40 0 R >>";
+    let mut objs = font_objs();
+    objs.push((30, tiling()));
+    for (mask, gone) in [(false, true), (true, false)] {
+        let mut o = objs.clone();
+        o.push((
+            40,
+            if mask {
+                stream_obj(
+                    "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ImageMask true \
+                     /BitsPerComponent 1",
+                    &[0],
+                )
+            } else {
+                stream_obj(
+                    "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB \
+                     /BitsPerComponent 8",
+                    &[1, 2, 3],
+                )
+            },
+        ));
+        let c = "/Pattern cs /P1 scn 60 95 20 10 re f q 10 0 0 10 10 10 cm /Im Do Q";
+        let r = run(&doc_with(res, &[c.as_bytes()], o), vec![RECT]);
+        if gone {
+            let r = r.unwrap();
+            assert!(
+                !contains(&r.output, b"0.321 0.654 0.987"),
+                "the cell is gone"
+            );
+        } else {
+            assert!(unsupported(r).contains("also outside"));
+        }
+    }
+}
+
+/// A removed shading reaching a long chain of references: a typed
+/// limit, not a stack overflow (review of 0.7.0).
+#[test]
+fn deep_references_from_a_removed_shading_are_bounded() {
+    let mut objs = font_objs();
+    objs.push((
+        30,
+        b"<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 1 0] /Function << /FunctionType 2 \
+          /Domain [0 1] /C0 [0 0 0] /C1 [1 1 1] /N 1 >> /Extra 1000 0 R >>"
+            .to_vec(),
+    ));
+    for i in 0..3000u32 {
+        let body = if i + 1 < 3000 {
+            format!("[{} 0 R]", 1001 + i)
+        } else {
+            "0".into()
+        };
+        objs.push((1000 + i, body.into_bytes()));
+    }
+    let pdf = doc_with(
+        "/Font << /F1 20 0 R >> /Shading << /S1 30 0 R >>",
+        &[format!("{SECRET} q 60 95 20 10 re W n /S1 sh Q").as_bytes()],
+        objs,
+    );
+    let e = run(&pdf, vec![RECT]).unwrap_err();
+    assert!(matches!(e, Error::LimitExceeded { .. }), "{e}");
 }

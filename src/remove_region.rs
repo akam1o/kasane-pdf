@@ -2661,37 +2661,42 @@ fn prune_removed_shadings(
         },
         detail,
     };
-    // How many objects refer to each object.
-    let mut referrers: HashMap<IndirectRef, u64> = HashMap::new();
+    // For each object, the objects referring to it and how often; the
+    // trailer is a holder of its own (`None`).
+    let mut referrers: HashMap<IndirectRef, HashMap<Option<IndirectRef>, u64>> = HashMap::new();
     let mut edges: u64 = 0;
-    for (r, e) in doc.xref_entries() {
-        if matches!(e, crate::xref::XrefEntry::Free { .. }) {
-            continue;
-        }
-        let body = doc.resolve(r)?;
-        let mut stack = vec![&body];
-        while let Some(o) = stack.pop() {
-            match o {
-                Object::Ref(t) => {
-                    edges += 1;
-                    if edges > limits.max_audit_edges {
-                        return Err(Error::LimitExceeded {
-                            limit: "max_audit_edges",
-                            max: limits.max_audit_edges,
-                        });
-                    }
-                    *referrers.entry(*t).or_default() += 1;
-                }
-                Object::Dict(d) => stack.extend(d.values()),
-                Object::Array(a) => stack.extend(a.iter()),
-                Object::Stream { dict, .. } => stack.extend(dict.values()),
-                _ => {}
+    let trailer = Object::Dict(doc.trailer().clone());
+    let bodies = doc
+        .xref_entries()
+        .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
+        .map(|(r, _)| Ok((Some(r), doc.resolve(r)?)))
+        .chain(std::iter::once(Ok((None, trailer))))
+        .collect::<Result<Vec<_>, Error>>()?;
+    for (holder, body) in &bodies {
+        for t in direct_refs(body) {
+            edges += 1;
+            if edges > limits.max_audit_edges {
+                return Err(Error::LimitExceeded {
+                    limit: "max_audit_edges",
+                    max: limits.max_audit_edges,
+                });
             }
+            *referrers.entry(t).or_default().entry(*holder).or_default() += 1;
         }
     }
+    let shared = |r: &IndirectRef| referrers.get(r).map_or(0, |h| h.values().sum::<u64>()) > 1;
     let mut digests = Vec::new();
     for (page_ref, removed, still) in removals {
-        let names: Vec<&Vec<u8>> = removed.iter().filter(|n| !still.contains(*n)).collect();
+        // A resource also painted outside the rects keeps what it
+        // painted inside them (a shading's function over the whole
+        // domain, a pattern's cell): the two cannot be separated.
+        if let Some(n) = removed.iter().find(|n| still.contains(*n)) {
+            return Err(refuse(format!(
+                "/{} is painted inside a rect and also outside the rects",
+                String::from_utf8_lossy(n)
+            )));
+        }
+        let names: Vec<&Vec<u8>> = removed.iter().collect();
         if names.is_empty() {
             continue;
         }
@@ -2707,7 +2712,7 @@ fn prune_removed_shadings(
             .cloned()
             .ok_or_else(|| refuse(format!("page {page_ref} has no /Resources")))?;
         if let Object::Ref(rr) = &res_obj {
-            if referrers.get(rr).copied().unwrap_or(0) > 1 {
+            if shared(rr) {
                 return Err(refuse(format!(
                     "the resources of page {page_ref} are shared"
                 )));
@@ -2726,7 +2731,7 @@ fn prune_removed_shadings(
             .cloned()
             .ok_or_else(|| Error::Structure(format!("a removed {what} is not in /Resources")))?;
         if let Object::Ref(sr) = &sh_obj {
-            if referrers.get(sr).copied().unwrap_or(0) > 1 {
+            if shared(sr) {
                 return Err(refuse(format!(
                     "the /{} dictionary of page {page_ref} is shared",
                     String::from_utf8_lossy(category)
@@ -2737,16 +2742,51 @@ fn prune_removed_shadings(
             doc.deref(&sh_obj)?.as_dict().cloned().ok_or_else(|| {
                 Error::Structure(format!("/Resources /{what} is not a dictionary"))
             })?;
+        // The object holding the category dictionary.
+        let holder = match (&sh_obj, &res_obj) {
+            (Object::Ref(r), _) | (_, Object::Ref(r)) => *r,
+            _ => *page_ref,
+        };
+        let mut seen_names: BTreeSet<&Vec<u8>> = BTreeSet::new();
         for n in names {
+            if !seen_names.insert(n) {
+                continue;
+            }
             let Some(entry) = sh.remove(n.as_slice()) else {
                 continue;
             };
-            if let Object::Ref(r) = &entry {
-                if referrers.get(r).copied().unwrap_or(0) > 1 {
-                    return Err(refuse(format!(
-                        "/{} (object {r}) is also reached from elsewhere",
-                        String::from_utf8_lossy(n)
-                    )));
+            // Everything the entry reaches must be reached only through
+            // it: from objects it reaches, or from the holder no more
+            // often than the entry itself refers to it. Anything else
+            // would keep the removed data in the output.
+            let mut closure: HashSet<IndirectRef> = HashSet::new();
+            let mut stack: Vec<IndirectRef> = direct_refs(&entry);
+            while let Some(r) = stack.pop() {
+                if !closure.insert(r) {
+                    continue;
+                }
+                edges += 1;
+                if edges > limits.max_audit_edges {
+                    return Err(Error::LimitExceeded {
+                        limit: "max_audit_edges",
+                        max: limits.max_audit_edges,
+                    });
+                }
+                stack.extend(direct_refs(&doc.resolve(r)?));
+            }
+            let from_entry = direct_refs(&entry);
+            for r in &closure {
+                for (h, count) in referrers.get(r).into_iter().flatten() {
+                    let inside = h.is_some_and(|h| closure.contains(&h));
+                    let via_entry = *h == Some(holder)
+                        && *count <= from_entry.iter().filter(|t| *t == r).count() as u64;
+                    if !inside && !via_entry {
+                        return Err(refuse(format!(
+                            "/{}: object {r} it uses is also referred to by {}",
+                            String::from_utf8_lossy(n),
+                            h.map_or("the trailer".to_string(), |h| format!("object {h}"))
+                        )));
+                    }
                 }
             }
             digests.push(crate::redact_type3::content_digest(doc, &entry, limits)?);
@@ -2757,6 +2797,22 @@ fn prune_removed_shadings(
             .insert((page_ref.number, page_ref.generation), Object::Dict(pd));
     }
     Ok(digests)
+}
+
+/// The references written in `o` itself (not through them).
+fn direct_refs(o: &Object) -> Vec<IndirectRef> {
+    let mut out = Vec::new();
+    let mut stack = vec![o];
+    while let Some(o) = stack.pop() {
+        match o {
+            Object::Ref(t) => out.push(*t),
+            Object::Dict(d) => stack.extend(d.values()),
+            Object::Array(a) => stack.extend(a.iter()),
+            Object::Stream { dict, .. } => stack.extend(dict.values()),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Why content other than the page's own may resolve names in `res`:

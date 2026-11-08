@@ -162,8 +162,11 @@ def mupdf_chars(pdf, size):
     -F stext`) — a second text engine, character by character. MuPDF
     applies /UserUnit, so its coordinates are scaled back. None when
     mutool is not installed."""
-    r = subprocess.run(["mutool", "draw", "-q", "-F", "stext", "-o", "-", pdf, "1"],
-                       capture_output=True, text=True)
+    try:
+        r = subprocess.run(["mutool", "draw", "-q", "-F", "stext", "-o", "-", pdf, "1"],
+                           capture_output=True, text=True)
+    except FileNotFoundError:
+        return None
     if r.returncode != 0:
         return None
     m = re.search(r'<page id="[^"]*" width="([^"]+)" height="([^"]+)"', r.stdout)
@@ -200,7 +203,7 @@ def pixel_checks(inp, out, rect, size, tmp):
     w0, h0, a = render(inp, os.path.join(tmp, "in"))
     w1, h1, b = render(out, os.path.join(tmp, "out"))
     if (w0, h0) != (w1, h1):
-        return None, None
+        return None, None, None
     s = DPI / 72.0
     _, ph = size
     x0, x1 = rect[0] * s, rect[2] * s

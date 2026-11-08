@@ -18,11 +18,12 @@ versions follow [Semantic Versioning](https://semver.org/).
   the option such text stays refused.
 - `redact` removes a shading (`sh`) in page content that paints only
   inside one rect — its extent the clip's bounds narrowed by its
-  `/BBox` — with the `/Resources /Shading` entry only it used
-  (`TargetKind::Shading`, `Redaction::shadings_removed`, CLI
+  `/BBox` — with its `/Resources /Shading` entry and everything it
+  reaches (`TargetKind::Shading`, `Redaction::shadings_removed`, CLI
   `shadings removed:`); verification checks by content digest that no
-  removed shading is left. A shading crossing a rect, unbounded, in a
-  form or reached from elsewhere stays refused.
+  removed shading is left. A shading crossing a rect, also painted
+  outside the rects, unbounded, in a form, or sharing any object it
+  reaches with anything else stays refused.
 
 ### Changed
 - `redact` redacts hairlines (`0 w`) as their zero-width centreline and
@@ -34,9 +35,10 @@ versions follow [Semantic Versioning](https://semver.org/).
   uncertain.
 - `redact` no longer refuses a page for selecting a tiling pattern: a
   path it paints clear of the rects is kept, one wholly inside a rect is
-  removed, and the pattern (with its `scn`) leaves the page when
-  nothing kept paints with it, checked by digest. Paths across a rect,
-  text meeting a rect, forms and shared patterns stay refused.
+  removed with the pattern (and its `scn`), checked by digest. A
+  pattern also painting kept content when one of its uses is removed,
+  paths across a rect, text meeting a rect, forms and patterns sharing
+  objects stay refused.
 - Resource lookups borrow direct resource dictionaries instead of
   cloning them per name (a page with 1,600 fonts redacted in 0.2 s,
   was 1.0 s).

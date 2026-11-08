@@ -62,11 +62,31 @@ struct Canon {
     memo: HashMap<IndirectRef, [u8; 32]>,
     open: HashSet<IndirectRef>,
     work: u64,
+    depth: u32,
 }
 
 /// The digest of `o` written canonically, each reference replaced by
 /// its target's digest.
 fn canonical(
+    doc: &Document,
+    o: &Object,
+    c: &mut Canon,
+    limits: &Limits,
+) -> Result<[u8; 32], Error> {
+    // References nest without bound in a file: the recursion is capped.
+    if c.depth >= limits.max_nesting_depth {
+        return Err(Error::LimitExceeded {
+            limit: "max_nesting_depth (canonical digest)",
+            max: limits.max_nesting_depth as u64,
+        });
+    }
+    c.depth += 1;
+    let r = canonical_inner(doc, o, c, limits);
+    c.depth -= 1;
+    r
+}
+
+fn canonical_inner(
     doc: &Document,
     o: &Object,
     c: &mut Canon,
