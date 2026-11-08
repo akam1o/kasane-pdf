@@ -295,9 +295,10 @@ pub(crate) fn extract_text_for_search(
     doc: &Document,
     page: &Page,
     limits: &Limits,
+    annotations: bool,
 ) -> Result<ExtractedText, Error> {
     limits.validate()?;
-    extract_text_impl(doc, page, limits, true, true, false)
+    extract_text_impl(doc, page, limits, true, annotations, false)
 }
 
 fn extract_text_impl(

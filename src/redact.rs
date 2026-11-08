@@ -751,7 +751,17 @@ fn find_elsewhere(
     // Everything the page shows as text — optional content off by
     // default and annotation appearances too: a copy there is a copy.
     for (i, page) in out.pages().iter().enumerate() {
-        let shown: String = match crate::text_extract::extract_text_for_search(out, page, limits) {
+        // An appearance that cannot be read leaves the page's own text
+        // searched and the page reported as not (wholly) searched.
+        let extracted = match crate::text_extract::extract_text_for_search(out, page, limits, true)
+        {
+            Ok(t) => Ok(t),
+            Err(_) => {
+                unsearched.push(i);
+                crate::text_extract::extract_text_for_search(out, page, limits, false)
+            }
+        };
+        let shown: String = match extracted {
             Ok(t) => {
                 let mut s: String = t
                     .chars
@@ -765,7 +775,9 @@ fn find_elsewhere(
                 eol(&s)
             }
             Err(_) => {
-                unsearched.push(i);
+                if unsearched.last() != Some(&i) {
+                    unsearched.push(i);
+                }
                 continue;
             }
         };

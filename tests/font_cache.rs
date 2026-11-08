@@ -301,3 +301,50 @@ fn build_doc_with_oc(pages: &[(&str, &str, &str)], extra: Vec<(u32, Vec<u8>)>) -
     objs.extend(extra);
     build_pdf(&objs)
 }
+
+/// A page whose annotation appearance cannot be read still has its own
+/// text searched, and is reported as not wholly searched.
+#[test]
+fn an_unreadable_appearance_leaves_the_page_text_searched() {
+    let res = "/Font << /A 20 0 R >>";
+    let objs = vec![
+        font(20, 500, "/Encoding /WinAnsiEncoding"),
+        (
+            41,
+            b"<< /Type /Annot /Subtype /Square /Rect [10 10 90 30] /AP << /N 42 0 R >> >>".to_vec(),
+        ),
+        (
+            42,
+            stream_obj(
+                "/Type /XObject /Subtype /Form /BBox [0 0 80 20]",
+                b"BT /Missing 8 Tf (x) Tj ET",
+            ),
+        ),
+    ];
+    let pdf = doc(
+        &[
+            ("BT /A 10 Tf 60 100 Td (CONFIDENTIAL) Tj ET", res, ""),
+            (
+                "BT /A 10 Tf 10 150 Td (CONFIDENTIAL) Tj ET",
+                res,
+                "/Annots [41 0 R]",
+            ),
+        ],
+        objs,
+    );
+    let d = Document::from_bytes(&pdf).unwrap();
+    let r = redact(
+        &d,
+        &[(0, vec![(50.0, 90.0, 190.0, 115.0)])],
+        &RedactOptions::new(),
+    )
+    .unwrap();
+    assert!(
+        r.elsewhere
+            .iter()
+            .any(|e| e.location == ElsewhereLocation::Page(1)),
+        "{:?}",
+        r.elsewhere
+    );
+    assert_eq!(r.elsewhere_unsearched_pages, vec![1]);
+}
