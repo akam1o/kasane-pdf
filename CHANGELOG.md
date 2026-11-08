@@ -26,6 +26,16 @@ versions follow [Semantic Versioning](https://semver.org/).
   reaches with anything else stays refused.
 
 ### Changed
+- A document loads each font dictionary once per set of limits and
+  reuses it across operators, pages and operations (the warnings the
+  load recorded are recorded again on each use); the fonts kept are
+  capped at 64 MiB of decoded data. A page drawing one font 20,000
+  times no longer exceeds `max_total_decoded_bytes`.
+- `redact` looks for copies of removed text (`elsewhere`) in optional
+  content that is off and in annotation appearances too, and without
+  evaluating glyph outlines: the Corpus redacts in 7.6 s instead of
+  50.3 s, outputs unchanged.
+- `Limits` implements `PartialEq`, `Eq` and `Hash`.
 - `redact` redacts hairlines (`0 w`) as their zero-width centreline and
   strokes, cut fills and stroked text under stroke adjustment
   (`/SA true`) as their user-space geometry, instead of refusing them:

@@ -730,14 +730,22 @@ fn find_elsewhere(
     if texts.is_empty() {
         return Ok((found, unsearched));
     }
-    let opts = crate::text_extract::TextOptions::default().with_limits(limits.clone());
+    // Everything the page shows as text — optional content off by
+    // default and annotation appearances too: a copy there is a copy.
     for (i, page) in out.pages().iter().enumerate() {
-        let shown: String = match crate::text_extract::extract_text(out, page, &opts) {
-            Ok(t) => t
-                .chars
-                .iter()
-                .filter_map(|c| c.unicode.as_deref())
-                .collect(),
+        let shown: String = match crate::text_extract::extract_text_for_search(out, page, limits) {
+            Ok(t) => {
+                let mut s: String = t
+                    .chars
+                    .iter()
+                    .filter_map(|c| c.unicode.as_deref())
+                    .collect();
+                for a in &t.annotations {
+                    s.push('\n');
+                    s.extend(a.appearance.iter().filter_map(|c| c.unicode.as_deref()));
+                }
+                s
+            }
             Err(_) => {
                 unsearched.push(i);
                 continue;

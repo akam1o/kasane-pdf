@@ -586,6 +586,7 @@ pub fn render_page(
         annot_hidden: Vec::new(),
         extract_unicode_bytes: 0,
         extraction_only: false,
+        glyph_bounds: true,
         substitutions: Vec::new(),
         color_approximations: Vec::new(),
         image_approximations: Vec::new(),
@@ -1498,6 +1499,10 @@ pub(crate) struct Renderer<'a> {
     /// interpreter still walks every operator so text state, resources
     /// and limits behave exactly as during a render.
     extraction_only: bool,
+    /// Extraction: compute each glyph's outline for its `bounds`. Off
+    /// where only the characters are wanted: what is extracted is the
+    /// same either way.
+    glyph_bounds: bool,
     /// Non-embedded fonts drawn with a bundled substitute this page
     /// (deduplicated) — surfaced on [`RenderedPage`].
     substitutions: Vec<crate::fontsubst::FontSubstitution>,
@@ -1795,6 +1800,7 @@ impl<'a> Renderer<'a> {
             annot_hidden: Vec::new(),
             extract_unicode_bytes: 0,
             extraction_only: true,
+            glyph_bounds: true,
             substitutions: Vec::new(),
             color_approximations: Vec::new(),
             image_approximations: Vec::new(),
@@ -1844,6 +1850,12 @@ impl<'a> Renderer<'a> {
     pub(crate) fn include_hidden_content(&mut self) {
         debug_assert!(self.extraction_only);
         self.oc_include_hidden = true;
+    }
+
+    /// Extraction without per-glyph bounds (no outlines evaluated).
+    pub(crate) fn skip_glyph_bounds(&mut self) {
+        debug_assert!(self.extraction_only);
+        self.glyph_bounds = false;
     }
 
     pub(crate) fn run(&mut self, ops: &[Operation]) -> Result<(), Error> {
@@ -6613,18 +6625,22 @@ impl<'a> Renderer<'a> {
         // metrics-only) must not fail extraction: it just reports
         // `bounds: None`. In render mode the same refusal propagates.
         let mut gp = crate::font::GlyphPath::new(font.glyph_matrix(gid)?);
-        let has_outline = match font.outline(gid, &mut gp) {
-            Ok(h) => h,
-            Err(e) if self.extraction_only => {
-                // Tolerated only when not painting — a metrics-only
-                // font yields no ink shape, so bounds degrade to None.
-                if matches!(e, Error::Unsupported { .. }) {
-                    false
-                } else {
-                    return Err(e);
+        let has_outline = if self.extraction_only && !self.glyph_bounds {
+            false
+        } else {
+            match font.outline(gid, &mut gp) {
+                Ok(h) => h,
+                Err(e) if self.extraction_only => {
+                    // Tolerated only when not painting — a metrics-only
+                    // font yields no ink shape, so bounds degrade to None.
+                    if matches!(e, Error::Unsupported { .. }) {
+                        false
+                    } else {
+                        return Err(e);
+                    }
                 }
+                Err(e) => return Err(e),
             }
-            Err(e) => return Err(e),
         };
         // The finished path is consumed by painting or by the bounds
         // computation below — exactly one of the two per call.

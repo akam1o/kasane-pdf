@@ -72,6 +72,11 @@ pub struct Document {
     /// Non-fatal findings of every operation on this document (see
     /// [`crate::Warning`]), read with [`Document::take_warnings`].
     warnings: std::cell::RefCell<crate::warning::WarningSink>,
+    /// Fonts loaded from a font dictionary object, by that object and
+    /// the limits they were loaded under, with the warnings the load
+    /// recorded (replayed on each use, as a fresh load would record
+    /// them). The document never changes, so neither does the font.
+    font_cache: std::cell::RefCell<FontCache>,
     /// The authenticated security handler of an encrypted document;
     /// every object read from the file is decrypted through it.
     crypt: Option<crate::crypt::Crypt>,
@@ -134,6 +139,28 @@ impl OpenOptions {
     pub fn with_recovery(mut self, recovery: bool) -> Self {
         self.recovery = recovery;
         self
+    }
+}
+
+#[derive(Default)]
+struct FontCache {
+    fonts: HashMap<(IndirectRef, crate::Limits), (crate::font::Font, Vec<crate::Warning>)>,
+    /// What the cached fonts decoded (their programs, CMaps …).
+    bytes: u64,
+}
+
+/// The decoded bytes the font cache may keep alive; fonts beyond it are
+/// loaded each time, as without the cache.
+const FONT_CACHE_BYTES: u64 = 64 << 20;
+
+impl std::fmt::Debug for FontCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "FontCache({} fonts, {} bytes)",
+            self.fonts.len(),
+            self.bytes
+        )
     }
 }
 
@@ -356,6 +383,7 @@ impl Document {
             length_resolve_depth: std::cell::Cell::new(0),
             objstm_cache: std::cell::RefCell::new(HashMap::new()),
             warnings: std::cell::RefCell::new(Default::default()),
+            font_cache: std::cell::RefCell::new(FontCache::default()),
             recovery: None,
             lenient,
             limits,
@@ -426,6 +454,7 @@ impl Document {
             length_resolve_depth: std::cell::Cell::new(0),
             objstm_cache: std::cell::RefCell::new(HashMap::new()),
             warnings: std::cell::RefCell::new(Default::default()),
+            font_cache: std::cell::RefCell::new(FontCache::default()),
             recovery: Some(report),
             lenient: true,
             limits,
@@ -498,6 +527,60 @@ impl Document {
     /// stream of their own, e.g. the ToUnicode parser).
     pub(crate) fn push_warning(&self, w: crate::Warning) {
         self.warnings.borrow_mut().push(w);
+    }
+
+    /// Run `f`, returning what it returned and the warnings it recorded
+    /// (also recorded on the document).
+    pub(crate) fn capture_warnings<T>(&self, f: impl FnOnce() -> T) -> (T, Vec<crate::Warning>) {
+        let outer = std::mem::take(&mut *self.warnings.borrow_mut());
+        let r = f();
+        let inner = std::mem::replace(&mut *self.warnings.borrow_mut(), outer);
+        let mut sink = self.warnings.borrow_mut();
+        for w in &inner.list {
+            sink.push(w.clone());
+        }
+        sink.dropped = sink.dropped.saturating_add(inner.dropped);
+        (r, inner.list)
+    }
+
+    /// The font loaded from font dictionary `r` under `limits`, if any.
+    pub(crate) fn cached_font(
+        &self,
+        r: IndirectRef,
+        limits: &crate::Limits,
+    ) -> Option<crate::font::Font> {
+        // A limit may decide whether a font loads: the limits are part
+        // of the key.
+        let key = (r, limits.clone());
+        let hit = self.font_cache.borrow().fonts.get(&key).cloned();
+        hit.map(|(f, warnings)| {
+            for w in warnings {
+                self.push_warning(w);
+            }
+            f
+        })
+    }
+
+    /// Keep `font`, which decoded `bytes`, unless the cache is full.
+    pub(crate) fn cache_font(
+        &self,
+        r: IndirectRef,
+        limits: &crate::Limits,
+        font: crate::font::Font,
+        warnings: Vec<crate::Warning>,
+        bytes: u64,
+    ) {
+        let mut c = self.font_cache.borrow_mut();
+        if c.bytes.saturating_add(bytes) > FONT_CACHE_BYTES {
+            return;
+        }
+        c.bytes += bytes;
+        c.fonts.insert((r, limits.clone()), (font, warnings));
+    }
+
+    /// What is left of the current operation's decoded-bytes budget.
+    pub(crate) fn decoded_left(&self) -> u64 {
+        self.decoded_budget.get()
     }
 
     /// Whether the document was opened through

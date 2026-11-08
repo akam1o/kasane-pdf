@@ -11,7 +11,7 @@ use crate::error::Error;
 /// The default values are generous enough for ordinary documents while
 /// still bounding pathological input. Construct with
 /// `Limits::default()` and adjust fields as needed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Limits {
     /// Maximum input size in bytes (checked before parsing starts).

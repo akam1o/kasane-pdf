@@ -280,6 +280,14 @@ pub(crate) fn load_font(
     name: &[u8],
     limits: &Limits,
 ) -> Result<Font, Error> {
+    // A font dictionary object loads to the same font every time.
+    let key = match doc.resolve_resource_raw(resources, "Font", name)? {
+        Some(Object::Ref(r)) => Some(r),
+        _ => None,
+    };
+    if let Some(f) = key.and_then(|r| doc.cached_font(r, limits)) {
+        return Ok(f);
+    }
     // Peek at the subtype to pick the loader; each loader re-resolves.
     let obj = doc.resolve_resource(resources, "Font", name)?;
     let dict = match obj.as_ref().and_then(|o| o.as_dict()) {
@@ -298,7 +306,7 @@ pub(crate) fn load_font(
             d.insert(b"Type".to_vec(), Object::Name(b"Font".to_vec()));
             d.insert(b"Subtype".to_vec(), Object::Name(b"Type1".to_vec()));
             d.insert(b"BaseFont".to_vec(), Object::Name(b"Helvetica".to_vec()));
-            d
+            return load_font_dict(doc, &d, name, limits);
         }
         None if obj.is_none() => {
             return Err(Error::Structure(format!(
@@ -313,7 +321,14 @@ pub(crate) fn load_font(
             )))
         }
     };
-    load_font_dict(doc, &dict, name, limits)
+    let before = doc.decoded_left();
+    let (font, warnings) = doc.capture_warnings(|| load_font_dict(doc, &dict, name, limits));
+    let font = font?;
+    if let Some(r) = key {
+        let bytes = before.saturating_sub(doc.decoded_left());
+        doc.cache_font(r, limits, font.clone(), warnings, bytes);
+    }
+    Ok(font)
 }
 
 /// Load a font from its dictionary — the resource lookup already

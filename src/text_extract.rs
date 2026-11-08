@@ -271,6 +271,7 @@ pub fn extract_text(
         &opts.limits,
         opts.include_hidden_content,
         opts.include_annotations,
+        true,
     )?;
     if let Some(r) = &opts.region {
         let (x0, x1) = (r.llx.min(r.urx), r.llx.max(r.urx));
@@ -287,12 +288,25 @@ pub fn extract_text(
     Ok(out)
 }
 
+/// Everything a page shows as text, for a search: hidden optional
+/// content and annotation appearances included, characters without
+/// their `bounds` (no glyph outline is evaluated).
+pub(crate) fn extract_text_for_search(
+    doc: &Document,
+    page: &Page,
+    limits: &Limits,
+) -> Result<ExtractedText, Error> {
+    limits.validate()?;
+    extract_text_impl(doc, page, limits, true, true, false)
+}
+
 fn extract_text_impl(
     doc: &Document,
     page: &Page,
     limits: &Limits,
     include_hidden: bool,
     include_annotations: bool,
+    glyph_bounds: bool,
 ) -> Result<ExtractedText, Error> {
     let _budget = doc.decoded_budget_scope();
     let opts = crate::render::RenderOptions {
@@ -307,6 +321,9 @@ fn extract_text_impl(
     let mut r = Renderer::for_extraction(doc, page, &opts, &mut pixmap)?;
     if include_hidden {
         r.include_hidden_content();
+    }
+    if !glyph_bounds {
+        r.skip_glyph_bounds();
     }
     r.run(&ops)?;
     let mut annotations = Vec::new();
