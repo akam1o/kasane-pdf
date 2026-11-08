@@ -4329,4 +4329,26 @@ fn removed_shows_leave_no_ext_gstate_trail() {
         })
         .collect();
     assert!(outputs[0] == outputs[1], "the outputs differ");
+    // A stroke opacity only removed stroked text used: the content
+    // does not select it (its definition stays in the page's resources,
+    // which are kept as they are).
+    let contents: Vec<String> = ["0.25", "0.75"]
+        .iter()
+        .map(|ca| {
+            let pdf = doc_with(
+                &format!("/Font << /F1 20 0 R >> /ExtGState << /S << /CA {ca} >> >>"),
+                &[b"/S gs BT /F1 12 Tf 1 Tr 80 100 Td (S) Tj 0 Tr 20 20 Td (PUBLICWORD) Tj ET"],
+                font_objs(),
+            );
+            let out = run(&pdf, vec![(60.0, 60.0, 155.0, 115.0)]).unwrap().output;
+            let d = Document::from_bytes(&out).unwrap();
+            let ops = d.page_operations(&d.pages()[0]).unwrap();
+            ops.iter()
+                .map(|o| o.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    assert_eq!(contents[0], contents[1]);
+    assert!(!contents[0].contains("gs"), "{}", contents[0]);
 }

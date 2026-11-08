@@ -450,7 +450,27 @@ struct GsLive {
     some: HashSet<Vec<u8>>,
 }
 
+/// ExtGState keys only stroking reads.
+const GS_STROKE_ONLY: [&[u8]; 7] = [b"CA", b"LW", b"LC", b"LJ", b"ML", b"D", b"SA"];
+
 impl GsLive {
+    /// A read of every key but those only stroking reads.
+    fn read_fill(&mut self) {
+        let stroke: HashSet<Vec<u8>> = GS_STROKE_ONLY.iter().map(|k| k.to_vec()).collect();
+        *self = if self.all {
+            GsLive {
+                all: true,
+                except: self.except.intersection(&stroke).cloned().collect(),
+                some: HashSet::new(),
+            }
+        } else {
+            GsLive {
+                all: true,
+                except: stroke.difference(&self.some).cloned().collect(),
+                some: HashSet::new(),
+            }
+        };
+    }
     fn read_all(&mut self) {
         *self = GsLive {
             all: true,
@@ -642,9 +662,11 @@ fn drop_dead_state(ops: Vec<Operation>, start: TextStart, gs_keys: GsKeys) -> Ve
                 fill(&mut live);
                 if stroking[i] {
                     stroke(&mut live);
+                    gs.read_all();
+                } else {
+                    gs.read_fill();
                 }
                 live[PAINT] = true;
-                gs.read_all();
                 true
             }
             O::NextLine => {
@@ -654,7 +676,7 @@ fn drop_dead_state(ops: Vec<Operation>, start: TextStart, gs_keys: GsKeys) -> Ve
             O::Fill | O::FillEvenOdd => {
                 fill(&mut live);
                 live[PAINT] = true;
-                gs.read_all();
+                gs.read_fill();
                 true
             }
             O::Stroke | O::CloseAndStroke => {
@@ -735,19 +757,16 @@ fn drop_dead_state(ops: Vec<Operation>, start: TextStart, gs_keys: GsKeys) -> Ve
 
 /// `ops` with consecutive `cm` composed — those with nothing reading the
 /// CTM between them (only colour, text state and positioning, marked
-/// content …) — and dropped where they compose to the identity (to
-/// 1e-12): a translation set for removed text and undone after it does
-/// not stay.
+/// content …) — and dropped where they compose exactly to the
+/// identity: a translation set for removed text and undone after it
+/// does not stay.
 fn compose_cm(ops: Vec<Operation>) -> Vec<Operation> {
     use Operation as O;
     let mut out: Vec<Option<Operation>> = Vec::with_capacity(ops.len());
     // The last `cm` with nothing reading the CTM since.
     let mut pending: Option<usize> = None;
-    let identity = |m: &Matrix| {
-        [m.a - 1.0, m.b, m.c, m.d - 1.0, m.e, m.f]
-            .iter()
-            .all(|v| v.abs() <= 1e-12)
-    };
+    // Exactly: any residue is amplified by the CTM in force.
+    let identity = |m: &Matrix| [m.a, m.b, m.c, m.d, m.e, m.f] == [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     for o in ops {
         match o {
             O::ConcatMatrix(m) => {
@@ -1013,5 +1032,19 @@ mod tests {
             ),
             "BT /F1 10 Tf (A) Tj 1 0 0 rg 0 0 5 5 re f 0 g [-500] TJ (B) Tj ET"
         );
+        // An identity is dropped only exactly: a tiny translation under
+        // a large CTM moves kept text.
+        let out = fold(
+            "100000000000000 0 0 100000000000000 0 0 cm 1 0 0 1 0.0000000000005 0 cm \
+             BT /F1 10 Tf 2 0 Td (C) Tj ET",
+            TextStart::PAGE,
+        );
+        let e: f64 = out
+            .split("] cm")
+            .next()
+            .and_then(|m| m.split_whitespace().nth(4))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0);
+        assert!((e - 50.0).abs() < 1e-6, "{out}");
     }
 }
