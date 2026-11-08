@@ -65,6 +65,9 @@ pub enum TargetKind {
     /// A shading `sh` or other painted entity we cannot enumerate —
     /// reported as a blocker instead of a target when it blocks.
     Other,
+    /// A shading `sh` (redaction): the bounds are what it may paint
+    /// (its clip, its `/BBox`).
+    Shading,
 }
 
 /// Where inside the logical content stream an occurrence was found.
@@ -1095,6 +1098,45 @@ impl<'a> DiagWalker<'a> {
         Ok(None)
     }
 
+    /// What `sh` with shading `name` may paint, in page space: the
+    /// clip's bounds, narrowed by the shading's `/BBox` under the CTM;
+    /// `None` when neither bounds it.
+    fn shading_extent(&self, name: &[u8]) -> Result<Option<(f64, f64, f64, f64)>, Error> {
+        let mut b = self.gs.clip;
+        let sh = self
+            .doc
+            .resolve_resource(&self.resources, "Shading", name)?;
+        let dict = match &sh {
+            Some(Object::Dict(d)) => Some(d),
+            Some(Object::Stream { dict, .. }) => Some(dict),
+            _ => None,
+        };
+        if let Some(bb) = dict
+            .and_then(|d| d.get(b"BBox".as_slice()))
+            .and_then(|o| self.doc.deref(o).ok())
+            .and_then(|o| crate::page::Rect::from_object(&o))
+        {
+            let m = self.gs.ctm;
+            let pts = [
+                m.transform(bb.llx, bb.lly),
+                m.transform(bb.urx, bb.lly),
+                m.transform(bb.llx, bb.ury),
+                m.transform(bb.urx, bb.ury),
+            ];
+            let t = (
+                pts.iter().map(|p| p.0).fold(f64::INFINITY, f64::min),
+                pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min),
+                pts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max),
+                pts.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max),
+            );
+            b = Some(match b {
+                Some(c) => (c.0.max(t.0), c.1.max(t.1), c.2.min(t.2), c.3.min(t.3)),
+                None => t,
+            });
+        }
+        Ok(b.filter(|b| [b.0, b.1, b.2, b.3].iter().all(|v| v.is_finite())))
+    }
+
     /// The clip in force is exactly a rectangle (`clip_exact`) that
     /// meets no rect: nothing drawn now can paint inside one.
     fn clipped_away_from_rects(&self) -> bool {
@@ -1517,14 +1559,51 @@ impl<'a> DiagWalker<'a> {
             // Redaction: a shading fills the clip; under a clip that is
             // exactly a rectangle meeting no rect it paints none of them.
             O::Shading(_) if self.redaction_mode && self.clipped_away_from_rects() => {}
+            // Redaction: a shading wholly inside a rect (what it may
+            // paint — its clip's bounds, its /BBox — inside one) is
+            // removed whole. One crossing a rect is refused: its
+            // function and geometry are data a clip would only hide.
+            O::Shading(n)
+                if self.redaction_mode
+                    && self.xobject_stack.is_empty()
+                    && self.shading_extent(n)?.is_some_and(|b| {
+                        self.rects
+                            .iter()
+                            .any(|r| b.0 >= r.llx && b.1 >= r.lly && b.2 <= r.urx && b.3 <= r.ury)
+                    }) =>
+            {
+                let b = self.shading_extent(n)?.expect("checked");
+                self.bump_reported()?;
+                self.targets.push(Target {
+                    kind: TargetKind::Shading,
+                    site: self.site(),
+                    bounds: b,
+                    hits: hits_for(&b, self.rects),
+                    detail: TargetDetail::Other {
+                        what: format!("sh /{}", String::from_utf8_lossy(n)),
+                    },
+                });
+            }
             O::Shading(n) => {
-                self.push_blocker(Blocker {
-                    site: Some(self.site()),
-                    what: "shading (sh)".into(),
-                    detail: format!(
+                let detail = match self.shading_extent(n)? {
+                    Some(_) if self.redaction_mode && !self.xobject_stack.is_empty() => format!(
+                        "/{} in a form — a shading is removed only from page content",
+                        String::from_utf8_lossy(n)
+                    ),
+                    Some(_) if self.redaction_mode => format!(
+                        "/{} crosses a rect — its function and geometry inside cannot be \
+                         separated from the rest (a clip would only hide them)",
+                        String::from_utf8_lossy(n)
+                    ),
+                    _ => format!(
                         "/{} — shading fills an area we cannot bound",
                         String::from_utf8_lossy(n)
                     ),
+                };
+                self.push_blocker(Blocker {
+                    site: Some(self.site()),
+                    what: "shading (sh)".into(),
+                    detail,
                 })?;
                 self.uncertain_state = true;
             }
@@ -1665,41 +1744,19 @@ impl<'a> DiagWalker<'a> {
                 // (`B`, `b`, `B*`, `b*`) the whole occurrence reports
                 // uncertain — the fill's bounds are known but the
                 // stroke's un-evaluated reach must not be dropped.
-                if stroked && self.gs.stroke.width == 0.0 {
+                //
+                // Redaction takes a hairline as its zero-width centreline
+                // and stroke adjustment as what it is: both only move
+                // ink at device-pixel scale, so geometry stays exact in
+                // user space (removed or cut there), the kept stroke's
+                // own ink possibly snapped by a pixel — the limit every
+                // kept edge has (see the redaction docs).
+                if stroked && self.gs.stroke.width == 0.0 && !self.redaction_mode {
                     self.push_uncertain(Uncertain {
                         kind: TargetKind::Path,
                         site: self.site(),
                         reason: "hairline stroke (w=0) — device-resolution dependent \
                                  extent cannot be bounded in user space"
-                            .into(),
-                    })?;
-                } else if self.redaction_mode && self.gs.stroke.adjust && stroked {
-                    // Stroke adjustment moves stroke edges by a device-
-                    // dependent amount (readers also widen thin strokes
-                    // to a pixel): no stroke under it is accepted.
-                    self.push_uncertain(Uncertain {
-                        kind: TargetKind::Path,
-                        site: self.site(),
-                        reason: "stroke under stroke adjustment (/SA true) — device-dependent \
-                                 extent cannot be bounded in user space"
-                            .into(),
-                    })?;
-                } else if self.redaction_mode
-                    && self.gs.stroke.adjust
-                    && !hits_for(&b, self.rects).is_empty()
-                    && !self
-                        .rects
-                        .iter()
-                        .any(|r| b.0 >= r.llx && b.1 >= r.lly && b.2 <= r.urx && b.3 <= r.ury)
-                {
-                    // A fill meeting a rect but not wholly inside one is
-                    // cut, and readers snap a rectangle fill's edges to
-                    // pixels under stroke adjustment (Splash does).
-                    self.push_uncertain(Uncertain {
-                        kind: TargetKind::Path,
-                        site: self.site(),
-                        reason: "fill cut at a rect under stroke adjustment (/SA true) — \
-                                 readers move its edges by a device-dependent amount"
                             .into(),
                     })?;
                 } else {
@@ -2169,15 +2226,7 @@ impl<'a> DiagWalker<'a> {
                 reason: format!("Tr {render_mode} — clip-mode text extent is not implemented"),
             })?;
             (bounds, bounds_kind)
-        } else if is_stroked_text && self.redaction_mode && self.gs.stroke.adjust {
-            return self.glyph_error(
-                code,
-                Error::Unsupported {
-                    feature: "stroke adjustment",
-                    detail: "stroked text under /SA true — device-dependent extent".into(),
-                },
-            );
-        } else if is_stroked_text && self.gs.stroke.width == 0.0 {
+        } else if is_stroked_text && self.gs.stroke.width == 0.0 && !self.redaction_mode {
             self.push_uncertain(Uncertain {
                 kind: TargetKind::Text,
                 site: self.text_site(self.code_index),
@@ -3114,11 +3163,10 @@ pub(crate) fn type3_glyph_bounds(
             | O::FillAndStrokeEvenOdd
             | O::CloseFillAndStroke
             | O::CloseFillAndStrokeEvenOdd => {
-                if !(gs.w.is_finite() && gs.w > 0.0) {
-                    return Err(refuse("a hairline or non-finite stroke"));
-                }
-                if inherited.4 {
-                    return Err(refuse("a stroke under stroke adjustment (/SA true)"));
+                // A hairline (`0 w`) is its centreline; stroke
+                // adjustment moves ink at device-pixel scale only.
+                if !(gs.w.is_finite() && gs.w >= 0.0) {
+                    return Err(refuse("a non-finite stroke"));
                 }
                 let miter = if gs.join == 0 && gs.miter.is_finite() {
                     gs.miter.max(1.0)

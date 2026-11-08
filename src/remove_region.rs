@@ -234,7 +234,7 @@ pub fn remove_region(
                 }
             }
             TargetKind::Image if t.site.form_path.is_empty() => {}
-            TargetKind::Form | TargetKind::Image | TargetKind::Other => {
+            TargetKind::Form | TargetKind::Image | TargetKind::Other | TargetKind::Shading => {
                 return Err(Error::Unsupported {
                     feature: "region removal on a page with non-image XObjects",
                     detail: format!(
@@ -784,6 +784,12 @@ pub(crate) struct RegionsEdit<'a> {
     pub(crate) paths_cut_total: u64,
     /// Redaction mode only: form invocations drawn from an edited copy.
     pub(crate) forms_edited_total: u64,
+    /// Redaction mode only: `sh` removed (each wholly inside a rect).
+    pub(crate) shadings_removed_total: u64,
+    /// Redaction mode only: content digests of the shadings those drew,
+    /// each named by no page any more — what must not be found in the
+    /// output.
+    pub(crate) removed_shading_digests: Vec<[u8; 32]>,
 }
 
 /// What `regions_edit_session` does beyond the content editor.
@@ -1130,6 +1136,10 @@ pub(crate) fn regions_edit_session_with<'a>(
     let mut edited_originals: HashMap<IndirectRef, ([[u8; 32]; 2], bool)> = HashMap::new();
     let mut forms_edited_total: u64 = 0;
     let mut drawn_after: HashMap<IndirectRef, BTreeSet<Vec<u8>>> = HashMap::new();
+    // Redaction: per edited page, the shadings whose `sh` was removed
+    // and the shading names its content still paints.
+    let mut shading_removals: Vec<ShadingRemoval> = Vec::new();
+    let mut shadings_removed_total: u64 = 0;
     let mut removed_text: Vec<String> = Vec::new();
     let mut per_page: Vec<(usize, Vec<Site>)> = Vec::new();
     let mut page_dicts: Vec<(IndirectRef, Dict)> = Vec::new();
@@ -1529,7 +1539,7 @@ pub(crate) fn regions_edit_session_with<'a>(
                     }
                 }
                 TargetKind::Image if t.site.form_path.is_empty() => {}
-                TargetKind::Form | TargetKind::Image | TargetKind::Other => {
+                TargetKind::Form | TargetKind::Image | TargetKind::Other | TargetKind::Shading => {
                     return Err(Error::Unsupported {
                         feature: "region removal on a page with non-image XObjects",
                         detail: format!(
@@ -1568,6 +1578,27 @@ pub(crate) fn regions_edit_session_with<'a>(
             BTreeMap::new();
         let mut paths_removed: u64 = 0;
         let mut paths_cut: u64 = 0;
+        let mut shadings_here: Vec<Vec<u8>> = Vec::new();
+        if mode == SessionMode::Redact {
+            // A shading wholly inside a rect: its `sh` goes.
+            for t in walker
+                .targets
+                .iter()
+                .filter(|t| t.kind == TargetKind::Shading && !t.hits.is_empty())
+            {
+                if !t.site.form_path.is_empty() {
+                    return Err(Error::Unsupported {
+                        feature: "redaction of a shading in a form",
+                        detail: format!("op #{}", t.site.op_index),
+                    });
+                }
+                if let Some(Operation::Shading(n)) = ops.get(t.site.op_index) {
+                    removed_op_set.insert((Vec::new(), t.site.op_index));
+                    shadings_here.push(n.clone());
+                    shadings_removed_total += 1;
+                }
+            }
+        }
         if mode == SessionMode::Redact {
             for t in walker.targets.iter().filter(|t| t.kind == TargetKind::Path) {
                 if t.hits.is_empty() {
@@ -2113,6 +2144,16 @@ pub(crate) fn regions_edit_session_with<'a>(
                 })
                 .collect();
             drawn_after.insert(page_ref, drawn);
+            if !shadings_here.is_empty() {
+                let still: BTreeSet<Vec<u8>> = new_ops
+                    .iter()
+                    .filter_map(|op| match op {
+                        Operation::Shading(n) => Some(n.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                shading_removals.push((page_ref, std::mem::take(&mut shadings_here), still));
+            }
         }
 
         // ---- orphaned XObject names for this page --------------
@@ -2284,6 +2325,11 @@ pub(crate) fn regions_edit_session_with<'a>(
     } else {
         0
     };
+    let removed_shading_digests = if shading_removals.is_empty() {
+        Vec::new()
+    } else {
+        prune_removed_shadings(doc, &mut edit, &shading_removals, limits)?
+    };
 
     Ok(RegionsEdit {
         edit,
@@ -2294,6 +2340,8 @@ pub(crate) fn regions_edit_session_with<'a>(
         per_page,
         page_count: by_page.len(),
         paths_removed_total,
+        shadings_removed_total,
+        removed_shading_digests,
         original_digests,
         names_pruned_total,
         removed_text,
@@ -2552,6 +2600,123 @@ fn prune_original_names(
             .insert((pr.number, pr.generation), Object::Dict(pd));
     }
     Ok(pruned)
+}
+
+/// An edited page, the shading names whose `sh` was removed there, and
+/// those its content still paints.
+type ShadingRemoval = (IndirectRef, Vec<Vec<u8>>, BTreeSet<Vec<u8>>);
+
+/// Redaction: drop from each edited page's `/Resources /Shading` the
+/// shadings whose `sh` was removed and that the page no longer paints,
+/// and return their content digests (verification checks none is left
+/// in the output). A shading also reached from anywhere else (another
+/// page, a form, a pattern …), or named in resources something else may
+/// use, is refused: whether it is drawn there is not followed.
+fn prune_removed_shadings(
+    doc: &Document,
+    edit: &mut Edit,
+    removals: &[ShadingRemoval],
+    limits: &Limits,
+) -> Result<Vec<[u8; 32]>, Error> {
+    let refuse = |detail: String| Error::Unsupported {
+        feature: "redaction of a shading used elsewhere",
+        detail,
+    };
+    // How many objects refer to each object.
+    let mut referrers: HashMap<IndirectRef, u64> = HashMap::new();
+    let mut edges: u64 = 0;
+    for (r, e) in doc.xref_entries() {
+        if matches!(e, crate::xref::XrefEntry::Free { .. }) {
+            continue;
+        }
+        let body = doc.resolve(r)?;
+        let mut stack = vec![&body];
+        while let Some(o) = stack.pop() {
+            match o {
+                Object::Ref(t) => {
+                    edges += 1;
+                    if edges > limits.max_audit_edges {
+                        return Err(Error::LimitExceeded {
+                            limit: "max_audit_edges",
+                            max: limits.max_audit_edges,
+                        });
+                    }
+                    *referrers.entry(*t).or_default() += 1;
+                }
+                Object::Dict(d) => stack.extend(d.values()),
+                Object::Array(a) => stack.extend(a.iter()),
+                Object::Stream { dict, .. } => stack.extend(dict.values()),
+                _ => {}
+            }
+        }
+    }
+    let mut digests = Vec::new();
+    for (page_ref, removed, still) in removals {
+        let names: Vec<&Vec<u8>> = removed.iter().filter(|n| !still.contains(*n)).collect();
+        if names.is_empty() {
+            continue;
+        }
+        let Some(Object::Dict(mut pd)) = edit
+            .overlay
+            .get(&(page_ref.number, page_ref.generation))
+            .cloned()
+        else {
+            return Err(refuse(format!("page {page_ref} was not rewritten")));
+        };
+        let res_obj = pd
+            .get(b"Resources".as_slice())
+            .cloned()
+            .ok_or_else(|| refuse(format!("page {page_ref} has no /Resources")))?;
+        if let Object::Ref(rr) = &res_obj {
+            if referrers.get(rr).copied().unwrap_or(0) > 1 {
+                return Err(refuse(format!(
+                    "the resources of page {page_ref} are shared"
+                )));
+            }
+        }
+        let mut res = doc
+            .deref(&res_obj)?
+            .as_dict()
+            .cloned()
+            .ok_or_else(|| Error::Structure("/Resources is not a dictionary".into()))?;
+        if let Some(why) = inherits_page_resources(doc, &res)? {
+            return Err(refuse(format!("page {page_ref}: {why}")));
+        }
+        let sh_obj = res
+            .get(b"Shading".as_slice())
+            .cloned()
+            .ok_or_else(|| Error::Structure("a removed shading is not in /Resources".into()))?;
+        if let Object::Ref(sr) = &sh_obj {
+            if referrers.get(sr).copied().unwrap_or(0) > 1 {
+                return Err(refuse(format!(
+                    "the /Shading dictionary of page {page_ref} is shared"
+                )));
+            }
+        }
+        let mut sh =
+            doc.deref(&sh_obj)?.as_dict().cloned().ok_or_else(|| {
+                Error::Structure("/Resources /Shading is not a dictionary".into())
+            })?;
+        for n in names {
+            let Some(entry) = sh.remove(n.as_slice()) else {
+                continue;
+            };
+            if let Object::Ref(r) = &entry {
+                if referrers.get(r).copied().unwrap_or(0) > 1 {
+                    return Err(refuse(format!(
+                        "/{} (object {r}) is also reached from elsewhere",
+                        String::from_utf8_lossy(n)
+                    )));
+                }
+            }
+            digests.push(crate::redact_type3::content_digest(doc, &entry, limits)?);
+        }
+        res.insert(b"Shading".to_vec(), Object::Dict(sh));
+        pd.insert(b"Resources".to_vec(), Object::Dict(res));
+        edit.overlay
+            .insert((page_ref.number, page_ref.generation), Object::Dict(pd));
+    }
+    Ok(digests)
 }
 
 /// Why content other than the page's own may resolve names in `res`:

@@ -2090,6 +2090,7 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
     println!("forms edited: {}", r.forms_edited);
     println!("paths removed: {}", r.paths_removed);
     println!("paths cut at a rect: {}", r.paths_cut);
+    println!("shadings removed: {}", r.shadings_removed);
     println!("links removed: {}", r.links_removed);
     println!("annotations removed: {}", r.annotations_removed);
     println!("fonts embedded: {}", r.fonts_embedded);

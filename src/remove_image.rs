@@ -267,7 +267,7 @@ pub fn remove_image_region(
                 });
             }
             TargetKind::Text | TargetKind::Path => {}
-            TargetKind::Image | TargetKind::Other => {
+            TargetKind::Image | TargetKind::Other | TargetKind::Shading => {
                 return Err(Error::Unsupported {
                     feature: "image removal on a page with non-image XObjects",
                     detail: format!(

@@ -3190,7 +3190,6 @@ fn type3_charprocs_beyond_paths_are_refused() {
         "1000 0 d0 /G gs 0 0 10 10 re f",
         "1000 0 d0 /Pattern cs /P scn 0 0 10 10 re f",
         "1000 0 d0 /Sh sh",
-        "1000 0 d0 0 w 0 0 m 10 10 l S",
         "1000 0 d0 /P << /ActualText (X) >> BDC 0 0 10 10 re f EMC",
     ] {
         let pdf = type3_page(T3_TEXT, proc, T3_FILL, "", vec![]);
@@ -3486,58 +3485,56 @@ fn type3_charprocs_count_against_the_execution_budget() {
     assert!(e.to_string().contains("max_diag_exec_ops"), "{e}");
 }
 
-/// Stroke adjustment (/SA true) moves stroke edges — and, in Splash,
-/// a rectangle fill's — by a device-dependent amount. Under it, text
-/// fills, fills removed whole and fills clear of the rects are
-/// accepted; any stroke, stroked text, a fill cut at a rect and a Type 3
-/// CharProc stroke are refused. `Q` and `/SA false` end it.
+/// Stroke adjustment (/SA true) and hairlines (0 w) move a stroke's ink
+/// at device-pixel scale only: their geometry is redacted in user space
+/// like any stroke's — removed inside a rect, cut at its edge, kept
+/// clear of it — and no path point stays inside a rect. Fills cut under
+/// /SA, stroked text under /SA and Type 3 CharProc hairlines likewise.
 #[test]
-fn stroke_adjustment_refuses_only_what_it_can_move() {
-    let ok = [
-        format!("/Adjust gs {SECRET} 60 95 20 10 re f 10 10 30 30 re f"),
-        format!("q /Adjust gs {SECRET} Q 1 w 10 10 m 40 40 l S"),
-        format!("/Adjust gs /Alpha gs {SECRET} 1 w 10 10 m 40 40 l S"),
-    ];
-    for c in &ok {
+fn stroke_adjustment_and_hairlines_are_redacted() {
+    for (gs, w) in [("/Adjust gs", "1"), ("", "0"), ("/Adjust gs", "0")] {
+        let c = format!(
+            "{gs} {SECRET} {w} w 70 100 m 80 100 l S 10 102 m 190 102 l S \
+             10 150 m 40 170 l S 30 95 50 10 re f"
+        );
         let pdf = doc_with(GS_RES, &[c.as_bytes()], vec![]);
         let r = run(&pdf, vec![RECT]).unwrap_or_else(|e| panic!("{c}: {e}"));
         assert_eq!(r.codes_removed, 10, "{c}");
-        assert!(!page_text(&r.output, 0).contains("SECRET"));
+        assert_eq!((r.paths_removed, r.paths_cut), (1, 2), "{c}");
+        assert!(!path_points_inside(&r.output, RECT), "{c}");
+        assert!(page_text(&r.output, 0).is_empty());
     }
-    let refused = [
-        format!("/Adjust gs {SECRET} 1 w 10 10 m 40 40 l S"),
-        format!("/Adjust gs {SECRET} 1 w 50 100 m 60 100 l S"),
-        format!("/Adjust gs {SECRET} 30 95 50 10 re f"),
+    // Stroked text under /SA, and a hairline stroked glyph.
+    for c in [
         format!("/Adjust gs {SECRET} BT /F1 12 Tf 1 Tr 10 20 Td (PUBLICWORD) Tj ET"),
-    ];
-    for c in &refused {
+        "0 w BT /F1 12 Tf 1 Tr 50 100 Td (SECRETTEXT) Tj 10 -80 Td (PUBLICWORD) Tj ET".to_string(),
+    ] {
         let pdf = doc_with(GS_RES, &[c.as_bytes()], vec![]);
-        let e = unsupported(run(&pdf, vec![RECT]));
-        assert!(e.contains("stroke adjustment"), "{c}: {e}");
+        let r = run(&pdf, vec![RECT]).unwrap_or_else(|e| panic!("{c}: {e}"));
+        assert_eq!(r.codes_removed, 10, "{c}");
+        assert_eq!(page_text(&r.output, 0), "PUBLICWORD", "{c}");
     }
-    // Type 3: a CharProc fill is accepted, a CharProc stroke refused.
+    // A Type 3 glyph drawn by a hairline under /SA.
     let page = (
         3,
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << \
           /Font << /T3 60 0 R >> /ExtGState << /Adjust << /SA true >> >> >> /Contents 4 0 R >>"
             .to_vec(),
     );
-    for (proc, ok) in [(T3_FILL, true), ("1000 0 d0 50 w 0 0 m 500 500 l S", false)] {
-        let pdf = type3_page(
-            "/Adjust gs BT /T3 10 Tf 20 100 Td (AAAAAA) Tj ET",
-            proc,
-            proc,
-            "",
-            vec![page.clone()],
-        );
-        match run(&pdf, vec![(41.5, 99.0, 55.0, 108.0)]) {
-            Ok(r) => assert!(ok && r.codes_removed == 2, "{proc}"),
-            Err(e) => assert!(
-                !ok && e.to_string().contains("stroke adjustment"),
-                "{proc}: {e}"
-            ),
-        }
-    }
+    let proc = "1000 0 d0 0 w 0 0 m 500 500 l S";
+    let pdf = type3_page(
+        "/Adjust gs BT /T3 10 Tf 20 100 Td (AAAAAA) Tj ET",
+        proc,
+        proc,
+        "",
+        vec![page],
+    );
+    assert_eq!(
+        run(&pdf, vec![(41.5, 99.0, 55.0, 108.0)])
+            .unwrap()
+            .codes_removed,
+        2
+    );
 }
 
 /// Chains of references are refused wherever a colour space is read in
@@ -4351,4 +4348,115 @@ fn removed_shows_leave_no_ext_gstate_trail() {
         .collect();
     assert_eq!(contents[0], contents[1]);
     assert!(!contents[0].contains("gs"), "{}", contents[0]);
+}
+
+// Shadings (`sh`): one painting only inside a rect is removed with the
+// resource only it used; one crossing a rect is refused (its function
+// and geometry are data a clip would only hide).
+
+/// An axial shading whose function carries `c0` (distinctive values).
+fn axial(c0: &str, extra: &str) -> Vec<u8> {
+    format!(
+        "<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 1 0] /Extend [true true] {extra} \
+         /Function << /FunctionType 2 /Domain [0 1] /C0 [{c0}] /C1 [1 1 1] /N 1 >> >>"
+    )
+    .into_bytes()
+}
+
+#[test]
+fn shadings_inside_a_rect_are_removed() {
+    let page_res = "/Font << /F1 20 0 R >> /Shading << /S1 30 0 R /S2 31 0 R >>";
+    let mut objs = font_objs();
+    objs.push((30, axial("0.123 0.456 0.789", "")));
+    objs.push((31, axial("0.9 0.1 0.2", "")));
+    // S1 clipped to a box inside the rect; S2 clipped clear of it.
+    let pdf = doc_with(
+        page_res,
+        &[format!(
+            "{SECRET} q 60 95 20 10 re W n /S1 sh Q q 10 10 20 20 re W n /S2 sh Q \
+             BT /F1 12 Tf 10 50 Td (PUBLICWORD) Tj ET"
+        )
+        .as_bytes()],
+        objs.clone(),
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!((r.codes_removed, r.shadings_removed), (10, 1));
+    assert!(!contains(&r.output, b"0.123 0.456 0.789") && !raw_contains(&r.output, b"0.456"));
+    assert!(raw_contains(&r.output, b"0.9 0.1 0.2") || contains(&r.output, b"0.9"));
+    let doc = Document::from_bytes(&r.output).unwrap();
+    let ops = doc.page_operations(&doc.pages()[0]).unwrap();
+    let sh: Vec<String> = ops
+        .iter()
+        .filter(|o| matches!(o, kasane_pdf::Operation::Shading(_)))
+        .map(|o| o.to_string())
+        .collect();
+    assert_eq!(sh, vec!["/S2 sh".to_string()]);
+    // A /BBox inside the rect bounds it without a clip.
+    let mut o2 = font_objs();
+    o2.push((30, axial("0.123 0.456 0.789", "/BBox [0 0 10 10]")));
+    o2.push((31, axial("0.9 0.1 0.2", "")));
+    let pdf = doc_with(
+        page_res,
+        &[format!("{SECRET} q 1 0 0 1 60 95 cm /S1 sh Q").as_bytes()],
+        o2,
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.shadings_removed, 1);
+    assert!(!raw_contains(&r.output, b"0.456"));
+}
+
+/// A shading crossing a rect, unbounded, shared with another page or
+/// drawn in a form is refused; one still painted elsewhere on the page
+/// keeps its resource.
+#[test]
+fn shadings_that_cannot_be_removed_alone() {
+    let page_res = "/Font << /F1 20 0 R >> /Shading << /S1 30 0 R >>";
+    let mut objs = font_objs();
+    objs.push((30, axial("0.123 0.456 0.789", "")));
+    for c in [
+        format!("{SECRET} q 30 95 50 10 re W n /S1 sh Q"),
+        format!("{SECRET} /S1 sh"),
+    ] {
+        let pdf = doc_with(page_res, &[c.as_bytes()], objs.clone());
+        let e = unsupported(run(&pdf, vec![RECT]));
+        assert!(e.contains("shading"), "{c}: {e}");
+    }
+    // Page 2 uses the same shading object.
+    let pdf = doc_with(
+        page_res,
+        &[
+            format!("{SECRET} q 60 95 20 10 re W n /S1 sh Q").as_bytes(),
+            b"q 0 0 5 5 re W n /S1 sh Q",
+        ],
+        objs.clone(),
+    );
+    let e = unsupported(run(&pdf, vec![RECT]));
+    assert!(
+        e.contains("shading used elsewhere") || e.contains("shared"),
+        "{e}"
+    );
+    // In a form.
+    let mut o2 = objs.clone();
+    o2.push((
+        40,
+        stream_obj(
+            "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Shading << /S1 30 0 R >> >>",
+            b"q 60 95 20 10 re W n /S1 sh Q",
+        ),
+    ));
+    let pdf = doc_with(
+        "/Font << /F1 20 0 R >> /XObject << /Fm 40 0 R >>",
+        &[format!("{SECRET} /Fm Do").as_bytes()],
+        o2,
+    );
+    assert!(unsupported(run(&pdf, vec![RECT])).contains("shading"));
+    // Still painted elsewhere on the page: the resource stays.
+    let pdf = doc_with(
+        page_res,
+        &[format!("{SECRET} q 60 95 20 10 re W n /S1 sh Q q 0 0 5 5 re W n /S1 sh Q").as_bytes()],
+        objs,
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.shadings_removed, 1);
+    assert!(raw_contains(&r.output, b"0.456") || contains(&r.output, b"0.456"));
 }

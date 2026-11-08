@@ -259,7 +259,7 @@ pub fn remove_text(
                 });
             }
             TargetKind::Form | TargetKind::Path => {}
-            TargetKind::Image | TargetKind::Other => {
+            TargetKind::Image | TargetKind::Other | TargetKind::Shading => {
                 return Err(Error::Unsupported {
                     feature: "text removal on a page with non-form XObjects",
                     detail: format!(
