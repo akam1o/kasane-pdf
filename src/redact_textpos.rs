@@ -323,10 +323,11 @@ impl Folder {
 }
 
 /// A run's operators with each text-state parameter (`Tc`, `Tw`, `Tz`,
-/// `TL`, `Ts`, `Tr`, `Tf`) set once, to its last value — the values in
-/// between belonged to removed text (a `TD` per removed line sets the
-/// leading to that line's offset). Under `q`/`Q` the parameters are
-/// restored, so the values cannot be collapsed: refused.
+/// `TL`, `Ts`, `Tr`, `Tf`) and the fill and stroke colour set once, to
+/// their last values — the values in between belonged to removed text
+/// (a `TD` per removed line sets the leading to that line's offset; a
+/// colour per removed link). Under `q`/`Q` the parameters are restored,
+/// so the values cannot be collapsed: refused.
 fn collapse_state(ops: Vec<Operation>) -> Result<Vec<Operation>, Error> {
     use Operation as O;
     fn kind(o: &O) -> Option<u8> {
@@ -341,13 +342,58 @@ fn collapse_state(ops: Vec<Operation>) -> Result<Vec<Operation>, Error> {
             _ => return None,
         })
     }
-    let mut count = [0usize; 7];
-    for o in &ops {
+    // Colour: an op setting the space (and colour), and one setting
+    // the colour in the current space (`sc`/`scn`), per side.
+    fn colour(o: &O) -> Option<(bool, bool)> {
+        Some(match o {
+            O::SetGrayFill(_)
+            | O::SetRgbFill(..)
+            | O::SetCmykFill(..)
+            | O::SetColorSpaceFill(_) => (true, true),
+            O::SetColorFill(_) => (true, false),
+            O::SetGrayStroke(_)
+            | O::SetRgbStroke(..)
+            | O::SetCmykStroke(..)
+            | O::SetColorSpaceStroke(_) => (false, true),
+            O::SetColorStroke(_) => (false, false),
+            _ => return None,
+        })
+    }
+    let mut keep = vec![true; ops.len()];
+    let mut collapsed = false;
+    let mut last = [None::<usize>; 7];
+    for (i, o) in ops.iter().enumerate() {
         if let Some(k) = kind(o) {
-            count[k as usize] += 1;
+            if let Some(prev) = last[k as usize].replace(i) {
+                keep[prev] = false;
+                collapsed = true;
+            }
         }
     }
-    if count.iter().all(|c| *c <= 1) {
+    for fill in [true, false] {
+        // The last space-setting op, and the last colour op after it.
+        let mut space: Option<usize> = None;
+        let mut value: Option<usize> = None;
+        for (i, o) in ops.iter().enumerate() {
+            match colour(o) {
+                Some((f, true)) if f == fill => {
+                    for p in [space.take(), value.take()].into_iter().flatten() {
+                        keep[p] = false;
+                        collapsed = true;
+                    }
+                    space = Some(i);
+                }
+                Some((f, false)) if f == fill => {
+                    if let Some(p) = value.replace(i) {
+                        keep[p] = false;
+                        collapsed = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if !collapsed {
         return Ok(ops);
     }
     if ops
@@ -355,20 +401,14 @@ fn collapse_state(ops: Vec<Operation>) -> Result<Vec<Operation>, Error> {
         .any(|o| matches!(o, O::SaveState | O::RestoreState))
     {
         return Err(unsupported(
-            "text state changed more than once under q/Q among removed text",
+            "text state or colour changed more than once under q/Q among removed text",
         ));
     }
-    let mut out = Vec::with_capacity(ops.len());
-    for o in ops {
-        if let Some(k) = kind(&o) {
-            count[k as usize] -= 1;
-            if count[k as usize] > 0 {
-                continue;
-            }
-        }
-        out.push(o);
-    }
-    Ok(out)
+    Ok(ops
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(o, k)| k.then_some(o))
+        .collect())
 }
 
 /// Fold the positioning of removed text in `ops` (see the module
@@ -562,5 +602,15 @@ mod tests {
         )
         .unwrap();
         assert!(fold_removed_positions(&ops, TextStart::FORM).is_err());
+        // Colours set for removed text (a link colour per removed
+        // citation) collapse to the one in force for the kept text.
+        assert_eq!(
+            fold(
+                "BT /F1 10 Tf (A) Tj 0 0 1 rg 0 0 1 RG [-500] TJ 0 g 0 G [-300] TJ 0 0 1 rg [-200] TJ \
+                 0 g (B) Tj ET",
+                TextStart::PAGE
+            ),
+            "BT /F1 10 Tf (A) Tj 0 G 0 g [-1000] TJ (B) Tj ET"
+        );
     }
 }

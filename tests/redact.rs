@@ -4233,10 +4233,20 @@ fn removed_text_leaves_no_positions() {
                  -60 -{} TD (below) Tj ET",
                 45 - a - b + 20
             ),
+            // The number of removed glyphs, words (spaces under Tw) and
+            // coloured spans differs.
+            format!(
+                "BT /F1 12 Tf 2 Tw 20 100 Td (Name:) Tj 52 0 Td {} 0 g 90 0 Td (here) Tj ET",
+                [
+                    "(AB CD) Tj 0 0 1 rg (EF) Tj",
+                    "(A B C) Tj 0 0 1 rg (D) Tj 0 g 0 0 1 rg (E) Tj 1 0 0 rg (F) Tj",
+                    "(ABCDEF) Tj",
+                ][(v % 3) as usize]
+            ),
         ]
     };
     let rect = vec![(60.0, 60.0, 155.0, 115.0)];
-    for i in 0..6 {
+    for i in 0..7 {
         let (a, b) = (layouts(1)[i].clone(), layouts(2)[i].clone());
         assert_ne!(a, b);
         let (pa, pb) = (one_page(&a, "", "", vec![]), one_page(&b, "", "", vec![]));
@@ -4246,7 +4256,7 @@ fn removed_text_leaves_no_positions() {
         );
         assert!(ra.codes_removed > 0, "{a}");
         let text = page_text(&ra.output, 0);
-        let after = ["here", "here", "here", "below", "here", "below"][i];
+        let after = ["here", "here", "here", "below", "here", "below", "here"][i];
         assert!(
             text.contains("Name") && text.contains(after),
             "layout {i}: {text}"
