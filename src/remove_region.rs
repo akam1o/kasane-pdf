@@ -1819,6 +1819,7 @@ pub(crate) fn regions_edit_session_with<'a>(
                 }
                 let node = &form_streams[&fp];
                 let mut new_form_ops: Vec<Operation> = Vec::with_capacity(node.ops.len());
+                let codes_before = codes_removed;
                 let mut renamed_from: BTreeSet<Vec<u8>> = BTreeSet::new();
                 for (inner, fop) in node.ops.iter().enumerate() {
                     let key = (fp.clone(), inner);
@@ -1843,6 +1844,15 @@ pub(crate) fn regions_edit_session_with<'a>(
                         &mut codes_removed,
                         &mut removed_sites,
                     )?);
+                }
+                // Redaction: no positioning of the removed text stays.
+                if mode == SessionMode::Redact && codes_removed != codes_before {
+                    let res = node.res.clone().or_else(|| page.resources().cloned());
+                    new_form_ops = crate::redact_textpos::fold_removed_positions(
+                        &new_form_ops,
+                        crate::redact_textpos::TextStart::FORM,
+                        &|n| ext_gstate_keys(doc, res.as_ref(), n),
+                    )?;
                 }
                 let new_body = serialize_ops(&new_form_ops, limits, generated_bytes)?;
                 generated_bytes = charge_generated(generated_bytes, new_body.len(), limits)?;
@@ -1941,6 +1951,7 @@ pub(crate) fn regions_edit_session_with<'a>(
 
         // ---- rewrite this page's content stream ---------------------
         let mut new_ops: Vec<Operation> = Vec::with_capacity(ops.len());
+        let codes_before = codes_removed;
         for (op_index, op) in ops.iter().enumerate() {
             if let Some(new) = replacements.get(&(Vec::new(), op_index)) {
                 new_ops.extend(new.iter().cloned());
@@ -1999,6 +2010,13 @@ pub(crate) fn regions_edit_session_with<'a>(
             .collect();
 
         // ---- serialise + page dict update ---------------------------
+        if mode == SessionMode::Redact && codes_removed != codes_before {
+            new_ops = crate::redact_textpos::fold_removed_positions(
+                &new_ops,
+                crate::redact_textpos::TextStart::PAGE,
+                &|n| ext_gstate_keys(doc, page.resources(), n),
+            )?;
+        }
         let new_body = serialize_ops(&new_ops, limits, generated_bytes)?;
         charge_generated(generated_bytes, new_body.len(), limits)?;
         // Share the *same* Edit across pages — a synthetic ref from an
@@ -2170,6 +2188,12 @@ const MAX_REDACT_FORM_DEPTH: u64 = 16;
 /// A form invocation chain resolved from the page: the innermost
 /// form's ops, stream dict, resource entry, and the resources its
 /// content resolves names against (its own, else inherited).
+/// The keys an ExtGState resource sets (`None`: not resolvable).
+fn ext_gstate_keys(doc: &Document, res: Option<&Object>, name: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let gs = doc.resolve_resource(res?, "ExtGState", name).ok()??;
+    Some(gs.as_dict()?.keys().cloned().collect())
+}
+
 pub(crate) struct FormNode {
     ops: Vec<Operation>,
     dict: Dict,

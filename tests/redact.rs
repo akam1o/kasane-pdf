@@ -2505,3 +2505,188 @@ fn strongly_anisotropic_text_is_refused() {
     );
     run(&ok, vec![(150.0, 150.0, 160.0, 160.0)]).unwrap();
 }
+
+/// Kept characters with their origins (rounded to 1e-6 pt).
+fn kept_chars(pdf: &[u8]) -> Vec<(String, i64, i64)> {
+    let doc = Document::from_bytes(pdf).unwrap();
+    extract_text(&doc, &doc.pages()[0], &TextOptions::default())
+        .unwrap()
+        .chars
+        .iter()
+        .map(|c| {
+            (
+                c.unicode.clone().unwrap_or_default(),
+                (c.origin.0 * 1e6).round() as i64,
+                (c.origin.1 * 1e6).round() as i64,
+            )
+        })
+        .collect()
+}
+
+/// The removed text's positioning does not stay: two inputs differing
+/// only in where (and how wide) the removed glyphs were give the same
+/// output, and the kept text stays exactly where it was — whatever the
+/// producer's positioning (per-glyph Td, TJ kerns, absolute Tm, T*, ').
+#[test]
+fn removed_text_leaves_no_positions() {
+    // Removed glyphs' offsets and kerns vary with `v`; the kept text
+    // ("Name:", "here", "next", "below") stays where it is.
+    let layouts = |v: u32| -> Vec<String> {
+        let o = |k: u32| ((v * 7 + k * 3) % 11) as i64; // varies with v
+        let (a, b, c) = (5 + o(1), 6 + o(2), 4 + o(3));
+        let k: Vec<i64> = (1..=4).map(|i| -(o(i) * 37) - 100).collect();
+        vec![
+            format!(
+                "BT /F1 12 Tf 20 100 Td (Name:) Tj 52 0 Td (S) Tj {a} 0 Td (E) Tj {b} 0 Td (CRET) Tj \
+                 {c} 0 Td (W) Tj {} 0 Td (here) Tj 0 -14 Td (next) Tj ET",
+                90 - a - b - c
+            ),
+            format!(
+                "BT /F1 12 Tf 20 100 Td [(Name: ) {} (S) {} (E) {} (CRET) {} (W) {} (ORD) -900 (here)] TJ ET",
+                k[0],
+                k[1],
+                k[2],
+                k[3],
+                -5000 - k.iter().sum::<i64>()
+            ),
+            format!(
+                "BT /F1 12 Tf 1 0 0 1 20 100 Tm (Name:) Tj 1 0 0 1 {} 100 Tm (SEC) Tj 1 0 0 1 {} 100 Tm \
+                 (RET) Tj 1 0 0 1 162 100 Tm (here) Tj ET",
+                70 + o(1),
+                100 + o(2)
+            ),
+            format!(
+                "BT /F1 12 Tf 14 TL 20 100 Td (Name:) Tj {} 0 Td (SECRET) Tj T* ({}) ' 30 0 Td (W) Tj ET \
+                 BT /F1 12 Tf 20 50 Td (below) Tj ET",
+                52 + o(1),
+                ["XX", "QQQQ", "W"][(v % 3) as usize]
+            ),
+            format!(
+                "BT /F1 12 Tf 100 Tz 20 100 Td (Name:) Tj {} 0 Td (SEC) Tj {} 0 Td (here) Tj ET",
+                52 + a,
+                90 - a
+            ),
+            format!(
+                "BT /F1 12 Tf 20 100 Td (Name:) Tj 60 -{a} TD (SEC) Tj 0 -{b} TD (RET) Tj \
+                 -60 -{} TD (below) Tj ET",
+                45 - a - b + 20
+            ),
+            // The number of removed glyphs, words (spaces under Tw) and
+            // coloured spans differs.
+            format!(
+                "BT /F1 12 Tf 2 Tw 20 100 Td (Name:) Tj 52 0 Td {} 0 g 90 0 Td (here) Tj ET",
+                [
+                    "(AB CD) Tj 0 0 1 rg (EF) Tj",
+                    "(A B C) Tj 0 0 1 rg (D) Tj 0 g 0 0 1 rg (E) Tj 1 0 0 rg (F) Tj",
+                    "(ABCDEF) Tj",
+                ][(v % 3) as usize]
+            ),
+            // Removed shows each in q/Q; removed-only text objects with
+            // their own styling; colours by cs/scn.
+            format!(
+                "BT /F1 12 Tf 20 100 Td (Name:) Tj ET {} {} \
+                 BT /F1 12 Tf 0 Ts 0 g 162 100 Td (here) Tj ET",
+                "q BT /F1 12 Tf 80 100 Td (S) Tj ET Q ".repeat(v as usize),
+                format!(
+                    "BT /F1 1{v} Tf {v} Ts /DeviceRGB cs 0.{v} 0 1 scn 90 95 Td (E{v}) Tj ET"
+                )
+            ),
+            // A translation set for the removed show and undone after
+            // it; a stroke colour and line width nothing kept strokes
+            // with (0.6 redacts fill text only).
+            format!(
+                "1 0 0 1 {v} 0 cm BT /F1 12 Tf 80 100 Td (SEC) Tj ET 1 0 0 1 -{v} 0 cm \
+                 BT /F1 12 Tf 0.{v} 0 0 RG {v} w 90 95 Td (RET) Tj 0 0 0 RG \
+                 20 100 Td (Name:) Tj ET BT /F1 12 Tf 162 100 Td (here) Tj ET"
+            ),
+        ]
+    };
+    let rect = vec![(60.0, 60.0, 155.0, 115.0)];
+    for i in 0..9 {
+        let (a, b) = (layouts(1)[i].clone(), layouts(2)[i].clone());
+        assert_ne!(a, b);
+        let (pa, pb) = (one_page(&a, "", "", vec![]), one_page(&b, "", "", vec![]));
+        let (ra, rb) = (
+            run(&pa, rect.clone()).unwrap(),
+            run(&pb, rect.clone()).unwrap(),
+        );
+        assert!(ra.codes_removed > 0, "{a}");
+        let text = page_text(&ra.output, 0);
+        let after = [
+            "here", "here", "here", "below", "here", "below", "here", "here", "here",
+        ][i];
+        assert!(
+            text.contains("Name") && text.contains(after),
+            "layout {i}: {text}"
+        );
+        let ops = |pdf: &[u8]| {
+            let d = Document::from_bytes(pdf).unwrap();
+            let p = &d.pages()[0];
+            d.page_operations(p)
+                .unwrap()
+                .iter()
+                .map(|o| o.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_eq!(
+            ops(&ra.output),
+            ops(&rb.output),
+            "layout {i}: the content differs"
+        );
+        assert!(ra.output == rb.output, "layout {i}: the outputs differ");
+        // Kept characters stay where they were.
+        let kept: Vec<_> = kept_chars(&pa)
+            .into_iter()
+            .filter(|c| kept_chars(&ra.output).contains(c))
+            .collect();
+        assert_eq!(
+            kept,
+            kept_chars(&ra.output),
+            "layout {i}: a kept character moved"
+        );
+    }
+}
+
+/// ExtGState set around each removed show: how many there were does
+/// not stay.
+#[test]
+fn removed_shows_leave_no_ext_gstate_trail() {
+    let outputs: Vec<Vec<u8>> = [1usize, 3]
+        .iter()
+        .map(|n| {
+            let removed = "/A gs BT /F1 12 Tf 80 100 Td (S) Tj ET /B gs ".repeat(*n);
+            let pdf = doc_with(
+                "/Font << /F1 20 0 R >> /ExtGState << /A << /ca 0.5 >> /B << /ca 1 >> >>",
+                &[format!("{removed}BT /F1 12 Tf 20 20 Td (PUBLICWORD) Tj ET").as_bytes()],
+                font_objs(),
+            );
+            let r = run(&pdf, vec![(60.0, 60.0, 155.0, 115.0)]).unwrap();
+            assert_eq!(r.codes_removed as usize, *n);
+            r.output
+        })
+        .collect();
+    assert!(outputs[0] == outputs[1], "the outputs differ");
+    // A stroke opacity set for removed text, read by nothing kept
+    // (fill text): the content does not select it (its definition stays
+    // in the page's resources, which are kept as they are).
+    let contents: Vec<String> = ["0.25", "0.75"]
+        .iter()
+        .map(|ca| {
+            let pdf = doc_with(
+                &format!("/Font << /F1 20 0 R >> /ExtGState << /S << /CA {ca} >> >>"),
+                &[b"/S gs BT /F1 12 Tf 80 100 Td (S) Tj -60 -80 Td (PUBLICWORD) Tj ET"],
+                font_objs(),
+            );
+            let out = run(&pdf, vec![(60.0, 60.0, 155.0, 115.0)]).unwrap().output;
+            let d = Document::from_bytes(&out).unwrap();
+            let ops = d.page_operations(&d.pages()[0]).unwrap();
+            ops.iter()
+                .map(|o| o.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect();
+    assert_eq!(contents[0], contents[1]);
+    assert!(!contents[0].contains("gs"), "{}", contents[0]);
+}

@@ -111,6 +111,7 @@ mod parser;
 mod redact;
 pub mod redact_diag;
 mod redact_geom;
+mod redact_textpos;
 pub mod remove_image;
 pub mod remove_metadata;
 pub mod remove_region;
