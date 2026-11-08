@@ -26,6 +26,8 @@
 //! starts (also visible in any rendering) and, when the leading is
 //! inherited and unknown here, the number of `T*` line moves.
 
+use std::collections::HashSet;
+
 use crate::content::{Operation, TJItem};
 use crate::error::Error;
 use crate::matrix::Matrix;
@@ -37,6 +39,7 @@ pub(crate) struct TextStart {
     pub(crate) font_size: Option<f64>,
     pub(crate) h_scale: Option<f64>,
     pub(crate) leading: Option<f64>,
+    pub(crate) render_mode: Option<i64>,
 }
 
 impl TextStart {
@@ -45,12 +48,14 @@ impl TextStart {
         font_size: None,
         h_scale: Some(1.0),
         leading: Some(0.0),
+        render_mode: Some(0),
     };
     /// A form's: everything inherited.
     pub(crate) const FORM: TextStart = TextStart {
         font_size: None,
         h_scale: None,
         leading: None,
+        render_mode: None,
     };
 }
 
@@ -388,9 +393,12 @@ impl Folder {
 
 /// Fold the positioning of removed text in `ops` (see the module
 /// documentation).
+/// `gs_keys` gives the keys of an ExtGState resource (`None`: not
+/// known).
 pub(crate) fn fold_removed_positions(
     ops: &[Operation],
     start: TextStart,
+    gs_keys: GsKeys,
 ) -> Result<Vec<Operation>, Error> {
     let mut f = Folder {
         out: Vec::with_capacity(ops.len()),
@@ -411,52 +419,145 @@ pub(crate) fn fold_removed_positions(
         // Unterminated text object: keep what does not move text.
         f.flush(false)?;
     }
-    Ok(drop_empty_pairs(drop_dead_state(f.out)))
+    let ops = drop_dead_state(f.out, start, gs_keys);
+    Ok(drop_empty_pairs(compose_cm(ops)))
 }
 
-/// Text-state parameters and colour, as slots a store writes and a
-/// reader reads.
-const SLOTS: usize = 11;
-/// Something paints later in the block (reads the path, the clip, the
-/// CTM, line state and ExtGState).
-const PAINT: usize = 10;
-const TL: usize = 3;
-const FILL: usize = 7;
-const FILL_SPACE: usize = 8;
-const STROKE: usize = 9;
+/// The keys of an ExtGState resource, by name (`None`: not known).
+pub(crate) type GsKeys<'a> = &'a dyn Fn(&[u8]) -> Option<Vec<Vec<u8>>>;
 
-/// `ops` without the stores nothing reads: a text-state parameter or a
-/// colour set and set again (or left unread at the end of the stream,
-/// or before a `Q` restoring it) before anything draws with it. The
-/// leading a `TD` folded into a `Td` and a `TL` set to its line's offset
-/// — measured from a removed line, as often as not — goes this way,
-/// and so does the styling of a text object whose glyphs were all
-/// removed. Readers: a show reads the text state and the colours; `T*`,
-/// `'` and `"` the leading; anything that paints the colours. Path
-/// construction, clipping, the CTM, line state and ExtGState matter
-/// only to something painting after them in their `q`/`Q` block (or the
-/// stream), so a clipped text object whose glyphs were all removed goes
-/// whole. Anything not modelled here (a form, an image, unknown
-/// operators) reads everything.
-fn drop_dead_state(ops: Vec<Operation>) -> Vec<Operation> {
+/// Slots of the graphics state a store writes and a reader reads.
+const SLOTS: usize = 17;
+const TL: usize = 3;
+const TR: usize = 5;
+const FONT: usize = 6;
+const FILL_VALUE: usize = 7;
+const FILL_SPACE: usize = 8;
+const STROKE_VALUE: usize = 9;
+const STROKE_SPACE: usize = 10;
+/// Line width, cap, join, miter limit, dash.
+const LINE: [usize; 5] = [11, 12, 13, 14, 15];
+/// Something paints later in the block: reads the path, the clip, the
+/// CTM, rendering intent and flatness.
+const PAINT: usize = 16;
+
+/// ExtGState keys written later and not read since, per block.
+#[derive(Clone, Default)]
+struct GsLive {
+    /// Every key is live but `except`; else only `some`.
+    all: bool,
+    except: HashSet<Vec<u8>>,
+    some: HashSet<Vec<u8>>,
+}
+
+impl GsLive {
+    fn read_all(&mut self) {
+        *self = GsLive {
+            all: true,
+            ..GsLive::default()
+        };
+    }
+    fn is_live(&self, k: &[u8]) -> bool {
+        if self.all {
+            !self.except.contains(k)
+        } else {
+            self.some.contains(k)
+        }
+    }
+    fn kill(&mut self, k: &[u8]) {
+        if self.all {
+            self.except.insert(k.to_vec());
+        } else {
+            self.some.remove(k);
+        }
+    }
+    fn union(self, o: GsLive) -> GsLive {
+        match (self.all, o.all) {
+            (true, true) => GsLive {
+                all: true,
+                except: self.except.intersection(&o.except).cloned().collect(),
+                some: HashSet::new(),
+            },
+            (true, false) | (false, true) => {
+                let (a, b) = if self.all { (self, o) } else { (o, self) };
+                GsLive {
+                    all: true,
+                    except: a.except.difference(&b.some).cloned().collect(),
+                    some: HashSet::new(),
+                }
+            }
+            (false, false) => GsLive {
+                all: false,
+                except: HashSet::new(),
+                some: self.some.union(&o.some).cloned().collect(),
+            },
+        }
+    }
+}
+
+/// The ExtGState keys that write a slot modelled here.
+fn gs_slot(k: &[u8]) -> Option<usize> {
+    Some(match k {
+        b"LW" => LINE[0],
+        b"LC" => LINE[1],
+        b"LJ" => LINE[2],
+        b"ML" => LINE[3],
+        b"D" => LINE[4],
+        b"Font" => FONT,
+        b"RI" | b"FL" => PAINT,
+        _ => return None,
+    })
+}
+
+/// `ops` without the stores nothing reads: a text-state parameter, a
+/// colour, line state, an ExtGState key, a path or clip, the CTM set
+/// and set again (or left unread at the end of the stream, or before a
+/// `Q` restoring it) before anything draws with it. The leading a `TD`
+/// folded into a `Td` and a `TL` set to its line's offset — measured
+/// from a removed line, as often as not — goes this way, and so do the
+/// styling of a text object whose glyphs were all removed and the
+/// clipping around it. Readers: a show reads the text state, the fill
+/// colour and — in a stroking rendering mode (or one not known here) —
+/// the stroke colour and line state; a fill reads the fill colour, a
+/// stroke the stroke colour and line state; `T*`, `'` and `"` the
+/// leading; anything painting reads every ExtGState key and the path,
+/// clip and CTM. `gs_keys` gives the keys an ExtGState sets (`None`:
+/// not known — then it reads everything). Anything not modelled (a
+/// form, an image, a shading, unknown operators) reads everything.
+fn drop_dead_state(ops: Vec<Operation>, start: TextStart, gs_keys: GsKeys) -> Vec<Operation> {
     use Operation as O;
+    // The rendering mode at each show, forward (saved with q/Q).
+    let mut stroking = vec![true; ops.len()];
+    {
+        let mut tr = start.render_mode;
+        let mut saved = Vec::new();
+        for (i, o) in ops.iter().enumerate() {
+            match o {
+                O::SaveState => saved.push(tr),
+                O::RestoreState => tr = saved.pop().unwrap_or(None),
+                O::SetTextRenderingMode(m) => tr = Some(*m),
+                _ => {}
+            }
+            stroking[i] = !matches!(tr, Some(0 | 3 | 4 | 7));
+        }
+    }
     let all = [true; SLOTS];
     let mut live = [false; SLOTS];
-    // Liveness after each `Q` (walking back) to restore at its `q`.
-    let mut blocks: Vec<[bool; SLOTS]> = Vec::new();
+    let mut gs = GsLive::default();
+    let mut blocks: Vec<([bool; SLOTS], GsLive)> = Vec::new();
     let mut keep = vec![true; ops.len()];
-    let text_read = |live: &mut [bool; SLOTS]| {
-        for (i, l) in live.iter_mut().enumerate() {
-            if i != TL {
-                *l = true;
-            }
+    let fill = |live: &mut [bool; SLOTS]| {
+        live[FILL_VALUE] = true;
+        live[FILL_SPACE] = true;
+    };
+    let stroke = |live: &mut [bool; SLOTS]| {
+        live[STROKE_VALUE] = true;
+        live[STROKE_SPACE] = true;
+        for s in LINE {
+            live[s] = true;
         }
     };
-    let store = |live: &mut [bool; SLOTS], slot: usize| {
-        let k = live[slot];
-        live[slot] = false;
-        k
-    };
+    let store = |live: &mut [bool; SLOTS], slot: usize| std::mem::replace(&mut live[slot], false);
     for (i, o) in ops.iter().enumerate().rev() {
         keep[i] = match o {
             O::SetCharSpacing(_) => store(&mut live, 0),
@@ -464,13 +565,22 @@ fn drop_dead_state(ops: Vec<Operation>) -> Vec<Operation> {
             O::SetHorizontalScaling(_) => store(&mut live, 2),
             O::SetTextLeading(_) => store(&mut live, TL),
             O::SetTextRise(_) => store(&mut live, 4),
-            O::SetTextRenderingMode(_) => store(&mut live, 5),
-            O::SetTextFont { .. } => store(&mut live, 6),
-            O::SetColorFill(_) => {
-                let k = live[FILL];
-                live[FILL] = false;
+            O::SetTextRenderingMode(_) => store(&mut live, TR),
+            O::SetTextFont { .. } => store(&mut live, FONT),
+            O::SetLineWidth(_) => store(&mut live, LINE[0]),
+            O::SetLineCap(_) => store(&mut live, LINE[1]),
+            O::SetLineJoin(_) => store(&mut live, LINE[2]),
+            O::SetMiterLimit(_) => store(&mut live, LINE[3]),
+            O::SetDash { .. } => store(&mut live, LINE[4]),
+            O::SetColorFill(_) | O::SetColorStroke(_) => {
+                let (v, sp) = if matches!(o, O::SetColorFill(_)) {
+                    (FILL_VALUE, FILL_SPACE)
+                } else {
+                    (STROKE_VALUE, STROKE_SPACE)
+                };
+                let k = store(&mut live, v);
                 if k {
-                    live[FILL_SPACE] = true;
+                    live[sp] = true;
                 }
                 k
             }
@@ -478,69 +588,91 @@ fn drop_dead_state(ops: Vec<Operation>) -> Vec<Operation> {
             | O::SetRgbFill(..)
             | O::SetCmykFill(..)
             | O::SetColorSpaceFill(_) => {
-                let k = live[FILL] || live[FILL_SPACE];
-                live[FILL] = false;
+                let k = live[FILL_VALUE] || live[FILL_SPACE];
+                live[FILL_VALUE] = false;
                 live[FILL_SPACE] = false;
                 k
             }
             O::SetGrayStroke(_)
             | O::SetRgbStroke(..)
             | O::SetCmykStroke(..)
-            | O::SetColorSpaceStroke(_)
-            | O::SetColorStroke(_) => {
-                // Stroke colour is one slot: sc/SCN after CS keep the CS
-                // conservatively (it is only dropped with them).
-                let k = live[STROKE];
-                if !matches!(o, O::SetColorStroke(_)) {
-                    live[STROKE] = false;
-                }
+            | O::SetColorSpaceStroke(_) => {
+                let k = live[STROKE_VALUE] || live[STROKE_SPACE];
+                live[STROKE_VALUE] = false;
+                live[STROKE_SPACE] = false;
                 k
             }
+            O::SetExtGState(name) => match gs_keys(name) {
+                None => {
+                    live = all;
+                    gs.read_all();
+                    true
+                }
+                Some(keys) => {
+                    let k = keys.iter().any(|key| match gs_slot(key) {
+                        Some(s) => live[s],
+                        None => gs.is_live(key),
+                    });
+                    for key in &keys {
+                        match gs_slot(key) {
+                            Some(s) if s != PAINT => live[s] = false,
+                            Some(_) => {}
+                            None => gs.kill(key),
+                        }
+                    }
+                    k
+                }
+            },
             O::ShowText(b) | O::NextLineShowText(b) if b.is_empty() => {
                 if matches!(o, O::NextLineShowText(_)) {
                     live[TL] = true;
                 }
                 true
             }
-            O::ShowText(_) | O::ShowTextAdjusted(_) => {
-                text_read(&mut live);
+            O::ShowText(_)
+            | O::ShowTextAdjusted(_)
+            | O::NextLineShowText(_)
+            | O::SetSpacingNextLineShowText { .. } => {
+                for s in [0, 1, 2, 4, TR, FONT] {
+                    live[s] = true;
+                }
+                if !matches!(o, O::ShowText(_) | O::ShowTextAdjusted(_)) {
+                    live[TL] = true;
+                }
+                fill(&mut live);
+                if stroking[i] {
+                    stroke(&mut live);
+                }
                 live[PAINT] = true;
-                true
-            }
-            O::NextLineShowText(_) | O::SetSpacingNextLineShowText { .. } => {
-                text_read(&mut live);
-                live[TL] = true;
-                live[PAINT] = true;
+                gs.read_all();
                 true
             }
             O::NextLine => {
                 live[TL] = true;
                 true
             }
-            O::RestoreState => {
-                blocks.push(live);
-                live = [false; SLOTS];
+            O::Fill | O::FillEvenOdd => {
+                fill(&mut live);
+                live[PAINT] = true;
+                gs.read_all();
                 true
             }
-            O::SaveState => {
-                // Before the block, a value is read by the block (as
-                // walked) or by what follows its `Q`.
-                let after = blocks.pop().unwrap_or(all);
-                for (l, a) in live.iter_mut().zip(after) {
-                    *l |= a;
-                }
+            O::Stroke | O::CloseAndStroke => {
+                stroke(&mut live);
+                live[PAINT] = true;
+                gs.read_all();
                 true
             }
-            O::BeginText
-            | O::EndText
-            | O::MoveTextPosition(..)
-            | O::MoveTextPositionAndSetLeading(..)
-            | O::SetTextMatrix(_)
-            | O::BeginMarkedContent(_)
-            | O::BeginMarkedContentWithProps { .. }
-            | O::EndMarkedContent
-            | O::MarkedContentPoint(_)
-            | O::DesignatedMarkedContentPoint { .. } => true,
+            O::FillAndStroke
+            | O::FillAndStrokeEvenOdd
+            | O::CloseFillAndStroke
+            | O::CloseFillAndStrokeEvenOdd => {
+                fill(&mut live);
+                stroke(&mut live);
+                live[PAINT] = true;
+                gs.read_all();
+                true
+            }
             O::MoveTo(..)
             | O::LineTo(..)
             | O::CurveTo(..)
@@ -552,43 +684,127 @@ fn drop_dead_state(ops: Vec<Operation>) -> Vec<Operation> {
             | O::Clip
             | O::ClipEvenOdd
             | O::ConcatMatrix(_)
+            | O::SetRenderingIntent(_)
+            | O::SetFlatness(_) => live[PAINT],
+            O::RestoreState => {
+                blocks.push((live, std::mem::take(&mut gs)));
+                live = [false; SLOTS];
+                true
+            }
+            O::SaveState => {
+                // Before the block, a value is read by the block (as
+                // walked) or by what follows its `Q`.
+                let (after, after_gs) = blocks.pop().unwrap_or((
+                    all,
+                    GsLive {
+                        all: true,
+                        ..GsLive::default()
+                    },
+                ));
+                for (l, a) in live.iter_mut().zip(after) {
+                    *l |= a;
+                }
+                gs = std::mem::take(&mut gs).union(after_gs);
+                true
+            }
+            O::BeginText
+            | O::EndText
+            | O::MoveTextPosition(..)
+            | O::SetTextMatrix(_)
+            | O::BeginMarkedContent(_)
+            | O::BeginMarkedContentWithProps { .. }
+            | O::EndMarkedContent
+            | O::MarkedContentPoint(_)
+            | O::DesignatedMarkedContentPoint { .. } => true,
+            O::MoveTextPositionAndSetLeading(..) => {
+                live[TL] = false;
+                true
+            }
+            _ => {
+                live = all;
+                gs.read_all();
+                true
+            }
+        };
+    }
+    ops.into_iter()
+        .zip(keep)
+        .filter_map(|(o, k)| k.then_some(o))
+        .collect()
+}
+
+/// `ops` with consecutive `cm` composed — those with nothing reading the
+/// CTM between them (only colour, text state and positioning, marked
+/// content …) — and dropped where they compose to the identity (to
+/// 1e-12): a translation set for removed text and undone after it does
+/// not stay.
+fn compose_cm(ops: Vec<Operation>) -> Vec<Operation> {
+    use Operation as O;
+    let mut out: Vec<Option<Operation>> = Vec::with_capacity(ops.len());
+    // The last `cm` with nothing reading the CTM since.
+    let mut pending: Option<usize> = None;
+    let identity = |m: &Matrix| {
+        [m.a - 1.0, m.b, m.c, m.d - 1.0, m.e, m.f]
+            .iter()
+            .all(|v| v.abs() <= 1e-12)
+    };
+    for o in ops {
+        match o {
+            O::ConcatMatrix(m) => {
+                let m = match pending.and_then(|p| out[p].take()) {
+                    Some(O::ConcatMatrix(prev)) => m.concat(prev),
+                    _ => m,
+                };
+                if identity(&m) {
+                    pending = None;
+                } else {
+                    out.push(Some(O::ConcatMatrix(m)));
+                    pending = Some(out.len() - 1);
+                }
+            }
+            O::SetCharSpacing(_)
+            | O::SetWordSpacing(_)
+            | O::SetHorizontalScaling(_)
+            | O::SetTextLeading(_)
+            | O::SetTextRise(_)
+            | O::SetTextRenderingMode(_)
+            | O::SetTextFont { .. }
+            | O::SetGrayFill(_)
+            | O::SetRgbFill(..)
+            | O::SetCmykFill(..)
+            | O::SetColorSpaceFill(_)
+            | O::SetColorFill(_)
+            | O::SetGrayStroke(_)
+            | O::SetRgbStroke(..)
+            | O::SetCmykStroke(..)
+            | O::SetColorSpaceStroke(_)
+            | O::SetColorStroke(_)
+            | O::BeginText
+            | O::EndText
+            | O::MoveTextPosition(..)
+            | O::MoveTextPositionAndSetLeading(..)
+            | O::SetTextMatrix(_)
+            | O::NextLine
+            | O::BeginMarkedContent(_)
+            | O::BeginMarkedContentWithProps { .. }
+            | O::EndMarkedContent
+            | O::MarkedContentPoint(_)
+            | O::DesignatedMarkedContentPoint { .. }
             | O::SetLineWidth(_)
             | O::SetLineCap(_)
             | O::SetLineJoin(_)
             | O::SetMiterLimit(_)
             | O::SetDash { .. }
             | O::SetRenderingIntent(_)
-            | O::SetFlatness(_) => live[PAINT],
-            // ExtGState may also set the font: kept if anything reads.
-            O::SetExtGState(_) => live.iter().any(|l| *l),
-            O::Stroke
-            | O::CloseAndStroke
-            | O::Fill
-            | O::FillEvenOdd
-            | O::FillAndStroke
-            | O::FillAndStrokeEvenOdd
-            | O::CloseFillAndStroke
-            | O::CloseFillAndStrokeEvenOdd => {
-                live[FILL] = true;
-                live[FILL_SPACE] = true;
-                live[STROKE] = true;
-                live[PAINT] = true;
-                true
+            | O::SetFlatness(_) => out.push(Some(o)),
+            O::ShowText(ref b) | O::NextLineShowText(ref b) if b.is_empty() => out.push(Some(o)),
+            other => {
+                pending = None;
+                out.push(Some(other));
             }
-            _ => {
-                live = all;
-                true
-            }
-        };
-        // A `TD` writes the leading too.
-        if matches!(o, O::MoveTextPositionAndSetLeading(..)) {
-            live[TL] = false;
         }
     }
-    ops.into_iter()
-        .zip(keep)
-        .filter_map(|(o, k)| k.then_some(o))
-        .collect()
+    out.into_iter().flatten().collect()
 }
 
 /// `ops` without `BT ET` and `q Q` pairs holding nothing (what removed
@@ -628,7 +844,7 @@ mod tests {
             &mut w,
         )
         .unwrap();
-        let out = fold_removed_positions(&ops, start).unwrap();
+        let out = fold_removed_positions(&ops, start, &|_| None).unwrap();
         out.iter()
             .map(|o| o.to_string())
             .collect::<Vec<_>>()
@@ -716,7 +932,7 @@ mod tests {
             &mut w,
         )
         .unwrap();
-        assert!(fold_removed_positions(&ops, TextStart::FORM).is_err());
+        assert!(fold_removed_positions(&ops, TextStart::FORM, &|_| None).is_err());
         // The leading each removed line's TD set is not kept; the last
         // is kept only where something reads it.
         assert_eq!(
@@ -747,7 +963,7 @@ mod tests {
             &mut w,
         )
         .unwrap();
-        assert!(fold_removed_positions(&ops, TextStart::FORM).is_err());
+        assert!(fold_removed_positions(&ops, TextStart::FORM, &|_| None).is_err());
         // Colours set for removed text (a link colour per removed
         // citation) collapse to the one in force for the kept text.
         assert_eq!(
@@ -756,7 +972,8 @@ mod tests {
                  0 g (B) Tj ET",
                 TextStart::PAGE
             ),
-            "BT /F1 10 Tf (A) Tj 0 G 0 g [-1000] TJ (B) Tj ET"
+            // (the stroke colour, unread by fill-only text, goes too)
+            "BT /F1 10 Tf (A) Tj 0 g [-1000] TJ (B) Tj ET"
         );
         // A form inside a text object reads what the fold moves past
         // it: refused.
@@ -768,7 +985,7 @@ mod tests {
             &mut w,
         )
         .unwrap();
-        assert!(fold_removed_positions(&ops, TextStart::PAGE).is_err());
+        assert!(fold_removed_positions(&ops, TextStart::PAGE, &|_| None).is_err());
         // The styling of a text object left drawing nothing is dropped,
         // and so are the empty pairs it leaves.
         for ts in ["1", "2"] {

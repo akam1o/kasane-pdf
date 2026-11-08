@@ -4253,10 +4253,18 @@ fn removed_text_leaves_no_positions() {
                     "BT /F1 1{v} Tf {v} Ts /DeviceRGB cs 0.{v} 0 1 scn 90 95 Td (E{v}) Tj ET"
                 )
             ),
+            // A translation set for the removed show and undone after
+            // it; a stroke colour and line width only removed stroked
+            // text used.
+            format!(
+                "1 0 0 1 {v} 0 cm BT /F1 12 Tf 80 100 Td (SEC) Tj ET 1 0 0 1 -{v} 0 cm \
+                 BT /F1 12 Tf 0.{v} 0 0 RG {v} w 2 Tr 90 95 Td (RET) Tj 0 0 0 RG 0 Tr \
+                 20 100 Td (Name:) Tj ET BT /F1 12 Tf 162 100 Td (here) Tj ET"
+            ),
         ]
     };
     let rect = vec![(60.0, 60.0, 155.0, 115.0)];
-    for i in 0..8 {
+    for i in 0..9 {
         let (a, b) = (layouts(1)[i].clone(), layouts(2)[i].clone());
         assert_ne!(a, b);
         let (pa, pb) = (one_page(&a, "", "", vec![]), one_page(&b, "", "", vec![]));
@@ -4267,7 +4275,7 @@ fn removed_text_leaves_no_positions() {
         assert!(ra.codes_removed > 0, "{a}");
         let text = page_text(&ra.output, 0);
         let after = [
-            "here", "here", "here", "below", "here", "below", "here", "here",
+            "here", "here", "here", "below", "here", "below", "here", "here", "here",
         ][i];
         assert!(
             text.contains("Name") && text.contains(after),
@@ -4300,4 +4308,25 @@ fn removed_text_leaves_no_positions() {
             "layout {i}: a kept character moved"
         );
     }
+}
+
+/// ExtGState set around each removed show: how many there were does
+/// not stay.
+#[test]
+fn removed_shows_leave_no_ext_gstate_trail() {
+    let outputs: Vec<Vec<u8>> = [1usize, 3]
+        .iter()
+        .map(|n| {
+            let removed = "/A gs BT /F1 12 Tf 80 100 Td (S) Tj ET /B gs ".repeat(*n);
+            let pdf = doc_with(
+                "/Font << /F1 20 0 R >> /ExtGState << /A << /ca 0.5 >> /B << /ca 1 >> >>",
+                &[format!("{removed}BT /F1 12 Tf 20 20 Td (PUBLICWORD) Tj ET").as_bytes()],
+                font_objs(),
+            );
+            let r = run(&pdf, vec![(60.0, 60.0, 155.0, 115.0)]).unwrap();
+            assert_eq!(r.codes_removed as usize, *n);
+            r.output
+        })
+        .collect();
+    assert!(outputs[0] == outputs[1], "the outputs differ");
 }
