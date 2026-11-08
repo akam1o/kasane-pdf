@@ -4243,10 +4243,20 @@ fn removed_text_leaves_no_positions() {
                     "(ABCDEF) Tj",
                 ][(v % 3) as usize]
             ),
+            // Removed shows each in q/Q; removed-only text objects with
+            // their own styling; colours by cs/scn.
+            format!(
+                "BT /F1 12 Tf 20 100 Td (Name:) Tj ET {} {} \
+                 BT /F1 12 Tf 0 Ts 0 g 162 100 Td (here) Tj ET",
+                "q BT /F1 12 Tf 80 100 Td (S) Tj ET Q ".repeat(v as usize),
+                format!(
+                    "BT /F1 1{v} Tf {v} Ts /DeviceRGB cs 0.{v} 0 1 scn 90 95 Td (E{v}) Tj ET"
+                )
+            ),
         ]
     };
     let rect = vec![(60.0, 60.0, 155.0, 115.0)];
-    for i in 0..7 {
+    for i in 0..8 {
         let (a, b) = (layouts(1)[i].clone(), layouts(2)[i].clone());
         assert_ne!(a, b);
         let (pa, pb) = (one_page(&a, "", "", vec![]), one_page(&b, "", "", vec![]));
@@ -4256,7 +4266,9 @@ fn removed_text_leaves_no_positions() {
         );
         assert!(ra.codes_removed > 0, "{a}");
         let text = page_text(&ra.output, 0);
-        let after = ["here", "here", "here", "below", "here", "below", "here"][i];
+        let after = [
+            "here", "here", "here", "below", "here", "below", "here", "here",
+        ][i];
         assert!(
             text.contains("Name") && text.contains(after),
             "layout {i}: {text}"

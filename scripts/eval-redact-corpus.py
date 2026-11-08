@@ -31,7 +31,8 @@ Checks on a success (tools that share no code with kasane):
   relaxed, since black content left over a zeroed image would look the
   same);
 - preservation: words of the input clear of the rect (by 1 pt) are
-  still extracted, and pixels outside the rect (2 px margin) are
+  still extracted (also counted by character, which a regrouping of
+  kept glyphs into other words does not change), and pixels outside the rect (2 px margin) are
   unchanged — the count is reported, not failed (a glyph straddling
   the edge is removed whole; square and round caps are cut
   conservatively);
@@ -220,6 +221,13 @@ def run_one(kasane, pdf, kind, rect, size, in_words, tmp, extra_args=()):
     lost = sum((kept_in - kept_out).values())
     res["outside_words"] = sum(kept_in.values())
     res["outside_words_lost"] = lost
+    # The same by character: pdftotext may regroup kept glyphs into
+    # other words once a neighbour is removed (per-glyph words in
+    # vertical CJK text); characters do not depend on the grouping.
+    chars_in = collections.Counter(c for w in in_words if clear_of(w, rect, 1.0) for c in w[0])
+    chars_out = collections.Counter(c for w in out_words if not within(w, rect, -0.5) for c in w[0])
+    res["outside_chars"] = sum(chars_in.values())
+    res["outside_chars_lost"] = sum((chars_in - chars_out).values())
     left_ink, changed_out = pixel_checks(pdf, out, rect, size, tmp)
     if left_ink is None:
         problems.append("render size changed")
@@ -289,7 +297,9 @@ def main():
     oks = [r for r in results if r["outcome"] == "ok"]
     if oks:
         print(f"  successes: outside words lost {sum(r.get('outside_words_lost', 0) for r in oks)}"
-              f" of {sum(r.get('outside_words', 0) for r in oks)};"
+              f" of {sum(r.get('outside_words', 0) for r in oks)}"
+              f" (characters lost {sum(r.get('outside_chars_lost', 0) for r in oks)}"
+              f" of {sum(r.get('outside_chars', 0) for r in oks)});"
               f" runs with outside pixels changed {sum(1 for r in oks if r.get('outside_pixels_changed'))};"
               f" runs reporting copies elsewhere {sum(1 for r in oks if r.get('elsewhere'))}")
     print("refusal reasons:")
