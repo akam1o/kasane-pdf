@@ -1539,7 +1539,7 @@ impl<'a> DiagWalker<'a> {
                     let own_colours = matches!(&x, Some(Object::Stream { dict, .. })
                         if dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name())
                             == Some(b"Image".as_slice())
-                            && !image_mask(dict));
+                            && !image_mask(self.doc, dict));
                     if !own_colours {
                         self.tiling_kept_now();
                     }
@@ -1547,7 +1547,7 @@ impl<'a> DiagWalker<'a> {
                 self.do_xobject(n)?
             }
             O::InlineImage { dict, .. }
-                if image_mask(dict) && {
+                if image_mask(self.doc, dict) && {
                     self.tiling_kept_now();
                     false
                 } => {}
@@ -3113,12 +3113,16 @@ type Type3Glyph = (Option<[f64; 4]>, Vec<Vec<u8>>);
 /// the op count is set in `ops_parsed` for the caller's execution
 /// budget — when the parse fails, a bound on it (half the decoded
 /// length); a CharProc whose bound exceeds `budget_left` is not parsed.
-/// An image dictionary's `/ImageMask` (inline `/IM`) is `true`: it
-/// paints with the colour in force.
-fn image_mask(dict: &crate::object::Dict) -> bool {
+/// An image dictionary's `/ImageMask` (inline `/IM`) may be `true`: it
+/// then paints with the colour in force. Resolved through references;
+/// anything but an absent or `false` flag counts as a mask.
+fn image_mask(doc: &Document, dict: &crate::object::Dict) -> bool {
     [b"ImageMask".as_slice(), b"IM"]
         .iter()
-        .any(|k| matches!(dict.get(*k), Some(Object::Bool(true))))
+        .any(|k| match dict.get(*k) {
+            None => false,
+            Some(v) => !matches!(doc.deref(v), Ok(Object::Bool(false))),
+        })
 }
 
 pub(crate) fn type3_glyph_bounds(

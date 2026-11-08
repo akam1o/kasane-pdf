@@ -2742,9 +2742,23 @@ fn prune_removed_shadings(
             doc.deref(&sh_obj)?.as_dict().cloned().ok_or_else(|| {
                 Error::Structure(format!("/Resources /{what} is not a dictionary"))
             })?;
-        // The object holding the category dictionary.
-        let holder = match (&sh_obj, &res_obj) {
-            (Object::Ref(r), _) | (_, Object::Ref(r)) => *r,
+        // The object holding the category dictionary in the input (the
+        // rewritten page may carry its resources directly).
+        let original = doc.resolve(*page_ref)?;
+        let orig_res = original
+            .as_dict()
+            .and_then(|d| d.get(b"Resources".as_slice()))
+            .cloned();
+        let orig_cat = match &orig_res {
+            Some(r) => doc
+                .deref(r)?
+                .as_dict()
+                .and_then(|d| d.get(category))
+                .cloned(),
+            None => None,
+        };
+        let holder = match (&orig_cat, &orig_res) {
+            (Some(Object::Ref(r)), _) | (_, Some(Object::Ref(r))) => *r,
             _ => *page_ref,
         };
         let mut seen_names: BTreeSet<&Vec<u8>> = BTreeSet::new();

@@ -4650,3 +4650,82 @@ fn deep_references_from_a_removed_shading_are_bounded() {
     let e = run(&pdf, vec![RECT]).unwrap_err();
     assert!(matches!(e, Error::LimitExceeded { .. }), "{e}");
 }
+
+/// Second review of 0.7.0: a copy of a removed shading written inside
+/// another object fails verification; an image mask flagged through a
+/// reference is a use of the pattern; resources given by reference
+/// with a direct /Shading are not taken as shared.
+#[test]
+fn removed_shading_copies_masks_and_holders() {
+    let sh = "<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 1 0] /Extend [true true] \
+              /Function << /FunctionType 2 /Domain [0 1] /C0 [0.123 0.456 0.789] /C1 [1 1 1] /N 1 >> >>";
+    let inside = format!("{SECRET} q 60 95 20 10 re W n /S1 sh Q 0 g 10 10 20 20 re f");
+    // An unused shading pattern holding an identical shading dictionary.
+    let res = format!("/Font << /F1 20 0 R >> /Shading << /S1 {sh} >> /Pattern << /P 33 0 R >>");
+    let mut objs = font_objs();
+    objs.push((
+        33,
+        format!("<< /PatternType 2 /Shading {sh} >>").into_bytes(),
+    ));
+    let e = unsupported(run(&doc_with(&res, &[inside.as_bytes()], objs), vec![RECT]));
+    assert!(e.contains("failed verification"), "{e}");
+    // /Resources by reference, /Shading direct in it: accepted.
+    let mut objs = font_objs();
+    objs.push((
+        34,
+        format!("<< /Font << /F1 20 0 R >> /Shading << /S1 {sh} >> >>").into_bytes(),
+    ));
+    let pdf = doc_with_resources_ref(34, &[inside.as_bytes()], objs);
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.shadings_removed, 1);
+    assert!(!raw_contains(&r.output, b"0.456") && !contains(&r.output, b"0.456"));
+    // An image mask whose /ImageMask is a reference paints with the
+    // pattern: a kept use, so removing the pattern fill is refused.
+    let res = "/Font << /F1 20 0 R >> /Pattern << /P1 30 0 R >> /XObject << /Im 40 0 R >>";
+    let mut objs = font_objs();
+    objs.push((30, tiling()));
+    objs.push((
+        40,
+        stream_obj(
+            "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ImageMask 41 0 R /BitsPerComponent 1",
+            &[0],
+        ),
+    ));
+    objs.push((41, b"true".to_vec()));
+    let c = "/Pattern cs /P1 scn 60 95 20 10 re f q 10 0 0 10 10 10 cm /Im Do Q";
+    let e = unsupported(run(&doc_with(res, &[c.as_bytes()], objs), vec![RECT]));
+    assert!(e.contains("also outside"), "{e}");
+}
+
+/// [`doc_with`] with the page's /Resources given by reference.
+fn doc_with_resources_ref(res: u32, pages: &[&[u8]], extra: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+    let mut objs: Vec<(u32, Vec<u8>)> = Vec::new();
+    objs.push((1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()));
+    let kids: Vec<String> = (0..pages.len())
+        .map(|i| format!("{} 0 R", 100 + 2 * i))
+        .collect();
+    objs.push((
+        2,
+        format!(
+            "<< /Type /Pages /Kids [{}] /Count {} >>",
+            kids.join(" "),
+            pages.len()
+        )
+        .into_bytes(),
+    ));
+    for (i, c) in pages.iter().enumerate() {
+        let n = 100 + 2 * i as u32;
+        objs.push((
+            n,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources {res} 0 R \
+                 /Contents {} 0 R >>",
+                n + 1
+            )
+            .into_bytes(),
+        ));
+        objs.push((n + 1, stream_obj("", c)));
+    }
+    objs.extend(extra);
+    build_pdf(&objs)
+}

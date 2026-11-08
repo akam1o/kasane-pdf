@@ -533,21 +533,40 @@ fn verify(
             .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
             .map(|(r, _)| r)
             .collect();
+        let resource = |d: &Dict| {
+            d.contains_key(b"ShadingType".as_slice()) || d.contains_key(b"PatternType".as_slice())
+        };
+        let mut elements: u64 = 0;
         for r in refs {
             let obj = out.resolve(r)?;
-            let resource = |d: &Dict| {
-                d.contains_key(b"ShadingType".as_slice())
-                    || d.contains_key(b"PatternType".as_slice())
-            };
-            let shading = match &obj {
-                Object::Dict(d) => resource(d),
-                Object::Stream { dict, .. } => resource(dict),
-                _ => false,
-            };
-            if shading && gone.contains(&crate::redact_type3::content_digest(&out, &obj, limits)?) {
-                return Err(fail(format!(
-                    "object {r} holds a removed shading or tiling pattern"
-                )));
+            // The object itself and every dictionary written inside it
+            // (a copy may sit in a pattern, a resource dictionary …).
+            let mut stack: Vec<&Object> = vec![&obj];
+            while let Some(o) = stack.pop() {
+                elements += 1;
+                if elements > limits.max_audit_elements {
+                    return Err(Error::LimitExceeded {
+                        limit: "max_audit_elements",
+                        max: limits.max_audit_elements,
+                    });
+                }
+                let (d, whole) = match o {
+                    Object::Dict(d) => (d, o),
+                    Object::Stream { dict, .. } => (dict, o),
+                    Object::Array(a) => {
+                        stack.extend(a.iter());
+                        continue;
+                    }
+                    _ => continue,
+                };
+                if resource(d)
+                    && gone.contains(&crate::redact_type3::content_digest(&out, whole, limits)?)
+                {
+                    return Err(fail(format!(
+                        "object {r} holds a removed shading or tiling pattern"
+                    )));
+                }
+                stack.extend(d.values());
             }
         }
     }
