@@ -170,11 +170,13 @@ CASES = [
         10: b"/DeviceRGB",
         11: stream(b"", bytes(range(256)) * 3),
     })), [], "ok"),
-    # Stroke adjustment: fills and text are taken; strokes refused.
+    # Stroke adjustment and hairlines: redacted as their user-space
+    # geometry — fills, strokes crossing the rect (cut) and clear of it.
     ("stroke-adjust-fills", build(page(b"/SA1 gs " + TEXT + b" 0.5 g 60 95 30 10 re f 10 150 40 20 re f",
                                        res=b"/Font << /F1 5 0 R >> /ExtGState << /SA1 << /SA true >> >>")), [], "ok"),
-    ("stroke-adjust-stroke", build(page(b"/SA1 gs " + TEXT + b" 1 w 10 150 m 50 170 l S",
-                                        res=b"/Font << /F1 5 0 R >> /ExtGState << /SA1 << /SA true >> >>")), [], "refused"),
+    ("stroke-adjust-stroke", build(page(b"/SA1 gs " + TEXT + b" 1 w 10 150 m 50 170 l S 10 102 m 190 102.7 l S"
+                                        b" 0 w 100 10 m 101.3 190 l S",
+                                        res=b"/Font << /F1 5 0 R >> /ExtGState << /SA1 << /SA true >> >>")), [], "ok"),
 ]
 # The same file with the document-wide option: the original still drawn
 # on page 2 is a copy elsewhere, so refused.
