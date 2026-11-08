@@ -2368,19 +2368,94 @@ fn a_shading_clipped_away_from_the_rects_is_kept() {
 
 // Pre-release review (P0s, fixed).
 
-/// /ActualText on any tag replaces the shown text: refused, as on
-/// /Span. Alternate descriptions and expansions likewise.
+/// Text-bearing marked-content properties (/ActualText on any tag,
+/// /Alt, /E) written in the content: where anything in the sequence is
+/// edited they are dropped (other keys stay); an untouched sequence
+/// keeps them. Named properties (the text would stay in the resources)
+/// and marked-content points stay refused.
 #[test]
-fn replacement_text_on_any_tag_is_refused() {
+fn replacement_text_of_edited_sequences_is_dropped() {
     for props in [
-        "/P << /ActualText (SECRETTEXT) >>",
-        "/Figure << /Alt (SECRETTEXT) >>",
-        "/Span << /E (SECRETTEXT) >>",
+        "/P << /ActualText (SECRETALT) /MCID 3 >>",
+        "/Figure << /Alt (SECRETALT) /MCID 3 >>",
+        "/Span << /E (SECRETALT) /MCID 3 >>",
     ] {
-        let pdf = one_page(&format!("{props} BDC {SECRET} EMC"), "", "", vec![]);
-        let e = unsupported(run(&pdf, vec![RECT]));
-        assert!(e.contains("blockers"), "{props}: {e}");
+        // Nested: the outer sequence holds the edited text too.
+        let pdf = one_page(
+            &format!(
+                "{props} BDC /Span << /ActualText (INNERALT) >> BDC {SECRET} EMC EMC \
+                 /Span << /ActualText (KEPTALT) >> BDC BT /F1 12 Tf 10 20 Td (PUBLICWORD) Tj ET EMC"
+            ),
+            "",
+            "",
+            vec![],
+        );
+        let r = run(&pdf, vec![RECT]).unwrap();
+        assert_eq!(r.codes_removed, 10, "{props}");
+        assert!(
+            !contains(&r.output, b"SECRETALT") && !contains(&r.output, b"INNERALT"),
+            "{props}"
+        );
+        assert!(
+            contains(&r.output, b"KEPTALT"),
+            "the untouched sequence keeps its text"
+        );
+        let doc = Document::from_bytes(&r.output).unwrap();
+        let ops = doc.page_operations(&doc.pages()[0]).unwrap();
+        assert!(
+            ops.iter().any(
+                |o| matches!(o, kasane_pdf::Operation::BeginMarkedContentWithProps {
+                properties: kasane_pdf::Object::Dict(d), .. } if d.contains_key(b"MCID".as_slice()))
+            ),
+            "/MCID stays"
+        );
     }
+    // A sequence clear of the rects keeps its text, the page is accepted.
+    let pdf = one_page(
+        &format!("/Span << /ActualText (KEPTALT) >> BDC BT /F1 12 Tf 10 20 Td (PUBLICWORD) Tj ET EMC {SECRET}"),
+        "",
+        "",
+        vec![],
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert!(contains(&r.output, b"KEPTALT"));
+    // Named properties and points stay refused.
+    let named = doc_with(
+        "/Font << /F1 20 0 R >> /Properties << /P0 << /ActualText (SECRETALT) >> >>",
+        &[format!("/Span /P0 BDC {SECRET} EMC").as_bytes()],
+        font_objs(),
+    );
+    let point = one_page(
+        &format!("/Span << /ActualText (SECRETALT) >> DP {SECRET}"),
+        "",
+        "",
+        vec![],
+    );
+    for pdf in [named, point] {
+        let e = unsupported(run(&pdf, vec![RECT]));
+        assert!(e.contains("ActualText"), "{e}");
+    }
+}
+
+/// Dropped replacement text found again elsewhere is reported.
+#[test]
+fn dropped_replacement_text_elsewhere_is_reported() {
+    let pdf = doc_with(
+        "/Font << /F1 20 0 R >>",
+        &[
+            format!("/Span << /ActualText (CONFIDENTIAL) >> BDC {SECRET} EMC").as_bytes(),
+            b"BT /F1 12 Tf 10 20 Td (CONFIDENTIAL) Tj ET",
+        ],
+        font_objs(),
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert!(
+        r.elsewhere.iter().any(
+            |e| matches!(&e.removed, kasane_pdf::Removed::Text(t) if t.contains("CONFIDENTIAL"))
+        ),
+        "{:?}",
+        r.elsewhere
+    );
 }
 
 /// A code without a /Widths entry takes /MissingWidth, so what follows

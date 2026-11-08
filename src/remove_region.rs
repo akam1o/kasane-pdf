@@ -662,6 +662,72 @@ pub type PageSpec = (usize, Vec<(f64, f64, f64, f64)>);
 /// overflowing: valid pages display 1-based (`page_index + 1`), an
 /// out-of-range index that cannot be converted (e.g. `usize::MAX`)
 /// is shown raw so the error itself never panics.
+/// Redaction: the keys of marked-content properties that carry text
+/// (replacement text, alternate description, expansion; §14.9).
+const SPAN_TEXT_KEYS: [&[u8]; 3] = [b"ActualText", b"Alt", b"E"];
+
+/// Redaction: each `BDC` with a properties dictionary carrying text
+/// whose sequence (up to its `EMC`, nested sequences included) holds an
+/// edited op (`edited(i)`), rewritten without those keys — the text may
+/// describe what the rects remove; the other keys (`/MCID` …) stay. The
+/// dropped strings are added to `removed_text` (searched elsewhere).
+fn strip_edited_spans(
+    ops: &[Operation],
+    edited: &dyn Fn(usize) -> bool,
+    removed_text: &mut Vec<String>,
+) -> BTreeMap<usize, Operation> {
+    let mut out = BTreeMap::new();
+    // Open sequences: (the BDC to rewrite, if it carries text; edited).
+    let mut open: Vec<(Option<usize>, bool)> = Vec::new();
+    let mut close = |entry: (Option<usize>, bool), out: &mut BTreeMap<usize, Operation>| {
+        let (Some(i), true) = entry else {
+            return;
+        };
+        let Operation::BeginMarkedContentWithProps {
+            tag,
+            properties: Object::Dict(d),
+        } = &ops[i]
+        else {
+            return;
+        };
+        let mut d = d.clone();
+        for k in SPAN_TEXT_KEYS {
+            if let Some(Object::String(t)) = d.remove(k) {
+                removed_text.push(crate::annot_text::text_string(&t));
+            }
+        }
+        out.insert(
+            i,
+            Operation::BeginMarkedContentWithProps {
+                tag: tag.clone(),
+                properties: Object::Dict(d),
+            },
+        );
+    };
+    for (i, op) in ops.iter().enumerate() {
+        match op {
+            Operation::BeginMarkedContentWithProps {
+                properties: Object::Dict(d),
+                ..
+            } if SPAN_TEXT_KEYS.iter().any(|k| d.contains_key(*k)) => open.push((Some(i), false)),
+            Operation::BeginMarkedContentWithProps { .. } | Operation::BeginMarkedContent(_) => {
+                open.push((None, false))
+            }
+            Operation::EndMarkedContent => {
+                if let Some(e) = open.pop() {
+                    close(e, &mut out);
+                }
+            }
+            _ if edited(i) => open.iter_mut().for_each(|e| e.1 = true),
+            _ => {}
+        }
+    }
+    while let Some(e) = open.pop() {
+        close(e, &mut out);
+    }
+    out
+}
+
 fn page_label(page_index: usize) -> String {
     match page_index.checked_add(1) {
         Some(n) => n.to_string(),
@@ -1845,6 +1911,18 @@ pub(crate) fn regions_edit_session_with<'a>(
                 }
                 let node = &form_streams[&fp];
                 let mut new_form_ops: Vec<Operation> = Vec::with_capacity(node.ops.len());
+                let spans = if mode == SessionMode::Redact {
+                    let edited = |i: usize| {
+                        let key = (fp.clone(), i);
+                        removed_op_set.contains(&key)
+                            || replacements.contains_key(&key)
+                            || to_remove_text.get(&key).is_some_and(|c| !c.is_empty())
+                            || inner_renames.contains_key(&key)
+                    };
+                    strip_edited_spans(&node.ops, &edited, &mut removed_text)
+                } else {
+                    BTreeMap::new()
+                };
                 let mut renamed_from: BTreeSet<Vec<u8>> = BTreeSet::new();
                 for (inner, fop) in node.ops.iter().enumerate() {
                     let key = (fp.clone(), inner);
@@ -1852,6 +1930,10 @@ pub(crate) fn regions_edit_session_with<'a>(
                         new_form_ops.extend(new.iter().cloned());
                     }
                     if removed_op_set.contains(&key) {
+                        continue;
+                    }
+                    if let Some(new) = spans.get(&inner) {
+                        new_form_ops.push(new.clone());
                         continue;
                     }
                     if let (Operation::Do(old), Some(new)) = (fop, inner_renames.get(&key)) {
@@ -1967,11 +2049,27 @@ pub(crate) fn regions_edit_session_with<'a>(
 
         // ---- rewrite this page's content stream ---------------------
         let mut new_ops: Vec<Operation> = Vec::with_capacity(ops.len());
+        let spans = if mode == SessionMode::Redact {
+            let edited = |i: usize| {
+                let key = (Vec::new(), i);
+                removed_op_set.contains(&key)
+                    || replacements.contains_key(&key)
+                    || to_remove_text.get(&key).is_some_and(|c| !c.is_empty())
+                    || do_renames.contains_key(&i)
+            };
+            strip_edited_spans(&ops, &edited, &mut removed_text)
+        } else {
+            BTreeMap::new()
+        };
         for (op_index, op) in ops.iter().enumerate() {
             if let Some(new) = replacements.get(&(Vec::new(), op_index)) {
                 new_ops.extend(new.iter().cloned());
             }
             if removed_op_set.contains(&(Vec::new(), op_index)) {
+                continue;
+            }
+            if let Some(new) = spans.get(&op_index) {
+                new_ops.push(new.clone());
                 continue;
             }
             match op {

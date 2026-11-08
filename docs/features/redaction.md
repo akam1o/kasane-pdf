@@ -48,6 +48,7 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 | ExtGState (`gs`) | stroke parameters (`/LW`, `/LC`, `/LJ`, `/ML`, `/D`) are applied; colour and compositing parameters (alpha, blend mode, overprint, transfer, halftone, `/SMask /None` …) are passed through, since removal and cutting are by geometry. A soft mask and `/Font` are refused. Stroke adjustment (`/SA true`) moves edges to device pixels by an amount no user-space bound covers (and Splash snaps a rectangle fill's edges too), so while it is on any stroke (paths, stroked text, a Type 3 CharProc's), and any fill meeting a rect without lying wholly inside one (which would be cut), is refused; text fills, images, fills removed whole and fills clear of every rect are accepted — their kept ink is the input's, unchanged, and like all kept content may be snapped by up to a device pixel (see Known limits of exactness) |
 | Form XObjects, nested up to 16 deep (transparency groups included) | their text, paths and images inside the rects are removed, cut or zeroed in copies along the invocation chain — each copy drawn by that one invocation only (`forms_edited`), its `/Resources` naming only what it draws. Other invocations and pages keep the originals; an original still drawn is reported in `elsewhere` (`Removed::Form` / `Removed::Image`); otherwise it is not carried. A form cycle is refused |
 | document `/Info`, catalog XMP `/Metadata` | always removed |
+| marked-content replacement text (`/ActualText` on any tag, `/Alt`, `/E`) written in the content (`BDC` with a dictionary) | where anything in the sequence is edited (a code removed, an image zeroed, a path removed or cut, a form edited — nested sequences included), the three keys are dropped from its properties, the other keys (`/MCID` …) kept: the text may describe what the rects remove, and the kept glyphs of the sequence then extract as themselves. The dropped text is searched for in `elsewhere` like removed text. An untouched sequence keeps its text. Named properties and points stay refused |
 | structure tree | refused when it carries `/Alt`, `/ActualText` or `/E`; with `remove_structure_tree(true)` the tree and `/MarkInfo` are removed |
 
 ## What a success states
@@ -121,7 +122,8 @@ NoZoom, NoRotate or `/FixedPrint` annotations and Text annotations
 than 16 deep or cyclic, inline images meeting a rect
 (or whose data length is not fixed by their dictionary), `sh` that may paint inside a rect,
 ExtGState with a soft mask or `/Font`, strokes and cut fills under
-`/SA true`, `/ActualText` marked content,
+`/SA true`, `/ActualText`, `/Alt` or `/E` in named marked-content
+properties or on a marked-content point,
 text in a clipping mode (`Tr` 4–7),
 non-embedded fonts (glyph extent unknown; see `embed_substitute_fonts`), Type 3 glyphs whose CharProc is not
 paths and images (see the table), vertical writing, images with masks, soft masks,
@@ -233,8 +235,9 @@ Each of these is refused with a typed error, not approximated:
   signatures, media, file attachments and 3D meeting a rect; NoZoom,
   NoRotate and `/FixedPrint` annotations and Text annotations not
   removed; appearance-less annotations whose geometry leaves `/Rect`.
-- **Text substitutes**: `/ActualText` (any tag), `/Alt` and `/E` on
-  marked content; a structure tree carrying alternate text unless it is
-  removed.
+- **Text substitutes**: `/ActualText` (any tag), `/Alt` and `/E` in
+  named marked-content properties (`/P0 BDC`: the text would stay in
+  the resources) or on a marked-content point (`DP`); a structure tree
+  carrying alternate text unless it is removed.
 - **Documents**: signed or encrypted; forms nested more than 16 deep or
   cyclic.

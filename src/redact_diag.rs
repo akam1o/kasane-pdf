@@ -1554,9 +1554,11 @@ impl<'a> DiagWalker<'a> {
                 self.uncertain_state = true;
             }
             O::MarkedContentPoint(_) => {}
-            O::DesignatedMarkedContentPoint { tag, properties }
-            | O::BeginMarkedContentWithProps { tag, properties } => {
-                self.marked_content(tag, properties)?;
+            O::DesignatedMarkedContentPoint { tag, properties } => {
+                self.marked_content(tag, properties, false)?;
+            }
+            O::BeginMarkedContentWithProps { tag, properties } => {
+                self.marked_content(tag, properties, true)?;
             }
             // begin/end marked-content without properties carry no
             // payload we must evaluate.
@@ -2685,7 +2687,12 @@ impl<'a> DiagWalker<'a> {
     /// DP/BDC properties: `/OC` (optional content) and `/Span
     /// <</ActualText …>>` both change what the content means — record
     /// them as blockers exactly as the renderer refuses them.
-    fn marked_content(&mut self, tag: &[u8], properties: &Object) -> Result<(), Error> {
+    fn marked_content(
+        &mut self,
+        tag: &[u8],
+        properties: &Object,
+        sequence: bool,
+    ) -> Result<(), Error> {
         let resolved = match properties {
             Object::Name(n) => {
                 match self
@@ -2732,6 +2739,14 @@ impl<'a> DiagWalker<'a> {
         // Replacement text (§14.9.4) — on any tag, not only /Span —
         // and, for redaction, alternate descriptions and expansions
         // (§14.9.3, §14.9.5) may repeat what the rects remove.
+        // Redaction edits a sequence whose properties are written in
+        // the content (`BDC` with a dictionary): where anything inside
+        // it is edited, the text keys are dropped
+        // (`remove_region::strip_edited_spans`). Named properties (the
+        // text would stay in the resources) and points stay refused.
+        if self.redaction_mode && sequence && matches!(properties, Object::Dict(_)) {
+            return Ok(());
+        }
         if dict.contains_key(b"ActualText".as_slice()) {
             self.push_blocker(Blocker {
                 site: Some(self.site()),

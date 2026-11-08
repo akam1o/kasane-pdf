@@ -58,6 +58,12 @@ versions follow [Semantic Versioning](https://semver.org/).
   CharProc, the codes naming it (encoding, widths, ToUnicode); a font
   losing glyphs that a place the walk does not read also uses (a
   pattern, a form field's `/DR`, …) is refused.
+- `redact` accepts marked-content replacement text (`/ActualText` on
+  any tag, `/Alt`, `/E`) written in the content: where anything in the
+  sequence is edited, the three keys are dropped (other keys such as
+  `/MCID` kept) and their text is searched for elsewhere; an untouched
+  sequence keeps them. Named properties and marked-content points
+  carrying them stay refused.
 - `redact` accepts Type 3 glyphs drawn by images (inline, or image
   XObjects from the font's resources; Chrome's bitmap glyphs, TeX's
   bitmap fonts): an image paints its unit square under the CTM. A
