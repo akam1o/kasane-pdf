@@ -54,13 +54,45 @@ fn refuse(detail: String) -> Error {
     }
 }
 
-/// `o` written canonically, references replaced by their targets.
-fn canonical(doc: &Document, o: &Object, depth: u32, out: &mut Vec<u8>) -> Result<(), Error> {
-    if depth > 32 {
-        return Err(refuse("a Type 3 font nested too deep to compare".into()));
+/// Digests of objects by reference, and the work spent, for
+/// [`font_key`]: each object is digested once (shared subgraphs do not
+/// multiply the work), and the total is bounded.
+#[derive(Default)]
+struct Canon {
+    memo: HashMap<IndirectRef, [u8; 32]>,
+    open: HashSet<IndirectRef>,
+    work: u64,
+}
+
+/// The digest of `o` written canonically, each reference replaced by
+/// its target's digest.
+fn canonical(
+    doc: &Document,
+    o: &Object,
+    c: &mut Canon,
+    limits: &Limits,
+) -> Result<[u8; 32], Error> {
+    c.work += 1;
+    if c.work > limits.max_audit_elements {
+        return Err(Error::LimitExceeded {
+            limit: "max_audit_elements",
+            max: limits.max_audit_elements,
+        });
     }
+    let mut out = Vec::new();
     match o {
-        Object::Ref(r) => canonical(doc, &doc.resolve(*r)?, depth + 1, out)?,
+        Object::Ref(r) => {
+            if let Some(d) = c.memo.get(r) {
+                return Ok(*d);
+            }
+            if !c.open.insert(*r) {
+                return Err(refuse("a Type 3 font refers to itself".into()));
+            }
+            let d = canonical(doc, &doc.resolve(*r)?, c, limits)?;
+            c.open.remove(r);
+            c.memo.insert(*r, d);
+            return Ok(d);
+        }
         Object::Dict(d) => {
             out.push(b'<');
             let mut keys: Vec<&Vec<u8>> = d.keys().collect();
@@ -68,40 +100,45 @@ fn canonical(doc: &Document, o: &Object, depth: u32, out: &mut Vec<u8>) -> Resul
             for k in keys {
                 out.extend_from_slice(&(k.len() as u64).to_be_bytes());
                 out.extend_from_slice(k);
-                canonical(doc, &d[k], depth + 1, out)?;
+                out.extend_from_slice(&canonical(doc, &d[k], c, limits)?);
             }
-            out.push(b'>');
         }
         Object::Array(a) => {
             out.push(b'[');
             for v in a {
-                canonical(doc, v, depth + 1, out)?;
+                out.extend_from_slice(&canonical(doc, v, c, limits)?);
             }
-            out.push(b']');
         }
         Object::Stream { dict, data } => {
             out.push(b'S');
             out.extend_from_slice(&sha256(data));
-            canonical(doc, &Object::Dict(dict.clone()), depth + 1, out)?;
+            out.extend_from_slice(&canonical(doc, &Object::Dict(dict.clone()), c, limits)?);
         }
         other => {
-            let s = format!("{other:?}");
-            out.extend_from_slice(&(s.len() as u64).to_be_bytes());
-            out.extend_from_slice(s.as_bytes());
+            out.push(b'.');
+            out.extend_from_slice(format!("{other:?}").as_bytes());
         }
     }
-    Ok(())
+    Ok(sha256(&out))
 }
 
-fn font_key(doc: &Document, dict: &Dict) -> Result<Option<FontKey>, Error> {
+fn font_key(
+    doc: &Document,
+    dict: &Dict,
+    c: &mut Canon,
+    limits: &Limits,
+) -> Result<Option<FontKey>, Error> {
     if dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) != Some(b"Type3")
         || !dict.contains_key(b"CharProcs".as_slice())
     {
         return Ok(None);
     }
-    let mut k = Vec::new();
-    canonical(doc, &Object::Dict(dict.clone()), 0, &mut k)?;
-    Ok(Some(sha256(&k)))
+    Ok(Some(canonical(
+        doc,
+        &Object::Dict(dict.clone()),
+        c,
+        limits,
+    )?))
 }
 
 /// A glyph name and its CharProc's digest (stored bytes).
@@ -156,6 +193,7 @@ fn usage(doc: &Document, limits: &Limits) -> Result<Usage, Error> {
         font: Current,
     }
     let mut u = Usage::default();
+    let mut canon = Canon::default();
     let mut keys: HashMap<Vec<u8>, Option<(FontKey, crate::font::Font)>> = HashMap::new();
     let mut budget: u64 = 0;
     // Page tree nodes hold inherited resources.
@@ -304,13 +342,17 @@ fn usage(doc: &Document, limits: &Limits) -> Result<Usage, Error> {
                             None => {
                                 let f = match &raw {
                                     Some(o) => match doc.deref(o)? {
-                                        Object::Dict(d) => match font_key(doc, &d)? {
-                                            Some(k) => Some((
-                                                k,
-                                                crate::font::load_font_dict(doc, &d, name, limits)?,
-                                            )),
-                                            None => None,
-                                        },
+                                        Object::Dict(d) => {
+                                            match font_key(doc, &d, &mut canon, limits)? {
+                                                Some(k) => Some((
+                                                    k,
+                                                    crate::font::load_font_dict(
+                                                        doc, &d, name, limits,
+                                                    )?,
+                                                )),
+                                                None => None,
+                                            }
+                                        }
                                         _ => None,
                                     },
                                     None => None,
@@ -564,6 +606,7 @@ pub(crate) fn prune_type3(
     for r in &refs {
         bodies.push((*r, out.resolve(*r)?));
     }
+    let mut canon = Canon::default();
     // Every Type 3 font of the output: (object, nested in another
     // object's body, dict, key).
     let mut fonts: Vec<(IndirectRef, bool, Dict, FontKey)> = Vec::new();
@@ -572,7 +615,7 @@ pub(crate) fn prune_type3(
         while let Some((o, top)) = stack.pop() {
             match o {
                 Object::Dict(d) => {
-                    if let Some(key) = font_key(&out, d)? {
+                    if let Some(key) = font_key(&out, d, &mut canon, limits)? {
                         fonts.push((*r, !top, d.clone(), key));
                     }
                     stack.extend(d.values().map(|v| (v, false)));

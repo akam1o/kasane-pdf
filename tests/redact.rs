@@ -4136,3 +4136,34 @@ fn type3_pruning_follows_every_use() {
         .collect();
     assert!(outputs[0] == outputs[1], "the outputs differ");
 }
+
+/// Comparing Type 3 fonts by content digests each shared object once:
+/// a 4-way shared graph 24 levels deep under the font costs 24 objects,
+/// not 4^24 paths.
+#[test]
+fn type3_font_keys_are_linear_in_shared_graphs() {
+    let mut extra: Vec<(u32, Vec<u8>)> = (0..24u32)
+        .map(|i| {
+            (
+                80 + i,
+                format!("[{n} 0 R {n} 0 R {n} 0 R {n} 0 R]", n = 81 + i).into_bytes(),
+            )
+        })
+        .collect();
+    extra.push((104, b"(leaf)".to_vec()));
+    let pdf = type3_page(
+        "BT /T3 10 Tf 20 100 Td (AB) Tj ET",
+        T3_FILL,
+        SECRET_GLYPH,
+        "/Junk 80 0 R",
+        extra,
+    );
+    let t = std::time::Instant::now();
+    let r = run(&pdf, vec![(31.0, 99.0, 39.0, 108.0)]).unwrap();
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        t.elapsed()
+    );
+    assert!(!contains(&r.output, b"333 777"));
+}
