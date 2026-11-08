@@ -6,16 +6,6 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-### Security
-- `redact` (0.6.0, 0.6.1) kept the text positioning of removed codes:
-  each removed show's `Td`/`TD`/`Tm` and advance, and the `TJ` numbers
-  between removed glyphs, so the output recorded the positions and
-  widths of individual removed glyphs or words. Between two shows that
-  still draw something, the positioning is now folded into one move to
-  the next kept glyph (exact; the kept text does not move); what stays
-  is where the next kept glyph starts and, when the leading is
-  inherited, the number of `T*` line moves.
-
 ### Added
 - `RedactOptions::embed_substitute_fonts` (CLI
   `--embed-substitute-fonts`): before redacting, each non-embedded Latin
@@ -99,6 +89,21 @@ versions follow [Semantic Versioning](https://semver.org/).
 - `diagnose_redaction` and the editors grew stroked text by the stroke's
   reach under the text matrix (font size included) instead of the CTM,
   reporting it far larger than drawn.
+
+## [0.6.2] - 2026-11-08
+
+A security fix for `redact`; no public API change. Release notes:
+`docs/releases/v0.6.2.md`.
+
+### Security
+- **`redact` kept the positioning of removed text (0.6.0, 0.6.1,
+  GHSA-9mw8-m2cr-vxqm).** The positioning and advances of removed
+  glyphs stayed in the output. Between two shows still drawing glyphs,
+  the text positioning is now folded into one move to the next kept
+  glyph, values set only for removed text are dropped, and the empty
+  text objects and saved states it leaves are removed; kept text does
+  not move. A form, an image or an unknown operator inside a text
+  object among removed text is refused.
 
 ## [0.6.1] - 2026-11-08
 
