@@ -16,8 +16,31 @@ versions follow [Semantic Versioning](https://semver.org/).
   positions and the text is redacted by ink (`Redaction::fonts_embedded`).
   The output shows Liberation's glyph shapes for those fonts. Without
   the option such text stays refused.
+- `redact` removes a shading (`sh`) in page content that paints only
+  inside one rect — its extent the clip's bounds narrowed by its
+  `/BBox` — with the `/Resources /Shading` entry only it used
+  (`TargetKind::Shading`, `Redaction::shadings_removed`, CLI
+  `shadings removed:`); verification checks by content digest that no
+  removed shading is left. A shading crossing a rect, unbounded, in a
+  form or reached from elsewhere stays refused.
 
 ### Changed
+- `redact` redacts hairlines (`0 w`) as their zero-width centreline and
+  strokes, cut fills and stroked text under stroke adjustment
+  (`/SA true`) as their user-space geometry, instead of refusing them:
+  both only move kept ink at device-pixel scale (none found inside a
+  rect beyond 1.5 device pixels from its edge, Poppler, MuPDF and
+  pdf.js at 72–1200 dpi). The diagnosis still reports hairlines as
+  uncertain.
+- `redact` no longer refuses a page for selecting a tiling pattern: a
+  path it paints clear of the rects is kept, one wholly inside a rect is
+  removed, and the pattern (with its `scn`) leaves the page when
+  nothing kept paints with it, checked by digest. Paths across a rect,
+  text meeting a rect, forms and shared patterns stay refused.
+- Resource lookups borrow direct resource dictionaries instead of
+  cloning them per name (a page with 1,600 fonts redacted in 0.2 s,
+  was 1.0 s).
+
 - `redact`: a round-capped piece of a cut stroke whose both ends are
   cuts is stroked with square caps, so its band ends exactly at the
   rects (it lost the round caps' corners). Square caps were already

@@ -406,7 +406,8 @@ and the remaining blockers are in
   Standard 14 substitutes first, Type 3 glyphs drawn by more than
   paths and images, vertical fonts, curved fills crossing a rect, masked images,
   Indexed or four-component JPEGs, widgets and media
-  meeting a rect, tiling patterns, soft masks and more
+  meeting a rect, shadings and tiling patterns crossing a rect, soft
+  masks and more
   (`docs/features/redaction.md`); a stroke cut at a rect can lose a
   sliver of band next to it (oblique crossings, round caps at an
   original end).

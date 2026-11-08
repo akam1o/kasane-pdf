@@ -47,6 +47,9 @@ Checks on a success (tools that share no code with kasane):
 - residual: the number of `elsewhere` findings is recorded;
 - time: each run's `redact` wall time is recorded.
 
+MuPDF rounds simple fonts' widths to integers: a kept glyph after
+removed ones "moves" by hundredths of a point in its reading only.
+
 A run whose only problem is unchanged ink inside that is all black
 where images were zeroed is still `unexpected`, marked `check_by_hand`
 (zeroed samples that were already black look unchanged; black content
