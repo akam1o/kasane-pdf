@@ -1498,7 +1498,8 @@ fn write_literal_string(bytes: &[u8], out: &mut BoundedWriter<'_>) -> Result<(),
                 out.push(b'\\')?;
                 out.push(b)?;
             }
-            0x00..=0x08 | 0x0b | 0x0c | 0x0e..=0x1f | 0x7f..=0xff => {
+            // A raw CR (or CRLF) would be read as one LF (§7.3.4.2).
+            0x00..=0x1f | 0x7f..=0xff => {
                 out.extend_from_slice(format!("\\{:03o}", b).as_bytes())?;
             }
             _ => out.push(b)?,

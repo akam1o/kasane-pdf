@@ -128,7 +128,8 @@ than 16 deep or cyclic, inline images meeting a rect
 (or whose data length is not fixed by their dictionary), `sh` crossing a rect, unbounded, in a
 form or reached from elsewhere, tiling patterns painting across a rect, in a form, under text
 meeting a rect or reached from elsewhere,
-ExtGState with a soft mask or `/Font`, `/ActualText`, `/Alt` or `/E` in named marked-content
+ExtGState with a soft mask or `/Font`, literal strings holding an
+unescaped carriage return (readers do not agree on the bytes they hold), `/ActualText`, `/Alt` or `/E` in named marked-content
 properties or on a marked-content point,
 text in a clipping mode (`Tr` 4–7),
 non-embedded fonts (glyph extent unknown; see `embed_substitute_fonts`), Type 3 glyphs whose CharProc is not
@@ -245,6 +246,8 @@ Each of these is refused with a typed error, not approximated:
 - **Paint**: shadings (`sh`) and tiling patterns crossing a rect,
   inside forms or shared; shading patterns with their own ExtGState;
   soft masks; `/Font` set by ExtGState.
+- **Strings**: content (page, forms, appearances whose glyph use is
+  counted) with a literal string holding an unescaped carriage return.
 - **Annotations**: other than links meeting a rect unless
   `remove_annotations` removes them (markup subtypes only); widgets,
   signatures, media, file attachments and 3D meeting a rect; NoZoom,

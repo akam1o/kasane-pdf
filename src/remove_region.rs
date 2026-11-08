@@ -1404,7 +1404,13 @@ pub(crate) fn regions_edit_session_with<'a>(
         // ---- walk with remaining budgets ---------------------------
         // Subtract what earlier pages spent so the multi-page call
         // cannot exceed the documented cumulative limits.
-        let ops = doc.page_operations(page)?;
+        let ops = if mode == SessionMode::Redact {
+            let (ops, warnings) = doc.page_operations_warned(page)?;
+            crate::redact_diag::refuse_raw_cr(&warnings)?;
+            ops
+        } else {
+            doc.page_operations(page)?
+        };
         let page_limits = Limits {
             max_diag_exec_ops: limits.max_diag_exec_ops.checked_sub(spent_exec_ops).ok_or(
                 Error::LimitExceeded {

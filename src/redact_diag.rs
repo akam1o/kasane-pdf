@@ -2810,6 +2810,9 @@ impl<'a> DiagWalker<'a> {
                 self.doc.recovery_mode(),
                 &mut warnings,
             )?;
+            if self.redaction_mode {
+                refuse_raw_cr(&warnings)?;
+            }
             for w in warnings {
                 self.doc.push_warning(w);
             }
@@ -3123,6 +3126,25 @@ fn image_mask(doc: &Document, dict: &crate::object::Dict) -> bool {
             None => false,
             Some(v) => !matches!(doc.deref(v), Ok(Object::Bool(false))),
         })
+}
+
+/// Redaction: content whose literal strings hold an unescaped carriage
+/// return is refused — §7.3.4.2 reads one (alone or in CRLF) as a line
+/// feed, Poppler and pdf.js keep it, so the glyph codes and the
+/// positions after them depend on the reader.
+pub(crate) fn refuse_raw_cr(warnings: &[crate::Warning]) -> Result<(), Error> {
+    for w in warnings {
+        if let crate::Warning::LiteralStringCarriageReturn { strings } = w {
+            return Err(Error::Unsupported {
+                feature: "redaction of content with an unescaped carriage return in a string",
+                detail: format!(
+                    "{strings} literal string(s) — readers differ on whether it is a line \
+                     feed (§7.3.4.2), and so on the codes shown and where"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn type3_glyph_bounds(

@@ -478,6 +478,8 @@ struct ContentParser<'a> {
     in_compat: bool,
     /// `BMC`/`BDC`/`EMC` nesting depth (tracked for balance only).
     mc_depth: usize,
+    /// Literal strings with an unescaped carriage return.
+    raw_cr_strings: u64,
 }
 
 impl<'a> ContentParser<'a> {
@@ -494,6 +496,7 @@ impl<'a> ContentParser<'a> {
             in_text: false,
             in_compat: false,
             mc_depth: 0,
+            raw_cr_strings: 0,
         }
     }
 
@@ -506,6 +509,9 @@ impl<'a> ContentParser<'a> {
                     self.tokens_seen += 1;
                     self.handle_token(&mut lexer, tok)?;
                 }
+            }
+            if lexer.raw_cr_strings != 0 {
+                self.raw_cr_strings += std::mem::take(&mut lexer.raw_cr_strings);
             }
             if self.ops.len() > self.limits.max_operations {
                 return Err(Error::LimitExceeded {
@@ -559,6 +565,11 @@ impl<'a> ContentParser<'a> {
         if self.in_compat {
             open.push("BX without EX".to_string());
             self.ops.push(Operation::EndCompatibility);
+        }
+        if self.raw_cr_strings != 0 {
+            warnings.push(Warning::LiteralStringCarriageReturn {
+                strings: self.raw_cr_strings,
+            });
         }
         if !open.is_empty() {
             warnings.push(Warning::UnterminatedContentBlock {

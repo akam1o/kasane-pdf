@@ -1109,6 +1109,20 @@ impl Document {
         }
     }
 
+    /// [`page_operations`](Self::page_operations) and the warnings that
+    /// parse recorded (also recorded on the document).
+    pub(crate) fn page_operations_warned(
+        &self,
+        page: &Page,
+    ) -> Result<(Vec<Operation>, Vec<crate::Warning>), Error> {
+        let contents = self.page_contents(page)?;
+        let mut warnings = Vec::new();
+        let ops =
+            content::parse_content_stream(&contents, &self.limits, self.lenient, &mut warnings)?;
+        self.warnings.borrow_mut().extend(warnings.clone());
+        Ok((ops, warnings))
+    }
+
     /// Like [`page_operations`](Self::page_operations) but also returns
     /// the total number of lexer tokens consumed — operands *and*
     /// operators, so `tokens >= ops.len()`. Used by `inspect` to

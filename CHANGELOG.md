@@ -26,6 +26,10 @@ versions follow [Semantic Versioning](https://semver.org/).
   reaches with anything else stays refused.
 
 ### Changed
+- Literal strings: an unescaped carriage return, alone or in CRLF, is
+  read as one line feed (§7.3.4.2), as an unescaped LF already was;
+  `Warning::LiteralStringCarriageReturn` records such strings in
+  content. `redact` refuses content holding one.
 - A document loads each font dictionary once per set of limits and
   reuses it across operators, pages and operations (the warnings the
   load recorded are recorded again on each use); the fonts kept are
@@ -121,6 +125,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   so readers would disagree on what is drawn.
 
 ### Fixed
+- Content written by `redact` and the `remove_*` editors escapes every
+  byte below 0x20 in literal strings; a raw CR or LF there was read
+  differently by different readers, changing kept text in some.
 - `diagnose_redaction` and the editors grew stroked text by the stroke's
   reach under the text matrix (font size included) instead of the CTM,
   reporting it far larger than drawn.
