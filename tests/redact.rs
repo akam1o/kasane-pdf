@@ -3190,7 +3190,6 @@ fn type3_charprocs_beyond_paths_are_refused() {
         "1000 0 d0 /G gs 0 0 10 10 re f",
         "1000 0 d0 /Pattern cs /P scn 0 0 10 10 re f",
         "1000 0 d0 /Sh sh",
-        "1000 0 d0 0 w 0 0 m 10 10 l S",
         "1000 0 d0 /P << /ActualText (X) >> BDC 0 0 10 10 re f EMC",
     ] {
         let pdf = type3_page(T3_TEXT, proc, T3_FILL, "", vec![]);
@@ -3486,58 +3485,56 @@ fn type3_charprocs_count_against_the_execution_budget() {
     assert!(e.to_string().contains("max_diag_exec_ops"), "{e}");
 }
 
-/// Stroke adjustment (/SA true) moves stroke edges — and, in Splash,
-/// a rectangle fill's — by a device-dependent amount. Under it, text
-/// fills, fills removed whole and fills clear of the rects are
-/// accepted; any stroke, stroked text, a fill cut at a rect and a Type 3
-/// CharProc stroke are refused. `Q` and `/SA false` end it.
+/// Stroke adjustment (/SA true) and hairlines (0 w) move a stroke's ink
+/// at device-pixel scale only: their geometry is redacted in user space
+/// like any stroke's — removed inside a rect, cut at its edge, kept
+/// clear of it — and no path point stays inside a rect. Fills cut under
+/// /SA, stroked text under /SA and Type 3 CharProc hairlines likewise.
 #[test]
-fn stroke_adjustment_refuses_only_what_it_can_move() {
-    let ok = [
-        format!("/Adjust gs {SECRET} 60 95 20 10 re f 10 10 30 30 re f"),
-        format!("q /Adjust gs {SECRET} Q 1 w 10 10 m 40 40 l S"),
-        format!("/Adjust gs /Alpha gs {SECRET} 1 w 10 10 m 40 40 l S"),
-    ];
-    for c in &ok {
+fn stroke_adjustment_and_hairlines_are_redacted() {
+    for (gs, w) in [("/Adjust gs", "1"), ("", "0"), ("/Adjust gs", "0")] {
+        let c = format!(
+            "{gs} {SECRET} {w} w 70 100 m 80 100 l S 10 102 m 190 102 l S \
+             10 150 m 40 170 l S 30 95 50 10 re f"
+        );
         let pdf = doc_with(GS_RES, &[c.as_bytes()], vec![]);
         let r = run(&pdf, vec![RECT]).unwrap_or_else(|e| panic!("{c}: {e}"));
         assert_eq!(r.codes_removed, 10, "{c}");
-        assert!(!page_text(&r.output, 0).contains("SECRET"));
+        assert_eq!((r.paths_removed, r.paths_cut), (1, 2), "{c}");
+        assert!(!path_points_inside(&r.output, RECT), "{c}");
+        assert!(page_text(&r.output, 0).is_empty());
     }
-    let refused = [
-        format!("/Adjust gs {SECRET} 1 w 10 10 m 40 40 l S"),
-        format!("/Adjust gs {SECRET} 1 w 50 100 m 60 100 l S"),
-        format!("/Adjust gs {SECRET} 30 95 50 10 re f"),
+    // Stroked text under /SA, and a hairline stroked glyph.
+    for c in [
         format!("/Adjust gs {SECRET} BT /F1 12 Tf 1 Tr 10 20 Td (PUBLICWORD) Tj ET"),
-    ];
-    for c in &refused {
+        "0 w BT /F1 12 Tf 1 Tr 50 100 Td (SECRETTEXT) Tj 10 -80 Td (PUBLICWORD) Tj ET".to_string(),
+    ] {
         let pdf = doc_with(GS_RES, &[c.as_bytes()], vec![]);
-        let e = unsupported(run(&pdf, vec![RECT]));
-        assert!(e.contains("stroke adjustment"), "{c}: {e}");
+        let r = run(&pdf, vec![RECT]).unwrap_or_else(|e| panic!("{c}: {e}"));
+        assert_eq!(r.codes_removed, 10, "{c}");
+        assert_eq!(page_text(&r.output, 0), "PUBLICWORD", "{c}");
     }
-    // Type 3: a CharProc fill is accepted, a CharProc stroke refused.
+    // A Type 3 glyph drawn by a hairline under /SA.
     let page = (
         3,
         b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << \
           /Font << /T3 60 0 R >> /ExtGState << /Adjust << /SA true >> >> >> /Contents 4 0 R >>"
             .to_vec(),
     );
-    for (proc, ok) in [(T3_FILL, true), ("1000 0 d0 50 w 0 0 m 500 500 l S", false)] {
-        let pdf = type3_page(
-            "/Adjust gs BT /T3 10 Tf 20 100 Td (AAAAAA) Tj ET",
-            proc,
-            proc,
-            "",
-            vec![page.clone()],
-        );
-        match run(&pdf, vec![(41.5, 99.0, 55.0, 108.0)]) {
-            Ok(r) => assert!(ok && r.codes_removed == 2, "{proc}"),
-            Err(e) => assert!(
-                !ok && e.to_string().contains("stroke adjustment"),
-                "{proc}: {e}"
-            ),
-        }
-    }
+    let proc = "1000 0 d0 0 w 0 0 m 500 500 l S";
+    let pdf = type3_page(
+        "/Adjust gs BT /T3 10 Tf 20 100 Td (AAAAAA) Tj ET",
+        proc,
+        proc,
+        "",
+        vec![page],
+    );
+    assert_eq!(
+        run(&pdf, vec![(41.5, 99.0, 55.0, 108.0)])
+            .unwrap()
+            .codes_removed,
+        2
+    );
 }
 
 /// Chains of references are refused wherever a colour space is read in
@@ -4351,4 +4348,384 @@ fn removed_shows_leave_no_ext_gstate_trail() {
         .collect();
     assert_eq!(contents[0], contents[1]);
     assert!(!contents[0].contains("gs"), "{}", contents[0]);
+}
+
+// Shadings (`sh`): one painting only inside a rect is removed with the
+// resource only it used; one crossing a rect is refused (its function
+// and geometry are data a clip would only hide).
+
+/// An axial shading whose function carries `c0` (distinctive values).
+fn axial(c0: &str, extra: &str) -> Vec<u8> {
+    format!(
+        "<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 1 0] /Extend [true true] {extra} \
+         /Function << /FunctionType 2 /Domain [0 1] /C0 [{c0}] /C1 [1 1 1] /N 1 >> >>"
+    )
+    .into_bytes()
+}
+
+#[test]
+fn shadings_inside_a_rect_are_removed() {
+    let page_res = "/Font << /F1 20 0 R >> /Shading << /S1 30 0 R /S2 31 0 R >>";
+    let mut objs = font_objs();
+    objs.push((30, axial("0.123 0.456 0.789", "")));
+    objs.push((31, axial("0.9 0.1 0.2", "")));
+    // S1 clipped to a box inside the rect; S2 clipped clear of it.
+    let pdf = doc_with(
+        page_res,
+        &[format!(
+            "{SECRET} q 60 95 20 10 re W n /S1 sh Q q 10 10 20 20 re W n /S2 sh Q \
+             BT /F1 12 Tf 10 50 Td (PUBLICWORD) Tj ET"
+        )
+        .as_bytes()],
+        objs.clone(),
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!((r.codes_removed, r.shadings_removed), (10, 1));
+    assert!(!contains(&r.output, b"0.123 0.456 0.789") && !raw_contains(&r.output, b"0.456"));
+    assert!(raw_contains(&r.output, b"0.9 0.1 0.2") || contains(&r.output, b"0.9"));
+    let doc = Document::from_bytes(&r.output).unwrap();
+    let ops = doc.page_operations(&doc.pages()[0]).unwrap();
+    let sh: Vec<String> = ops
+        .iter()
+        .filter(|o| matches!(o, kasane_pdf::Operation::Shading(_)))
+        .map(|o| o.to_string())
+        .collect();
+    assert_eq!(sh, vec!["/S2 sh".to_string()]);
+    // A /BBox inside the rect bounds it without a clip.
+    let mut o2 = font_objs();
+    o2.push((30, axial("0.123 0.456 0.789", "/BBox [0 0 10 10]")));
+    o2.push((31, axial("0.9 0.1 0.2", "")));
+    let pdf = doc_with(
+        page_res,
+        &[format!("{SECRET} q 1 0 0 1 60 95 cm /S1 sh Q").as_bytes()],
+        o2,
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.shadings_removed, 1);
+    assert!(!raw_contains(&r.output, b"0.456"));
+}
+
+/// A shading crossing a rect, unbounded, shared with another page,
+/// drawn in a form or also painted elsewhere on the page is refused.
+#[test]
+fn shadings_that_cannot_be_removed_alone() {
+    let page_res = "/Font << /F1 20 0 R >> /Shading << /S1 30 0 R >>";
+    let mut objs = font_objs();
+    objs.push((30, axial("0.123 0.456 0.789", "")));
+    for c in [
+        format!("{SECRET} q 30 95 50 10 re W n /S1 sh Q"),
+        format!("{SECRET} /S1 sh"),
+    ] {
+        let pdf = doc_with(page_res, &[c.as_bytes()], objs.clone());
+        let e = unsupported(run(&pdf, vec![RECT]));
+        assert!(e.contains("shading"), "{c}: {e}");
+    }
+    // Page 2 uses the same shading object.
+    let pdf = doc_with(
+        page_res,
+        &[
+            format!("{SECRET} q 60 95 20 10 re W n /S1 sh Q").as_bytes(),
+            b"q 0 0 5 5 re W n /S1 sh Q",
+        ],
+        objs.clone(),
+    );
+    let e = unsupported(run(&pdf, vec![RECT]));
+    assert!(
+        e.contains("shading used elsewhere") || e.contains("shared"),
+        "{e}"
+    );
+    // In a form.
+    let mut o2 = objs.clone();
+    o2.push((
+        40,
+        stream_obj(
+            "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Shading << /S1 30 0 R >> >>",
+            b"q 60 95 20 10 re W n /S1 sh Q",
+        ),
+    ));
+    let pdf = doc_with(
+        "/Font << /F1 20 0 R >> /XObject << /Fm 40 0 R >>",
+        &[format!("{SECRET} /Fm Do").as_bytes()],
+        o2,
+    );
+    assert!(unsupported(run(&pdf, vec![RECT])).contains("shading"));
+    // Still painted elsewhere on the page: refused — the kept use would
+    // keep the function over the part painted inside.
+    let pdf = doc_with(
+        page_res,
+        &[format!("{SECRET} q 60 95 20 10 re W n /S1 sh Q q 0 0 5 5 re W n /S1 sh Q").as_bytes()],
+        objs,
+    );
+    assert!(unsupported(run(&pdf, vec![RECT])).contains("also outside"));
+}
+
+// Tiling patterns: what a pattern paints is decided where it is used —
+// a fill clear of the rects stays, one wholly inside a rect goes with
+// the pattern only it used, one crossing a rect is refused (the cell is
+// content a cut would only hide), and so is text painted with one that
+// meets a rect.
+
+fn tiling() -> Vec<u8> {
+    stream_obj(
+        "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 4 4] /XStep 4 /YStep 4 /Resources << >>",
+        b"0.321 0.654 0.987 rg 0 0 2 2 re f",
+    )
+}
+
+#[test]
+fn tiling_patterns_follow_their_uses() {
+    let res = "/Font << /F1 20 0 R >> /Pattern << /P1 30 0 R >>";
+    let mut objs = font_objs();
+    objs.push((30, tiling()));
+    // Clear of the rect: kept (the page was refused whole before).
+    let pdf = doc_with(
+        res,
+        &[format!("{SECRET} /Pattern cs /P1 scn 10 10 20 20 re f").as_bytes()],
+        objs.clone(),
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.codes_removed, 10);
+    assert!(contains(&r.output, b"0.321 0.654 0.987"));
+    // Wholly inside: removed with the cell.
+    let pdf = doc_with(
+        res,
+        &[format!("{SECRET} /Pattern cs /P1 scn 60 95 20 10 re f").as_bytes()],
+        objs.clone(),
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!((r.codes_removed, r.paths_removed), (10, 1));
+    assert!(
+        !contains(&r.output, b"0.321 0.654 0.987"),
+        "the cell is gone"
+    );
+    // Nor is it still selected by name (kept content follows).
+    let pdf = doc_with(
+        res,
+        &[b"/Pattern cs /P1 scn 60 95 20 10 re f 0 g 10 10 20 20 re f"],
+        objs.clone(),
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    let doc = Document::from_bytes(&r.output).unwrap();
+    let ops = doc.page_operations(&doc.pages()[0]).unwrap();
+    let shown: Vec<String> = ops.iter().map(|o| o.to_string()).collect();
+    assert!(!shown.iter().any(|o| o.contains("/P1")), "{shown:?}");
+    // Crossing, and text painted with it meeting the rect: refused.
+    for c in [
+        format!("{SECRET} /Pattern cs /P1 scn 30 95 50 10 re f"),
+        "/Pattern cs /P1 scn BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET".to_string(),
+    ] {
+        let pdf = doc_with(res, &[c.as_bytes()], objs.clone());
+        let e = unsupported(run(&pdf, vec![RECT]));
+        assert!(e.contains("tiling pattern"), "{c}: {e}");
+    }
+    // A colour set after the pattern ends it.
+    let pdf = doc_with(
+        res,
+        &[b"/Pattern cs /P1 scn 0 g BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET"],
+        objs.clone(),
+    );
+    assert_eq!(run(&pdf, vec![RECT]).unwrap().codes_removed, 10);
+    // The pattern also used by another page: refused.
+    let pdf = doc_with(
+        res,
+        &[
+            format!("{SECRET} /Pattern cs /P1 scn 60 95 20 10 re f").as_bytes(),
+            b"/Pattern cs /P1 scn 0 0 5 5 re f",
+        ],
+        objs,
+    );
+    let e = unsupported(run(&pdf, vec![RECT]));
+    assert!(
+        e.contains("tiling pattern used elsewhere") || e.contains("shared"),
+        "{e}"
+    );
+}
+
+/// What a removed shading or tiling pattern uses must go with it: data
+/// it shares with anything else, a shading or pattern also painted
+/// outside the rects, and patterns read only by images carrying their
+/// own colours (review of 0.7.0).
+#[test]
+fn removed_shadings_and_patterns_take_their_data() {
+    let page_res = "/Font << /F1 20 0 R >> /Shading << /S1 30 0 R >>";
+    let inside = format!("{SECRET} q 60 95 20 10 re W n /S1 sh Q 0 g 10 10 20 20 re f");
+    let shading = |f: &str| {
+        format!(
+            "<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 1 0] /Extend [true true] \
+             /Function {f} >>"
+        )
+        .into_bytes()
+    };
+    let func = b"<< /FunctionType 2 /Domain [0 1] /C0 [0.123 0.456 0.789] /C1 [1 1 1] /N 1 >>";
+    // Its function an object of its own: removed with it.
+    let mut objs = font_objs();
+    objs.push((30, shading("31 0 R")));
+    objs.push((31, func.to_vec()));
+    let pdf = doc_with(page_res, &[inside.as_bytes()], objs.clone());
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.shadings_removed, 1);
+    assert!(!raw_contains(&r.output, b"0.456") && !contains(&r.output, b"0.456"));
+    // The function also held by another object (here an unused
+    // annotation-free dictionary the page refers to): refused.
+    let mut o2 = objs.clone();
+    o2.push((32, b"<< /Cache 31 0 R >>".to_vec()));
+    let page_res2 = format!("{page_res} /Properties << /X 32 0 R >>");
+    let pdf = doc_with(&page_res2, &[inside.as_bytes()], o2);
+    let e = unsupported(run(&pdf, vec![RECT]));
+    assert!(e.contains("also referred to"), "{e}");
+    // Painted inside and also outside: refused.
+    let c = format!("{inside} q 0 0 5 5 re W n /S1 sh Q");
+    let pdf = doc_with(page_res, &[c.as_bytes()], objs.clone());
+    let e = unsupported(run(&pdf, vec![RECT]));
+    assert!(e.contains("also outside"), "{e}");
+    // Two names for one shading, one of them kept: refused.
+    let pdf = doc_with(
+        "/Font << /F1 20 0 R >> /Shading << /S1 30 0 R /S2 30 0 R >>",
+        &[format!("{inside} q 0 0 5 5 re W n /S2 sh Q").as_bytes()],
+        objs,
+    );
+    assert!(unsupported(run(&pdf, vec![RECT])).contains("shading"));
+
+    // A tiling pattern followed by an RGB image: the image carries its
+    // own colours, so the cell goes; an image mask paints with it.
+    let res = "/Font << /F1 20 0 R >> /Pattern << /P1 30 0 R >> /XObject << /Im 40 0 R >>";
+    let mut objs = font_objs();
+    objs.push((30, tiling()));
+    for (mask, gone) in [(false, true), (true, false)] {
+        let mut o = objs.clone();
+        o.push((
+            40,
+            if mask {
+                stream_obj(
+                    "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ImageMask true \
+                     /BitsPerComponent 1",
+                    &[0],
+                )
+            } else {
+                stream_obj(
+                    "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB \
+                     /BitsPerComponent 8",
+                    &[1, 2, 3],
+                )
+            },
+        ));
+        let c = "/Pattern cs /P1 scn 60 95 20 10 re f q 10 0 0 10 10 10 cm /Im Do Q";
+        let r = run(&doc_with(res, &[c.as_bytes()], o), vec![RECT]);
+        if gone {
+            let r = r.unwrap();
+            assert!(
+                !contains(&r.output, b"0.321 0.654 0.987"),
+                "the cell is gone"
+            );
+        } else {
+            assert!(unsupported(r).contains("also outside"));
+        }
+    }
+}
+
+/// A removed shading reaching a long chain of references: a typed
+/// limit, not a stack overflow (review of 0.7.0).
+#[test]
+fn deep_references_from_a_removed_shading_are_bounded() {
+    let mut objs = font_objs();
+    objs.push((
+        30,
+        b"<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 1 0] /Function << /FunctionType 2 \
+          /Domain [0 1] /C0 [0 0 0] /C1 [1 1 1] /N 1 >> /Extra 1000 0 R >>"
+            .to_vec(),
+    ));
+    for i in 0..3000u32 {
+        let body = if i + 1 < 3000 {
+            format!("[{} 0 R]", 1001 + i)
+        } else {
+            "0".into()
+        };
+        objs.push((1000 + i, body.into_bytes()));
+    }
+    let pdf = doc_with(
+        "/Font << /F1 20 0 R >> /Shading << /S1 30 0 R >>",
+        &[format!("{SECRET} q 60 95 20 10 re W n /S1 sh Q").as_bytes()],
+        objs,
+    );
+    let e = run(&pdf, vec![RECT]).unwrap_err();
+    assert!(matches!(e, Error::LimitExceeded { .. }), "{e}");
+}
+
+/// Second review of 0.7.0: a copy of a removed shading written inside
+/// another object fails verification; an image mask flagged through a
+/// reference is a use of the pattern; resources given by reference
+/// with a direct /Shading are not taken as shared.
+#[test]
+fn removed_shading_copies_masks_and_holders() {
+    let sh = "<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 1 0] /Extend [true true] \
+              /Function << /FunctionType 2 /Domain [0 1] /C0 [0.123 0.456 0.789] /C1 [1 1 1] /N 1 >> >>";
+    let inside = format!("{SECRET} q 60 95 20 10 re W n /S1 sh Q 0 g 10 10 20 20 re f");
+    // An unused shading pattern holding an identical shading dictionary.
+    let res = format!("/Font << /F1 20 0 R >> /Shading << /S1 {sh} >> /Pattern << /P 33 0 R >>");
+    let mut objs = font_objs();
+    objs.push((
+        33,
+        format!("<< /PatternType 2 /Shading {sh} >>").into_bytes(),
+    ));
+    let e = unsupported(run(&doc_with(&res, &[inside.as_bytes()], objs), vec![RECT]));
+    assert!(e.contains("failed verification"), "{e}");
+    // /Resources by reference, /Shading direct in it: accepted.
+    let mut objs = font_objs();
+    objs.push((
+        34,
+        format!("<< /Font << /F1 20 0 R >> /Shading << /S1 {sh} >> >>").into_bytes(),
+    ));
+    let pdf = doc_with_resources_ref(34, &[inside.as_bytes()], objs);
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.shadings_removed, 1);
+    assert!(!raw_contains(&r.output, b"0.456") && !contains(&r.output, b"0.456"));
+    // An image mask whose /ImageMask is a reference paints with the
+    // pattern: a kept use, so removing the pattern fill is refused.
+    let res = "/Font << /F1 20 0 R >> /Pattern << /P1 30 0 R >> /XObject << /Im 40 0 R >>";
+    let mut objs = font_objs();
+    objs.push((30, tiling()));
+    objs.push((
+        40,
+        stream_obj(
+            "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ImageMask 41 0 R /BitsPerComponent 1",
+            &[0],
+        ),
+    ));
+    objs.push((41, b"true".to_vec()));
+    let c = "/Pattern cs /P1 scn 60 95 20 10 re f q 10 0 0 10 10 10 cm /Im Do Q";
+    let e = unsupported(run(&doc_with(res, &[c.as_bytes()], objs), vec![RECT]));
+    assert!(e.contains("also outside"), "{e}");
+}
+
+/// [`doc_with`] with the page's /Resources given by reference.
+fn doc_with_resources_ref(res: u32, pages: &[&[u8]], extra: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+    let mut objs: Vec<(u32, Vec<u8>)> = Vec::new();
+    objs.push((1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()));
+    let kids: Vec<String> = (0..pages.len())
+        .map(|i| format!("{} 0 R", 100 + 2 * i))
+        .collect();
+    objs.push((
+        2,
+        format!(
+            "<< /Type /Pages /Kids [{}] /Count {} >>",
+            kids.join(" "),
+            pages.len()
+        )
+        .into_bytes(),
+    ));
+    for (i, c) in pages.iter().enumerate() {
+        let n = 100 + 2 * i as u32;
+        objs.push((
+            n,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources {res} 0 R \
+                 /Contents {} 0 R >>",
+                n + 1
+            )
+            .into_bytes(),
+        ));
+        objs.push((n + 1, stream_obj("", c)));
+    }
+    objs.extend(extra);
+    build_pdf(&objs)
 }

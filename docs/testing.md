@@ -67,12 +67,24 @@ but external tools are used to *confirm* behaviour on real files:
   (`--redact-arg --embed-substitute-fonts --redact-arg
   --remove-annotations`), `--json` for the per-run results. A success
   is checked for words still extracted inside the rect, unchanged ink
-  inside it, words lost and pixels changed outside it. Two known false
-  signals, checked by hand rather than relaxed: zeroed image samples
-  that were already black count as unchanged ink (an image redacted
-  under a black region is reported `unexpected`); a word "lost" outside
-  can be pdftotext joining a kept glyph to its neighbour once the glyph
-  between them is removed (per-glyph words in vertical CJK text).
+  inside it, words lost and pixels changed outside it; character by
+  character with MuPDF (`mutool draw -F stext`, coordinates scaled back
+  from `/UserUnit`): no character extracted inside the rect, each kept
+  character found again at its origin (lost and moved counted apart
+  from words pdftotext only regrouped); an image reported edited must
+  not leave every page image unchanged (`pdfimages -all`); each run's
+  time is recorded. A redactor that copies its input is flagged on
+  every run whose rect holds ink. Known false signals, checked by hand
+  rather than relaxed: zeroed image samples that were already black
+  count as unchanged ink (reported `unexpected`, marked
+  `check_by_hand`); a word "lost" outside can be pdftotext joining a
+  kept glyph to its neighbour once the glyph between them is removed
+  (per-glyph words in vertical CJK text); MuPDF rounds simple fonts'
+  widths to integers, so a kept glyph after removed ones on its line
+  "moves" by up to a few hundredths of a point in MuPDF's reading only
+  (Poppler places it identically); a Type 3 code is removed when its
+  advance cell meets a rect, so MuPDF can count a character whose ink
+  lies just outside as lost.
 - [`../scripts/analyze-redact-refusals.py`](../scripts/analyze-redact-refusals.py)
   `<kasane-pdf> <eval.json> [--redact-arg …] --json out.json` — for
   each refused run, every blocker of the redaction walk (through the
@@ -87,6 +99,13 @@ but external tools are used to *confirm* behaviour on real files:
   reader); check the harness with a control that keeps some varied data.
   The image and path cases were run this way; the results are in the
   redaction docs' known limits.
+- [`../tests/redact_security.rs`](../tests/redact_security.rs) — that
+  check as a regression suite: text under nested `cm` and a form
+  `/Matrix`, removed kerns, `Tm`/`Td` positioning, `/ActualText`
+  `/Alt` `/E`, Type 3 programs, clipped and optional content, image
+  samples (Gray, RGB with `/Interpolate`, CMYK, ICCBased, Indexed, in a
+  form), `/SA` and hairline strokes, a shading and a tiling pattern,
+  an annotation appearance; refusals must be alike for both inputs.
 
 ## Compatibility suite
 

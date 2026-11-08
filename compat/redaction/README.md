@@ -17,6 +17,10 @@ failure). The one `unexpected` run, `scan-bitmap-composite-and-xnor-text`
 block, is a known false signal (zeroed image samples that were already
 black look like unchanged ink); its output was checked by hand. A
 "lost" word can be pdftotext regrouping kept glyphs once a neighbour is
-removed (per-glyph words in vertical CJK text). The category counts are
+removed (per-glyph words in vertical CJK text). MuPDF characters
+"moved" are its integer-rounded widths (Poppler places those glyphs
+identically). MuPDF characters "lost" include Type 3 codes whose
+advance cell meets the rect (removed by design); the others are still
+being checked. The category counts are
 upper bounds for what supporting a category gains: a later stage may
 still refuse.

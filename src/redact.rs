@@ -150,6 +150,9 @@ pub struct Redaction {
     /// Painted paths crossing a rect's edge, cut there: what they
     /// painted inside the rect is gone, the rest is kept.
     pub paths_cut: u64,
+    /// Shadings (`sh`) removed, each painting only inside a rect; the
+    /// shading resources only they used are not carried.
+    pub shadings_removed: u64,
     /// `/Link` annotations removed because their `/Rect` met a rect
     /// (with their action or destination); links outside are kept.
     pub links_removed: u64,
@@ -242,6 +245,7 @@ impl std::fmt::Debug for Redaction {
             .field("pixels_changed", &self.pixels_changed)
             .field("paths_removed", &self.paths_removed)
             .field("paths_cut", &self.paths_cut)
+            .field("shadings_removed", &self.shadings_removed)
             .field("links_removed", &self.links_removed)
             .field("annotations_removed", &self.annotations_removed)
             .field("original_names_removed", &self.original_names_removed)
@@ -355,6 +359,7 @@ fn redact_doc(
         &output,
         specs,
         limits,
+        &s.removed_shading_digests,
         &originals,
         &s.removed_annot_prints,
         session,
@@ -395,6 +400,7 @@ fn redact_doc(
         pixels_changed: s.pixels_changed_total,
         paths_removed: s.paths_removed_total,
         paths_cut: s.paths_cut_total,
+        shadings_removed: s.shadings_removed_total,
         links_removed: s.links_removed_total,
         annotations_removed: s.annots_removed_total,
         original_names_removed: s.names_pruned_total,
@@ -417,6 +423,7 @@ fn verify(
     output: &[u8],
     specs: &[PageSpec],
     limits: &Limits,
+    shadings: &[[u8; 32]],
     originals: &[[u8; 32]],
     removed_annots: &[[u8; 32]],
     session: crate::remove_region::SessionOptions,
@@ -515,6 +522,52 @@ fn verify(
             };
             let form = dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Form");
             shown.extend(pages.iter().map(|p| (*p, form)));
+        }
+    }
+    // No removed shading is still in the file (by content: renumbering
+    // does not hide it).
+    if !shadings.is_empty() {
+        let gone: HashSet<[u8; 32]> = shadings.iter().copied().collect();
+        let refs: Vec<_> = out
+            .xref_entries()
+            .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
+            .map(|(r, _)| r)
+            .collect();
+        let resource = |d: &Dict| {
+            d.contains_key(b"ShadingType".as_slice()) || d.contains_key(b"PatternType".as_slice())
+        };
+        let mut elements: u64 = 0;
+        for r in refs {
+            let obj = out.resolve(r)?;
+            // The object itself and every dictionary written inside it
+            // (a copy may sit in a pattern, a resource dictionary …).
+            let mut stack: Vec<&Object> = vec![&obj];
+            while let Some(o) = stack.pop() {
+                elements += 1;
+                if elements > limits.max_audit_elements {
+                    return Err(Error::LimitExceeded {
+                        limit: "max_audit_elements",
+                        max: limits.max_audit_elements,
+                    });
+                }
+                let (d, whole) = match o {
+                    Object::Dict(d) => (d, o),
+                    Object::Stream { dict, .. } => (dict, o),
+                    Object::Array(a) => {
+                        stack.extend(a.iter());
+                        continue;
+                    }
+                    _ => continue,
+                };
+                if resource(d)
+                    && gone.contains(&crate::redact_type3::content_digest(&out, whole, limits)?)
+                {
+                    return Err(fail(format!(
+                        "object {r} holds a removed shading or tiling pattern"
+                    )));
+                }
+                stack.extend(d.values());
+            }
         }
     }
     let residual = audit_residuals(&out, limits)?;

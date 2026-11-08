@@ -36,7 +36,24 @@ Checks on a success (tools that share no code with kasane):
   unchanged — the count is reported, not failed (a glyph straddling
   the edge is removed whole; square and round caps are cut
   conservatively);
-- residual: the number of `elsewhere` findings is recorded.
+- characters (MuPDF `mutool draw -F stext`, a second text engine,
+  when installed): no character is extracted inside the rect, and each
+  character of the input clear of the rect is found again at the same
+  origin (to 0.01 pt) — lost and moved characters are counted
+  separately from words pdftotext merely regroups;
+- images: when an image is reported edited, the page's images
+  (`pdfimages -all`) must not all come out unchanged unless an original
+  is reported still drawn elsewhere;
+- residual: the number of `elsewhere` findings is recorded;
+- time: each run's `redact` wall time is recorded.
+
+MuPDF rounds simple fonts' widths to integers: a kept glyph after
+removed ones "moves" by hundredths of a point in its reading only.
+
+A run whose only problem is unchanged ink inside that is all black
+where images were zeroed is still `unexpected`, marked `check_by_hand`
+(zeroed samples that were already black look unchanged; black content
+left over a zeroed image would look the same).
 
 Pages whose geometry differs from plain MediaBox space (a /Rotate, a
 CropBox, a MediaBox not at the origin) are skipped: the generated rects
@@ -54,6 +71,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPUS = os.path.join(ROOT, "compat", "corpus")
@@ -138,6 +156,41 @@ def rects_for(pdf, size):
     return rects, ws
 
 
+def mupdf_chars(pdf, size):
+    """Page-1 characters as (char, origin x, origin y, llx, lly, urx, ury)
+    in the page space Poppler reports (`size`), from MuPDF (`mutool draw
+    -F stext`) — a second text engine, character by character. MuPDF
+    applies /UserUnit, so its coordinates are scaled back. None when
+    mutool is not installed."""
+    try:
+        r = subprocess.run(["mutool", "draw", "-q", "-F", "stext", "-o", "-", pdf, "1"],
+                           capture_output=True, text=True)
+    except FileNotFoundError:
+        return None
+    if r.returncode != 0:
+        return None
+    m = re.search(r'<page id="[^"]*" width="([^"]+)" height="([^"]+)"', r.stdout)
+    k = size[0] / float(m.group(1)) if m and float(m.group(1)) > 0 else 1.0
+    height = size[1]
+    out = []
+    for m in re.finditer(r'<char c="([^"]*)" quad="([^"]+)" x="([^"]+)" y="([^"]+)"', r.stdout):
+        q = [float(v) * k for v in m.group(2).split()]
+        xs, ys = q[0::2], q[1::2]
+        out.append((html.unescape(m.group(1)), float(m.group(3)) * k, height - float(m.group(4)) * k,
+                    min(xs), height - max(ys), max(xs), height - min(ys)))
+    return out
+
+
+def image_digests(pdf, tmp, tag):
+    """Digests of page 1's images as stored (`pdfimages -all`)."""
+    import hashlib
+    d = os.path.join(tmp, "img-" + tag)
+    os.makedirs(d, exist_ok=True)
+    subprocess.run(["pdfimages", "-all", "-f", "1", "-l", "1", pdf, os.path.join(d, "i")], capture_output=True)
+    return collections.Counter(hashlib.sha256(open(os.path.join(d, f), "rb").read()).hexdigest()
+                               for f in sorted(os.listdir(d)))
+
+
 def render(pdf, base):
     subprocess.run(["pdftoppm", "-r", str(DPI), "-gray", "-f", "1", "-l", "1", "-singlefile", pdf, base],
                    capture_output=True, check=True)
@@ -150,12 +203,12 @@ def pixel_checks(inp, out, rect, size, tmp):
     w0, h0, a = render(inp, os.path.join(tmp, "in"))
     w1, h1, b = render(out, os.path.join(tmp, "out"))
     if (w0, h0) != (w1, h1):
-        return None, None
+        return None, None, None
     s = DPI / 72.0
     _, ph = size
     x0, x1 = rect[0] * s, rect[2] * s
     y0, y1 = (ph - rect[3]) * s, (ph - rect[1]) * s
-    left_ink, changed_out = 0, 0
+    left_ink, changed_out, left_black = 0, 0, 0
     for y in range(h0):
         row = y * w0
         for x in range(w0):
@@ -164,9 +217,10 @@ def pixel_checks(inp, out, rect, size, tmp):
             outside = x < x0 - 2 or x > x1 + 2 or y < y0 - 2 or y > y1 + 2
             if inside and b[i] != 255 and a[i] == b[i]:
                 left_ink += 1
+                left_black += b[i] == 0
             elif outside and a[i] != b[i]:
                 changed_out += 1
-    return left_ink, changed_out
+    return left_ink, changed_out, left_black
 
 
 def within(word, r, pad=0.0):
@@ -182,8 +236,9 @@ def run_one(kasane, pdf, kind, rect, size, in_words, tmp, extra_args=()):
     if os.path.exists(out):
         os.remove(out)
     args = [kasane, "redact", pdf, "--page", "1", "--rect"] + [f"{v:.3f}" for v in rect] + list(extra_args) + ["--output", out]
+    t0 = time.monotonic()
     r = subprocess.run(args, capture_output=True, text=True, timeout=600)
-    res = {"kind": kind, "rect": [round(v, 2) for v in rect]}
+    res = {"kind": kind, "rect": [round(v, 2) for v in rect], "seconds": round(time.monotonic() - t0, 3)}
     if r.returncode != 0:
         msg = (r.stderr or r.stdout).strip().splitlines()[-1] if (r.stderr or r.stdout).strip() else ""
         m = re.match(r"error \[unsupported feature\]: unsupported PDF feature: ([^(]*?)\s*(\(.*)?$", msg)
@@ -228,7 +283,35 @@ def run_one(kasane, pdf, kind, rect, size, in_words, tmp, extra_args=()):
     chars_out = collections.Counter(c for w in out_words if not within(w, rect, -0.5) for c in w[0])
     res["outside_chars"] = sum(chars_in.values())
     res["outside_chars_lost"] = sum((chars_in - chars_out).values())
-    left_ink, changed_out = pixel_checks(pdf, out, rect, size, tmp)
+    # Character by character with MuPDF: kept characters clear of the
+    # rect must be found again at the same origin (to 0.01 pt) — a
+    # word regrouped by pdftotext is not a loss, a character gone or
+    # moved is; no character may be extracted inside the rect.
+    cin = mupdf_chars(pdf, size)
+    cout = mupdf_chars(out, size) if cin is not None else None
+    if cin is not None and cout is not None:
+        boxed = lambda c: (c[0], c[3], c[4], c[5], c[6])
+        kept = [c for c in cin if c[0].strip() and clear_of(boxed(c), rect, 1.0)]
+        index = collections.defaultdict(list)
+        for c in cout:
+            index[c[0]].append((c[1], c[2]))
+        lost = moved = 0
+        for c in kept:
+            near = index.get(c[0], [])
+            if any(abs(x - c[1]) <= 0.01 and abs(y - c[2]) <= 0.01 for x, y in near):
+                continue
+            if any(abs(x - c[1]) <= 1 and abs(y - c[2]) <= 1 for x, y in near):
+                moved += 1
+            else:
+                lost += 1
+        inside = [c for c in cout if c[0].strip() and within(boxed(c), rect, -0.5)]
+        res["outside_chars_mupdf"] = len(kept)
+        res["outside_chars_mupdf_lost"] = lost
+        res["outside_chars_mupdf_moved"] = moved
+        res["words_regrouped"] = max(0, res["outside_words_lost"] - res["outside_chars_lost"])
+        if inside:
+            problems.append(f"{len(inside)} character(s) still extracted inside the rect (MuPDF)")
+    left_ink, changed_out, left_black = pixel_checks(pdf, out, rect, size, tmp)
     if left_ink is None:
         problems.append("render size changed")
     else:
@@ -236,10 +319,25 @@ def run_one(kasane, pdf, kind, rect, size, in_words, tmp, extra_args=()):
         res["unchanged_ink_inside"] = left_ink
         if left_ink:
             problems.append(f"{left_ink} unchanged non-white pixel(s) inside the rect")
-    for k in ("codes removed", "images edited", "forms edited", "paths removed", "paths cut at a rect"):
+    for k in ("codes removed", "images edited", "forms edited", "paths removed", "paths cut at a rect",
+              "shadings removed"):
         mm = re.search(re.escape(k) + r": (\d+)", r.stdout)
         if mm:
             res[k.replace(" ", "_")] = int(mm.group(1))
+    # An image reported edited must not come out with every image of the
+    # page unchanged (an edit lost on the way), unless an original is
+    # reported still drawn elsewhere.
+    if res.get("images_edited"):
+        di, do = image_digests(pdf, tmp, "in"), image_digests(out, tmp, "out")
+        res["images_unchanged"] = sum((di & do).values())
+        if di and not (di - do) and not res.get("elsewhere"):
+            problems.append("an image was reported edited but every image of the page is unchanged")
+    # The one known false signal: unchanged ink inside the rect that is
+    # all black where images were zeroed (samples already black look
+    # unchanged). Still unexpected — black content left over a zeroed
+    # image would look the same — but marked for the hand check.
+    if left_ink and left_ink == left_black and res.get("images_edited") and len(problems) == 1:
+        res["check_by_hand"] = "unchanged ink inside is all black where images were zeroed"
     if problems:
         res.update(outcome="unexpected", reason="; ".join(problems))
     else:
@@ -301,7 +399,17 @@ def main():
               f" (characters lost {sum(r.get('outside_chars_lost', 0) for r in oks)}"
               f" of {sum(r.get('outside_chars', 0) for r in oks)});"
               f" runs with outside pixels changed {sum(1 for r in oks if r.get('outside_pixels_changed'))};"
+              f" MuPDF characters lost {sum(r.get('outside_chars_mupdf_lost', 0) for r in oks)},"
+              f" moved {sum(r.get('outside_chars_mupdf_moved', 0) for r in oks)}"
+              f" of {sum(r.get('outside_chars_mupdf', 0) for r in oks)};"
+              f" words only regrouped {sum(r.get('words_regrouped', 0) for r in oks)};"
               f" runs reporting copies elsewhere {sum(1 for r in oks if r.get('elsewhere'))}")
+    secs = sorted(r.get("seconds", 0) for r in results)
+    if secs:
+        print(f"  redact time: total {sum(secs):.1f} s, median {secs[len(secs) // 2]:.2f} s, max {secs[-1]:.2f} s")
+    hand = [r for r in results if r.get("check_by_hand")]
+    for r in hand:
+        print(f"  check by hand: {r['id']} {r['kind']}: {r['check_by_hand']}")
     print("refusal reasons:")
     for reason, n in reasons.most_common():
         print(f"  {n:>3}  {reason}")

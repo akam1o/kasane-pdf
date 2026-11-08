@@ -65,6 +65,9 @@ pub enum TargetKind {
     /// A shading `sh` or other painted entity we cannot enumerate —
     /// reported as a blocker instead of a target when it blocks.
     Other,
+    /// A shading `sh` (redaction): the bounds are what it may paint
+    /// (its clip, its `/BBox`).
+    Shading,
 }
 
 /// Where inside the logical content stream an occurrence was found.
@@ -749,6 +752,9 @@ pub(crate) struct DiagGs {
     /// graphics-state parameters (Table 52); `Tm`/`Tlm` are not.
     /// `pub(crate)` — `remove_text` reads it for advance math.
     pub(crate) text: TextState,
+    /// Redaction: the tiling pattern the fill / stroke paints with
+    /// (its resource name), if any.
+    tiling: [Option<Vec<u8>>; 2],
 }
 
 /// `pub(crate)` — `remove_text` walks the same content with the
@@ -828,6 +834,11 @@ pub(crate) struct DiagWalker<'a> {
     /// same way, so it is not a blocker; an inline image is a blocker
     /// only when it meets a rect (one elsewhere is kept as it is).
     pub(crate) redaction_mode: bool,
+    /// Redaction: tiling patterns that painted a path removed whole
+    /// (page content).
+    pub(crate) tiling_removed: Vec<Vec<u8>>,
+    /// Redaction: tiling patterns something kept may paint with.
+    pub(crate) tiling_kept: std::collections::BTreeSet<Vec<u8>>,
     /// Redaction: Type 3 glyph bounds by (font, code), evaluated once.
     type3_cache: std::collections::HashMap<Type3Key, Type3Bounds>,
     /// object ref → (kind, sites) for sharing analysis.
@@ -953,6 +964,7 @@ impl<'a> DiagWalker<'a> {
                     h_scale: 1.0,
                     ..Default::default()
                 },
+                tiling: [None, None],
             },
             gs_stack: Vec::new(),
             resources,
@@ -979,6 +991,8 @@ impl<'a> DiagWalker<'a> {
             record_show_states,
             redaction_mode: false,
             type3_cache: std::collections::HashMap::new(),
+            tiling_removed: Vec::new(),
+            tiling_kept: std::collections::BTreeSet::new(),
             site_map: BTreeMap::new(),
             reported: 0,
             text_codes: 0,
@@ -1093,6 +1107,52 @@ impl<'a> DiagWalker<'a> {
         }
         self.gs.stroke = st;
         Ok(None)
+    }
+
+    /// The tiling patterns in force count as used by what is kept.
+    fn tiling_kept_now(&mut self) {
+        for t in self.gs.tiling.iter().flatten() {
+            self.tiling_kept.insert(t.clone());
+        }
+    }
+
+    /// What `sh` with shading `name` may paint, in page space: the
+    /// clip's bounds, narrowed by the shading's `/BBox` under the CTM;
+    /// `None` when neither bounds it.
+    fn shading_extent(&self, name: &[u8]) -> Result<Option<(f64, f64, f64, f64)>, Error> {
+        let mut b = self.gs.clip;
+        let sh = self
+            .doc
+            .resolve_resource(&self.resources, "Shading", name)?;
+        let dict = match &sh {
+            Some(Object::Dict(d)) => Some(d),
+            Some(Object::Stream { dict, .. }) => Some(dict),
+            _ => None,
+        };
+        if let Some(bb) = dict
+            .and_then(|d| d.get(b"BBox".as_slice()))
+            .and_then(|o| self.doc.deref(o).ok())
+            .and_then(|o| crate::page::Rect::from_object(&o))
+        {
+            let m = self.gs.ctm;
+            let pts = [
+                m.transform(bb.llx, bb.lly),
+                m.transform(bb.urx, bb.lly),
+                m.transform(bb.llx, bb.ury),
+                m.transform(bb.urx, bb.ury),
+            ];
+            let t = (
+                pts.iter().map(|p| p.0).fold(f64::INFINITY, f64::min),
+                pts.iter().map(|p| p.1).fold(f64::INFINITY, f64::min),
+                pts.iter().map(|p| p.0).fold(f64::NEG_INFINITY, f64::max),
+                pts.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max),
+            );
+            b = Some(match b {
+                Some(c) => (c.0.max(t.0), c.1.max(t.1), c.2.min(t.2), c.3.min(t.3)),
+                None => t,
+            });
+        }
+        Ok(b.filter(|b| [b.0, b.1, b.2, b.3].iter().all(|v| v.is_finite())))
     }
 
     /// The clip in force is exactly a rectangle (`clip_exact`) that
@@ -1249,7 +1309,9 @@ impl<'a> DiagWalker<'a> {
             // Redaction: a pattern paints only inside the path or glyph
             // it fills (§8.7.2), so a Pattern colour space moves
             // nothing; the selected pattern is checked at `scn`.
-            O::SetColorSpaceStroke(_) | O::SetColorSpaceFill(_) if self.redaction_mode => {}
+            O::SetColorSpaceStroke(_) | O::SetColorSpaceFill(_) if self.redaction_mode => {
+                self.gs.tiling[usize::from(matches!(op, O::SetColorSpaceStroke(_)))] = None;
+            }
             O::SetColorStroke(ops) | O::SetColorFill(ops)
                 if self.redaction_mode && matches!(ops.last(), Some(Object::Name(_))) =>
             {
@@ -1275,17 +1337,10 @@ impl<'a> DiagWalker<'a> {
                             && !d.contains_key(b"ExtGState".as_slice())
                     })
                 });
-                if !shading {
-                    self.push_blocker(Blocker {
-                        site: Some(self.site()),
-                        what: "tiling pattern".into(),
-                        detail: format!(
-                            "/{} — a tiling pattern's cell content is not edited",
-                            String::from_utf8_lossy(n)
-                        ),
-                    })?;
-                    self.uncertain_state = true;
-                }
+                // A tiling pattern's cell is content of its own: what
+                // it paints is decided where it is used (`tiling_paint`).
+                let side = usize::from(matches!(op, O::SetColorStroke(_)));
+                self.gs.tiling[side] = (!shading).then(|| n.clone());
             }
             O::SetColorSpaceStroke(n) | O::SetColorSpaceFill(n) => {
                 // A Pattern colour space means subsequent SC/sc paints
@@ -1304,14 +1359,13 @@ impl<'a> DiagWalker<'a> {
                     self.uncertain_state = true;
                 }
             }
+            O::SetColorFill(_) | O::SetGrayFill(_) | O::SetRgbFill(..) | O::SetCmykFill(..) => {
+                self.gs.tiling[0] = None;
+            }
             O::SetColorStroke(_)
-            | O::SetColorFill(_)
             | O::SetGrayStroke(_)
-            | O::SetGrayFill(_)
             | O::SetRgbStroke(..)
-            | O::SetRgbFill(..)
-            | O::SetCmykStroke(..)
-            | O::SetCmykFill(..) => {}
+            | O::SetCmykStroke(..) => self.gs.tiling[1] = None,
             O::MoveTo(x, y) => {
                 self.path_single_rect = false;
                 self.path_point(*x, *y);
@@ -1476,7 +1530,27 @@ impl<'a> DiagWalker<'a> {
                 self.capture_show_state()?;
                 self.show_text(text)?;
             }
-            O::Do(n) => self.do_xobject(n)?,
+            O::Do(n) => {
+                // An image mask or a form may paint with the colour in
+                // force: a tiling pattern there stays used. Other images
+                // carry their own colours.
+                if self.redaction_mode && self.gs.tiling.iter().any(Option::is_some) {
+                    let x = self.doc.resolve_resource(&self.resources, "XObject", n)?;
+                    let own_colours = matches!(&x, Some(Object::Stream { dict, .. })
+                        if dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name())
+                            == Some(b"Image".as_slice())
+                            && !image_mask(self.doc, dict));
+                    if !own_colours {
+                        self.tiling_kept_now();
+                    }
+                }
+                self.do_xobject(n)?
+            }
+            O::InlineImage { dict, .. }
+                if image_mask(self.doc, dict) && {
+                    self.tiling_kept_now();
+                    false
+                } => {}
             O::InlineImage { dict, data }
                 if self.redaction_mode
                     && !self.uncertain_state
@@ -1517,14 +1591,51 @@ impl<'a> DiagWalker<'a> {
             // Redaction: a shading fills the clip; under a clip that is
             // exactly a rectangle meeting no rect it paints none of them.
             O::Shading(_) if self.redaction_mode && self.clipped_away_from_rects() => {}
+            // Redaction: a shading wholly inside a rect (what it may
+            // paint — its clip's bounds, its /BBox — inside one) is
+            // removed whole. One crossing a rect is refused: its
+            // function and geometry are data a clip would only hide.
+            O::Shading(n)
+                if self.redaction_mode
+                    && self.xobject_stack.is_empty()
+                    && self.shading_extent(n)?.is_some_and(|b| {
+                        self.rects
+                            .iter()
+                            .any(|r| b.0 >= r.llx && b.1 >= r.lly && b.2 <= r.urx && b.3 <= r.ury)
+                    }) =>
+            {
+                let b = self.shading_extent(n)?.expect("checked");
+                self.bump_reported()?;
+                self.targets.push(Target {
+                    kind: TargetKind::Shading,
+                    site: self.site(),
+                    bounds: b,
+                    hits: hits_for(&b, self.rects),
+                    detail: TargetDetail::Other {
+                        what: format!("sh /{}", String::from_utf8_lossy(n)),
+                    },
+                });
+            }
             O::Shading(n) => {
-                self.push_blocker(Blocker {
-                    site: Some(self.site()),
-                    what: "shading (sh)".into(),
-                    detail: format!(
+                let detail = match self.shading_extent(n)? {
+                    Some(_) if self.redaction_mode && !self.xobject_stack.is_empty() => format!(
+                        "/{} in a form — a shading is removed only from page content",
+                        String::from_utf8_lossy(n)
+                    ),
+                    Some(_) if self.redaction_mode => format!(
+                        "/{} crosses a rect — its function and geometry inside cannot be \
+                         separated from the rest (a clip would only hide them)",
+                        String::from_utf8_lossy(n)
+                    ),
+                    _ => format!(
                         "/{} — shading fills an area we cannot bound",
                         String::from_utf8_lossy(n)
                     ),
+                };
+                self.push_blocker(Blocker {
+                    site: Some(self.site()),
+                    what: "shading (sh)".into(),
+                    detail,
                 })?;
                 self.uncertain_state = true;
             }
@@ -1665,41 +1776,19 @@ impl<'a> DiagWalker<'a> {
                 // (`B`, `b`, `B*`, `b*`) the whole occurrence reports
                 // uncertain — the fill's bounds are known but the
                 // stroke's un-evaluated reach must not be dropped.
-                if stroked && self.gs.stroke.width == 0.0 {
+                //
+                // Redaction takes a hairline as its zero-width centreline
+                // and stroke adjustment as what it is: both only move
+                // ink at device-pixel scale, so geometry stays exact in
+                // user space (removed or cut there), the kept stroke's
+                // own ink possibly snapped by a pixel — the limit every
+                // kept edge has (see the redaction docs).
+                if stroked && self.gs.stroke.width == 0.0 && !self.redaction_mode {
                     self.push_uncertain(Uncertain {
                         kind: TargetKind::Path,
                         site: self.site(),
                         reason: "hairline stroke (w=0) — device-resolution dependent \
                                  extent cannot be bounded in user space"
-                            .into(),
-                    })?;
-                } else if self.redaction_mode && self.gs.stroke.adjust && stroked {
-                    // Stroke adjustment moves stroke edges by a device-
-                    // dependent amount (readers also widen thin strokes
-                    // to a pixel): no stroke under it is accepted.
-                    self.push_uncertain(Uncertain {
-                        kind: TargetKind::Path,
-                        site: self.site(),
-                        reason: "stroke under stroke adjustment (/SA true) — device-dependent \
-                                 extent cannot be bounded in user space"
-                            .into(),
-                    })?;
-                } else if self.redaction_mode
-                    && self.gs.stroke.adjust
-                    && !hits_for(&b, self.rects).is_empty()
-                    && !self
-                        .rects
-                        .iter()
-                        .any(|r| b.0 >= r.llx && b.1 >= r.lly && b.2 <= r.urx && b.3 <= r.ury)
-                {
-                    // A fill meeting a rect but not wholly inside one is
-                    // cut, and readers snap a rectangle fill's edges to
-                    // pixels under stroke adjustment (Splash does).
-                    self.push_uncertain(Uncertain {
-                        kind: TargetKind::Path,
-                        site: self.site(),
-                        reason: "fill cut at a rect under stroke adjustment (/SA true) — \
-                                 readers move its edges by a device-dependent amount"
                             .into(),
                     })?;
                 } else {
@@ -1721,6 +1810,40 @@ impl<'a> DiagWalker<'a> {
                             reason: "graphics state was changed by an unhandled construct".into(),
                         })?;
                     } else {
+                        // A tiling pattern paints its cell: a path it
+                        // paints may only be removed whole (its cell then
+                        // left unused) or stay clear of the rects.
+                        if self.redaction_mode {
+                            let fills = !matches!(op, O::Stroke | O::CloseAndStroke);
+                            let sides = [fills, stroked];
+                            let tiled = (0..2).any(|i| sides[i] && self.gs.tiling[i].is_some());
+                            let meets = !hits_for(&b, self.rects).is_empty();
+                            let inside = self.rects.iter().any(|r| {
+                                b.0 >= r.llx && b.1 >= r.lly && b.2 <= r.urx && b.3 <= r.ury
+                            });
+                            if tiled && meets && (!inside || !self.xobject_stack.is_empty()) {
+                                self.push_uncertain(Uncertain {
+                                    kind: TargetKind::Path,
+                                    site: self.site(),
+                                    reason: "a path painted with a tiling pattern crossing a \
+                                             rect (or in a form) — its cell is content a cut \
+                                             would only hide"
+                                        .into(),
+                                })?;
+                            } else if tiled && meets {
+                                for (side, t) in sides.iter().zip(&self.gs.tiling) {
+                                    if let (true, Some(n)) = (side, t) {
+                                        self.tiling_removed.push(n.clone());
+                                    }
+                                }
+                            } else if tiled {
+                                for (side, t) in sides.iter().zip(&self.gs.tiling) {
+                                    if let (true, Some(n)) = (side, t) {
+                                        self.tiling_kept.insert(n.clone());
+                                    }
+                                }
+                            }
+                        }
                         let hits = self.visible_hits(&b);
                         self.bump_reported()?;
                         if !hits.is_empty() {
@@ -2169,15 +2292,7 @@ impl<'a> DiagWalker<'a> {
                 reason: format!("Tr {render_mode} — clip-mode text extent is not implemented"),
             })?;
             (bounds, bounds_kind)
-        } else if is_stroked_text && self.redaction_mode && self.gs.stroke.adjust {
-            return self.glyph_error(
-                code,
-                Error::Unsupported {
-                    feature: "stroke adjustment",
-                    detail: "stroked text under /SA true — device-dependent extent".into(),
-                },
-            );
-        } else if is_stroked_text && self.gs.stroke.width == 0.0 {
+        } else if is_stroked_text && self.gs.stroke.width == 0.0 && !self.redaction_mode {
             self.push_uncertain(Uncertain {
                 kind: TargetKind::Text,
                 site: self.text_site(self.code_index),
@@ -2241,6 +2356,37 @@ impl<'a> DiagWalker<'a> {
             // also emit a normal Target for clip-mode text.
         } else {
             let hits = self.visible_hits(&bounds);
+            // A glyph painted with a tiling pattern shows the cell
+            // through its outline: removing the glyph leaves the cell,
+            // which the walk does not follow — refused where one meets
+            // a rect.
+            let fills = matches!(render_mode, 0 | 2);
+            let strokes = matches!(render_mode, 1 | 2);
+            if self.redaction_mode
+                && !hits.is_empty()
+                && ((fills && self.gs.tiling[0].is_some())
+                    || (strokes && self.gs.tiling[1].is_some()))
+            {
+                return self.glyph_error(
+                    code,
+                    Error::Unsupported {
+                        feature: "text painted with a tiling pattern",
+                        detail: "its cell content is not edited".into(),
+                    },
+                );
+            }
+            if self.redaction_mode {
+                if fills {
+                    if let Some(t) = &self.gs.tiling[0] {
+                        self.tiling_kept.insert(t.clone());
+                    }
+                }
+                if strokes {
+                    if let Some(t) = &self.gs.tiling[1] {
+                        self.tiling_kept.insert(t.clone());
+                    }
+                }
+            }
             let (unicode, _via) = crate::text_extract::resolve_unicode(font, code);
             self.bump_reported()?;
             self.targets.push(Target {
@@ -2967,6 +3113,18 @@ type Type3Glyph = (Option<[f64; 4]>, Vec<Vec<u8>>);
 /// the op count is set in `ops_parsed` for the caller's execution
 /// budget — when the parse fails, a bound on it (half the decoded
 /// length); a CharProc whose bound exceeds `budget_left` is not parsed.
+/// An image dictionary's `/ImageMask` (inline `/IM`) may be `true`: it
+/// then paints with the colour in force. Resolved through references;
+/// anything but an absent or `false` flag counts as a mask.
+fn image_mask(doc: &Document, dict: &crate::object::Dict) -> bool {
+    [b"ImageMask".as_slice(), b"IM"]
+        .iter()
+        .any(|k| match dict.get(*k) {
+            None => false,
+            Some(v) => !matches!(doc.deref(v), Ok(Object::Bool(false))),
+        })
+}
+
 pub(crate) fn type3_glyph_bounds(
     doc: &Document,
     dict: &crate::object::Dict,
@@ -3114,11 +3272,10 @@ pub(crate) fn type3_glyph_bounds(
             | O::FillAndStrokeEvenOdd
             | O::CloseFillAndStroke
             | O::CloseFillAndStrokeEvenOdd => {
-                if !(gs.w.is_finite() && gs.w > 0.0) {
-                    return Err(refuse("a hairline or non-finite stroke"));
-                }
-                if inherited.4 {
-                    return Err(refuse("a stroke under stroke adjustment (/SA true)"));
+                // A hairline (`0 w`) is its centreline; stroke
+                // adjustment moves ink at device-pixel scale only.
+                if !(gs.w.is_finite() && gs.w >= 0.0) {
+                    return Err(refuse("a non-finite stroke"));
                 }
                 let miter = if gs.join == 0 && gs.miter.is_finite() {
                     gs.miter.max(1.0)

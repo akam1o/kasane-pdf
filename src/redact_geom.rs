@@ -296,9 +296,11 @@ pub(crate) fn cut_path(
     // joins are exact.
     let mut stroke_lines: Option<(Lines, Curves)> = None;
     if stroke {
+        // A hairline (`0 w`) is cut as its centreline: readers draw it a
+        // device pixel wide, ink at pixel scale like any kept edge's.
         let half = st.width.abs() / 2.0;
-        if !(half.is_finite() && half > 0.0) {
-            return Err(unsupported("a hairline or non-finite line width"));
+        if !half.is_finite() {
+            return Err(unsupported("a non-finite line width"));
         }
         // How far a cap reaches past an end along the segment: none for
         // butt; a square's half side for square; a round cap is bounded

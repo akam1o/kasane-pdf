@@ -1,45 +1,39 @@
 {
  "summary": {
-  "refused_runs": 66,
+  "refused_runs": 64,
   "first_reasons": {
-   "region removal on a page with uncertain content": 30,
+   "region removal on a page with uncertain content": 29,
    "redaction of an annotation other than a link meeting a rect": 8,
    "redaction of a document whose structure tree has alternate text": 6,
    "JavaScript name tree": 3,
    "redaction on a page with an annotation drawn outside its /Rect": 3,
    "region removal on a page with blockers: shading": 3,
-   "region removal on a page with blockers: tiling pattern": 2,
+   "redaction of a path crossing a rect's edge": 2,
    "other: invalid document structure": 2,
    "other: signature policy": 2,
    "redaction on a page with a NoZoom or NoRotate annotation": 1,
-   "redaction of a path crossing a rect's edge": 1,
    "image colour space": 1,
    "image attribute": 1,
    "other: parse error": 1,
    "catalog entry outside profile": 1,
    "image BitsPerComponent": 1
   },
-  "walk_refusals": 35,
-  "walk_refusals_with_several_categories": 6,
+  "walk_refusals": 32,
+  "walk_refusals_with_several_categories": 1,
   "walk_category_runs": {
    "non-embedded font": 28,
-   "hairline stroke (0 w)": 3,
-   "stroke adjustment": 3,
    "shading (sh)": 3,
-   "other: graphics state was changed by an unhandled construct": 2,
    "tiling pattern": 2
   },
   "walk_category_files": {
    "non-embedded font": 11,
    "shading (sh)": 3,
-   "other: graphics state was changed by an unhandled construct": 2,
-   "tiling pattern": 2,
-   "hairline stroke (0 w)": 1,
-   "stroke adjustment": 1
+   "tiling pattern": 2
   },
   "would_pass_the_walk_if_only_this_were_supported": {
    "non-embedded font": 27,
-   "shading (sh)": 2
+   "shading (sh)": 2,
+   "tiling pattern": 2
   }
  },
  "runs": [
@@ -358,52 +352,6 @@
   },
   {
    "id": "chrome-form-controls-0",
-   "kind": "word",
-   "rect": [
-    83.93,
-    386.74,
-    135.63,
-    399.74
-   ],
-   "first_reason": "region removal on a page with uncertain content",
-   "first_detail": "hairline stroke (w=0) — device-resolution dependent extent cannot be bounded in user space",
-   "refused_by_walk": true,
-   "walk_error": null,
-   "walk_categories": [
-    "hairline stroke (0 w)",
-    "stroke adjustment"
-   ],
-   "walk_findings": 12,
-   "examples": {
-    "hairline stroke (0 w)": "hairline stroke (w=0) — device-resolution dependent extent cannot be bounded in user space",
-    "stroke adjustment": "stroke under stroke adjustment (/SA true) — device-dependent extent cannot be bounded in user space"
-   }
-  },
-  {
-   "id": "chrome-form-controls-0",
-   "kind": "line",
-   "rect": [
-    0.0,
-    386.74,
-    612.0,
-    399.74
-   ],
-   "first_reason": "region removal on a page with uncertain content",
-   "first_detail": "hairline stroke (w=0) — device-resolution dependent extent cannot be bounded in user space",
-   "refused_by_walk": true,
-   "walk_error": null,
-   "walk_categories": [
-    "hairline stroke (0 w)",
-    "stroke adjustment"
-   ],
-   "walk_findings": 12,
-   "examples": {
-    "hairline stroke (0 w)": "hairline stroke (w=0) — device-resolution dependent extent cannot be bounded in user space",
-    "stroke adjustment": "stroke under stroke adjustment (/SA true) — device-dependent extent cannot be bounded in user space"
-   }
-  },
-  {
-   "id": "chrome-form-controls-0",
    "kind": "block",
    "rect": [
     204.0,
@@ -411,19 +359,13 @@
     408.0,
     528.0
    ],
-   "first_reason": "region removal on a page with uncertain content",
-   "first_detail": "hairline stroke (w=0) — device-resolution dependent extent cannot be bounded in user space",
-   "refused_by_walk": true,
+   "first_reason": "redaction of a path crossing a rect's edge",
+   "first_detail": "op #737: a filled shape that is not an axis-aligned rectangle",
+   "refused_by_walk": false,
    "walk_error": null,
-   "walk_categories": [
-    "hairline stroke (0 w)",
-    "stroke adjustment"
-   ],
-   "walk_findings": 12,
-   "examples": {
-    "hairline stroke (0 w)": "hairline stroke (w=0) — device-resolution dependent extent cannot be bounded in user space",
-    "stroke adjustment": "stroke under stroke adjustment (/SA true) — device-dependent extent cannot be bounded in user space"
-   }
+   "walk_categories": [],
+   "walk_findings": 0,
+   "examples": {}
   },
   {
    "id": "axial_shading_many_inputs",
@@ -612,7 +554,7 @@
     561.26
    ],
    "first_reason": "region removal on a page with blockers: shading",
-   "first_detail": "shading (sh): /Sh1 — shading fills an area we cannot bound",
+   "first_detail": "shading (sh): /Sh1 crosses a rect — its function and geometry inside cannot be separated from the rest (a clip would only hide them",
    "refused_by_walk": true,
    "walk_error": null,
    "walk_categories": [
@@ -622,7 +564,7 @@
    "walk_findings": 127,
    "examples": {
     "non-embedded font": "glyph 0x52 — outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Helvetica is drawn with the bundled LiberationSans-Regula",
-    "shading (sh)": "shading (sh): /Sh1 — shading fills an area we cannot bound"
+    "shading (sh)": "shading (sh): /Sh1 crosses a rect — its function and geometry inside cannot be separated from the rest (a clip would only hide them)"
    }
   },
   {
@@ -634,18 +576,16 @@
     396.85,
     561.26
    ],
-   "first_reason": "region removal on a page with blockers: tiling pattern",
-   "first_detail": "tiling pattern: /p5 — a tiling pattern's cell content is not edited",
+   "first_reason": "region removal on a page with uncertain content",
+   "first_detail": "a path painted with a tiling pattern crossing a rect (or in a form) — its cell is content a cut would only hide",
    "refused_by_walk": true,
    "walk_error": null,
    "walk_categories": [
-    "other: graphics state was changed by an unhandled construct",
     "tiling pattern"
    ],
-   "walk_findings": 2,
+   "walk_findings": 1,
    "examples": {
-    "other: graphics state was changed by an unhandled construct": "graphics state was changed by an unhandled construct",
-    "tiling pattern": "tiling pattern: /p5 — a tiling pattern's cell content is not edited"
+    "tiling pattern": "a path painted with a tiling pattern crossing a rect (or in a form) — its cell is content a cut would only hide"
    }
   },
   {
@@ -1232,7 +1172,7 @@
     193.33
    ],
    "first_reason": "region removal on a page with blockers: shading",
-   "first_detail": "shading (sh): /Sh20 — shading fills an area we cannot bound",
+   "first_detail": "shading (sh): /Sh20 crosses a rect — its function and geometry inside cannot be separated from the rest (a clip would only hide them",
    "refused_by_walk": true,
    "walk_error": null,
    "walk_categories": [
@@ -1240,7 +1180,7 @@
    ],
    "walk_findings": 2,
    "examples": {
-    "shading (sh)": "shading (sh): /Sh20 — shading fills an area we cannot bound"
+    "shading (sh)": "shading (sh): /Sh20 crosses a rect — its function and geometry inside cannot be separated from the rest (a clip would only hide them)"
    }
   },
   {
@@ -1315,18 +1255,16 @@
     133.33,
     200.0
    ],
-   "first_reason": "region removal on a page with blockers: tiling pattern",
-   "first_detail": "tiling pattern: /P0 — a tiling pattern's cell content is not edited",
+   "first_reason": "region removal on a page with uncertain content",
+   "first_detail": "a path painted with a tiling pattern crossing a rect (or in a form) — its cell is content a cut would only hide",
    "refused_by_walk": true,
    "walk_error": null,
    "walk_categories": [
-    "other: graphics state was changed by an unhandled construct",
     "tiling pattern"
    ],
-   "walk_findings": 2,
+   "walk_findings": 1,
    "examples": {
-    "other: graphics state was changed by an unhandled construct": "graphics state was changed by an unhandled construct",
-    "tiling pattern": "tiling pattern: /P0 — a tiling pattern's cell content is not edited"
+    "tiling pattern": "a path painted with a tiling pattern crossing a rect (or in a form) — its cell is content a cut would only hide"
    }
   }
  ]
