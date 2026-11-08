@@ -58,6 +58,13 @@ versions follow [Semantic Versioning](https://semver.org/).
   CharProc, the codes naming it (encoding, widths, ToUnicode); a font
   losing glyphs that a place the walk does not read also uses (a
   pattern, a form field's `/DR`, …) is refused.
+- `redact` accepts Type 3 glyphs drawn by images (inline, or image
+  XObjects from the font's resources; Chrome's bitmap glyphs, TeX's
+  bitmap fonts): an image paints its unit square under the CTM. A
+  removed glyph's images leave the font's resources with it (verified
+  like an edited image's original: gone, or still drawn and reported).
+  Forms in CharProcs, and images drawn from resources the font
+  inherits by a removed glyph, stay refused.
 - `redact` accepts stroke adjustment (`/SA true`) for content it does
   not change and whose ink it does not move: while it is on, any stroke (paths, stroked text, a
   Type 3 CharProc's) and any fill that would be cut at a rect are

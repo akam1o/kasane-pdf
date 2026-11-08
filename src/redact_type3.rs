@@ -328,14 +328,34 @@ fn tounicode_cmap(entries: &[(u8, Vec<u16>)]) -> Vec<u8> {
     s.into_bytes()
 }
 
+/// The XObject names a CharProc draws (`Do`).
+fn drawn_names(doc: &Document, cp: &Object, limits: &Limits) -> Result<BTreeSet<Vec<u8>>, Error> {
+    let Object::Stream { dict, data } = doc.deref(cp)? else {
+        return Ok(BTreeSet::new());
+    };
+    let decoded = doc.decode_stream(&dict, &data)?;
+    let mut w = Vec::new();
+    let ops = crate::content::parse_content_stream(&[decoded], limits, false, &mut w)?;
+    Ok(ops
+        .into_iter()
+        .filter_map(|o| match o {
+            Operation::Do(n) => Some(n),
+            _ => None,
+        })
+        .collect())
+}
+
 /// The font dictionary `dict` keeping only the glyphs `keep`: its
-/// CharProcs, the codes naming them (encoding, widths, ToUnicode).
+/// CharProcs, the codes naming them (encoding, widths, ToUnicode), the
+/// images they draw. Digests of the images only removed glyphs drew
+/// are added to `gone`.
 fn pruned_font(
     doc: &Document,
     edit: &mut Edit,
     dict: &Dict,
     keep: &BTreeSet<Vec<u8>>,
     limits: &Limits,
+    gone: &mut Vec<[u8; 32]>,
 ) -> Result<Dict, Error> {
     let loaded = crate::font::load_font_dict(doc, dict, b"T3", limits)?;
     let t3 = loaded
@@ -354,6 +374,50 @@ fn pruned_font(
         if keep.contains(n) {
             new_cp.insert(n.clone(), v.clone());
         }
+    }
+    // The images: those the kept glyphs draw stay in the font's
+    // resources; the others leave with their glyphs.
+    let mut kept_names = BTreeSet::new();
+    let mut gone_names = BTreeSet::new();
+    for (n, v) in cp {
+        let names = drawn_names(doc, v, limits)?;
+        if keep.contains(n) {
+            kept_names.extend(names);
+        } else {
+            gone_names.extend(names);
+        }
+    }
+    gone_names.retain(|n| !kept_names.contains(n));
+    if !gone_names.is_empty() {
+        let Some(res) = dict.get(b"Resources".as_slice()) else {
+            return Err(refuse(
+                "a removed glyph draws an image from resources the font inherits".into(),
+            ));
+        };
+        let res = doc.deref(res)?;
+        let mut res = res
+            .as_dict()
+            .ok_or_else(|| refuse("the font's /Resources is not a dictionary".into()))?
+            .clone();
+        let xo = match res.get(b"XObject".as_slice()) {
+            Some(x) => doc.deref(x)?,
+            None => Object::Dict(Dict::new()),
+        };
+        let xo = xo
+            .as_dict()
+            .ok_or_else(|| refuse("the font's /XObject is not a dictionary".into()))?;
+        let mut new_xo = Dict::new();
+        for (n, v) in xo {
+            if gone_names.contains(n) {
+                if let Object::Stream { data, .. } = doc.deref(v)? {
+                    gone.push(sha256(&data));
+                }
+            } else {
+                new_xo.insert(n.clone(), v.clone());
+            }
+        }
+        res.insert(b"XObject".to_vec(), Object::Dict(new_xo));
+        out.insert(b"Resources".to_vec(), Object::Dict(res));
     }
     out.insert(b"CharProcs".to_vec(), Object::Dict(new_cp));
     // Codes whose glyph is kept, with their names, written out in full
@@ -421,6 +485,14 @@ fn pruned_font(
     Ok(out)
 }
 
+/// What pruning did: the rewritten output, and the digests of the
+/// images only removed glyphs drew (each must be gone from the output
+/// or still drawn there).
+pub(crate) struct Pruned {
+    pub(crate) output: Vec<u8>,
+    pub(crate) images: Vec<[u8; 32]>,
+}
+
 /// Prune the Type 3 glyph definitions `output` no longer shows that
 /// `input` showed (see the module documentation). `None`: nothing to
 /// prune.
@@ -428,7 +500,7 @@ pub(crate) fn prune_type3(
     input: &Document,
     output: &[u8],
     limits: &Limits,
-) -> Result<Option<Vec<u8>>, Error> {
+) -> Result<Option<Pruned>, Error> {
     // Cheap exit: no Type 3 font in the input.
     let any = input.xref_entries().any(|(r, _)| {
         matches!(input.resolve(r), Ok(Object::Dict(d))
@@ -491,15 +563,15 @@ pub(crate) fn prune_type3(
         }
     }
     let mut edit = Edit::new(&out, limits.clone())?;
+    let mut images = Vec::new();
     for (f, dict, keep) in &plans {
-        let new = pruned_font(&out, &mut edit, dict, keep, limits)?;
+        let new = pruned_font(&out, &mut edit, dict, keep, limits, &mut images)?;
         edit.overlay
             .insert((f.number, f.generation), Object::Dict(new));
     }
-    Ok(Some(edit.rewrite_with_overrides(
-        &crate::rewrite::RewriteOverrides {
-            strip_info: true,
-            strip_metadata: true,
-        },
-    )?))
+    let output = edit.rewrite_with_overrides(&crate::rewrite::RewriteOverrides {
+        strip_info: true,
+        strip_metadata: true,
+    })?;
+    Ok(Some(Pruned { output, images }))
 }

@@ -163,6 +163,8 @@ pub use error::{Error, ErrorKind, MissingReference, RefusalReason, SignatureRule
 pub use limits::Limits;
 pub use object::{Dict, IndirectRef, Object};
 pub use page::{Page, Rect};
+#[doc(hidden)]
+pub use redact::redaction_walk_findings;
 pub use redact::{redact, Elsewhere, ElsewhereLocation, RedactOptions, Redaction, Removed};
 pub use redact_diag::{diagnose_redaction, Diagnosis, Target, TargetDetail, TargetKind};
 pub use remove_image::{remove_image_region, ImageRemoval};

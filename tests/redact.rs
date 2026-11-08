@@ -3111,7 +3111,6 @@ fn type3_same_glyph_inside_and_outside() {
 fn type3_charprocs_beyond_paths_are_refused() {
     for proc in [
         "1000 0 d0 q 100 0 0 100 0 0 cm /Im Do Q",
-        "1000 0 d0 BI /W 1 /H 1 /CS /G /BPC 8 ID \u{0} EI",
         "1000 0 d0 BT /T3 1 Tf (A) Tj ET",
         "1000 0 d0 /G gs 0 0 10 10 re f",
         "1000 0 d0 /Pattern cs /P scn 0 0 10 10 re f",
@@ -3784,4 +3783,154 @@ fn type3_charproc_parsing_is_bounded() {
     let bomb = z.finish().unwrap();
     let pdf = type3_many(1, |_| stream_obj("/Filter /FlateDecode", &bomb), b"\x00");
     assert!(go(&pdf, &RedactOptions::new()).is_err());
+}
+
+// Type 3 glyphs drawn by images (Chrome's bitmap glyphs, TeX's bitmap
+// fonts): an image paints its unit square; a removed glyph's image
+// leaves with its definition.
+
+/// 4 × 4 RGB samples, distinct per `seed`, with a soft mask.
+fn glyph_image(seed: u8, smask: u32) -> Vec<u8> {
+    let px: Vec<u8> = (0..48u8)
+        .map(|i| i.wrapping_mul(29).wrapping_add(seed))
+        .collect();
+    stream_obj(
+        &format!("/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask {smask} 0 R"),
+        &px,
+    )
+}
+
+fn glyph_mask(seed: u8) -> Vec<u8> {
+    let px: Vec<u8> = (0..16u8)
+        .map(|i| i.wrapping_mul(53).wrapping_add(seed))
+        .collect();
+    stream_obj("/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceGray /BitsPerComponent 8", &px)
+}
+
+/// Glyph A draws image /Ia, B draws /Ib (each with a soft mask).
+fn image_glyph_font(content: &str, font_extra: &str, extra: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
+    let mut objs = vec![
+        (70, glyph_image(1, 71)),
+        (71, glyph_mask(2)),
+        (72, glyph_image(101, 73)),
+        (73, glyph_mask(102)),
+    ];
+    objs.extend(extra);
+    type3_page(
+        content,
+        "1000 0 d0 800 0 0 800 100 0 cm /Ia Do",
+        "1000 0 d0 800 0 0 800 100 0 cm /Ib Do",
+        &format!("/Resources << /XObject << /Ia 70 0 R /Ib 72 0 R >> >> {font_extra}"),
+        objs,
+    )
+}
+
+fn samples_of(seed: u8) -> Vec<u8> {
+    (0..48u8)
+        .map(|i| i.wrapping_mul(29).wrapping_add(seed))
+        .collect()
+}
+
+#[test]
+fn a_removed_image_glyph_takes_its_image_with_it() {
+    let pdf = image_glyph_font("BT /T3 10 Tf 20 100 Td (AB) Tj ET", "", vec![]);
+    // B at x 31…39.
+    let r = run(&pdf, vec![(32.0, 101.0, 38.0, 107.0)]).unwrap();
+    assert_eq!(r.codes_removed, 1);
+    assert!(!contains(&r.output, &samples_of(101)), "B's image is gone");
+    let mask: Vec<u8> = (0..16u8)
+        .map(|i| i.wrapping_mul(53).wrapping_add(102))
+        .collect();
+    assert!(!contains(&r.output, &mask), "and its soft mask");
+    assert!(contains(&r.output, &samples_of(1)), "A's image stays");
+    assert!(r.elsewhere.is_empty());
+    // B also shown outside: its image stays, drawn there.
+    let pdf = image_glyph_font(
+        "BT /T3 10 Tf 20 100 Td (AB) Tj 0 -50 Td (B) Tj ET",
+        "",
+        vec![],
+    );
+    let r = run(&pdf, vec![(32.0, 101.0, 38.0, 107.0)]).unwrap();
+    assert_eq!(r.codes_removed, 1);
+    assert!(contains(&r.output, &samples_of(101)));
+}
+
+/// An inline-image glyph goes with its CharProc; a CharProc drawing a
+/// form, or an image from resources the font inherits, is refused; an
+/// image a removed glyph drew that the page also draws stays, reported.
+#[test]
+fn image_glyph_edge_cases() {
+    let inline = type3_page(
+        "BT /T3 10 Tf 20 100 Td (AB) Tj ET",
+        T3_FILL,
+        "1000 0 d0 800 0 0 800 100 0 cm BI /W 2 /H 1 /CS /G /BPC 8 ID \u{7}\u{9} EI",
+        "",
+        vec![],
+    );
+    let r = run(&inline, vec![(32.0, 101.0, 38.0, 107.0)]).unwrap();
+    assert_eq!(r.codes_removed, 1);
+    assert!(!contains(&r.output, b"/W 2 /H 1"));
+    let form = type3_page(
+        "BT /T3 10 Tf 20 100 Td (AB) Tj ET",
+        T3_FILL,
+        "1000 0 d0 /Fm Do",
+        "/Resources << /XObject << /Fm 74 0 R >> >>",
+        vec![(
+            74,
+            stream_obj(
+                "/Type /XObject /Subtype /Form /BBox [0 0 1 1]",
+                b"0 0 1 1 re f",
+            ),
+        )],
+    );
+    let e = unsupported(run(&form, vec![(32.0, 101.0, 38.0, 107.0)]));
+    assert!(e.contains("not an image"), "{e}");
+    // The font has no /Resources: its images come from the page's.
+    let inherited = type3_page(
+        "BT /T3 10 Tf 20 100 Td (AB) Tj ET",
+        T3_FILL,
+        "1000 0 d0 800 0 0 800 100 0 cm /Ib Do",
+        "",
+        vec![
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << \
+                  /Font << /T3 60 0 R >> /XObject << /Ib 72 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (
+                60,
+                b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
+                  /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /A 61 0 R /B 62 0 R >> \
+                  /Encoding << /Type /Encoding /Differences [65 /A /B] >> /FirstChar 65 \
+                  /LastChar 66 /Widths [1000 1000] >>"
+                    .to_vec(),
+            ),
+            (72, glyph_image(101, 73)),
+            (73, glyph_mask(102)),
+        ],
+    );
+    let e = unsupported(run(&inherited, vec![(32.0, 101.0, 38.0, 107.0)]));
+    assert!(e.contains("inherits"), "{e}");
+    // The page draws B's image itself too, far from the rect.
+    let shared = image_glyph_font(
+        "BT /T3 10 Tf 20 100 Td (AB) Tj ET q 20 0 0 20 150 20 cm /Pb Do Q",
+        "",
+        vec![(
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << \
+              /Font << /T3 60 0 R >> /XObject << /Pb 72 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        )],
+    );
+    let r = run(&shared, vec![(32.0, 101.0, 38.0, 107.0)]).unwrap();
+    assert_eq!(r.codes_removed, 1);
+    assert!(contains(&r.output, &samples_of(101)));
+    assert!(
+        r.elsewhere
+            .iter()
+            .any(|e| matches!(e.removed, kasane_pdf::Removed::Image)),
+        "{:?}",
+        r.elsewhere
+    );
 }

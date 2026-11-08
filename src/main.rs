@@ -1956,6 +1956,7 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
     let mut refuse_copies = false;
     let mut remove_annots = false;
     let mut embed_fonts = false;
+    let mut explain = false;
     let mut i = 1;
     let num = |s: &String| -> Result<f64, Error> {
         s.parse::<f64>()
@@ -2008,6 +2009,12 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
                 embed_fonts = true;
                 i += 1;
             }
+            // Corpus analysis (undocumented): list every finding of the
+            // redaction walk as JSON lines; nothing is written.
+            "--explain" => {
+                explain = true;
+                i += 1;
+            }
             other => {
                 return Err(Error::Structure(format!(
                     "unknown option '{other}'\n{}",
@@ -2025,6 +2032,33 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
             p + 1,
             redact_usage()
         )));
+    }
+    if explain {
+        let data = std::fs::read(input)?;
+        let doc = open_document(&data)?;
+        for (page, rects) in &specs {
+            for (kind, what) in kasane_pdf::redaction_walk_findings(
+                &doc,
+                *page,
+                rects,
+                &Limits::default(),
+                embed_fonts,
+            )? {
+                println!(
+                    "{{\"page\": {}, \"kind\": \"{kind}\", \"what\": \"{}\"}}",
+                    page + 1,
+                    what.chars()
+                        .map(|c| match c {
+                            '"' => "\\\"".to_string(),
+                            '\\' => "\\\\".to_string(),
+                            ' '..='~' => c.to_string(),
+                            _ => format!("\\u{:04x}", c as u32),
+                        })
+                        .collect::<String>()
+                );
+            }
+        }
+        return Ok(());
     }
     let output = output.ok_or_else(usage)?;
     refuse_same_file(input, output)?;

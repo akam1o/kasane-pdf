@@ -829,7 +829,7 @@ pub(crate) struct DiagWalker<'a> {
     /// only when it meets a rect (one elsewhere is kept as it is).
     pub(crate) redaction_mode: bool,
     /// Redaction: Type 3 glyph bounds by (font, code), evaluated once.
-    type3_cache: std::collections::HashMap<Type3Key, Result<Option<[f64; 4]>, String>>,
+    type3_cache: std::collections::HashMap<Type3Key, Type3Bounds>,
     /// object ref → (kind, sites) for sharing analysis.
     site_map: BTreeMap<(u32, u16), (String, Vec<Site>)>,
     /// Counting budget for reported items.
@@ -1951,7 +1951,7 @@ impl<'a> DiagWalker<'a> {
                                 &mut ops,
                             )
                         }
-                        None => Ok(None),
+                        None => Ok((None, Vec::new())),
                     };
                     self.exec_ops = self.exec_ops.saturating_add(ops.max(1));
                     if self.exec_ops > self.limits.max_diag_exec_ops {
@@ -1971,7 +1971,7 @@ impl<'a> DiagWalker<'a> {
                     g
                 }
             };
-            let glyph = match glyph {
+            let (glyph, images) = match glyph {
                 Ok(g) => g,
                 Err(detail) => {
                     return self.glyph_error(
@@ -1983,6 +1983,34 @@ impl<'a> DiagWalker<'a> {
                     )
                 }
             };
+            // Each `Do` must draw an image, resolved as a reader does:
+            // against the font's /Resources, else the resources in
+            // force.
+            if !images.is_empty() {
+                let res = t3
+                    .resources()
+                    .cloned()
+                    .unwrap_or_else(|| self.resources.clone());
+                for name in &images {
+                    let is_image = match self.doc.resolve_resource(&res, "XObject", name) {
+                        Ok(Some(Object::Stream { dict, .. })) => {
+                            dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name())
+                                == Some(b"Image".as_slice())
+                        }
+                        Err(e @ Error::LimitExceeded { .. }) => return Err(e),
+                        _ => false,
+                    };
+                    if !is_image {
+                        return self.glyph_error(
+                            code,
+                            Error::Unsupported {
+                                feature: "Type 3 glyph",
+                                detail: "its CharProc draws an XObject that is not an image".into(),
+                            },
+                        );
+                    }
+                }
+            }
             let to_page = t3.font_matrix().concat(trm);
             // The FontMatrix stretches the glyph too: the same 16:1
             // bound as for the text matrix (a singular one is refused).
@@ -2897,6 +2925,13 @@ use crate::object::Dict;
 /// width, cap, join, miter limit, stroke adjustment).
 type Type3Key = (crate::object::IndirectRef, [u64; 5]);
 
+/// A CharProc's [`Type3Glyph`], or why it is refused.
+type Type3Bounds = Result<Type3Glyph, String>;
+
+/// A CharProc's glyph-space ink bounds (`None`: it paints nothing) and
+/// the XObject names it draws.
+type Type3Glyph = (Option<[f64; 4]>, Vec<Vec<u8>>);
+
 /// The glyph-space bounds of everything a Type 3 CharProc paints —
 /// `None` when it paints nothing — for `redact`, which accepts the
 /// CharProcs it can bound exactly: path construction and painting
@@ -2904,10 +2939,14 @@ type Type3Key = (crate::object::IndirectRef, [u64; 5]);
 /// limit for miter joins, √2 for square caps — under the local CTM's
 /// largest stretch), `q`/`Q`/`cm`, line state, colour (not a pattern),
 /// clips (which decide nothing in redaction), `d0`/`d1`, flatness,
-/// rendering intent, and unpropertied marked content. Anything else —
-/// images, XObjects, text, shadings, ExtGState, patterns, marked
-/// content with properties, a hairline (`0 w`) stroke — is refused: its
-/// extent or the data it carries is not evaluated. The line state
+/// rendering intent, unpropertied marked content, and images — an
+/// inline image or an image XObject (`Do`) paints its unit square
+/// under the CTM, whatever its samples, masks or filters (the glyph is
+/// removed whole, its image never edited). The `Do` names are returned
+/// for the caller to check, against the resources in force, that each
+/// is an image. Anything else — forms, text, shadings, ExtGState,
+/// patterns, marked content with properties, a hairline (`0 w`) stroke —
+/// is refused: its extent or the data it carries is not evaluated. The line state
 /// starts as `inherited` (width, cap, join, miter limit and stroke
 /// adjustment of the show; a stroke under adjustment is refused);
 /// the op count is set in `ops_parsed` for the caller's execution
@@ -2921,7 +2960,7 @@ pub(crate) fn type3_glyph_bounds(
     inherited: (f64, i64, i64, f64, bool),
     budget_left: u64,
     ops_parsed: &mut u64,
-) -> Result<Option<[f64; 4]>, Error> {
+) -> Result<Type3Glyph, Error> {
     use crate::content::Operation as O;
     let refuse = |what: &str| Error::Unsupported {
         feature: "Type 3 glyph",
@@ -2961,6 +3000,7 @@ pub(crate) fn type3_glyph_bounds(
     let mut stack: Vec<Gs> = Vec::new();
     let mut path: Option<[f64; 4]> = None;
     let mut out: Option<[f64; 4]> = None;
+    let mut images: Vec<Vec<u8>> = Vec::new();
     let add = |b: &mut Option<[f64; 4]>, p: (f64, f64)| {
         *b = Some(match *b {
             None => [p.0, p.1, p.0, p.1],
@@ -3038,6 +3078,14 @@ pub(crate) fn type3_glyph_bounds(
                 }
             }
             O::ClosePath | O::Clip | O::ClipEvenOdd => {}
+            O::InlineImage { .. } | O::Do(_) => {
+                if let O::Do(n) = op {
+                    images.push(n.clone());
+                }
+                for (x, y) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+                    add(&mut out, gs.ctm.transform(x, y));
+                }
+            }
             O::EndPath => path = None,
             O::Fill | O::FillEvenOdd => {
                 if let Some(b) = path.take() {
@@ -3074,7 +3122,7 @@ pub(crate) fn type3_glyph_bounds(
     if out.is_some_and(|b| !b.iter().all(|v| v.is_finite())) {
         return Err(Error::Structure("non-finite Type 3 glyph bounds".into()));
     }
-    Ok(out)
+    Ok((out, images))
 }
 
 #[cfg(test)]

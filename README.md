@@ -106,7 +106,7 @@ no edited original or removed annotation is still in the file unless
 the output still uses it elsewhere (reported), one revision only. What
 it cannot process exactly — non-embedded fonts (unless their
 Standard 14 substitutes are embedded first, on request), Type 3 glyphs
-drawn by more than paths,
+drawn by more than paths and images,
 curved fills crossing a rect, masked images, widgets meeting a rect and
 more — is a typed error and no output. Copies of the information elsewhere in the
 document are reported, not removed.
@@ -404,7 +404,7 @@ and the remaining blockers are in
   annotations, attachments, metadata it does not own). It refuses
   non-embedded fonts unless `embed_substitute_fonts` embeds the
   Standard 14 substitutes first, Type 3 glyphs drawn by more than
-  paths, vertical fonts, curved fills crossing a rect, masked images,
+  paths and images, vertical fonts, curved fills crossing a rect, masked images,
   Indexed or four-component JPEGs, widgets and media
   meeting a rect, tiling patterns, soft masks and more
   (`docs/features/redaction.md`); a stroke cut at a rect can lose a

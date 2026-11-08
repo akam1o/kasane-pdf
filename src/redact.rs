@@ -340,18 +340,22 @@ fn redact_doc(
         })?;
 
     // Type 3 glyph definitions the output no longer shows go too.
-    let output = match crate::redact_type3::prune_type3(doc, &output, limits)? {
-        Some(pruned) => pruned,
-        None => output,
+    let (output, glyph_images) = match crate::redact_type3::prune_type3(doc, &output, limits)? {
+        Some(p) => (p.output, p.images),
+        None => (output, Vec::new()),
     };
 
     // An original may stay only as an object the output still draws
     // (from a page, through forms); each such display is reported.
+    // The images only removed Type 3 glyphs drew are checked like
+    // edited originals: gone, or still drawn (reported).
+    let mut originals = s.original_digests.clone();
+    originals.extend(glyph_images);
     let (out, residual, shown) = verify(
         &output,
         specs,
         limits,
-        &s.original_digests,
+        &originals,
         &s.removed_annot_prints,
         session,
     )?;
@@ -781,4 +785,51 @@ fn structure_alternate_text(
         }
     }
     Ok(None)
+}
+
+/// Corpus analysis aid, not a verdict: every blocker and uncertain item
+/// the redaction-mode walk finds on `page_index` for `rects` (as
+/// `(kind, what)` pairs, `kind` "blocker" or "uncertain"), where
+/// [`redact`] refuses on the first. Other refusals (annotations,
+/// images, the structure tree …) are not listed. With `embed` the
+/// substitutes are embedded first, as with
+/// [`RedactOptions::embed_substitute_fonts`].
+#[doc(hidden)]
+pub fn redaction_walk_findings(
+    doc: &Document,
+    page_index: usize,
+    rects: &[(f64, f64, f64, f64)],
+    limits: &Limits,
+    embed: bool,
+) -> Result<Vec<(&'static str, String)>, Error> {
+    if embed {
+        if let Some((bytes, _)) = crate::redact_fonts::embed_substitutes(doc, limits)? {
+            let normalized = Document::from_bytes_with_limits(&bytes, limits.clone())?;
+            return redaction_walk_findings(&normalized, page_index, rects, limits, false);
+        }
+    }
+    let pages = doc.pages();
+    let page = pages
+        .get(page_index)
+        .ok_or_else(|| Error::Structure(format!("no page {page_index}")))?;
+    let mut validated = Vec::with_capacity(rects.len());
+    for (i, r) in rects.iter().enumerate() {
+        validated.push(crate::redact_diag::check_rect(i, r.0, r.1, r.2, r.3)?);
+    }
+    let ops = doc.page_operations(page)?;
+    let mut walker = crate::redact_diag::DiagWalker::new(doc, page, limits, &validated);
+    walker.redaction_mode = true;
+    walker.run(&ops)?;
+    let mut out: Vec<(&'static str, String)> = walker
+        .blockers
+        .iter()
+        .map(|b| ("blocker", format!("{}: {}", b.what, b.detail)))
+        .collect();
+    out.extend(
+        walker
+            .uncertain
+            .iter()
+            .map(|u| ("uncertain", u.reason.clone())),
+    );
+    Ok(out)
 }
