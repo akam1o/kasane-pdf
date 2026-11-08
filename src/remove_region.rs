@@ -1923,6 +1923,7 @@ pub(crate) fn regions_edit_session_with<'a>(
                 } else {
                     BTreeMap::new()
                 };
+                let codes_before = codes_removed;
                 let mut renamed_from: BTreeSet<Vec<u8>> = BTreeSet::new();
                 for (inner, fop) in node.ops.iter().enumerate() {
                     let key = (fp.clone(), inner);
@@ -1951,6 +1952,13 @@ pub(crate) fn regions_edit_session_with<'a>(
                         &mut codes_removed,
                         &mut removed_sites,
                     )?);
+                }
+                // Redaction: no positioning of the removed text stays.
+                if mode == SessionMode::Redact && codes_removed != codes_before {
+                    new_form_ops = crate::redact_textpos::fold_removed_positions(
+                        &new_form_ops,
+                        crate::redact_textpos::TextStart::FORM,
+                    )?;
                 }
                 let new_body = serialize_ops(&new_form_ops, limits, generated_bytes)?;
                 generated_bytes = charge_generated(generated_bytes, new_body.len(), limits)?;
@@ -2061,6 +2069,7 @@ pub(crate) fn regions_edit_session_with<'a>(
         } else {
             BTreeMap::new()
         };
+        let codes_before = codes_removed;
         for (op_index, op) in ops.iter().enumerate() {
             if let Some(new) = replacements.get(&(Vec::new(), op_index)) {
                 new_ops.extend(new.iter().cloned());
@@ -2123,6 +2132,12 @@ pub(crate) fn regions_edit_session_with<'a>(
             .collect();
 
         // ---- serialise + page dict update ---------------------------
+        if mode == SessionMode::Redact && codes_removed != codes_before {
+            new_ops = crate::redact_textpos::fold_removed_positions(
+                &new_ops,
+                crate::redact_textpos::TextStart::PAGE,
+            )?;
+        }
         let new_body = serialize_ops(&new_ops, limits, generated_bytes)?;
         charge_generated(generated_bytes, new_body.len(), limits)?;
         // Share the *same* Edit across pages — a synthetic ref from an

@@ -4167,3 +4167,105 @@ fn type3_font_keys_are_linear_in_shared_graphs() {
     );
     assert!(!contains(&r.output, b"333 777"));
 }
+
+/// Kept characters with their origins (rounded to 1e-6 pt).
+fn kept_chars(pdf: &[u8]) -> Vec<(String, i64, i64)> {
+    let doc = Document::from_bytes(pdf).unwrap();
+    extract_text(&doc, &doc.pages()[0], &TextOptions::default())
+        .unwrap()
+        .chars
+        .iter()
+        .map(|c| {
+            (
+                c.unicode.clone().unwrap_or_default(),
+                (c.origin.0 * 1e6).round() as i64,
+                (c.origin.1 * 1e6).round() as i64,
+            )
+        })
+        .collect()
+}
+
+/// The removed text's positioning does not stay: two inputs differing
+/// only in where (and how wide) the removed glyphs were give the same
+/// output, and the kept text stays exactly where it was — whatever the
+/// producer's positioning (per-glyph Td, TJ kerns, absolute Tm, T*, ').
+#[test]
+fn removed_text_leaves_no_positions() {
+    // Removed glyphs' offsets and kerns vary with `v`; the kept text
+    // ("Name:", "here", "next", "below") stays where it is.
+    let layouts = |v: u32| -> Vec<String> {
+        let o = |k: u32| ((v * 7 + k * 3) % 11) as i64; // varies with v
+        let (a, b, c) = (5 + o(1), 6 + o(2), 4 + o(3));
+        let k: Vec<i64> = (1..=4).map(|i| -(o(i) * 37) - 100).collect();
+        vec![
+            format!(
+                "BT /F1 12 Tf 20 100 Td (Name:) Tj 52 0 Td (S) Tj {a} 0 Td (E) Tj {b} 0 Td (CRET) Tj \
+                 {c} 0 Td (W) Tj {} 0 Td (here) Tj 0 -14 Td (next) Tj ET",
+                90 - a - b - c
+            ),
+            format!(
+                "BT /F1 12 Tf 20 100 Td [(Name: ) {} (S) {} (E) {} (CRET) {} (W) {} (ORD) -900 (here)] TJ ET",
+                k[0],
+                k[1],
+                k[2],
+                k[3],
+                -5000 - k.iter().sum::<i64>()
+            ),
+            format!(
+                "BT /F1 12 Tf 1 0 0 1 20 100 Tm (Name:) Tj 1 0 0 1 {} 100 Tm (SEC) Tj 1 0 0 1 {} 100 Tm \
+                 (RET) Tj 1 0 0 1 162 100 Tm (here) Tj ET",
+                70 + o(1),
+                100 + o(2)
+            ),
+            format!(
+                "BT /F1 12 Tf 14 TL 20 100 Td (Name:) Tj {} 0 Td (SECRET) Tj T* ({}) ' 30 0 Td (W) Tj ET \
+                 BT /F1 12 Tf 20 50 Td (below) Tj ET",
+                52 + o(1),
+                ["XX", "QQQQ", "W"][(v % 3) as usize]
+            ),
+        ]
+    };
+    let rect = vec![(60.0, 60.0, 155.0, 115.0)];
+    for i in 0..4 {
+        let (a, b) = (layouts(1)[i].clone(), layouts(2)[i].clone());
+        assert_ne!(a, b);
+        let (pa, pb) = (one_page(&a, "", "", vec![]), one_page(&b, "", "", vec![]));
+        let (ra, rb) = (
+            run(&pa, rect.clone()).unwrap(),
+            run(&pb, rect.clone()).unwrap(),
+        );
+        assert!(ra.codes_removed > 0, "{a}");
+        let text = page_text(&ra.output, 0);
+        let after = ["here", "here", "here", "below"][i];
+        assert!(
+            text.contains("Name") && text.contains(after),
+            "layout {i}: {text}"
+        );
+        let ops = |pdf: &[u8]| {
+            let d = Document::from_bytes(pdf).unwrap();
+            let p = &d.pages()[0];
+            d.page_operations(p)
+                .unwrap()
+                .iter()
+                .map(|o| o.to_string())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_eq!(
+            ops(&ra.output),
+            ops(&rb.output),
+            "layout {i}: the content differs"
+        );
+        assert!(ra.output == rb.output, "layout {i}: the outputs differ");
+        // Kept characters stay where they were.
+        let kept: Vec<_> = kept_chars(&pa)
+            .into_iter()
+            .filter(|c| kept_chars(&ra.output).contains(c))
+            .collect();
+        assert_eq!(
+            kept,
+            kept_chars(&ra.output),
+            "layout {i}: a kept character moved"
+        );
+    }
+}

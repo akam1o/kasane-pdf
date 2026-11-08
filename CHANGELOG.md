@@ -6,6 +6,16 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+- `redact` (0.6.0, 0.6.1) kept the text positioning of removed codes:
+  each removed show's `Td`/`TD`/`Tm` and advance, and the `TJ` numbers
+  between removed glyphs, so the output recorded the positions and
+  widths of individual removed glyphs or words. Between two shows that
+  still draw something, the positioning is now folded into one move to
+  the next kept glyph (exact; the kept text does not move); what stays
+  is where the next kept glyph starts and, when the leading is
+  inherited, the number of `T*` line moves.
+
 ### Added
 - `RedactOptions::embed_substitute_fonts` (CLI
   `--embed-substitute-fonts`): before redacting, each non-embedded Latin
