@@ -55,6 +55,39 @@ but external tools are used to *confirm* behaviour on real files:
   decoded bytes are verified in-process so decoder differences are
   not confused with real edits.
 
+### Redaction
+
+- [`../scripts/verify-redact.py`](../scripts/verify-redact.py) —
+  synthetic cases, each successful output checked with `qpdf`
+  (structure, and every decoded stream searched for the secret text
+  and image samples), `pdftotext` and `pdftoppm`; refusals as declared.
+- [`../scripts/eval-redact-corpus.py`](../scripts/eval-redact-corpus.py)
+  — the same three rects (a word, its line, a central block) on page 1
+  of each Corpus file, with and without the opt-ins
+  (`--redact-arg --embed-substitute-fonts --redact-arg
+  --remove-annotations`), `--json` for the per-run results. A success
+  is checked for words still extracted inside the rect, unchanged ink
+  inside it, words lost and pixels changed outside it. Two known false
+  signals, checked by hand rather than relaxed: zeroed image samples
+  that were already black count as unchanged ink (an image redacted
+  under a black region is reported `unexpected`); a word "lost" outside
+  can be pdftotext joining a kept glyph to its neighbour once the glyph
+  between them is removed (per-glyph words in vertical CJK text).
+- [`../scripts/analyze-redact-refusals.py`](../scripts/analyze-redact-refusals.py)
+  `<kasane-pdf> <eval.json> [--redact-arg …] --json out.json` — for
+  each refused run, every blocker of the redaction walk (through the
+  undocumented `redact --explain`), grouped into categories, with the
+  number of runs each category alone blocks (an upper bound for what
+  supporting it gains: a later stage may still refuse). Results of a
+  round are kept in [`../compat/redaction/`](../compat/redaction/).
+- Independence of the output from what is removed: build two inputs
+  that differ only in the data meeting the rects, redact both, require
+  byte-identical outputs (this rules out any route — interpolation,
+  anti-aliasing, a kept operand — by which removed data could reach a
+  reader); check the harness with a control that keeps some varied data.
+  The image and path cases were run this way; the results are in the
+  redaction docs' known limits.
+
 ## Compatibility suite
 
 `compat/runner` (`kasane-compat`) runs the real-world corpus through

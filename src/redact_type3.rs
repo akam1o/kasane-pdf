@@ -29,19 +29,22 @@ use crate::limits::Limits;
 use crate::object::{Dict, IndirectRef, Object};
 use crate::remove_region::sha256;
 
-/// A Type 3 font by content: its FontMatrix and its CharProcs (names
-/// and stored bytes), so the same font is found again after rewriting
-/// renumbers it.
+/// A Type 3 font by content: its whole dictionary with every reference
+/// replaced by what it refers to (streams by their stored bytes'
+/// digest) — CharProcs, encoding, widths, ToUnicode, resources — so the
+/// same font is found again after rewriting renumbers it, and only
+/// fonts identical in everything share a key.
 type FontKey = [u8; 32];
 
 #[derive(Default)]
 struct Usage {
     /// Glyph names shown, per font key.
     shown: HashMap<FontKey, BTreeSet<Vec<u8>>>,
-    /// Objects whose body maps a font resource name the walk resolved
-    /// (a `/Font` dictionary, a resources dictionary, a form, a page
-    /// tree node).
-    holders: HashSet<IndirectRef>,
+    /// What the walk reads content from: pages, page tree nodes, the
+    /// forms and annotation appearances it entered.
+    roots: HashSet<IndirectRef>,
+    /// Resources and `/Font` dictionaries the walk resolved names in.
+    intermediates: HashSet<IndirectRef>,
 }
 
 fn refuse(detail: String) -> Error {
@@ -51,33 +54,72 @@ fn refuse(detail: String) -> Error {
     }
 }
 
+/// `o` written canonically, references replaced by their targets.
+fn canonical(doc: &Document, o: &Object, depth: u32, out: &mut Vec<u8>) -> Result<(), Error> {
+    if depth > 32 {
+        return Err(refuse("a Type 3 font nested too deep to compare".into()));
+    }
+    match o {
+        Object::Ref(r) => canonical(doc, &doc.resolve(*r)?, depth + 1, out)?,
+        Object::Dict(d) => {
+            out.push(b'<');
+            let mut keys: Vec<&Vec<u8>> = d.keys().collect();
+            keys.sort();
+            for k in keys {
+                out.extend_from_slice(&(k.len() as u64).to_be_bytes());
+                out.extend_from_slice(k);
+                canonical(doc, &d[k], depth + 1, out)?;
+            }
+            out.push(b'>');
+        }
+        Object::Array(a) => {
+            out.push(b'[');
+            for v in a {
+                canonical(doc, v, depth + 1, out)?;
+            }
+            out.push(b']');
+        }
+        Object::Stream { dict, data } => {
+            out.push(b'S');
+            out.extend_from_slice(&sha256(data));
+            canonical(doc, &Object::Dict(dict.clone()), depth + 1, out)?;
+        }
+        other => {
+            let s = format!("{other:?}");
+            out.extend_from_slice(&(s.len() as u64).to_be_bytes());
+            out.extend_from_slice(s.as_bytes());
+        }
+    }
+    Ok(())
+}
+
 fn font_key(doc: &Document, dict: &Dict) -> Result<Option<FontKey>, Error> {
-    if dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) != Some(b"Type3") {
+    if dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) != Some(b"Type3")
+        || !dict.contains_key(b"CharProcs".as_slice())
+    {
         return Ok(None);
     }
     let mut k = Vec::new();
-    if let Some(m) = dict.get(b"FontMatrix".as_slice()) {
-        k.extend_from_slice(format!("{:?}", doc.deref(m)?).as_bytes());
-    }
+    canonical(doc, &Object::Dict(dict.clone()), 0, &mut k)?;
+    Ok(Some(sha256(&k)))
+}
+
+/// A glyph name and its CharProc's digest (stored bytes).
+type GlyphDigest = (Vec<u8>, [u8; 32]);
+
+/// The digest of each glyph's CharProc.
+fn charproc_digests(doc: &Document, dict: &Dict) -> Result<Vec<GlyphDigest>, Error> {
     let Some(cp) = dict.get(b"CharProcs".as_slice()) else {
-        return Ok(None);
+        return Ok(Vec::new());
     };
     let cp = doc.deref(cp)?;
-    let Some(cp) = cp.as_dict() else {
-        return Ok(None);
-    };
-    let mut names: Vec<&Vec<u8>> = cp.keys().collect();
-    names.sort();
-    for n in names {
-        k.extend_from_slice(&(n.len() as u64).to_be_bytes());
-        k.extend_from_slice(n);
-        let digest = match doc.deref(&cp[n])? {
-            Object::Stream { data, .. } => sha256(&data),
-            _ => [0; 32],
-        };
-        k.extend_from_slice(&digest);
+    let mut out = Vec::new();
+    for (n, v) in cp.as_dict().into_iter().flatten() {
+        if let Object::Stream { data, .. } = doc.deref(v)? {
+            out.push((n.clone(), sha256(&data)));
+        }
     }
-    Ok(Some(sha256(&k)))
+    Ok(out)
 }
 
 /// The object directly holding the `/Font` mapping of resources `res`
@@ -85,23 +127,17 @@ fn font_key(doc: &Document, dict: &Dict) -> Result<Option<FontKey>, Error> {
 fn record_holder(
     doc: &Document,
     res: &Object,
-    owner: Option<IndirectRef>,
     out: &mut HashSet<IndirectRef>,
 ) -> Result<(), Error> {
-    let (body, holder) = match res {
-        Object::Ref(r) => (doc.resolve(*r)?, Some(*r)),
-        other => (other.clone(), owner),
+    let body = match res {
+        Object::Ref(r) => {
+            out.insert(*r);
+            doc.resolve(*r)?
+        }
+        other => other.clone(),
     };
-    match body.as_dict().and_then(|d| d.get(b"Font".as_slice())) {
-        Some(Object::Ref(f)) => {
-            out.insert(*f);
-        }
-        Some(_) => {
-            if let Some(h) = holder {
-                out.insert(h);
-            }
-        }
-        None => {}
+    if let Some(Object::Ref(f)) = body.as_dict().and_then(|d| d.get(b"Font".as_slice())) {
+        out.insert(*f);
     }
     Ok(())
 }
@@ -110,10 +146,14 @@ fn record_holder(
 /// forms it draws and annotation appearances, as `drawn_xobjects` walks
 /// them, with each `Tf` resolved against the resources in force.
 fn usage(doc: &Document, limits: &Limits) -> Result<Usage, Error> {
+    type Current = Option<(FontKey, crate::font::Font)>;
     struct Frame {
         ops: Vec<Operation>,
         res: Object,
         depth: usize,
+        /// The font in force where the stream is invoked (a form
+        /// inherits the text state).
+        font: Current,
     }
     let mut u = Usage::default();
     let mut keys: HashMap<Vec<u8>, Option<(FontKey, crate::font::Font)>> = HashMap::new();
@@ -128,7 +168,7 @@ fn usage(doc: &Document, limits: &Limits) -> Result<Usage, Error> {
         if !seen_nodes.insert(n) || seen_nodes.len() > limits.max_page_tree_nodes as usize {
             continue;
         }
-        u.holders.insert(n);
+        u.roots.insert(n);
         if let Some(kids) = doc
             .resolve(n)?
             .as_dict()
@@ -146,17 +186,22 @@ fn usage(doc: &Document, limits: &Limits) -> Result<Usage, Error> {
             .resources()
             .cloned()
             .unwrap_or(Object::Dict(Dict::new()));
-        record_holder(doc, &res, page.object_ref(), &mut u.holders)?;
+        record_holder(doc, &res, &mut u.intermediates)?;
+        if let Some(p) = page.object_ref() {
+            u.roots.insert(p);
+        }
         let mut stack = vec![Frame {
             ops: doc.page_operations(page)?,
             res,
             depth: 0,
+            font: None,
         }];
         let mut seen: HashSet<(IndirectRef, Vec<u8>)> = HashSet::new();
         let enter = |r: IndirectRef,
                      inherited: &Object,
                      depth: usize,
-                     holders: &mut HashSet<IndirectRef>,
+                     font: &Current,
+                     u: &mut Usage,
                      seen: &mut HashSet<(IndirectRef, Vec<u8>)>|
          -> Result<Option<Frame>, Error> {
             let obj = doc.resolve(r)?;
@@ -166,14 +211,19 @@ fn usage(doc: &Document, limits: &Limits) -> Result<Usage, Error> {
             if dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Image") {
                 return Ok(None);
             }
+            u.roots.insert(r);
             let res = match dict.get(b"Resources".as_slice()) {
                 Some(Object::Null) | None => inherited.clone(),
                 Some(own) => {
-                    record_holder(doc, own, Some(r), holders)?;
+                    record_holder(doc, own, &mut u.intermediates)?;
                     own.clone()
                 }
             };
-            if !seen.insert((r, format!("{res:?}").into_bytes())) {
+            let mut seen_key = format!("{res:?}").into_bytes();
+            if let Some((k, _)) = font {
+                seen_key.extend_from_slice(k);
+            }
+            if !seen.insert((r, seen_key)) {
                 return Ok(None);
             }
             if depth + 1 > limits.max_xobject_depth as usize {
@@ -197,15 +247,22 @@ fn usage(doc: &Document, limits: &Limits) -> Result<Usage, Error> {
                     o => o.clone(),
                 },
                 depth: depth + 1,
+                font: font.clone(),
             }))
         };
         let empty = Object::Dict(Dict::new());
         for r in crate::redact::appearance_streams(doc, page)? {
-            if let Some(f) = enter(r, &empty, 0, &mut u.holders, &mut seen)? {
+            if let Some(f) = enter(r, &empty, 0, &None, &mut u, &mut seen)? {
                 stack.push(f);
             }
         }
-        while let Some(Frame { ops, res, depth }) = stack.pop() {
+        while let Some(Frame {
+            ops,
+            res,
+            depth,
+            font: inherited_font,
+        }) = stack.pop()
+        {
             budget = budget.saturating_add(ops.len() as u64);
             if budget > limits.max_diag_exec_ops {
                 return Err(Error::LimitExceeded {
@@ -215,7 +272,7 @@ fn usage(doc: &Document, limits: &Limits) -> Result<Usage, Error> {
             }
             // The current font (its key and dict, if Type 3) through
             // q/Q (the text state is part of the graphics state).
-            let mut font: Option<(FontKey, crate::font::Font)> = None;
+            let mut font: Current = inherited_font;
             let mut saved: Vec<Option<(FontKey, crate::font::Font)>> = Vec::new();
             let show = |font: &Option<(FontKey, crate::font::Font)>,
                         bytes: &[u8],
@@ -280,7 +337,7 @@ fn usage(doc: &Document, limits: &Limits) -> Result<Usage, Error> {
                         if let Some(Object::Ref(r)) =
                             doc.resolve_resource_raw(&res, "XObject", name)?
                         {
-                            if let Some(f) = enter(r, &res, depth, &mut u.holders, &mut seen)? {
+                            if let Some(f) = enter(r, &res, depth, &font, &mut u, &mut seen)? {
                                 stack.push(f);
                             }
                         }
@@ -291,21 +348,6 @@ fn usage(doc: &Document, limits: &Limits) -> Result<Usage, Error> {
         }
     }
     Ok(u)
-}
-
-/// Whether `o` (not following references) refers to `target`.
-fn refers_to(o: &Object, target: IndirectRef) -> bool {
-    let mut stack = vec![o];
-    while let Some(o) = stack.pop() {
-        match o {
-            Object::Ref(r) if *r == target => return true,
-            Object::Dict(d) => stack.extend(d.values()),
-            Object::Array(a) => stack.extend(a.iter()),
-            Object::Stream { dict, .. } => stack.extend(dict.values()),
-            _ => {}
-        }
-    }
-    false
 }
 
 /// A ToUnicode CMap mapping each of `entries` (single-byte codes).
@@ -522,24 +564,16 @@ pub(crate) fn prune_type3(
     for r in &refs {
         bodies.push((*r, out.resolve(*r)?));
     }
-    let mut plans: Vec<(IndirectRef, Dict, BTreeSet<Vec<u8>>)> = Vec::new();
+    // Every Type 3 font of the output: (object, nested in another
+    // object's body, dict, key).
+    let mut fonts: Vec<(IndirectRef, bool, Dict, FontKey)> = Vec::new();
     for (r, body) in &bodies {
-        // Direct Type 3 fonts, nested in another object's body.
         let mut stack: Vec<(&Object, bool)> = vec![(body, true)];
         while let Some((o, top)) = stack.pop() {
             match o {
                 Object::Dict(d) => {
                     if let Some(key) = font_key(&out, d)? {
-                        let shown_in = before.shown.get(&key).unwrap_or(&empty);
-                        let shown_out = after.shown.get(&key).unwrap_or(&empty);
-                        if shown_in.iter().any(|n| !shown_out.contains(n)) {
-                            if !top {
-                                return Err(refuse(format!(
-                                    "a direct Type 3 font dictionary (in object {r}) loses glyphs"
-                                )));
-                            }
-                            plans.push((*r, d.clone(), shown_out.clone()));
-                        }
+                        fonts.push((*r, !top, d.clone(), key));
                     }
                     stack.extend(d.values().map(|v| (v, false)));
                 }
@@ -549,15 +583,109 @@ pub(crate) fn prune_type3(
             }
         }
     }
+    // A font loses the glyphs it no longer shows when one it showed is
+    // gone — and so does any font keeping, unshown, a CharProc such a
+    // glyph was drawn by (until nothing changes).
+    let digests: Vec<Vec<GlyphDigest>> = fonts
+        .iter()
+        .map(|(_, _, d, _)| charproc_digests(&out, d))
+        .collect::<Result<_, _>>()?;
+    let mut planned: Vec<bool> = vec![false; fonts.len()];
+    let mut gone: HashSet<[u8; 32]> = HashSet::new();
+    loop {
+        let mut changed = false;
+        for (i, (_, _, _, key)) in fonts.iter().enumerate() {
+            if planned[i] {
+                continue;
+            }
+            let shown_in = before.shown.get(key).unwrap_or(&empty);
+            let shown_out = after.shown.get(key).unwrap_or(&empty);
+            let digests = &digests[i];
+            let lost = shown_in.iter().any(|n| !shown_out.contains(n))
+                || digests
+                    .iter()
+                    .any(|(n, dg)| !shown_out.contains(n) && gone.contains(dg));
+            if lost {
+                planned[i] = true;
+                changed = true;
+                gone.extend(
+                    digests
+                        .iter()
+                        .filter(|(n, _)| !shown_out.contains(n))
+                        .map(|(_, dg)| *dg),
+                );
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let mut plans: Vec<(IndirectRef, Dict, BTreeSet<Vec<u8>>)> = Vec::new();
+    for (i, (r, nested, d, key)) in fonts.iter().enumerate() {
+        if !planned[i] {
+            continue;
+        }
+        if *nested {
+            return Err(refuse(format!(
+                "a direct Type 3 font dictionary (in object {r}) loses glyphs"
+            )));
+        }
+        plans.push((
+            *r,
+            d.clone(),
+            after.shown.get(key).unwrap_or(&empty).clone(),
+        ));
+    }
     if plans.is_empty() {
         return Ok(None);
     }
+    // Who refers to whom, once (bounded like the audit's graph).
+    let mut referrers: HashMap<IndirectRef, Vec<IndirectRef>> = HashMap::new();
+    let mut edges: u64 = 0;
+    for (r, body) in &bodies {
+        let mut stack = vec![body];
+        while let Some(o) = stack.pop() {
+            match o {
+                Object::Ref(t) => {
+                    edges += 1;
+                    if edges > limits.max_audit_edges {
+                        return Err(Error::LimitExceeded {
+                            limit: "max_audit_edges",
+                            max: limits.max_audit_edges,
+                        });
+                    }
+                    referrers.entry(*t).or_default().push(*r);
+                }
+                Object::Dict(d) => stack.extend(d.values()),
+                Object::Array(a) => stack.extend(a.iter()),
+                Object::Stream { dict, .. } => stack.extend(dict.values()),
+                _ => {}
+            }
+        }
+    }
+    // A font losing glyphs may be reached only through what the walk
+    // read: up from the font, every referrer is a page, a page tree
+    // node, a form or appearance the walk entered, or a resources or
+    // /Font dictionary it resolved names in — whose referrers are held
+    // to the same rule.
     for (f, _, _) in &plans {
-        for (r, body) in &bodies {
-            if r != f && refers_to(body, *f) && !after.holders.contains(r) {
+        let mut stack = vec![*f];
+        let mut seen = HashSet::new();
+        while let Some(o) = stack.pop() {
+            if !seen.insert(o) {
+                continue;
+            }
+            for r in referrers.get(&o).into_iter().flatten() {
+                if after.roots.contains(r) {
+                    continue;
+                }
+                if after.intermediates.contains(r) {
+                    stack.push(*r);
+                    continue;
+                }
                 return Err(refuse(format!(
-                    "the font (object {f}) is also used from object {r}, where its glyphs are not \
-                     evaluated"
+                    "the font (object {f}) is also reached from object {r}, where its glyphs are \
+                     not evaluated"
                 )));
             }
         }

@@ -4009,3 +4009,130 @@ fn image_glyph_edge_cases() {
         r.elsewhere
     );
 }
+
+/// Review of the pruning: a form inheriting the font; a /Font dict also
+/// reached from a pattern; fonts differing only in ToUnicode; a CharProc
+/// shared with a font that does not show it.
+#[test]
+fn type3_pruning_follows_every_use() {
+    let page = |res: &str| {
+        (
+            3,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << {res} >> \
+                 /Contents 4 0 R >>"
+            )
+            .into_bytes(),
+        )
+    };
+    // The form shows with the font set before its invocation: B (in the
+    // rect) loses its definition, A (outside) keeps its own.
+    let pdf = type3_page(
+        "BT /T3 10 Tf ET /T3 10 Tf /Fm Do",
+        T3_FILL,
+        SECRET_GLYPH,
+        "",
+        vec![
+            page("/Font << /T3 60 0 R >> /XObject << /Fm 75 0 R >>"),
+            (
+                75,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 200 200]",
+                    b"BT 20 100 Td (AB) Tj ET",
+                ),
+            ),
+        ],
+    );
+    let r = run(&pdf, vec![(31.0, 99.0, 39.0, 108.0)]).unwrap();
+    assert_eq!(r.codes_removed, 1);
+    assert!(!contains(&r.output, b"333 777"));
+    assert!(
+        contains(&r.output, b"100 0 600 700 re f"),
+        "A, shown in the form, keeps its glyph"
+    );
+    // A /Font dictionary shared with a pattern (on another page): refused.
+    let mut pdf = type3_page(
+        "BT /T3 10 Tf 20 100 Td (AB) Tj ET",
+        T3_FILL,
+        SECRET_GLYPH,
+        "",
+        vec![
+            page("/Font 76 0 R"),
+            (76, b"<< /T3 60 0 R >>".to_vec()),
+            (
+                2,
+                b"<< /Type /Pages /Kids [3 0 R 77 0 R] /Count 2 >>".to_vec(),
+            ),
+            (
+                77,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << \
+                  /Pattern << /P 78 0 R >> >> /Contents 79 0 R >>"
+                    .to_vec(),
+            ),
+            (
+                78,
+                stream_obj(
+                    "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 50 50] /XStep 50 \
+                     /YStep 50 /Resources << /Font 76 0 R >>",
+                    b"BT /T3 10 Tf 0 0 Td (B) Tj ET",
+                ),
+            ),
+            (79, stream_obj("", b"/Pattern cs /P scn 0 0 200 200 re f")),
+        ],
+    );
+    let e = unsupported(run(&pdf, vec![(31.0, 99.0, 39.0, 108.0)]));
+    assert!(e.contains("Type 3 glyph definitions"), "{e}");
+    // Two fonts equal but for their ToUnicode (and a third with another
+    // matrix sharing B's CharProc, shown nowhere): the output does not
+    // depend on what only the removed glyph carried.
+    let outputs: Vec<Vec<u8>> = ["SECRETONE", "SECRETTWO"]
+        .iter()
+        .map(|secret| {
+            let tu = |s: &str| {
+                let hex: String = s.encode_utf16().map(|u| format!("{u:04X}")).collect();
+                stream_obj(
+                    "",
+                    format!(
+                        "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /T def \
+                         1 begincodespacerange <00> <FF> endcodespacerange 2 beginbfchar <41> <0041> \
+                         <42> <{hex}> endbfchar endcmap CMapName currentdict /CMap defineresource pop end end"
+                    )
+                    .as_bytes(),
+                )
+            };
+            pdf = type3_page(
+                "BT /T3 10 Tf 20 100 Td (B) Tj /U 10 Tf 20 20 Td (A) Tj ET",
+                T3_FILL,
+                SECRET_GLYPH,
+                "/ToUnicode 63 0 R",
+                vec![
+                    page("/Font << /T3 60 0 R /U 64 0 R /V 66 0 R >>"),
+                    (63, tu(secret)),
+                    (
+                        64,
+                        b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
+                          /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /A 61 0 R /B 62 0 R >> \
+                          /Encoding << /Type /Encoding /Differences [65 /A /B] >> /FirstChar 65 \
+                          /LastChar 66 /Widths [1000 1000] /Resources << >> /ToUnicode 65 0 R >>"
+                            .to_vec(),
+                    ),
+                    (65, tu("PUBLIC")),
+                    (
+                        66,
+                        b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
+                          /FontMatrix [0.002 0 0 0.002 0 0] /CharProcs << /Z 62 0 R >> \
+                          /Encoding << /Type /Encoding /Differences [90 /Z] >> /FirstChar 90 \
+                          /LastChar 90 /Widths [1000] /Resources << >> >>"
+                            .to_vec(),
+                    ),
+                ],
+            );
+            let r = run(&pdf, vec![(15.0, 95.0, 45.0, 115.0)]).unwrap();
+            assert_eq!(r.codes_removed, 1);
+            assert!(!contains(&r.output, secret.as_bytes()));
+            assert!(!contains(&r.output, b"333 777"), "B's CharProc is gone from every font");
+            r.output
+        })
+        .collect();
+    assert!(outputs[0] == outputs[1], "the outputs differ");
+}
