@@ -4460,3 +4460,74 @@ fn shadings_that_cannot_be_removed_alone() {
     assert_eq!(r.shadings_removed, 1);
     assert!(raw_contains(&r.output, b"0.456") || contains(&r.output, b"0.456"));
 }
+
+// Tiling patterns: what a pattern paints is decided where it is used —
+// a fill clear of the rects stays, one wholly inside a rect goes with
+// the pattern only it used, one crossing a rect is refused (the cell is
+// content a cut would only hide), and so is text painted with one that
+// meets a rect.
+
+fn tiling() -> Vec<u8> {
+    stream_obj(
+        "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 4 4] /XStep 4 /YStep 4 /Resources << >>",
+        b"0.321 0.654 0.987 rg 0 0 2 2 re f",
+    )
+}
+
+#[test]
+fn tiling_patterns_follow_their_uses() {
+    let res = "/Font << /F1 20 0 R >> /Pattern << /P1 30 0 R >>";
+    let mut objs = font_objs();
+    objs.push((30, tiling()));
+    // Clear of the rect: kept (the page was refused whole before).
+    let pdf = doc_with(
+        res,
+        &[format!("{SECRET} /Pattern cs /P1 scn 10 10 20 20 re f").as_bytes()],
+        objs.clone(),
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.codes_removed, 10);
+    assert!(contains(&r.output, b"0.321 0.654 0.987"));
+    // Wholly inside: removed with the cell.
+    let pdf = doc_with(
+        res,
+        &[format!("{SECRET} /Pattern cs /P1 scn 60 95 20 10 re f").as_bytes()],
+        objs.clone(),
+    );
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!((r.codes_removed, r.paths_removed), (10, 1));
+    assert!(
+        !contains(&r.output, b"0.321 0.654 0.987"),
+        "the cell is gone"
+    );
+    // Crossing, and text painted with it meeting the rect: refused.
+    for c in [
+        format!("{SECRET} /Pattern cs /P1 scn 30 95 50 10 re f"),
+        "/Pattern cs /P1 scn BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET".to_string(),
+    ] {
+        let pdf = doc_with(res, &[c.as_bytes()], objs.clone());
+        let e = unsupported(run(&pdf, vec![RECT]));
+        assert!(e.contains("tiling pattern"), "{c}: {e}");
+    }
+    // A colour set after the pattern ends it.
+    let pdf = doc_with(
+        res,
+        &[b"/Pattern cs /P1 scn 0 g BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET"],
+        objs.clone(),
+    );
+    assert_eq!(run(&pdf, vec![RECT]).unwrap().codes_removed, 10);
+    // The pattern also used by another page: refused.
+    let pdf = doc_with(
+        res,
+        &[
+            format!("{SECRET} /Pattern cs /P1 scn 60 95 20 10 re f").as_bytes(),
+            b"/Pattern cs /P1 scn 0 0 5 5 re f",
+        ],
+        objs,
+    );
+    let e = unsupported(run(&pdf, vec![RECT]));
+    assert!(
+        e.contains("tiling pattern used elsewhere") || e.contains("shared"),
+        "{e}"
+    );
+}

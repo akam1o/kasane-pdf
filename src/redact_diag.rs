@@ -752,6 +752,9 @@ pub(crate) struct DiagGs {
     /// graphics-state parameters (Table 52); `Tm`/`Tlm` are not.
     /// `pub(crate)` — `remove_text` reads it for advance math.
     pub(crate) text: TextState,
+    /// Redaction: the tiling pattern the fill / stroke paints with
+    /// (its resource name), if any.
+    tiling: [Option<Vec<u8>>; 2],
 }
 
 /// `pub(crate)` — `remove_text` walks the same content with the
@@ -831,6 +834,11 @@ pub(crate) struct DiagWalker<'a> {
     /// same way, so it is not a blocker; an inline image is a blocker
     /// only when it meets a rect (one elsewhere is kept as it is).
     pub(crate) redaction_mode: bool,
+    /// Redaction: tiling patterns that painted a path removed whole
+    /// (page content).
+    pub(crate) tiling_removed: Vec<Vec<u8>>,
+    /// Redaction: tiling patterns something kept may paint with.
+    pub(crate) tiling_kept: std::collections::BTreeSet<Vec<u8>>,
     /// Redaction: Type 3 glyph bounds by (font, code), evaluated once.
     type3_cache: std::collections::HashMap<Type3Key, Type3Bounds>,
     /// object ref → (kind, sites) for sharing analysis.
@@ -956,6 +964,7 @@ impl<'a> DiagWalker<'a> {
                     h_scale: 1.0,
                     ..Default::default()
                 },
+                tiling: [None, None],
             },
             gs_stack: Vec::new(),
             resources,
@@ -982,6 +991,8 @@ impl<'a> DiagWalker<'a> {
             record_show_states,
             redaction_mode: false,
             type3_cache: std::collections::HashMap::new(),
+            tiling_removed: Vec::new(),
+            tiling_kept: std::collections::BTreeSet::new(),
             site_map: BTreeMap::new(),
             reported: 0,
             text_codes: 0,
@@ -1096,6 +1107,13 @@ impl<'a> DiagWalker<'a> {
         }
         self.gs.stroke = st;
         Ok(None)
+    }
+
+    /// The tiling patterns in force count as used by what is kept.
+    fn tiling_kept_now(&mut self) {
+        for t in self.gs.tiling.iter().flatten() {
+            self.tiling_kept.insert(t.clone());
+        }
     }
 
     /// What `sh` with shading `name` may paint, in page space: the
@@ -1291,7 +1309,9 @@ impl<'a> DiagWalker<'a> {
             // Redaction: a pattern paints only inside the path or glyph
             // it fills (§8.7.2), so a Pattern colour space moves
             // nothing; the selected pattern is checked at `scn`.
-            O::SetColorSpaceStroke(_) | O::SetColorSpaceFill(_) if self.redaction_mode => {}
+            O::SetColorSpaceStroke(_) | O::SetColorSpaceFill(_) if self.redaction_mode => {
+                self.gs.tiling[usize::from(matches!(op, O::SetColorSpaceStroke(_)))] = None;
+            }
             O::SetColorStroke(ops) | O::SetColorFill(ops)
                 if self.redaction_mode && matches!(ops.last(), Some(Object::Name(_))) =>
             {
@@ -1317,17 +1337,10 @@ impl<'a> DiagWalker<'a> {
                             && !d.contains_key(b"ExtGState".as_slice())
                     })
                 });
-                if !shading {
-                    self.push_blocker(Blocker {
-                        site: Some(self.site()),
-                        what: "tiling pattern".into(),
-                        detail: format!(
-                            "/{} — a tiling pattern's cell content is not edited",
-                            String::from_utf8_lossy(n)
-                        ),
-                    })?;
-                    self.uncertain_state = true;
-                }
+                // A tiling pattern's cell is content of its own: what
+                // it paints is decided where it is used (`tiling_paint`).
+                let side = usize::from(matches!(op, O::SetColorStroke(_)));
+                self.gs.tiling[side] = (!shading).then(|| n.clone());
             }
             O::SetColorSpaceStroke(n) | O::SetColorSpaceFill(n) => {
                 // A Pattern colour space means subsequent SC/sc paints
@@ -1346,14 +1359,13 @@ impl<'a> DiagWalker<'a> {
                     self.uncertain_state = true;
                 }
             }
+            O::SetColorFill(_) | O::SetGrayFill(_) | O::SetRgbFill(..) | O::SetCmykFill(..) => {
+                self.gs.tiling[0] = None;
+            }
             O::SetColorStroke(_)
-            | O::SetColorFill(_)
             | O::SetGrayStroke(_)
-            | O::SetGrayFill(_)
             | O::SetRgbStroke(..)
-            | O::SetRgbFill(..)
-            | O::SetCmykStroke(..)
-            | O::SetCmykFill(..) => {}
+            | O::SetCmykStroke(..) => self.gs.tiling[1] = None,
             O::MoveTo(x, y) => {
                 self.path_single_rect = false;
                 self.path_point(*x, *y);
@@ -1518,7 +1530,17 @@ impl<'a> DiagWalker<'a> {
                 self.capture_show_state()?;
                 self.show_text(text)?;
             }
-            O::Do(n) => self.do_xobject(n)?,
+            O::Do(n) => {
+                // An image mask or a form may paint with the colour in
+                // force: a tiling pattern there stays used.
+                self.tiling_kept_now();
+                self.do_xobject(n)?
+            }
+            O::InlineImage { .. }
+                if {
+                    self.tiling_kept_now();
+                    false
+                } => {}
             O::InlineImage { dict, data }
                 if self.redaction_mode
                     && !self.uncertain_state
@@ -1778,6 +1800,40 @@ impl<'a> DiagWalker<'a> {
                             reason: "graphics state was changed by an unhandled construct".into(),
                         })?;
                     } else {
+                        // A tiling pattern paints its cell: a path it
+                        // paints may only be removed whole (its cell then
+                        // left unused) or stay clear of the rects.
+                        if self.redaction_mode {
+                            let fills = !matches!(op, O::Stroke | O::CloseAndStroke);
+                            let sides = [fills, stroked];
+                            let tiled = (0..2).any(|i| sides[i] && self.gs.tiling[i].is_some());
+                            let meets = !hits_for(&b, self.rects).is_empty();
+                            let inside = self.rects.iter().any(|r| {
+                                b.0 >= r.llx && b.1 >= r.lly && b.2 <= r.urx && b.3 <= r.ury
+                            });
+                            if tiled && meets && (!inside || !self.xobject_stack.is_empty()) {
+                                self.push_uncertain(Uncertain {
+                                    kind: TargetKind::Path,
+                                    site: self.site(),
+                                    reason: "a path painted with a tiling pattern crossing a \
+                                             rect (or in a form) — its cell is content a cut \
+                                             would only hide"
+                                        .into(),
+                                })?;
+                            } else if tiled && meets {
+                                for (side, t) in sides.iter().zip(&self.gs.tiling) {
+                                    if let (true, Some(n)) = (side, t) {
+                                        self.tiling_removed.push(n.clone());
+                                    }
+                                }
+                            } else if tiled {
+                                for (side, t) in sides.iter().zip(&self.gs.tiling) {
+                                    if let (true, Some(n)) = (side, t) {
+                                        self.tiling_kept.insert(n.clone());
+                                    }
+                                }
+                            }
+                        }
                         let hits = self.visible_hits(&b);
                         self.bump_reported()?;
                         if !hits.is_empty() {
@@ -2290,6 +2346,37 @@ impl<'a> DiagWalker<'a> {
             // also emit a normal Target for clip-mode text.
         } else {
             let hits = self.visible_hits(&bounds);
+            // A glyph painted with a tiling pattern shows the cell
+            // through its outline: removing the glyph leaves the cell,
+            // which the walk does not follow — refused where one meets
+            // a rect.
+            let fills = matches!(render_mode, 0 | 2);
+            let strokes = matches!(render_mode, 1 | 2);
+            if self.redaction_mode
+                && !hits.is_empty()
+                && ((fills && self.gs.tiling[0].is_some())
+                    || (strokes && self.gs.tiling[1].is_some()))
+            {
+                return self.glyph_error(
+                    code,
+                    Error::Unsupported {
+                        feature: "text painted with a tiling pattern",
+                        detail: "its cell content is not edited".into(),
+                    },
+                );
+            }
+            if self.redaction_mode {
+                if fills {
+                    if let Some(t) = &self.gs.tiling[0] {
+                        self.tiling_kept.insert(t.clone());
+                    }
+                }
+                if strokes {
+                    if let Some(t) = &self.gs.tiling[1] {
+                        self.tiling_kept.insert(t.clone());
+                    }
+                }
+            }
             let (unicode, _via) = crate::text_extract::resolve_unicode(font, code);
             self.bump_reported()?;
             self.targets.push(Target {

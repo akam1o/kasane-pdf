@@ -1139,6 +1139,7 @@ pub(crate) fn regions_edit_session_with<'a>(
     // Redaction: per edited page, the shadings whose `sh` was removed
     // and the shading names its content still paints.
     let mut shading_removals: Vec<ShadingRemoval> = Vec::new();
+    let mut pattern_removals: Vec<ShadingRemoval> = Vec::new();
     let mut shadings_removed_total: u64 = 0;
     let mut removed_text: Vec<String> = Vec::new();
     let mut per_page: Vec<(usize, Vec<Site>)> = Vec::new();
@@ -2144,6 +2145,11 @@ pub(crate) fn regions_edit_session_with<'a>(
                 })
                 .collect();
             drawn_after.insert(page_ref, drawn);
+            if !walker.tiling_removed.is_empty() {
+                // Still used: by what the walk kept painting with it.
+                let still = walker.tiling_kept.clone();
+                pattern_removals.push((page_ref, walker.tiling_removed.clone(), still));
+            }
             if !shadings_here.is_empty() {
                 let still: BTreeSet<Vec<u8>> = new_ops
                     .iter()
@@ -2328,8 +2334,18 @@ pub(crate) fn regions_edit_session_with<'a>(
     let removed_shading_digests = if shading_removals.is_empty() {
         Vec::new()
     } else {
-        prune_removed_shadings(doc, &mut edit, &shading_removals, limits)?
+        prune_removed_shadings(doc, &mut edit, &shading_removals, limits, b"Shading")?
     };
+    let mut removed_shading_digests = removed_shading_digests;
+    if !pattern_removals.is_empty() {
+        removed_shading_digests.extend(prune_removed_shadings(
+            doc,
+            &mut edit,
+            &pattern_removals,
+            limits,
+            b"Pattern",
+        )?);
+    }
 
     Ok(RegionsEdit {
         edit,
@@ -2617,9 +2633,19 @@ fn prune_removed_shadings(
     edit: &mut Edit,
     removals: &[ShadingRemoval],
     limits: &Limits,
+    category: &[u8],
 ) -> Result<Vec<[u8; 32]>, Error> {
+    let what = if category == b"Pattern" {
+        "pattern"
+    } else {
+        "shading"
+    };
     let refuse = |detail: String| Error::Unsupported {
-        feature: "redaction of a shading used elsewhere",
+        feature: if category == b"Pattern" {
+            "redaction of a tiling pattern used elsewhere"
+        } else {
+            "redaction of a shading used elsewhere"
+        },
         detail,
     };
     // How many objects refer to each object.
@@ -2683,19 +2709,20 @@ fn prune_removed_shadings(
             return Err(refuse(format!("page {page_ref}: {why}")));
         }
         let sh_obj = res
-            .get(b"Shading".as_slice())
+            .get(category)
             .cloned()
-            .ok_or_else(|| Error::Structure("a removed shading is not in /Resources".into()))?;
+            .ok_or_else(|| Error::Structure(format!("a removed {what} is not in /Resources")))?;
         if let Object::Ref(sr) = &sh_obj {
             if referrers.get(sr).copied().unwrap_or(0) > 1 {
                 return Err(refuse(format!(
-                    "the /Shading dictionary of page {page_ref} is shared"
+                    "the /{} dictionary of page {page_ref} is shared",
+                    String::from_utf8_lossy(category)
                 )));
             }
         }
         let mut sh =
             doc.deref(&sh_obj)?.as_dict().cloned().ok_or_else(|| {
-                Error::Structure("/Resources /Shading is not a dictionary".into())
+                Error::Structure(format!("/Resources /{what} is not a dictionary"))
             })?;
         for n in names {
             let Some(entry) = sh.remove(n.as_slice()) else {
@@ -2711,7 +2738,7 @@ fn prune_removed_shadings(
             }
             digests.push(crate::redact_type3::content_digest(doc, &entry, limits)?);
         }
-        res.insert(b"Shading".to_vec(), Object::Dict(sh));
+        res.insert(category.to_vec(), Object::Dict(sh));
         pd.insert(b"Resources".to_vec(), Object::Dict(res));
         edit.overlay
             .insert((page_ref.number, page_ref.generation), Object::Dict(pd));

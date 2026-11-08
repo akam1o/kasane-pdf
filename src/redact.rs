@@ -535,13 +535,19 @@ fn verify(
             .collect();
         for r in refs {
             let obj = out.resolve(r)?;
+            let resource = |d: &Dict| {
+                d.contains_key(b"ShadingType".as_slice())
+                    || d.contains_key(b"PatternType".as_slice())
+            };
             let shading = match &obj {
-                Object::Dict(d) => d.contains_key(b"ShadingType".as_slice()),
-                Object::Stream { dict, .. } => dict.contains_key(b"ShadingType".as_slice()),
+                Object::Dict(d) => resource(d),
+                Object::Stream { dict, .. } => resource(dict),
                 _ => false,
             };
             if shading && gone.contains(&crate::redact_type3::content_digest(&out, &obj, limits)?) {
-                return Err(fail(format!("object {r} holds a removed shading")));
+                return Err(fail(format!(
+                    "object {r} holds a removed shading or tiling pattern"
+                )));
             }
         }
     }
