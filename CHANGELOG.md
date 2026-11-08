@@ -6,6 +6,21 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-11-08
+
+A security fix for `redact`; no public API change. Release notes:
+`docs/releases/v0.6.2.md`.
+
+### Security
+- **`redact` kept the positioning of removed text (0.6.0, 0.6.1,
+  GHSA-9mw8-m2cr-vxqm).** The positioning and advances of removed
+  glyphs stayed in the output. Between two shows still drawing glyphs,
+  the text positioning is now folded into one move to the next kept
+  glyph, values set only for removed text are dropped, and the empty
+  text objects and saved states it leaves are removed; kept text does
+  not move. A form, an image or an unknown operator inside a text
+  object among removed text is refused.
+
 ## [0.6.1] - 2026-11-08
 
 A security fix for `redact`; no public API change (`cargo
