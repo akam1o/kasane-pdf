@@ -339,6 +339,12 @@ fn redact_doc(
             strip_metadata: true,
         })?;
 
+    // Type 3 glyph definitions the output no longer shows go too.
+    let output = match crate::redact_type3::prune_type3(doc, &output, limits)? {
+        Some(pruned) => pruned,
+        None => output,
+    };
+
     // An original may stay only as an object the output still draws
     // (from a page, through forms); each such display is reported.
     let (out, residual, shown) = verify(
@@ -349,6 +355,14 @@ fn redact_doc(
         &s.removed_annot_prints,
         session,
     )?;
+    // No Type 3 glyph the input showed and the output does not is
+    // still defined.
+    if crate::redact_type3::prune_type3(doc, &output, limits)?.is_some() {
+        return Err(Error::Unsupported {
+            feature: "redaction output failed verification",
+            detail: "a Type 3 font still defines a glyph the output no longer shows".into(),
+        });
+    }
     let (mut elsewhere, elsewhere_unsearched_pages) =
         find_elsewhere(&out, &s.removed_text, limits)?;
     elsewhere.extend(shown.into_iter().map(|(p, form)| Elsewhere {
@@ -599,7 +613,10 @@ fn drawn_xobjects(
 
 /// The appearance streams (`/AP` `/N`, `/R`, `/D`, each a stream or a
 /// dictionary of states) of a page's annotations.
-fn appearance_streams(out: &Document, page: &crate::page::Page) -> Result<Vec<IndirectRef>, Error> {
+pub(crate) fn appearance_streams(
+    out: &Document,
+    page: &crate::page::Page,
+) -> Result<Vec<IndirectRef>, Error> {
     let mut refs = Vec::new();
     let Some(annots) = crate::redact_diag::page_dict_entry(out, page, b"Annots")? else {
         return Ok(refs);

@@ -34,7 +34,7 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 | content inside a rect | handling |
 |---|---|
 | text shown with `Tr 0`–`3` in an embedded font (fill, stroke, both, invisible) (rotated, scaled, `Ts`/`Tz`/`Tc`/`Tw`, `TJ` kerning) | the codes whose glyph ink hits a rect are deleted — whole glyphs, so a glyph straddling a rect's edge goes entirely; advances are preserved so the rest of the line keeps its position. A clip hides ink, not data: text, images and paths are hits wherever they meet a rect, clipped or not (the one exception: a shading `sh`, which fills the clip, is accepted under a rectangular clip meeting no rect, its resource kept as it is). Text whose text matrix, CTM or their product stretches one axis over 16 times the other is refused (readers disagree where it is drawn) |
-| text in a Type 3 font whose CharProcs are paths | each CharProc is evaluated: the bounds of what it fills and strokes (control points for curves; strokes, with the line state the glyph is shown with unless the CharProc sets its own, grown by half the width × the larger of the miter limit and √2 × the CharProc CTM's largest stretch; clips in it decide nothing; text rendering modes 1–2 add nothing, the CharProc deciding what is painted; its ops count against `max_diag_exec_ops`), mapped by `/FontMatrix` and the text rendering matrix and united with the code's advance cell (0.2 em below the baseline to 1 em above, where extraction places it) — not `/FontBBox`, which a CharProc may paint beyond. Codes meeting a rect are removed whole like any glyph; the same glyph elsewhere is kept. A CharProc with anything but path construction and painting, `q`/`Q`/`cm`, line state, device colours, `d0`/`d1`, flatness, rendering intent and unpropertied marked content — images (inline too), XObjects, text, shadings, `gs`, patterns or named colour spaces, marked content with properties, a hairline (`0 w`) stroke — is refused, as is a `/FontMatrix` × text matrix stretching one axis over 16 times the other or singular. The CharProcs stay in the font (see below) |
+| text in a Type 3 font whose CharProcs are paths | each CharProc is evaluated: the bounds of what it fills and strokes (control points for curves; strokes, with the line state the glyph is shown with unless the CharProc sets its own, grown by half the width × the larger of the miter limit and √2 × the CharProc CTM's largest stretch; clips in it decide nothing; text rendering modes 1–2 add nothing, the CharProc deciding what is painted; its ops count against `max_diag_exec_ops`), mapped by `/FontMatrix` and the text rendering matrix and united with the code's advance cell (0.2 em below the baseline to 1 em above, where extraction places it) — not `/FontBBox`, which a CharProc may paint beyond. Codes meeting a rect are removed whole like any glyph; the same glyph elsewhere is kept. A CharProc with anything but path construction and painting, `q`/`Q`/`cm`, line state, device colours, `d0`/`d1`, flatness, rendering intent and unpropertied marked content — images (inline too), XObjects, text, shadings, `gs`, patterns or named colour spaces, marked content with properties, a hairline (`0 w`) stroke — is refused, as is a `/FontMatrix` × text matrix stretching one axis over 16 times the other or singular. A glyph the output no longer shows loses its definition (see below) |
 | image XObjects, 8-bit DeviceGray/RGB/CMYK, Indexed (not as a JPEG; `/Decode` absent or its default `[0 255]`) or ICCBased (N 1, 3, 4, `/Alternate` absent or a device space; not a four-component JPEG), the colour space direct, named or one reference away (a reference to a reference is refused: readers resolve such chains differently), unfiltered / Flate / one DCT, axis-aligned | a copy with the covered samples set to 0 replaces the call; the original is not carried (next section) |
 | painted paths wholly inside one rect | the path and its painting op are deleted |
 | painted paths crossing a rect's edge | cut there (`paths_cut`): filled axis-aligned rectangles become their difference with the rects (exact; several only when they do not overlap); stroked straight segments are cut, in user space where the stroke is defined, at the centreline positions whose cross-section (and cap) would reach the rect — exact for butt caps; for square and round caps the cut end is pulled back by the cap's square: a square cap then ends the band exactly at the rect, and a round-capped piece whose both ends are cuts is stroked with square caps for the same result, while a round-capped piece keeping one of the path's own ends keeps its round caps and loses the two corners of the cut cap's square (≈ 0.21 × the squared half width each). A crossing that is not perpendicular also loses the sliver of band beyond the perpendicular cut; a corner kept near a rect must clear it by its join (the exact miter, or the bevel/round extent). A dashed stroke's pieces each restart the pattern at the phase where they start on the original subpath (an odd array written out in full, the phase reduced into one period), so the dashes outside fall where they did (a closed dashed outline is not rejoined at its start); each piece is its own stroke, so a dashed stroke that is not opaque in the Normal blend mode (`/CA` < 1, another `/BM`) is refused when cut into pieces. Stroked curves are cut by subdivision: a sub-curve (an exact de Casteljau piece of the original) is kept when its control points' bounds, grown by √2 × half the width under the CTM's largest stretch, clear every rect, and a part still near a rect after 14 halvings is removed — so up to that reach plus the last piece's length of band next to the rect is lost, and nothing reaches inside. Dashed curves cut at a rect, curved fills, degenerate dash patterns, other fill shapes and overlapping rectangles near a rect are refused |
@@ -149,12 +149,28 @@ information elsewhere is not removed:
   (attachments, annotations, form values, actions, JavaScript,
   embedded fonts, …; see [`audit.md`](audit.md)).
 
-Neither is a guarantee of absence: text inside a font program (a
-removed Type 3 glyph's CharProc too: glyph definitions stay in the
-font, as an embedded font program keeps its glyphs — which glyphs a
-font has, not where or in what order they were shown), in an
-image's pixels or encoded differently is not found. Reports carry no
-document text in `Debug` output.
+- **Type 3 glyph definitions.** A CharProc can hold any drawing (a
+  picture, a signature, a word), so it is not treated as a mere glyph
+  shape. After the edit, a Type 3 glyph the input showed and the output
+  no longer shows anywhere — page content, the forms it draws,
+  annotation appearances; the same font found by its content — loses
+  its definition: its `/CharProcs` entry, the codes naming it in the
+  encoding (rewritten as `/Differences` naming only kept glyphs), their
+  `/Widths` (set to 0) and their `/ToUnicode` entries (the CMap is
+  rewritten). Glyphs the input never showed go too. A glyph the output
+  still shows elsewhere keeps its definition: that drawing is on the
+  page there (single glyphs are not reported in `elsewhere`, like
+  letters of any font). A font that loses glyphs and that something
+  else uses — a tiling pattern, a soft mask, a form field's `/DR`,
+  another Type 3 font's resources, an ExtGState `/Font` — is refused, as
+  is a direct (unreferenced) Type 3 font dictionary that loses glyphs;
+  verification checks that no glyph the output no longer shows is
+  still defined.
+
+Neither report is a guarantee of absence: text inside an embedded font
+program (which glyphs a font has, not where or in what order they were
+shown), in an image's pixels or encoded differently is not found.
+Reports carry no document text in `Debug` output.
 
 ## Known limits of exactness
 
@@ -165,12 +181,17 @@ document text in `Debug` output.
 - Glyphs are removed whole: a glyph straddling a rect's edge goes
   entirely, including its part outside.
 - Geometry is exact in user space, not in device pixels. A reader
-  snaps what it draws to its pixel grid (Splash places images and thin
-  fills on whole pixels, with or without stroke adjustment), so kept
-  content lying within one device pixel of a rect's edge can colour
-  that edge's pixels inside the rect — measured: one pixel column of
-  the kept neighbouring image samples at 72–300 dpi. Nothing removed
-  is drawn there; the pixels are the kept content's own.
+  snaps what it draws to its pixel grid and blends at edges, so kept
+  content near a rect's edge can colour pixels inside the rect: up to
+  half a device pixel for images drawn without interpolation and thin
+  fills (measured with Poppler, MuPDF and pdf.js at 36–300 dpi), and
+  for an image with `/Interpolate true` up to about one sample's width
+  (the kept boundary sample blended towards its zeroed neighbour).
+  Nothing removed takes part: two inputs differing only in the data
+  inside the rects give byte-identical outputs (images with and without
+  interpolation, scaled, flipped and rotated by 90°, under transparency
+  and blending; paths), so these pixels are the
+  kept content's own.
 
 ## Not covered (known limitations of 0.6)
 

@@ -51,8 +51,13 @@ versions follow [Semantic Versioning](https://semver.org/).
   hairline strokes stay refused, as do FontMatrices stretching one axis
   over 16:1. A CharProc starts from the line state it is shown with;
   stroke text modes do not inflate Type 3 glyphs; CharProc ops count
-  against `max_diag_exec_ops`, refused CharProcs included. Removed glyphs' CharProcs stay in the
-  font, as an embedded font program keeps its glyphs.
+  against `max_diag_exec_ops`, refused CharProcs included (a CharProc
+  is charged a bound on its ops — half its decoded length — before it
+  is parsed, and refused unparsed when that exceeds what is left).
+  A Type 3 glyph the output no longer shows loses its definition: its
+  CharProc, the codes naming it (encoding, widths, ToUnicode); a font
+  losing glyphs that a place the walk does not read also uses (a
+  pattern, a form field's `/DR`, …) is refused.
 - `redact` accepts stroke adjustment (`/SA true`) for content it does
   not change and whose ink it does not move: while it is on, any stroke (paths, stroked text, a
   Type 3 CharProc's) and any fill that would be cut at a rect are

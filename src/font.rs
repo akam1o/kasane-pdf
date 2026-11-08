@@ -1239,6 +1239,11 @@ impl Type3Font {
 
     /// Char code → the CharProc stream `(dict, raw)` for its glyph.
     /// `None` = code not encodable or no matching CharProc.
+    /// The glyph name `code` selects (the encoding's), if any.
+    pub(crate) fn glyph_name(&self, code: u8) -> Option<&[u8]> {
+        self.encoding[code as usize].as_deref()
+    }
+
     /// The `/CharProcs` entry for `code` as written (a reference for a
     /// well-formed font), `None` when the code has none.
     pub(crate) fn charproc_entry(&self, code: u8) -> Option<&Object> {

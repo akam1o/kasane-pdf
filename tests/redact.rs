@@ -3530,3 +3530,258 @@ fn refused_type3_charprocs_count_against_the_execution_budget() {
     let e = redact(&doc, &[(0, vec![(41.5, 99.0, 55.0, 108.0)])], &opts).unwrap_err();
     assert!(e.to_string().contains("max_diag_exec_ops"), "{e}");
 }
+
+// Type 3 glyph definitions of removed text: a CharProc may hold any
+// drawing, so a glyph the output no longer shows loses its definition.
+
+/// A ToUnicode CMap mapping 65 → A, 66 → B.
+fn t3_tounicode() -> (u32, Vec<u8>) {
+    (
+        63,
+        stream_obj(
+            "",
+            b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /T def \
+              1 begincodespacerange <00> <FF> endcodespacerange 2 beginbfchar <41> <0041> \
+              <42> <0042> endbfchar endcmap CMapName currentdict /CMap defineresource pop end end",
+        ),
+    )
+}
+
+/// The Type 3 font dictionary of a one-font output.
+fn t3_font(pdf: &[u8]) -> kasane_pdf::Dict {
+    let doc = Document::from_bytes(pdf).unwrap();
+    let page = &doc.pages()[0];
+    let res = doc.deref(page.resources().unwrap()).unwrap();
+    let fonts = doc
+        .deref(res.as_dict().unwrap().get(b"Font".as_slice()).unwrap())
+        .unwrap();
+    let f = fonts
+        .as_dict()
+        .unwrap()
+        .get(b"T3".as_slice())
+        .unwrap()
+        .clone();
+    doc.deref(&f).unwrap().as_dict().unwrap().clone()
+}
+
+const SECRET_GLYPH: &str = "1000 0 d0 111 0 333 777 re f";
+
+#[test]
+fn a_type3_glyph_shown_only_in_the_rect_loses_its_definition() {
+    let pdf = type3_page(
+        "BT /T3 10 Tf 20 100 Td (AB) Tj ET",
+        T3_FILL,
+        SECRET_GLYPH,
+        "/ToUnicode 63 0 R",
+        vec![t3_tounicode()],
+    );
+    let r = run(&pdf, vec![(31.0, 99.0, 39.0, 108.0)]).unwrap();
+    assert_eq!(r.codes_removed, 1);
+    assert!(!contains(&r.output, b"333 777"), "the B CharProc is gone");
+    let doc = Document::from_bytes(&r.output).unwrap();
+    let f = t3_font(&r.output);
+    let get = |k: &[u8]| doc.deref(f.get(k).unwrap()).unwrap();
+    let cp = get(b"CharProcs");
+    let names: Vec<&Vec<u8>> = cp.as_dict().unwrap().keys().collect();
+    assert_eq!(names, vec![&b"A".to_vec()]);
+    let enc = format!("{:?}", get(b"Encoding"));
+    assert!(
+        enc.contains("Name([65])") && !enc.contains("Name([66])"),
+        "{enc}"
+    );
+    assert_eq!(
+        format!("{:?}", get(b"Widths")),
+        "Array([Integer(1000), Integer(0)])"
+    );
+    let kasane_pdf::Object::Stream { data, .. } = get(b"ToUnicode") else {
+        panic!("ToUnicode")
+    };
+    let cmap = String::from_utf8(data).unwrap();
+    assert!(
+        cmap.contains("<41> <0041>") && !cmap.contains("<42>"),
+        "{cmap}"
+    );
+    // The kept A still shows and extracts.
+    assert_eq!(page_text(&r.output, 0), "A");
+    assert_ne!(at(&r.output, 25, 103), 255);
+}
+
+#[test]
+fn a_type3_glyph_also_shown_outside_keeps_its_definition() {
+    let pdf = type3_page(
+        "BT /T3 10 Tf 20 100 Td (AB) Tj 0 -50 Td (B) Tj ET",
+        T3_FILL,
+        SECRET_GLYPH,
+        "/ToUnicode 63 0 R",
+        vec![t3_tounicode()],
+    );
+    let r = run(&pdf, vec![(31.0, 99.0, 39.0, 108.0)]).unwrap();
+    assert_eq!(r.codes_removed, 1);
+    assert!(contains(&r.output, b"333 777"), "B is still shown below");
+    assert_eq!(page_text(&r.output, 0).replace(['\n', ' '], ""), "AB");
+    // Nothing removed: the font is untouched.
+    let r = run(&pdf, vec![(150.0, 150.0, 160.0, 160.0)]).unwrap();
+    assert_eq!(r.codes_removed, 0);
+    let strip = |pdf: &[u8]| {
+        t3_font(pdf)
+            .iter()
+            .filter(|(k, _)| !matches!(k.as_slice(), b"CharProcs" | b"ToUnicode"))
+            .map(|(k, v)| format!("{k:?}{v:?}"))
+            .collect::<String>()
+    };
+    assert_eq!(strip(&r.output), strip(&pdf));
+    assert!(contains(&r.output, b"333 777"));
+}
+
+/// A font losing glyphs that something the walk does not read also
+/// uses (a form field's /DR, a tiling pattern) is refused.
+#[test]
+fn a_type3_font_used_where_its_glyphs_are_not_evaluated_is_refused() {
+    let mut pdf = type3_page(
+        "BT /T3 10 Tf 20 100 Td (AB) Tj ET",
+        T3_FILL,
+        SECRET_GLYPH,
+        "",
+        vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [] /DR << /Font << /T3 60 0 R >> >> >> >>".to_vec()),
+        ],
+    );
+    let e = unsupported(run(&pdf, vec![(31.0, 99.0, 39.0, 108.0)]));
+    assert!(e.contains("Type 3 glyph definitions"), "{e}");
+    pdf = type3_page(
+        "BT /T3 10 Tf 20 100 Td (AB) Tj ET",
+        T3_FILL,
+        SECRET_GLYPH,
+        "",
+        vec![
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << \
+                  /Font << /T3 60 0 R >> /Pattern << /P 70 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (
+                70,
+                stream_obj(
+                    "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10 \
+                     /Resources << /Font << /F 60 0 R >> >>",
+                    b"BT /F 1 Tf (B) Tj ET",
+                ),
+            ),
+        ],
+    );
+    let e = unsupported(run(&pdf, vec![(31.0, 99.0, 39.0, 108.0)]));
+    assert!(e.contains("Type 3 glyph definitions"), "{e}");
+}
+
+/// A Type 3 font with `n` glyphs (codes 0…n−1, names g0…), glyph i
+/// drawn by `proc(i)`, shown by `text` on one page.
+fn type3_many(n: usize, proc: impl Fn(usize) -> Vec<u8>, text: &[u8]) -> Vec<u8> {
+    let names: String = (0..n).map(|i| format!("/g{i} ")).collect();
+    let cps: String = (0..n).map(|i| format!("/g{i} {} 0 R ", 1000 + i)).collect();
+    let widths: String = (0..n).map(|_| "1000 ").collect();
+    let mut content = b"BT /T3 10 Tf 20 100 Td (".to_vec();
+    content.extend_from_slice(text);
+    content.extend_from_slice(b") Tj ET");
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /T3 60 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", &content)),
+        (
+            60,
+            format!(
+                "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
+                 /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << {cps}>> \
+                 /Encoding << /Type /Encoding /Differences [0 {names}] >> /FirstChar 0 \
+                 /LastChar {} /Widths [{widths}] /Resources << >> >>",
+                n - 1
+            )
+            .into_bytes(),
+        ),
+    ];
+    for i in 0..n {
+        objs.push((1000 + i as u32, proc(i)));
+    }
+    build_pdf(&objs)
+}
+
+fn limit_hit(e: &Error) -> bool {
+    matches!(e, Error::LimitExceeded { limit, .. } if *limit == "max_diag_exec_ops")
+}
+
+/// CharProc parsing is bounded whatever its outcome: a parse failing
+/// late, one huge CharProc, many distinct failing ones, a compressed
+/// one that inflates hugely — each stops at a limit, quickly.
+#[test]
+fn type3_charproc_parsing_is_bounded() {
+    let small = |n| {
+        RedactOptions::new().with_limits(kasane_pdf::Limits::default().with_max_diag_exec_ops(n))
+    };
+    let go = |pdf: &[u8], o: &RedactOptions| {
+        let doc = Document::from_bytes(pdf).unwrap();
+        let t = std::time::Instant::now();
+        let r = redact(&doc, &[(0, vec![(19.0, 99.0, 200.0, 108.0)])], o);
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            t.elapsed()
+        );
+        r
+    };
+    // A parse failing after 2,000 ops (an operand left without its
+    // operator), under a budget of 1,000.
+    let late = type3_many(
+        1,
+        |_| {
+            stream_obj(
+                "",
+                format!("1000 0 d0 {} 1 2", "q Q ".repeat(2000)).as_bytes(),
+            )
+        },
+        b"\x00",
+    );
+    let e = go(&late, &small(1000)).unwrap_err();
+    assert!(limit_hit(&e), "{e}");
+    // One huge CharProc under the default budget.
+    let huge = type3_many(
+        1,
+        |_| {
+            stream_obj(
+                "",
+                format!("1000 0 d0 {}", "q Q ".repeat(300_000)).as_bytes(),
+            )
+        },
+        b"\x00",
+    );
+    let e = go(&huge, &RedactOptions::new()).unwrap_err();
+    assert!(limit_hit(&e), "{e}");
+    // 200 distinct CharProcs, each failing after 1,000 ops.
+    let text: Vec<u8> = (0..200u8).collect();
+    let many = type3_many(
+        200,
+        |i| {
+            stream_obj(
+                "",
+                format!("1000 0 d0 % {i}\n{} 1 2", "q Q ".repeat(1000)).as_bytes(),
+            )
+        },
+        &text,
+    );
+    let e = go(&many, &small(50_000)).unwrap_err();
+    assert!(limit_hit(&e), "{e}");
+    // A Flate CharProc inflating to 64 MB of `q Q`.
+    let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+    std::io::Write::write_all(&mut z, b"1000 0 d0 ").unwrap();
+    for _ in 0..(64 << 20) / 4096 {
+        std::io::Write::write_all(&mut z, "q Q ".repeat(1024).as_bytes()).unwrap();
+    }
+    let bomb = z.finish().unwrap();
+    let pdf = type3_many(1, |_| stream_obj("/Filter /FlateDecode", &bomb), b"\x00");
+    assert!(go(&pdf, &RedactOptions::new()).is_err());
+}

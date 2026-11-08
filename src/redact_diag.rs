@@ -1940,7 +1940,16 @@ impl<'a> DiagWalker<'a> {
                     let mut ops = 0;
                     let g = match &charproc {
                         Some((d, raw)) => {
-                            type3_glyph_bounds(self.doc, d, raw, self.limits, inherited, &mut ops)
+                            let left = self.limits.max_diag_exec_ops.saturating_sub(self.exec_ops);
+                            type3_glyph_bounds(
+                                self.doc,
+                                d,
+                                raw,
+                                self.limits,
+                                inherited,
+                                left,
+                                &mut ops,
+                            )
                         }
                         None => Ok(None),
                     };
@@ -2901,14 +2910,16 @@ type Type3Key = (crate::object::IndirectRef, [u64; 5]);
 /// extent or the data it carries is not evaluated. The line state
 /// starts as `inherited` (width, cap, join, miter limit and stroke
 /// adjustment of the show; a stroke under adjustment is refused);
-/// the parsed op count is set in `ops_parsed` for the caller's
-/// execution budget, also when the CharProc is refused.
+/// the op count is set in `ops_parsed` for the caller's execution
+/// budget — when the parse fails, a bound on it (half the decoded
+/// length); a CharProc whose bound exceeds `budget_left` is not parsed.
 pub(crate) fn type3_glyph_bounds(
     doc: &Document,
     dict: &crate::object::Dict,
     raw: &[u8],
     limits: &Limits,
     inherited: (f64, i64, i64, f64, bool),
+    budget_left: u64,
     ops_parsed: &mut u64,
 ) -> Result<Option<[f64; 4]>, Error> {
     use crate::content::Operation as O;
@@ -2917,6 +2928,18 @@ pub(crate) fn type3_glyph_bounds(
         detail: format!("its CharProc uses {what}; only paths are evaluated"),
     };
     let decoded = doc.decode_stream(dict, raw)?;
+    // An operator takes at least two bytes (itself and a delimiter):
+    // half the length bounds the ops a parse of these bytes can do.
+    // That bound is charged whatever the parse's outcome, and a stream
+    // whose bound exceeds what is left of the budget is not parsed.
+    let bound = (decoded.len() as u64).div_ceil(2).max(1);
+    *ops_parsed = bound;
+    if bound > budget_left {
+        return Err(Error::LimitExceeded {
+            limit: "max_diag_exec_ops",
+            max: limits.max_diag_exec_ops,
+        });
+    }
     let mut warnings = Vec::new();
     let ops = crate::content::parse_content_stream(&[decoded], limits, false, &mut warnings)?;
     *ops_parsed = ops.len() as u64;
