@@ -81,8 +81,9 @@ pub enum Warning {
         /// Which block(s), as the parser saw them.
         detail: String,
     },
-    /// Literal strings in a content stream hold an unescaped carriage
-    /// return. kasane reads one — alone or as CRLF — as a single line
+    /// Literal strings in a content stream or in objects hold an
+    /// unescaped carriage return (for objects, reported once per
+    /// document with the count at that point). kasane reads one — alone or as CRLF — as a single line
     /// feed, as §7.3.4.2 says; Poppler and pdf.js keep the bytes. The
     /// strings' bytes (glyph codes, and the positions that follow from
     /// them) therefore differ between readers; `redact` refuses them.

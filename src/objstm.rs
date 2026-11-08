@@ -27,6 +27,8 @@ use std::collections::HashMap;
 pub(crate) struct ObjectStream {
     /// Object number → parsed object.
     objects: HashMap<u32, Object>,
+    /// Literal strings in the members with an unescaped carriage return.
+    pub(crate) raw_cr_strings: u64,
 }
 
 impl ObjectStream {
@@ -40,7 +42,7 @@ impl ObjectStream {
         expected: (u32, u32),
         limits: &Limits,
     ) -> Result<ObjectStream, Error> {
-        let (members, header) = Self::parse_all(decoded, dict, limits)?;
+        let (members, header, raw_cr_strings) = Self::parse_all(decoded, dict, limits)?;
         // The entry we were asked for must exist and match.
         let (want_num, want_idx) = expected;
         if (want_idx as usize) >= header.len() || header[want_idx as usize] != want_num {
@@ -51,6 +53,7 @@ impl ObjectStream {
         }
         Ok(ObjectStream {
             objects: members.into_iter().collect(),
+            raw_cr_strings,
         })
     }
 
@@ -123,6 +126,7 @@ impl ObjectStream {
 
         // Parse each object.
         let mut objects = Vec::with_capacity(n);
+        let mut raw_cr = 0u64;
         for (i, &(num, _off)) in header.iter().enumerate() {
             let start = bounds[i];
             let end = bounds[i + 1];
@@ -136,9 +140,10 @@ impl ObjectStream {
                 offset: start,
                 context: "object stream object",
             })?;
+            raw_cr += p.raw_cr_strings();
             objects.push((num, obj));
         }
-        Ok((objects, header.iter().map(|(n, _)| *n).collect()))
+        Ok((objects, header.iter().map(|(n, _)| *n).collect(), raw_cr))
     }
 
     /// Look up an object by number.
@@ -162,7 +167,7 @@ fn read_usize_word(parser: &mut Parser, context: &'static str) -> Result<usize, 
 }
 
 /// `(members in index order, header object numbers)`.
-type Members = (Vec<(u32, Object)>, Vec<u32>);
+type Members = (Vec<(u32, Object)>, Vec<u32>, u64);
 
 /// Every `(object number, object)` of an object stream in index order
 /// — the same bounds and parsing as [`ObjectStream::parse`] without a

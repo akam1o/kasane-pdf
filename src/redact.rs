@@ -349,6 +349,20 @@ fn redact_doc(
         None => (output, Vec::new()),
     };
 
+    // Every object the output carries was read by now. A literal string
+    // holding an unescaped CR is a line feed here and a CR to some
+    // readers: written out it changes for them (a palette, a font
+    // name, a field value), so the document is refused.
+    if doc.raw_cr_object_strings() > 0 {
+        return Err(Error::Unsupported {
+            feature: "redaction of a document with an unescaped carriage return in a string",
+            detail: format!(
+                "{} literal string(s) — readers do not agree on their bytes",
+                doc.raw_cr_object_strings()
+            ),
+        });
+    }
+
     // An original may stay only as an object the output still draws
     // (from a page, through forms); each such display is reported.
     // The images only removed Type 3 glyphs drew are checked like
@@ -725,6 +739,10 @@ fn find_elsewhere(
         .collect();
     texts.sort_unstable();
     texts.dedup();
+    // Line ends compared as one: a CR, LF or CRLF in the removed text
+    // matches any of them in a copy.
+    let eol = |s: &str| s.replace("\r\n", "\n").replace('\r', "\n");
+    let wanted: Vec<String> = texts.iter().map(|t| eol(t)).collect();
     let mut found = Vec::new();
     let mut unsearched = Vec::new();
     if texts.is_empty() {
@@ -744,15 +762,15 @@ fn find_elsewhere(
                     s.push('\n');
                     s.extend(a.appearance.iter().filter_map(|c| c.unicode.as_deref()));
                 }
-                s
+                eol(&s)
             }
             Err(_) => {
                 unsearched.push(i);
                 continue;
             }
         };
-        for t in &texts {
-            if shown.contains(t) {
+        for (t, w) in texts.iter().zip(&wanted) {
+            if shown.contains(w.as_str()) {
                 found.push(Elsewhere {
                     removed: Removed::Text(t.to_string()),
                     location: ElsewhereLocation::Page(i),
@@ -772,8 +790,9 @@ fn find_elsewhere(
         }
         let mut strings = Vec::new();
         collect_strings(&obj, &mut strings, 0);
-        for t in &texts {
-            if strings.iter().any(|s| s.contains(t)) {
+        let strings: Vec<String> = strings.iter().map(|s| eol(s)).collect();
+        for (t, w) in texts.iter().zip(&wanted) {
+            if strings.iter().any(|s| s.contains(w.as_str())) {
                 found.push(Elsewhere {
                     removed: Removed::Text(t.to_string()),
                     location: ElsewhereLocation::Object(r),
@@ -893,4 +912,66 @@ pub fn redaction_walk_findings(
             .map(|u| ("uncertain", u.reason.clone())),
     );
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pdf(objs: &[&[u8]]) -> Vec<u8> {
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offs = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offs.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+            out.extend_from_slice(o);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let x = out.len();
+        out.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes(),
+        );
+        for o in offs {
+            out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n",
+                objs.len() + 1
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    /// Line ends are compared as one: removed text with a LF is found in
+    /// a copy written with CR LF or CR, and the other way round.
+    #[test]
+    fn copies_match_across_line_ends() {
+        for (copy, removed) in [
+            (&b"(SECRET\\r\\nTEXT)"[..], "SECRET\nTEXT"),
+            (b"(SECRET\\rTEXT)", "SECRET\nTEXT"),
+            (b"(SECRET\\nTEXT)", "SECRET\r\nTEXT"),
+        ] {
+            let mut annot = b"<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] /Contents ".to_vec();
+            annot.extend_from_slice(copy);
+            annot.extend_from_slice(b" >>");
+            let bytes = pdf(&[
+                b"<< /Type /Catalog /Pages 2 0 R >>",
+                b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Annots [4 0 R] >>",
+                &annot,
+            ]);
+            let doc = Document::from_bytes(&bytes).unwrap();
+            let (found, _) =
+                find_elsewhere(&doc, &[removed.to_string()], &Limits::default()).unwrap();
+            assert!(
+                found
+                    .iter()
+                    .any(|e| e.location == ElsewhereLocation::Object(IndirectRef::new(4, 0))),
+                "{:?} vs {removed:?}: {found:?}",
+                String::from_utf8_lossy(copy)
+            );
+        }
+    }
 }

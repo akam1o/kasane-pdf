@@ -265,3 +265,101 @@ fn redaction_refuses_raw_line_ends_and_keeps_escaped_ones_exact() {
         );
     }
 }
+
+/// A Type 0 font with an embedded encoding CMap whose single mapping
+/// for byte `code` is written as `code_src` (a hex or literal string).
+fn cmap_page(code_src: &[u8]) -> Vec<u8> {
+    let mut cmap = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+        /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> def \
+        /CMapName /Test def /CMapType 1 def 1 begincodespacerange <00> <FF> endcodespacerange \
+        2 begincidchar "
+        .to_vec();
+    cmap.extend_from_slice(code_src);
+    cmap.extend_from_slice(
+        b" 36 <53> 37 endcidchar endcmap CMapName currentdict /CMap defineresource pop end end",
+    );
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] \
+              /Resources << /Font << /F 5 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"BT /F 10 Tf 20 100 Td <4153> Tj ET")),
+        (
+            5,
+            b"<< /Type /Font /Subtype /Type0 /BaseFont /LiberationSans /Encoding 9 0 R \
+              /DescendantFonts [8 0 R] >>"
+                .to_vec(),
+        ),
+        (
+            8,
+            b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /LiberationSans \
+              /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+              /DW 600 /W [36 [4000]] /CIDToGIDMap /Identity /FontDescriptor 6 0 R >>"
+                .to_vec(),
+        ),
+        (9, stream_obj("/Type /CMap /CMapName /Test", &cmap)),
+    ];
+    objs.extend(
+        font("Type0")
+            .into_iter()
+            .filter(|(n, _)| *n == 6 || *n == 7),
+    );
+    build_pdf(&objs)
+}
+
+/// A CMap code written as a literal string maps like the same code in
+/// hex (it decides the CID, so the width and where the next glyph
+/// falls); one holding an unescaped CR is refused.
+#[test]
+fn cmap_codes_in_literal_strings() {
+    let hex = chars(&cmap_page(b"<41>"));
+    assert_eq!(hex.len(), 2);
+    assert_eq!(hex[1].1 .0, 60_000, "CID 36 advances 40 pt");
+    assert_eq!(chars(&cmap_page(b"(A)")), hex);
+    let doc = Document::from_bytes(&cmap_page(b"(\r)")).unwrap();
+    let e = redact(
+        &doc,
+        &[(0, vec![(55.0, 95.0, 70.0, 115.0)])],
+        &RedactOptions::new(),
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("carriage return"), "{e}");
+}
+
+/// A literal string with an unescaped CRLF elsewhere in the document —
+/// here an Indexed palette — is refused: rewritten, it would change for
+/// some readers.
+#[test]
+fn object_strings_with_raw_line_ends_are_refused() {
+    let raw = b"(\xff\r\n\x00\xff\x00)".to_vec();
+    for (pal, ok) in [(raw, false), (b"<ff0d0a00ff00>".to_vec(), true)] {
+        let mut img = b"<< /Type /XObject /Subtype /Image /Width 2 /Height 1 /BitsPerComponent 8 \
+             /ColorSpace [/Indexed /DeviceRGB 1 "
+            .to_vec();
+        img.extend_from_slice(&pal);
+        img.extend_from_slice(b"] /Length 2 >>\nstream\n\x00\x01\nendstream");
+        let mut objs = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] \
+                  /Resources << /Font << /F 5 0 R >> /XObject << /Im 10 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (
+                4,
+                stream_obj("", b"q 20 0 0 10 10 10 cm /Im Do Q BT /F 12 Tf 120 100 Td (AB) Tj ET"),
+            ),
+            (10, img),
+        ];
+        objs.extend(font("TrueType"));
+        let doc = Document::from_bytes(&build_pdf(&objs)).unwrap();
+        let r = redact(&doc, &[(0, vec![RECT])], &RedactOptions::new());
+        assert_eq!(r.is_ok(), ok, "{:?}", r.map(|r| r.codes_removed));
+    }
+}

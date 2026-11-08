@@ -94,6 +94,12 @@ impl<'a> Parser<'a> {
         self.length_resolver = Some(f);
     }
 
+    /// Literal strings parsed so far that held an unescaped carriage
+    /// return (see the lexer).
+    pub(crate) fn raw_cr_strings(&self) -> u64 {
+        self.lexer.raw_cr_strings
+    }
+
     /// Byte offset the lexer is currently positioned at.
     pub(crate) fn pos(&self) -> usize {
         self.lexer.pos()

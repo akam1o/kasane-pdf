@@ -77,6 +77,9 @@ pub struct Document {
     /// recorded (replayed on each use, as a fresh load would record
     /// them). The document never changes, so neither does the font.
     font_cache: std::cell::RefCell<FontCache>,
+    /// Literal strings parsed in objects that held an unescaped
+    /// carriage return (read as a line feed; not every reader does).
+    raw_cr_object_strings: std::cell::Cell<u64>,
     /// The authenticated security handler of an encrypted document;
     /// every object read from the file is decrypted through it.
     crypt: Option<crate::crypt::Crypt>,
@@ -339,7 +342,9 @@ impl Document {
             parser.tolerate_missing_endobj();
         }
         parser.seek(Self::object_offset(offset, self.data.len(), r)?);
-        parser.parse_indirect_object()?.ok_or_else(|| {
+        let obj = parser.parse_indirect_object();
+        self.note_raw_cr(parser.raw_cr_strings());
+        obj?.ok_or_else(|| {
             Error::Parse(format!(
                 "no indirect object at xref offset {offset} (for {r})"
             ))
@@ -384,6 +389,7 @@ impl Document {
             objstm_cache: std::cell::RefCell::new(HashMap::new()),
             warnings: std::cell::RefCell::new(Default::default()),
             font_cache: std::cell::RefCell::new(FontCache::default()),
+            raw_cr_object_strings: std::cell::Cell::new(0),
             recovery: None,
             lenient,
             limits,
@@ -455,6 +461,7 @@ impl Document {
             objstm_cache: std::cell::RefCell::new(HashMap::new()),
             warnings: std::cell::RefCell::new(Default::default()),
             font_cache: std::cell::RefCell::new(FontCache::default()),
+            raw_cr_object_strings: std::cell::Cell::new(0),
             recovery: Some(report),
             lenient: true,
             limits,
@@ -527,6 +534,24 @@ impl Document {
     /// stream of their own, e.g. the ToUnicode parser).
     pub(crate) fn push_warning(&self, w: crate::Warning) {
         self.warnings.borrow_mut().push(w);
+    }
+
+    /// Count literal strings with an unescaped CR read in objects; the
+    /// first is reported.
+    fn note_raw_cr(&self, n: u64) {
+        if n == 0 {
+            return;
+        }
+        let before = self.raw_cr_object_strings.get();
+        self.raw_cr_object_strings.set(before.saturating_add(n));
+        if before == 0 {
+            self.push_warning(crate::Warning::LiteralStringCarriageReturn { strings: n });
+        }
+    }
+
+    /// Literal strings with an unescaped CR read in objects so far.
+    pub(crate) fn raw_cr_object_strings(&self) -> u64 {
+        self.raw_cr_object_strings.get()
     }
 
     /// Run `f`, returning what it returned and the warnings it recorded
@@ -697,7 +722,9 @@ impl Document {
                 parser.tolerate_missing_endobj();
             }
             parser.seek(Self::object_offset(offset, self.data.len(), current)?);
-            let obj = parser.parse_indirect_object()?.ok_or_else(|| {
+            let obj = parser.parse_indirect_object();
+            self.note_raw_cr(parser.raw_cr_strings());
+            let obj = obj?.ok_or_else(|| {
                 Error::Parse(format!(
                     "no indirect object at xref offset {offset} (for {})",
                     current
@@ -787,6 +814,7 @@ impl Document {
             }
             let decoded = self.decode_stream(dict, raw)?;
             let parsed = ObjectStream::parse(&decoded, dict, (want.number, index), &self.limits)?;
+            self.note_raw_cr(parsed.raw_cr_strings);
             self.objstm_cached_bytes
                 .set(self.objstm_cached_bytes.get() + decoded.len() as u64);
             self.objstm_cache.borrow_mut().insert(objstm_num, parsed);
