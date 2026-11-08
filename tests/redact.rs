@@ -4223,10 +4223,20 @@ fn removed_text_leaves_no_positions() {
                 52 + o(1),
                 ["XX", "QQQQ", "W"][(v % 3) as usize]
             ),
+            format!(
+                "BT /F1 12 Tf 100 Tz 20 100 Td (Name:) Tj {} 0 Td (SEC) Tj {} 0 Td (here) Tj ET",
+                52 + a,
+                90 - a
+            ),
+            format!(
+                "BT /F1 12 Tf 20 100 Td (Name:) Tj 60 -{a} TD (SEC) Tj 0 -{b} TD (RET) Tj \
+                 -60 -{} TD (below) Tj ET",
+                45 - a - b + 20
+            ),
         ]
     };
     let rect = vec![(60.0, 60.0, 155.0, 115.0)];
-    for i in 0..4 {
+    for i in 0..6 {
         let (a, b) = (layouts(1)[i].clone(), layouts(2)[i].clone());
         assert_ne!(a, b);
         let (pa, pb) = (one_page(&a, "", "", vec![]), one_page(&b, "", "", vec![]));
@@ -4236,7 +4246,7 @@ fn removed_text_leaves_no_positions() {
         );
         assert!(ra.codes_removed > 0, "{a}");
         let text = page_text(&ra.output, 0);
-        let after = ["here", "here", "here", "below"][i];
+        let after = ["here", "here", "here", "below", "here", "below"][i];
         assert!(
             text.contains("Name") && text.contains(after),
             "layout {i}: {text}"

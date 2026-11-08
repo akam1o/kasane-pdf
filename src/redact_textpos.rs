@@ -135,15 +135,21 @@ impl Folder {
         self.run.kern = 0.0;
     }
 
-    fn tstar(&mut self) {
+    fn tstar(&mut self) -> Result<(), Error> {
         match self.scale.leading {
             Some(l) => self.line_move((0.0, -l)),
             None => {
-                // Kept as a `T*`; still undo the offset first.
+                // Kept as a `T*` (written before the run's other
+                // operators, which may set the leading); after a `Tm`
+                // it cannot be, without keeping that `Tm`.
+                if self.run.absolute.is_some() {
+                    return Err(unsupported("a T* of unknown leading after a Tm"));
+                }
                 self.line_move((0.0, 0.0));
                 self.run.unknown_tstar += 1;
             }
         }
+        Ok(())
     }
 
     fn kerns(&mut self, items: &[TJItem]) {
@@ -158,12 +164,16 @@ impl Folder {
     /// the text object ends and positions no longer matter).
     fn flush(&mut self, before_show: bool) -> Result<(), Error> {
         let run = std::mem::take(&mut self.run);
-        self.out.extend(run.kept);
+        // `T*` moves of unknown leading come before anything that sets
+        // the leading (they came before any in the run).
+        if before_show {
+            for _ in 0..run.unknown_tstar {
+                self.out.push(Operation::NextLine);
+            }
+        }
+        self.out.extend(collapse_state(run.kept)?);
         if !before_show {
             return Ok(());
-        }
-        for _ in 0..run.unknown_tstar {
-            self.out.push(Operation::NextLine);
         }
         if !run.moved {
             if run.kern != 0.0 {
@@ -212,8 +222,9 @@ impl Folder {
                 self.rescale(s)?;
             }
             O::SetHorizontalScaling(h) => {
+                // `Tz` is a percentage.
                 let s = Scale {
-                    h_scale: Some(*h),
+                    h_scale: Some(*h / 100.0),
                     ..self.scale
                 };
                 self.rescale(s)?;
@@ -242,7 +253,7 @@ impl Folder {
                 self.scale.leading = Some(-*y);
                 self.run.kept.push(O::SetTextLeading(-*y));
             }
-            O::NextLine => self.tstar(),
+            O::NextLine => self.tstar()?,
             O::SetTextMatrix(m) => {
                 self.ahead = 0.0;
                 self.run.absolute = Some(*m);
@@ -252,7 +263,7 @@ impl Folder {
                 self.run.kern = 0.0;
             }
             O::NextLineShowText(t) => {
-                self.tstar();
+                self.tstar()?;
                 self.show(&[TJItem::Text(t.clone())])?;
             }
             O::SetSpacingNextLineShowText {
@@ -262,7 +273,7 @@ impl Folder {
             } => {
                 self.run.kept.push(O::SetWordSpacing(*word_spacing));
                 self.run.kept.push(O::SetCharSpacing(*char_spacing));
-                self.tstar();
+                self.tstar()?;
                 self.show(&[TJItem::Text(text.clone())])?;
             }
             O::ShowText(t) => self.show(&[TJItem::Text(t.clone())])?,
@@ -301,6 +312,55 @@ impl Folder {
     }
 }
 
+/// A run's operators with each text-state parameter (`Tc`, `Tw`, `Tz`,
+/// `TL`, `Ts`, `Tr`, `Tf`) set once, to its last value — the values in
+/// between belonged to removed text (a `TD` per removed line sets the
+/// leading to that line's offset). Under `q`/`Q` the parameters are
+/// restored, so the values cannot be collapsed: refused.
+fn collapse_state(ops: Vec<Operation>) -> Result<Vec<Operation>, Error> {
+    use Operation as O;
+    fn kind(o: &O) -> Option<u8> {
+        Some(match o {
+            O::SetCharSpacing(_) => 0,
+            O::SetWordSpacing(_) => 1,
+            O::SetHorizontalScaling(_) => 2,
+            O::SetTextLeading(_) => 3,
+            O::SetTextRise(_) => 4,
+            O::SetTextRenderingMode(_) => 5,
+            O::SetTextFont { .. } => 6,
+            _ => return None,
+        })
+    }
+    let mut count = [0usize; 7];
+    for o in &ops {
+        if let Some(k) = kind(o) {
+            count[k as usize] += 1;
+        }
+    }
+    if count.iter().all(|c| *c <= 1) {
+        return Ok(ops);
+    }
+    if ops
+        .iter()
+        .any(|o| matches!(o, O::SaveState | O::RestoreState))
+    {
+        return Err(unsupported(
+            "text state changed more than once under q/Q among removed text",
+        ));
+    }
+    let mut out = Vec::with_capacity(ops.len());
+    for o in ops {
+        if let Some(k) = kind(&o) {
+            count[k as usize] -= 1;
+            if count[k as usize] > 0 {
+                continue;
+            }
+        }
+        out.push(o);
+    }
+    Ok(out)
+}
+
 /// Fold the positioning of removed text in `ops` (see the module
 /// documentation).
 pub(crate) fn fold_removed_positions(
@@ -326,7 +386,38 @@ pub(crate) fn fold_removed_positions(
         // Unterminated text object: keep what does not move text.
         f.flush(false)?;
     }
-    Ok(f.out)
+    Ok(drop_dead_leading(f.out))
+}
+
+/// `ops` without the leading (`TL`) values nothing reads: a `TD`
+/// setting it to its line's offset — measured from a removed line, as
+/// often as not — is folded into a `Td` and a `TL`, and that value is
+/// dropped unless a `T*`, `'`, `"` or a form (which inherits it) may
+/// read it before it is set again. `q`/`Q` count as a read.
+fn drop_dead_leading(ops: Vec<Operation>) -> Vec<Operation> {
+    use Operation as O;
+    let mut live = false;
+    let mut keep = vec![true; ops.len()];
+    for (i, o) in ops.iter().enumerate().rev() {
+        match o {
+            O::NextLine
+            | O::NextLineShowText(_)
+            | O::SetSpacingNextLineShowText { .. }
+            | O::Do(_)
+            | O::SaveState
+            | O::RestoreState => live = true,
+            O::SetTextLeading(_) => {
+                keep[i] = live;
+                live = false;
+            }
+            O::MoveTextPositionAndSetLeading(..) => live = false,
+            _ => {}
+        }
+    }
+    ops.into_iter()
+        .zip(keep)
+        .filter_map(|(o, k)| k.then_some(o))
+        .collect()
 }
 
 #[cfg(test)]
@@ -398,6 +489,54 @@ mod tests {
                 TextStart::PAGE
             ),
             "BT /F1 9 Tf (A) Tj 1 Tc ET"
+        );
+    }
+
+    #[test]
+    fn review_cases() {
+        // Tz is a percentage: 100 Tz leaves the advance as it is.
+        assert_eq!(
+            fold(
+                "BT /F1 10 Tf 100 Tz 0 0 Td (A) Tj 7 0 Td [-500] TJ (B) Tj ET",
+                TextStart::FORM
+            ),
+            "BT /F1 10 Tf 100 Tz 0 0 Td (A) Tj 12 0 Td (B) Tj ET"
+        );
+        // A T* of unknown leading comes before the run's TL (here
+        // read by nothing after, so dropped).
+        assert_eq!(
+            fold(
+                "BT /F1 10 Tf 100 Tz (A) Tj T* 12 TL [-500] TJ (B) Tj ET",
+                TextStart::FORM
+            ),
+            "BT /F1 10 Tf 100 Tz (A) Tj T* 5 0 Td (B) Tj ET"
+        );
+        // ... and cannot follow a Tm.
+        let mut w = Vec::new();
+        let ops = crate::content::parse_content_stream(
+            &[b"BT /F1 10 Tf (A) Tj 1 0 0 1 5 5 Tm T* (B) Tj ET".to_vec()],
+            &crate::limits::Limits::default(),
+            false,
+            &mut w,
+        )
+        .unwrap();
+        assert!(fold_removed_positions(&ops, TextStart::FORM).is_err());
+        // The leading each removed line's TD set is not kept; the last
+        // is kept only where something reads it.
+        assert_eq!(
+            fold(
+                "BT /F1 10 Tf 0 0 Td (A) Tj 0 -10 TD [-500] TJ 0 -20 TD [-500] TJ 0 -12 TD (C) Tj ET",
+                TextStart::PAGE
+            ),
+            "BT /F1 10 Tf 0 0 Td (A) Tj 0 -42 Td (C) Tj ET"
+        );
+        assert_eq!(
+            fold(
+                "BT /F1 10 Tf 0 0 Td (A) Tj 0 -10 TD [-500] TJ 0 -12 TD (C) Tj T* (D) Tj ET",
+                TextStart::PAGE
+            ),
+            // The T* of known leading folds too, so nothing reads it.
+            "BT /F1 10 Tf 0 0 Td (A) Tj 0 -22 Td (C) Tj 0 -12 Td (D) Tj ET"
         );
     }
 }
