@@ -814,6 +814,16 @@ impl Document {
         }
     }
 
+    /// [`Self::deref`] that borrows a direct object instead of cloning
+    /// it — resource lookups go through the resources dictionary on
+    /// every name.
+    fn deref_cow<'o>(&self, obj: &'o Object) -> Result<std::borrow::Cow<'o, Object>, Error> {
+        match obj {
+            Object::Ref(r) => Ok(std::borrow::Cow::Owned(self.resolve(*r)?)),
+            other => Ok(std::borrow::Cow::Borrowed(other)),
+        }
+    }
+
     /// The merged trailer dictionary (newest section, older fills).
     pub fn trailer(&self) -> &Dict {
         &self.xref.trailer
@@ -1115,13 +1125,13 @@ impl Document {
         category: &str,
         name: &[u8],
     ) -> Result<Option<Object>, Error> {
-        let res = self.deref(resources)?;
+        let res = self.deref_cow(resources)?;
         let res_dict = res
             .as_dict()
             .ok_or_else(|| Error::Structure("/Resources is not a dictionary".into()))?;
         let category_obj = match res_dict.get(category.as_bytes()) {
             None => return Ok(None),
-            Some(c) => self.deref(c)?,
+            Some(c) => self.deref_cow(c)?,
         };
         let cat_dict = category_obj.as_dict().ok_or_else(|| {
             Error::Structure(format!("/Resources /{category} is not a dictionary"))
@@ -1143,13 +1153,13 @@ impl Document {
         category: &str,
         name: &[u8],
     ) -> Result<Option<Object>, Error> {
-        let res = self.deref(resources)?;
+        let res = self.deref_cow(resources)?;
         let res_dict = res
             .as_dict()
             .ok_or_else(|| Error::Structure("/Resources is not a dictionary".into()))?;
         let category_obj = match res_dict.get(category.as_bytes()) {
             None => return Ok(None),
-            Some(c) => self.deref(c)?,
+            Some(c) => self.deref_cow(c)?,
         };
         let cat_dict = category_obj.as_dict().ok_or_else(|| {
             Error::Structure(format!("/Resources /{category} is not a dictionary"))
