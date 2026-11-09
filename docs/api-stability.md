@@ -104,7 +104,7 @@ patch release.
   class of input is refused with `max_pattern_tiles`, and `rewrite`
   carries `/OCProperties`.
 
-## 0.7.0 (unreleased)
+## 0.7.0
 
 - Added: `RedactOptions::{embed_substitute_fonts, remove_javascript}`;
   `Redaction::{fonts_embedded, shadings_removed, javascript_removed}`;
@@ -117,7 +117,10 @@ patch release.
 - `Document` stays `Send` and `UnwindSafe`: the fonts it reuses are
   kept per thread for the duration of an operation, not in it.
 - Behaviour: unescaped CR / CRLF in literal strings read as LF
-  (§7.3.4.2); see the CHANGELOG.
+  (§7.3.4.2); a rewrite that edits or removes anything refuses a
+  document whose objects refer to an input object stream; `redact`
+  refuses strings and CMaps readers disagree on, and documents running
+  scripts unless `remove_javascript`; see the CHANGELOG.
 
 ## 0.6.0
 

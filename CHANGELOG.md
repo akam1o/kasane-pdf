@@ -6,6 +6,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - unreleased (the date is set when the release is tagged)
+
 ### Added
 - `RedactOptions::remove_javascript` (CLI `--remove-javascript`,
   `Redaction::javascript_removed`): every JavaScript action and the
@@ -139,6 +141,13 @@ versions follow [Semantic Versioning](https://semver.org/).
   so readers would disagree on what is drawn.
 
 ### Fixed
+- A rewrite that edits or removes anything (`redact`,
+  `remove_document_metadata`, `Edit::rewrite`, the `remove_*` editors,
+  `rewrite_with` removing usage rights) refuses a document in which an
+  object refers to an input object stream or cross-reference stream:
+  written out, the stream kept the input's objects as they were
+  (removed annotations, the dropped `/Info`). A plain `rewrite` copies
+  it as before.
 - `redact` verification fails when the output carries an input object
   stream or cross-reference stream (something referred to it): it would
   hold the input's objects as they were, edited ones included.
