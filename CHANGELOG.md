@@ -6,6 +6,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - unreleased (the date is set when the release is tagged)
+
 ### Added
 - `redact` keeps and edits the structure tree instead of refusing one
   with alternate text: every element whose content the edit touches
@@ -55,7 +57,12 @@ versions follow [Semantic Versioning](https://semver.org/).
   readers draw it: `/Rect` and its geometry (formerly refused when the
   geometry left `/Rect`), grown by line endings and leader lines; one
   with a caption or a cloudy border is refused.
-- `Diagnosis` is `#[non_exhaustive]` and gains `data`.
+- `Diagnosis` is `#[non_exhaustive]` and gains `data`; its image
+  blockers list a soft mask only when `redact` cannot edit it.
+- An appearance-less Highlight, Underline, StrikeOut or Squiggly reaches
+  half its tallest quadrilateral's height past it in `redact`'s extent
+  (Poppler and MuPDF draw a highlight's rounded ends up to 0.19 × the
+  height past it).
 
 ## [0.7.0] - 2026-11-10
 
