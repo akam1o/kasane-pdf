@@ -782,6 +782,18 @@ pub(crate) fn drawn_xobjects(
             .resources()
             .cloned()
             .unwrap_or(Object::Dict(Dict::new()));
+        // A page naming no XObject and with no annotations draws none:
+        // its content need not be read.
+        let names_xobjects = match out.deref(&res)? {
+            Object::Dict(d) => match d.get(b"XObject".as_slice()) {
+                Some(x) => out.deref(x)?.as_dict().is_none_or(|x| !x.is_empty()),
+                None => false,
+            },
+            _ => true,
+        };
+        if !names_xobjects && crate::redact_diag::page_dict_entry(out, page, b"Annots")?.is_none() {
+            continue;
+        }
         let mut seen: HashSet<(IndirectRef, Option<IndirectRef>)> = HashSet::new();
         let mut stack: Vec<Frame> = vec![(out.page_operations(page)?, res.clone(), None, 0)];
         // Annotation appearances: their own resources, else none.
