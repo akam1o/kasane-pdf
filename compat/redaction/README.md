@@ -9,6 +9,7 @@ starts from them. See [`../../docs/testing.md`](../../docs/testing.md)
 |---|---|
 | `eval-default.json` | `scripts/eval-redact-corpus.py`, default options |
 | `eval-optin.json` | the same with `--embed-substitute-fonts --remove-annotations` |
+| `eval-optin-javascript.json` | the same with `--remove-javascript` added |
 | `refusals-default.json`, `refusals-optin.json` | `scripts/analyze-redact-refusals.py` on those: every walk blocker of each refused run, by category, and the runs each category alone blocks |
 
 Reading them: a run is `ok`, `refused` (a typed refusal, nothing
@@ -19,8 +20,7 @@ black look like unchanged ink); its output was checked by hand. A
 "lost" word can be pdftotext regrouping kept glyphs once a neighbour is
 removed (per-glyph words in vertical CJK text). MuPDF characters
 "moved" are its integer-rounded widths (Poppler places those glyphs
-identically). MuPDF characters "lost" include Type 3 codes whose
-advance cell meets the rect (removed by design); the others are still
-being checked. The category counts are
+identically); the 6 MuPDF characters "lost" are Type 3 codes whose
+advance cell meets the rect (removed by design). The category counts are
 upper bounds for what supporting a category gains: a later stage may
 still refuse.
