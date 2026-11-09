@@ -33,6 +33,10 @@ pub(crate) struct CMap {
     identity_base: bool,
     /// `/WMode 1`.
     pub(crate) vertical: bool,
+    /// Some code is written as a literal string: read like a hex one
+    /// here and by pdf.js, rejected by Poppler — readers place glyphs
+    /// differently.
+    pub(crate) literal_codes: bool,
 }
 
 impl CMap {
@@ -162,11 +166,19 @@ impl CMap {
                                     break
                                 }
                                 Some(Token::HexString { value, .. }) => value,
+                                Some(Token::LiteralString { value, .. }) => {
+                                    cm.literal_codes = true;
+                                    value
+                                }
                                 Some(_) => continue,
                                 None => return Err(eof("codespacerange")),
                             };
                             let hi = match lx.next_token()? {
                                 Some(Token::HexString { value, .. }) => value,
+                                Some(Token::LiteralString { value, .. }) => {
+                                    cm.literal_codes = true;
+                                    value
+                                }
                                 _ => {
                                     return Err(Error::Structure(
                                         "codespacerange needs a high bound".into(),
@@ -189,11 +201,19 @@ impl CMap {
                             let lo = match lx.next_token()? {
                                 Some(Token::Word { bytes, .. }) if bytes == b"endcidrange" => break,
                                 Some(Token::HexString { value, .. }) => value,
+                                Some(Token::LiteralString { value, .. }) => {
+                                    cm.literal_codes = true;
+                                    value
+                                }
                                 Some(_) => continue,
                                 None => return Err(eof("cidrange")),
                             };
                             let hi = match lx.next_token()? {
                                 Some(Token::HexString { value, .. }) => value,
+                                Some(Token::LiteralString { value, .. }) => {
+                                    cm.literal_codes = true;
+                                    value
+                                }
                                 _ => {
                                     return Err(Error::Structure(
                                         "cidrange needs a high bound".into(),
@@ -225,6 +245,10 @@ impl CMap {
                             let code = match lx.next_token()? {
                                 Some(Token::Word { bytes, .. }) if bytes == b"endcidchar" => break,
                                 Some(Token::HexString { value, .. }) => value,
+                                Some(Token::LiteralString { value, .. }) => {
+                                    cm.literal_codes = true;
+                                    value
+                                }
                                 Some(_) => continue,
                                 None => return Err(eof("cidchar")),
                             };
@@ -313,6 +337,15 @@ impl CMap {
                     }
                 }
             }
+        }
+        // A code written as a literal string with an unescaped CR is a
+        // line feed here (§7.3.4.2) and a CR to other readers: which
+        // codes the CMap maps, and so where glyphs fall, would differ.
+        if lx.raw_cr_strings != 0 {
+            return Err(Error::Unsupported {
+                feature: "CMap code with an unescaped carriage return",
+                detail: "readers do not agree on the bytes of such a string".into(),
+            });
         }
         if cm.codespaces.is_empty() && !cm.identity_base {
             return Err(Error::Structure(

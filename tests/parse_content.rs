@@ -460,6 +460,55 @@ fn ops_and_warnings(stream: &[u8]) -> Result<(Vec<Operation>, Vec<kasane_pdf::Wa
     Ok((ops, doc.take_warnings()))
 }
 
+/// An unescaped CR in a literal string — alone or as CRLF — is one LF
+/// (§7.3.4.2) and is recorded (Poppler and pdf.js keep the bytes); an
+/// escaped one is not, and neither is a raw LF.
+#[test]
+fn raw_carriage_return_in_a_literal_string_is_recorded() {
+    let (ops, w) = ops_and_warnings(b"BT (A\rB) Tj (C\r\nD) Tj ET").unwrap();
+    assert_eq!(ops[1], Operation::ShowText(b"A\nB".to_vec()));
+    assert_eq!(ops[2], Operation::ShowText(b"C\nD".to_vec()));
+    assert!(
+        matches!(
+            &w[..],
+            [kasane_pdf::Warning::LiteralStringCarriageReturn { strings: 2 }]
+        ),
+        "{w:?}"
+    );
+    let (_, w) = ops_and_warnings(b"BT (A\\rB\\015) Tj <0d> Tj ET").unwrap();
+    assert!(w.is_empty(), "{w:?}");
+    // Every way of writing an end-of-line or a CR byte, one show each.
+    for (src, bytes, warned) in [
+        (b"(A\nB)".as_slice(), b"A\nB".as_slice(), false), // raw LF
+        (b"(A\\nB)", b"A\nB", false),                      // escaped LF
+        (b"(A\\rB)", b"A\rB", false),                      // escaped CR
+        (b"(A\\015\\012B)", b"A\r\nB", false),             // octal CR LF
+        (b"(A\\\r\nB)", b"AB", false),                     // continuation, CRLF
+        (b"(A\\\rB)", b"AB", false),                       // continuation, CR
+        (b"(A\\\nB)", b"AB", false),                       // continuation, LF
+        (b"(A\r\r\nB)", b"A\n\nB", true),                  // CR then CRLF
+        (b"(\x82\xa0\r\n\xff)", b"\x82\xa0\n\xff", true),  // 8-bit, two-byte codes
+    ] {
+        let mut c = b"BT ".to_vec();
+        c.extend_from_slice(src);
+        c.extend_from_slice(b" Tj ET");
+        let (ops, w) = ops_and_warnings(&c).unwrap();
+        assert_eq!(
+            ops[1],
+            Operation::ShowText(bytes.to_vec()),
+            "{:?}",
+            String::from_utf8_lossy(src)
+        );
+        assert_eq!(
+            w.iter()
+                .any(|w| matches!(w, kasane_pdf::Warning::LiteralStringCarriageReturn { .. })),
+            warned,
+            "{:?}",
+            String::from_utf8_lossy(src)
+        );
+    }
+}
+
 #[test]
 fn unbalanced_q_is_closed_with_a_warning() {
     // §7.8.2 wants the block closed; closing it at the end of the

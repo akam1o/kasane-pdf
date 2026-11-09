@@ -371,6 +371,7 @@ pub fn diagnose_redaction(
     limits: &Limits,
 ) -> Result<Diagnosis, Error> {
     limits.validate()?;
+    let _fonts = doc.font_cache_scope();
     // ---- input validation ----------------------------------------
     if rects.is_empty() {
         return Err(Error::Structure("at least one --rect is required".into()));
@@ -1446,12 +1447,17 @@ impl<'a> DiagWalker<'a> {
             }
             O::EndText => self.in_text = false,
             O::SetTextFont { font, size } => {
-                self.gs.text.font = Some(crate::font::load_font(
-                    self.doc,
-                    &self.resources,
-                    font,
-                    self.limits,
-                )?);
+                let f = crate::font::load_font(self.doc, &self.resources, font, self.limits)?;
+                if self.redaction_mode && f.reader_dependent_codes() {
+                    return Err(Error::Unsupported {
+                        feature: "redaction of text in a CMap with codes written as strings",
+                        detail: format!(
+                            "/{} — readers do not agree on its codes, so on where its glyphs fall",
+                            String::from_utf8_lossy(font)
+                        ),
+                    });
+                }
+                self.gs.text.font = Some(f);
                 self.gs.text.font_name = font.clone();
                 self.gs.text.font_size = *size;
             }
@@ -2810,6 +2816,9 @@ impl<'a> DiagWalker<'a> {
                 self.doc.recovery_mode(),
                 &mut warnings,
             )?;
+            if self.redaction_mode {
+                refuse_raw_cr(&warnings)?;
+            }
             for w in warnings {
                 self.doc.push_warning(w);
             }
@@ -3123,6 +3132,25 @@ fn image_mask(doc: &Document, dict: &crate::object::Dict) -> bool {
             None => false,
             Some(v) => !matches!(doc.deref(v), Ok(Object::Bool(false))),
         })
+}
+
+/// Redaction: content whose literal strings hold an unescaped carriage
+/// return is refused — §7.3.4.2 reads one (alone or in CRLF) as a line
+/// feed, Poppler and pdf.js keep it, so the glyph codes and the
+/// positions after them depend on the reader.
+pub(crate) fn refuse_raw_cr(warnings: &[crate::Warning]) -> Result<(), Error> {
+    for w in warnings {
+        if let crate::Warning::LiteralStringCarriageReturn { strings } = w {
+            return Err(Error::Unsupported {
+                feature: "redaction of content with an unescaped carriage return in a string",
+                detail: format!(
+                    "{strings} literal string(s) — readers differ on whether it is a line \
+                     feed (§7.3.4.2), and so on the codes shown and where"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn type3_glyph_bounds(

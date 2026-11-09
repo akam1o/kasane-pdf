@@ -260,7 +260,11 @@ fn usage(doc: &Document, limits: &Limits) -> Result<Usage, Error> {
             u.roots.insert(p);
         }
         let mut stack = vec![Frame {
-            ops: doc.page_operations(page)?,
+            ops: {
+                let (ops, w) = doc.page_operations_warned(page)?;
+                crate::redact_diag::refuse_raw_cr(&w)?;
+                ops
+            },
             res,
             depth: 0,
             font: None,
@@ -309,6 +313,8 @@ fn usage(doc: &Document, limits: &Limits) -> Result<Usage, Error> {
                 doc.recovery_mode(),
                 &mut warnings,
             )?;
+            // The codes counted must be the codes every reader shows.
+            crate::redact_diag::refuse_raw_cr(&warnings)?;
             Ok(Some(Frame {
                 ops,
                 res: match &res {
@@ -774,6 +780,7 @@ pub(crate) fn prune_type3(
     let output = edit.rewrite_with_overrides(&crate::rewrite::RewriteOverrides {
         strip_info: true,
         strip_metadata: true,
+        ..Default::default()
     })?;
     Ok(Some(Pruned { output, images }))
 }

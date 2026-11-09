@@ -3751,9 +3751,8 @@ fn type3_many(n: usize, proc: impl Fn(usize) -> Vec<u8>, text: &[u8]) -> Vec<u8>
     let names: String = (0..n).map(|i| format!("/g{i} ")).collect();
     let cps: String = (0..n).map(|i| format!("/g{i} {} 0 R ", 1000 + i)).collect();
     let widths: String = (0..n).map(|_| "1000 ").collect();
-    let mut content = b"BT /T3 10 Tf 20 100 Td (".to_vec();
-    content.extend_from_slice(text);
-    content.extend_from_slice(b") Tj ET");
+    let hex: String = text.iter().map(|b| format!("{b:02x}")).collect();
+    let content = format!("BT /T3 10 Tf 20 100 Td <{hex}> Tj ET").into_bytes();
     let mut objs = vec![
         (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
         (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
@@ -4541,6 +4540,64 @@ fn tiling_patterns_follow_their_uses() {
     );
 }
 
+// Carriage returns in strings. §7.3.4.2 reads an unescaped CR in a
+// literal string — alone or as CRLF — as one LF; Poppler and pdf.js keep
+// the bytes. Kept codes holding 0x0D are written escaped, so every
+// reader reads them alike; input holding a raw CR is refused, the codes
+// shown (and where) depending on the reader.
+
+#[test]
+fn kept_carriage_return_codes_are_written_escaped() {
+    let c = format!("{SECRET} BT /F1 12 Tf 10 20 Td <410d0a42> Tj ET");
+    let pdf = doc_with("/Font << /F1 20 0 R >>", &[c.as_bytes()], font_objs());
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert_eq!(r.codes_removed, 10);
+    let doc = Document::from_bytes(&r.output).unwrap();
+    let page = &doc.pages()[0];
+    let raw: Vec<u8> = doc.page_contents(page).unwrap().concat();
+    assert!(
+        !raw.contains(&b'\r'),
+        "a raw CR in the content: {}",
+        String::from_utf8_lossy(&raw)
+    );
+    let shown: Vec<Vec<u8>> = doc
+        .page_operations(page)
+        .unwrap()
+        .into_iter()
+        .filter_map(|o| match o {
+            kasane_pdf::Operation::ShowText(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(shown, vec![b"A\r\nB".to_vec()]);
+}
+
+#[test]
+fn raw_carriage_returns_in_strings_are_refused() {
+    let page_res = "/Font << /F1 20 0 R >> /XObject << /Fm 40 0 R >>";
+    for c in [
+        format!("{SECRET} BT /F1 12 Tf 10 20 Td (A\rB) Tj ET"),
+        "BT /F1 12 Tf 50 100 Td (SECRET\r\nTEXT) Tj ET".to_string(),
+        format!("{SECRET} /Fm Do"),
+    ] {
+        let mut objs = font_objs();
+        objs.push((
+            40,
+            stream_obj(
+                "/Type /XObject /Subtype /Form /BBox [0 0 200 200] /Resources << /Font << /F1 20 0 R >> >>",
+                b"BT /F1 12 Tf 10 20 Td (A\rB) Tj ET",
+            ),
+        ));
+        let pdf = doc_with(page_res, &[c.as_bytes()], objs);
+        let e = unsupported(run(&pdf, vec![RECT]));
+        assert!(e.contains("carriage return"), "{c:?}: {e}");
+    }
+    // Escaped, it is unambiguous.
+    let c = format!("{SECRET} BT /F1 12 Tf 10 20 Td (A\\rB\\015) Tj ET");
+    let pdf = doc_with("/Font << /F1 20 0 R >>", &[c.as_bytes()], font_objs());
+    assert_eq!(run(&pdf, vec![RECT]).unwrap().codes_removed, 10);
+}
+
 /// What a removed shading or tiling pattern uses must go with it: data
 /// it shares with anything else, a shading or pattern also painted
 /// outside the rects, and patterns read only by images carrying their
@@ -4728,4 +4785,247 @@ fn doc_with_resources_ref(res: u32, pages: &[&[u8]], extra: Vec<(u32, Vec<u8>)>)
     }
     objs.extend(extra);
     build_pdf(&objs)
+}
+
+/// A kept annotation appearance holding a raw CR, in a Type 3 font
+/// whose glyphs are pruned: which code it shows decides which glyph
+/// must stay, and readers differ on it — refused (second review).
+#[test]
+fn raw_carriage_returns_in_type3_usage_are_refused() {
+    let widths = vec!["600"; 57].join(" ");
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << /Font << /T 5 0 R >> >> \
+              /Contents 4 0 R /Annots [40 0 R] >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"BT /T 10 Tf 80 100 Td <0A> Tj ET")),
+        (
+            5,
+            format!(
+                "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 600 600] /FontMatrix [.001 0 0 .001 0 0] \
+                 /CharProcs << /LF 6 0 R /CR 7 0 R /A 8 0 R /B 9 0 R >> /Encoding << /Differences \
+                 [10 /LF 13 /CR 65 /A /B] >> /FirstChar 10 /LastChar 66 /Widths [{widths}] >>"
+            )
+            .into_bytes(),
+        ),
+        (6, stream_obj("", b"600 0 d0 1 0 0 rg 0 0 600 600 re f")),
+        (7, stream_obj("", b"600 0 d0 0 0 1 rg 0 0 600 600 re f")),
+        (8, stream_obj("", b"600 0 d0 0 g 0 0 400 600 re f")),
+        (9, stream_obj("", b"600 0 d0 0 g 100 0 400 600 re f")),
+        (
+            40,
+            b"<< /Type /Annot /Subtype /Square /Rect [10 10 70 40] /AP << /N 41 0 R >> >>".to_vec(),
+        ),
+        (
+            41,
+            stream_obj(
+                "/Type /XObject /Subtype /Form /BBox [0 0 60 30] /Resources << /Font << /T 5 0 R >> >>",
+                b"BT /T 10 Tf 0 10 Td (A\rB) Tj ET",
+            ),
+        ),
+    ]);
+    let e = unsupported(run(&pdf, vec![(60.0, 60.0, 140.0, 140.0)]));
+    assert!(e.contains("carriage return"), "{e}");
+}
+
+/// remove_javascript: every JavaScript action and script tree goes — the
+/// name tree, /OpenAction, /AA triggers, an annotation's /A, a step of
+/// an action chain, one script shared by several — and other actions
+/// stay; without the option the document is refused.
+#[test]
+fn javascript_is_removed_on_request() {
+    let objs = |cat_extra: &str| {
+        let mut o = font_objs();
+        o.extend([
+            (
+                50,
+                b"<< /S /JavaScript /JS (var leak = 'SCRIPTBODY1';) >>".to_vec(),
+            ),
+            (51, b"<< /S /JavaScript /JS 52 0 R >>".to_vec()),
+            (52, stream_obj("", b"app.alert('SCRIPTBODY2');")),
+            (
+                53,
+                b"<< /S /URI /URI (https://example.com/kept) /Next [50 0 R 54 0 R] >>".to_vec(),
+            ),
+            (54, b"<< /S /JavaScript /JS (SCRIPTBODY3) >>".to_vec()),
+            (55, b"<< /Names [(init) 50 0 R (more) 51 0 R] >>".to_vec()),
+            (
+                56,
+                b"<< /Type /Annot /Subtype /Link /Rect [10 150 60 170] /A 53 0 R \
+                  /AA << /E 51 0 R /X << /S /JavaScript /JS (SCRIPTBODY4) >> >> >>"
+                    .to_vec(),
+            ),
+            (
+                1,
+                format!(
+                    "<< /Type /Catalog /Pages 2 0 R /OpenAction 50 0 R \
+                     /Names << /JavaScript 55 0 R >> {cat_extra} >>"
+                )
+                .into_bytes(),
+            ),
+        ]);
+        o
+    };
+    let page = format!("{SECRET} BT /F1 12 Tf 10 20 Td (PUBLICWORD) Tj ET");
+    let pdf = doc_with_annots(
+        "/Font << /F1 20 0 R >>",
+        page.as_bytes(),
+        "/Annots [56 0 R]",
+        objs(""),
+    );
+    assert!(unsupported(run(&pdf, vec![RECT])).contains("JavaScript"));
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let r = redact(
+        &doc,
+        &[(0, vec![RECT])],
+        &RedactOptions::new().remove_javascript(true),
+    )
+    .unwrap();
+    assert_eq!(r.codes_removed, 10);
+    assert!(r.javascript_removed >= 5, "{}", r.javascript_removed);
+    for s in [&b"SCRIPTBODY"[..], b"/JavaScript", b"/JS"] {
+        assert!(
+            !raw_contains(&r.output, s) && !contains(&r.output, s),
+            "{}",
+            String::from_utf8_lossy(s)
+        );
+    }
+    assert!(
+        contains(&r.output, b"https://example.com/kept")
+            || raw_contains(&r.output, b"example.com/kept")
+    );
+    assert_eq!(page_text(&r.output, 0), "PUBLICWORD");
+}
+
+/// [`doc_with`] for one page with `page_extra` in its dictionary; an
+/// object 1 in `extra` replaces the catalog.
+fn doc_with_annots(
+    page_res: &str,
+    content: &[u8],
+    page_extra: &str,
+    extra: Vec<(u32, Vec<u8>)>,
+) -> Vec<u8> {
+    let mut objs: Vec<(u32, Vec<u8>)> = vec![
+        (2, b"<< /Type /Pages /Kids [100 0 R] /Count 1 >>".to_vec()),
+        (
+            100,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << {page_res} >> \
+                 /Contents 101 0 R {page_extra} >>"
+            )
+            .into_bytes(),
+        ),
+        (101, stream_obj("", content)),
+    ];
+    if !extra.iter().any(|(n, _)| *n == 1) {
+        objs.push((1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()));
+    }
+    objs.extend(extra);
+    objs.sort_by_key(|(n, _)| *n);
+    build_pdf(&objs)
+}
+
+/// remove_javascript, second review: a script's source also referred to
+/// elsewhere, and an XFA form, are refused; a dictionary that only names
+/// /S /JavaScript (no /JS) is not a script; a script in an action chain
+/// gives its place to the actions after it.
+#[test]
+fn javascript_removal_keeps_what_is_not_a_script() {
+    let o = RedactOptions::new().remove_javascript(true);
+    let page = format!("{SECRET} BT /F1 12 Tf 10 20 Td (PUBLICWORD) Tj ET");
+    let go = |cat: &str, extra: Vec<(u32, Vec<u8>)>| {
+        let mut objs = font_objs();
+        objs.push((
+            1,
+            format!("<< /Type /Catalog /Pages 2 0 R {cat} >>").into_bytes(),
+        ));
+        objs.extend(extra);
+        let pdf = doc_with_annots("/Font << /F1 20 0 R >>", page.as_bytes(), "", objs);
+        let doc = Document::from_bytes(&pdf).unwrap();
+        redact(&doc, &[(0, vec![RECT])], &o)
+    };
+    let script = || (50, b"<< /S /JavaScript /JS 51 0 R >>".to_vec());
+    let source = || (51, stream_obj("", b"var s = 'SCRIPTSOURCE';"));
+    let e = go("/OpenAction 50 0 R /Cache 51 0 R", vec![script(), source()]).unwrap_err();
+    assert!(e.to_string().contains("also referred to"), "{e}");
+    let e = go(
+        "/AcroForm << /Fields [] /XFA 52 0 R >>",
+        vec![(52, stream_obj("", b"<xdp:xdp/>"))],
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("XFA"), "{e}");
+    // Not an action: kept, and the document is not taken for scripted.
+    let r = go(
+        "/Extra 53 0 R",
+        vec![(53, b"<< /S /JavaScript /Keep (KEPTVALUE) >>".to_vec())],
+    )
+    .unwrap();
+    assert!(contains(&r.output, b"KEPTVALUE") || raw_contains(&r.output, b"KEPTVALUE"));
+    // An inline script whose source is also referred to elsewhere.
+    let e = go(
+        "/OpenAction << /S /JavaScript /JS 51 0 R >> /Cache 51 0 R",
+        vec![source()],
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("also referred to"), "{e}");
+    // A script followed (through a referenced array) by two actions,
+    // in an entry holding one action: refused.
+    let e = go(
+        "/OpenAction 50 0 R",
+        vec![
+            (50, b"<< /S /JavaScript /JS (x) /Next 56 0 R >>".to_vec()),
+            (56, b"[57 0 R 58 0 R]".to_vec()),
+            (57, b"<< /S /URI /URI (https://example.com/a) >>".to_vec()),
+            (58, b"<< /S /URI /URI (https://example.com/b) >>".to_vec()),
+        ],
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("several actions"), "{e}");
+    // Two scripts following each other in a cycle: both go.
+    let r = go(
+        "/OpenAction 50 0 R",
+        vec![
+            (
+                50,
+                b"<< /S /JavaScript /JS (SCRIPTSOURCE) /Next 59 0 R >>".to_vec(),
+            ),
+            (
+                59,
+                b"<< /S /JavaScript /JS (SCRIPTSOURCE) /Next 50 0 R >>".to_vec(),
+            ),
+        ],
+    )
+    .unwrap();
+    assert!(!raw_contains(&r.output, b"SCRIPTSOURCE") && !contains(&r.output, b"SCRIPTSOURCE"));
+    // URI -> script -> URI: the last one follows the first.
+    let r = go(
+        "/OpenAction 54 0 R",
+        vec![
+            (
+                54,
+                b"<< /S /URI /URI (https://example.com/first) /Next 50 0 R >>".to_vec(),
+            ),
+            (
+                50,
+                b"<< /S /JavaScript /JS (SCRIPTSOURCE) /Next 55 0 R >>".to_vec(),
+            ),
+            (
+                55,
+                b"<< /S /URI /URI (https://example.com/after) >>".to_vec(),
+            ),
+        ],
+    )
+    .unwrap();
+    assert!(!raw_contains(&r.output, b"SCRIPTSOURCE") && !contains(&r.output, b"SCRIPTSOURCE"));
+    for u in [&b"example.com/first"[..], b"example.com/after"] {
+        assert!(
+            contains(&r.output, u) || raw_contains(&r.output, u),
+            "{}",
+            String::from_utf8_lossy(u)
+        );
+    }
 }

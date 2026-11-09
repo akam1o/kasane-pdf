@@ -54,6 +54,7 @@ pub struct RedactOptions {
     refuse_copies_elsewhere: bool,
     remove_annotations: bool,
     embed_substitute_fonts: bool,
+    remove_javascript: bool,
 }
 
 impl RedactOptions {
@@ -74,6 +75,18 @@ impl RedactOptions {
     /// text. The output is then untagged.
     pub fn remove_structure_tree(mut self, remove: bool) -> Self {
         self.remove_structure_tree = remove;
+        self
+    }
+
+    /// Remove every JavaScript action — `/Names /JavaScript`, an
+    /// `/OpenAction`, `/AA` triggers, annotation and field `/A` actions,
+    /// steps of an action chain — instead of refusing a document whose
+    /// catalog runs scripts. A script may hold any of the document's
+    /// text and is not redacted, so it is removed whole: the output's
+    /// forms no longer calculate, validate or format, and nothing runs
+    /// when it opens. Verification checks that no JavaScript is left.
+    pub fn remove_javascript(mut self, remove: bool) -> Self {
+        self.remove_javascript = remove;
         self
     }
 
@@ -130,6 +143,7 @@ impl RedactOptions {
 }
 
 /// The result of [`redact`]: a verified single-revision PDF.
+#[non_exhaustive]
 pub struct Redaction {
     /// The redacted PDF.
     pub output: Vec<u8>,
@@ -172,6 +186,9 @@ pub struct Redaction {
     /// The input's structure tree was removed (only with
     /// [`RedactOptions::remove_structure_tree`]).
     pub structure_tree_removed: bool,
+    /// JavaScript actions and script trees removed
+    /// ([`RedactOptions::remove_javascript`]).
+    pub javascript_removed: u64,
     /// What was removed from the rects that the output still shows or
     /// stores elsewhere: removed text (runs of at least four
     /// non-whitespace characters) in another page's text or an
@@ -252,6 +269,7 @@ impl std::fmt::Debug for Redaction {
             .field("info_removed", &self.info_removed)
             .field("metadata_removed", &self.metadata_removed)
             .field("structure_tree_removed", &self.structure_tree_removed)
+            .field("javascript_removed", &self.javascript_removed)
             .field("elsewhere", &self.elsewhere)
             .field("residual_findings", &self.residual.findings.len())
             .finish()
@@ -272,7 +290,9 @@ pub fn redact(
 ) -> Result<Redaction, Error> {
     options.limits.validate()?;
     if options.embed_substitute_fonts {
-        if let Some((bytes, n)) = crate::redact_fonts::embed_substitutes(doc, &options.limits)? {
+        if let Some((bytes, n)) =
+            crate::redact_fonts::embed_substitutes(doc, &options.limits, options.remove_javascript)?
+        {
             let normalized = Document::from_bytes_with_limits(&bytes, options.limits.clone())?;
             return redact_doc(&normalized, specs, options, n);
         }
@@ -287,6 +307,7 @@ fn redact_doc(
     fonts_embedded: u64,
 ) -> Result<Redaction, Error> {
     let limits = &options.limits;
+    let _fonts = doc.font_cache_scope();
     let info_present = doc.trailer().contains_key(b"Info".as_slice());
     let metadata_present = doc.catalog().contains_key(b"Metadata".as_slice());
 
@@ -336,11 +357,17 @@ fn redact_doc(
             .overlay
             .insert((root.number, root.generation), Object::Dict(catalog));
     }
+    let javascript_removed = if options.remove_javascript {
+        crate::redact_js::strip_javascript(doc, &mut s.edit.overlay, limits)?
+    } else {
+        0
+    };
     let output = s
         .edit
         .rewrite_with_overrides(&crate::rewrite::RewriteOverrides {
             strip_info: true,
             strip_metadata: true,
+            javascript_removed: options.remove_javascript,
         })?;
 
     // Type 3 glyph definitions the output no longer shows go too.
@@ -348,6 +375,20 @@ fn redact_doc(
         Some(p) => (p.output, p.images),
         None => (output, Vec::new()),
     };
+
+    // Every object the output carries was read by now. A literal string
+    // holding an unescaped CR is a line feed here and a CR to some
+    // readers: written out it changes for them (a palette, a font
+    // name, a field value), so the document is refused.
+    if doc.raw_cr_object_strings() > 0 {
+        return Err(Error::Unsupported {
+            feature: "redaction of a document with an unescaped carriage return in a string",
+            detail: format!(
+                "{} literal string(s) — readers do not agree on their bytes",
+                doc.raw_cr_object_strings()
+            ),
+        });
+    }
 
     // An original may stay only as an object the output still draws
     // (from a page, through forms); each such display is reported.
@@ -364,6 +405,14 @@ fn redact_doc(
         &s.removed_annot_prints,
         session,
     )?;
+    if options.remove_javascript {
+        if let Some(r) = crate::redact_js::find_javascript(&out, limits)? {
+            return Err(Error::Unsupported {
+                feature: "redaction output failed verification",
+                detail: format!("object {r} still holds JavaScript"),
+            });
+        }
+    }
     // No Type 3 glyph the input showed and the output does not is
     // still defined.
     if crate::redact_type3::prune_type3(doc, &output, limits)?.is_some() {
@@ -408,6 +457,7 @@ fn redact_doc(
         info_removed: info_present,
         metadata_removed: metadata_present,
         structure_tree_removed,
+        javascript_removed,
         elsewhere,
         elsewhere_unsearched_pages,
         residual,
@@ -435,6 +485,26 @@ fn verify(
     let out = Document::from_bytes_with_limits(output, limits.clone())?;
     if out.xref_section_offsets().len() != 1 {
         return Err(fail("the output has more than one revision".into()));
+    }
+    // The rewrite writes neither object streams nor cross-reference
+    // streams: one in the output is an input's, carried because
+    // something referred to it, and holds the input's objects as they
+    // were — edited and removed ones included.
+    let streams: Vec<_> = out
+        .xref_entries()
+        .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
+        .map(|(r, _)| r)
+        .collect();
+    for r in streams {
+        if let Object::Stream { dict, .. } = out.resolve(r)? {
+            let t = dict.get(b"Type".as_slice()).and_then(|t| t.as_name());
+            if matches!(t, Some(b"ObjStm") | Some(b"XRef")) {
+                return Err(fail(format!(
+                    "object {r} is an input object stream or cross-reference stream (it holds \
+                     the input's objects as they were)"
+                )));
+            }
+        }
     }
     // The same rects find nothing left to remove.
     let again = regions_edit_session_with(&out, specs, limits, SessionMode::Redact, session)?;
@@ -725,26 +795,51 @@ fn find_elsewhere(
         .collect();
     texts.sort_unstable();
     texts.dedup();
+    // Line ends compared as one: a CR, LF or CRLF in the removed text
+    // matches any of them in a copy.
+    let eol = |s: &str| s.replace("\r\n", "\n").replace('\r', "\n");
+    let wanted: Vec<String> = texts.iter().map(|t| eol(t)).collect();
     let mut found = Vec::new();
     let mut unsearched = Vec::new();
     if texts.is_empty() {
         return Ok((found, unsearched));
     }
-    let opts = crate::text_extract::TextOptions::default().with_limits(limits.clone());
+    let _fonts = out.font_cache_scope();
+    // Everything the page shows as text — optional content off by
+    // default and annotation appearances too: a copy there is a copy.
     for (i, page) in out.pages().iter().enumerate() {
-        let shown: String = match crate::text_extract::extract_text(out, page, &opts) {
-            Ok(t) => t
-                .chars
-                .iter()
-                .filter_map(|c| c.unicode.as_deref())
-                .collect(),
+        // An appearance that cannot be read leaves the page's own text
+        // searched and the page reported as not (wholly) searched.
+        let extracted = match crate::text_extract::extract_text_for_search(out, page, limits, true)
+        {
+            Ok(t) => Ok(t),
             Err(_) => {
                 unsearched.push(i);
+                crate::text_extract::extract_text_for_search(out, page, limits, false)
+            }
+        };
+        let shown: String = match extracted {
+            Ok(t) => {
+                let mut s: String = t
+                    .chars
+                    .iter()
+                    .filter_map(|c| c.unicode.as_deref())
+                    .collect();
+                for a in &t.annotations {
+                    s.push('\n');
+                    s.extend(a.appearance.iter().filter_map(|c| c.unicode.as_deref()));
+                }
+                eol(&s)
+            }
+            Err(_) => {
+                if unsearched.last() != Some(&i) {
+                    unsearched.push(i);
+                }
                 continue;
             }
         };
-        for t in &texts {
-            if shown.contains(t) {
+        for (t, w) in texts.iter().zip(&wanted) {
+            if shown.contains(w.as_str()) {
                 found.push(Elsewhere {
                     removed: Removed::Text(t.to_string()),
                     location: ElsewhereLocation::Page(i),
@@ -764,8 +859,9 @@ fn find_elsewhere(
         }
         let mut strings = Vec::new();
         collect_strings(&obj, &mut strings, 0);
-        for t in &texts {
-            if strings.iter().any(|s| s.contains(t)) {
+        let strings: Vec<String> = strings.iter().map(|s| eol(s)).collect();
+        for (t, w) in texts.iter().zip(&wanted) {
+            if strings.iter().any(|s| s.contains(w.as_str())) {
                 found.push(Elsewhere {
                     removed: Removed::Text(t.to_string()),
                     location: ElsewhereLocation::Object(r),
@@ -856,7 +952,7 @@ pub fn redaction_walk_findings(
     embed: bool,
 ) -> Result<Vec<(&'static str, String)>, Error> {
     if embed {
-        if let Some((bytes, _)) = crate::redact_fonts::embed_substitutes(doc, limits)? {
+        if let Some((bytes, _)) = crate::redact_fonts::embed_substitutes(doc, limits, false)? {
             let normalized = Document::from_bytes_with_limits(&bytes, limits.clone())?;
             return redaction_walk_findings(&normalized, page_index, rects, limits, false);
         }
@@ -885,4 +981,66 @@ pub fn redaction_walk_findings(
             .map(|u| ("uncertain", u.reason.clone())),
     );
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pdf(objs: &[&[u8]]) -> Vec<u8> {
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offs = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offs.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+            out.extend_from_slice(o);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let x = out.len();
+        out.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes(),
+        );
+        for o in offs {
+            out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n",
+                objs.len() + 1
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    /// Line ends are compared as one: removed text with a LF is found in
+    /// a copy written with CR LF or CR, and the other way round.
+    #[test]
+    fn copies_match_across_line_ends() {
+        for (copy, removed) in [
+            (&b"(SECRET\\r\\nTEXT)"[..], "SECRET\nTEXT"),
+            (b"(SECRET\\rTEXT)", "SECRET\nTEXT"),
+            (b"(SECRET\\nTEXT)", "SECRET\r\nTEXT"),
+        ] {
+            let mut annot = b"<< /Type /Annot /Subtype /Text /Rect [0 0 1 1] /Contents ".to_vec();
+            annot.extend_from_slice(copy);
+            annot.extend_from_slice(b" >>");
+            let bytes = pdf(&[
+                b"<< /Type /Catalog /Pages 2 0 R >>",
+                b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] /Annots [4 0 R] >>",
+                &annot,
+            ]);
+            let doc = Document::from_bytes(&bytes).unwrap();
+            let (found, _) =
+                find_elsewhere(&doc, &[removed.to_string()], &Limits::default()).unwrap();
+            assert!(
+                found
+                    .iter()
+                    .any(|e| e.location == ElsewhereLocation::Object(IndirectRef::new(4, 0))),
+                "{:?} vs {removed:?}: {found:?}",
+                String::from_utf8_lossy(copy)
+            );
+        }
+    }
 }

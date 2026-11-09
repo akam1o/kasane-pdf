@@ -7,6 +7,10 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `RedactOptions::remove_javascript` (CLI `--remove-javascript`,
+  `Redaction::javascript_removed`): every JavaScript action and the
+  `/Names /JavaScript` tree are removed instead of refusing a document
+  whose catalog runs scripts; verification checks none is left.
 - `RedactOptions::embed_substitute_fonts` (CLI
   `--embed-substitute-fonts`): before redacting, each non-embedded Latin
   Standard 14 Type 1 font (Times, Helvetica, Courier, and aliases such
@@ -26,6 +30,30 @@ versions follow [Semantic Versioning](https://semver.org/).
   reaches with anything else stays refused.
 
 ### Changed
+- Literal strings: an unescaped carriage return, alone or in CRLF, is
+  read as one line feed (§7.3.4.2), as an unescaped LF already was;
+  `Warning::LiteralStringCarriageReturn` records such strings (in
+  content, and once per document for objects). `redact` refuses a
+  document holding one.
+- Embedded CMaps may write codes as literal strings; they are read like
+  hex codes. `redact` refuses text in such a font (readers disagree).
+- A document loads each font dictionary once per set of limits and
+  reuses it across operators and pages within an operation (a render,
+  an extraction, a redaction; kept per thread, so `Document` stays
+  `Send`) (the warnings the
+  load recorded are recorded again on each use); the fonts kept are
+  capped at 64 MiB of decoded data and 2,048 fonts; a reused font is not
+  decoded again, so it does not count against `max_total_decoded_bytes`
+  again. A page drawing one font 20,000 times no longer exceeds it.
+- `redact` looks for copies of removed text (`elsewhere`) in optional
+  content that is off and in annotation appearances too, and without
+  evaluating glyph outlines (CR, LF and CRLF compare as one line end; a
+  page whose appearances cannot be read has its own text searched and is
+  listed unsearched): the Corpus redacts in 7.6 s instead of 50.3 s,
+  outputs unchanged.
+- `Limits` implements `PartialEq`, `Eq` and `Hash`.
+- `Redaction` is `#[non_exhaustive]` (a result, read only; its new
+  fields would have broken struct literals anyway).
 - `redact` redacts hairlines (`0 w`) as their zero-width centreline and
   strokes, cut fills and stroked text under stroke adjustment
   (`/SA true`) as their user-space geometry, instead of refusing them:
@@ -111,6 +139,12 @@ versions follow [Semantic Versioning](https://semver.org/).
   so readers would disagree on what is drawn.
 
 ### Fixed
+- `redact` verification fails when the output carries an input object
+  stream or cross-reference stream (something referred to it): it would
+  hold the input's objects as they were, edited ones included.
+- Content written by `redact` and the `remove_*` editors escapes every
+  byte below 0x20 in literal strings; a raw CR or LF there was read
+  differently by different readers, changing kept text in some.
 - `diagnose_redaction` and the editors grew stroked text by the stroke's
   reach under the text matrix (font size included) instead of the CTM,
   reporting it far larger than drawn.

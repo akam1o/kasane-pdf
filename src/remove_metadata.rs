@@ -93,6 +93,7 @@ pub fn remove_document_metadata(doc: &Document, limits: &Limits) -> Result<Metad
     let overrides = RewriteOverrides {
         strip_info: true,
         strip_metadata: true,
+        ..Default::default()
     };
     let output = rewrite_overlay_with(doc, &HashMap::new(), &HashSet::new(), limits, &overrides)?;
 

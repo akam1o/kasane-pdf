@@ -92,6 +92,17 @@ but external tools are used to *confirm* behaviour on real files:
   number of runs each category alone blocks (an upper bound for what
   supporting it gains: a later stage may still refuse). Results of a
   round are kept in [`../compat/redaction/`](../compat/redaction/).
+- [`../scripts/bench-redact.py`](../scripts/bench-redact.py)
+  `<kasane-pdf> [<kasane-pdf> …] [--runs N]` — fixed redaction timing
+  benchmark: generated inputs (400/800/1,600 fonts, 200 pages in one
+  font or 1,600 font dictionaries, 5,000-entry resources, forms nested
+  15 deep, 50 pages of 20,000 shows, 4,000 annotations), one rect on
+  page 1, best of N sequential runs per binary.
+- Reader agreement on literal strings: `tests/literal_strings.rs`
+  (TrueType, Type 1, Type 0 and Type 3 pages with raw and escaped
+  end-of-lines; CMap codes as strings; object strings); the same
+  outputs were compared with Poppler, MuPDF and pdf.js by rendering
+  and extraction.
 - Independence of the output from what is removed: build two inputs
   that differ only in the data meeting the rects, redact both, require
   byte-identical outputs (this rules out any route — interpolation,

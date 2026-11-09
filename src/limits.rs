@@ -11,7 +11,7 @@ use crate::error::Error;
 /// The default values are generous enough for ordinary documents while
 /// still bounding pathological input. Construct with
 /// `Limits::default()` and adjust fields as needed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct Limits {
     /// Maximum input size in bytes (checked before parsing starts).
@@ -51,7 +51,9 @@ pub struct Limits {
     /// the document keeps cached; document-level lookups between
     /// operations share the same budget. Guards against many small
     /// streams exhausting memory while letting every page of a long
-    /// document be processed in turn. Default: 1 GiB.
+    /// document be processed in turn. A font the operation already
+    /// loaded (up to 64 MiB of them are kept, per set of limits) is not
+    /// decoded again and so does not count again. Default: 1 GiB.
     pub max_total_decoded_bytes: u64,
     /// Maximum number of filters in a `/Filter` array. Default: 8.
     pub max_filter_chain: usize,

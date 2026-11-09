@@ -561,3 +561,63 @@ fn annotation_appearances_in_the_rect() {
         &o,
     );
 }
+
+// ---- literal strings -----------------------------------------------
+
+/// A raw CR in a shown string is a line feed to some readers and a
+/// CR to others: a glyph after it lands in different places, inside
+/// the rect for one reader, outside for another. Refused, whatever the
+/// glyph holds.
+#[test]
+fn raw_line_ends_in_shown_strings() {
+    let o = RedactOptions::new();
+    refused(
+        "raw CR before a glyph",
+        |v| {
+            // CR advances 10 pt, LF 60 pt at 20 pt: the box after them
+            // lands at x 30 or x 80.
+            let font = "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
+                        /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /cr 51 0 R /lf 52 0 R /S 53 0 R >> \
+                        /Encoding << /Type /Encoding /Differences [10 /lf 13 /cr 83 /S] >> \
+                        /FirstChar 10 /LastChar 83 /Widths [3000 0 0 500 "
+                .to_string()
+                + &"0 ".repeat(69)
+                + "1000] /Resources << >> >>";
+            page(
+                &format!("BT /T 20 Tf 20 90 Td (\r\rS) Tj ET {KEPT}"),
+                "/Font << /F1 20 0 R /T 50 0 R >>",
+                "",
+                vec![
+                    (50, font.into_bytes()),
+                    (51, stream_obj("", b"500 0 d0")),
+                    (52, stream_obj("", b"3000 0 d0")),
+                    (
+                        53,
+                        stream_obj(
+                            "",
+                            format!("1000 0 d0 0 0 {} 1000 re f", 900 + v).as_bytes(),
+                        ),
+                    ),
+                ],
+            )
+        },
+        &o,
+    );
+    // Kept codes 0x0D and 0x0A, escaped or in hex, next to removed text.
+    accepted(
+        "kept CR and LF codes",
+        |v| {
+            page(
+                &format!(
+                    "BT /F1 10 Tf 80 100 Td ({}) Tj ET BT /F1 10 Tf 10 40 Td (A\\r\\nB\\015) Tj \
+                     <0d0a43> Tj ET {KEPT}",
+                    secret(v)
+                ),
+                "",
+                "",
+                vec![],
+            )
+        },
+        &o,
+    );
+}

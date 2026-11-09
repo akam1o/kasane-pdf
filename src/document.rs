@@ -72,6 +72,12 @@ pub struct Document {
     /// Non-fatal findings of every operation on this document (see
     /// [`crate::Warning`]), read with [`Document::take_warnings`].
     warnings: std::cell::RefCell<crate::warning::WarningSink>,
+    /// Open [`Document::font_cache_scope`] guards; the fonts this
+    /// document loads are kept while one is open (see [`FONT_CACHE`]).
+    font_cache_depth: std::cell::Cell<u32>,
+    /// Literal strings parsed in objects that held an unescaped
+    /// carriage return (read as a line feed; not every reader does).
+    raw_cr_object_strings: std::cell::Cell<u64>,
     /// The authenticated security handler of an encrypted document;
     /// every object read from the file is decrypted through it.
     crypt: Option<crate::crypt::Crypt>,
@@ -134,6 +140,57 @@ impl OpenOptions {
     pub fn with_recovery(mut self, recovery: bool) -> Self {
         self.recovery = recovery;
         self
+    }
+}
+
+#[derive(Default)]
+struct FontCache {
+    fonts: HashMap<(IndirectRef, crate::Limits), CachedFont>,
+    /// What the cached fonts decoded (their programs, CMaps …).
+    bytes: u64,
+}
+
+thread_local! {
+    /// The fonts each document loaded while a font cache scope is open
+    /// on it, by the document's address. Fonts are not `Send`, so they
+    /// stay in the thread: a document keeps none in itself (it stays
+    /// `Send`), and its entry goes when its outermost scope ends — a
+    /// scope borrows the document, which can then be neither moved nor
+    /// dropped (nor its address reused) while the entry exists.
+    static FONT_CACHE: std::cell::RefCell<HashMap<usize, FontCache>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// A loaded font and what its load recorded: the warnings kept and how
+/// many more the bounded warning list dropped.
+#[derive(Clone)]
+pub(crate) struct CachedFont {
+    pub(crate) font: crate::font::Font,
+    pub(crate) warnings: Vec<crate::Warning>,
+    pub(crate) dropped: u64,
+}
+
+/// The decoded bytes a document's font cache may keep alive, and the
+/// fonts (a font also holds dictionaries and tables its decoded bytes
+/// do not count); fonts beyond either are loaded each time, as without
+/// the cache.
+const FONT_CACHE_BYTES: u64 = 64 << 20;
+const FONT_CACHE_FONTS: usize = 2048;
+
+/// Keeps the fonts its document loads until the outermost such guard on
+/// that document is dropped.
+pub(crate) struct FontCacheScope<'a> {
+    doc: &'a Document,
+}
+
+impl Drop for FontCacheScope<'_> {
+    fn drop(&mut self) {
+        let depth = self.doc.font_cache_depth.get().saturating_sub(1);
+        self.doc.font_cache_depth.set(depth);
+        if depth == 0 {
+            let key = self.doc as *const Document as usize;
+            FONT_CACHE.with(|c| c.borrow_mut().remove(&key));
+        }
     }
 }
 
@@ -312,7 +369,9 @@ impl Document {
             parser.tolerate_missing_endobj();
         }
         parser.seek(Self::object_offset(offset, self.data.len(), r)?);
-        parser.parse_indirect_object()?.ok_or_else(|| {
+        let obj = parser.parse_indirect_object();
+        self.note_raw_cr(parser.raw_cr_strings());
+        obj?.ok_or_else(|| {
             Error::Parse(format!(
                 "no indirect object at xref offset {offset} (for {r})"
             ))
@@ -356,6 +415,8 @@ impl Document {
             length_resolve_depth: std::cell::Cell::new(0),
             objstm_cache: std::cell::RefCell::new(HashMap::new()),
             warnings: std::cell::RefCell::new(Default::default()),
+            font_cache_depth: std::cell::Cell::new(0),
+            raw_cr_object_strings: std::cell::Cell::new(0),
             recovery: None,
             lenient,
             limits,
@@ -426,6 +487,8 @@ impl Document {
             length_resolve_depth: std::cell::Cell::new(0),
             objstm_cache: std::cell::RefCell::new(HashMap::new()),
             warnings: std::cell::RefCell::new(Default::default()),
+            font_cache_depth: std::cell::Cell::new(0),
+            raw_cr_object_strings: std::cell::Cell::new(0),
             recovery: Some(report),
             lenient: true,
             limits,
@@ -498,6 +561,105 @@ impl Document {
     /// stream of their own, e.g. the ToUnicode parser).
     pub(crate) fn push_warning(&self, w: crate::Warning) {
         self.warnings.borrow_mut().push(w);
+    }
+
+    /// Count literal strings with an unescaped CR read in objects; the
+    /// first is reported.
+    fn note_raw_cr(&self, n: u64) {
+        if n == 0 {
+            return;
+        }
+        let before = self.raw_cr_object_strings.get();
+        self.raw_cr_object_strings.set(before.saturating_add(n));
+        if before == 0 {
+            self.push_warning(crate::Warning::LiteralStringCarriageReturn { strings: n });
+        }
+    }
+
+    /// Literal strings with an unescaped CR read in objects so far.
+    pub(crate) fn raw_cr_object_strings(&self) -> u64 {
+        self.raw_cr_object_strings.get()
+    }
+
+    /// Run `f`, returning what it returned and the warnings it recorded
+    /// (also recorded on the document).
+    pub(crate) fn capture_warnings<T>(
+        &self,
+        f: impl FnOnce() -> T,
+    ) -> (T, Vec<crate::Warning>, u64) {
+        let outer = std::mem::take(&mut *self.warnings.borrow_mut());
+        let r = f();
+        let inner = std::mem::replace(&mut *self.warnings.borrow_mut(), outer);
+        self.replay_warnings(&inner.list, inner.dropped);
+        (r, inner.list, inner.dropped)
+    }
+
+    /// Record `warnings` again, and `dropped` more the list had no room
+    /// for.
+    fn replay_warnings(&self, warnings: &[crate::Warning], dropped: u64) {
+        let mut sink = self.warnings.borrow_mut();
+        for w in warnings {
+            sink.push(w.clone());
+        }
+        sink.dropped = sink.dropped.saturating_add(dropped);
+    }
+
+    /// Keep the fonts this document loads until the guard (the
+    /// outermost one, when nested) is dropped.
+    pub(crate) fn font_cache_scope(&self) -> FontCacheScope<'_> {
+        self.font_cache_depth.set(self.font_cache_depth.get() + 1);
+        FontCacheScope { doc: self }
+    }
+
+    /// The font loaded from font dictionary `r` under `limits`, if one
+    /// is kept.
+    pub(crate) fn cached_font(
+        &self,
+        r: IndirectRef,
+        limits: &crate::Limits,
+    ) -> Option<crate::font::Font> {
+        if self.font_cache_depth.get() == 0 {
+            return None;
+        }
+        // A limit may decide whether a font loads: the limits are part
+        // of the key.
+        let key = (r, limits.clone());
+        let me = self as *const Document as usize;
+        let hit = FONT_CACHE.with(|c| c.borrow().get(&me).and_then(|f| f.fonts.get(&key).cloned()));
+        hit.map(|c| {
+            self.replay_warnings(&c.warnings, c.dropped);
+            c.font
+        })
+    }
+
+    /// Keep `font`, which decoded `bytes`, inside a font cache scope and
+    /// unless the cache is full.
+    pub(crate) fn cache_font(
+        &self,
+        r: IndirectRef,
+        limits: &crate::Limits,
+        font: CachedFont,
+        bytes: u64,
+    ) {
+        if self.font_cache_depth.get() == 0 {
+            return;
+        }
+        let me = self as *const Document as usize;
+        FONT_CACHE.with(|c| {
+            let mut all = c.borrow_mut();
+            let c = all.entry(me).or_default();
+            if c.bytes.saturating_add(bytes) > FONT_CACHE_BYTES || c.fonts.len() >= FONT_CACHE_FONTS
+            {
+                return;
+            }
+            c.bytes += bytes;
+            c.fonts.insert((r, limits.clone()), font);
+        });
+    }
+
+    /// What is left of the current operation's decoded-bytes budget.
+    pub(crate) fn decoded_left(&self) -> u64 {
+        self.decoded_budget.get()
     }
 
     /// Whether the document was opened through
@@ -614,7 +776,9 @@ impl Document {
                 parser.tolerate_missing_endobj();
             }
             parser.seek(Self::object_offset(offset, self.data.len(), current)?);
-            let obj = parser.parse_indirect_object()?.ok_or_else(|| {
+            let obj = parser.parse_indirect_object();
+            self.note_raw_cr(parser.raw_cr_strings());
+            let obj = obj?.ok_or_else(|| {
                 Error::Parse(format!(
                     "no indirect object at xref offset {offset} (for {})",
                     current
@@ -704,6 +868,7 @@ impl Document {
             }
             let decoded = self.decode_stream(dict, raw)?;
             let parsed = ObjectStream::parse(&decoded, dict, (want.number, index), &self.limits)?;
+            self.note_raw_cr(parsed.raw_cr_strings);
             self.objstm_cached_bytes
                 .set(self.objstm_cached_bytes.get() + decoded.len() as u64);
             self.objstm_cache.borrow_mut().insert(objstm_num, parsed);
@@ -1024,6 +1189,20 @@ impl Document {
             self.warnings.borrow_mut().extend(warnings);
             r
         }
+    }
+
+    /// [`page_operations`](Self::page_operations) and the warnings that
+    /// parse recorded (also recorded on the document).
+    pub(crate) fn page_operations_warned(
+        &self,
+        page: &Page,
+    ) -> Result<(Vec<Operation>, Vec<crate::Warning>), Error> {
+        let contents = self.page_contents(page)?;
+        let mut warnings = Vec::new();
+        let ops =
+            content::parse_content_stream(&contents, &self.limits, self.lenient, &mut warnings)?;
+        self.warnings.borrow_mut().extend(warnings.clone());
+        Ok((ops, warnings))
     }
 
     /// Like [`page_operations`](Self::page_operations) but also returns
@@ -1456,6 +1635,138 @@ impl Drop for DecodedBudgetScope<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A one-page document drawing `/F` (object 5, a TrueType font
+    /// over the bundled Liberation program, with `tounicode` as its
+    /// ToUnicode CMap body).
+    fn font_doc(tounicode: &str) -> Vec<u8> {
+        let ff = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fonts/liberation/LiberationSans-Regular.ttf"
+        ))
+        .unwrap();
+        let widths = vec!["500"; 95].join(" ");
+        let objs: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /Font << /F 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            b"<< /Length 30 >>\nstream\nBT /F 10 Tf 10 10 Td (ab) Tj ET\nendstream".to_vec(),
+            format!(
+                "<< /Type /Font /Subtype /TrueType /BaseFont /LiberationSans /FirstChar 32 \
+                 /LastChar 126 /Widths [{widths}] /Encoding /WinAnsiEncoding \
+                 /FontDescriptor 6 0 R /ToUnicode 8 0 R >>"
+            )
+            .into_bytes(),
+            b"<< /Type /FontDescriptor /FontName /LiberationSans /Flags 32 /FontBBox [-200 -300 1200 1000] /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 7 0 R >>".to_vec(),
+            [format!("<< /Length {} /Length1 {} >>\nstream\n", ff.len(), ff.len()).into_bytes(), ff, b"\nendstream".to_vec()].concat(),
+            [format!("<< /Length {} >>\nstream\n", tounicode.len()).into_bytes(), tounicode.as_bytes().to_vec(), b"\nendstream".to_vec()].concat(),
+        ];
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offs = Vec::new();
+        for (i, o) in objs.iter().enumerate() {
+            offs.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+            out.extend_from_slice(o);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let x = out.len();
+        out.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes(),
+        );
+        for o in offs {
+            out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n",
+                objs.len() + 1
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    const PLAIN: &str = "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+        1 begincodespacerange <00> <FF> endcodespacerange \
+        1 beginbfchar <61> <0041> endbfchar endcmap end end";
+
+    fn load(doc: &Document, limits: &crate::Limits) -> Result<crate::font::Font, Error> {
+        let res = doc.pages()[0].resources().cloned().unwrap();
+        crate::font::load_font(doc, &res, b"F", limits)
+    }
+
+    /// Inside a scope a font loads once; other limits load it afresh
+    /// (and may refuse it); outside a scope, and once the outermost one
+    /// ends, nothing is kept.
+    #[test]
+    fn fonts_are_kept_per_scope_and_limits() {
+        let doc = Document::from_bytes(&font_doc(PLAIN)).unwrap();
+        let d = crate::Limits::default();
+        let small = crate::Limits::default().with_max_stream_bytes(1000);
+        let same = |a: &crate::font::Font, b: &crate::font::Font| match (a, b) {
+            (crate::font::Font::Simple(a), crate::font::Font::Simple(b)) => {
+                std::rc::Rc::ptr_eq(a, b)
+            }
+            _ => false,
+        };
+        let outside = (load(&doc, &d).unwrap(), load(&doc, &d).unwrap());
+        assert!(!same(&outside.0, &outside.1), "no scope, no cache");
+        {
+            let _s = doc.font_cache_scope();
+            let a = load(&doc, &d).unwrap();
+            {
+                let _inner = doc.font_cache_scope();
+                assert!(same(&a, &load(&doc, &d).unwrap()));
+            }
+            assert!(
+                same(&a, &load(&doc, &d).unwrap()),
+                "an inner scope keeps the fonts"
+            );
+            assert!(
+                load(&doc, &small).is_err(),
+                "other limits are not given the cached font"
+            );
+            assert!(same(&a, &load(&doc, &d).unwrap()));
+        }
+        let me = &doc as *const Document as usize;
+        assert!(
+            FONT_CACHE.with(|c| !c.borrow().contains_key(&me)),
+            "the entry goes with the scope"
+        );
+    }
+
+    /// A kept font records the warnings, and the count of those dropped,
+    /// its load recorded — each time it is used.
+    #[test]
+    fn kept_fonts_record_their_warnings_each_time() {
+        let entries: String = (0..1500)
+            .map(|i| format!("<{:02x}> <41>\n", i % 256))
+            .collect();
+        let cmap = format!(
+            "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+             1 begincodespacerange <00> <FF> endcodespacerange \
+             1500 beginbfchar\n{entries}endbfchar endcmap end end"
+        );
+        let doc = Document::from_bytes(&font_doc(&cmap)).unwrap();
+        let d = crate::Limits::default();
+        let _s = doc.font_cache_scope();
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            let before = doc.warnings_dropped();
+            load(&doc, &d).unwrap();
+            seen.push((doc.take_warnings().len(), doc.warnings_dropped() - before));
+        }
+        assert!(seen[0].0 > 0 && seen[0].1 > 0, "{seen:?}");
+        assert_eq!(seen[1], seen[0]);
+        assert_eq!(seen[2], seen[0]);
+    }
+
+    /// A document stays movable across threads and unwind-safe.
+    #[test]
+    fn documents_stay_send_and_unwind_safe() {
+        fn check<T: Send + std::panic::UnwindSafe>() {}
+        check::<Document>();
+    }
 
     #[test]
     fn an_inspection_leaves_no_trace() {

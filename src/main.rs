@@ -1929,7 +1929,7 @@ fn redact_usage() -> &'static str {
     "usage: kasane-pdf redact <file.pdf> --page <n> --rect <llx> <lly> <urx> <ury> \
      [--rect …] [--page <m> --rect …] [--remove-structure-tree] \
      [--refuse-copies-elsewhere] [--remove-annotations] \
-     [--embed-substitute-fonts] --output <out.pdf>\n\
+     [--embed-substitute-fonts] [--remove-javascript] --output <out.pdf>\n\
      Removes the text, image samples and paths drawn inside the rects (page \
      default user space; --page is 1-based, each --rect belongs to the nearest \
      preceding --page), removes /Info and XMP metadata, leaves no route to an \
@@ -1943,7 +1943,8 @@ fn redact_usage() -> &'static str {
      (with their popups and replies) instead of refusing. \
      --embed-substitute-fonts first replaces non-embedded Times, Helvetica \
      and Courier fonts by embedded substitutes (Liberation) so their text \
-     can be redacted."
+     can be redacted. --remove-javascript removes every JavaScript action \
+     and script tree instead of refusing a document that runs scripts."
 }
 
 /// `redact` subcommand.
@@ -1955,6 +1956,7 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
     let mut remove_tree = false;
     let mut refuse_copies = false;
     let mut remove_annots = false;
+    let mut remove_js = false;
     let mut embed_fonts = false;
     let mut explain = false;
     let mut i = 1;
@@ -2007,6 +2009,10 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
             }
             "--embed-substitute-fonts" => {
                 embed_fonts = true;
+                i += 1;
+            }
+            "--remove-javascript" => {
+                remove_js = true;
                 i += 1;
             }
             // Corpus analysis (undocumented): list every finding of the
@@ -2071,7 +2077,8 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
             .remove_structure_tree(remove_tree)
             .refuse_copies_elsewhere(refuse_copies)
             .remove_annotations(remove_annots)
-            .embed_substitute_fonts(embed_fonts),
+            .embed_substitute_fonts(embed_fonts)
+            .remove_javascript(remove_js),
     )?;
     write_atomic(
         &r.output,
@@ -2093,6 +2100,7 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
     println!("shadings removed: {}", r.shadings_removed);
     println!("links removed: {}", r.links_removed);
     println!("annotations removed: {}", r.annotations_removed);
+    println!("javascript removed: {}", r.javascript_removed);
     println!("fonts embedded: {}", r.fonts_embedded);
     println!("original image names removed: {}", r.original_names_removed);
     println!("/Info removed: {}", r.info_removed);

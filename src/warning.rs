@@ -124,6 +124,16 @@ pub enum Warning {
         /// The length the revision specifies.
         specified: usize,
     },
+    /// Literal strings in a content stream or in objects hold an
+    /// unescaped carriage return (for objects, reported once per
+    /// document with the count at that point). kasane reads one — alone or as CRLF — as a single line
+    /// feed, as §7.3.4.2 says; Poppler and pdf.js keep the bytes. The
+    /// strings' bytes (glyph codes, and the positions that follow from
+    /// them) therefore differ between readers; `redact` refuses them.
+    LiteralStringCarriageReturn {
+        /// How many such strings.
+        strings: u64,
+    },
 }
 
 /// The recovery-mode reinterpretations (see
@@ -217,6 +227,11 @@ impl fmt::Display for Warning {
                     "content stream ended with an open block, closed at the end: {detail}"
                 )
             }
+            Warning::LiteralStringCarriageReturn { strings } => write!(
+                f,
+                "{strings} literal string(s) hold an unescaped carriage return — read as a \
+                 line feed (§7.3.4.2); readers differ"
+            ),
             Warning::UnknownRenderingIntent { name } => {
                 write!(f, "rendering intent /{name} is not one of §8.6.5.8; treated as RelativeColorimetric")
             }

@@ -52,6 +52,7 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 | document `/Info`, catalog XMP `/Metadata` | always removed |
 | marked-content replacement text (`/ActualText` on any tag, `/Alt`, `/E`) written in the content (`BDC` with a dictionary) | where anything in the sequence is edited (a code removed, an image zeroed, a path removed or cut, a form edited — nested sequences included), the three keys are dropped from its properties, the other keys (`/MCID` …) kept: the text may describe what the rects remove, and the kept glyphs of the sequence then extract as themselves. The dropped text is searched for in `elsewhere` like removed text. An untouched sequence keeps its text. Named properties and points stay refused |
 | structure tree | refused when it carries `/Alt`, `/ActualText` or `/E`; with `remove_structure_tree(true)` the tree and `/MarkInfo` are removed |
+| JavaScript, with `remove_javascript(true)` (CLI `--remove-javascript`) | refused by default when the catalog runs scripts (`/Names /JavaScript`, a JavaScript `/OpenAction`). On request every JavaScript action (`/S /JavaScript` with its `/JS`) is removed (`javascript_removed`): the name tree, and each dictionary entry or array element that is one — `/OpenAction`, `/AA` triggers, an annotation's or field's `/A`, a step of an action chain — directly or by reference; the actions after it in its chain (`/Next`) take its place, and other actions (links, URIs) stay. A script may hold any of the document's text and cannot be redacted, so it goes whole: forms no longer calculate, validate or format. Refused: an XFA form (its scripts are not edited), anything a removed script uses (its source stream …) that something kept still refers to, a single-action entry whose script is followed by several actions, and a catalog `/AA`. Verification fails when a `/JS` entry or a script tree is left |
 
 ## What a success states
 
@@ -102,6 +103,9 @@ Three separate statements; none implies the next:
   `elsewhere` either way, and `refuse_copies_elsewhere` refuses it. Any
   other copy — one only named in some resources, or reachable
   otherwise — fails.
+- The output carries no object stream or cross-reference stream (the
+  rewrite writes neither; one carried because something referred to it
+  would hold the input's objects as they were).
 - No object of the output is a removed shading or tiling pattern
   (compared by content, references replaced by what they refer to, so
   renumbering does not hide one).
@@ -128,7 +132,10 @@ than 16 deep or cyclic, inline images meeting a rect
 (or whose data length is not fixed by their dictionary), `sh` crossing a rect, unbounded, in a
 form or reached from elsewhere, tiling patterns painting across a rect, in a form, under text
 meeting a rect or reached from elsewhere,
-ExtGState with a soft mask or `/Font`, `/ActualText`, `/Alt` or `/E` in named marked-content
+ExtGState with a soft mask or `/Font`, literal strings holding an
+unescaped carriage return anywhere in the document (readers do not agree
+on the bytes they hold), text in a font whose embedded CMap writes codes
+as literal strings (Poppler rejects them, other readers do not), `/ActualText`, `/Alt` or `/E` in named marked-content
 properties or on a marked-content point,
 text in a clipping mode (`Tr` 4–7),
 non-embedded fonts (glyph extent unknown; see `embed_substitute_fonts`), Type 3 glyphs whose CharProc is not
@@ -149,10 +156,13 @@ default); with `refuse_copies_elsewhere`, any copy found elsewhere. Rewrite refu
 information elsewhere is not removed:
 
 - `elsewhere` lists where removed text (runs of four or more
-  non-whitespace characters) is still shown — another page's text —
-  or stored — a non-stream object's string: an outline title, an
-  annotation's `/Contents`, a field value. `elsewhere_unsearched_pages`
-  lists pages whose text could not be extracted for that search.
+  non-whitespace characters) is still shown — a page's text, including
+  optional content that is off and annotation appearances — or stored —
+  a non-stream object's string: an outline title, an annotation's
+  `/Contents`, a field value. CR, LF and CRLF compare as one line end.
+  `elsewhere_unsearched_pages` lists pages whose text could not be
+  extracted for that search (a page whose annotation appearances
+  cannot be read has its own text searched and is listed).
 - `residual` is the residual-information audit of the output
   (attachments, annotations, form values, actions, JavaScript,
   embedded fonts, …; see [`audit.md`](audit.md)).
@@ -245,6 +255,11 @@ Each of these is refused with a typed error, not approximated:
 - **Paint**: shadings (`sh`) and tiling patterns crossing a rect,
   inside forms or shared; shading patterns with their own ExtGState;
   soft masks; `/Font` set by ExtGState.
+- **Strings**: a document with a literal string holding an unescaped
+  carriage return (in content, objects or a CMap); text in a font whose
+  embedded CMap writes codes as literal strings.
+- **Scripts**: a catalog running JavaScript, unless `remove_javascript`
+  removes every script; a catalog `/AA`.
 - **Annotations**: other than links meeting a rect unless
   `remove_annotations` removes them (markup subtypes only); widgets,
   signatures, media, file attachments and 3D meeting a rect; NoZoom,

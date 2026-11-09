@@ -73,6 +73,11 @@ pub(crate) struct Lexer<'a> {
     pub(crate) input: &'a [u8],
     pos: usize,
     limits: &'a Limits,
+    /// Literal strings read so far holding an unescaped carriage
+    /// return. This lexer reads one (alone or in CRLF) as a single line
+    /// feed, as §7.3.4.2 says; Poppler and pdf.js keep the bytes —
+    /// readers disagree on what such a string holds.
+    pub(crate) raw_cr_strings: u64,
 }
 
 impl<'a> Lexer<'a> {
@@ -81,6 +86,7 @@ impl<'a> Lexer<'a> {
             input,
             pos: 0,
             limits,
+            raw_cr_strings: 0,
         }
     }
 
@@ -247,6 +253,7 @@ impl<'a> Lexer<'a> {
         self.pos += 1;
         let mut out = Vec::new();
         let mut depth: u32 = 1;
+        let mut raw_cr = false;
         loop {
             if self.pos >= self.input.len() {
                 return Err(Error::UnexpectedEof {
@@ -321,6 +328,15 @@ impl<'a> Lexer<'a> {
                     }
                     out.push(b')');
                 }
+                // An unescaped end-of-line is one line feed (§7.3.4.2):
+                // CR, LF and CRLF alike.
+                b'\r' => {
+                    raw_cr = true;
+                    if self.input.get(self.pos) == Some(&b'\n') {
+                        self.pos += 1;
+                    }
+                    out.push(b'\n')
+                }
                 _ => out.push(b),
             }
             if out.len() > self.limits.max_string_bytes {
@@ -329,6 +345,9 @@ impl<'a> Lexer<'a> {
                     max: self.limits.max_string_bytes as u64,
                 });
             }
+        }
+        if raw_cr {
+            self.raw_cr_strings += 1;
         }
         Ok(out)
     }
