@@ -991,6 +991,31 @@ fn decoration_reach(doc: &Document, d: &Dict, w: f64) -> Result<f64, Error> {
         }
     }
     let mut reach = num(b"LL")? + num(b"LLE")? + num(b"LLO")?;
+    // Text markup is drawn from its quadrilaterals with rounded ends or
+    // waves: Poppler and MuPDF reach up to 0.19 × a quadrilateral's
+    // height past it (a highlight's ends); half the height is taken.
+    let subtype = d.get(b"Subtype".as_slice()).and_then(|s| s.as_name());
+    if matches!(
+        subtype,
+        Some(b"Highlight" | b"Underline" | b"StrikeOut" | b"Squiggly")
+    ) {
+        if let Some(q) = d.get(b"QuadPoints".as_slice()) {
+            let q = doc.deref(q)?;
+            let nums: Vec<f64> = q
+                .as_array()
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|v| v.as_number())
+                .collect();
+            let mut h: f64 = 0.0;
+            for quad in nums.chunks_exact(8) {
+                let side =
+                    |a: usize, b: usize| (quad[a] - quad[b]).hypot(quad[a + 1] - quad[b + 1]);
+                h = h.max(side(0, 4)).max(side(2, 6));
+            }
+            reach += h / 2.0;
+        }
+    }
     if let Some(le) = d.get(b"LE".as_slice()) {
         let le = doc.deref(le)?;
         let ends: Vec<Object> = match le {

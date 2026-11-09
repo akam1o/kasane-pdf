@@ -5149,3 +5149,37 @@ fn appearance_less_line_endings_and_decorations() {
     assert!(unsupported(annots_run(&line("/Cap true"))).contains("no known extent"));
     assert!(unsupported(annots_run(&line("/BE << /S /C /I 1 >>"))).contains("no known extent"));
 }
+
+/// An appearance-less highlight's rounded ends reach past its
+/// quadrilaterals (0.19 × their height in Poppler and MuPDF): 2 pt from
+/// a rect, a 20 pt high highlight meets it. (Release review: the
+/// extent was the quadrilaterals grown by the border width.)
+#[test]
+fn appearance_less_highlight_ends() {
+    let pdf = annot_page(
+        "30 0 R",
+        vec![(
+            30,
+            b"<< /Type /Annot /Subtype /Highlight /Rect [10 150 40 170] \
+              /QuadPoints [10 170 40 170 10 150 40 150] /C [1 1 0] >>"
+                .to_vec(),
+        )],
+    );
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let rects = vec![RECT, (42.0, 150.0, 60.0, 170.0)];
+    let r = redact(
+        &doc,
+        &[(0, rects.clone())],
+        &RedactOptions::new().remove_annotations(true),
+    )
+    .unwrap();
+    assert_eq!(r.annotations_removed, 1);
+    let far = vec![RECT, (55.0, 150.0, 60.0, 170.0)];
+    let r = redact(
+        &doc,
+        &[(0, far)],
+        &RedactOptions::new().remove_annotations(true),
+    )
+    .unwrap();
+    assert_eq!(r.annotations_removed, 0, "beyond half its height: kept");
+}
