@@ -36,10 +36,13 @@ use crate::object::{Dict, Object};
 use std::io::Write;
 
 /// The document with each embeddable non-embedded font replaced, and
-/// how many were; `None` when there is none.
+/// how many were; `None` when there is none. `scripts_go`: the
+/// redaction removes every JavaScript action afterwards, so a catalog
+/// running scripts is not refused in this intermediate document.
 pub(crate) fn embed_substitutes(
     doc: &Document,
     limits: &Limits,
+    scripts_go: bool,
 ) -> Result<Option<(Vec<u8>, u64)>, Error> {
     let refs: Vec<_> = doc
         .xref_entries()
@@ -164,7 +167,10 @@ pub(crate) fn embed_substitutes(
     let Some(e) = edit else {
         return Ok(None);
     };
-    let bytes = e.rewrite()?;
+    let bytes = e.rewrite_with_overrides(&crate::rewrite::RewriteOverrides {
+        javascript_removed: scripts_go,
+        ..Default::default()
+    })?;
     check_embedded(&bytes, limits)?;
     Ok(Some((bytes, count)))
 }

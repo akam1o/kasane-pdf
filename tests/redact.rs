@@ -4831,3 +4831,100 @@ fn raw_carriage_returns_in_type3_usage_are_refused() {
     let e = unsupported(run(&pdf, vec![(60.0, 60.0, 140.0, 140.0)]));
     assert!(e.contains("carriage return"), "{e}");
 }
+
+/// remove_javascript: every JavaScript action and script tree goes — the
+/// name tree, /OpenAction, /AA triggers, an annotation's /A, a step of
+/// an action chain, one script shared by several — and other actions
+/// stay; without the option the document is refused.
+#[test]
+fn javascript_is_removed_on_request() {
+    let objs = |cat_extra: &str| {
+        let mut o = font_objs();
+        o.extend([
+            (
+                50,
+                b"<< /S /JavaScript /JS (var leak = 'SCRIPTBODY1';) >>".to_vec(),
+            ),
+            (51, b"<< /S /JavaScript /JS 52 0 R >>".to_vec()),
+            (52, stream_obj("", b"app.alert('SCRIPTBODY2');")),
+            (
+                53,
+                b"<< /S /URI /URI (https://example.com/kept) /Next [50 0 R 54 0 R] >>".to_vec(),
+            ),
+            (54, b"<< /S /JavaScript /JS (SCRIPTBODY3) >>".to_vec()),
+            (55, b"<< /Names [(init) 50 0 R (more) 51 0 R] >>".to_vec()),
+            (
+                56,
+                b"<< /Type /Annot /Subtype /Link /Rect [10 150 60 170] /A 53 0 R \
+                  /AA << /E 51 0 R /X << /S /JavaScript /JS (SCRIPTBODY4) >> >> >>"
+                    .to_vec(),
+            ),
+            (
+                1,
+                format!(
+                    "<< /Type /Catalog /Pages 2 0 R /OpenAction 50 0 R \
+                     /Names << /JavaScript 55 0 R >> {cat_extra} >>"
+                )
+                .into_bytes(),
+            ),
+        ]);
+        o
+    };
+    let page = format!("{SECRET} BT /F1 12 Tf 10 20 Td (PUBLICWORD) Tj ET");
+    let pdf = doc_with_annots(
+        "/Font << /F1 20 0 R >>",
+        page.as_bytes(),
+        "/Annots [56 0 R]",
+        objs(""),
+    );
+    assert!(unsupported(run(&pdf, vec![RECT])).contains("JavaScript"));
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let r = redact(
+        &doc,
+        &[(0, vec![RECT])],
+        &RedactOptions::new().remove_javascript(true),
+    )
+    .unwrap();
+    assert_eq!(r.codes_removed, 10);
+    assert!(r.javascript_removed >= 5, "{}", r.javascript_removed);
+    for s in [&b"SCRIPTBODY"[..], b"/JavaScript", b"/JS"] {
+        assert!(
+            !raw_contains(&r.output, s) && !contains(&r.output, s),
+            "{}",
+            String::from_utf8_lossy(s)
+        );
+    }
+    assert!(
+        contains(&r.output, b"https://example.com/kept")
+            || raw_contains(&r.output, b"example.com/kept")
+    );
+    assert_eq!(page_text(&r.output, 0), "PUBLICWORD");
+}
+
+/// [`doc_with`] for one page with `page_extra` in its dictionary; an
+/// object 1 in `extra` replaces the catalog.
+fn doc_with_annots(
+    page_res: &str,
+    content: &[u8],
+    page_extra: &str,
+    extra: Vec<(u32, Vec<u8>)>,
+) -> Vec<u8> {
+    let mut objs: Vec<(u32, Vec<u8>)> = vec![
+        (2, b"<< /Type /Pages /Kids [100 0 R] /Count 1 >>".to_vec()),
+        (
+            100,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << {page_res} >> \
+                 /Contents 101 0 R {page_extra} >>"
+            )
+            .into_bytes(),
+        ),
+        (101, stream_obj("", content)),
+    ];
+    if !extra.iter().any(|(n, _)| *n == 1) {
+        objs.push((1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()));
+    }
+    objs.extend(extra);
+    objs.sort_by_key(|(n, _)| *n);
+    build_pdf(&objs)
+}

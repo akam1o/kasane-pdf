@@ -302,7 +302,7 @@ kasane-pdf text <pdf> <page> [--format json|lines]
 kasane-pdf rewrite <in.pdf> --output <out.pdf>
 kasane-pdf annotate-rect <in> <page> --rect llx lly urx ury --color r g b --width w --output <out>
 kasane-pdf inspect <pdf> <page>                         structural dump
-kasane-pdf redact <in> --page N --rect … [--page M --rect …] [--remove-annotations] --output <out>
+kasane-pdf redact <in> --page N --rect … [--page M --rect …] [--remove-annotations] [--embed-substitute-fonts] [--remove-javascript] --output <out>
 kasane-pdf preflight-redaction <pdf> <page> --rect … [--format text|json]
 kasane-pdf audit-residuals <pdf> [--format text|json]
 kasane-pdf experimental-remove-text <in> <page> --rect … --output <out>
@@ -407,7 +407,9 @@ and the remaining blockers are in
   paths and images, vertical fonts, curved fills crossing a rect, masked images,
   Indexed or four-component JPEGs, widgets and media
   meeting a rect, shadings and tiling patterns crossing a rect, soft
-  masks and more
+  masks, scripts unless `remove_javascript` removes them, strings
+  readers disagree on (unescaped CRs, CMap codes written as strings)
+  and more
   (`docs/features/redaction.md`); a stroke cut at a rect can lose a
   sliver of band next to it (oblique crossings, round caps at an
   original end).

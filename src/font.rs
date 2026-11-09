@@ -322,11 +322,17 @@ pub(crate) fn load_font(
         }
     };
     let before = doc.decoded_left();
-    let (font, warnings) = doc.capture_warnings(|| load_font_dict(doc, &dict, name, limits));
+    let (font, warnings, dropped) =
+        doc.capture_warnings(|| load_font_dict(doc, &dict, name, limits));
     let font = font?;
     if let Some(r) = key {
         let bytes = before.saturating_sub(doc.decoded_left());
-        doc.cache_font(r, limits, font.clone(), warnings, bytes);
+        let cached = crate::document::CachedFont {
+            font: font.clone(),
+            warnings,
+            dropped,
+        };
+        doc.cache_font(r, limits, cached, bytes);
     }
     Ok(font)
 }
@@ -2462,6 +2468,16 @@ impl CompositeFont {
 }
 
 impl Font {
+    /// Readers disagree on this font's codes (an embedded CMap writing
+    /// codes as literal strings): where its glyphs fall depends on the
+    /// reader.
+    pub(crate) fn reader_dependent_codes(&self) -> bool {
+        match self {
+            Font::Composite(f) => f.cmap.as_ref().is_some_and(|c| c.literal_codes),
+            _ => false,
+        }
+    }
+
     /// Decode one code at `bytes` big-endian. Returns `(code,
     /// consumed_bytes)` or `Err` for a truncated tail (odd trailing
     /// byte on a 2-byte font). Codes never span string boundaries.

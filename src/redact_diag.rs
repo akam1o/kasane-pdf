@@ -1446,12 +1446,17 @@ impl<'a> DiagWalker<'a> {
             }
             O::EndText => self.in_text = false,
             O::SetTextFont { font, size } => {
-                self.gs.text.font = Some(crate::font::load_font(
-                    self.doc,
-                    &self.resources,
-                    font,
-                    self.limits,
-                )?);
+                let f = crate::font::load_font(self.doc, &self.resources, font, self.limits)?;
+                if self.redaction_mode && f.reader_dependent_codes() {
+                    return Err(Error::Unsupported {
+                        feature: "redaction of text in a CMap with codes written as strings",
+                        detail: format!(
+                            "/{} — readers do not agree on its codes, so on where its glyphs fall",
+                            String::from_utf8_lossy(font)
+                        ),
+                    });
+                }
+                self.gs.text.font = Some(f);
                 self.gs.text.font_name = font.clone();
                 self.gs.text.font_size = *size;
             }

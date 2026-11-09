@@ -3017,6 +3017,7 @@ pub fn remove_regions_and_document_metadata(
         .rewrite_with_overrides(&crate::rewrite::RewriteOverrides {
             strip_info: true,
             strip_metadata: true,
+            ..Default::default()
         })?;
 
     Ok(RegionsAndMetadataRemoval {

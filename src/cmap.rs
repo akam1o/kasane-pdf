@@ -33,6 +33,10 @@ pub(crate) struct CMap {
     identity_base: bool,
     /// `/WMode 1`.
     pub(crate) vertical: bool,
+    /// Some code is written as a literal string: read like a hex one
+    /// here and by pdf.js, rejected by Poppler — readers place glyphs
+    /// differently.
+    pub(crate) literal_codes: bool,
 }
 
 impl CMap {
@@ -161,18 +165,20 @@ impl CMap {
                                 {
                                     break
                                 }
-                                Some(
-                                    Token::HexString { value, .. }
-                                    | Token::LiteralString { value, .. },
-                                ) => value,
+                                Some(Token::HexString { value, .. }) => value,
+                                Some(Token::LiteralString { value, .. }) => {
+                                    cm.literal_codes = true;
+                                    value
+                                }
                                 Some(_) => continue,
                                 None => return Err(eof("codespacerange")),
                             };
                             let hi = match lx.next_token()? {
-                                Some(
-                                    Token::HexString { value, .. }
-                                    | Token::LiteralString { value, .. },
-                                ) => value,
+                                Some(Token::HexString { value, .. }) => value,
+                                Some(Token::LiteralString { value, .. }) => {
+                                    cm.literal_codes = true;
+                                    value
+                                }
                                 _ => {
                                     return Err(Error::Structure(
                                         "codespacerange needs a high bound".into(),
@@ -194,18 +200,20 @@ impl CMap {
                         loop {
                             let lo = match lx.next_token()? {
                                 Some(Token::Word { bytes, .. }) if bytes == b"endcidrange" => break,
-                                Some(
-                                    Token::HexString { value, .. }
-                                    | Token::LiteralString { value, .. },
-                                ) => value,
+                                Some(Token::HexString { value, .. }) => value,
+                                Some(Token::LiteralString { value, .. }) => {
+                                    cm.literal_codes = true;
+                                    value
+                                }
                                 Some(_) => continue,
                                 None => return Err(eof("cidrange")),
                             };
                             let hi = match lx.next_token()? {
-                                Some(
-                                    Token::HexString { value, .. }
-                                    | Token::LiteralString { value, .. },
-                                ) => value,
+                                Some(Token::HexString { value, .. }) => value,
+                                Some(Token::LiteralString { value, .. }) => {
+                                    cm.literal_codes = true;
+                                    value
+                                }
                                 _ => {
                                     return Err(Error::Structure(
                                         "cidrange needs a high bound".into(),
@@ -236,10 +244,11 @@ impl CMap {
                         loop {
                             let code = match lx.next_token()? {
                                 Some(Token::Word { bytes, .. }) if bytes == b"endcidchar" => break,
-                                Some(
-                                    Token::HexString { value, .. }
-                                    | Token::LiteralString { value, .. },
-                                ) => value,
+                                Some(Token::HexString { value, .. }) => value,
+                                Some(Token::LiteralString { value, .. }) => {
+                                    cm.literal_codes = true;
+                                    value
+                                }
                                 Some(_) => continue,
                                 None => return Err(eof("cidchar")),
                             };

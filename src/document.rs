@@ -147,14 +147,26 @@ impl OpenOptions {
 
 #[derive(Default)]
 struct FontCache {
-    fonts: HashMap<(IndirectRef, crate::Limits), (crate::font::Font, Vec<crate::Warning>)>,
+    fonts: HashMap<(IndirectRef, crate::Limits), CachedFont>,
     /// What the cached fonts decoded (their programs, CMaps …).
     bytes: u64,
 }
 
-/// The decoded bytes the font cache may keep alive; fonts beyond it are
-/// loaded each time, as without the cache.
+/// A loaded font and what its load recorded: the warnings kept and how
+/// many more the bounded warning list dropped.
+#[derive(Clone)]
+pub(crate) struct CachedFont {
+    pub(crate) font: crate::font::Font,
+    pub(crate) warnings: Vec<crate::Warning>,
+    pub(crate) dropped: u64,
+}
+
+/// The decoded bytes the font cache may keep alive, and the fonts (a
+/// font also holds dictionaries and tables its decoded bytes do not
+/// count); fonts beyond either are loaded each time, as without the
+/// cache.
 const FONT_CACHE_BYTES: u64 = 64 << 20;
+const FONT_CACHE_FONTS: usize = 2048;
 
 impl std::fmt::Debug for FontCache {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -556,16 +568,25 @@ impl Document {
 
     /// Run `f`, returning what it returned and the warnings it recorded
     /// (also recorded on the document).
-    pub(crate) fn capture_warnings<T>(&self, f: impl FnOnce() -> T) -> (T, Vec<crate::Warning>) {
+    pub(crate) fn capture_warnings<T>(
+        &self,
+        f: impl FnOnce() -> T,
+    ) -> (T, Vec<crate::Warning>, u64) {
         let outer = std::mem::take(&mut *self.warnings.borrow_mut());
         let r = f();
         let inner = std::mem::replace(&mut *self.warnings.borrow_mut(), outer);
+        self.replay_warnings(&inner.list, inner.dropped);
+        (r, inner.list, inner.dropped)
+    }
+
+    /// Record `warnings` again, and `dropped` more the list had no room
+    /// for.
+    fn replay_warnings(&self, warnings: &[crate::Warning], dropped: u64) {
         let mut sink = self.warnings.borrow_mut();
-        for w in &inner.list {
+        for w in warnings {
             sink.push(w.clone());
         }
-        sink.dropped = sink.dropped.saturating_add(inner.dropped);
-        (r, inner.list)
+        sink.dropped = sink.dropped.saturating_add(dropped);
     }
 
     /// The font loaded from font dictionary `r` under `limits`, if any.
@@ -578,11 +599,9 @@ impl Document {
         // of the key.
         let key = (r, limits.clone());
         let hit = self.font_cache.borrow().fonts.get(&key).cloned();
-        hit.map(|(f, warnings)| {
-            for w in warnings {
-                self.push_warning(w);
-            }
-            f
+        hit.map(|c| {
+            self.replay_warnings(&c.warnings, c.dropped);
+            c.font
         })
     }
 
@@ -591,16 +610,15 @@ impl Document {
         &self,
         r: IndirectRef,
         limits: &crate::Limits,
-        font: crate::font::Font,
-        warnings: Vec<crate::Warning>,
+        font: CachedFont,
         bytes: u64,
     ) {
         let mut c = self.font_cache.borrow_mut();
-        if c.bytes.saturating_add(bytes) > FONT_CACHE_BYTES {
+        if c.bytes.saturating_add(bytes) > FONT_CACHE_BYTES || c.fonts.len() >= FONT_CACHE_FONTS {
             return;
         }
         c.bytes += bytes;
-        c.fonts.insert((r, limits.clone()), (font, warnings));
+        c.fonts.insert((r, limits.clone()), font);
     }
 
     /// What is left of the current operation's decoded-bytes budget.

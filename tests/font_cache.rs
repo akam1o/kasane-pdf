@@ -348,3 +348,41 @@ fn an_unreadable_appearance_leaves_the_page_text_searched() {
     );
     assert_eq!(r.elsewhere_unsearched_pages, vec![1]);
 }
+
+/// More warnings than the document keeps: a reused font counts the
+/// dropped ones again too.
+#[test]
+fn a_cached_font_counts_its_dropped_warnings_again() {
+    let entries: String = (0..1500)
+        .map(|i| format!("<{:02x}> <41>\n", i % 256))
+        .collect();
+    let cmap = format!(
+        "/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+         1 begincodespacerange <00> <FF> endcodespacerange \
+         1500 beginbfchar\n{entries}endbfchar endcmap end end"
+    );
+    let mut extra = vec![font(
+        20,
+        500,
+        "/Encoding /WinAnsiEncoding /ToUnicode 30 0 R",
+    )];
+    extra.push((30, stream_obj("", cmap.as_bytes())));
+    let pdf = doc(
+        &[(
+            "BT /A 10 Tf 10 10 Td (ab) Tj ET",
+            "/Font << /A 20 0 R >>",
+            "",
+        )],
+        extra,
+    );
+    let d = Document::from_bytes(&pdf).unwrap();
+    let page = &d.pages()[0];
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        let before = d.warnings_dropped();
+        extract_text(&d, page, &TextOptions::default()).unwrap();
+        seen.push((d.take_warnings().len(), d.warnings_dropped() - before));
+    }
+    assert!(seen[0].1 > 0, "{seen:?}");
+    assert_eq!(seen[1], seen[0]);
+}

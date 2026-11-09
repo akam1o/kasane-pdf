@@ -113,6 +113,10 @@ pub(crate) struct RewriteOverrides {
     /// Drop the catalog `/Metadata` entry — the catalog object is
     /// overlaid with a copy that lacks `/Metadata`.
     pub strip_metadata: bool,
+    /// The overlay removed every JavaScript action: the refusal of a
+    /// catalog running scripts does not apply (the caller verifies the
+    /// output holds none).
+    pub javascript_removed: bool,
 }
 
 /// Rewrite with an *overlay*: `(old obj num, gen) → replacement body`.
@@ -199,7 +203,12 @@ fn rewrite_core(
     if doc.is_encrypted() {
         return Err(crate::incremental::encrypted_write_refused());
     }
-    check_refusals(doc, carry, remove_usage_rights)?;
+    check_refusals(
+        doc,
+        carry,
+        remove_usage_rights,
+        overrides.javascript_removed,
+    )?;
 
     // The catalog's `/Metadata` is removed by overlaying the catalog
     // object itself — but if the caller already overlaid the catalog
@@ -999,7 +1008,12 @@ pub(crate) fn xfa_scripts(
 /// JavaScript `/OpenAction`, `/Names /JavaScript`) and nothing else: the
 /// catalog `/RichMedia` refusal is `MultimediaPolicy::Refuse`, and the
 /// signature refusals apply under every policy.
-fn check_refusals(doc: &Document, carry: bool, remove_usage_rights: bool) -> Result<(), Error> {
+fn check_refusals(
+    doc: &Document,
+    carry: bool,
+    remove_usage_rights: bool,
+    javascript_removed: bool,
+) -> Result<(), Error> {
     let catalog = doc.catalog();
 
     // Signed documents: a signature/lock dictionary in /Perms claims
@@ -1134,7 +1148,7 @@ fn check_refusals(doc: &Document, carry: bool, remove_usage_rights: bool) -> Res
 
     // Open-action / Names JavaScript: refuse executable payloads that
     // a rewrite could silently retain.
-    if carry {
+    if carry || javascript_removed {
         return Ok(());
     }
     if let Some(oa) = catalog.get(b"OpenAction".as_slice()) {

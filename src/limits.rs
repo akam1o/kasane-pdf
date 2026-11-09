@@ -51,7 +51,9 @@ pub struct Limits {
     /// the document keeps cached; document-level lookups between
     /// operations share the same budget. Guards against many small
     /// streams exhausting memory while letting every page of a long
-    /// document be processed in turn. Default: 1 GiB.
+    /// document be processed in turn. A font the document already
+    /// loaded (it keeps up to 64 MiB of them, per set of limits) is not
+    /// decoded again and so does not count again. Default: 1 GiB.
     pub max_total_decoded_bytes: u64,
     /// Maximum number of filters in a `/Filter` array. Default: 8.
     pub max_filter_chain: usize,

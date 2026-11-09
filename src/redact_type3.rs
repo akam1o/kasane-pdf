@@ -780,6 +780,7 @@ pub(crate) fn prune_type3(
     let output = edit.rewrite_with_overrides(&crate::rewrite::RewriteOverrides {
         strip_info: true,
         strip_metadata: true,
+        ..Default::default()
     })?;
     Ok(Some(Pruned { output, images }))
 }

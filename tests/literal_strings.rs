@@ -313,21 +313,25 @@ fn cmap_page(code_src: &[u8]) -> Vec<u8> {
 
 /// A CMap code written as a literal string maps like the same code in
 /// hex (it decides the CID, so the width and where the next glyph
-/// falls); one holding an unescaped CR is refused.
+/// falls), as pdf.js reads it; Poppler rejects it, so redaction refuses
+/// such a font — with or without an unescaped CR in the code.
 #[test]
 fn cmap_codes_in_literal_strings() {
     let hex = chars(&cmap_page(b"<41>"));
     assert_eq!(hex.len(), 2);
     assert_eq!(hex[1].1 .0, 60_000, "CID 36 advances 40 pt");
     assert_eq!(chars(&cmap_page(b"(A)")), hex);
-    let doc = Document::from_bytes(&cmap_page(b"(\r)")).unwrap();
-    let e = redact(
-        &doc,
-        &[(0, vec![(55.0, 95.0, 70.0, 115.0)])],
-        &RedactOptions::new(),
-    )
-    .unwrap_err();
-    assert!(e.to_string().contains("carriage return"), "{e}");
+    let rect = (55.0, 95.0, 70.0, 115.0);
+    let doc = Document::from_bytes(&cmap_page(b"<41>")).unwrap();
+    assert!(redact(&doc, &[(0, vec![rect])], &RedactOptions::new()).is_ok());
+    for (src, why) in [
+        (&b"(A)"[..], "codes written as strings"),
+        (b"(\r)", "carriage return"),
+    ] {
+        let doc = Document::from_bytes(&cmap_page(src)).unwrap();
+        let e = redact(&doc, &[(0, vec![rect])], &RedactOptions::new()).unwrap_err();
+        assert!(e.to_string().contains(why), "{e}");
+    }
 }
 
 /// A literal string with an unescaped CRLF elsewhere in the document —

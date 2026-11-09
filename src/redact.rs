@@ -54,6 +54,7 @@ pub struct RedactOptions {
     refuse_copies_elsewhere: bool,
     remove_annotations: bool,
     embed_substitute_fonts: bool,
+    remove_javascript: bool,
 }
 
 impl RedactOptions {
@@ -74,6 +75,18 @@ impl RedactOptions {
     /// text. The output is then untagged.
     pub fn remove_structure_tree(mut self, remove: bool) -> Self {
         self.remove_structure_tree = remove;
+        self
+    }
+
+    /// Remove every JavaScript action — `/Names /JavaScript`, an
+    /// `/OpenAction`, `/AA` triggers, annotation and field `/A` actions,
+    /// steps of an action chain — instead of refusing a document whose
+    /// catalog runs scripts. A script may hold any of the document's
+    /// text and is not redacted, so it is removed whole: the output's
+    /// forms no longer calculate, validate or format, and nothing runs
+    /// when it opens. Verification checks that no JavaScript is left.
+    pub fn remove_javascript(mut self, remove: bool) -> Self {
+        self.remove_javascript = remove;
         self
     }
 
@@ -172,6 +185,9 @@ pub struct Redaction {
     /// The input's structure tree was removed (only with
     /// [`RedactOptions::remove_structure_tree`]).
     pub structure_tree_removed: bool,
+    /// JavaScript actions and script trees removed
+    /// ([`RedactOptions::remove_javascript`]).
+    pub javascript_removed: u64,
     /// What was removed from the rects that the output still shows or
     /// stores elsewhere: removed text (runs of at least four
     /// non-whitespace characters) in another page's text or an
@@ -252,6 +268,7 @@ impl std::fmt::Debug for Redaction {
             .field("info_removed", &self.info_removed)
             .field("metadata_removed", &self.metadata_removed)
             .field("structure_tree_removed", &self.structure_tree_removed)
+            .field("javascript_removed", &self.javascript_removed)
             .field("elsewhere", &self.elsewhere)
             .field("residual_findings", &self.residual.findings.len())
             .finish()
@@ -272,7 +289,9 @@ pub fn redact(
 ) -> Result<Redaction, Error> {
     options.limits.validate()?;
     if options.embed_substitute_fonts {
-        if let Some((bytes, n)) = crate::redact_fonts::embed_substitutes(doc, &options.limits)? {
+        if let Some((bytes, n)) =
+            crate::redact_fonts::embed_substitutes(doc, &options.limits, options.remove_javascript)?
+        {
             let normalized = Document::from_bytes_with_limits(&bytes, options.limits.clone())?;
             return redact_doc(&normalized, specs, options, n);
         }
@@ -336,11 +355,17 @@ fn redact_doc(
             .overlay
             .insert((root.number, root.generation), Object::Dict(catalog));
     }
+    let javascript_removed = if options.remove_javascript {
+        crate::redact_js::strip_javascript(doc, &mut s.edit.overlay, limits)?
+    } else {
+        0
+    };
     let output = s
         .edit
         .rewrite_with_overrides(&crate::rewrite::RewriteOverrides {
             strip_info: true,
             strip_metadata: true,
+            javascript_removed: options.remove_javascript,
         })?;
 
     // Type 3 glyph definitions the output no longer shows go too.
@@ -378,6 +403,14 @@ fn redact_doc(
         &s.removed_annot_prints,
         session,
     )?;
+    if options.remove_javascript {
+        if let Some(r) = crate::redact_js::find_javascript(&out, limits)? {
+            return Err(Error::Unsupported {
+                feature: "redaction output failed verification",
+                detail: format!("object {r} still holds JavaScript"),
+            });
+        }
+    }
     // No Type 3 glyph the input showed and the output does not is
     // still defined.
     if crate::redact_type3::prune_type3(doc, &output, limits)?.is_some() {
@@ -422,6 +455,7 @@ fn redact_doc(
         info_removed: info_present,
         metadata_removed: metadata_present,
         structure_tree_removed,
+        javascript_removed,
         elsewhere,
         elsewhere_unsearched_pages,
         residual,
@@ -895,7 +929,7 @@ pub fn redaction_walk_findings(
     embed: bool,
 ) -> Result<Vec<(&'static str, String)>, Error> {
     if embed {
-        if let Some((bytes, _)) = crate::redact_fonts::embed_substitutes(doc, limits)? {
+        if let Some((bytes, _)) = crate::redact_fonts::embed_substitutes(doc, limits, false)? {
             let normalized = Document::from_bytes_with_limits(&bytes, limits.clone())?;
             return redaction_walk_findings(&normalized, page_index, rects, limits, false);
         }

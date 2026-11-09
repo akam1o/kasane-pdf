@@ -112,6 +112,7 @@ mod redact;
 pub mod redact_diag;
 mod redact_fonts;
 mod redact_geom;
+mod redact_js;
 mod redact_textpos;
 mod redact_type3;
 pub mod remove_image;
