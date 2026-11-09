@@ -8,7 +8,7 @@
     115.58,
     634.56
    ],
-   "seconds": 0.021,
+   "seconds": 0.255,
    "elsewhere": 0,
    "outside_words": 4,
    "outside_words_lost": 0,
@@ -39,7 +39,7 @@
     595.32,
     634.56
    ],
-   "seconds": 0.018,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 4,
    "outside_words_lost": 0,
@@ -70,7 +70,7 @@
     396.88,
     561.28
    ],
-   "seconds": 0.012,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 5,
    "outside_words_lost": 0,
@@ -101,25 +101,10 @@
     56.34,
     611.02
    ],
-   "seconds": 0.024,
-   "elsewhere": 1,
-   "outside_words": 26,
-   "outside_words_lost": 0,
-   "outside_chars": 172,
-   "outside_chars_lost": 0,
-   "outside_chars_mupdf": 172,
-   "outside_chars_mupdf_lost": 0,
-   "outside_chars_mupdf_moved": 0,
-   "words_regrouped": 0,
-   "outside_pixels_changed": 0,
-   "unchanged_ink_inside": 0,
-   "codes_removed": 6,
-   "images_edited": 0,
-   "forms_edited": 0,
-   "paths_removed": 0,
-   "paths_cut_at_a_rect": 0,
-   "shadings_removed": 0,
-   "outcome": "ok",
+   "seconds": 0.013,
+   "outcome": "refused",
+   "reason": "JavaScript removal",
+   "detail": "an XFA form: its scripts are not edited",
    "id": "annotation-button-widget",
    "category": "annotations",
    "producer": "LiveCycle Designer"
@@ -132,7 +117,7 @@
     612.0,
     611.02
    ],
-   "seconds": 0.014,
+   "seconds": 0.012,
    "outcome": "refused",
    "reason": "redaction of an annotation other than a link meeting a rect",
    "detail": "/Annots[7] (/Widget) \u2014 its content is not edited",
@@ -148,25 +133,10 @@
     408.0,
     528.0
    ],
-   "seconds": 0.023,
-   "elsewhere": 0,
-   "outside_words": 27,
-   "outside_words_lost": 0,
-   "outside_chars": 177,
-   "outside_chars_lost": 0,
-   "outside_chars_mupdf": 177,
-   "outside_chars_mupdf_lost": 0,
-   "outside_chars_mupdf_moved": 0,
-   "words_regrouped": 0,
-   "outside_pixels_changed": 0,
-   "unchanged_ink_inside": 0,
-   "codes_removed": 0,
-   "images_edited": 0,
-   "forms_edited": 0,
-   "paths_removed": 0,
-   "paths_cut_at_a_rect": 0,
-   "shadings_removed": 0,
-   "outcome": "ok",
+   "seconds": 0.013,
+   "outcome": "refused",
+   "reason": "JavaScript removal",
+   "detail": "an XFA form: its scripts are not edited",
    "id": "annotation-button-widget",
    "category": "annotations",
    "producer": "LiveCycle Designer"
@@ -179,7 +149,7 @@
     88.16,
     703.8
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
    "reason": "redaction on a page with an annotation drawn outside its /Rect",
    "detail": "/Annots[0] has no appearance stream and geometry outside /Rect",
@@ -195,7 +165,7 @@
     612.0,
     703.8
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
    "reason": "redaction on a page with an annotation drawn outside its /Rect",
    "detail": "/Annots[0] has no appearance stream and geometry outside /Rect",
@@ -227,7 +197,7 @@
     167.16,
     714.16
    ],
-   "seconds": 0.023,
+   "seconds": 0.022,
    "elsewhere": 8,
    "outside_words": 3,
    "outside_words_lost": 0,
@@ -258,7 +228,7 @@
     612.0,
     714.16
    ],
-   "seconds": 0.02,
+   "seconds": 0.028,
    "elsewhere": 4,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -289,7 +259,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.021,
+   "seconds": 0.02,
    "elsewhere": 0,
    "outside_words": 4,
    "outside_words_lost": 0,
@@ -320,7 +290,7 @@
     74.99,
     794.61
    ],
-   "seconds": 0.008,
+   "seconds": 0.026,
    "elsewhere": 0,
    "outside_words": 5,
    "outside_words_lost": 0,
@@ -351,7 +321,7 @@
     594.96,
     794.61
    ],
-   "seconds": 0.008,
+   "seconds": 0.027,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -398,7 +368,7 @@
     360.83,
     401.5
    ],
-   "seconds": 0.018,
+   "seconds": 0.017,
    "elsewhere": 1,
    "outside_words": 255,
    "outside_words_lost": 0,
@@ -429,7 +399,7 @@
     612.0,
     401.5
    ],
-   "seconds": 0.017,
+   "seconds": 0.018,
    "elsewhere": 2,
    "outside_words": 232,
    "outside_words_lost": 0,
@@ -476,7 +446,7 @@
     342.47,
     401.59
    ],
-   "seconds": 0.025,
+   "seconds": 0.023,
    "elsewhere": 1,
    "outside_words": 898,
    "outside_words_lost": 0,
@@ -507,7 +477,7 @@
     612.0,
     401.59
    ],
-   "seconds": 0.028,
+   "seconds": 0.023,
    "elsewhere": 1,
    "outside_words": 856,
    "outside_words_lost": 0,
@@ -538,7 +508,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.026,
+   "seconds": 0.023,
    "elsewhere": 15,
    "outside_words": 687,
    "outside_words_lost": 0,
@@ -569,7 +539,7 @@
     37.84,
     109.12
    ],
-   "seconds": 0.02,
+   "seconds": 0.018,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -631,7 +601,7 @@
     133.33,
     133.33
    ],
-   "seconds": 0.013,
+   "seconds": 0.011,
    "outcome": "refused",
    "reason": "redaction of an annotation other than a link meeting a rect",
    "detail": "/Annots[1] (/Widget) \u2014 its content is not edited",
@@ -647,7 +617,7 @@
     169.49,
     571.87
    ],
-   "seconds": 0.021,
+   "seconds": 0.019,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -709,7 +679,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.015,
+   "seconds": 0.013,
    "outcome": "refused",
    "reason": "redaction of an annotation other than a link meeting a rect",
    "detail": "/Annots[0] (/Widget) \u2014 its content is not edited",
@@ -725,7 +695,7 @@
     91.22,
     728.26
    ],
-   "seconds": 0.013,
+   "seconds": 0.012,
    "elsewhere": 1,
    "outside_words": 9,
    "outside_words_lost": 0,
@@ -803,7 +773,7 @@
     135.63,
     399.74
    ],
-   "seconds": 0.045,
+   "seconds": 0.042,
    "elsewhere": 1,
    "outside_words": 231,
    "outside_words_lost": 0,
@@ -834,7 +804,7 @@
     612.0,
     399.74
    ],
-   "seconds": 0.046,
+   "seconds": 0.043,
    "elsewhere": 1,
    "outside_words": 199,
    "outside_words_lost": 0,
@@ -865,7 +835,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.013,
+   "seconds": 0.012,
    "outcome": "refused",
    "reason": "redaction of a path crossing a rect's edge",
    "detail": "op #737: a filled shape that is not an axis-aligned rectangle",
@@ -881,7 +851,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
    "reason": "region removal on a page with blockers: shading",
    "detail": "shading (sh): /S0 \u2014 shading fills an area we cannot bound",
@@ -897,7 +867,7 @@
     57.46,
     415.11
    ],
-   "seconds": 0.023,
+   "seconds": 0.022,
    "elsewhere": 0,
    "outside_words": 22,
    "outside_words_lost": 0,
@@ -928,7 +898,7 @@
     595.28,
     415.11
    ],
-   "seconds": 0.015,
+   "seconds": 0.013,
    "outcome": "refused",
    "reason": "image attribute",
    "detail": "/SMask is not supported for image removal",
@@ -944,7 +914,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.015,
+   "seconds": 0.013,
    "outcome": "refused",
    "reason": "image attribute",
    "detail": "/SMask is not supported for image removal",
@@ -991,7 +961,7 @@
     612.0,
     571.87
    ],
-   "seconds": 0.01,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -1101,7 +1071,7 @@
     81.05,
     750.92
    ],
-   "seconds": 0.023,
+   "seconds": 0.02,
    "elsewhere": 0,
    "outside_words": 16,
    "outside_words_lost": 0,
@@ -1132,7 +1102,7 @@
     595.28,
     750.92
    ],
-   "seconds": 0.024,
+   "seconds": 0.022,
    "elsewhere": 0,
    "outside_words": 15,
    "outside_words_lost": 0,
@@ -1163,7 +1133,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.015,
+   "seconds": 0.013,
    "outcome": "refused",
    "reason": "region removal on a page with blockers: shading",
    "detail": "shading (sh): /Sh1 crosses a rect \u2014 its function and geometry inside cannot be separated from the rest (a clip would only hide them",
@@ -1226,7 +1196,7 @@
     184.0,
     184.0
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
    "reason": "image colour space",
    "detail": "indirect colour space is not a name",
@@ -1242,7 +1212,7 @@
     316.02,
     605.7
    ],
-   "seconds": 0.009,
+   "seconds": 0.01,
    "elsewhere": 1,
    "outside_words": 10,
    "outside_words_lost": 0,
@@ -1273,7 +1243,7 @@
     595.0,
     605.7
    ],
-   "seconds": 0.01,
+   "seconds": 0.009,
    "elsewhere": 3,
    "outside_words": 6,
    "outside_words_lost": 0,
@@ -1304,7 +1274,7 @@
     396.67,
     561.33
    ],
-   "seconds": 0.009,
+   "seconds": 0.011,
    "elsewhere": 0,
    "outside_words": 10,
    "outside_words_lost": 0,
@@ -1335,7 +1305,7 @@
     516.96,
     134.34
    ],
-   "seconds": 0.047,
+   "seconds": 0.042,
    "elsewhere": 0,
    "outside_words": 98,
    "outside_words_lost": 12,
@@ -1366,7 +1336,7 @@
     612.0,
     134.34
    ],
-   "seconds": 0.043,
+   "seconds": 0.04,
    "elsewhere": 0,
    "outside_words": 98,
    "outside_words_lost": 12,
@@ -1397,7 +1367,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.051,
+   "seconds": 0.041,
    "elsewhere": 0,
    "outside_words": 83,
    "outside_words_lost": 9,
@@ -1428,7 +1398,7 @@
     229.11,
     366.81
    ],
-   "seconds": 0.009,
+   "seconds": 0.008,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -1459,7 +1429,7 @@
     756.0,
     366.81
    ],
-   "seconds": 0.008,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -1490,7 +1460,7 @@
     504.0,
     374.4
    ],
-   "seconds": 0.009,
+   "seconds": 0.008,
    "elsewhere": 0,
    "outside_words": 1,
    "outside_words_lost": 0,
@@ -1521,7 +1491,7 @@
     266.67,
     266.67
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
    "reason": "image attribute",
    "detail": "/SMask is not supported for image removal",
@@ -1537,7 +1507,7 @@
     177.1,
     397.55
    ],
-   "seconds": 0.209,
+   "seconds": 0.182,
    "elsewhere": 11,
    "outside_words": 451,
    "outside_words_lost": 0,
@@ -1568,7 +1538,7 @@
     612.0,
     397.55
    ],
-   "seconds": 0.19,
+   "seconds": 0.181,
    "elsewhere": 0,
    "outside_words": 438,
    "outside_words_lost": 0,
@@ -1599,7 +1569,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.188,
+   "seconds": 0.185,
    "elsewhere": 0,
    "outside_words": 311,
    "outside_words_lost": 0,
@@ -1630,7 +1600,7 @@
     140.32,
     386.87
    ],
-   "seconds": 0.709,
+   "seconds": 0.643,
    "elsewhere": 0,
    "outside_words": 908,
    "outside_words_lost": 0,
@@ -1661,7 +1631,7 @@
     612.0,
     386.87
    ],
-   "seconds": 0.768,
+   "seconds": 0.657,
    "elsewhere": 0,
    "outside_words": 906,
    "outside_words_lost": 0,
@@ -1692,7 +1662,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.763,
+   "seconds": 0.656,
    "elsewhere": 224,
    "outside_words": 748,
    "outside_words_lost": 0,
@@ -1723,7 +1693,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.008,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -1754,7 +1724,7 @@
     341.42,
     404.85
    ],
-   "seconds": 0.011,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 88,
    "outside_words_lost": 0,
@@ -1785,7 +1755,7 @@
     612.0,
     404.85
    ],
-   "seconds": 0.012,
+   "seconds": 0.011,
    "elsewhere": 0,
    "outside_words": 88,
    "outside_words_lost": 0,
@@ -1847,7 +1817,7 @@
     82.84,
     28.7
    ],
-   "seconds": 0.022,
+   "seconds": 0.021,
    "elsewhere": 0,
    "outside_words": 5,
    "outside_words_lost": 0,
@@ -1878,7 +1848,7 @@
     200.0,
     28.7
    ],
-   "seconds": 0.021,
+   "seconds": 0.018,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -1909,7 +1879,7 @@
     133.33,
     33.33
    ],
-   "seconds": 0.024,
+   "seconds": 0.02,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -1956,7 +1926,7 @@
     105.51,
     720.99
    ],
-   "seconds": 0.021,
+   "seconds": 0.02,
    "elsewhere": 2,
    "outside_words": 1,
    "outside_words_lost": 0,
@@ -1987,7 +1957,7 @@
     612.0,
     720.99
    ],
-   "seconds": 0.021,
+   "seconds": 0.019,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2065,7 +2035,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.009,
+   "seconds": 0.008,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2096,7 +2066,7 @@
     133.33,
     133.33
    ],
-   "seconds": 0.011,
+   "seconds": 0.01,
    "outcome": "refused",
    "reason": "catalog entry outside profile",
    "detail": "/AA is outside the rewrite profile",
@@ -2112,7 +2082,7 @@
     117.97,
     710.38
    ],
-   "seconds": 0.074,
+   "seconds": 0.068,
    "elsewhere": 2,
    "outside_words": 12,
    "outside_words_lost": 0,
@@ -2143,7 +2113,7 @@
     595.28,
     710.38
    ],
-   "seconds": 0.071,
+   "seconds": 0.066,
    "elsewhere": 2,
    "outside_words": 9,
    "outside_words_lost": 0,
@@ -2174,7 +2144,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.066,
+   "seconds": 0.06,
    "elsewhere": 0,
    "outside_words": 15,
    "outside_words_lost": 0,
@@ -2236,7 +2206,7 @@
     396.67,
     560.67
    ],
-   "seconds": 0.008,
+   "seconds": 0.007,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2298,7 +2268,7 @@
     612.0,
     402.34
    ],
-   "seconds": 0.015,
+   "seconds": 0.016,
    "elsewhere": 0,
    "outside_words": 59,
    "outside_words_lost": 0,
@@ -2329,7 +2299,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.015,
+   "seconds": 0.016,
    "elsewhere": 0,
    "outside_words": 39,
    "outside_words_lost": 0,
@@ -2360,7 +2330,7 @@
     237.08,
     399.17
    ],
-   "seconds": 0.016,
+   "seconds": 0.015,
    "outcome": "refused",
    "reason": "other: signature policy",
    "detail": "error [signature policy]: refused by signature policy: a full rewrite would invalidate the signature (/Perms /UR3 present \u2014 rewrite would invalidate the signature)",
@@ -2424,7 +2394,7 @@
     373.69,
     399.18
    ],
-   "seconds": 0.193,
+   "seconds": 0.184,
    "elsewhere": 0,
    "outside_words": 763,
    "outside_words_lost": 0,
@@ -2455,7 +2425,7 @@
     612.0,
     399.18
    ],
-   "seconds": 0.226,
+   "seconds": 0.217,
    "elsewhere": 0,
    "outside_words": 735,
    "outside_words_lost": 0,
@@ -2486,7 +2456,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.202,
+   "seconds": 0.188,
    "elsewhere": 6,
    "outside_words": 602,
    "outside_words_lost": 0,
@@ -2517,7 +2487,7 @@
     128.11,
     395.01
    ],
-   "seconds": 0.064,
+   "seconds": 0.056,
    "elsewhere": 0,
    "outside_words": 501,
    "outside_words_lost": 0,
@@ -2548,7 +2518,7 @@
     612.0,
     395.01
    ],
-   "seconds": 0.073,
+   "seconds": 0.057,
    "elsewhere": 0,
    "outside_words": 501,
    "outside_words_lost": 0,
@@ -2579,7 +2549,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.06,
+   "seconds": 0.057,
    "elsewhere": 121,
    "outside_words": 396,
    "outside_words_lost": 0,
@@ -2626,7 +2596,7 @@
     612.0,
     402.74
    ],
-   "seconds": 0.005,
+   "seconds": 0.004,
    "outcome": "refused",
    "reason": "redaction of a document whose structure tree has alternate text",
    "detail": "a structure element carries /Alt, which may repeat redacted content; RedactOptions::remove_structure_tree removes the tree",
@@ -2658,7 +2628,7 @@
     119.11,
     399.19
    ],
-   "seconds": 0.195,
+   "seconds": 0.183,
    "elsewhere": 11,
    "outside_words": 463,
    "outside_words_lost": 0,
@@ -2689,7 +2659,7 @@
     612.0,
     399.19
    ],
-   "seconds": 0.315,
+   "seconds": 0.296,
    "elsewhere": 0,
    "outside_words": 448,
    "outside_words_lost": 0,
@@ -2720,7 +2690,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.195,
+   "seconds": 0.182,
    "elsewhere": 1,
    "outside_words": 311,
    "outside_words_lost": 0,
@@ -2751,7 +2721,7 @@
     396.8,
     561.28
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
    "reason": "other: invalid document structure",
    "detail": "error [invalid document structure]: invalid document structure: Tj before Tf \u2014 no font selected",
@@ -2767,7 +2737,7 @@
     592.67,
     600.0
    ],
-   "seconds": 0.021,
+   "seconds": 0.02,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2799,7 +2769,7 @@
     333.33,
     333.33
    ],
-   "seconds": 0.008,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2877,7 +2847,7 @@
     266.24,
     266.88
    ],
-   "seconds": 0.016,
+   "seconds": 0.015,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2911,7 +2881,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.032,
+   "seconds": 0.031,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2943,7 +2913,7 @@
     133.44,
     133.44
    ],
-   "seconds": 0.009,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -3022,7 +2992,7 @@
     198.88,
     422.04
    ],
-   "seconds": 0.022,
+   "seconds": 0.021,
    "elsewhere": 1,
    "outside_words": 24,
    "outside_words_lost": 0,
@@ -3115,7 +3085,7 @@
     133.33,
     200.0
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "a path painted with a tiling pattern crossing a rect (or in a form) \u2014 its cell is content a cut would only hide",
