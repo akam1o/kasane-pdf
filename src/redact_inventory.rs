@@ -286,9 +286,18 @@ const CATALOG_KEYS: &[&[u8]] = &[
     b"NeedsRendering",
     b"DPartRoot",
     b"DSS",
+    // A modification date (defined for pages; some writers put it here).
+    b"LastModified",
 ];
 
-const PAGES_KEYS: &[&[u8]] = &[b"Type", b"Count", b"MediaBox", b"CropBox", b"Rotate"];
+const PAGES_KEYS: &[&[u8]] = &[
+    b"Type",
+    b"Count",
+    b"MediaBox",
+    b"CropBox",
+    b"Rotate",
+    b"ProcSet",
+];
 
 const PAGE_KEYS: &[&[u8]] = &[
     b"Type",
@@ -861,7 +870,7 @@ fn child_ctx_in(ctx: Ctx, d: &Dict, key: &[u8]) -> Option<Ctx> {
             b"Group" => Ctx::Group,
             b"Metadata" => Ctx::Opaque(DataRole::Metadata),
             b"PieceInfo" => Ctx::Opaque(DataRole::PrivateData),
-            b"OPI" => Ctx::Opaque(DataRole::PostScript),
+            b"OPI" | b"PS" => Ctx::Opaque(DataRole::PostScript),
             b"Ref" => Ctx::FileSpec,
             _ => Ctx::Generic,
         },
