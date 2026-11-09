@@ -139,6 +139,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   so readers would disagree on what is drawn.
 
 ### Fixed
+- `redact` verification fails when the output carries an input object
+  stream or cross-reference stream (something referred to it): it would
+  hold the input's objects as they were, edited ones included.
 - Content written by `redact` and the `remove_*` editors escapes every
   byte below 0x20 in literal strings; a raw CR or LF there was read
   differently by different readers, changing kept text in some.

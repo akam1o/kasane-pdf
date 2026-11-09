@@ -486,6 +486,26 @@ fn verify(
     if out.xref_section_offsets().len() != 1 {
         return Err(fail("the output has more than one revision".into()));
     }
+    // The rewrite writes neither object streams nor cross-reference
+    // streams: one in the output is an input's, carried because
+    // something referred to it, and holds the input's objects as they
+    // were — edited and removed ones included.
+    let streams: Vec<_> = out
+        .xref_entries()
+        .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
+        .map(|(r, _)| r)
+        .collect();
+    for r in streams {
+        if let Object::Stream { dict, .. } = out.resolve(r)? {
+            let t = dict.get(b"Type".as_slice()).and_then(|t| t.as_name());
+            if matches!(t, Some(b"ObjStm") | Some(b"XRef")) {
+                return Err(fail(format!(
+                    "object {r} is an input object stream or cross-reference stream (it holds \
+                     the input's objects as they were)"
+                )));
+            }
+        }
+    }
     // The same rects find nothing left to remove.
     let again = regions_edit_session_with(&out, specs, limits, SessionMode::Redact, session)?;
     if again.codes_removed_total

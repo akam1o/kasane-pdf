@@ -181,3 +181,51 @@ fn the_work_is_bounded() {
         Err(Error::LimitExceeded { .. })
     ));
 }
+
+/// Redaction edits objects; one kept in an object stream that something
+/// still refers to would keep its input form there (here a page whose
+/// removed link and its text). The output may carry no input object
+/// stream: refused — with or without scripts.
+#[test]
+fn an_input_object_stream_is_never_carried() {
+    let page = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Annots [<< /Type /Annot \
+                /Subtype /Link /Rect [1 1 9 9] /A << /S /URI /URI (https://example.com/REMOVED_LINK) >> >>] >>";
+    for js in [false, true] {
+        let mut p = base("/Cache 90000 0 R");
+        p.retain(|(n, _)| *n != 3);
+        let doc = Document::from_bytes(&pdf(p, &[(3, page.into())])).unwrap();
+        let o = RedactOptions::new().remove_javascript(js);
+        let e = redact(&doc, &[(0, vec![(0.0, 0.0, 10.0, 10.0)])], &o).unwrap_err();
+        assert!(e.to_string().contains("object stream"), "{e}");
+    }
+    // Not referred to: its objects are written afresh, the link gone.
+    let mut p = base("");
+    p.retain(|(n, _)| *n != 3);
+    let doc = Document::from_bytes(&pdf(p, &[(3, page.into())])).unwrap();
+    let r = redact(
+        &doc,
+        &[(0, vec![(0.0, 0.0, 10.0, 10.0)])],
+        &RedactOptions::new(),
+    )
+    .unwrap();
+    assert_eq!(r.links_removed, 1);
+    assert!(!has(&r.output, b"REMOVED_LINK"));
+}
+
+/// Inline scripts chained through referenced arrays count towards the
+/// depth limit like referenced ones.
+#[test]
+fn inline_script_chains_are_bounded() {
+    let mut p = base("/OpenAction << /S /JavaScript /JS (x) /Next 10 0 R >>");
+    for i in 10..10 + 2000u32 {
+        p.push((
+            i,
+            format!("[<< /S /JavaScript /JS (x) /Next {} 0 R >>]", i + 1).into_bytes(),
+        ));
+    }
+    p.push((2010, b"[<< /S /Named /N /NextPage >>]".to_vec()));
+    assert!(matches!(
+        run(&pdf(p, &[]), Limits::default()),
+        Err(Error::LimitExceeded { .. })
+    ));
+}

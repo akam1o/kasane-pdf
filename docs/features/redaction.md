@@ -103,6 +103,9 @@ Three separate statements; none implies the next:
   `elsewhere` either way, and `refuse_copies_elsewhere` refuses it. Any
   other copy — one only named in some resources, or reachable
   otherwise — fails.
+- The output carries no object stream or cross-reference stream (the
+  rewrite writes neither; one carried because something referred to it
+  would hold the input's objects as they were).
 - No object of the output is a removed shading or tiling pattern
   (compared by content, references replaced by what they refer to, so
   renumbering does not hide one).

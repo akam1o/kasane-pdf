@@ -77,7 +77,15 @@ pub(crate) fn strip_javascript(
     }
     // The objects that are JavaScript actions.
     let mut scripts: HashSet<IndirectRef> = HashSet::new();
+    let mut classified = 0u64;
     for r in &refs {
+        classified += 1;
+        if classified > limits.max_audit_elements {
+            return Err(Error::LimitExceeded {
+                limit: "max_audit_elements",
+                max: limits.max_audit_elements,
+            });
+        }
         if body(*r)?.as_dict().is_some_and(is_javascript_action) {
             scripts.insert(*r);
         }
@@ -90,7 +98,7 @@ pub(crate) fn strip_javascript(
         scripts: &scripts,
         body: &body,
         limits,
-        elements: 0,
+        elements: classified,
         removed: Vec::new(),
     };
     let mut count = 0u64;
@@ -175,7 +183,7 @@ pub(crate) fn strip_javascript(
         if let Object::Ref(r) = v {
             stack.push(r);
         } else {
-            cx.charge(count_elements(&v))?;
+            cx.charge_walk(&v)?;
             uses(&v, &mut stack);
         }
     }
@@ -197,7 +205,7 @@ pub(crate) fn strip_javascript(
             reached.insert(IndirectRef::new(*c, 0));
         }
         let o = body(r)?;
-        cx.charge(count_elements(&o))?;
+        cx.charge_walk(&o)?;
         if scripts.contains(&r) {
             uses(&o, &mut stack);
         } else {
@@ -228,21 +236,6 @@ pub(crate) fn strip_javascript(
         )));
     }
     Ok(count)
-}
-
-/// How many objects `o` is written with (not through references).
-fn count_elements(o: &Object) -> u64 {
-    let mut n = 0;
-    let mut stack = vec![o];
-    while let Some(o) = stack.pop() {
-        n += 1;
-        match o {
-            Object::Dict(d) | Object::Stream { dict: d, .. } => stack.extend(d.values()),
-            Object::Array(a) => stack.extend(a.iter()),
-            _ => {}
-        }
-    }
-    n
 }
 
 /// The references written in `o` itself.
@@ -282,6 +275,21 @@ impl Strip<'_> {
         Ok(())
     }
 
+    /// Charge each object `o` is written with (not through references),
+    /// stopping at the limit.
+    fn charge_walk(&mut self, o: &Object) -> Result<(), Error> {
+        let mut stack = vec![o];
+        while let Some(o) = stack.pop() {
+            self.charge(1)?;
+            match o {
+                Object::Dict(d) | Object::Stream { dict: d, .. } => stack.extend(d.values()),
+                Object::Array(a) => stack.extend(a.iter()),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     fn is_script(&self, v: &Object) -> bool {
         match v {
             Object::Ref(r) => self.scripts.contains(r),
@@ -299,6 +307,7 @@ impl Strip<'_> {
         &mut self,
         v: &Object,
         path: &mut Vec<IndirectRef>,
+        depth: u32,
         out: &mut Vec<Object>,
     ) -> Result<(), Error> {
         self.charge(1)?;
@@ -306,7 +315,8 @@ impl Strip<'_> {
             out.push(v.clone());
             return Ok(());
         }
-        if path.len() as u32 >= self.limits.max_nesting_depth {
+        // Every script followed counts, inline or not.
+        if depth >= self.limits.max_nesting_depth {
             return Err(Error::LimitExceeded {
                 limit: "max_nesting_depth (JavaScript action chain)",
                 max: self.limits.max_nesting_depth as u64,
@@ -340,14 +350,14 @@ impl Strip<'_> {
             Some(Object::Array(a)) => {
                 let mut r = Ok(());
                 for x in &a {
-                    r = self.successors(x, path, out);
+                    r = self.successors(x, path, depth + 1, out);
                     if r.is_err() {
                         break;
                     }
                 }
                 r
             }
-            Some(x) => self.successors(&x, path, out),
+            Some(x) => self.successors(&x, path, depth + 1, out),
         };
         if matches!(v, Object::Ref(_)) {
             path.pop();
@@ -377,7 +387,7 @@ impl Strip<'_> {
                     let v = d.remove(k.as_slice()).expect("listed above");
                     n += 1;
                     let mut next = Vec::new();
-                    self.successors(&v, &mut Vec::new(), &mut next)?;
+                    self.successors(&v, &mut Vec::new(), 0, &mut next)?;
                     match next.len() {
                         0 => {}
                         1 => {
@@ -406,7 +416,7 @@ impl Strip<'_> {
                     for v in std::mem::take(a) {
                         if self.is_script(&v) {
                             n += 1;
-                            self.successors(&v, &mut Vec::new(), &mut out)?;
+                            self.successors(&v, &mut Vec::new(), 0, &mut out)?;
                         } else {
                             out.push(v);
                         }
