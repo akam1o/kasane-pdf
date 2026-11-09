@@ -4928,3 +4928,68 @@ fn doc_with_annots(
     objs.sort_by_key(|(n, _)| *n);
     build_pdf(&objs)
 }
+
+/// remove_javascript, second review: a script's source also referred to
+/// elsewhere, and an XFA form, are refused; a dictionary that only names
+/// /S /JavaScript (no /JS) is not a script; a script in an action chain
+/// gives its place to the actions after it.
+#[test]
+fn javascript_removal_keeps_what_is_not_a_script() {
+    let o = RedactOptions::new().remove_javascript(true);
+    let page = format!("{SECRET} BT /F1 12 Tf 10 20 Td (PUBLICWORD) Tj ET");
+    let go = |cat: &str, extra: Vec<(u32, Vec<u8>)>| {
+        let mut objs = font_objs();
+        objs.push((
+            1,
+            format!("<< /Type /Catalog /Pages 2 0 R {cat} >>").into_bytes(),
+        ));
+        objs.extend(extra);
+        let pdf = doc_with_annots("/Font << /F1 20 0 R >>", page.as_bytes(), "", objs);
+        let doc = Document::from_bytes(&pdf).unwrap();
+        redact(&doc, &[(0, vec![RECT])], &o)
+    };
+    let script = || (50, b"<< /S /JavaScript /JS 51 0 R >>".to_vec());
+    let source = || (51, stream_obj("", b"var s = 'SCRIPTSOURCE';"));
+    let e = go("/OpenAction 50 0 R /Cache 51 0 R", vec![script(), source()]).unwrap_err();
+    assert!(e.to_string().contains("also referred to"), "{e}");
+    let e = go(
+        "/AcroForm << /Fields [] /XFA 52 0 R >>",
+        vec![(52, stream_obj("", b"<xdp:xdp/>"))],
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("XFA"), "{e}");
+    // Not an action: kept, and the document is not taken for scripted.
+    let r = go(
+        "/Extra 53 0 R",
+        vec![(53, b"<< /S /JavaScript /Keep (KEPTVALUE) >>".to_vec())],
+    )
+    .unwrap();
+    assert!(contains(&r.output, b"KEPTVALUE") || raw_contains(&r.output, b"KEPTVALUE"));
+    // URI -> script -> URI: the last one follows the first.
+    let r = go(
+        "/OpenAction 54 0 R",
+        vec![
+            (
+                54,
+                b"<< /S /URI /URI (https://example.com/first) /Next 50 0 R >>".to_vec(),
+            ),
+            (
+                50,
+                b"<< /S /JavaScript /JS (SCRIPTSOURCE) /Next 55 0 R >>".to_vec(),
+            ),
+            (
+                55,
+                b"<< /S /URI /URI (https://example.com/after) >>".to_vec(),
+            ),
+        ],
+    )
+    .unwrap();
+    assert!(!raw_contains(&r.output, b"SCRIPTSOURCE") && !contains(&r.output, b"SCRIPTSOURCE"));
+    for u in [&b"example.com/first"[..], b"example.com/after"] {
+        assert!(
+            contains(&r.output, u) || raw_contains(&r.output, u),
+            "{}",
+            String::from_utf8_lossy(u)
+        );
+    }
+}
