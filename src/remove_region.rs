@@ -770,9 +770,11 @@ pub(crate) struct RegionsEdit<'a> {
     /// Redaction mode only: `/Link` annotations removed because their
     /// `/Rect` met a rect.
     pub(crate) links_removed_total: u64,
-    /// Of those, links a structure tree refers to (`/StructParent`):
-    /// the tree would keep them reachable.
-    pub(crate) tagged_links_removed_total: u64,
+    /// Redaction mode only: what the edit touched, for the structure
+    /// tree (`redact_struct`).
+    pub(crate) touched: crate::redact_struct::Touched,
+    /// Redaction mode only: `/Thumb` removed from edited pages.
+    pub(crate) thumbnails_removed_total: u64,
     /// Redaction mode only: annotations other than links removed
     /// whole (`remove_annotations`), with the popups and replies tied
     /// to them.
@@ -1125,7 +1127,8 @@ pub(crate) fn regions_edit_session_with<'a>(
     let mut paths_removed_total: u64 = 0;
     let mut links_removed_total: u64 = 0;
     let mut paths_cut_total: u64 = 0;
-    let mut tagged_links_removed_total: u64 = 0;
+    let mut touched = crate::redact_struct::Touched::default();
+    let mut thumbnails_removed_total: u64 = 0;
     let mut annots_removed_total: u64 = 0;
     // Removed links and annotations, by content (`annotation_print`):
     // verification fails if the output still holds one.
@@ -1175,7 +1178,6 @@ pub(crate) fn regions_edit_session_with<'a>(
         // NoRotate place it elsewhere — those are refused.
         let mut kept_annots: Option<Vec<Object>> = None;
         let mut links_removed: u64 = 0;
-        let mut tagged_links_removed: u64 = 0;
         let mut annots_removed: u64 = 0;
         if let Some(a) = page_dict_entry(doc, page, b"Annots")? {
             if mode != SessionMode::Redact {
@@ -1379,8 +1381,9 @@ pub(crate) fn regions_edit_session_with<'a>(
                         }
                     }
                 }
-                if d.contains_key(b"StructParent".as_slice()) {
-                    tagged_links_removed += 1;
+                if let Some(r) = entries[k].0 {
+                    touched.objects.insert(r);
+                    touched.removed_annotations.insert(r);
                 }
             }
             kept_annots = Some(kept);
@@ -1866,6 +1869,9 @@ pub(crate) fn regions_edit_session_with<'a>(
             new_dict.remove(b"Filter".as_slice());
             new_dict.remove(b"DecodeParms".as_slice());
             new_dict.remove(b"Length".as_slice());
+            if mode == SessionMode::Redact {
+                new_dict.remove(b"StructParent".as_slice());
+            }
             new_dict.insert(b"Length".to_vec(), Object::Integer(new_data.len() as i64));
             if let Some(d) = dict.get(b"Decode".as_slice()) {
                 // An Indexed space's default is [0 2^bpc−1] (§8.9.5.2,
@@ -1958,6 +1964,19 @@ pub(crate) fn regions_edit_session_with<'a>(
                             || to_remove_text.get(&key).is_some_and(|c| !c.is_empty())
                             || inner_renames.contains_key(&key)
                     };
+                    if let Object::Ref(form) = &node.entry {
+                        touched.record(
+                            doc,
+                            &node.ops,
+                            &edited,
+                            node.res.as_ref(),
+                            crate::redact_struct::Owner::Form {
+                                form: *form,
+                                page: page_ref,
+                                tagged: node.dict.contains_key(b"StructParents".as_slice()),
+                            },
+                        )?;
+                    }
                     strip_edited_spans(&node.ops, &edited, &mut removed_text)
                 } else {
                     BTreeMap::new()
@@ -2007,6 +2026,9 @@ pub(crate) fn regions_edit_session_with<'a>(
                 new_dict.remove(b"Filter".as_slice());
                 new_dict.remove(b"DecodeParms".as_slice());
                 new_dict.insert(b"Length".to_vec(), Object::Integer(new_body.len() as i64));
+                // The copy is not the content the structure tree names.
+                new_dict.remove(b"StructParent".as_slice());
+                new_dict.remove(b"StructParents".as_slice());
                 // The copy's resources: its own (or, when it inherits,
                 // those it would inherit), with the copies' names added
                 // and the replaced originals' names removed.
@@ -2106,6 +2128,13 @@ pub(crate) fn regions_edit_session_with<'a>(
                     || to_remove_text.get(&key).is_some_and(|c| !c.is_empty())
                     || do_renames.contains_key(&i)
             };
+            touched.record(
+                doc,
+                &ops,
+                &edited,
+                page.resources(),
+                crate::redact_struct::Owner::Page(page_ref),
+            )?;
             strip_edited_spans(&ops, &edited, &mut removed_text)
         } else {
             BTreeMap::new()
@@ -2237,6 +2266,10 @@ pub(crate) fn regions_edit_session_with<'a>(
         // Rule: never write Contents separately from the
         // materialised Resources.
         page_dict.insert(b"Contents".to_vec(), Object::Ref(stream_ref));
+        // A thumbnail pictures the page as it was.
+        if mode == SessionMode::Redact && page_dict.remove(b"Thumb".as_slice()).is_some() {
+            thumbnails_removed_total += 1;
+        }
         match kept_annots {
             Some(k) if k.is_empty() => {
                 page_dict.remove(b"Annots".as_slice());
@@ -2288,7 +2321,6 @@ pub(crate) fn regions_edit_session_with<'a>(
         paths_cut_total += paths_cut;
         links_removed_total += links_removed;
         annots_removed_total += annots_removed;
-        tagged_links_removed_total += tagged_links_removed;
         invocations_edited_total += (do_renames.len() - form_names.len() + images_in_forms) as u64;
         forms_edited_total += forms_copied;
         pixels_changed_total += pixels_changed;
@@ -2345,6 +2377,7 @@ pub(crate) fn regions_edit_session_with<'a>(
             Object::Dict(page_dict),
         );
     }
+    touched.objects.extend(edited_originals.keys().copied());
     let names_pruned_total = if mode == SessionMode::Redact && !edited_originals.is_empty() {
         let refs: HashSet<IndirectRef> = edited_originals.keys().copied().collect();
         prune_original_names(doc, &mut edit, &refs, &drawn_after)?
@@ -2382,7 +2415,8 @@ pub(crate) fn regions_edit_session_with<'a>(
         names_pruned_total,
         removed_text,
         links_removed_total,
-        tagged_links_removed_total,
+        touched,
+        thumbnails_removed_total,
         annots_removed_total,
         removed_annot_prints,
         paths_cut_total,

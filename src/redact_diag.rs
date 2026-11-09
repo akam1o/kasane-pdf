@@ -284,7 +284,9 @@ pub struct Incomplete {
 /// impossible, `uncertain` what could not be localised, `incomplete`
 /// what was never scanned, `unexamined` whole document areas never
 /// evaluated, and `shared` objects that must not be edited because
-/// other sites use them.
+/// other sites use them; `data` what of the whole document `redact`
+/// reads and what it carries unread.
+#[non_exhaustive]
 #[derive(Debug)]
 pub struct Diagnosis {
     /// Validated input rectangles (echoed back).
@@ -312,6 +314,11 @@ pub struct Diagnosis {
     /// scanned — `targets`/`blockers` are then *partial* and must not
     /// be treated as "nothing found".
     pub incomplete: Option<Incomplete>,
+    /// The whole document's data by what `redact` does with it:
+    /// searched, interpreted, carried uninspected, or not carried
+    /// ([`crate::uninspected_data`]). Not complete
+    /// (`data.complete == false`) when it could not be computed.
+    pub data: crate::redact_inventory::DataInventory,
 }
 
 // -------------------------------------------------------------------
@@ -408,6 +415,7 @@ pub fn diagnose_redaction(
         annotations: Vec::new(),
         unexamined: Vec::new(),
         incomplete: None,
+        data: Default::default(),
     };
 
     // ---- page-level blockers -------------------------------------
@@ -457,6 +465,12 @@ pub fn diagnose_redaction(
     // call site. The cross-page scan is bounded by limits — a
     // truncated scan is *not* a "not shared" guarantee.
     collect_shared(doc, page_index, &site_map, limits, &mut diag)?;
+
+    // ---- the document's data ---------------------------------------
+    // Not computed (a limit, an unreadable object): left incomplete.
+    if let Ok(d) = crate::redact_inventory::uninspected_data(doc, limits) {
+        diag.data = d;
+    }
 
     // ---- unexamined areas ----------------------------------------
     diag.unexamined = vec![

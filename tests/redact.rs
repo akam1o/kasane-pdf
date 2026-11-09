@@ -340,7 +340,8 @@ fn document_metadata_is_removed() {
     assert!(!contains(&r.output, b"SECRETINFO") && !contains(&r.output, b"SECRETXMP"));
 }
 
-/// Alternate text in the structure tree may repeat what is removed.
+/// Alternate text in the structure tree may repeat what is removed: the
+/// touched element loses it, the tree stays; or the tree is removed.
 #[test]
 fn structure_alternate_text() {
     let pdf = one_page(
@@ -356,8 +357,10 @@ fn structure_alternate_text() {
             ),
         ],
     );
-    let e = unsupported(run(&pdf, vec![RECT]));
-    assert!(e.contains("structure tree"), "{e}");
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert!(!r.structure_tree_removed);
+    assert_eq!(r.structure_texts_removed, 1);
+    assert!(!contains(&r.output, b"SECRETTEXT"));
     let doc = Document::from_bytes(&pdf).unwrap();
     let r = redact(
         &doc,
@@ -474,8 +477,8 @@ fn output_is_one_clean_revision() {
 }
 
 /// A link whose `/Rect` meets a rect is removed with its action; one
-/// outside is kept. A link the structure tree refers to would stay
-/// reachable through it: refused unless the tree is removed.
+/// outside is kept. A link the structure tree refers to leaves the
+/// tree with it.
 #[test]
 fn links() {
     let pdf = one_page(
@@ -531,8 +534,9 @@ fn links() {
             ),
         ],
     );
-    let e = unsupported(run(&tagged, vec![RECT]));
-    assert!(e.contains("structure tree refers to"), "{e}");
+    let r = run(&tagged, vec![RECT]).unwrap();
+    assert_eq!(r.structure_items_removed, 1);
+    assert!(!contains(&r.output, b"SECRETLINK"));
     let doc = Document::from_bytes(&tagged).unwrap();
     let r = redact(
         &doc,
@@ -2086,7 +2090,7 @@ fn popups_and_replies_go_with_a_removed_annotation() {
 }
 
 #[test]
-fn widgets_and_tagged_annotations_stay_refused() {
+fn widgets_stay_refused_and_tagged_annotations_leave_the_tree() {
     let widget = annot_page(
         "30 0 R",
         vec![(
@@ -2106,10 +2110,24 @@ fn widgets_and_tagged_annotations_stay_refused() {
                 b"<< /Type /Annot /Subtype /Square /Rect [60 95 70 105] /StructParent 0 >>"
                     .to_vec(),
             ),
-            (40, b"<< /Type /StructTreeRoot >>".to_vec()),
+            (
+                40,
+                b"<< /Type /StructTreeRoot /K 41 0 R /ParentTree << /Nums [0 41 0 R] >> >>"
+                    .to_vec(),
+            ),
+            (
+                41,
+                b"<< /Type /StructElem /S /Annot /P 40 0 R /Alt (SECRETNOTE) \
+                  /K << /Type /OBJR /Obj 30 0 R >> >>"
+                    .to_vec(),
+            ),
         ],
     );
-    assert!(unsupported(annots_run(&tagged)).contains("structure tree"));
+    let r = annots_run(&tagged).unwrap();
+    assert_eq!(r.annotations_removed, 1);
+    assert_eq!(r.structure_items_removed, 1);
+    assert_eq!(r.structure_texts_removed, 1);
+    assert!(!contains(&r.output, b"SECRETNOTE"));
 }
 
 // Review of annotation removal (fixed).

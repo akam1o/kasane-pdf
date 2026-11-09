@@ -621,3 +621,134 @@ fn raw_line_ends_in_shown_strings() {
         &o,
     );
 }
+
+// ---- the structure tree ----------------------------------------------
+
+/// A tagged page: `content` with `/StructParents 0`, the tree's
+/// elements from object 31 on (root 30), `/ParentTree` `pt`, and
+/// `extra` objects (object 41, when given, is the page's annotation).
+fn tagged_page(
+    content: &str,
+    elements: &[String],
+    pt: &str,
+    extra: Vec<(u32, Vec<u8>)>,
+) -> Vec<u8> {
+    let annots = if extra.iter().any(|(n, _)| *n == 41) {
+        "/Annots [41 0 R]"
+    } else {
+        ""
+    };
+    let kids: Vec<String> = (0..elements.len())
+        .map(|i| format!("{} 0 R", 31 + i))
+        .collect();
+    let mut objs = vec![
+        (
+            1,
+            b"<< /Type /Catalog /Pages 2 0 R /StructTreeRoot 30 0 R \
+              /MarkInfo << /Marked true >> >>"
+                .to_vec(),
+        ),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << \
+                 /Font << /F1 20 0 R >> >> /Contents 4 0 R /StructParents 0 {annots} >>"
+            )
+            .into_bytes(),
+        ),
+        (4, stream_obj("", content.as_bytes())),
+        (
+            30,
+            format!(
+                "<< /Type /StructTreeRoot /K [{}] /ParentTree {pt} >>",
+                kids.join(" ")
+            )
+            .into_bytes(),
+        ),
+    ];
+    for (i, e) in elements.iter().enumerate() {
+        objs.push((31 + i as u32, e.clone().into_bytes()));
+    }
+    objs.extend(font_objs());
+    objs.extend(extra);
+    build_pdf(&objs)
+}
+
+/// The text of an element whose content the rect touches — `/Alt`,
+/// `/ActualText`, `/E`, `/T`, direct or indirect, on the element or an
+/// ancestor — leaves nothing behind; a removed link's `/OBJR` neither.
+#[test]
+fn structure_tree_text_of_touched_elements() {
+    let o = RedactOptions::new();
+    let content = |v: u32| {
+        format!(
+            "/P <</MCID 0>> BDC BT /F1 10 Tf 80 100 Td ({}) Tj ET EMC \
+             /P <</MCID 1>> BDC {KEPT} EMC",
+            secret(v)
+        )
+    };
+    for key in ["Alt", "ActualText", "E", "T"] {
+        accepted(
+            key,
+            |v| {
+                tagged_page(
+                    &content(v),
+                    &[
+                        format!(
+                            "<< /S /P /P 30 0 R /Pg 3 0 R /K 0 /{key} ({}) >>",
+                            secret(v)
+                        ),
+                        "<< /S /P /P 30 0 R /Pg 3 0 R /K 1 /Alt (KEPTALT) >>".into(),
+                    ],
+                    "<< /Nums [0 [31 0 R 32 0 R]] >>",
+                    vec![],
+                )
+            },
+            &o,
+        );
+    }
+    accepted(
+        "indirect text on an ancestor",
+        |v| {
+            tagged_page(
+                &content(v),
+                &[
+                    "<< /S /Sect /P 30 0 R /K [33 0 R] /Alt 40 0 R >>".into(),
+                    "<< /S /P /P 30 0 R /Pg 3 0 R /K 1 >>".into(),
+                    "<< /S /Figure /P 31 0 R /Pg 3 0 R /K 0 >>".into(),
+                ],
+                "<< /Nums [0 [33 0 R 32 0 R]] >>",
+                vec![(40, format!("({})", secret(v)).into_bytes())],
+            )
+        },
+        &o,
+    );
+    accepted(
+        "a tagged link",
+        |v| {
+            tagged_page(
+                &content(v),
+                &[
+                    format!(
+                        "<< /S /Link /P 30 0 R /Pg 3 0 R /Alt ({}) \
+                         /K [0 << /Type /OBJR /Obj 41 0 R >>] >>",
+                        secret(v)
+                    ),
+                    "<< /S /P /P 30 0 R /Pg 3 0 R /K 1 >>".into(),
+                ],
+                "<< /Nums [0 [31 0 R 32 0 R] 1 31 0 R] >>",
+                vec![(
+                    41,
+                    format!(
+                        "<< /Type /Annot /Subtype /Link /Rect [80 95 120 110] /StructParent 1 \
+                         /A << /S /URI /URI (https://example.com/{}) >> >>",
+                        secret(v)
+                    )
+                    .into_bytes(),
+                )],
+            )
+        },
+        &o,
+    );
+}

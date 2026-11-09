@@ -30,9 +30,12 @@
 //!    fonts, other encodings). [`RedactOptions::refuse_copies_elsewhere`]
 //!    turns any finding into a refusal.
 //!
-//! Always: `/Info` and catalog XMP are removed; a structure tree with
-//! alternate text (`/Alt`, `/ActualText`, `/E`) is refused unless the
-//! caller asks for it to be removed. Everything the editor refuses
+//! Always: `/Info` and catalog XMP are removed. A structure tree is
+//! kept and edited: the elements whose content the edit touched — and
+//! their ancestors — lose their text (`/Alt`, `/ActualText`, `/E`,
+//! `/T`), and object references to removed annotations or edited
+//! originals leave it (`redact_struct`); or the caller asks for the
+//! whole tree to be removed. Everything the editor refuses
 //! stays refused: a structure that cannot be processed exactly is an
 //! error, never a best-effort result, and a failed check returns no
 //! PDF.
@@ -55,10 +58,11 @@ pub struct RedactOptions {
     remove_annotations: bool,
     embed_substitute_fonts: bool,
     remove_javascript: bool,
+    refuse_uninspected: bool,
 }
 
 impl RedactOptions {
-    /// Default limits; a structure tree with alternate text refuses.
+    /// Default limits; the structure tree is kept and edited.
     pub fn new() -> Self {
         Self::default()
     }
@@ -71,8 +75,10 @@ impl RedactOptions {
     }
 
     /// Remove the document's structure tree (`/StructTreeRoot`,
-    /// `/MarkInfo`) instead of refusing one that carries alternate
-    /// text. The output is then untagged.
+    /// `/MarkInfo`) instead of editing it. The output is then untagged.
+    /// By default the tree is kept: the elements whose content the
+    /// edit touched, and their ancestors, lose their alternate text
+    /// (see [`Redaction::structure_texts_removed`]).
     pub fn remove_structure_tree(mut self, remove: bool) -> Self {
         self.remove_structure_tree = remove;
         self
@@ -101,6 +107,22 @@ impl RedactOptions {
         self
     }
 
+    /// Refuse when the output carries data `redact` does not read
+    /// ([`Redaction::uninspected`] lists any): attachments, XMP
+    /// metadata other than the catalog's, thumbnails of pages not
+    /// edited, scripts, XFA, rich text, multimedia, application data,
+    /// forms nothing draws, streams under keys no modelled structure
+    /// names, unknown entries of the catalog or a page — or when that
+    /// inventory could not be completed. Images, fonts and the other
+    /// data shown only through the pages are not refused (they are
+    /// interpreted, not searched). This narrows a success to "every
+    /// stream carried is of a kind `redact` reads or interprets"; it is
+    /// still not a proof that no copy of the removed content remains.
+    pub fn refuse_uninspected(mut self, refuse: bool) -> Self {
+        self.refuse_uninspected = refuse;
+        self
+    }
+
     /// Remove a markup annotation (Text, FreeText, Line, Square,
     /// Circle, Polygon, PolyLine, Highlight, Underline, Squiggly,
     /// StrikeOut, Caret, Stamp, Ink, Popup) whose `/Rect` meets a rect
@@ -113,8 +135,8 @@ impl RedactOptions {
     /// file attachments …) stay refused. Its appearance streams may not
     /// stay in the output unless something still draws them (checked
     /// like an edited image's original), and its text is searched for
-    /// in `elsewhere`. One the structure tree refers to is refused
-    /// unless the tree is removed.
+    /// in `elsewhere`. The structure tree's reference to it goes, and
+    /// the element holding that reference loses its alternate text.
     pub fn remove_annotations(mut self, remove: bool) -> Self {
         self.remove_annotations = remove;
         self
@@ -186,6 +208,15 @@ pub struct Redaction {
     /// The input's structure tree was removed (only with
     /// [`RedactOptions::remove_structure_tree`]).
     pub structure_tree_removed: bool,
+    /// Text entries (`/Alt`, `/ActualText`, `/E`, `/T`) removed from
+    /// structure elements whose content the edit touched, or whose
+    /// descendants' content it touched. The tree is otherwise kept.
+    pub structure_texts_removed: u64,
+    /// Content items removed from structure elements' `/K`: object
+    /// references (`/OBJR`) to removed annotations and edited
+    /// originals, marked-content references (`/MCR`) into edited
+    /// forms' originals.
+    pub structure_items_removed: u64,
     /// JavaScript actions and script trees removed
     /// ([`RedactOptions::remove_javascript`]).
     pub javascript_removed: u64,
@@ -201,6 +232,14 @@ pub struct Redaction {
     /// Pages whose text could not be extracted for that search (an
     /// unsupported construct or a limit): not searched, not clean.
     pub elsewhere_unsearched_pages: Vec<usize>,
+    /// The output's data by what `redact` does with it: searched for
+    /// copies of the removed text, interpreted, or carried uninspected
+    /// (listed). See [`crate::uninspected_data`] and
+    /// [`RedactOptions::refuse_uninspected`].
+    pub uninspected: crate::redact_inventory::DataInventory,
+    /// Thumbnails (`/Thumb`) removed from edited pages: they picture
+    /// the page as it was.
+    pub thumbnails_removed: u64,
     /// The residual-information audit of the *output*: annotations,
     /// attachments, form values, actions, outlines' targets … that
     /// the positional redaction does not touch. Review before
@@ -269,8 +308,12 @@ impl std::fmt::Debug for Redaction {
             .field("info_removed", &self.info_removed)
             .field("metadata_removed", &self.metadata_removed)
             .field("structure_tree_removed", &self.structure_tree_removed)
+            .field("structure_texts_removed", &self.structure_texts_removed)
+            .field("structure_items_removed", &self.structure_items_removed)
             .field("javascript_removed", &self.javascript_removed)
             .field("elsewhere", &self.elsewhere)
+            .field("uninspected", &self.uninspected.uninspected)
+            .field("thumbnails_removed", &self.thumbnails_removed)
             .field("residual_findings", &self.residual.findings.len())
             .finish()
     }
@@ -312,31 +355,20 @@ fn redact_doc(
     let metadata_present = doc.catalog().contains_key(b"Metadata".as_slice());
 
     let tree = doc.catalog().contains_key(b"StructTreeRoot".as_slice());
-    if tree && !options.remove_structure_tree {
-        if let Some(key) = structure_alternate_text(doc, limits)? {
-            return Err(Error::Unsupported {
-                feature: "redaction of a document whose structure tree has alternate text",
-                detail: format!(
-                    "a structure element carries /{key}, which may repeat redacted \
-                     content; RedactOptions::remove_structure_tree removes the tree"
-                ),
-            });
-        }
-    }
 
     let session = crate::remove_region::SessionOptions {
         remove_annotations: options.remove_annotations,
     };
     let mut s = regions_edit_session_with(doc, specs, limits, SessionMode::Redact, session)?;
     let structure_tree_removed = tree && options.remove_structure_tree;
-    if tree && !structure_tree_removed && s.tagged_links_removed_total > 0 {
-        return Err(Error::Unsupported {
-            feature: "redaction of an annotation the structure tree refers to",
-            detail: "the tree's /OBJR would keep the removed link or annotation \
-                     reachable; RedactOptions::remove_structure_tree removes the tree"
-                .into(),
-        });
-    }
+    let structure = if tree && !structure_tree_removed {
+        let e = crate::redact_struct::edit_tree(doc, &mut s.edit.overlay, &s.touched, limits)?;
+        // The removed texts may describe what the rects removed.
+        s.removed_text.extend(e.removed.iter().cloned());
+        e
+    } else {
+        crate::redact_struct::StructureEdit::default()
+    };
     if structure_tree_removed {
         let root = match doc.trailer().get(b"Root".as_slice()) {
             Some(Object::Ref(r)) => *r,
@@ -405,6 +437,7 @@ fn redact_doc(
         &s.removed_annot_prints,
         session,
     )?;
+    crate::redact_struct::verify(&out, &structure, limits)?;
     if options.remove_javascript {
         if let Some(r) = crate::redact_js::find_javascript(&out, limits)? {
             return Err(Error::Unsupported {
@@ -419,6 +452,34 @@ fn redact_doc(
         return Err(Error::Unsupported {
             feature: "redaction output failed verification",
             detail: "a Type 3 font still defines a glyph the output no longer shows".into(),
+        });
+    }
+    let uninspected = crate::redact_inventory::uninspected_data(&out, limits)?;
+    if options.refuse_uninspected && (uninspected.uninspected > 0 || !uninspected.complete) {
+        let first: Vec<String> = uninspected
+            .uninspected_items()
+            .take(5)
+            .map(|i| {
+                format!(
+                    "{} {:?}",
+                    i.object
+                        .map(|r| r.to_string())
+                        .unwrap_or_else(|| "(direct)".into()),
+                    i.role
+                )
+            })
+            .collect();
+        return Err(Error::Unsupported {
+            feature: "redaction: the output carries uninspected data",
+            detail: if uninspected.complete {
+                format!(
+                    "{} item(s) redact does not read: {}",
+                    uninspected.uninspected,
+                    first.join(", ")
+                )
+            } else {
+                "the inventory of the output's data stopped at a limit".into()
+            },
         });
     }
     let (mut elsewhere, elsewhere_unsearched_pages) =
@@ -457,9 +518,13 @@ fn redact_doc(
         info_removed: info_present,
         metadata_removed: metadata_present,
         structure_tree_removed,
+        structure_texts_removed: structure.texts_removed,
+        structure_items_removed: structure.items_removed,
         javascript_removed,
         elsewhere,
         elsewhere_unsearched_pages,
+        uninspected,
+        thumbnails_removed: s.thumbnails_removed_total,
         residual,
     })
 }
@@ -651,7 +716,7 @@ fn verify(
 /// `/Resources`, else the resources it inherits. An invocation counts
 /// whether or not a clip or `/BBox` hides what it draws: this is what
 /// the output still *uses*, not what is visible.
-fn drawn_xobjects(
+pub(crate) fn drawn_xobjects(
     out: &Document,
     limits: &Limits,
 ) -> Result<HashMap<IndirectRef, BTreeSet<usize>>, Error> {
@@ -884,56 +949,6 @@ fn collect_strings(o: &Object, out: &mut Vec<String>, depth: u32) {
         Object::Dict(d) => d.values().for_each(|v| collect_strings(v, out, depth + 1)),
         _ => {}
     }
-}
-
-/// The first alternate-text key (`Alt`, `ActualText`, `E`) found in the
-/// structure tree, walking at most `max_audit_elements` containers.
-fn structure_alternate_text(
-    doc: &Document,
-    limits: &Limits,
-) -> Result<Option<&'static str>, Error> {
-    let Some(root) = doc.catalog().get(b"StructTreeRoot".as_slice()) else {
-        return Ok(None);
-    };
-    let mut stack = vec![root.clone()];
-    let mut seen = HashSet::new();
-    let mut budget = limits.max_audit_elements;
-    while let Some(o) = stack.pop() {
-        if budget == 0 {
-            return Err(Error::LimitExceeded {
-                limit: "max_audit_elements",
-                max: limits.max_audit_elements,
-            });
-        }
-        budget -= 1;
-        let o = match o {
-            Object::Ref(r) => {
-                if !seen.insert(r) {
-                    continue;
-                }
-                doc.resolve(r)?
-            }
-            o => o,
-        };
-        match o {
-            Object::Dict(d) => {
-                for key in ["Alt", "ActualText", "E"] {
-                    if d.contains_key(key.as_bytes()) {
-                        return Ok(Some(key));
-                    }
-                }
-                // Descend through the tree's own links only.
-                for k in [b"K".as_slice(), b"ParentTree", b"Nums", b"Kids"] {
-                    if let Some(v) = d.get(k) {
-                        stack.push(v.clone());
-                    }
-                }
-            }
-            Object::Array(a) => stack.extend(a),
-            _ => {}
-        }
-    }
-    Ok(None)
 }
 
 /// Corpus analysis aid, not a verdict: every blocker and uncertain item
