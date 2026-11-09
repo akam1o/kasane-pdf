@@ -6,7 +6,22 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.7.0] - unreleased (the date is set when the release is tagged)
+## [0.7.0] - 2026-11-10
+
+### Security
+- Input object streams carried into the output (GHSA-vph3-9p4m-58fh, Medium):
+  when an object of the input referred to one of its object streams,
+  `redact` (0.6.0–0.6.2) and `remove_document_metadata` (0.1.0–0.6.2)
+  wrote that stream out with the objects they had removed (annotations,
+  links, `/Info`) still inside it. Such inputs are now refused.
+- Readers disagreeing on literal strings (GHSA-f228-qvw7-4x37, Low): a literal
+  string with an unescaped carriage return is a line feed to some readers
+  and a CR to others; `redact` (0.6.0–0.6.2) could keep glyphs that MuPDF
+  draws inside the rect. Such documents are now refused.
+- Readers disagreeing on CMap codes (GHSA-xpph-r5fc-83rj, Low): codes written as
+  literal strings in an embedded CMap are applied by MuPDF and pdf.js and
+  rejected by Poppler; `redact` (0.6.0–0.6.2) could keep glyphs those
+  readers draw inside the rect. Such fonts are now refused.
 
 ### Added
 - `RedactOptions::remove_javascript` (CLI `--remove-javascript`,
