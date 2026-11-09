@@ -2478,6 +2478,24 @@ impl Font {
         }
     }
 
+    /// Why readers disagree on the CID of this (packed) code, if they
+    /// do: its CMap maps it by no `cidchar` / `cidrange` (nor an
+    /// Identity base). Poppler shows CID 0, MuPDF nothing (no advance),
+    /// pdf.js the CID equal to the code; a notdef mapping, which all
+    /// three ignore, is honoured here.
+    pub(crate) fn reader_dependent_code(&self, code: u32) -> Option<&'static str> {
+        let Font::Composite(f) = self else {
+            return None;
+        };
+        let (c, len) = unpack_code(code);
+        match f.cmap.as_ref()?.lookup(c, len).1 {
+            crate::cmap::Mapping::Defined => None,
+            crate::cmap::Mapping::Notdef => Some("mapped only by a notdef mapping"),
+            crate::cmap::Mapping::Unmapped => Some("mapped to no CID"),
+            crate::cmap::Mapping::Invalid => Some("in no codespace range"),
+        }
+    }
+
     /// Decode one code at `bytes` big-endian. Returns `(code,
     /// consumed_bytes)` or `Err` for a truncated tail (odd trailing
     /// byte on a 2-byte font). Codes never span string boundaries.

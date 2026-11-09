@@ -6,6 +6,23 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Type 0 CMaps honour notdef mappings (`beginnotdefchar`,
+  `beginnotdefrange`, §9.7.6.3), inherited through `usecmap` too: a code
+  in the codespace with no defined mapping takes the notdef CID (every
+  code in a range the same one) instead of CID 0, in rendering, text
+  extraction and redaction alike. Malformed notdef blocks are
+  `Error::Structure`; their entries count against `max_text_codes`.
+
+### Changed
+- `redact` refuses text showing a Type 0 code that its CMap maps by no
+  `cidchar` / `cidrange` (a notdef mapping, no mapping, or bytes in no
+  codespace range): Poppler, MuPDF and pdf.js draw such codes with
+  different glyphs and widths, so later glyphs fall in different places.
+  Fonts that only declare such mappings still redact.
+- An embedded CMap based on Identity-H/V (`usecmap`) inherits its
+  `<0000> <FFFF>` codespace when splitting a string into codes.
+
 ## [0.7.0] - 2026-11-10
 
 ### Security

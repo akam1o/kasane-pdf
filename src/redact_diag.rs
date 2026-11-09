@@ -1921,6 +1921,18 @@ impl<'a> DiagWalker<'a> {
         let mut pos = 0;
         while pos < bytes.len() {
             let (code, len) = font.read_code(bytes, pos)?;
+            if self.redaction_mode {
+                if let Some(why) = font.reader_dependent_code(code) {
+                    return Err(Error::Unsupported {
+                        feature: "redaction of text with a code its CMap does not map",
+                        detail: format!(
+                            "/{} shows a code {why}: readers do not agree on its glyph \
+                             or its width, so on where the glyphs after it fall",
+                            String::from_utf8_lossy(&self.gs.text.font_name)
+                        ),
+                    });
+                }
+            }
             pos += len;
             self.text_codes += 1;
             if self.text_codes > self.limits.max_text_codes {
