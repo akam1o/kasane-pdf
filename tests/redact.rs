@@ -2188,20 +2188,30 @@ fn a_removed_appearance_keeps_no_image() {
     }
 }
 
-/// An annotation without an appearance stream whose geometry lies
-/// outside its /Rect is drawn there by readers: refused.
+/// An annotation without an appearance stream is drawn from its
+/// geometry, inside its /Rect or not: its extent is both. Geometry
+/// meeting a rect makes it a hit (removed on request, else refused);
+/// geometry clear of every rect keeps it.
 #[test]
-fn appearance_less_geometry_outside_rect_is_refused() {
-    let pdf = annot_page(
-        "30 0 R",
-        vec![(
-            30,
-            b"<< /Type /Annot /Subtype /Ink /Rect [150 150 190 180] /C [1 0 0] \
-              /InkList [[60 100 100 100]] /BS << /W 2 >> >>"
-                .to_vec(),
-        )],
-    );
-    assert!(unsupported(annots_run(&pdf)).contains("outside its /Rect"));
+fn appearance_less_geometry_outside_rect_counts_where_it_is() {
+    let ink = |list: &str| {
+        annot_page(
+            "30 0 R",
+            vec![(
+                30,
+                format!(
+                    "<< /Type /Annot /Subtype /Ink /Rect [150 150 190 180] /C [1 0 0] \
+                     /InkList [[{list}]] /BS << /W 2 >> >>"
+                )
+                .into_bytes(),
+            )],
+        )
+    };
+    let r = annots_run(&ink("60 100 100 100")).unwrap();
+    assert_eq!(r.annotations_removed, 1);
+    assert!(unsupported(run(&ink("60 100 100 100"), vec![RECT])).contains("other than a link"));
+    let r = annots_run(&ink("10 10 30 30")).unwrap();
+    assert_eq!(r.annotations_removed, 0, "clear of the rect: kept");
 }
 
 /// A rich-text /RC stream is searched like a string.

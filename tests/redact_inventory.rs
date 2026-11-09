@@ -249,6 +249,28 @@ fn unknown_entries_and_streams() {
     assert_eq!(roles(&inv), vec![DataRole::UnknownStream]);
 }
 
+/// A number under an unknown entry holds nothing; a transparency
+/// group's ICC colour space is interpreted.
+#[test]
+fn scalars_and_group_colour_spaces() {
+    let form = stream_obj(
+        "/Type /XObject /Subtype /Form /BBox [0 0 200 200] \
+         /Group << /S /Transparency /CS [/ICCBased 31 0 R] >>",
+        b"",
+    );
+    let icc = stream_obj("/N 1", b"icc");
+    let pdf = doc(
+        &format!("{TEXT} /Fm Do"),
+        "/XObject << /Fm 30 0 R >>",
+        "/XYZPageNum 32 0 R /XYZFlag true /ProcSet [/PDF]",
+        "",
+        vec![(30, form), (31, icc), (32, b"7".to_vec())],
+    );
+    let d = Document::from_bytes(&pdf).unwrap();
+    let inv = uninspected_data(&d, &Limits::default()).unwrap();
+    assert_eq!(inv.uninspected, 0, "{:?}", inv.items);
+}
+
 /// An object nothing refers to is not carried; a known object reached
 /// also through an unknown entry is not listed.
 #[test]

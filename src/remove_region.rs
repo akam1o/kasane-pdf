@@ -1227,34 +1227,29 @@ pub(crate) fn regions_edit_session_with<'a>(
                     .transpose()?
                     .and_then(|r| crate::page::Rect::from_object(&r))
                     .ok_or_else(|| Error::Structure(format!("/Annots[{i}] has no valid /Rect")))?;
-                let (mut x0, mut x1) = (r.llx.min(r.urx), r.llx.max(r.urx));
-                let (mut y0, mut y1) = (r.lly.min(r.ury), r.lly.max(r.ury));
+                let mut boxes = vec![(
+                    r.llx.min(r.urx),
+                    r.lly.min(r.ury),
+                    r.llx.max(r.urx),
+                    r.lly.max(r.ury),
+                )];
                 // Without an appearance stream a reader draws one from
-                // the annotation's geometry: refuse geometry outside
-                // /Rect, and allow for the border reaching past it.
+                // the annotation's geometry, inside /Rect or not: its
+                // extent is both, and the border reaching past them.
                 if !has_normal_appearance(doc, &d)? {
                     if let Some(g) = annotation_geometry_bounds(doc, &d)? {
-                        let eps = 1e-6;
-                        if g.0 < x0 - eps || g.1 < y0 - eps || g.2 > x1 + eps || g.3 > y1 + eps {
-                            return Err(Error::Unsupported {
-                                feature:
-                                    "redaction on a page with an annotation drawn outside its /Rect",
-                                detail: format!(
-                                    "/Annots[{i}] has no appearance stream and geometry outside \
-                                     /Rect"
-                                ),
-                            });
-                        }
+                        boxes.push(g);
                     }
                     let w = border_width(doc, &d)?;
-                    x0 -= w;
-                    y0 -= w;
-                    x1 += w;
-                    y1 += w;
+                    for b in &mut boxes {
+                        *b = (b.0 - w, b.1 - w, b.2 + w, b.3 + w);
+                    }
                 }
-                let hit = validated
-                    .iter()
-                    .any(|v| x0 <= v.urx && x1 >= v.llx && y0 <= v.ury && y1 >= v.lly);
+                let hit = boxes.iter().any(|&(x0, y0, x1, y1)| {
+                    validated
+                        .iter()
+                        .any(|v| x0 <= v.urx && x1 >= v.llx && y0 <= v.ury && y1 >= v.lly)
+                });
                 let r = match item {
                     Object::Ref(r) => Some(*r),
                     _ => None,

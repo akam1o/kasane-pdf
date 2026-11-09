@@ -194,6 +194,8 @@ enum Ctx {
     ColorSpace,
     Icc,
     Annots,
+    /// A transparency group dictionary.
+    Group,
     Annot,
     Appearance,
     /// An appearance: a stream, or a dictionary of states.
@@ -304,6 +306,8 @@ const PAGE_KEYS: &[&[u8]] = &[
     b"UserUnit",
     b"VP",
     b"DPart",
+    // Belongs in resources; a list of standard names wherever it is.
+    b"ProcSet",
 ];
 
 /// Classify every stream of `doc` by what `redact` does with it, and
@@ -513,7 +517,10 @@ impl Walk<'_> {
         }
         if ctx == Ctx::Unknown {
             // Listed as itself (a non-stream unless also reached in a
-            // known role).
+            // known role); a number, boolean or null holds nothing.
+            if is_scalar(&body) {
+                return Ok(true);
+            }
             if let Some(r) = r {
                 self.note_stream(r, DataStatus::Uninspected, DataRole::UnknownEntry, &via);
             }
@@ -661,7 +668,7 @@ impl Walk<'_> {
                 None => continue,
             };
             let path = format!("{via}/{}", name(k));
-            if child == Ctx::Unknown && !matches!(v, Object::Ref(_)) {
+            if child == Ctx::Unknown && !matches!(v, Object::Ref(_)) && !is_scalar(v) {
                 // A direct value under an unknown entry: listed at its
                 // holder.
                 self.direct_unknown.push((holder, path.clone()));
@@ -671,6 +678,14 @@ impl Walk<'_> {
             queue.push_back((v.clone(), child, path));
         }
     }
+}
+
+/// A value that carries no data of its own.
+fn is_scalar(o: &Object) -> bool {
+    matches!(
+        o,
+        Object::Integer(_) | Object::Real(_) | Object::Bool(_) | Object::Null
+    )
 }
 
 fn name(k: &[u8]) -> String {
@@ -722,6 +737,7 @@ fn child_ctx_in(ctx: Ctx, d: &Dict, key: &[u8]) -> Option<Ctx> {
             b"Contents" => Ctx::Contents,
             b"Resources" => Ctx::Resources,
             b"Annots" => Ctx::Annots,
+            b"Group" => Ctx::Group,
             b"Thumb" => Ctx::Opaque(DataRole::Thumbnail),
             b"Metadata" => Ctx::Opaque(DataRole::Metadata),
             b"PieceInfo" => Ctx::Opaque(DataRole::PrivateData),
@@ -774,6 +790,7 @@ fn child_ctx_in(ctx: Ctx, d: &Dict, key: &[u8]) -> Option<Ctx> {
         },
         Ctx::Form => match key {
             b"Resources" => Ctx::Resources,
+            b"Group" => Ctx::Group,
             b"Metadata" => Ctx::Opaque(DataRole::Metadata),
             b"PieceInfo" => Ctx::Opaque(DataRole::PrivateData),
             b"OPI" => Ctx::Opaque(DataRole::PostScript),
@@ -811,6 +828,10 @@ fn child_ctx_in(ctx: Ctx, d: &Dict, key: &[u8]) -> Option<Ctx> {
             // A colour space dictionary (CalRGB, Lab) or DeviceN
             // attributes: colourants are colour spaces.
             b"Colorants" => Ctx::Map(Sub::ColorSpace),
+            _ => Ctx::Generic,
+        },
+        Ctx::Group => match key {
+            b"CS" => Ctx::ColorSpace,
             _ => Ctx::Generic,
         },
         Ctx::Icc => match key {
