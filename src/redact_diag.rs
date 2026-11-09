@@ -371,6 +371,7 @@ pub fn diagnose_redaction(
     limits: &Limits,
 ) -> Result<Diagnosis, Error> {
     limits.validate()?;
+    let _fonts = doc.font_cache_scope();
     // ---- input validation ----------------------------------------
     if rects.is_empty() {
         return Err(Error::Structure("at least one --rect is required".into()));

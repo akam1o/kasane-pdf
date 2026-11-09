@@ -38,7 +38,9 @@ versions follow [Semantic Versioning](https://semver.org/).
 - Embedded CMaps may write codes as literal strings; they are read like
   hex codes. `redact` refuses text in such a font (readers disagree).
 - A document loads each font dictionary once per set of limits and
-  reuses it across operators, pages and operations (the warnings the
+  reuses it across operators and pages within an operation (a render,
+  an extraction, a redaction; kept per thread, so `Document` stays
+  `Send`) (the warnings the
   load recorded are recorded again on each use); the fonts kept are
   capped at 64 MiB of decoded data and 2,048 fonts; a reused font is not
   decoded again, so it does not count against `max_total_decoded_bytes`
@@ -50,6 +52,8 @@ versions follow [Semantic Versioning](https://semver.org/).
   listed unsearched): the Corpus redacts in 7.6 s instead of 50.3 s,
   outputs unchanged.
 - `Limits` implements `PartialEq`, `Eq` and `Hash`.
+- `Redaction` is `#[non_exhaustive]` (a result, read only; its new
+  fields would have broken struct literals anyway).
 - `redact` redacts hairlines (`0 w`) as their zero-width centreline and
   strokes, cut fills and stroked text under stroke adjustment
   (`/SA true`) as their user-space geometry, instead of refusing them:

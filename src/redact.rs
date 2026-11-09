@@ -143,6 +143,7 @@ impl RedactOptions {
 }
 
 /// The result of [`redact`]: a verified single-revision PDF.
+#[non_exhaustive]
 pub struct Redaction {
     /// The redacted PDF.
     pub output: Vec<u8>,
@@ -306,6 +307,7 @@ fn redact_doc(
     fonts_embedded: u64,
 ) -> Result<Redaction, Error> {
     let limits = &options.limits;
+    let _fonts = doc.font_cache_scope();
     let info_present = doc.trailer().contains_key(b"Info".as_slice());
     let metadata_present = doc.catalog().contains_key(b"Metadata".as_slice());
 
@@ -782,6 +784,7 @@ fn find_elsewhere(
     if texts.is_empty() {
         return Ok((found, unsearched));
     }
+    let _fonts = out.font_cache_scope();
     // Everything the page shows as text — optional content off by
     // default and annotation appearances too: a copy there is a copy.
     for (i, page) in out.pages().iter().enumerate() {

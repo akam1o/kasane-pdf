@@ -1056,6 +1056,7 @@ pub(crate) fn regions_edit_session_with<'a>(
     mode: SessionMode,
     opts: SessionOptions,
 ) -> Result<RegionsEdit<'a>, Error> {
+    let _fonts = doc.font_cache_scope();
     // ---- input validation (all before any edit work) --------------
     if specs.is_empty() {
         return Err(Error::Structure(

@@ -104,6 +104,21 @@ patch release.
   class of input is refused with `max_pattern_tiles`, and `rewrite`
   carries `/OCProperties`.
 
+## 0.7.0 (unreleased)
+
+- Added: `RedactOptions::{embed_substitute_fonts, remove_javascript}`;
+  `Redaction::{fonts_embedded, shadings_removed, javascript_removed}`;
+  `TargetKind::Shading`; `Warning::LiteralStringCarriageReturn` (last
+  variant, so no discriminant moves); `Limits: PartialEq + Eq + Hash`.
+- Breaking (allowed by the 0.6 → 0.7 bump): `Redaction` gains fields
+  and is now `#[non_exhaustive]` — a struct literal no longer compiles
+  (it is a result: read its fields), and later fields are additive.
+  `cargo semver-checks` against 0.6.2 reports only that.
+- `Document` stays `Send` and `UnwindSafe`: the fonts it reuses are
+  kept per thread for the duration of an operation, not in it.
+- Behaviour: unescaped CR / CRLF in literal strings read as LF
+  (§7.3.4.2); see the CHANGELOG.
+
 ## 0.6.0
 
 - Added: `redact`, `RedactOptions`, `Redaction`, `Elsewhere`,

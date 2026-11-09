@@ -478,6 +478,7 @@ pub fn render_page(
     opts: &RenderOptions,
 ) -> Result<RenderedPage, Error> {
     opts.validate()?;
+    let _fonts = doc.font_cache_scope();
     let limits = &opts.limits;
     let _budget = doc.decoded_budget_scope();
 
