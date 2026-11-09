@@ -403,6 +403,27 @@ fn image_samples_in_the_rect() {
             "/Decode [0 255]",
             vec![(82, stream_obj("", &[9u8; 768]))],
         ),
+        (
+            "[/Separation /Spot /DeviceCMYK 83 0 R]",
+            1,
+            "",
+            vec![(
+                83,
+                b"<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0 0] /C1 [0 1 1 0] /N 1 >>".to_vec(),
+            )],
+        ),
+        (
+            "[/DeviceN [/Cyan /Spot] /DeviceCMYK 84 0 R]",
+            2,
+            "",
+            vec![(
+                84,
+                stream_obj(
+                    "/FunctionType 4 /Domain [0 1 0 1] /Range [0 1 0 1 0 1 0 1]",
+                    b"{ 0 0 }",
+                ),
+            )],
+        ),
     ] {
         accepted(
             &format!("image {cs} {extra}"),
