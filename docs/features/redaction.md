@@ -163,6 +163,11 @@ information elsewhere is not removed:
   `elsewhere_unsearched_pages` lists pages whose text could not be
   extracted for that search (a page whose annotation appearances
   cannot be read has its own text searched and is listed).
+- Streams the redaction does not interpret — attachments, private or
+  unknown streams, anything an object refers to under a key no
+  structure gives a meaning — are carried as they are and are not
+  searched: a copy of the removed content the input keeps in one stays.
+  `residual` lists what it can classify.
 - `residual` is the residual-information audit of the output
   (attachments, annotations, form values, actions, JavaScript,
   embedded fonts, …; see [`audit.md`](audit.md)).
