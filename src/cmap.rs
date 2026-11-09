@@ -446,8 +446,21 @@ impl CMap {
     /// a defined mapping (`cidchar`, `cidrange`, an Identity base);
     /// else, for a code in the codespace, a notdef mapping; else CID 0.
     pub(crate) fn lookup(&self, code: u32, len: usize) -> (u32, Mapping) {
+        // Bytes in no codespace range are invalid whatever a mapping
+        // says of them: readers split and skip them differently.
+        let valid = self.in_codespace(code, len);
+        let found = |cid| {
+            (
+                cid,
+                if valid {
+                    Mapping::Defined
+                } else {
+                    Mapping::Invalid
+                },
+            )
+        };
         if let Some(cid) = self.defined(code, len) {
-            return (cid, Mapping::Defined);
+            return found(cid);
         }
         // Defined only for another length: read by value, as pdf.js and
         // MuPDF do (Poppler does not; redaction refuses such a code,
@@ -456,9 +469,8 @@ impl CMap {
             .filter(|l| *l != len)
             .find_map(|l| self.defined(code, l))
         {
-            return (cid, Mapping::Defined);
+            return found(cid);
         }
-        let valid = self.in_codespace(code, len);
         if self.identity_base {
             let m = if valid {
                 Mapping::Defined

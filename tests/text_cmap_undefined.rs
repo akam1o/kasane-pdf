@@ -227,3 +227,19 @@ fn a_value_defined_for_another_length_is_refused() {
     .unwrap_err();
     assert!(e.to_string().contains("another code length"), "{e}");
 }
+
+/// A code outside every codespace range is invalid whatever a mapping
+/// says of it: readers split and skip it differently. (Confirmation
+/// review, P0.)
+#[test]
+fn a_mapping_does_not_make_an_invalid_code_valid() {
+    let pdf = page("1 begincidchar <A0> 37 endcidchar", "41A041");
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let e = redact(
+        &doc,
+        &[(0, vec![(5.0, 95.0, 50.0, 115.0)])],
+        &RedactOptions::new(),
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("no codespace range"), "{e}");
+}

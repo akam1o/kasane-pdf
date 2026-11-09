@@ -623,84 +623,116 @@ fn read_tree(
     Ok(tree)
 }
 
+/// Attribute objects (`/A`, a `/ClassMap` entry) are walked this deep
+/// in direct nesting; deeper is refused.
+const MAX_ATTRIBUTE_DEPTH: usize = 32;
+
 /// Strings in a structure attribute object or a list of them (`/A`, a
-/// `/ClassMap` entry): a table's `/Summary`, any other text an
-/// attribute carries. Each entry whose value is a string, or an array
-/// holding one, is removed — in the overlay for an indirect object, in
-/// the returned copy for a direct one. The removed strings go to
-/// `removed`; `Some` when a direct value changed.
+/// `/ClassMap` entry): a table's `/Summary`, a user property's `/V`, any
+/// other text an attribute carries, at any depth (dictionaries and
+/// arrays, through references). Each string is removed — a dictionary
+/// entry or an array element — in the overlay for an indirect object
+/// (each once: `seen`), in the returned copy for a direct one. The
+/// removed strings go to `removed`; `Some` when a direct value changed.
 fn strip_attribute_strings(
     doc: &Document,
     overlay: &mut HashMap<(u32, u16), Object>,
     o: &Object,
     removed: &mut Vec<String>,
+    seen: &mut HashSet<IndirectRef>,
     budget: &mut Budget,
 ) -> Result<Option<Object>, Error> {
-    fn strings(
+    // Recursion follows direct nesting only (bounded by
+    // `MAX_ATTRIBUTE_DEPTH`); each reference is entered once.
+    #[allow(clippy::too_many_arguments)]
+    fn walk(
         doc: &Document,
-        overlay: &HashMap<(u32, u16), Object>,
-        v: &Object,
-    ) -> Result<Vec<String>, Error> {
-        Ok(match deref_cur(doc, overlay, v)? {
-            Object::String(s) => vec![crate::annot_text::text_string(&s)],
+        overlay: &mut HashMap<(u32, u16), Object>,
+        o: &Object,
+        removed: &mut Vec<String>,
+        seen: &mut HashSet<IndirectRef>,
+        budget: &mut Budget,
+        depth: usize,
+    ) -> Result<Option<Object>, Error> {
+        budget.charge()?;
+        if depth > MAX_ATTRIBUTE_DEPTH {
+            return Err(refuse("an attribute object nested too deeply"));
+        }
+        match o {
+            Object::Ref(r) => {
+                if !seen.insert(*r) {
+                    return Ok(None);
+                }
+                let body = current(doc, overlay, *r)?;
+                if let Some(new) = walk(doc, overlay, &body, removed, seen, budget, depth + 1)? {
+                    overlay.insert((r.number, r.generation), new);
+                }
+                Ok(None)
+            }
             Object::Array(a) => {
-                let mut out = Vec::new();
-                for x in &a {
-                    if let Object::String(s) = deref_cur(doc, overlay, x)? {
-                        out.push(crate::annot_text::text_string(&s));
+                let mut new = Vec::with_capacity(a.len());
+                let mut changed = false;
+                for x in a {
+                    if let Some(t) = string_of(doc, overlay, x)? {
+                        removed.push(t);
+                        changed = true;
+                        continue;
+                    }
+                    match walk(doc, overlay, x, removed, seen, budget, depth + 1)? {
+                        Some(n) => {
+                            new.push(n);
+                            changed = true;
+                        }
+                        None => new.push(x.clone()),
                     }
                 }
-                out
+                Ok(changed.then_some(Object::Array(new)))
             }
-            _ => Vec::new(),
-        })
-    }
-    budget.charge()?;
-    match o {
-        Object::Ref(r) => {
-            let body = current(doc, overlay, *r)?;
-            if let Some(new) = strip_attribute_strings(doc, overlay, &body, removed, budget)? {
-                overlay.insert((r.number, r.generation), new);
-            }
-            Ok(None)
-        }
-        Object::Array(a) => {
-            let mut new = a.clone();
-            let mut changed = false;
-            for x in new.iter_mut() {
-                if let Some(n) = strip_attribute_strings(doc, overlay, x, removed, budget)? {
-                    *x = n;
-                    changed = true;
+            Object::Dict(_) | Object::Stream { .. } => {
+                let mut o = o.clone();
+                let d = match &mut o {
+                    Object::Dict(d) => d,
+                    Object::Stream { dict, .. } => dict,
+                    _ => unreachable!(),
+                };
+                let mut changed = false;
+                let keys: Vec<Vec<u8>> = d.keys().cloned().collect();
+                for k in keys {
+                    let v = d[k.as_slice()].clone();
+                    if let Some(t) = string_of(doc, overlay, &v)? {
+                        removed.push(t);
+                        d.remove(&k);
+                        changed = true;
+                        continue;
+                    }
+                    if let Some(n) = walk(doc, overlay, &v, removed, seen, budget, depth + 1)? {
+                        d.insert(k, n);
+                        changed = true;
+                    }
                 }
+                Ok(changed.then_some(o))
             }
-            Ok(changed.then_some(Object::Array(new)))
+            _ => Ok(None),
         }
-        Object::Dict(_) | Object::Stream { .. } => {
-            let mut o = o.clone();
-            let d = match &mut o {
-                Object::Dict(d) => d,
-                Object::Stream { dict, .. } => dict,
-                _ => unreachable!(),
-            };
-            let mut gone = Vec::new();
-            for (k, v) in d.iter() {
-                let found = strings(doc, overlay, v)?;
-                if !found.is_empty() {
-                    gone.push(k.clone());
-                    removed.extend(found);
-                }
-            }
-            for k in &gone {
-                d.remove(k);
-            }
-            Ok((!gone.is_empty()).then_some(o))
-        }
-        _ => Ok(None),
     }
+    walk(doc, overlay, o, removed, seen, budget, 0)
 }
 
-/// The strings an attribute object or a list of them holds (one level
-/// into arrays, as [`strip_attribute_strings`] removes them).
+/// `o`'s text when it is a string, direct or one reference away.
+fn string_of(
+    doc: &Document,
+    overlay: &HashMap<(u32, u16), Object>,
+    o: &Object,
+) -> Result<Option<String>, Error> {
+    Ok(match deref_cur(doc, overlay, o)? {
+        Object::String(s) => Some(crate::annot_text::text_string(&s)),
+        _ => None,
+    })
+}
+
+/// The strings an attribute object or a list of them holds, at any
+/// depth, through references (as [`strip_attribute_strings`] removes
+/// them).
 fn attribute_strings(
     doc: &Document,
     overlay: &HashMap<(u32, u16), Object>,
@@ -708,13 +740,22 @@ fn attribute_strings(
     budget: &mut Budget,
 ) -> Result<Vec<String>, Error> {
     let mut out = Vec::new();
-    let mut stack = vec![(o.clone(), 0u32)];
+    let mut seen = HashSet::new();
+    let mut stack = vec![(o.clone(), 0usize)];
     while let Some((o, depth)) = stack.pop() {
         budget.charge()?;
+        if depth > MAX_ATTRIBUTE_DEPTH {
+            return Err(refuse("an attribute object nested too deeply"));
+        }
+        if let Object::Ref(r) = &o {
+            if !seen.insert(*r) {
+                continue;
+            }
+        }
         match deref_cur(doc, overlay, &o)? {
             Object::String(s) => out.push(crate::annot_text::text_string(&s)),
-            Object::Array(a) if depth < 3 => stack.extend(a.into_iter().map(|x| (x, depth + 1))),
-            Object::Dict(d) | Object::Stream { dict: d, .. } if depth < 3 => {
+            Object::Array(a) => stack.extend(a.into_iter().map(|x| (x, depth + 1))),
+            Object::Dict(d) | Object::Stream { dict: d, .. } => {
                 stack.extend(d.into_values().map(|x| (x, depth + 1)))
             }
             _ => {}
@@ -725,15 +766,27 @@ fn attribute_strings(
 
 /// The attribute objects `/ClassMap` gives the classes of an element's
 /// `/C` (a name, or an array of names and revision numbers).
-fn class_names(d: &Dict) -> Vec<Vec<u8>> {
-    match d.get(b"C".as_slice()) {
-        Some(Object::Name(n)) => vec![n.clone()],
-        Some(Object::Array(a)) => a
-            .iter()
-            .filter_map(|x| x.as_name().map(|n| n.to_vec()))
-            .collect(),
+fn class_names(
+    doc: &Document,
+    overlay: &HashMap<(u32, u16), Object>,
+    d: &Dict,
+) -> Result<Vec<Vec<u8>>, Error> {
+    let Some(c) = d.get(b"C".as_slice()) else {
+        return Ok(Vec::new());
+    };
+    Ok(match deref_cur(doc, overlay, c)? {
+        Object::Name(n) => vec![n],
+        Object::Array(a) => {
+            let mut out = Vec::new();
+            for x in &a {
+                if let Object::Name(n) = deref_cur(doc, overlay, x)? {
+                    out.push(n);
+                }
+            }
+            out
+        }
         _ => Vec::new(),
-    }
+    })
 }
 
 /// The values `/ParentTree` holds for `key`, flattened: the element of
@@ -922,17 +975,23 @@ pub(crate) fn edit_tree(
     // Edit the touched elements: their attribute objects' strings, the
     // classes' they name, their text, the items that go.
     let mut classes: BTreeSet<Vec<u8>> = BTreeSet::new();
+    let mut attr_seen: HashSet<IndirectRef> = HashSet::new();
     let mut attr_edits: HashMap<usize, Object> = HashMap::new();
     for (i, e) in tree.elements.iter().enumerate() {
         if !hit.contains(&i) {
             continue;
         }
-        classes.extend(class_names(&e.dict));
+        classes.extend(class_names(doc, overlay, &e.dict)?);
         if let Some(a) = e.dict.get(b"A".as_slice()) {
             let before = out.removed.len();
-            if let Some(new) =
-                strip_attribute_strings(doc, overlay, a, &mut out.removed, &mut budget)?
-            {
+            if let Some(new) = strip_attribute_strings(
+                doc,
+                overlay,
+                a,
+                &mut out.removed,
+                &mut attr_seen,
+                &mut budget,
+            )? {
                 attr_edits.insert(i, new);
             }
             out.texts_removed += (out.removed.len() - before) as u64;
@@ -955,9 +1014,14 @@ pub(crate) fn edit_tree(
                 for c in &classes {
                     if let Some(v) = m.get(c) {
                         let before = out.removed.len();
-                        if let Some(new) =
-                            strip_attribute_strings(doc, overlay, v, &mut out.removed, &mut budget)?
-                        {
+                        if let Some(new) = strip_attribute_strings(
+                            doc,
+                            overlay,
+                            v,
+                            &mut out.removed,
+                            &mut attr_seen,
+                            &mut budget,
+                        )? {
                             m2.insert(c.clone(), new);
                             changed = true;
                         }
@@ -1205,7 +1269,7 @@ pub(crate) fn verify(out: &Document, edit: &StructureEdit, limits: &Limits) -> R
             attrs.extend(attribute_strings(out, &overlay, a, &mut budget)?);
         }
         if let Some(Object::Dict(cm)) = &class_map {
-            for c in class_names(d) {
+            for c in class_names(out, &overlay, d)? {
                 if let Some(v) = cm.get(&c) {
                     attrs.extend(attribute_strings(out, &overlay, v, &mut budget)?);
                 }

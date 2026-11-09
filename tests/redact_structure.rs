@@ -926,3 +926,47 @@ fn phonemes_and_associated_files() {
     assert!(!contains(&r.output, b"SECRETSOURCE"));
     assert_eq!(r.structure_items_removed, 1);
 }
+
+/// Attribute strings at any depth, a class named indirectly, and an
+/// attribute object that refers to itself. (Confirmation review: P0,
+/// P0, P1.)
+#[test]
+fn nested_indirect_and_cyclic_attributes() {
+    let with = |el: &str, root_extra: &str, extra: Vec<(u32, Vec<u8>)>| {
+        let mut objs = vec![(31, el.as_bytes().to_vec())];
+        objs.extend(extra);
+        tagged(
+            TWO,
+            "",
+            "",
+            &format!("31 0 R {root_extra}"),
+            "<< /Nums [0 [31 0 R]] >>",
+            objs,
+        )
+    };
+    let nested = with(
+        "<< /S /P /P 30 0 R /Pg 3 0 R /K 0 /A << /O /UserProperties \
+         /P [<< /N (Description) /V (SECRETNESTED) >>] >> >>",
+        "",
+        vec![],
+    );
+    let r = run(&nested).unwrap();
+    assert!(!contains(&r.output, b"SECRETNESTED"));
+    let indirect_class = with(
+        "<< /S /P /P 30 0 R /Pg 3 0 R /K 0 /C 40 0 R >>",
+        "/ClassMap << /C0 << /O /Table /Summary (SECRETCLASS) >> >>",
+        vec![(40, b"/C0".to_vec())],
+    );
+    let r = run(&indirect_class).unwrap();
+    assert!(!contains(&r.output, b"SECRETCLASS"));
+    let cyclic = with(
+        "<< /S /P /P 30 0 R /Pg 3 0 R /K 0 /A 40 0 R /Alt (SECRETALT) >>",
+        "",
+        vec![(
+            40,
+            b"[40 0 R << /O /Layout /Summary (SECRETCYCLE) >>]".to_vec(),
+        )],
+    );
+    let r = run(&cyclic).unwrap();
+    assert!(!contains(&r.output, b"SECRETCYCLE") && !contains(&r.output, b"SECRETALT"));
+}
