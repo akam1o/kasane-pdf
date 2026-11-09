@@ -262,6 +262,10 @@ fn rewrite_core(
         kinds: HashMap::new(),
         next_number: 1,
         walked: 0,
+        edited: !overlay.is_empty()
+            || overrides.strip_info
+            || overrides.strip_metadata
+            || overrides.javascript_removed,
     };
 
     let trailer = doc.trailer();
@@ -385,6 +389,10 @@ struct Collector<'a> {
     kinds: HashMap<u32, RootKind>,
     next_number: u32,
     walked: usize,
+    /// The rewrite edits or removes something: an input object stream
+    /// or cross-reference stream may not be written, since it holds the
+    /// input's objects (or trailer) as they were.
+    edited: bool,
 }
 
 impl<'a> Collector<'a> {
@@ -447,6 +455,26 @@ impl<'a> Collector<'a> {
             // that cannot be read stays an error.
             None => (self.doc.resolve(old_ref)?, false),
         };
+        // An object stream holds the input's objects as stored, a
+        // cross-reference stream its trailer: written out, either keeps
+        // what an edit removed or replaced (a removed annotation, the
+        // /Info an edit drops). Something refers to one only in an
+        // unusual or crafted file; an edited rewrite refuses it.
+        if self.edited && !from_overlay {
+            if let Object::Stream { dict, .. } = &obj {
+                let t = dict.get(b"Type".as_slice()).and_then(|t| t.as_name());
+                if matches!(t, Some(b"ObjStm") | Some(b"XRef")) {
+                    return Err(Error::Unsupported {
+                        feature: "rewrite of an object stream or cross-reference stream",
+                        detail: format!(
+                            "object {old_ref} is a /{} an object refers to; written out it \
+                             would keep the input's objects as they were",
+                            String::from_utf8_lossy(t.unwrap_or_default())
+                        ),
+                    });
+                }
+            }
+        }
         self.scan_and_collect(&mut obj, depth, from_overlay)?;
         self.bodies.insert(new_num, obj);
         Ok(())
