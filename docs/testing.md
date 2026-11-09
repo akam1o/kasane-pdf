@@ -79,7 +79,10 @@ but external tools are used to *confirm* behaviour on real files:
   every run whose rect holds ink. Known false signals, checked by hand
   rather than relaxed: zeroed image samples that were already black
   count as unchanged ink (reported `unexpected`, marked
-  `check_by_hand`); a word "lost" outside can be pdftotext joining a
+  `check_by_hand`, then checked mechanically: rendered again with no
+  image drawn — each image XObject an empty form — no unchanged ink may
+  stay inside, so it is all image samples, which `redact` verifies are
+  zero inside the rect; `unchanged_ink_not_from_images`); a word "lost" outside can be pdftotext joining a
   kept glyph to its neighbour once the glyph between them is removed
   (per-glyph words in vertical CJK text); MuPDF rounds simple fonts'
   widths to integers, so a kept glyph after removed ones on its line

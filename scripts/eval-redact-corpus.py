@@ -53,7 +53,11 @@ removed ones "moves" by hundredths of a point in its reading only.
 A run whose only problem is unchanged ink inside that is all black
 where images were zeroed is still `unexpected`, marked `check_by_hand`
 (zeroed samples that were already black look unchanged; black content
-left over a zeroed image would look the same).
+left over a zeroed image would look the same). It is then checked
+mechanically: with no image of the output drawn (each image XObject an
+empty form), no unchanged ink may stay inside — then it is all image samples, which `redact` verifies
+are zero inside the rect (`unchanged_ink_not_from_images`, 0; the run
+stays `unexpected`).
 
 Pages whose geometry differs from plain MediaBox space (a /Rotate, a
 CropBox, a MediaBox not at the origin) are skipped: the generated rects
@@ -223,6 +227,38 @@ def pixel_checks(inp, out, rect, size, tmp):
     return left_ink, changed_out, left_black
 
 
+def ink_not_from_images(inp, out, rect, size, tmp):
+    """Unchanged non-white pixels inside the rect that stay when no image
+    of the output is drawn (each image XObject turned into an empty
+    form, so blending sees nothing either): ink that is not image
+    samples. `None` when the output cannot be rewritten so."""
+    plain = os.path.join(tmp, "plain.pdf")
+    q = subprocess.run(["qpdf", "--qdf", "--object-streams=disable", out, plain], capture_output=True)
+    if q.returncode not in (0, 3) or not os.path.exists(plain):
+        return None
+    data = open(plain, "rb").read()
+    parts, pos = [], 0
+    for m in re.finditer(rb"(\d+ 0 obj\n<<)(.*?)(>>\nstream\n)", data, re.S):
+        if not re.search(rb"/Subtype /Image\b", m.group(2)):
+            continue
+        end = data.find(b"\nendstream", m.end())
+        if end < 0:
+            return None
+        d = re.sub(rb"/Subtype /Image\b", b"/Subtype /Form /BBox [0 0 1 1]", m.group(2))
+        d = re.sub(rb"/(Filter|DecodeParms) (/\w+|\[[^\]]*\])", b"", d)
+        parts += [data[pos:m.start()], m.group(1), d, m.group(3), b" " * (end - m.end())]
+        pos = end
+    parts.append(data[pos:])
+    blank, fixed = os.path.join(tmp, "blank.pdf"), os.path.join(tmp, "blank-fixed.pdf")
+    open(blank, "wb").write(b"".join(parts))
+    fx = subprocess.run(["fix-qdf", blank], capture_output=True)
+    if fx.returncode != 0:
+        return None
+    open(fixed, "wb").write(fx.stdout)
+    left, _, _ = pixel_checks(inp, fixed, rect, size, tmp)
+    return left
+
+
 def within(word, r, pad=0.0):
     return word[1] >= r[0] - pad and word[3] <= r[2] + pad and word[2] >= r[1] - pad and word[4] <= r[3] + pad
 
@@ -338,6 +374,15 @@ def run_one(kasane, pdf, kind, rect, size, in_words, tmp, extra_args=()):
     # image would look the same — but marked for the hand check.
     if left_ink and left_ink == left_black and res.get("images_edited") and len(problems) == 1:
         res["check_by_hand"] = "unchanged ink inside is all black where images were zeroed"
+        # Checked mechanically: with no image drawn, does any of that
+        # ink stay? None staying means it is all image samples —
+        # which `redact` verifies are zero inside the rect. The run stays
+        # `unexpected`; the check only says what the ink is.
+        rest = ink_not_from_images(pdf, out, rect, size, tmp)
+        res["unchanged_ink_not_from_images"] = rest
+        if rest == 0:
+            res["check_by_hand"] = ("verified: the unchanged ink inside is all image samples "
+                                    "(zero inside the rect)")
     if problems:
         res.update(outcome="unexpected", reason="; ".join(problems))
     else:
