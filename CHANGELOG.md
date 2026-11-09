@@ -6,6 +6,57 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `redact` keeps and edits the structure tree instead of refusing one
+  with alternate text: every element whose content the edit touches
+  (matched by `MCID` through `/K`, `/ParentTree`, `/IDTree`, `/MCR`,
+  `/OBJR`), and its ancestors, loses `/Alt`, `/ActualText`, `/E`, `/T`,
+  `/Phoneme`, `/AF` and the strings of its attribute objects; references
+  to removed annotations and edited originals leave `/K`. Cycles and
+  trees that cannot be edited exactly are refused; verification re-reads
+  the output's tree. `Redaction::{structure_texts_removed,
+  structure_items_removed}`. `remove_structure_tree` still removes the
+  whole tree. Tagged links and annotations removed with a rect no longer
+  refuse.
+- `uninspected_data(&Document, &Limits) -> DataInventory`
+  (`DataItem`, `DataRole`, `DataStatus`): every stream by what `redact`
+  does with it — searched, interpreted, uninspected (listed: attachments,
+  metadata, thumbnails, scripts, XFA, rich text, multimedia, application
+  data, undrawn images and forms, unknown streams and entries), not
+  carried. `Diagnosis::data`, `Redaction::uninspected`,
+  `RedactOptions::refuse_uninspected` (CLI `--refuse-uninspected`):
+  refuse an output carrying uninspected data. `preflight-redaction` and
+  `redact` print the inventory.
+- `redact` removes the thumbnail (`/Thumb`) of every edited page
+  (`Redaction::thumbnails_removed`).
+- `redact` edits images with a soft mask (`/SMask`, 8-bit DeviceGray):
+  the mask's samples inside the rects are made opaque in a copy.
+- `redact` edits Separation and DeviceN images.
+- Type 0 CMaps honour notdef mappings (`beginnotdefchar`,
+  `beginnotdefrange`, §9.7.6.3), inherited through `usecmap` too: a code
+  in the codespace with no defined mapping takes the notdef CID (every
+  code in a range the same one) instead of CID 0, in rendering, text
+  extraction and redaction alike. Malformed notdef blocks are
+  `Error::Structure`; their entries count against `max_text_codes`.
+
+### Changed
+- `redact` refuses text showing a Type 0 code that its CMap maps by no
+  `cidchar` / `cidrange` (a notdef mapping, no mapping, or bytes in no
+  codespace range): Poppler, MuPDF and pdf.js draw such codes with
+  different glyphs and widths, so later glyphs fall in different places.
+  Fonts that only declare such mappings still redact.
+- An embedded CMap based on Identity-H/V (`usecmap`) inherits its
+  `<0000> <FFFF>` codespace when splitting a string into codes.
+- A CMap code defined both by `cidchar` and `cidrange` takes the later
+  definition, as Poppler, MuPDF and pdf.js read it (the `cidchar` won
+  before); mappings are matched by code length, and `redact` refuses a
+  code whose value another length maps to another CID.
+- `redact` takes an annotation without an appearance stream where
+  readers draw it: `/Rect` and its geometry (formerly refused when the
+  geometry left `/Rect`), grown by line endings and leader lines; one
+  with a caption or a cloudy border is refused.
+- `Diagnosis` is `#[non_exhaustive]` and gains `data`.
+
 ## [0.7.0] - 2026-11-10
 
 ### Security

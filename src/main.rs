@@ -1929,14 +1929,16 @@ fn redact_usage() -> &'static str {
     "usage: kasane-pdf redact <file.pdf> --page <n> --rect <llx> <lly> <urx> <ury> \
      [--rect …] [--page <m> --rect …] [--remove-structure-tree] \
      [--refuse-copies-elsewhere] [--remove-annotations] \
-     [--embed-substitute-fonts] [--remove-javascript] --output <out.pdf>\n\
+     [--embed-substitute-fonts] [--remove-javascript] [--refuse-uninspected] \
+     --output <out.pdf>\n\
      Removes the text, image samples and paths drawn inside the rects (page \
      default user space; --page is 1-based, each --rect belongs to the nearest \
      preceding --page), removes /Info and XMP metadata, leaves no route to an \
      edited image's original, and verifies the written PDF before saving it. \
      Structures it cannot process exactly are refused and nothing is written. \
-     --remove-structure-tree drops a structure tree with alternate text instead \
-     of refusing. The redaction is positional: copies of the information \
+     A structure tree is kept: the elements whose content the rects touch, \
+     and their ancestors, lose their alternate text (/Alt, /ActualText, /E, \
+     /T); --remove-structure-tree removes the whole tree instead. The redaction is positional: copies of the information \
      elsewhere (other pages, annotations, an image's original drawn on \
      another page) are listed, not removed; --refuse-copies-elsewhere \
      refuses instead when any is found. --remove-annotations removes markup annotations meeting a rect whole \
@@ -1944,7 +1946,10 @@ fn redact_usage() -> &'static str {
      --embed-substitute-fonts first replaces non-embedded Times, Helvetica \
      and Courier fonts by embedded substitutes (Liberation) so their text \
      can be redacted. --remove-javascript removes every JavaScript action \
-     and script tree instead of refusing a document that runs scripts."
+     and script tree instead of refusing a document that runs scripts. \
+     The data the output carries unread (attachments, metadata, unknown \
+     streams …) is listed; --refuse-uninspected refuses instead when there \
+     is any."
 }
 
 /// `redact` subcommand.
@@ -1957,6 +1962,7 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
     let mut refuse_copies = false;
     let mut remove_annots = false;
     let mut remove_js = false;
+    let mut refuse_uninspected = false;
     let mut embed_fonts = false;
     let mut explain = false;
     let mut i = 1;
@@ -2013,6 +2019,10 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
             }
             "--remove-javascript" => {
                 remove_js = true;
+                i += 1;
+            }
+            "--refuse-uninspected" => {
+                refuse_uninspected = true;
                 i += 1;
             }
             // Corpus analysis (undocumented): list every finding of the
@@ -2078,7 +2088,8 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
             .refuse_copies_elsewhere(refuse_copies)
             .remove_annotations(remove_annots)
             .embed_substitute_fonts(embed_fonts)
-            .remove_javascript(remove_js),
+            .remove_javascript(remove_js)
+            .refuse_uninspected(refuse_uninspected),
     )?;
     write_atomic(
         &r.output,
@@ -2106,6 +2117,10 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
     println!("/Info removed: {}", r.info_removed);
     println!("XMP /Metadata removed: {}", r.metadata_removed);
     println!("structure tree removed: {}", r.structure_tree_removed);
+    println!("structure texts removed: {}", r.structure_texts_removed);
+    println!("structure items removed: {}", r.structure_items_removed);
+    println!("thumbnails removed: {}", r.thumbnails_removed);
+    print_data_inventory(&r.uninspected);
     for e in &r.elsewhere {
         let what = match e.removed {
             kasane_pdf::Removed::Text(_) => "removed text",
@@ -2341,6 +2356,7 @@ fn print_preflight_text(d: &kasane_pdf::Diagnosis, page: usize) {
     for u in &d.unexamined {
         println!("  - {u}");
     }
+    print_data_inventory(&d.data);
     println!(
         "note: a clean report means 'no obstacle found in the examined scope' — \
          it is NOT a redaction-safety verdict."
@@ -2509,10 +2525,80 @@ fn print_preflight_json(d: &kasane_pdf::Diagnosis) {
         }
     ));
     out.push_str(&format!(
-        ",\n  \"unexamined\": {}\n}}\n",
-        d.unexamined.len()
+        ",\n  \"unexamined\": {},\n  \"data\": {}\n}}\n",
+        d.unexamined.len(),
+        data_inventory_json(&d.data)
     ));
     print!("{out}");
+}
+
+/// The document's data by status, and the uninspected items (at most
+/// 50 printed).
+fn print_data_inventory(d: &kasane_pdf::DataInventory) {
+    println!(
+        "data: {} searched, {} interpreted, {} uninspected, {} not carried{}",
+        d.searched,
+        d.interpreted,
+        d.uninspected,
+        d.not_carried,
+        if d.complete { "" } else { " (incomplete)" }
+    );
+    for it in d.uninspected_items().take(50) {
+        println!(
+            "  uninspected {} {:?} at {}{}{} — {}",
+            it.object
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| "(direct)".into()),
+            it.role,
+            it.via,
+            it.stream_bytes
+                .map(|b| format!(", {b} bytes"))
+                .unwrap_or_default(),
+            if it.filters.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", it.filters.join(" "))
+            },
+            it.role.recommendation()
+        );
+    }
+    if d.uninspected > 50 {
+        println!("  ... ({} more)", d.uninspected - 50);
+    }
+}
+
+fn data_inventory_json(d: &kasane_pdf::DataInventory) -> String {
+    let items: Vec<String> = d
+        .items
+        .iter()
+        .map(|it| {
+            format!(
+                "{{\"object\": {}, \"role\": \"{:?}\", \"status\": \"{:?}\", \"via\": {:?}, \
+                 \"stream_bytes\": {}, \"filters\": {:?}}}",
+                it.object
+                    .map(|r| format!("\"{r}\""))
+                    .unwrap_or_else(|| "null".into()),
+                it.role,
+                it.status,
+                it.via,
+                it.stream_bytes
+                    .map(|b| b.to_string())
+                    .unwrap_or_else(|| "null".into()),
+                it.filters
+            )
+        })
+        .collect();
+    format!(
+        "{{\"searched\": {}, \"interpreted\": {}, \"uninspected\": {}, \"not_carried\": {}, \
+         \"structural\": {}, \"complete\": {}, \"items\": [{}]}}",
+        d.searched,
+        d.interpreted,
+        d.uninspected,
+        d.not_carried,
+        d.structural,
+        d.complete,
+        items.join(", ")
+    )
 }
 
 fn target_json(t: &kasane_pdf::Target) -> String {

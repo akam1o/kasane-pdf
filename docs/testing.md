@@ -58,7 +58,9 @@ but external tools are used to *confirm* behaviour on real files:
 ### Redaction
 
 - [`../scripts/verify-redact.py`](../scripts/verify-redact.py) —
-  synthetic cases, each successful output checked with `qpdf`
+  synthetic cases (including tagged documents, whose output's structure
+  tree is read with qpdf: present, every reference resolving, the
+  untouched elements' text kept), each successful output checked with `qpdf`
   (structure, and every decoded stream searched for the secret text
   and image samples), `pdftotext` and `pdftoppm`; refusals as declared.
 - [`../scripts/eval-redact-corpus.py`](../scripts/eval-redact-corpus.py)
@@ -116,7 +118,19 @@ but external tools are used to *confirm* behaviour on real files:
   `/Alt` `/E`, Type 3 programs, clipped and optional content, image
   samples (Gray, RGB with `/Interpolate`, CMYK, ICCBased, Indexed, in a
   form), `/SA` and hairline strokes, a shading and a tiling pattern,
-  an annotation appearance; refusals must be alike for both inputs.
+  an annotation appearance, soft masks, Separation / DeviceN images, the
+  structure tree's text of touched elements (`/Alt`, `/ActualText`,
+  `/E`, `/T`, indirect, on an ancestor, a tagged link); refusals must
+  be alike for both inputs.
+- [`../tests/redact_structure.rs`](../tests/redact_structure.rs) — the
+  structure tree after `redact`: which elements lose their text and
+  attribute strings, `/ParentTree` and `/K` still resolving, shared
+  elements, `/IDTree`, forms, annotations, malformed and large trees.
+  `verify-redact.py`'s `structure-*` cases read the output's tree with
+  qpdf; the same outputs were read with pdf.js (`getStructTree`) and
+  MuPDF during development.
+- [`../tests/redact_inventory.rs`](../tests/redact_inventory.rs) — the
+  inventory of uninspected data and `refuse_uninspected`.
 
 ## Compatibility suite
 

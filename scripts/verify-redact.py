@@ -103,7 +103,7 @@ CASES = [
         8: b"<< /Type /Annot /Subtype /Link /Rect [50 95 120 110] /A << /S /URI /URI (https://x.invalid/SECRETTEXT) >> >>"})), [], "ok"),
     ("structure-alt-text", build(page(b"/P <</MCID 0>> BDC " + TEXT + b" EMC", page_extra=b"/StructParents 0",
         cat=b"/StructTreeRoot 8 0 R", more={8: b"<< /Type /StructTreeRoot /K 9 0 R >>",
-        9: b"<< /Type /StructElem /S /P /P 8 0 R /Pg 3 0 R /K 0 /ActualText (SECRETTEXT) >>"})), [], "refused"),
+        9: b"<< /Type /StructElem /S /P /P 8 0 R /Pg 3 0 R /K 0 /ActualText (SECRETTEXT) >>"})), [], "ok"),
     ("structure-alt-text-removed", build(page(b"/P <</MCID 0>> BDC " + TEXT + b" EMC", page_extra=b"/StructParents 0",
         cat=b"/StructTreeRoot 8 0 R", more={8: b"<< /Type /StructTreeRoot /K 9 0 R >>",
         9: b"<< /Type /StructElem /S /P /P 8 0 R /Pg 3 0 R /K 0 /ActualText (SECRETTEXT) >>"})), ["--remove-structure-tree"], "ok"),
@@ -185,6 +185,99 @@ CASES.append(("image-shown-on-two-pages-refuse-copies", dict((c[0], c[1]) for c 
 # draws the original; the redaction is positional and reports it).
 ORIGINAL_STAYS = {"image-shown-on-two-pages"}
 
+# Tagged documents: the touched element's text goes, the tree stays.
+TWO_TAGGED = (b"/P <</MCID 0>> BDC BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET EMC "
+              b"/P <</MCID 1>> BDC BT /F1 12 Tf 10 20 Td (PUBLICWORD) Tj ET EMC")
+
+
+def tagged(content, elements, parent_tree, k=b"[9 0 R 10 0 R]", res=b"/Font << /F1 5 0 R >>", page_extra=b"", more=None):
+    objs = page(content, res=res, page_extra=b"/StructParents 0 " + page_extra,
+                cat=b"/StructTreeRoot 8 0 R /MarkInfo << /Marked true >>",
+                more={8: b"<< /Type /StructTreeRoot /K " + k + b" /ParentTree " + parent_tree + b" >>", **elements})
+    objs.update(more or {})
+    return build(objs)
+
+
+CASES += [
+    ("structure-partial", tagged(TWO_TAGGED, {
+        9: b"<< /Type /StructElem /S /P /P 8 0 R /Pg 3 0 R /K 0 /Alt (SECRETTEXT) /ActualText (SECRETTEXT) >>",
+        10: b"<< /Type /StructElem /S /H1 /P 8 0 R /Pg 3 0 R /K 1 /Alt (PUBLICALT) >>"},
+        b"<< /Nums [0 [9 0 R 10 0 R]] >>"), [], "ok"),
+    ("structure-nested-shared", tagged(TWO_TAGGED, {
+        9: b"<< /S /Sect /P 8 0 R /K [11 0 R 10 0 R] /T (SECRETTEXT) >>",
+        10: b"<< /S /Caption /P 9 0 R /Pg 3 0 R /K 1 /Alt (PUBLICALT) >>",
+        11: b"<< /S /Figure /P 9 0 R /Pg 3 0 R /K 0 /Alt (SECRETTEXT) >>",
+        12: b"<< /S /Art /P 8 0 R /K 11 0 R /E (SECRETTEXT) >>"},
+        b"<< /Kids [13 0 R] >>", k=b"[9 0 R 12 0 R]", more={
+        13: b"<< /Limits [0 0] /Nums [0 14 0 R] >>", 14: b"[11 0 R 10 0 R]"}), [], "ok"),
+    ("structure-tagged-link", tagged(TWO_TAGGED, {
+        9: b"<< /S /Link /P 8 0 R /Pg 3 0 R /Alt (SECRETTEXT) /K [0 << /Type /OBJR /Obj 15 0 R >>] >>",
+        10: b"<< /S /H1 /P 8 0 R /Pg 3 0 R /K 1 /Alt (PUBLICALT) >>"},
+        b"<< /Nums [0 [9 0 R 10 0 R] 1 9 0 R] >>", page_extra=b"/Annots [15 0 R]", more={
+        15: b"<< /Type /Annot /Subtype /Link /Rect [50 95 120 110] /StructParent 1 "
+            b"/A << /S /URI /URI (https://x.invalid/SECRETTEXT) >> >>"}), [], "ok"),
+    ("structure-form-mcr", tagged(b"/Fm Do /P <</MCID 1>> BDC BT /F1 12 Tf 10 20 Td (PUBLICWORD) Tj ET EMC", {
+        9: b"<< /S /P /P 8 0 R /Pg 3 0 R /Alt (SECRETTEXT) /K << /Type /MCR /Stm 16 0 R /MCID 0 >> >>",
+        10: b"<< /S /H1 /P 8 0 R /Pg 3 0 R /K 1 /Alt (PUBLICALT) >>"},
+        b"<< /Nums [0 [null 10 0 R] 1 [9 0 R]] >>", res=b"/Font << /F1 5 0 R >> /XObject << /Fm 16 0 R >>", more={
+        16: stream(b"/Type /XObject /Subtype /Form /BBox [0 0 200 200] /StructParents 1 "
+                   b"/Resources << /Font << /F1 5 0 R >> >>",
+                   b"/P <</MCID 0>> BDC BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET EMC")}), [], "ok"),
+    ("structure-cycle", tagged(TWO_TAGGED, {
+        9: b"<< /S /Sect /P 8 0 R /K 10 0 R /Alt (SECRETTEXT) >>",
+        10: b"<< /S /Div /P 9 0 R /Pg 3 0 R /K [0 9 0 R] >>"},
+        b"<< /Nums [0 [10 0 R]] >>", k=b"9 0 R"), [], "refused"),
+]
+MASK = bytes((i * 7) % 200 + 20 for i in range(256))
+CASES += [
+    ("image-soft-mask", build(page(TEXT + b" q 100 0 0 100 50 50 cm /Im1 Do Q",
+                                   res=b"/Font << /F1 5 0 R >> /XObject << /Im1 8 0 R >>", more={
+        8: stream(b"/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace /DeviceRGB "
+                  b"/BitsPerComponent 8 /SMask 9 0 R", SAMPLES, flate=True),
+        9: stream(b"/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace /DeviceGray "
+                  b"/BitsPerComponent 8", MASK, flate=True)})), ["--rect", "40", "40", "160", "160"], "ok"),
+]
+STRUCTURE_KEEPS = {"structure-partial": [b"PUBLICALT"], "structure-nested-shared": [b"PUBLICALT"],
+                   "structure-tagged-link": [b"PUBLICALT"], "structure-form-mcr": [b"PUBLICALT"]}
+
+
+def structure_problems(out):
+    """The output's structure tree read by qpdf: present, every
+    reference in it resolves, and the untouched elements' text kept."""
+    import json
+    j = json.loads(subprocess.run(["qpdf", "--json=2", "--json-key=qpdf", out],
+                                  capture_output=True, check=True).stdout)
+    objs = j["qpdf"][1]
+    def body(ref):
+        o = objs.get("obj:" + ref)
+        if o is None:
+            return None
+        return o.get("value", (o.get("stream") or {}).get("dict"))
+    trailer = objs["trailer"]["value"]
+    root = body(trailer["/Root"])
+    if "/StructTreeRoot" not in root:
+        return ["the structure tree was removed"]
+    problems = []
+    seen, stack = set(), [root["/StructTreeRoot"]]
+    while stack:
+        v = stack.pop()
+        if isinstance(v, str) and v.endswith(" R"):
+            if v in seen:
+                continue
+            seen.add(v)
+            b = body(v)
+            if b is None:
+                problems.append(f"{v} in the structure tree does not resolve")
+                continue
+            v = b
+        if isinstance(v, list):
+            stack.extend(v)
+        elif isinstance(v, dict):
+            for key in ("/K", "/ParentTree", "/Kids", "/Nums", "/Obj", "/Stm", "/Pg"):
+                if key in v:
+                    stack.append(v[key])
+    return problems
+
 
 def rects_custom(args):
     return "--rect" in args
@@ -242,6 +335,8 @@ def run():
                     problems.append("secret text bytes present after full decode")
                 if SAMPLES[:96] in data and name not in ORIGINAL_STAYS:
                     problems.append("original image samples present after full decode")
+                if name == "image-soft-mask" and MASK[:64] in data:
+                    problems.append("original soft mask samples present after full decode")
                 if "image" not in name and not rects_custom(args):
                     ink = ink_inside(out, tmp)
                     if ink:
@@ -251,6 +346,11 @@ def run():
                     problems.append("pdftotext extracts the secret")
                 if rects and PUBLIC not in text:
                     problems.append("public text lost")
+                if name in STRUCTURE_KEEPS:
+                    problems += structure_problems(out)
+                    for kept in STRUCTURE_KEEPS[name]:
+                        if kept not in data:
+                            problems.append("an untouched element's text was lost")
             status = "ok  " if not problems else "FAIL"
             print(f"{status} {name}: {got}" + ("" if not problems else " — " + "; ".join(problems)))
             failed += bool(problems)

@@ -112,7 +112,9 @@ mod redact;
 pub mod redact_diag;
 mod redact_fonts;
 mod redact_geom;
+pub mod redact_inventory;
 mod redact_js;
+mod redact_struct;
 mod redact_textpos;
 mod redact_type3;
 pub mod remove_image;
@@ -169,6 +171,7 @@ pub use page::{Page, Rect};
 pub use redact::redaction_walk_findings;
 pub use redact::{redact, Elsewhere, ElsewhereLocation, RedactOptions, Redaction, Removed};
 pub use redact_diag::{diagnose_redaction, Diagnosis, Target, TargetDetail, TargetKind};
+pub use redact_inventory::{uninspected_data, DataInventory, DataItem, DataRole, DataStatus};
 pub use remove_image::{remove_image_region, ImageRemoval};
 pub use remove_metadata::{remove_document_metadata, MetadataRemoval};
 pub use remove_region::{

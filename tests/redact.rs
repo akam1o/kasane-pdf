@@ -340,7 +340,8 @@ fn document_metadata_is_removed() {
     assert!(!contains(&r.output, b"SECRETINFO") && !contains(&r.output, b"SECRETXMP"));
 }
 
-/// Alternate text in the structure tree may repeat what is removed.
+/// Alternate text in the structure tree may repeat what is removed: the
+/// touched element loses it, the tree stays; or the tree is removed.
 #[test]
 fn structure_alternate_text() {
     let pdf = one_page(
@@ -356,8 +357,10 @@ fn structure_alternate_text() {
             ),
         ],
     );
-    let e = unsupported(run(&pdf, vec![RECT]));
-    assert!(e.contains("structure tree"), "{e}");
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert!(!r.structure_tree_removed);
+    assert_eq!(r.structure_texts_removed, 1);
+    assert!(!contains(&r.output, b"SECRETTEXT"));
     let doc = Document::from_bytes(&pdf).unwrap();
     let r = redact(
         &doc,
@@ -474,8 +477,8 @@ fn output_is_one_clean_revision() {
 }
 
 /// A link whose `/Rect` meets a rect is removed with its action; one
-/// outside is kept. A link the structure tree refers to would stay
-/// reachable through it: refused unless the tree is removed.
+/// outside is kept. A link the structure tree refers to leaves the
+/// tree with it.
 #[test]
 fn links() {
     let pdf = one_page(
@@ -531,8 +534,9 @@ fn links() {
             ),
         ],
     );
-    let e = unsupported(run(&tagged, vec![RECT]));
-    assert!(e.contains("structure tree refers to"), "{e}");
+    let r = run(&tagged, vec![RECT]).unwrap();
+    assert_eq!(r.structure_items_removed, 1);
+    assert!(!contains(&r.output, b"SECRETLINK"));
     let doc = Document::from_bytes(&tagged).unwrap();
     let r = redact(
         &doc,
@@ -2086,7 +2090,7 @@ fn popups_and_replies_go_with_a_removed_annotation() {
 }
 
 #[test]
-fn widgets_and_tagged_annotations_stay_refused() {
+fn widgets_stay_refused_and_tagged_annotations_leave_the_tree() {
     let widget = annot_page(
         "30 0 R",
         vec![(
@@ -2106,10 +2110,24 @@ fn widgets_and_tagged_annotations_stay_refused() {
                 b"<< /Type /Annot /Subtype /Square /Rect [60 95 70 105] /StructParent 0 >>"
                     .to_vec(),
             ),
-            (40, b"<< /Type /StructTreeRoot >>".to_vec()),
+            (
+                40,
+                b"<< /Type /StructTreeRoot /K 41 0 R /ParentTree << /Nums [0 41 0 R] >> >>"
+                    .to_vec(),
+            ),
+            (
+                41,
+                b"<< /Type /StructElem /S /Annot /P 40 0 R /Alt (SECRETNOTE) \
+                  /K << /Type /OBJR /Obj 30 0 R >> >>"
+                    .to_vec(),
+            ),
         ],
     );
-    assert!(unsupported(annots_run(&tagged)).contains("structure tree"));
+    let r = annots_run(&tagged).unwrap();
+    assert_eq!(r.annotations_removed, 1);
+    assert_eq!(r.structure_items_removed, 1);
+    assert_eq!(r.structure_texts_removed, 1);
+    assert!(!contains(&r.output, b"SECRETNOTE"));
 }
 
 // Review of annotation removal (fixed).
@@ -2170,20 +2188,30 @@ fn a_removed_appearance_keeps_no_image() {
     }
 }
 
-/// An annotation without an appearance stream whose geometry lies
-/// outside its /Rect is drawn there by readers: refused.
+/// An annotation without an appearance stream is drawn from its
+/// geometry, inside its /Rect or not: its extent is both. Geometry
+/// meeting a rect makes it a hit (removed on request, else refused);
+/// geometry clear of every rect keeps it.
 #[test]
-fn appearance_less_geometry_outside_rect_is_refused() {
-    let pdf = annot_page(
-        "30 0 R",
-        vec![(
-            30,
-            b"<< /Type /Annot /Subtype /Ink /Rect [150 150 190 180] /C [1 0 0] \
-              /InkList [[60 100 100 100]] /BS << /W 2 >> >>"
-                .to_vec(),
-        )],
-    );
-    assert!(unsupported(annots_run(&pdf)).contains("outside its /Rect"));
+fn appearance_less_geometry_outside_rect_counts_where_it_is() {
+    let ink = |list: &str| {
+        annot_page(
+            "30 0 R",
+            vec![(
+                30,
+                format!(
+                    "<< /Type /Annot /Subtype /Ink /Rect [150 150 190 180] /C [1 0 0] \
+                     /InkList [[{list}]] /BS << /W 2 >> >>"
+                )
+                .into_bytes(),
+            )],
+        )
+    };
+    let r = annots_run(&ink("60 100 100 100")).unwrap();
+    assert_eq!(r.annotations_removed, 1);
+    assert!(unsupported(run(&ink("60 100 100 100"), vec![RECT])).contains("other than a link"));
+    let r = annots_run(&ink("10 10 30 30")).unwrap();
+    assert_eq!(r.annotations_removed, 0, "clear of the rect: kept");
 }
 
 /// A rich-text /RC stream is searched like a string.
@@ -5028,4 +5056,96 @@ fn javascript_removal_keeps_what_is_not_a_script() {
             String::from_utf8_lossy(u)
         );
     }
+}
+
+/// An image's soft mask is redacted with it: its samples inside the
+/// rect made opaque in a copy, the original not carried — or, when the
+/// image is still drawn elsewhere, kept with it and reported.
+#[test]
+fn soft_masks() {
+    let mask: Vec<u8> = (0..256).map(|i| (i * 7 % 200 + 20) as u8).collect();
+    let make = |content: &[u8]| {
+        build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", content)),
+            (
+                5,
+                stream_obj(
+                    "/Type /XObject /Subtype /Image /Width 16 /Height 16 \
+                     /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask 6 0 R",
+                    &secret_samples(),
+                ),
+            ),
+            (
+                6,
+                stream_obj(
+                    "/Type /XObject /Subtype /Image /Width 16 /Height 16 \
+                     /ColorSpace /DeviceGray /BitsPerComponent 8",
+                    &mask,
+                ),
+            ),
+        ])
+    };
+    let pdf = make(b"q 100 0 0 100 50 50 cm /Im1 Do Q");
+    let r = run(&pdf, vec![(40.0, 40.0, 100.0, 100.0)]).unwrap();
+    assert_eq!(r.images_edited, 1);
+    assert!(
+        !contains(&r.output, &mask),
+        "the original mask is not carried"
+    );
+    let doc = Document::from_bytes(&r.output).unwrap();
+    let res = doc.pages()[0].resources().cloned().unwrap();
+    let img = doc.resolve_resource(&res, "XObject", b"Im1").unwrap();
+    assert!(img.is_none(), "the original's name is gone");
+    // Still drawn elsewhere: the original and its mask stay, reported.
+    let pdf = make(b"q 40 0 0 40 50 50 cm /Im1 Do Q q 40 0 0 40 150 150 cm /Im1 Do Q");
+    let r = run(&pdf, vec![(40.0, 40.0, 100.0, 100.0)]).unwrap();
+    assert!(contains(&r.output, &mask));
+    assert!(r
+        .elsewhere
+        .iter()
+        .any(|e| e.removed == kasane_pdf::Removed::Image));
+}
+
+/// An appearance-less line's endings reach past its geometry — up to
+/// 9.5 × the border width in Poppler and MuPDF: they make it a hit.
+/// A caption or a cloudy border is drawn to no known extent: refused.
+/// (Independent review, P0.)
+#[test]
+fn appearance_less_line_endings_and_decorations() {
+    let line = |extra: &str| {
+        annot_page(
+            "30 0 R",
+            vec![(
+                30,
+                format!(
+                    "<< /Type /Annot /Subtype /Line /Rect [170 170 190 190] \
+                     /L [80 80 110 80] /C [0 0 0] /IC [0 0 0] /BS << /W 2 >> {extra} >>"
+                )
+                .into_bytes(),
+            )],
+        )
+    };
+    // Without endings the line (y 80 ± 2) is clear of the rect (y ≥ 90).
+    assert_eq!(annots_run(&line("")).unwrap().annotations_removed, 0);
+    let r = annots_run(&line("/LE [/ClosedArrow /None]")).unwrap();
+    assert_eq!(r.annotations_removed, 1, "the arrowhead reaches the rect");
+    assert!(
+        unsupported(run(&line("/LE [/ClosedArrow /None]"), vec![RECT]))
+            .contains("other than a link")
+    );
+    assert_eq!(
+        annots_run(&line("/LL 15")).unwrap().annotations_removed,
+        1,
+        "a leader line"
+    );
+    assert!(unsupported(annots_run(&line("/Cap true"))).contains("no known extent"));
+    assert!(unsupported(annots_run(&line("/BE << /S /C /I 1 >>"))).contains("no known extent"));
 }

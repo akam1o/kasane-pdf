@@ -1,19 +1,16 @@
 {
  "summary": {
-  "refused_runs": 64,
+  "refused_runs": 56,
   "first_reasons": {
    "region removal on a page with uncertain content": 29,
-   "redaction of an annotation other than a link meeting a rect": 8,
-   "redaction of a document whose structure tree has alternate text": 6,
+   "redaction of an annotation other than a link meeting a rect": 10,
    "JavaScript name tree": 3,
-   "redaction on a page with an annotation drawn outside its /Rect": 3,
    "region removal on a page with blockers: shading": 3,
    "redaction of a path crossing a rect's edge": 2,
    "other: invalid document structure": 2,
    "other: signature policy": 2,
    "redaction on a page with a NoZoom or NoRotate annotation": 1,
-   "image colour space": 1,
-   "image attribute": 1,
+   "image stream filter": 1,
    "other: parse error": 1,
    "catalog entry outside profile": 1,
    "image BitsPerComponent": 1
@@ -97,8 +94,8 @@
     88.16,
     703.8
    ],
-   "first_reason": "redaction on a page with an annotation drawn outside its /Rect",
-   "first_detail": "/Annots[0] has no appearance stream and geometry outside /Rect",
+   "first_reason": "redaction of an annotation other than a link meeting a rect",
+   "first_detail": "/Annots[0] (/Highlight) — its content is not edited; RedactOptions::remove_annotations removes it whole",
    "refused_by_walk": false,
    "walk_error": null,
    "walk_categories": [],
@@ -114,25 +111,8 @@
     612.0,
     703.8
    ],
-   "first_reason": "redaction on a page with an annotation drawn outside its /Rect",
-   "first_detail": "/Annots[0] has no appearance stream and geometry outside /Rect",
-   "refused_by_walk": false,
-   "walk_error": null,
-   "walk_categories": [],
-   "walk_findings": 0,
-   "examples": {}
-  },
-  {
-   "id": "annotation-highlight-without-appearance",
-   "kind": "block",
-   "rect": [
-    204.0,
-    264.0,
-    408.0,
-    528.0
-   ],
-   "first_reason": "redaction on a page with an annotation drawn outside its /Rect",
-   "first_detail": "/Annots[0] has no appearance stream and geometry outside /Rect",
+   "first_reason": "redaction of an annotation other than a link meeting a rect",
+   "first_detail": "/Annots[0] (/Highlight) — its content is not edited; RedactOptions::remove_annotations removes it whole",
    "refused_by_walk": false,
    "walk_error": null,
    "walk_categories": [],
@@ -452,57 +432,6 @@
    }
   },
   {
-   "id": "chrome-text-selection-markedcontent",
-   "kind": "word",
-   "rect": [
-    334.35,
-    260.82,
-    366.8,
-    274.3
-   ],
-   "first_reason": "redaction of a document whose structure tree has alternate text",
-   "first_detail": "a structure element carries /Alt, which may repeat redacted content; RedactOptions::remove_structure_tree removes the tree",
-   "refused_by_walk": false,
-   "walk_error": null,
-   "walk_categories": [],
-   "walk_findings": 0,
-   "examples": {}
-  },
-  {
-   "id": "chrome-text-selection-markedcontent",
-   "kind": "line",
-   "rect": [
-    0.0,
-    260.82,
-    960.0,
-    274.3
-   ],
-   "first_reason": "redaction of a document whose structure tree has alternate text",
-   "first_detail": "a structure element carries /Alt, which may repeat redacted content; RedactOptions::remove_structure_tree removes the tree",
-   "refused_by_walk": false,
-   "walk_error": null,
-   "walk_categories": [],
-   "walk_findings": 0,
-   "examples": {}
-  },
-  {
-   "id": "chrome-text-selection-markedcontent",
-   "kind": "block",
-   "rect": [
-    320.0,
-    180.0,
-    640.0,
-    360.0
-   ],
-   "first_reason": "redaction of a document whose structure tree has alternate text",
-   "first_detail": "a structure element carries /Alt, which may repeat redacted content; RedactOptions::remove_structure_tree removes the tree",
-   "refused_by_walk": false,
-   "walk_error": null,
-   "walk_categories": [],
-   "walk_findings": 0,
-   "examples": {}
-  },
-  {
    "id": "alphatrans",
    "kind": "word",
    "rect": [
@@ -589,23 +518,6 @@
    }
   },
   {
-   "id": "colorspace_cos",
-   "kind": "block",
-   "rect": [
-    92.0,
-    92.0,
-    184.0,
-    184.0
-   ],
-   "first_reason": "image colour space",
-   "first_detail": "indirect colour space is not a name",
-   "refused_by_walk": false,
-   "walk_error": null,
-   "walk_categories": [],
-   "walk_findings": 0,
-   "examples": {}
-  },
-  {
    "id": "pdfium-jpeg_reduced_size_with_smask",
    "kind": "block",
    "rect": [
@@ -614,8 +526,8 @@
     266.67,
     266.67
    ],
-   "first_reason": "image attribute",
-   "first_detail": "/SMask is not supported for image removal",
+   "first_reason": "image stream filter",
+   "first_detail": "[\"ASCIIHexDecode\", \"DCTDecode\"] — only none, FlateDecode, or DCTDecode are supported",
    "refused_by_walk": false,
    "walk_error": null,
    "walk_categories": [],
@@ -1076,57 +988,6 @@
    "examples": {
     "non-embedded font": "glyph 0x61 — outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/ArialMT is drawn with the bundled LiberationSans-Regular "
    }
-  },
-  {
-   "id": "arxiv-2610.29022",
-   "kind": "word",
-   "rect": [
-    71.5,
-    385.58,
-    105.12,
-    402.74
-   ],
-   "first_reason": "redaction of a document whose structure tree has alternate text",
-   "first_detail": "a structure element carries /Alt, which may repeat redacted content; RedactOptions::remove_structure_tree removes the tree",
-   "refused_by_walk": false,
-   "walk_error": null,
-   "walk_categories": [],
-   "walk_findings": 0,
-   "examples": {}
-  },
-  {
-   "id": "arxiv-2610.29022",
-   "kind": "line",
-   "rect": [
-    0.0,
-    385.58,
-    612.0,
-    402.74
-   ],
-   "first_reason": "redaction of a document whose structure tree has alternate text",
-   "first_detail": "a structure element carries /Alt, which may repeat redacted content; RedactOptions::remove_structure_tree removes the tree",
-   "refused_by_walk": false,
-   "walk_error": null,
-   "walk_categories": [],
-   "walk_findings": 0,
-   "examples": {}
-  },
-  {
-   "id": "arxiv-2610.29022",
-   "kind": "block",
-   "rect": [
-    204.0,
-    264.0,
-    408.0,
-    528.0
-   ],
-   "first_reason": "redaction of a document whose structure tree has alternate text",
-   "first_detail": "a structure element carries /Alt, which may repeat redacted content; RedactOptions::remove_structure_tree removes the tree",
-   "refused_by_walk": false,
-   "walk_error": null,
-   "walk_categories": [],
-   "walk_findings": 0,
-   "examples": {}
   },
   {
    "id": "verapdf_verapdf-test-suite-6-1-12-t02-pass-l",

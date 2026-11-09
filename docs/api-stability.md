@@ -21,7 +21,7 @@ patch release.
 | writing | `rewrite`, `rewrite_with_limits`; since 0.5 `rewrite_with(&Document, &RewriteOptions) -> RewriteOutput` with `RewriteOptions` (`#[non_exhaustive]`, `pub` fields, `with_*`), `ExecutableContentPolicy`, `MultimediaPolicy`, `UsageRightsPolicy` (`#[non_exhaustive]`; `Refuse`, `Remove`), `RewriteOutput::{bytes, into_bytes, report, into_parts}` (`#[must_use]`), `RewriteReport` (accessors, `usage_rights()`, `signatures_removed()`), `UsageRightsOutcome`, `UsageRightsRemoval`, `RemovedSignature`, `SigFlagsChange`, `UsageRightsKey`, `SubFilterKind`, `UsageRight`, `OutputCheck` (`#[non_exhaustive]`, read-only fields), `ExecutableItem`, `ExecutableSummary`, `ActionClass`, `ActionKind`, `ActionOwner`, `Trigger`, `ScriptSize`, `MultimediaSubtype`, `UnclassifiedStructure`, `UnclassifiedReason`, `VersionChange`, `VersionReason` (`#[non_exhaustive]`); `Document::edit*() -> Edit`, `Edit::{add_square, set_info, remove_annotation, set_annotation_entries, set_field_value, rewrite, save_incremental}` | `Edit<'a>` borrows the document; the save methods consume it |
 | signatures | `signatures() -> Vec<SignatureInfo>`, `ChangeKind`, `SignatureRule` | detection and policy only; nothing is verified |
 | diagnostics / editors | `diagnose_redaction`, `audit_residuals`, `remove_text`, `remove_image_region`, `remove_region(s)`, `remove_document_metadata` and their report types; `named_destinations`, `substitution_for` | experimental editors are documented as such |
-| redaction | since 0.6 `redact(&Document, &[PageSpec], &RedactOptions) -> Result<Redaction, Error>`; `RedactOptions::{new, with_limits, remove_structure_tree, refuse_copies_elsewhere, remove_annotations}`; `Redaction` (`pub` counts, `output`, `elsewhere`, `residual`); `Elsewhere`, `ElsewhereLocation`, `Removed` | the guarantee is the three statements in `docs/features/redaction.md` |
+| redaction | since 0.6 `redact(&Document, &[PageSpec], &RedactOptions) -> Result<Redaction, Error>`; `RedactOptions::{new, with_limits, remove_structure_tree, refuse_copies_elsewhere, remove_annotations}` (since 0.7 `embed_substitute_fonts`, `remove_javascript`; since 0.8 `refuse_uninspected`); `Redaction` (`pub` counts, `output`, `elsewhere`, `uninspected`, `residual`); since 0.8 `uninspected_data`, `DataInventory`; `Elsewhere`, `ElsewhereLocation`, `Removed` | the guarantee is the three statements in `docs/features/redaction.md` |
 | errors | `Error` (12 variants) + `Error::kind() -> ErrorKind`; `ErrorKind::{as_str, is_malformed_input}`; `MissingReference`; `SignatureRule`; since 0.5 `Error::refusal_reason() -> Option<RefusalReason>` | `std::error::Error + Send + Sync` |
 | limits | `Limits` (49 `pub` fields, `Default`, `Clone`, `new`, `validate`, one `with_<field>` each) | |
 | features | `cjk-fallback` (off), `tiny-skia-interop` (on) | `cjk_fallback_enabled()` reports the first at run time |
@@ -103,6 +103,22 @@ patch release.
   blend mode and stroked text render differently (corrected), one more
   class of input is refused with `max_pattern_tiles`, and `rewrite`
   carries `/OCProperties`.
+
+## Unreleased (0.8)
+
+- Added: `uninspected_data`, `DataInventory`, `DataItem`, `DataRole`,
+  `DataStatus` (all `#[non_exhaustive]`); `RedactOptions::refuse_uninspected`;
+  `Redaction::{structure_texts_removed, structure_items_removed,
+  uninspected, thumbnails_removed}`.
+- Breaking (allowed by a minor bump): `Diagnosis` becomes
+  `#[non_exhaustive]` (a struct literal no longer compiles; it is a
+  result) and gains `data`.
+- Behaviour: a structure tree with alternate text is edited instead of
+  refused; tagged annotations removed with a rect no longer refuse;
+  edited pages lose `/Thumb`; Type 0 codes readers map differently are
+  refused; CMap definition order and code length follow the readers;
+  soft-masked, Separation and DeviceN images are redacted. See the
+  CHANGELOG.
 
 ## 0.7.0
 

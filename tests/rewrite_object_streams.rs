@@ -332,3 +332,15 @@ fn malformed_containers_are_typed_errors() {
         "{r:?}"
     );
 }
+
+/// The inventory of data counts object streams and cross-reference
+/// streams as the file's structure, never as data nothing refers to.
+#[test]
+fn containers_are_structure_in_the_inventory() {
+    let pdf = file(&plain(""), &[(20, members(), "", true)], 21, "/Info 5 0 R");
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let inv = kasane_pdf::uninspected_data(&doc, &Limits::default()).unwrap();
+    assert!(inv.complete);
+    assert_eq!(inv.structural, 2, "{inv:?}");
+    assert_eq!(inv.not_carried, 0, "{inv:?}");
+}

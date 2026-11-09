@@ -622,6 +622,40 @@ fn redaction_components(
             };
             Ok((matches!(hival, Some(0..=255)) && base_ok).then_some(1))
         }
+        // Colorant tints: a zeroed sample is tint 0 in every colorant,
+        // one colour through the tint transform whatever was there.
+        // The alternate is a device or ICC space (no chains).
+        Some(b"Separation" | b"DeviceN") if a.len() == 4 || a.len() == 5 => {
+            let n = match a[0].as_name() {
+                Some(b"Separation") => deref_unchained(doc, &a[1])?.as_name().map(|_| 1),
+                _ => {
+                    let names = deref_unchained(doc, &a[1])?;
+                    names
+                        .as_array()
+                        .filter(|v| {
+                            (1..=32).contains(&v.len()) && v.iter().all(|x| x.as_name().is_some())
+                        })
+                        .map(|v| v.len())
+                }
+            };
+            let alt = deref_unchained(doc, &a[2])?;
+            let alt_ok = match &alt {
+                Object::Name(n) => matches!(
+                    n.as_slice(),
+                    b"DeviceGray" | b"DeviceRGB" | b"DeviceCMYK" | b"G" | b"RGB" | b"CMYK"
+                ),
+                Object::Array(b) => {
+                    b.first().and_then(|f| f.as_name()) == Some(b"ICCBased".as_slice())
+                        && redaction_components(doc, &alt, redaction)?.is_some()
+                }
+                _ => false,
+            };
+            let tint_ok = matches!(
+                deref_unchained(doc, &a[3])?,
+                Object::Dict(_) | Object::Stream { .. }
+            );
+            Ok(n.filter(|_| alt_ok && tint_ok))
+        }
         Some(b"ICCBased") if a.len() == 2 => {
             let s = deref_unchained(doc, &a[1])?;
             // A reader that cannot use the profile falls back to
@@ -730,7 +764,8 @@ pub(crate) fn validate_image(
             // between samples (it blends only neighbours' colours across
             // the rect's edge) and optional content (taken as drawn) do
             // not change which samples those are.
-            if redaction && (key == b"Interpolate" || key == b"OC") {
+            // A soft mask is edited with the image (`redact_soft_mask`).
+            if redaction && (key == b"Interpolate" || key == b"OC" || key == b"SMask") {
                 continue;
             }
             return Err(Error::Unsupported {

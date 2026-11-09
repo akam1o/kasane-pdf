@@ -770,9 +770,11 @@ pub(crate) struct RegionsEdit<'a> {
     /// Redaction mode only: `/Link` annotations removed because their
     /// `/Rect` met a rect.
     pub(crate) links_removed_total: u64,
-    /// Of those, links a structure tree refers to (`/StructParent`):
-    /// the tree would keep them reachable.
-    pub(crate) tagged_links_removed_total: u64,
+    /// Redaction mode only: what the edit touched, for the structure
+    /// tree (`redact_struct`).
+    pub(crate) touched: crate::redact_struct::Touched,
+    /// Redaction mode only: `/Thumb` removed from edited pages.
+    pub(crate) thumbnails_removed_total: u64,
     /// Redaction mode only: annotations other than links removed
     /// whole (`remove_annotations`), with the popups and replies tied
     /// to them.
@@ -952,6 +954,62 @@ fn annotation_geometry_bounds(
     Ok(b)
 }
 
+/// How far past its geometry (and border) a reader draws an annotation
+/// without an appearance stream: line endings (`/LE`, sized by each
+/// reader: Poppler and MuPDF reach up to 9.5 × the border width, and
+/// about 9.3 at the least — 15 × the width, at least 15, is taken) and leader
+/// lines (`/LL`, `/LLE`, `/LLO`). A caption (`/Cap`) and a cloudy border
+/// (`/BE /S /C`) are drawn to no known extent: refused.
+fn decoration_reach(doc: &Document, d: &Dict, w: f64) -> Result<f64, Error> {
+    let refuse = |what: &str| Error::Unsupported {
+        feature: "redaction on a page with an annotation drawn to no known extent",
+        detail: format!("no appearance stream and {what}"),
+    };
+    let num = |k: &[u8]| -> Result<f64, Error> {
+        Ok(match d.get(k) {
+            Some(o) => doc.deref(o)?.as_number().unwrap_or(0.0).abs(),
+            None => 0.0,
+        })
+    };
+    if d.get(b"Cap".as_slice())
+        .map(|c| doc.deref(c))
+        .transpose()?
+        .and_then(|c| c.as_bool())
+        == Some(true)
+    {
+        return Err(refuse("a caption (/Cap)"));
+    }
+    if let Some(be) = d.get(b"BE".as_slice()) {
+        let be = doc.deref(be)?;
+        if be
+            .as_dict()
+            .and_then(|b| b.get(b"S".as_slice()))
+            .and_then(|s| s.as_name())
+            == Some(b"C")
+        {
+            return Err(refuse("a cloudy border (/BE)"));
+        }
+    }
+    let mut reach = num(b"LL")? + num(b"LLE")? + num(b"LLO")?;
+    if let Some(le) = d.get(b"LE".as_slice()) {
+        let le = doc.deref(le)?;
+        let ends: Vec<Object> = match le {
+            Object::Array(a) => a,
+            o => vec![o],
+        };
+        if ends
+            .iter()
+            .any(|e| !matches!(e.as_name(), None | Some(b"None")))
+        {
+            reach += (15.0 * w).max(15.0);
+        }
+    }
+    if !reach.is_finite() {
+        return Err(refuse("geometry that is not finite"));
+    }
+    Ok(reach)
+}
+
 /// The border width a reader strokes an annotation without an
 /// appearance stream with: `/BS /W`, else `/Border [h v w]`, else 1.
 fn border_width(doc: &Document, d: &Dict) -> Result<f64, Error> {
@@ -1125,7 +1183,8 @@ pub(crate) fn regions_edit_session_with<'a>(
     let mut paths_removed_total: u64 = 0;
     let mut links_removed_total: u64 = 0;
     let mut paths_cut_total: u64 = 0;
-    let mut tagged_links_removed_total: u64 = 0;
+    let mut touched = crate::redact_struct::Touched::default();
+    let mut thumbnails_removed_total: u64 = 0;
     let mut annots_removed_total: u64 = 0;
     // Removed links and annotations, by content (`annotation_print`):
     // verification fails if the output still holds one.
@@ -1175,7 +1234,6 @@ pub(crate) fn regions_edit_session_with<'a>(
         // NoRotate place it elsewhere — those are refused.
         let mut kept_annots: Option<Vec<Object>> = None;
         let mut links_removed: u64 = 0;
-        let mut tagged_links_removed: u64 = 0;
         let mut annots_removed: u64 = 0;
         if let Some(a) = page_dict_entry(doc, page, b"Annots")? {
             if mode != SessionMode::Redact {
@@ -1225,34 +1283,36 @@ pub(crate) fn regions_edit_session_with<'a>(
                     .transpose()?
                     .and_then(|r| crate::page::Rect::from_object(&r))
                     .ok_or_else(|| Error::Structure(format!("/Annots[{i}] has no valid /Rect")))?;
-                let (mut x0, mut x1) = (r.llx.min(r.urx), r.llx.max(r.urx));
-                let (mut y0, mut y1) = (r.lly.min(r.ury), r.lly.max(r.ury));
+                let mut boxes = vec![(
+                    r.llx.min(r.urx),
+                    r.lly.min(r.ury),
+                    r.llx.max(r.urx),
+                    r.lly.max(r.ury),
+                )];
                 // Without an appearance stream a reader draws one from
-                // the annotation's geometry: refuse geometry outside
-                // /Rect, and allow for the border reaching past it.
+                // the annotation's geometry, inside /Rect or not: its
+                // extent is both, and the border reaching past them.
                 if !has_normal_appearance(doc, &d)? {
                     if let Some(g) = annotation_geometry_bounds(doc, &d)? {
-                        let eps = 1e-6;
-                        if g.0 < x0 - eps || g.1 < y0 - eps || g.2 > x1 + eps || g.3 > y1 + eps {
-                            return Err(Error::Unsupported {
-                                feature:
-                                    "redaction on a page with an annotation drawn outside its /Rect",
-                                detail: format!(
-                                    "/Annots[{i}] has no appearance stream and geometry outside \
-                                     /Rect"
-                                ),
-                            });
-                        }
+                        boxes.push(g);
                     }
                     let w = border_width(doc, &d)?;
-                    x0 -= w;
-                    y0 -= w;
-                    x1 += w;
-                    y1 += w;
+                    let m = w + decoration_reach(doc, &d, w).map_err(|e| match e {
+                        Error::Unsupported { feature, detail } => Error::Unsupported {
+                            feature,
+                            detail: format!("/Annots[{i}]: {detail}"),
+                        },
+                        e => e,
+                    })?;
+                    for b in &mut boxes {
+                        *b = (b.0 - m, b.1 - m, b.2 + m, b.3 + m);
+                    }
                 }
-                let hit = validated
-                    .iter()
-                    .any(|v| x0 <= v.urx && x1 >= v.llx && y0 <= v.ury && y1 >= v.lly);
+                let hit = boxes.iter().any(|&(x0, y0, x1, y1)| {
+                    validated
+                        .iter()
+                        .any(|v| x0 <= v.urx && x1 >= v.llx && y0 <= v.ury && y1 >= v.lly)
+                });
                 let r = match item {
                     Object::Ref(r) => Some(*r),
                     _ => None,
@@ -1379,8 +1439,9 @@ pub(crate) fn regions_edit_session_with<'a>(
                         }
                     }
                 }
-                if d.contains_key(b"StructParent".as_slice()) {
-                    tagged_links_removed += 1;
+                if let Some(r) = entries[k].0 {
+                    touched.objects.insert(r);
+                    touched.removed_annotations.insert(r);
                 }
             }
             kept_annots = Some(kept);
@@ -1851,12 +1912,28 @@ pub(crate) fn regions_edit_session_with<'a>(
                     }
                 }
             }
-            if changed_here == 0 {
+            // Redaction: a soft mask holds the shape of what is drawn —
+            // its samples inside the rects go too (made opaque), even
+            // where the colour samples were already black.
+            let smask = match dict.get(b"SMask".as_slice()) {
+                Some(sm) if mode == SessionMode::Redact => {
+                    redact_soft_mask(doc, sm, ctm, &validated, limits)?
+                }
+                _ => None,
+            };
+            let smask_changed = smask.as_ref().map_or(0, |s| s.changed);
+            if changed_here == 0 && smask_changed == 0 {
                 continue;
             }
-            pixels_changed += changed_here;
+            pixels_changed += changed_here + smask_changed;
             if let Some(d) = digests {
-                original_digests.extend(d);
+                // Unchanged colour samples are not an original to hide.
+                if changed_here > 0 {
+                    original_digests.extend(d);
+                }
+                if let Some(sm) = &smask {
+                    original_digests.extend(sm.digests);
+                }
                 if let Object::Ref(r) = &entry {
                     edited_originals.insert(*r, (d, false));
                 }
@@ -1866,6 +1943,25 @@ pub(crate) fn regions_edit_session_with<'a>(
             new_dict.remove(b"Filter".as_slice());
             new_dict.remove(b"DecodeParms".as_slice());
             new_dict.remove(b"Length".as_slice());
+            if mode == SessionMode::Redact {
+                new_dict.remove(b"StructParent".as_slice());
+            }
+            if let Some(sm) = smask {
+                if edit_guard.is_none() {
+                    edit_guard = Some(Edit::new(doc, limits.clone())?);
+                }
+                let edit = edit_guard.as_mut().unwrap();
+                let sm_ref = edit.alloc()?;
+                generated_bytes = charge_generated(generated_bytes, sm.data.len(), limits)?;
+                edit.overlay.insert(
+                    (sm_ref.number, sm_ref.generation),
+                    Object::Stream {
+                        dict: sm.dict,
+                        data: sm.data,
+                    },
+                );
+                new_dict.insert(b"SMask".to_vec(), Object::Ref(sm_ref));
+            }
             new_dict.insert(b"Length".to_vec(), Object::Integer(new_data.len() as i64));
             if let Some(d) = dict.get(b"Decode".as_slice()) {
                 // An Indexed space's default is [0 2^bpc−1] (§8.9.5.2,
@@ -1958,6 +2054,19 @@ pub(crate) fn regions_edit_session_with<'a>(
                             || to_remove_text.get(&key).is_some_and(|c| !c.is_empty())
                             || inner_renames.contains_key(&key)
                     };
+                    if let Object::Ref(form) = &node.entry {
+                        touched.record(
+                            doc,
+                            &node.ops,
+                            &edited,
+                            node.res.as_ref(),
+                            crate::redact_struct::Owner::Form {
+                                form: *form,
+                                page: page_ref,
+                                tagged: node.dict.contains_key(b"StructParents".as_slice()),
+                            },
+                        )?;
+                    }
                     strip_edited_spans(&node.ops, &edited, &mut removed_text)
                 } else {
                     BTreeMap::new()
@@ -2007,6 +2116,9 @@ pub(crate) fn regions_edit_session_with<'a>(
                 new_dict.remove(b"Filter".as_slice());
                 new_dict.remove(b"DecodeParms".as_slice());
                 new_dict.insert(b"Length".to_vec(), Object::Integer(new_body.len() as i64));
+                // The copy is not the content the structure tree names.
+                new_dict.remove(b"StructParent".as_slice());
+                new_dict.remove(b"StructParents".as_slice());
                 // The copy's resources: its own (or, when it inherits,
                 // those it would inherit), with the copies' names added
                 // and the replaced originals' names removed.
@@ -2106,6 +2218,13 @@ pub(crate) fn regions_edit_session_with<'a>(
                     || to_remove_text.get(&key).is_some_and(|c| !c.is_empty())
                     || do_renames.contains_key(&i)
             };
+            touched.record(
+                doc,
+                &ops,
+                &edited,
+                page.resources(),
+                crate::redact_struct::Owner::Page(page_ref),
+            )?;
             strip_edited_spans(&ops, &edited, &mut removed_text)
         } else {
             BTreeMap::new()
@@ -2237,6 +2356,10 @@ pub(crate) fn regions_edit_session_with<'a>(
         // Rule: never write Contents separately from the
         // materialised Resources.
         page_dict.insert(b"Contents".to_vec(), Object::Ref(stream_ref));
+        // A thumbnail pictures the page as it was.
+        if mode == SessionMode::Redact && page_dict.remove(b"Thumb".as_slice()).is_some() {
+            thumbnails_removed_total += 1;
+        }
         match kept_annots {
             Some(k) if k.is_empty() => {
                 page_dict.remove(b"Annots".as_slice());
@@ -2288,7 +2411,6 @@ pub(crate) fn regions_edit_session_with<'a>(
         paths_cut_total += paths_cut;
         links_removed_total += links_removed;
         annots_removed_total += annots_removed;
-        tagged_links_removed_total += tagged_links_removed;
         invocations_edited_total += (do_renames.len() - form_names.len() + images_in_forms) as u64;
         forms_edited_total += forms_copied;
         pixels_changed_total += pixels_changed;
@@ -2345,6 +2467,7 @@ pub(crate) fn regions_edit_session_with<'a>(
             Object::Dict(page_dict),
         );
     }
+    touched.objects.extend(edited_originals.keys().copied());
     let names_pruned_total = if mode == SessionMode::Redact && !edited_originals.is_empty() {
         let refs: HashSet<IndirectRef> = edited_originals.keys().copied().collect();
         prune_original_names(doc, &mut edit, &refs, &drawn_after)?
@@ -2382,12 +2505,112 @@ pub(crate) fn regions_edit_session_with<'a>(
         names_pruned_total,
         removed_text,
         links_removed_total,
-        tagged_links_removed_total,
+        touched,
+        thumbnails_removed_total,
         annots_removed_total,
         removed_annot_prints,
         paths_cut_total,
         forms_edited_total,
     })
+}
+
+/// A soft mask edited for the rects: its copy, the samples changed, the
+/// original's digests (decoded, stored).
+struct SoftMaskEdit {
+    dict: Dict,
+    data: Vec<u8>,
+    changed: u64,
+    digests: [[u8; 32]; 2],
+}
+
+/// Redaction: the copy of an image's `/SMask` with its samples inside
+/// the rects set opaque (it maps to the image's unit square, at its own
+/// resolution); `None` when nothing there changes. Refused: a soft mask
+/// that is not an 8-bit DeviceGray image in the forms images are
+/// rewritten from, with a `/Matte` (pre-multiplied colour), a
+/// non-default `/Decode`, or masks of its own.
+fn redact_soft_mask(
+    doc: &Document,
+    sm: &Object,
+    ctm: &Matrix,
+    rects: &[crate::page::Rect],
+    limits: &Limits,
+) -> Result<Option<SoftMaskEdit>, Error> {
+    let refuse = |detail: &str| Error::Unsupported {
+        feature: "image soft mask",
+        detail: detail.into(),
+    };
+    let Object::Ref(_) = sm else {
+        return Err(refuse("/SMask is not a reference to a stream"));
+    };
+    let obj = doc.deref(sm)?;
+    let (dict, raw) = obj
+        .as_stream()
+        .ok_or_else(|| refuse("/SMask is not a stream"))?;
+    if dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) != Some(b"Image") {
+        return Err(refuse("/SMask is not an image"));
+    }
+    for key in [b"Matte".as_slice(), b"SMask", b"Mask"] {
+        if dict.contains_key(key) {
+            return Err(refuse(&format!(
+                "a soft mask with /{}",
+                String::from_utf8_lossy(key)
+            )));
+        }
+    }
+    let (w, h, n) = validate_image(dict, None, doc, limits, true)?;
+    if n != 1 {
+        return Err(refuse("a soft mask that is not DeviceGray"));
+    }
+    if let Some(d) = dict.get(b"Decode".as_slice()) {
+        if !is_default_decode(d, 1) {
+            return Err(refuse("a soft mask with a non-default /Decode"));
+        }
+    }
+    let ranges = image_pixel_ranges(ctm, w, h, rects)?;
+    if ranges.is_empty() {
+        return Ok(None);
+    }
+    let expected = w as u64 * h as u64;
+    if expected > limits.max_image_bytes {
+        return Err(Error::LimitExceeded {
+            limit: "max_image_bytes",
+            max: limits.max_image_bytes,
+        });
+    }
+    let mut data = decode_image(dict, raw, limits, (w, h, 1))?;
+    if data.len() as u64 != expected {
+        return Err(Error::Structure(format!(
+            "soft mask data length {} does not match {w}x{h}",
+            data.len()
+        )));
+    }
+    let digests = [sha256(&data), sha256(raw)];
+    let mut changed = 0;
+    for &(x0, y0, x1, y1) in &ranges {
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = (y as usize) * (w as usize) + x as usize;
+                if data[i] != 255 {
+                    data[i] = 255;
+                    changed += 1;
+                }
+            }
+        }
+    }
+    if changed == 0 {
+        return Ok(None);
+    }
+    let mut d = dict.clone();
+    d.remove(b"Filter".as_slice());
+    d.remove(b"DecodeParms".as_slice());
+    d.insert(b"Length".to_vec(), Object::Integer(data.len() as i64));
+    Ok(Some(SoftMaskEdit {
+        dict: d,
+        data,
+        changed,
+        digests,
+    }))
 }
 
 /// The deepest form chain `redact` edits inside.
