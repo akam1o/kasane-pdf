@@ -192,7 +192,18 @@ are on the [roadmap](architecture.md#roadmap).
   is written as 2.0, above is refused); an incremental save never
   changes the header.
   Preserved objects are
-  carried verbatim — the rewriter is **not a sanitizer**.
+  carried verbatim — the rewriter is **not a sanitizer**. An input
+  object stream or cross-reference stream is never rewritten as such
+  (its objects are written afresh) unless an object refers to it: a
+  plain rewrite then copies it; a rewrite that edits or removes anything
+  (`redact`, `remove_document_metadata`, an `Edit`) refuses, since the
+  copy would keep the input's objects as they were.
+- **Strings readers disagree on**: a literal string with an unescaped
+  carriage return is read as a line feed (§7.3.4.2; Poppler and pdf.js
+  keep the CR), and an embedded CMap's codes written as literal strings
+  are read like hex codes (Poppler rejects them). Rendering and
+  extraction follow that reading; `redact` refuses such documents and
+  fonts.
 - **Incremental save** cannot delete bytes (a removed annotation's
   object stays in the file), refuses recovered documents, encrypted
   documents and non-zero-generation references, and only appends the
