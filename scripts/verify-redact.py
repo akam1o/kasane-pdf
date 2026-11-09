@@ -228,6 +228,15 @@ CASES += [
         10: b"<< /S /Div /P 9 0 R /Pg 3 0 R /K [0 9 0 R] >>"},
         b"<< /Nums [0 [10 0 R]] >>", k=b"9 0 R"), [], "refused"),
 ]
+MASK = bytes((i * 7) % 200 + 20 for i in range(256))
+CASES += [
+    ("image-soft-mask", build(page(TEXT + b" q 100 0 0 100 50 50 cm /Im1 Do Q",
+                                   res=b"/Font << /F1 5 0 R >> /XObject << /Im1 8 0 R >>", more={
+        8: stream(b"/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace /DeviceRGB "
+                  b"/BitsPerComponent 8 /SMask 9 0 R", SAMPLES, flate=True),
+        9: stream(b"/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace /DeviceGray "
+                  b"/BitsPerComponent 8", MASK, flate=True)})), ["--rect", "40", "40", "160", "160"], "ok"),
+]
 STRUCTURE_KEEPS = {"structure-partial": [b"PUBLICALT"], "structure-nested-shared": [b"PUBLICALT"],
                    "structure-tagged-link": [b"PUBLICALT"], "structure-form-mcr": [b"PUBLICALT"]}
 
@@ -326,6 +335,8 @@ def run():
                     problems.append("secret text bytes present after full decode")
                 if SAMPLES[:96] in data and name not in ORIGINAL_STAYS:
                     problems.append("original image samples present after full decode")
+                if name == "image-soft-mask" and MASK[:64] in data:
+                    problems.append("original soft mask samples present after full decode")
                 if "image" not in name and not rects_custom(args):
                     ink = ink_inside(out, tmp)
                     if ink:

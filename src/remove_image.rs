@@ -730,7 +730,8 @@ pub(crate) fn validate_image(
             // between samples (it blends only neighbours' colours across
             // the rect's edge) and optional content (taken as drawn) do
             // not change which samples those are.
-            if redaction && (key == b"Interpolate" || key == b"OC") {
+            // A soft mask is edited with the image (`redact_soft_mask`).
+            if redaction && (key == b"Interpolate" || key == b"OC" || key == b"SMask") {
                 continue;
             }
             return Err(Error::Unsupported {

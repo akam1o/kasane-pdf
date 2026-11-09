@@ -5057,3 +5057,59 @@ fn javascript_removal_keeps_what_is_not_a_script() {
         );
     }
 }
+
+/// An image's soft mask is redacted with it: its samples inside the
+/// rect made opaque in a copy, the original not carried — or, when the
+/// image is still drawn elsewhere, kept with it and reported.
+#[test]
+fn soft_masks() {
+    let mask: Vec<u8> = (0..256).map(|i| (i * 7 % 200 + 20) as u8).collect();
+    let make = |content: &[u8]| {
+        build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", content)),
+            (
+                5,
+                stream_obj(
+                    "/Type /XObject /Subtype /Image /Width 16 /Height 16 \
+                     /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask 6 0 R",
+                    &secret_samples(),
+                ),
+            ),
+            (
+                6,
+                stream_obj(
+                    "/Type /XObject /Subtype /Image /Width 16 /Height 16 \
+                     /ColorSpace /DeviceGray /BitsPerComponent 8",
+                    &mask,
+                ),
+            ),
+        ])
+    };
+    let pdf = make(b"q 100 0 0 100 50 50 cm /Im1 Do Q");
+    let r = run(&pdf, vec![(40.0, 40.0, 100.0, 100.0)]).unwrap();
+    assert_eq!(r.images_edited, 1);
+    assert!(
+        !contains(&r.output, &mask),
+        "the original mask is not carried"
+    );
+    let doc = Document::from_bytes(&r.output).unwrap();
+    let res = doc.pages()[0].resources().cloned().unwrap();
+    let img = doc.resolve_resource(&res, "XObject", b"Im1").unwrap();
+    assert!(img.is_none(), "the original's name is gone");
+    // Still drawn elsewhere: the original and its mask stay, reported.
+    let pdf = make(b"q 40 0 0 40 50 50 cm /Im1 Do Q q 40 0 0 40 150 150 cm /Im1 Do Q");
+    let r = run(&pdf, vec![(40.0, 40.0, 100.0, 100.0)]).unwrap();
+    assert!(contains(&r.output, &mask));
+    assert!(r
+        .elsewhere
+        .iter()
+        .any(|e| e.removed == kasane_pdf::Removed::Image));
+}

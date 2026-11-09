@@ -1849,12 +1849,28 @@ pub(crate) fn regions_edit_session_with<'a>(
                     }
                 }
             }
-            if changed_here == 0 {
+            // Redaction: a soft mask holds the shape of what is drawn —
+            // its samples inside the rects go too (made opaque), even
+            // where the colour samples were already black.
+            let smask = match dict.get(b"SMask".as_slice()) {
+                Some(sm) if mode == SessionMode::Redact => {
+                    redact_soft_mask(doc, sm, ctm, &validated, limits)?
+                }
+                _ => None,
+            };
+            let smask_changed = smask.as_ref().map_or(0, |s| s.changed);
+            if changed_here == 0 && smask_changed == 0 {
                 continue;
             }
-            pixels_changed += changed_here;
+            pixels_changed += changed_here + smask_changed;
             if let Some(d) = digests {
-                original_digests.extend(d);
+                // Unchanged colour samples are not an original to hide.
+                if changed_here > 0 {
+                    original_digests.extend(d);
+                }
+                if let Some(sm) = &smask {
+                    original_digests.extend(sm.digests);
+                }
                 if let Object::Ref(r) = &entry {
                     edited_originals.insert(*r, (d, false));
                 }
@@ -1866,6 +1882,22 @@ pub(crate) fn regions_edit_session_with<'a>(
             new_dict.remove(b"Length".as_slice());
             if mode == SessionMode::Redact {
                 new_dict.remove(b"StructParent".as_slice());
+            }
+            if let Some(sm) = smask {
+                if edit_guard.is_none() {
+                    edit_guard = Some(Edit::new(doc, limits.clone())?);
+                }
+                let edit = edit_guard.as_mut().unwrap();
+                let sm_ref = edit.alloc()?;
+                generated_bytes = charge_generated(generated_bytes, sm.data.len(), limits)?;
+                edit.overlay.insert(
+                    (sm_ref.number, sm_ref.generation),
+                    Object::Stream {
+                        dict: sm.dict,
+                        data: sm.data,
+                    },
+                );
+                new_dict.insert(b"SMask".to_vec(), Object::Ref(sm_ref));
             }
             new_dict.insert(b"Length".to_vec(), Object::Integer(new_data.len() as i64));
             if let Some(d) = dict.get(b"Decode".as_slice()) {
@@ -2417,6 +2449,105 @@ pub(crate) fn regions_edit_session_with<'a>(
         paths_cut_total,
         forms_edited_total,
     })
+}
+
+/// A soft mask edited for the rects: its copy, the samples changed, the
+/// original's digests (decoded, stored).
+struct SoftMaskEdit {
+    dict: Dict,
+    data: Vec<u8>,
+    changed: u64,
+    digests: [[u8; 32]; 2],
+}
+
+/// Redaction: the copy of an image's `/SMask` with its samples inside
+/// the rects set opaque (it maps to the image's unit square, at its own
+/// resolution); `None` when nothing there changes. Refused: a soft mask
+/// that is not an 8-bit DeviceGray image in the forms images are
+/// rewritten from, with a `/Matte` (pre-multiplied colour), a
+/// non-default `/Decode`, or masks of its own.
+fn redact_soft_mask(
+    doc: &Document,
+    sm: &Object,
+    ctm: &Matrix,
+    rects: &[crate::page::Rect],
+    limits: &Limits,
+) -> Result<Option<SoftMaskEdit>, Error> {
+    let refuse = |detail: &str| Error::Unsupported {
+        feature: "image soft mask",
+        detail: detail.into(),
+    };
+    let Object::Ref(_) = sm else {
+        return Err(refuse("/SMask is not a reference to a stream"));
+    };
+    let obj = doc.deref(sm)?;
+    let (dict, raw) = obj
+        .as_stream()
+        .ok_or_else(|| refuse("/SMask is not a stream"))?;
+    if dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) != Some(b"Image") {
+        return Err(refuse("/SMask is not an image"));
+    }
+    for key in [b"Matte".as_slice(), b"SMask", b"Mask"] {
+        if dict.contains_key(key) {
+            return Err(refuse(&format!(
+                "a soft mask with /{}",
+                String::from_utf8_lossy(key)
+            )));
+        }
+    }
+    let (w, h, n) = validate_image(dict, None, doc, limits, true)?;
+    if n != 1 {
+        return Err(refuse("a soft mask that is not DeviceGray"));
+    }
+    if let Some(d) = dict.get(b"Decode".as_slice()) {
+        if !is_default_decode(d, 1) {
+            return Err(refuse("a soft mask with a non-default /Decode"));
+        }
+    }
+    let ranges = image_pixel_ranges(ctm, w, h, rects)?;
+    if ranges.is_empty() {
+        return Ok(None);
+    }
+    let expected = w as u64 * h as u64;
+    if expected > limits.max_image_bytes {
+        return Err(Error::LimitExceeded {
+            limit: "max_image_bytes",
+            max: limits.max_image_bytes,
+        });
+    }
+    let mut data = decode_image(dict, raw, limits, (w, h, 1))?;
+    if data.len() as u64 != expected {
+        return Err(Error::Structure(format!(
+            "soft mask data length {} does not match {w}x{h}",
+            data.len()
+        )));
+    }
+    let digests = [sha256(&data), sha256(raw)];
+    let mut changed = 0;
+    for &(x0, y0, x1, y1) in &ranges {
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let i = (y as usize) * (w as usize) + x as usize;
+                if data[i] != 255 {
+                    data[i] = 255;
+                    changed += 1;
+                }
+            }
+        }
+    }
+    if changed == 0 {
+        return Ok(None);
+    }
+    let mut d = dict.clone();
+    d.remove(b"Filter".as_slice());
+    d.remove(b"DecodeParms".as_slice());
+    d.insert(b"Length".to_vec(), Object::Integer(data.len() as i64));
+    Ok(Some(SoftMaskEdit {
+        dict: d,
+        data,
+        changed,
+        digests,
+    }))
 }
 
 /// The deepest form chain `redact` edits inside.

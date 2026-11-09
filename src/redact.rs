@@ -743,6 +743,10 @@ pub(crate) fn drawn_xobjects(
             return Ok(None);
         };
         if dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Image") {
+            // Its soft mask is drawn with it.
+            if let Some(Object::Ref(m)) = dict.get(b"SMask".as_slice()) {
+                drawn.entry(*m).or_default().insert(page);
+            }
             return Ok(None);
         }
         let own = dict

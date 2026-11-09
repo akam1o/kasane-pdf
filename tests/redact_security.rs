@@ -441,17 +441,68 @@ fn image_samples_in_the_rect() {
             &o,
         );
     }
-    refused(
+    // A soft mask holds the shape of what is drawn: black colour samples
+    // (already what redaction writes) with a shape only in the mask,
+    // differing only inside the rect.
+    let inside = |i: usize| {
+        let (x, y) = (i % 10, 9 - i / 10);
+        (3..7).contains(&x) && (3..7).contains(&y)
+    };
+    let mask_data = |v: u32| -> Vec<u8> {
+        (0..100)
+            .map(|i| {
+                if inside(i) {
+                    ((i as u32 * 13 + v * 77) % 256) as u8
+                } else {
+                    ((i * 31) % 251) as u8
+                }
+            })
+            .collect()
+    };
+    let black = stream_obj(
+        "/Type /XObject /Subtype /Image /Width 10 /Height 10 /ColorSpace /DeviceRGB \
+         /BitsPerComponent 8 /SMask 81 0 R",
+        &[0u8; 300],
+    );
+    accepted(
         "soft-masked image",
         |v| {
-            let mask = image(10, 10, "/DeviceGray", 1, v, "");
             page(
                 &format!("q 200 0 0 200 0 0 cm /Im Do Q {KEPT}"),
                 "/XObject << /Im 80 0 R >>",
                 "",
                 vec![
-                    (80, image(10, 10, "/DeviceRGB", 3, v, "/SMask 81 0 R")),
-                    (81, mask),
+                    (80, black.clone()),
+                    (
+                        81,
+                        stream_obj(
+                            "/Type /XObject /Subtype /Image /Width 10 /Height 10 \
+                             /ColorSpace /DeviceGray /BitsPerComponent 8",
+                            &mask_data(v),
+                        ),
+                    ),
+                ],
+            )
+        },
+        &o,
+    );
+    refused(
+        "soft mask with /Matte",
+        |v| {
+            page(
+                &format!("q 200 0 0 200 0 0 cm /Im Do Q {KEPT}"),
+                "/XObject << /Im 80 0 R >>",
+                "",
+                vec![
+                    (80, black.clone()),
+                    (
+                        81,
+                        stream_obj(
+                            "/Type /XObject /Subtype /Image /Width 10 /Height 10 \
+                             /ColorSpace /DeviceGray /BitsPerComponent 8 /Matte [0 0 0]",
+                            &mask_data(v),
+                        ),
+                    ),
                 ],
             )
         },
