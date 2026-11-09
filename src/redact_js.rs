@@ -33,7 +33,8 @@ fn refuse(detail: String) -> Error {
 /// is edited as it stands). A removed action's successors (`/Next`)
 /// take its place. Returns how many were removed. Refused: an XFA form
 /// (its scripts are not edited), and anything a removed script reaches
-/// (its source stream …) that something kept still refers to.
+/// (its source stream, the object stream holding it …) that something
+/// kept still refers to.
 pub(crate) fn strip_javascript(
     doc: &Document,
     overlay: &mut HashMap<(u32, u16), Object>,
@@ -48,59 +49,76 @@ pub(crate) fn strip_javascript(
             return Err(refuse("an XFA form: its scripts are not edited".into()));
         }
     }
-    let body = |r: IndirectRef, overlay: &HashMap<(u32, u16), Object>| -> Result<Object, Error> {
-        match overlay.get(&(r.number, r.generation)) {
+    let snapshot = overlay.clone();
+    let body = |r: IndirectRef| -> Result<Object, Error> {
+        match snapshot.get(&(r.number, r.generation)) {
             Some(o) => Ok(o.clone()),
             None => doc.resolve(r),
         }
     };
-    let mut refs: Vec<IndirectRef> = doc
-        .xref_entries()
-        .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
-        .map(|(r, _)| r)
-        .collect();
-    for (n, g) in overlay.keys() {
+    let mut refs: Vec<IndirectRef> = Vec::new();
+    // Object number → the object stream holding it.
+    let mut container: HashMap<u32, u32> = HashMap::new();
+    for (r, e) in doc.xref_entries() {
+        match e {
+            crate::xref::XrefEntry::Free { .. } => continue,
+            crate::xref::XrefEntry::Compressed { objstm, .. } => {
+                container.insert(r.number, objstm);
+            }
+            _ => {}
+        }
+        refs.push(r);
+    }
+    for (n, g) in snapshot.keys() {
         let r = IndirectRef::new(*n, *g);
         if !refs.contains(&r) {
             refs.push(r);
         }
     }
-    // The objects that are JavaScript actions, with their successors.
-    let mut scripts: HashMap<IndirectRef, Option<Object>> = HashMap::new();
+    // The objects that are JavaScript actions.
+    let mut scripts: HashSet<IndirectRef> = HashSet::new();
     for r in &refs {
-        if let Some(d) = body(*r, overlay)?.as_dict() {
-            if is_javascript_action(d) {
-                scripts.insert(*r, d.get(b"Next".as_slice()).cloned());
-            }
+        if body(*r)?.as_dict().is_some_and(is_javascript_action) {
+            scripts.insert(*r);
         }
     }
     let root = match doc.trailer().get(b"Root".as_slice()) {
         Some(Object::Ref(r)) => Some(*r),
         _ => None,
     };
-    let mut removed = 0u64;
-    let mut elements = 0u64;
+    let mut cx = Strip {
+        scripts: &scripts,
+        body: &body,
+        limits,
+        elements: 0,
+        removed: Vec::new(),
+    };
+    let mut count = 0u64;
     let mut kept: Vec<IndirectRef> = Vec::new();
     for r in refs {
-        if scripts.contains_key(&r) {
+        if scripts.contains(&r) {
             continue;
         }
         kept.push(r);
-        let mut obj = body(r, overlay)?;
-        let mut n = strip(&mut obj, &scripts, 0, limits, &mut elements)?;
+        let mut obj = body(r)?;
+        let mut n = cx.strip(&mut obj, 0)?;
         // The catalog's /Names /JavaScript, direct or by reference.
         if Some(r) == root {
             if let Object::Dict(cat) = &mut obj {
                 match cat.get_mut(b"Names".as_slice()) {
                     Some(Object::Dict(names)) => {
-                        n += u64::from(names.remove(b"JavaScript".as_slice()).is_some());
+                        if let Some(t) = names.remove(b"JavaScript".as_slice()) {
+                            cx.removed.push(t);
+                            n += 1;
+                        }
                     }
                     Some(Object::Ref(nr)) => {
                         let nr = *nr;
-                        let mut names = body(nr, overlay)?;
+                        let mut names = body(nr)?;
                         if let Object::Dict(d) = &mut names {
-                            if d.remove(b"JavaScript".as_slice()).is_some() {
-                                removed += 1;
+                            if let Some(t) = d.remove(b"JavaScript".as_slice()) {
+                                cx.removed.push(t);
+                                count += 1;
                                 overlay.insert((nr.number, nr.generation), names);
                             }
                         }
@@ -110,44 +128,62 @@ pub(crate) fn strip_javascript(
             }
         }
         if n > 0 {
-            removed += n;
+            count += n;
             overlay.insert((r.number, r.generation), obj);
         }
     }
-    // What the removed scripts reach (their source streams, …) besides
-    // other actions: nothing kept may still refer to it.
+    // What the removed scripts use besides other scripts and their
+    // successors: their sources, the object streams holding them, the
+    // name tree's nodes. Nothing kept may still refer to it.
     let mut reached: HashSet<IndirectRef> = HashSet::new();
     let mut stack: Vec<IndirectRef> = Vec::new();
-    for r in scripts.keys() {
-        if let Some(d) = body(*r, overlay)?.as_dict() {
-            for (k, v) in d.iter() {
+    let uses = |v: &Object, stack: &mut Vec<IndirectRef>| match v {
+        Object::Dict(d) if is_javascript_action(d) => {
+            for (k, x) in d.iter() {
                 if k.as_slice() != b"Next" {
-                    stack.extend(refs_in(v));
+                    stack.extend(refs_in(x));
                 }
             }
         }
+        Object::Ref(_) => {}
+        other => stack.extend(refs_in(other)),
+    };
+    for v in std::mem::take(&mut cx.removed) {
+        if let Object::Ref(r) = v {
+            stack.push(r);
+        } else {
+            uses(&v, &mut stack);
+        }
     }
+    for r in &scripts {
+        stack.push(*r);
+    }
+    let mut walked: HashSet<IndirectRef> = HashSet::new();
     while let Some(r) = stack.pop() {
-        if scripts.contains_key(&r) || !reached.insert(r) {
+        if !walked.insert(r) {
             continue;
         }
-        elements += 1;
-        if elements > limits.max_audit_elements {
-            return Err(Error::LimitExceeded {
-                limit: "max_audit_elements",
-                max: limits.max_audit_elements,
-            });
+        cx.charge(1)?;
+        if let Some(c) = container.get(&r.number) {
+            reached.insert(IndirectRef::new(*c, 0));
         }
-        stack.extend(refs_in(&body(r, overlay)?));
+        let o = body(r)?;
+        if scripts.contains(&r) {
+            uses(&o, &mut stack);
+        } else {
+            reached.insert(r);
+            stack.extend(refs_in(&o));
+        }
     }
     for r in kept {
         if reached.contains(&r) {
             continue;
         }
-        if let Some(t) = refs_in(&body(r, overlay)?)
-            .into_iter()
-            .find(|t| reached.contains(t))
-        {
+        let o = match overlay.get(&(r.number, r.generation)) {
+            Some(o) => o.clone(),
+            None => body(r)?,
+        };
+        if let Some(t) = refs_in(&o).into_iter().find(|t| reached.contains(t)) {
             return Err(refuse(format!(
                 "object {t}, which a removed script uses, is also referred to by object {r}"
             )));
@@ -161,7 +197,7 @@ pub(crate) fn strip_javascript(
             "object {t}, which a removed script uses, is referred to by the trailer"
         )));
     }
-    Ok(removed)
+    Ok(count)
 }
 
 /// The references written in `o` itself.
@@ -179,123 +215,150 @@ fn refs_in(o: &Object) -> Vec<IndirectRef> {
     out
 }
 
-/// What stands for `v` once scripts are removed: `v` itself, or the
-/// successors of a script (its `/Next`, one action or an array), with
-/// the scripts among them replaced in turn.
-fn successors(
-    v: &Object,
-    scripts: &HashMap<IndirectRef, Option<Object>>,
-    depth: u32,
-    limits: &Limits,
-) -> Result<Vec<Object>, Error> {
-    if depth > limits.max_nesting_depth {
-        return Err(Error::LimitExceeded {
-            limit: "max_nesting_depth (JavaScript removal)",
-            max: limits.max_nesting_depth as u64,
-        });
-    }
-    let next = match v {
-        Object::Ref(r) => match scripts.get(r) {
-            Some(n) => n.clone(),
-            None => return Ok(vec![v.clone()]),
-        },
-        Object::Dict(d) if is_javascript_action(d) => d.get(b"Next".as_slice()).cloned(),
-        _ => return Ok(vec![v.clone()]),
-    };
-    let mut out = Vec::new();
-    match next {
-        None => {}
-        Some(Object::Array(a)) => {
-            for x in &a {
-                out.extend(successors(x, scripts, depth + 1, limits)?);
-            }
-        }
-        Some(x) => out.extend(successors(&x, scripts, depth + 1, limits)?),
-    }
-    Ok(out)
+struct Strip<'a> {
+    scripts: &'a HashSet<IndirectRef>,
+    body: &'a dyn Fn(IndirectRef) -> Result<Object, Error>,
+    limits: &'a Limits,
+    /// Work done, charged against `max_audit_elements`.
+    elements: u64,
+    /// The script actions and trees removed (references or inline).
+    removed: Vec<Object>,
 }
 
-/// Replace in `o` (not through references) every entry and element that
-/// is a JavaScript action, inline or one of `scripts`, by its successors.
-fn strip(
-    o: &mut Object,
-    scripts: &HashMap<IndirectRef, Option<Object>>,
-    depth: u32,
-    limits: &Limits,
-    elements: &mut u64,
-) -> Result<u64, Error> {
-    if depth > limits.max_nesting_depth {
-        return Err(Error::LimitExceeded {
-            limit: "max_nesting_depth (JavaScript removal)",
-            max: limits.max_nesting_depth as u64,
-        });
+impl Strip<'_> {
+    fn charge(&mut self, n: u64) -> Result<(), Error> {
+        self.elements = self.elements.saturating_add(n);
+        if self.elements > self.limits.max_audit_elements {
+            return Err(Error::LimitExceeded {
+                limit: "max_audit_elements",
+                max: self.limits.max_audit_elements,
+            });
+        }
+        Ok(())
     }
-    *elements += 1;
-    if *elements > limits.max_audit_elements {
-        return Err(Error::LimitExceeded {
-            limit: "max_audit_elements",
-            max: limits.max_audit_elements,
-        });
+
+    fn is_script(&self, v: &Object) -> bool {
+        match v {
+            Object::Ref(r) => self.scripts.contains(r),
+            Object::Dict(d) => is_javascript_action(d),
+            _ => false,
+        }
     }
-    let script = |v: &Object| match v {
-        Object::Ref(r) => scripts.contains_key(r),
-        Object::Dict(d) => is_javascript_action(d),
-        _ => false,
-    };
-    let mut n = 0;
-    match o {
-        Object::Dict(d) | Object::Stream { dict: d, .. } => {
-            let keys: Vec<Vec<u8>> = d
-                .iter()
-                .filter(|(_, v)| script(v))
-                .map(|(k, _)| k.clone())
-                .collect();
-            for k in keys {
-                let v = d.remove(k.as_slice()).expect("listed above");
-                n += 1;
-                let mut next = successors(&v, scripts, 0, limits)?;
-                match next.len() {
-                    0 => {}
-                    1 => {
-                        d.insert(k, next.pop().expect("one"));
-                    }
-                    // Several successors fit only a /Next.
-                    _ if k.as_slice() == b"Next" => {
-                        d.insert(k, Object::Array(next));
-                    }
-                    _ => {
-                        return Err(refuse(format!(
-                            "the script at /{} is followed by several actions, which that \
-                             entry cannot hold",
-                            String::from_utf8_lossy(&k)
-                        )))
-                    }
-                }
-            }
-            for v in d.values_mut() {
-                n += strip(v, scripts, depth + 1, limits, elements)?;
+
+    /// What stands for `v` once scripts are removed: `v` itself, or the
+    /// actions after a script (its `/Next`: one action or an array, by
+    /// reference or not), the scripts among them replaced in turn. Each
+    /// action is listed once; a script met twice ends the chain there.
+    fn successors(
+        &mut self,
+        v: &Object,
+        seen: &mut HashSet<IndirectRef>,
+        out: &mut Vec<Object>,
+    ) -> Result<(), Error> {
+        self.charge(1)?;
+        if let Object::Ref(r) = v {
+            if !seen.insert(*r) {
+                return Ok(());
             }
         }
-        Object::Array(a) => {
-            if a.iter().any(script) {
-                let mut out = Vec::with_capacity(a.len());
-                for v in a.drain(..) {
-                    if script(&v) {
-                        n += 1;
-                        out.extend(successors(&v, scripts, 0, limits)?);
-                    } else {
-                        out.push(v);
+        if !self.is_script(v) {
+            out.push(v.clone());
+            return Ok(());
+        }
+        self.removed.push(v.clone());
+        let dict = match v {
+            Object::Ref(r) => (self.body)(*r)?,
+            other => other.clone(),
+        };
+        let next = match dict.as_dict().and_then(|d| d.get(b"Next".as_slice())) {
+            Some(n) => n.clone(),
+            None => return Ok(()),
+        };
+        // A /Next by reference may be an array.
+        let next = match &next {
+            Object::Ref(r) if !self.scripts.contains(r) => match (self.body)(*r)? {
+                a @ Object::Array(_) => a,
+                _ => next,
+            },
+            _ => next,
+        };
+        match next {
+            Object::Array(a) => {
+                for x in &a {
+                    self.successors(x, seen, out)?;
+                }
+            }
+            x => self.successors(&x, seen, out)?,
+        }
+        Ok(())
+    }
+
+    /// Replace in `o` (not through references) every entry and element
+    /// that is a JavaScript action by the actions after it.
+    fn strip(&mut self, o: &mut Object, depth: u32) -> Result<u64, Error> {
+        if depth > self.limits.max_nesting_depth {
+            return Err(Error::LimitExceeded {
+                limit: "max_nesting_depth (JavaScript removal)",
+                max: self.limits.max_nesting_depth as u64,
+            });
+        }
+        self.charge(1)?;
+        let mut n = 0;
+        match o {
+            Object::Dict(d) | Object::Stream { dict: d, .. } => {
+                let keys: Vec<Vec<u8>> = d
+                    .iter()
+                    .filter(|(_, v)| self.is_script(v))
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                for k in keys {
+                    let v = d.remove(k.as_slice()).expect("listed above");
+                    n += 1;
+                    let mut next = Vec::new();
+                    self.successors(&v, &mut HashSet::new(), &mut next)?;
+                    match next.len() {
+                        0 => {}
+                        1 => {
+                            d.insert(k, next.pop().expect("one"));
+                        }
+                        // Several actions fit only a /Next.
+                        _ if k.as_slice() == b"Next" => {
+                            d.insert(k, Object::Array(next));
+                        }
+                        _ => {
+                            return Err(refuse(format!(
+                                "the script at /{} is followed by several actions, which that \
+                                 entry cannot hold",
+                                String::from_utf8_lossy(&k)
+                            )))
+                        }
                     }
                 }
-                *a = out;
+                for v in d.values_mut() {
+                    n += self.strip(v, depth + 1)?;
+                }
             }
-            for v in a.iter_mut() {
-                n += strip(v, scripts, depth + 1, limits, elements)?;
+            Object::Array(a) => {
+                if a.iter().any(|v| self.is_script(v)) {
+                    let mut out = Vec::with_capacity(a.len());
+                    for v in std::mem::take(a) {
+                        if self.is_script(&v) {
+                            n += 1;
+                            self.successors(&v, &mut HashSet::new(), &mut out)?;
+                        } else {
+                            out.push(v);
+                        }
+                    }
+                    *a = out;
+                }
+                for v in a.iter_mut() {
+                    n += self.strip(v, depth + 1)?;
+                }
             }
+            _ => {}
         }
-        _ => {}
+        Ok(n)
     }
-    Ok(n)
 }
 
 /// An object of `out` still holding JavaScript: an action, a `/JS`

@@ -4965,6 +4965,42 @@ fn javascript_removal_keeps_what_is_not_a_script() {
     )
     .unwrap();
     assert!(contains(&r.output, b"KEPTVALUE") || raw_contains(&r.output, b"KEPTVALUE"));
+    // An inline script whose source is also referred to elsewhere.
+    let e = go(
+        "/OpenAction << /S /JavaScript /JS 51 0 R >> /Cache 51 0 R",
+        vec![source()],
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("also referred to"), "{e}");
+    // A script followed (through a referenced array) by two actions,
+    // in an entry holding one action: refused.
+    let e = go(
+        "/OpenAction 50 0 R",
+        vec![
+            (50, b"<< /S /JavaScript /JS (x) /Next 56 0 R >>".to_vec()),
+            (56, b"[57 0 R 58 0 R]".to_vec()),
+            (57, b"<< /S /URI /URI (https://example.com/a) >>".to_vec()),
+            (58, b"<< /S /URI /URI (https://example.com/b) >>".to_vec()),
+        ],
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("several actions"), "{e}");
+    // Two scripts following each other in a cycle: both go.
+    let r = go(
+        "/OpenAction 50 0 R",
+        vec![
+            (
+                50,
+                b"<< /S /JavaScript /JS (SCRIPTSOURCE) /Next 59 0 R >>".to_vec(),
+            ),
+            (
+                59,
+                b"<< /S /JavaScript /JS (SCRIPTSOURCE) /Next 50 0 R >>".to_vec(),
+            ),
+        ],
+    )
+    .unwrap();
+    assert!(!raw_contains(&r.output, b"SCRIPTSOURCE") && !contains(&r.output, b"SCRIPTSOURCE"));
     // URI -> script -> URI: the last one follows the first.
     let r = go(
         "/OpenAction 54 0 R",
