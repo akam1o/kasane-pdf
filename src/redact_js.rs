@@ -95,41 +95,64 @@ pub(crate) fn strip_javascript(
     };
     let mut count = 0u64;
     let mut kept: Vec<IndirectRef> = Vec::new();
+    // Objects edited here: their stored form (in an object stream, which
+    // is not edited) still holds what was removed.
+    let mut edited: Vec<IndirectRef> = Vec::new();
     for r in refs {
+        cx.charge(1)?;
         if scripts.contains(&r) {
             continue;
         }
         kept.push(r);
         let mut obj = body(r)?;
-        let mut n = cx.strip(&mut obj, 0)?;
-        // The catalog's /Names /JavaScript, direct or by reference.
-        if Some(r) == root {
-            if let Object::Dict(cat) = &mut obj {
-                match cat.get_mut(b"Names".as_slice()) {
-                    Some(Object::Dict(names)) => {
-                        if let Some(t) = names.remove(b"JavaScript".as_slice()) {
-                            cx.removed.push(t);
-                            n += 1;
-                        }
-                    }
-                    Some(Object::Ref(nr)) => {
-                        let nr = *nr;
-                        let mut names = body(nr)?;
-                        if let Object::Dict(d) = &mut names {
-                            if let Some(t) = d.remove(b"JavaScript".as_slice()) {
-                                cx.removed.push(t);
-                                count += 1;
-                                overlay.insert((nr.number, nr.generation), names);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
+        let n = cx.strip(&mut obj, 0)?;
         if n > 0 {
             count += n;
+            edited.push(r);
             overlay.insert((r.number, r.generation), obj);
+        }
+    }
+    // The catalog's /Names /JavaScript, direct or by reference, removed
+    // from what the pass above left.
+    if let Some(root) = root {
+        let current = |r: IndirectRef, overlay: &HashMap<(u32, u16), Object>| match overlay
+            .get(&(r.number, r.generation))
+        {
+            Some(o) => Ok(o.clone()),
+            None => doc.resolve(r),
+        };
+        let mut cat = current(root, overlay)?;
+        let names_ref = match &cat {
+            Object::Dict(c) => match c.get(b"Names".as_slice()) {
+                Some(Object::Ref(nr)) => Some(*nr),
+                _ => None,
+            },
+            _ => None,
+        };
+        match names_ref {
+            Some(nr) => {
+                let mut names = current(nr, overlay)?;
+                if let Object::Dict(d) = &mut names {
+                    if let Some(t) = d.remove(b"JavaScript".as_slice()) {
+                        cx.removed.push(t);
+                        count += 1;
+                        edited.push(nr);
+                        overlay.insert((nr.number, nr.generation), names);
+                    }
+                }
+            }
+            None => {
+                if let Object::Dict(c) = &mut cat {
+                    if let Some(Object::Dict(names)) = c.get_mut(b"Names".as_slice()) {
+                        if let Some(t) = names.remove(b"JavaScript".as_slice()) {
+                            cx.removed.push(t);
+                            count += 1;
+                            edited.push(root);
+                            overlay.insert((root.number, root.generation), cat);
+                        }
+                    }
+                }
+            }
         }
     }
     // What the removed scripts use besides other scripts and their
@@ -152,7 +175,13 @@ pub(crate) fn strip_javascript(
         if let Object::Ref(r) = v {
             stack.push(r);
         } else {
+            cx.charge(count_elements(&v))?;
             uses(&v, &mut stack);
+        }
+    }
+    for r in &edited {
+        if let Some(c) = container.get(&r.number) {
+            reached.insert(IndirectRef::new(*c, 0));
         }
     }
     for r in &scripts {
@@ -168,6 +197,7 @@ pub(crate) fn strip_javascript(
             reached.insert(IndirectRef::new(*c, 0));
         }
         let o = body(r)?;
+        cx.charge(count_elements(&o))?;
         if scripts.contains(&r) {
             uses(&o, &mut stack);
         } else {
@@ -198,6 +228,21 @@ pub(crate) fn strip_javascript(
         )));
     }
     Ok(count)
+}
+
+/// How many objects `o` is written with (not through references).
+fn count_elements(o: &Object) -> u64 {
+    let mut n = 0;
+    let mut stack = vec![o];
+    while let Some(o) = stack.pop() {
+        n += 1;
+        match o {
+            Object::Dict(d) | Object::Stream { dict: d, .. } => stack.extend(d.values()),
+            Object::Array(a) => stack.extend(a.iter()),
+            _ => {}
+        }
+    }
+    n
 }
 
 /// The references written in `o` itself.
@@ -247,50 +292,67 @@ impl Strip<'_> {
 
     /// What stands for `v` once scripts are removed: `v` itself, or the
     /// actions after a script (its `/Next`: one action or an array, by
-    /// reference or not), the scripts among them replaced in turn. Each
-    /// action is listed once; a script met twice ends the chain there.
+    /// reference or not), the scripts among them replaced in turn. A
+    /// script met again on the same chain (`path`) ends it there; the
+    /// chain is followed at most `max_nesting_depth` scripts deep.
     fn successors(
         &mut self,
         v: &Object,
-        seen: &mut HashSet<IndirectRef>,
+        path: &mut Vec<IndirectRef>,
         out: &mut Vec<Object>,
     ) -> Result<(), Error> {
         self.charge(1)?;
-        if let Object::Ref(r) = v {
-            if !seen.insert(*r) {
-                return Ok(());
-            }
-        }
         if !self.is_script(v) {
             out.push(v.clone());
             return Ok(());
+        }
+        if path.len() as u32 >= self.limits.max_nesting_depth {
+            return Err(Error::LimitExceeded {
+                limit: "max_nesting_depth (JavaScript action chain)",
+                max: self.limits.max_nesting_depth as u64,
+            });
+        }
+        if let Object::Ref(r) = v {
+            if path.contains(r) {
+                return Ok(());
+            }
+            path.push(*r);
         }
         self.removed.push(v.clone());
         let dict = match v {
             Object::Ref(r) => (self.body)(*r)?,
             other => other.clone(),
         };
-        let next = match dict.as_dict().and_then(|d| d.get(b"Next".as_slice())) {
-            Some(n) => n.clone(),
-            None => return Ok(()),
-        };
+        let next = dict
+            .as_dict()
+            .and_then(|d| d.get(b"Next".as_slice()))
+            .cloned();
         // A /Next by reference may be an array.
-        let next = match &next {
-            Object::Ref(r) if !self.scripts.contains(r) => match (self.body)(*r)? {
-                a @ Object::Array(_) => a,
-                _ => next,
+        let next = match next {
+            Some(Object::Ref(r)) if !self.scripts.contains(&r) => match (self.body)(r)? {
+                a @ Object::Array(_) => Some(a),
+                _ => Some(Object::Ref(r)),
             },
-            _ => next,
+            n => n,
         };
-        match next {
-            Object::Array(a) => {
+        let r = match next {
+            None => Ok(()),
+            Some(Object::Array(a)) => {
+                let mut r = Ok(());
                 for x in &a {
-                    self.successors(x, seen, out)?;
+                    r = self.successors(x, path, out);
+                    if r.is_err() {
+                        break;
+                    }
                 }
+                r
             }
-            x => self.successors(&x, seen, out)?,
+            Some(x) => self.successors(&x, path, out),
+        };
+        if matches!(v, Object::Ref(_)) {
+            path.pop();
         }
-        Ok(())
+        r
     }
 
     /// Replace in `o` (not through references) every entry and element
@@ -315,7 +377,7 @@ impl Strip<'_> {
                     let v = d.remove(k.as_slice()).expect("listed above");
                     n += 1;
                     let mut next = Vec::new();
-                    self.successors(&v, &mut HashSet::new(), &mut next)?;
+                    self.successors(&v, &mut Vec::new(), &mut next)?;
                     match next.len() {
                         0 => {}
                         1 => {
@@ -344,7 +406,7 @@ impl Strip<'_> {
                     for v in std::mem::take(a) {
                         if self.is_script(&v) {
                             n += 1;
-                            self.successors(&v, &mut HashSet::new(), &mut out)?;
+                            self.successors(&v, &mut Vec::new(), &mut out)?;
                         } else {
                             out.push(v);
                         }
@@ -361,9 +423,8 @@ impl Strip<'_> {
     }
 }
 
-/// An object of `out` still holding JavaScript: an action, a `/JS`
-/// entry or a `/Names /JavaScript` tree (the catalog's direct `/Names`
-/// as object 0).
+/// An object of `out` still holding JavaScript: a `/JS` entry, or the
+/// catalog's `/Names /JavaScript` tree (a direct `/Names` as object 0).
 pub(crate) fn find_javascript(
     out: &Document,
     limits: &Limits,
@@ -387,10 +448,8 @@ pub(crate) fn find_javascript(
             }
             match o {
                 Object::Dict(d) | Object::Stream { dict: d, .. } => {
-                    // A /JS entry is a script; a /JavaScript key is a
-                    // name dictionary's script tree.
-                    if d.contains_key(b"JS".as_slice()) || d.contains_key(b"JavaScript".as_slice())
-                    {
+                    // A /JS entry is a script (an action's, a rendition's).
+                    if d.contains_key(b"JS".as_slice()) {
                         return Ok(Some(r));
                     }
                     stack.extend(d.values());
@@ -400,10 +459,18 @@ pub(crate) fn find_javascript(
             }
         }
     }
-    // The catalog's direct /Names.
-    if let Some(Object::Dict(n)) = out.catalog().get(b"Names".as_slice()) {
-        if n.contains_key(b"JavaScript".as_slice()) {
-            return Ok(Some(IndirectRef::new(0, 0)));
+    // The catalog's /Names /JavaScript (a /JavaScript key elsewhere is
+    // just a name, a resource's for one).
+    if let Some(n) = out.catalog().get(b"Names".as_slice()) {
+        if out
+            .deref(n)?
+            .as_dict()
+            .is_some_and(|n| n.contains_key(b"JavaScript".as_slice()))
+        {
+            return Ok(Some(match n {
+                Object::Ref(r) => *r,
+                _ => IndirectRef::new(0, 0),
+            }));
         }
     }
     Ok(None)
