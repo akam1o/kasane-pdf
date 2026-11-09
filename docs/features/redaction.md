@@ -237,9 +237,9 @@ content remains: interpreted data is not searched (text in an image's
 pixels or a font program), non-stream objects' strings are searched
 only as text, and nothing searches bytes — compression, encryption,
 encodings and application formats make a byte search no evidence of
-absence. The default does not refuse: on the Corpus the strict mode
-refuses about one success in seven, mostly for document XMP on objects
-other than the catalog, application data and thumbnails.
+absence. The default does not refuse: on the Corpus (117 runs) the
+strict mode refused 4 of the 91 successes, in 2 files — XMP metadata on
+a structure element, and application data (`/PieceInfo`).
 
 ## Positional, not semantic
 

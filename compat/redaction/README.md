@@ -10,13 +10,16 @@ starts from them. See [`../../docs/testing.md`](../../docs/testing.md)
 | `eval-default.json` | `scripts/eval-redact-corpus.py`, default options |
 | `eval-optin.json` | the same with `--embed-substitute-fonts --remove-annotations` |
 | `eval-optin-javascript.json` | the same with `--remove-javascript` added |
+| `eval-optin-strict.json` | the same with `--refuse-uninspected` added (the strict mode) |
 | `refusals-default.json`, `refusals-optin.json` | `scripts/analyze-redact-refusals.py` on those: every walk blocker of each refused run, by category, and the runs each category alone blocks |
 
 Reading them: a run is `ok`, `refused` (a typed refusal, nothing
 written) or `unexpected` (a success failing a check, or an untyped
-failure). The one `unexpected` run, `scan-bitmap-composite-and-xnor-text`
-block, is a known false signal (zeroed image samples that were already
-black look like unchanged ink); its output was checked by hand. A
+failure). The two `unexpected` runs, `scan-bitmap-composite-and-xnor-text`
+block and (with the opt-ins) `blendmode` block, are the known false
+signal (zeroed image samples that were already black look like
+unchanged ink, `check_by_hand`); their outputs were checked by hand:
+the unchanged pixels lie in edited images, black before and after. A
 "lost" word can be pdftotext regrouping kept glyphs once a neighbour is
 removed (per-glyph words in vertical CJK text). MuPDF characters
 "moved" are its integer-rounded widths (Poppler places those glyphs
