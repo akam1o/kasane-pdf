@@ -8,7 +8,7 @@
     115.58,
     634.56
    ],
-   "seconds": 0.017,
+   "seconds": 0.021,
    "elsewhere": 0,
    "outside_words": 4,
    "outside_words_lost": 0,
@@ -39,7 +39,7 @@
     595.32,
     634.56
    ],
-   "seconds": 0.02,
+   "seconds": 0.018,
    "elsewhere": 0,
    "outside_words": 4,
    "outside_words_lost": 0,
@@ -70,7 +70,7 @@
     396.88,
     561.28
    ],
-   "seconds": 0.009,
+   "seconds": 0.012,
    "elsewhere": 0,
    "outside_words": 5,
    "outside_words_lost": 0,
@@ -101,7 +101,7 @@
     56.34,
     611.02
    ],
-   "seconds": 0.022,
+   "seconds": 0.024,
    "elsewhere": 1,
    "outside_words": 26,
    "outside_words_lost": 0,
@@ -148,7 +148,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.022,
+   "seconds": 0.023,
    "elsewhere": 0,
    "outside_words": 27,
    "outside_words_lost": 0,
@@ -179,7 +179,7 @@
     88.16,
     703.8
    ],
-   "seconds": 0.002,
+   "seconds": 0.003,
    "outcome": "refused",
    "reason": "redaction on a page with an annotation drawn outside its /Rect",
    "detail": "/Annots[0] has no appearance stream and geometry outside /Rect",
@@ -195,7 +195,7 @@
     612.0,
     703.8
    ],
-   "seconds": 0.002,
+   "seconds": 0.003,
    "outcome": "refused",
    "reason": "redaction on a page with an annotation drawn outside its /Rect",
    "detail": "/Annots[0] has no appearance stream and geometry outside /Rect",
@@ -227,7 +227,7 @@
     167.16,
     714.16
    ],
-   "seconds": 0.021,
+   "seconds": 0.023,
    "elsewhere": 8,
    "outside_words": 3,
    "outside_words_lost": 0,
@@ -289,7 +289,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.023,
+   "seconds": 0.021,
    "elsewhere": 0,
    "outside_words": 4,
    "outside_words_lost": 0,
@@ -320,7 +320,7 @@
     74.99,
     794.61
    ],
-   "seconds": 0.009,
+   "seconds": 0.008,
    "elsewhere": 0,
    "outside_words": 5,
    "outside_words_lost": 0,
@@ -351,7 +351,7 @@
     594.96,
     794.61
    ],
-   "seconds": 0.009,
+   "seconds": 0.008,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -398,7 +398,7 @@
     360.83,
     401.5
    ],
-   "seconds": 0.017,
+   "seconds": 0.018,
    "elsewhere": 1,
    "outside_words": 255,
    "outside_words_lost": 0,
@@ -429,7 +429,7 @@
     612.0,
     401.5
    ],
-   "seconds": 0.016,
+   "seconds": 0.017,
    "elsewhere": 2,
    "outside_words": 232,
    "outside_words_lost": 0,
@@ -476,7 +476,7 @@
     342.47,
     401.59
    ],
-   "seconds": 0.024,
+   "seconds": 0.025,
    "elsewhere": 1,
    "outside_words": 898,
    "outside_words_lost": 0,
@@ -507,7 +507,7 @@
     612.0,
     401.59
    ],
-   "seconds": 0.025,
+   "seconds": 0.028,
    "elsewhere": 1,
    "outside_words": 856,
    "outside_words_lost": 0,
@@ -538,7 +538,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.024,
+   "seconds": 0.026,
    "elsewhere": 15,
    "outside_words": 687,
    "outside_words_lost": 0,
@@ -709,7 +709,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.014,
+   "seconds": 0.015,
    "outcome": "refused",
    "reason": "redaction of an annotation other than a link meeting a rect",
    "detail": "/Annots[0] (/Widget) \u2014 its content is not edited",
@@ -725,7 +725,7 @@
     91.22,
     728.26
    ],
-   "seconds": 0.011,
+   "seconds": 0.013,
    "elsewhere": 1,
    "outside_words": 9,
    "outside_words_lost": 0,
@@ -803,7 +803,7 @@
     135.63,
     399.74
    ],
-   "seconds": 0.036,
+   "seconds": 0.045,
    "elsewhere": 1,
    "outside_words": 231,
    "outside_words_lost": 0,
@@ -834,7 +834,7 @@
     612.0,
     399.74
    ],
-   "seconds": 0.039,
+   "seconds": 0.046,
    "elsewhere": 1,
    "outside_words": 199,
    "outside_words_lost": 0,
@@ -897,7 +897,7 @@
     57.46,
     415.11
    ],
-   "seconds": 0.022,
+   "seconds": 0.023,
    "elsewhere": 0,
    "outside_words": 22,
    "outside_words_lost": 0,
@@ -928,7 +928,7 @@
     595.28,
     415.11
    ],
-   "seconds": 0.016,
+   "seconds": 0.015,
    "outcome": "refused",
    "reason": "image attribute",
    "detail": "/SMask is not supported for image removal",
@@ -944,7 +944,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.021,
+   "seconds": 0.015,
    "outcome": "refused",
    "reason": "image attribute",
    "detail": "/SMask is not supported for image removal",
@@ -960,7 +960,7 @@
     169.49,
     571.87
    ],
-   "seconds": 0.009,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -991,7 +991,7 @@
     612.0,
     571.87
    ],
-   "seconds": 0.009,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -1022,7 +1022,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.01,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 3,
    "outside_words_lost": 0,
@@ -1101,7 +1101,7 @@
     81.05,
     750.92
    ],
-   "seconds": 0.022,
+   "seconds": 0.023,
    "elsewhere": 0,
    "outside_words": 16,
    "outside_words_lost": 0,
@@ -1132,7 +1132,7 @@
     595.28,
     750.92
    ],
-   "seconds": 0.022,
+   "seconds": 0.024,
    "elsewhere": 0,
    "outside_words": 15,
    "outside_words_lost": 0,
@@ -1179,7 +1179,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.009,
+   "seconds": 0.008,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -1242,7 +1242,7 @@
     316.02,
     605.7
    ],
-   "seconds": 0.01,
+   "seconds": 0.009,
    "elsewhere": 1,
    "outside_words": 10,
    "outside_words_lost": 0,
@@ -1273,7 +1273,7 @@
     595.0,
     605.7
    ],
-   "seconds": 0.009,
+   "seconds": 0.01,
    "elsewhere": 3,
    "outside_words": 6,
    "outside_words_lost": 0,
@@ -1304,7 +1304,7 @@
     396.67,
     561.33
    ],
-   "seconds": 0.01,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 10,
    "outside_words_lost": 0,
@@ -1366,7 +1366,7 @@
     612.0,
     134.34
    ],
-   "seconds": 0.048,
+   "seconds": 0.043,
    "elsewhere": 0,
    "outside_words": 98,
    "outside_words_lost": 12,
@@ -1397,7 +1397,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.047,
+   "seconds": 0.051,
    "elsewhere": 0,
    "outside_words": 83,
    "outside_words_lost": 9,
@@ -1428,7 +1428,7 @@
     229.11,
     366.81
    ],
-   "seconds": 0.007,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -1490,7 +1490,7 @@
     504.0,
     374.4
    ],
-   "seconds": 0.008,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 1,
    "outside_words_lost": 0,
@@ -1537,7 +1537,7 @@
     177.1,
     397.55
    ],
-   "seconds": 0.186,
+   "seconds": 0.209,
    "elsewhere": 11,
    "outside_words": 451,
    "outside_words_lost": 0,
@@ -1568,7 +1568,7 @@
     612.0,
     397.55
    ],
-   "seconds": 0.182,
+   "seconds": 0.19,
    "elsewhere": 0,
    "outside_words": 438,
    "outside_words_lost": 0,
@@ -1599,7 +1599,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.209,
+   "seconds": 0.188,
    "elsewhere": 0,
    "outside_words": 311,
    "outside_words_lost": 0,
@@ -1630,7 +1630,7 @@
     140.32,
     386.87
    ],
-   "seconds": 0.713,
+   "seconds": 0.709,
    "elsewhere": 0,
    "outside_words": 908,
    "outside_words_lost": 0,
@@ -1661,7 +1661,7 @@
     612.0,
     386.87
    ],
-   "seconds": 0.76,
+   "seconds": 0.768,
    "elsewhere": 0,
    "outside_words": 906,
    "outside_words_lost": 0,
@@ -1692,7 +1692,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.732,
+   "seconds": 0.763,
    "elsewhere": 224,
    "outside_words": 748,
    "outside_words_lost": 0,
@@ -1723,7 +1723,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.01,
+   "seconds": 0.008,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -1754,7 +1754,7 @@
     341.42,
     404.85
    ],
-   "seconds": 0.013,
+   "seconds": 0.011,
    "elsewhere": 0,
    "outside_words": 88,
    "outside_words_lost": 0,
@@ -1785,7 +1785,7 @@
     612.0,
     404.85
    ],
-   "seconds": 0.013,
+   "seconds": 0.012,
    "elsewhere": 0,
    "outside_words": 88,
    "outside_words_lost": 0,
@@ -1816,7 +1816,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.013,
+   "seconds": 0.011,
    "elsewhere": 0,
    "outside_words": 61,
    "outside_words_lost": 0,
@@ -1847,7 +1847,7 @@
     82.84,
     28.7
    ],
-   "seconds": 0.021,
+   "seconds": 0.022,
    "elsewhere": 0,
    "outside_words": 5,
    "outside_words_lost": 0,
@@ -1878,7 +1878,7 @@
     200.0,
     28.7
    ],
-   "seconds": 0.023,
+   "seconds": 0.021,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -1909,7 +1909,7 @@
     133.33,
     33.33
    ],
-   "seconds": 0.022,
+   "seconds": 0.024,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -1940,7 +1940,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
    "reason": "other: parse error",
    "detail": "error [parse error]: parse error: ASCII85Decode: byte 0xb1 at offset 13 is outside `!`..`u`",
@@ -2018,7 +2018,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.024,
+   "seconds": 0.02,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -2049,7 +2049,7 @@
     66.67,
     133.33
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
    "reason": "other: invalid document structure",
    "detail": "error [invalid document structure]: invalid document structure: unexpected /Type /Template in page tree",
@@ -2065,7 +2065,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.008,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2112,7 +2112,7 @@
     117.97,
     710.38
    ],
-   "seconds": 0.065,
+   "seconds": 0.074,
    "elsewhere": 2,
    "outside_words": 12,
    "outside_words_lost": 0,
@@ -2143,7 +2143,7 @@
     595.28,
     710.38
    ],
-   "seconds": 0.064,
+   "seconds": 0.071,
    "elsewhere": 2,
    "outside_words": 9,
    "outside_words_lost": 0,
@@ -2236,7 +2236,7 @@
     396.67,
     560.67
    ],
-   "seconds": 0.03,
+   "seconds": 0.008,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2267,7 +2267,7 @@
     209.1,
     402.34
    ],
-   "seconds": 0.025,
+   "seconds": 0.014,
    "elsewhere": 0,
    "outside_words": 59,
    "outside_words_lost": 0,
@@ -2298,7 +2298,7 @@
     612.0,
     402.34
    ],
-   "seconds": 0.027,
+   "seconds": 0.015,
    "elsewhere": 0,
    "outside_words": 59,
    "outside_words_lost": 0,
@@ -2329,7 +2329,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.017,
+   "seconds": 0.015,
    "elsewhere": 0,
    "outside_words": 39,
    "outside_words_lost": 0,
@@ -2360,7 +2360,7 @@
     237.08,
     399.17
    ],
-   "seconds": 0.017,
+   "seconds": 0.016,
    "outcome": "refused",
    "reason": "other: signature policy",
    "detail": "error [signature policy]: refused by signature policy: a full rewrite would invalidate the signature (/Perms /UR3 present \u2014 rewrite would invalidate the signature)",
@@ -2376,7 +2376,7 @@
     612.0,
     399.17
    ],
-   "seconds": 0.017,
+   "seconds": 0.015,
    "outcome": "refused",
    "reason": "other: signature policy",
    "detail": "error [signature policy]: refused by signature policy: a full rewrite would invalidate the signature (/Perms /UR3 present \u2014 rewrite would invalidate the signature)",
@@ -2392,7 +2392,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.016,
+   "seconds": 0.015,
    "outcome": "refused",
    "reason": "other: signature policy",
    "detail": "error [signature policy]: refused by signature policy: a full rewrite would invalidate the signature (/Perms /UR3 present \u2014 rewrite would invalidate the signature)",
@@ -2424,7 +2424,7 @@
     373.69,
     399.18
    ],
-   "seconds": 0.197,
+   "seconds": 0.193,
    "elsewhere": 0,
    "outside_words": 763,
    "outside_words_lost": 0,
@@ -2455,7 +2455,7 @@
     612.0,
     399.18
    ],
-   "seconds": 0.228,
+   "seconds": 0.226,
    "elsewhere": 0,
    "outside_words": 735,
    "outside_words_lost": 0,
@@ -2486,7 +2486,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.206,
+   "seconds": 0.202,
    "elsewhere": 6,
    "outside_words": 602,
    "outside_words_lost": 0,
@@ -2517,7 +2517,7 @@
     128.11,
     395.01
    ],
-   "seconds": 0.058,
+   "seconds": 0.064,
    "elsewhere": 0,
    "outside_words": 501,
    "outside_words_lost": 0,
@@ -2548,7 +2548,7 @@
     612.0,
     395.01
    ],
-   "seconds": 0.06,
+   "seconds": 0.073,
    "elsewhere": 0,
    "outside_words": 501,
    "outside_words_lost": 0,
@@ -2579,7 +2579,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.062,
+   "seconds": 0.06,
    "elsewhere": 121,
    "outside_words": 396,
    "outside_words_lost": 0,
@@ -2642,7 +2642,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.005,
+   "seconds": 0.004,
    "outcome": "refused",
    "reason": "redaction of a document whose structure tree has alternate text",
    "detail": "a structure element carries /Alt, which may repeat redacted content; RedactOptions::remove_structure_tree removes the tree",
@@ -2658,7 +2658,7 @@
     119.11,
     399.19
    ],
-   "seconds": 0.19,
+   "seconds": 0.195,
    "elsewhere": 11,
    "outside_words": 463,
    "outside_words_lost": 0,
@@ -2689,7 +2689,7 @@
     612.0,
     399.19
    ],
-   "seconds": 0.323,
+   "seconds": 0.315,
    "elsewhere": 0,
    "outside_words": 448,
    "outside_words_lost": 0,
@@ -2720,7 +2720,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.203,
+   "seconds": 0.195,
    "elsewhere": 1,
    "outside_words": 311,
    "outside_words_lost": 0,
@@ -2830,7 +2830,7 @@
     333.33,
     333.33
    ],
-   "seconds": 0.014,
+   "seconds": 0.008,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2861,7 +2861,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
    "reason": "image BitsPerComponent",
    "detail": "1 (only 8 supported",
@@ -2877,7 +2877,7 @@
     266.24,
     266.88
    ],
-   "seconds": 0.021,
+   "seconds": 0.016,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2911,7 +2911,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.035,
+   "seconds": 0.032,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2943,7 +2943,7 @@
     133.44,
     133.44
    ],
-   "seconds": 0.01,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2991,7 +2991,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.009,
+   "seconds": 0.007,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -3022,7 +3022,7 @@
     198.88,
     422.04
    ],
-   "seconds": 0.021,
+   "seconds": 0.022,
    "elsewhere": 1,
    "outside_words": 24,
    "outside_words_lost": 0,
@@ -3053,7 +3053,7 @@
     612.0,
     422.04
    ],
-   "seconds": 0.023,
+   "seconds": 0.022,
    "elsewhere": 0,
    "outside_words": 19,
    "outside_words_lost": 0,
@@ -3084,7 +3084,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.025,
+   "seconds": 0.021,
    "elsewhere": 2,
    "outside_words": 13,
    "outside_words_lost": 0,
