@@ -4,6 +4,13 @@
 //! CID each code maps to (`begincidchar`, `begincidrange`); `/WMode 1`
 //! selects vertical writing.
 //!
+//! A code in the codespace with no defined mapping takes its notdef
+//! mapping (`beginnotdefchar`, `beginnotdefrange`: every code of a range
+//! maps to the same CID), else CID 0 (§9.7.6.3); bytes in no codespace
+//! range map to CID 0. Poppler, MuPDF and pdf.js ignore notdef mappings
+//! and differ on such codes among themselves, so redaction refuses
+//! showing any of them (`CMap::lookup` tells which).
+//!
 //! `usecmap` is honoured only for the two Identity CMaps (they need no
 //! resource file). Any other predefined CMap name — `90ms-RKSJ-H`,
 //! `UniJIS-UCS2-H`, … — needs the Adobe CMap resources, which are not
@@ -28,6 +35,10 @@ pub(crate) struct CMap {
     /// `(byte length, low, high, first cid)` range mappings, in file
     /// order (later entries override — searched last-to-first).
     ranges: Vec<(u8, u32, u32, u32)>,
+    /// `(byte length, low, high, cid)` notdef mappings (`beginnotdefchar`
+    /// entries have `low == high`): every code in a range maps to the
+    /// same CID. Searched last-to-first, after the defined mappings.
+    notdef: Vec<(u8, u32, u32, u32)>,
     /// Codes not mapped explicitly fall through to Identity (the CMap
     /// `usecmap`s Identity-H/V).
     identity_base: bool,
@@ -120,6 +131,7 @@ impl CMap {
                 merged.codespaces.extend(std::mem::take(&mut cm.codespaces));
                 merged.ranges.extend(std::mem::take(&mut cm.ranges));
                 merged.single.extend(std::mem::take(&mut cm.single));
+                merged.notdef.extend(std::mem::take(&mut cm.notdef));
                 merged.vertical |= cm.vertical;
                 merged.identity_base |= cm.identity_base;
                 *cm = merged;
@@ -195,18 +207,24 @@ impl CMap {
                             cm.codespaces.push((lo.len() as u8, be(&lo), be(&hi)));
                         }
                     }
-                    b"begincidrange" => {
+                    b"begincidrange" | b"beginnotdefrange" => {
+                        let notdef = bytes.as_slice() == b"beginnotdefrange";
+                        let (end, kind): (&[u8], &'static str) = if notdef {
+                            (b"endnotdefrange", "notdefrange")
+                        } else {
+                            (b"endcidrange", "cidrange")
+                        };
                         stack.clear();
                         loop {
                             let lo = match lx.next_token()? {
-                                Some(Token::Word { bytes, .. }) if bytes == b"endcidrange" => break,
+                                Some(Token::Word { bytes, .. }) if bytes == end => break,
                                 Some(Token::HexString { value, .. }) => value,
                                 Some(Token::LiteralString { value, .. }) => {
                                     cm.literal_codes = true;
                                     value
                                 }
                                 Some(_) => continue,
-                                None => return Err(eof("cidrange")),
+                                None => return Err(eof(kind)),
                             };
                             let hi = match lx.next_token()? {
                                 Some(Token::HexString { value, .. }) => value,
@@ -215,54 +233,67 @@ impl CMap {
                                     value
                                 }
                                 _ => {
-                                    return Err(Error::Structure(
-                                        "cidrange needs a high bound".into(),
-                                    ))
+                                    return Err(Error::Structure(format!(
+                                        "{kind} needs a high bound"
+                                    )))
                                 }
                             };
                             let cid = match lx.next_token()? {
                                 Some(Token::Word { bytes, .. }) => int(&bytes)?,
-                                _ => return Err(Error::Structure("cidrange needs a CID".into())),
+                                _ => return Err(Error::Structure(format!("{kind} needs a CID"))),
                             };
                             if lo.is_empty() || lo.len() > 4 || lo.len() != hi.len() {
-                                return Err(Error::Structure(
-                                    "cidrange bounds must be 1–4 equal-length bytes".into(),
-                                ));
+                                return Err(Error::Structure(format!(
+                                    "{kind} bounds must be 1–4 equal-length bytes"
+                                )));
                             }
                             let (l, h) = (be(&lo), be(&hi));
                             if h < l {
-                                return Err(Error::Structure(
-                                    "cidrange low bound exceeds high".into(),
-                                ));
+                                return Err(Error::Structure(format!(
+                                    "{kind} low bound exceeds high"
+                                )));
                             }
                             count(1, &mut entries)?;
-                            cm.ranges.push((lo.len() as u8, l, h, cid));
+                            if notdef {
+                                cm.notdef.push((lo.len() as u8, l, h, cid));
+                            } else {
+                                cm.ranges.push((lo.len() as u8, l, h, cid));
+                            }
                         }
                     }
-                    b"begincidchar" => {
+                    b"begincidchar" | b"beginnotdefchar" => {
+                        let notdef = bytes.as_slice() == b"beginnotdefchar";
+                        let (end, kind): (&[u8], &'static str) = if notdef {
+                            (b"endnotdefchar", "notdefchar")
+                        } else {
+                            (b"endcidchar", "cidchar")
+                        };
                         stack.clear();
                         loop {
                             let code = match lx.next_token()? {
-                                Some(Token::Word { bytes, .. }) if bytes == b"endcidchar" => break,
+                                Some(Token::Word { bytes, .. }) if bytes == end => break,
                                 Some(Token::HexString { value, .. }) => value,
                                 Some(Token::LiteralString { value, .. }) => {
                                     cm.literal_codes = true;
                                     value
                                 }
                                 Some(_) => continue,
-                                None => return Err(eof("cidchar")),
+                                None => return Err(eof(kind)),
                             };
                             let cid = match lx.next_token()? {
                                 Some(Token::Word { bytes, .. }) => int(&bytes)?,
-                                _ => return Err(Error::Structure("cidchar needs a CID".into())),
+                                _ => return Err(Error::Structure(format!("{kind} needs a CID"))),
                             };
                             if code.is_empty() || code.len() > 4 {
-                                return Err(Error::Structure(
-                                    "cidchar code must be 1–4 bytes".into(),
-                                ));
+                                return Err(Error::Structure(format!(
+                                    "{kind} code must be 1–4 bytes"
+                                )));
                             }
                             count(1, &mut entries)?;
-                            if cm.single.len() < cap as usize {
+                            if notdef {
+                                let c = be(&code);
+                                cm.notdef.push((code.len() as u8, c, c, cid));
+                            } else if cm.single.len() < cap as usize {
                                 cm.single.insert(be(&code), cid);
                             }
                         }
@@ -295,13 +326,11 @@ impl CMap {
                     }
                     b"begin" | b"end" | b"pop" | b"findresource" | b"dict" | b"currentdict"
                     | b"defineresource" | b"CMapName" | b"endcmap" | b"begincmap" => stack.clear(),
-                    b"beginbfchar" | b"beginbfrange" | b"beginnotdefrange" | b"beginnotdefchar" => {
+                    b"beginbfchar" | b"beginbfrange" => {
                         // Not meaningful in an encoding CMap; skip to the end marker.
                         let end: &[u8] = match bytes.as_slice() {
                             b"beginbfchar" => b"endbfchar",
-                            b"beginbfrange" => b"endbfrange",
-                            b"beginnotdefrange" => b"endnotdefrange",
-                            _ => b"endnotdefchar",
+                            _ => b"endbfrange",
                         };
                         loop {
                             match lx.next_token()? {
@@ -366,11 +395,7 @@ impl CMap {
                 break;
             }
             let code = be(&bytes[pos..pos + len]);
-            if self
-                .codespaces
-                .iter()
-                .any(|(l, lo, hi)| *l as usize == len && code >= *lo && code <= *hi)
-            {
+            if self.in_codespace(code, len) {
                 return (code, len);
             }
         }
@@ -385,21 +410,51 @@ impl CMap {
         (be(&bytes[pos..pos + len]), len)
     }
 
+    /// `code` (of `len` bytes) lies in a codespace range — Identity's
+    /// `<0000> <FFFF>` included when it is the base.
+    fn in_codespace(&self, code: u32, len: usize) -> bool {
+        (self.identity_base && len == 2)
+            || self
+                .codespaces
+                .iter()
+                .any(|(l, lo, hi)| *l as usize == len && code >= *lo && code <= *hi)
+    }
+
     /// CID for `code` (of `len` bytes).
     pub(crate) fn cid(&self, code: u32, len: usize) -> u32 {
+        self.lookup(code, len).0
+    }
+
+    /// CID for `code` (of `len` bytes) and how it was found (§9.7.6.3):
+    /// a defined mapping (`cidchar`, `cidrange`, an Identity base);
+    /// else, for a code in the codespace, a notdef mapping; else CID 0.
+    pub(crate) fn lookup(&self, code: u32, len: usize) -> (u32, Mapping) {
         if let Some(c) = self.single.get(&code) {
-            return *c;
+            return (*c, Mapping::Defined);
         }
         for (l, lo, hi, cid) in self.ranges.iter().rev() {
             if *l as usize == len && code >= *lo && code <= *hi {
-                return cid + (code - lo);
+                return (cid + (code - lo), Mapping::Defined);
             }
         }
+        let valid = self.in_codespace(code, len);
         if self.identity_base {
-            code
-        } else {
-            0
+            let m = if valid {
+                Mapping::Defined
+            } else {
+                Mapping::Invalid
+            };
+            return (code, m);
         }
+        if !valid {
+            return (0, Mapping::Invalid);
+        }
+        for (l, lo, hi, cid) in self.notdef.iter().rev() {
+            if *l as usize == len && code >= *lo && code <= *hi {
+                return (*cid, Mapping::Notdef);
+            }
+        }
+        (0, Mapping::Unmapped)
     }
 
     /// `true` when every code is two bytes (so a `/ToUnicode` CMap
@@ -407,6 +462,19 @@ impl CMap {
     pub(crate) fn is_two_byte(&self) -> bool {
         !self.codespaces.is_empty() && self.codespaces.iter().all(|(l, _, _)| *l == 2)
     }
+}
+
+/// How [`CMap::lookup`] found a code's CID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Mapping {
+    /// `cidchar`, `cidrange` or an Identity base.
+    Defined,
+    /// A notdef mapping: a code in the codespace with no defined one.
+    Notdef,
+    /// In the codespace, mapped by nothing: CID 0.
+    Unmapped,
+    /// In no codespace range: CID 0.
+    Invalid,
 }
 
 fn be(b: &[u8]) -> u32 {
@@ -476,6 +544,119 @@ mod tests {
                 &Limits::default()
             ),
             Err(Error::Structure(_))
+        ));
+    }
+
+    const CS: &str =
+        "1 begincodespacerange <00> <7F> endcodespacerange 1 begincidchar <41> 36 endcidchar ";
+
+    fn notdef(body: &str) -> Result<CMap, Error> {
+        CMap::parse(format!("{CS}{body}").as_bytes(), None, &Limits::default())
+    }
+
+    #[test]
+    fn notdef_char_and_range_map_to_one_cid() {
+        let cm = notdef(
+            "1 beginnotdefchar <42> 37 endnotdefchar \
+             1 beginnotdefrange <50> <5F> 38 endnotdefrange",
+        )
+        .unwrap();
+        assert_eq!(cm.lookup(0x41, 1), (36, Mapping::Defined));
+        assert_eq!(cm.lookup(0x42, 1), (37, Mapping::Notdef));
+        // Every code of a notdef range maps to the same CID.
+        for c in [0x50, 0x57, 0x5F] {
+            assert_eq!(cm.lookup(c, 1), (38, Mapping::Notdef));
+        }
+        assert_eq!(cm.lookup(0x43, 1), (0, Mapping::Unmapped));
+        // Bytes in no codespace range: CID 0, never a notdef CID.
+        assert_eq!(cm.next_code(b"\x90", 0), (0x90, 1));
+        assert_eq!(cm.lookup(0x90, 1), (0, Mapping::Invalid));
+        // A notdef range applies to codes of its own length only.
+        assert_eq!(cm.lookup(0x0050, 2), (0, Mapping::Invalid));
+    }
+
+    #[test]
+    fn defined_mappings_beat_notdef_and_later_notdef_wins() {
+        let cm = notdef(
+            "1 beginnotdefrange <40> <4F> 38 endnotdefrange \
+             1 begincidrange <44> <45> 50 endcidrange \
+             1 beginnotdefchar <46> 39 endnotdefchar",
+        )
+        .unwrap();
+        assert_eq!(cm.cid(0x41, 1), 36);
+        assert_eq!(cm.cid(0x45, 1), 51);
+        assert_eq!(cm.lookup(0x46, 1), (39, Mapping::Notdef));
+        assert_eq!(cm.lookup(0x47, 1), (38, Mapping::Notdef));
+        // An Identity base maps every two-byte code: no notdef applies.
+        let cm = CMap::parse(
+            b"/Identity-H usecmap 1 beginnotdefrange <0000> <00FF> 7 endnotdefrange",
+            None,
+            &Limits::default(),
+        )
+        .unwrap();
+        assert_eq!(cm.lookup(0x0041, 2), (0x41, Mapping::Defined));
+        assert_eq!(cm.next_code(b"\x00\x41", 0), (0x41, 2));
+    }
+
+    #[test]
+    fn notdef_through_usecmap() {
+        // 90ms-RKSJ-H: `<00> <1f>` notdef → 231, `<20> <7d>` → 231…
+        let r = CMap::parse(
+            b"/90ms-RKSJ-H usecmap 1 beginnotdefchar <05> 9 endnotdefchar \
+              1 beginnotdefrange <20> <20> 8 endnotdefrange",
+            None,
+            &Limits::default(),
+        );
+        if !cfg!(feature = "cjk-fallback") {
+            assert!(matches!(r, Err(Error::Unsupported { .. })));
+            return;
+        }
+        let cm = r.unwrap();
+        assert_eq!(cm.lookup(0x01, 1), (231, Mapping::Notdef), "inherited");
+        assert_eq!(cm.lookup(0x05, 1), (9, Mapping::Notdef), "overridden");
+        // The base's defined mapping beats the derived notdef one.
+        assert_eq!(cm.lookup(0x20, 1), (231, Mapping::Defined));
+        assert_eq!(cm.lookup(0x41, 1), (264, Mapping::Defined));
+    }
+
+    #[test]
+    fn malformed_notdef_blocks() {
+        for body in [
+            "1 beginnotdefrange <50> <4F> 38 endnotdefrange",
+            "1 beginnotdefrange <50> <0060> 38 endnotdefrange",
+            "1 beginnotdefrange <50> 38 endnotdefrange",
+            "1 beginnotdefrange <50> <5F> /X endnotdefrange",
+            "1 beginnotdefrange <50> <5F> 70000 endnotdefrange",
+            "1 beginnotdefchar <42> <43> endnotdefchar",
+            "1 beginnotdefchar <0102030405> 1 endnotdefchar",
+            "1 beginnotdefchar <> 1 endnotdefchar",
+        ] {
+            assert!(matches!(notdef(body), Err(Error::Structure(_))), "{body}");
+        }
+        assert!(matches!(
+            notdef("1 beginnotdefchar <42> 37"),
+            Err(Error::UnexpectedEof { .. })
+        ));
+        // Codes written as literal strings are flagged like elsewhere.
+        assert!(
+            notdef("1 beginnotdefchar (B) 37 endnotdefchar")
+                .unwrap()
+                .literal_codes
+        );
+    }
+
+    #[test]
+    fn notdef_entries_count_against_the_limit() {
+        let limits = Limits {
+            max_text_codes: 3,
+            ..Limits::default()
+        };
+        let src = format!("{CS}1 beginnotdefrange <50> <5F> 38 endnotdefrange");
+        assert!(CMap::parse(src.as_bytes(), None, &limits).is_ok());
+        let src = format!("{src} 2 beginnotdefchar <42> 1 <43> 2 endnotdefchar");
+        assert!(matches!(
+            CMap::parse(src.as_bytes(), None, &limits),
+            Err(Error::LimitExceeded { .. })
         ));
     }
 }

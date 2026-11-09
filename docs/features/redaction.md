@@ -135,7 +135,10 @@ meeting a rect or reached from elsewhere,
 ExtGState with a soft mask or `/Font`, literal strings holding an
 unescaped carriage return anywhere in the document (readers do not agree
 on the bytes they hold), text in a font whose embedded CMap writes codes
-as literal strings (Poppler rejects them, other readers do not), `/ActualText`, `/Alt` or `/E` in named marked-content
+as literal strings (Poppler rejects them, other readers do not), a
+Type 0 code its CMap maps by no `cidchar` / `cidrange` (a notdef
+mapping, no mapping, or bytes in no codespace range: readers draw
+different glyphs at different widths), `/ActualText`, `/Alt` or `/E` in named marked-content
 properties or on a marked-content point,
 text in a clipping mode (`Tr` 4–7),
 non-embedded fonts (glyph extent unknown; see `embed_substitute_fonts`), Type 3 glyphs whose CharProc is not
@@ -263,6 +266,24 @@ Each of these is refused with a typed error, not approximated:
 - **Strings**: a document with a literal string holding an unescaped
   carriage return (in content, objects or a CMap); text in a font whose
   embedded CMap writes codes as literal strings.
+- **CMap codes**: a shown Type 0 code that its CMap (embedded or
+  predefined, with what it inherits by `usecmap`) maps by no `cidchar`
+  or `cidrange` and no Identity base. Fonts that declare notdef
+  mappings or leave codes unmapped redact as long as the codes they
+  show are mapped. Readers measured on synthetic Type 0 fonts (Poppler
+  26.10, MuPDF 1.28.6, pdf.js 6.5.438):
+
+  | shown code | kasane (§9.7.6.3) | Poppler | MuPDF | pdf.js |
+  | --- | --- | --- | --- | --- |
+  | in a notdef char or range (any CID, also 0) | the notdef CID (a range maps every code to the same CID) | CID 0 (notdef ignored) | nothing drawn, no advance | CID = code (notdef ignored) |
+  | in the codespace, mapped by nothing | CID 0 | CID 0 | nothing drawn, no advance | CID = code |
+  | in no codespace range | CID 0, shortest codespace length | CID 0; a 2-byte prefix match takes 2 bytes (`<81 20>` against `<8140> <9FFC>`), otherwise 1 | nothing drawn, no advance, 1 byte | CID 0, 1 byte |
+
+  The glyph, its width (`/W` is indexed by CID) and so where every
+  later glyph falls differ, so a code placed outside a rect here can be
+  drawn inside it by another reader. The three readers ignore the notdef
+  mappings of predefined CMaps as well (measured with `90ms-RKSJ-H`,
+  whose `<00> <1f>` notdef range maps to CID 231).
 - **Scripts**: a catalog running JavaScript, unless `remove_javascript`
   removes every script; a catalog `/AA`.
 - **Annotations**: other than links meeting a rect unless

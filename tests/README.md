@@ -18,6 +18,7 @@ directly under `tests/` as a separate integration-test binary.
 | `text_tounicode.rs` | ToUnicode CMap + positioned `extract_text` |
 | `text_extract_hardening.rs` | ActualText/OC refusal, budgets, headless extraction, coordinates |
 | `text_cid.rs` | Type0/CIDFontType2/Identity-H render + extract |
+| `text_cmap_undefined.rs` | Type0 CMap notdef / unmapped / invalid codes: render, extract, redaction refusal |
 | `rewrite_roundtrip.rs` | full-rewrite round-trip, ref remap, refusal conditions |
 | `edit_annotations.rs` | `/Square` annotation editing via `Edit` session |
 | `cli_rewrite.rs` | `rewrite` subcommand + atomic-output guards |
