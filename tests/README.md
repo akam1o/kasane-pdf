@@ -19,6 +19,11 @@ directly under `tests/` as a separate integration-test binary.
 | `text_extract_hardening.rs` | ActualText/OC refusal, budgets, headless extraction, coordinates |
 | `text_cid.rs` | Type0/CIDFontType2/Identity-H render + extract |
 | `text_cmap_undefined.rs` | Type0 CMap notdef / unmapped / invalid codes: render, extract, redaction refusal |
+| `redact.rs` | `redact`: removal in rects, originals, verification, annotations, soft masks, refusals |
+| `redact_security.rs` | `redact` non-interference: inputs differing only inside the rects give identical outputs |
+| `redact_javascript.rs` | `redact` with `remove_javascript` |
+| `redact_structure.rs` | `redact` and the structure tree: touched elements' text, attributes, `/OBJR`, `/MCR`, malformed trees |
+| `redact_inventory.rs` | `uninspected_data`, `Redaction::uninspected`, `refuse_uninspected` |
 | `rewrite_roundtrip.rs` | full-rewrite round-trip, ref remap, refusal conditions |
 | `edit_annotations.rs` | `/Square` annotation editing via `Edit` session |
 | `cli_rewrite.rs` | `rewrite` subcommand + atomic-output guards |
