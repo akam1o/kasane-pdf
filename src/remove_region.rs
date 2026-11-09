@@ -2554,13 +2554,13 @@ struct SoftMaskEdit {
 /// that is not an 8-bit DeviceGray image in the forms images are
 /// rewritten from, with a `/Matte` (pre-multiplied colour), a
 /// non-default `/Decode`, or masks of its own.
-fn redact_soft_mask(
+/// The soft mask `sm` of an image, when redaction can edit it (see
+/// [`redact_soft_mask`]): its dictionary, stored bytes and size.
+fn soft_mask_checked(
     doc: &Document,
     sm: &Object,
-    ctm: &Matrix,
-    rects: &[crate::page::Rect],
     limits: &Limits,
-) -> Result<Option<SoftMaskEdit>, Error> {
+) -> Result<(Dict, Vec<u8>, u32, u32), Error> {
     let refuse = |detail: &str| Error::Unsupported {
         feature: "image soft mask",
         detail: detail.into(),
@@ -2592,6 +2592,26 @@ fn redact_soft_mask(
             return Err(refuse("a soft mask with a non-default /Decode"));
         }
     }
+    Ok((dict.clone(), raw.to_vec(), w, h))
+}
+
+/// Why redaction cannot edit the soft mask `sm`, if it cannot (for the
+/// diagnosis).
+pub(crate) fn soft_mask_blocker(doc: &Document, sm: &Object, limits: &Limits) -> Option<String> {
+    soft_mask_checked(doc, sm, limits)
+        .err()
+        .map(|e| e.to_string())
+}
+
+fn redact_soft_mask(
+    doc: &Document,
+    sm: &Object,
+    ctm: &Matrix,
+    rects: &[crate::page::Rect],
+    limits: &Limits,
+) -> Result<Option<SoftMaskEdit>, Error> {
+    let (dict, raw, w, h) = soft_mask_checked(doc, sm, limits)?;
+    let (dict, raw) = (&dict, raw.as_slice());
     let ranges = image_pixel_ranges(ctm, w, h, rects)?;
     if ranges.is_empty() {
         return Ok(None);

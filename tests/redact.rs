@@ -5183,3 +5183,59 @@ fn appearance_less_highlight_ends() {
     .unwrap();
     assert_eq!(r.annotations_removed, 0, "beyond half its height: kept");
 }
+
+/// The diagnosis lists a soft mask among an image's blockers only when
+/// redaction cannot edit it.
+#[test]
+fn diagnosis_soft_mask_blockers() {
+    let make = |mask_extra: &str| {
+        build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", b"q 100 0 0 100 50 50 cm /Im1 Do Q")),
+            (
+                5,
+                stream_obj(
+                    "/Type /XObject /Subtype /Image /Width 16 /Height 16 \
+                     /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask 6 0 R",
+                    &secret_samples(),
+                ),
+            ),
+            (
+                6,
+                stream_obj(
+                    &format!(
+                        "/Type /XObject /Subtype /Image /Width 16 /Height 16 \
+                         /ColorSpace /DeviceGray /BitsPerComponent 8 {mask_extra}"
+                    ),
+                    &[7u8; 256],
+                ),
+            ),
+        ])
+    };
+    let blockers = |pdf: &[u8]| {
+        let doc = Document::from_bytes(pdf).unwrap();
+        let d = kasane_pdf::diagnose_redaction(
+            &doc,
+            0,
+            &[(40.0, 40.0, 100.0, 100.0)],
+            &kasane_pdf::Limits::default(),
+        )
+        .unwrap();
+        d.targets
+            .iter()
+            .filter_map(|t| match &t.detail {
+                kasane_pdf::TargetDetail::Image { blockers, .. } => Some(blockers.join(" ")),
+                _ => None,
+            })
+            .collect::<String>()
+    };
+    assert!(!blockers(&make("")).contains("SMask"));
+    assert!(blockers(&make("/Matte [0 0 0]")).contains("/SMask"));
+}

@@ -2573,6 +2573,15 @@ impl<'a> DiagWalker<'a> {
                 if key == b"Interpolate" && v.as_bool() == Some(false) {
                     continue;
                 }
+                // A soft mask redaction edits with the image is no blocker.
+                if key == b"SMask" {
+                    if let Some(why) =
+                        crate::remove_region::soft_mask_blocker(self.doc, v, self.limits)
+                    {
+                        blockers.push(format!("/SMask ({why})"));
+                    }
+                    continue;
+                }
                 blockers.push(format!("/{}", String::from_utf8_lossy(key)));
             }
         }
