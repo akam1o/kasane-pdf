@@ -189,7 +189,7 @@ fn undrawn_forms() {
     );
     let d = Document::from_bytes(&unused).unwrap();
     let inv = uninspected_data(&d, &Limits::default()).unwrap();
-    assert_eq!(roles(&inv), vec![DataRole::UndrawnForm]);
+    assert_eq!(roles(&inv), vec![DataRole::Undrawn]);
     let drawn = doc(
         &format!("{TEXT} /Fm Do"),
         "/XObject << /Fm 30 0 R >>",
@@ -345,4 +345,124 @@ fn an_incomplete_inventory_says_so() {
     let inv = uninspected_data(&d, &small).unwrap();
     assert!(!inv.complete);
     assert_eq!(inv.not_carried, 0, "nothing is called unreachable");
+}
+
+/// What only a back edge (`/Parent`) reaches is still carried by the
+/// writer: classified, not called unreachable. (Independent review, P1.)
+#[test]
+fn back_edges_are_followed() {
+    let pdf = doc(
+        TEXT,
+        "",
+        "/Annots [30 0 R]",
+        "",
+        vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Square /Rect [150 150 160 160] /Parent 31 0 R >>"
+                    .to_vec(),
+            ),
+            (31, stream_obj("", b"hidden")),
+        ],
+    );
+    let r = run(&pdf, RedactOptions::new()).unwrap();
+    assert_eq!(roles(&r.uninspected), vec![DataRole::UnknownStream]);
+    assert!(run(&pdf, RedactOptions::new().refuse_uninspected(true)).is_err());
+}
+
+/// A long chain of objects: the paths recorded are shared, so their
+/// size does not grow with the square of the chain. (Independent
+/// review, P1.)
+#[test]
+fn long_chains_keep_paths_small() {
+    let n = 8000u32;
+    let mut extra = Vec::new();
+    for i in 0..n {
+        let next = if i + 1 < n {
+            format!("/Next {} 0 R", 100 + i + 1)
+        } else {
+            String::new()
+        };
+        extra.push((100 + i, stream_obj(&next, b"")));
+    }
+    let pdf = doc(
+        TEXT,
+        "",
+        "",
+        "/PieceInfo << /A << /Private 100 0 R >> >>",
+        extra,
+    );
+    let d = Document::from_bytes(&pdf).unwrap();
+    let inv = uninspected_data(&d, &Limits::default()).unwrap();
+    assert_eq!(inv.uninspected, n as u64);
+    let total: usize = inv.items.iter().map(|i| i.via.len()).sum();
+    assert!(total < 5_000_000, "{total} bytes of paths");
+}
+
+/// An appearance stream's own resources are resources: the image it
+/// draws is interpreted. (Independent review, P2.)
+#[test]
+fn appearance_resources() {
+    let ap = stream_obj(
+        "/Type /XObject /Subtype /Form /BBox [0 0 10 10] /Resources << /XObject << /I 32 0 R >> >>",
+        b"q 10 0 0 10 0 0 cm /I Do Q",
+    );
+    let img = stream_obj(
+        "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray \
+         /BitsPerComponent 8",
+        &[7],
+    );
+    let pdf = doc(
+        TEXT,
+        "",
+        "/Annots [30 0 R]",
+        "",
+        vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Square /Rect [150 150 160 160] /AP << /N 31 0 R >> >>"
+                    .to_vec(),
+            ),
+            (31, ap),
+            (32, img),
+        ],
+    );
+    let r = run(&pdf, RedactOptions::new().refuse_uninspected(true)).unwrap();
+    assert_eq!(r.uninspected.uninspected, 0);
+}
+
+/// An image nothing draws is not shown: uninspected. A stream that is
+/// both an attachment and a page's content is handed out as it is:
+/// uninspected whatever else it is. (Independent review.)
+#[test]
+fn undrawn_images_and_attachments_used_as_content() {
+    let img = stream_obj(
+        "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray \
+         /BitsPerComponent 8",
+        b"payload-not-a-pixel",
+    );
+    let pdf = doc(
+        TEXT,
+        "/XObject << /Unused 30 0 R >>",
+        "",
+        "",
+        vec![(30, img)],
+    );
+    let d = Document::from_bytes(&pdf).unwrap();
+    let inv = uninspected_data(&d, &Limits::default()).unwrap();
+    assert_eq!(roles(&inv), vec![DataRole::Undrawn]);
+
+    let pdf = doc(
+        TEXT,
+        "",
+        "",
+        "/Names << /EmbeddedFiles << /Names [(a.txt) 30 0 R] >> >>",
+        vec![(
+            30,
+            b"<< /Type /Filespec /F (a.txt) /EF << /F 4 0 R >> >>".to_vec(),
+        )],
+    );
+    let d = Document::from_bytes(&pdf).unwrap();
+    let inv = uninspected_data(&d, &Limits::default()).unwrap();
+    assert_eq!(roles(&inv), vec![DataRole::EmbeddedFile]);
 }

@@ -2488,7 +2488,11 @@ impl Font {
             return None;
         };
         let (c, len) = unpack_code(code);
-        match f.cmap.as_ref()?.lookup(c, len).1 {
+        let cmap = f.cmap.as_ref()?;
+        match cmap.lookup(c, len).1 {
+            crate::cmap::Mapping::Defined if cmap.length_ambiguous(c, len) => {
+                Some("whose value another code length maps to another CID")
+            }
             crate::cmap::Mapping::Defined => None,
             crate::cmap::Mapping::Notdef => Some("mapped only by a notdef mapping"),
             crate::cmap::Mapping::Unmapped => Some("mapped to no CID"),

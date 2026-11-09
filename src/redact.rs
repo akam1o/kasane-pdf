@@ -33,7 +33,7 @@
 //! Always: `/Info` and catalog XMP are removed. A structure tree is
 //! kept and edited: the elements whose content the edit touched — and
 //! their ancestors — lose their text (`/Alt`, `/ActualText`, `/E`,
-//! `/T`), and object references to removed annotations or edited
+//! `/T`, `/Phoneme`, attribute strings) and associated files, and object references to removed annotations or edited
 //! originals leave it (`redact_struct`); or the caller asks for the
 //! whole tree to be removed. Everything the editor refuses
 //! stays refused: a structure that cannot be processed exactly is an
@@ -208,7 +208,8 @@ pub struct Redaction {
     /// The input's structure tree was removed (only with
     /// [`RedactOptions::remove_structure_tree`]).
     pub structure_tree_removed: bool,
-    /// Text entries (`/Alt`, `/ActualText`, `/E`, `/T`) removed from
+    /// Text entries (`/Alt`, `/ActualText`, `/E`, `/T`, `/Phoneme`,
+    /// attribute strings) removed from
     /// structure elements whose content the edit touched, or whose
     /// descendants' content it touched. The tree is otherwise kept.
     pub structure_texts_removed: u64,

@@ -810,3 +810,119 @@ fn large_and_deep_trees() {
         Err(Error::LimitExceeded { .. })
     ));
 }
+
+/// Attribute objects carry text too: a table's `/Summary`, direct,
+/// indirect, in an array with revisions, or through `/ClassMap`. A
+/// touched element's go; layout attributes and untouched elements'
+/// stay. (Independent review, P0.)
+#[test]
+fn attribute_strings_of_touched_elements() {
+    let pdf = tagged(
+        TWO,
+        "",
+        "",
+        "[31 0 R 32 0 R 33 0 R] /ClassMap << /Cls << /O /Table /Summary (SECRETCLASS) >> >>",
+        "<< /Nums [0 [31 0 R 32 0 R]] >>",
+        vec![
+            (
+                31,
+                b"<< /S /Table /P 30 0 R /Pg 3 0 R /K 0 \
+                  /A << /O /Table /Summary (SECRETSUMMARY) /Width 100 >> >>"
+                    .to_vec(),
+            ),
+            (
+                32,
+                b"<< /S /Table /P 30 0 R /Pg 3 0 R /K 1 \
+                  /A << /O /Table /Summary (PUBLICSUMMARY) >> >>"
+                    .to_vec(),
+            ),
+            (
+                33,
+                b"<< /S /Figure /P 30 0 R /Pg 3 0 R /K 0 /C /Cls /A [40 0 R 0] >>".to_vec(),
+            ),
+            (
+                40,
+                b"<< /O /Layout /Placement /Block /Summary (SECRETINDIRECT) >>".to_vec(),
+            ),
+        ],
+    );
+    let r = run(&pdf).unwrap();
+    for s in [&b"SECRETSUMMARY"[..], b"SECRETINDIRECT", b"SECRETCLASS"] {
+        assert!(!contains(&r.output, s), "{}", String::from_utf8_lossy(s));
+    }
+    assert!(contains(&r.output, b"PUBLICSUMMARY"));
+    let els = elements(&r.output);
+    let doc = Document::from_bytes(&r.output).unwrap();
+    let a = doc.deref(&elem(&els, "Table")[b"A".as_slice()]).unwrap();
+    assert!(
+        a.as_dict().unwrap().contains_key(b"Width".as_slice()),
+        "layout attributes stay"
+    );
+    tree_resolves(&r.output);
+}
+
+/// Elements reached only through `/IDTree`, or through a `/ParentTree`
+/// entry no page names, are matched by their own `/K` too.
+/// (Independent review, P0.)
+#[test]
+fn elements_outside_the_root_kids() {
+    let pdf = tagged(
+        TWO,
+        "",
+        "",
+        "31 0 R /IDTree << /Names [(alias) 32 0 R] >>",
+        "<< /Nums [0 [31 0 R] 7 [33 0 R]] >>",
+        vec![
+            (
+                31,
+                b"<< /S /P /P 30 0 R /Pg 3 0 R /K 0 /Alt (SECRETALT) >>".to_vec(),
+            ),
+            (
+                32,
+                b"<< /S /P /P 30 0 R /Pg 3 0 R /K 0 /ID (alias) /Alt (SECRETALIAS) >>".to_vec(),
+            ),
+            (
+                33,
+                b"<< /S /P /P 30 0 R /Pg 3 0 R /K 0 /Alt (SECRETOTHER) >>".to_vec(),
+            ),
+        ],
+    );
+    let r = run(&pdf).unwrap();
+    for s in [&b"SECRETALT"[..], b"SECRETALIAS", b"SECRETOTHER"] {
+        assert!(!contains(&r.output, s), "{}", String::from_utf8_lossy(s));
+    }
+}
+
+/// PDF 2.0 element text and files: `/Phoneme` and associated files
+/// (`/AF`) of a touched element go.
+#[test]
+fn phonemes_and_associated_files() {
+    let pdf = tagged(
+        TWO,
+        "",
+        "",
+        "31 0 R",
+        "<< /Nums [0 [31 0 R]] >>",
+        vec![
+            (
+                31,
+                b"<< /S /Formula /P 30 0 R /Pg 3 0 R /K 0 /Phoneme (SECRETSOUND) \
+                  /PhoneticAlphabet /ipa /AF [40 0 R] >>"
+                    .to_vec(),
+            ),
+            (
+                40,
+                b"<< /Type /Filespec /F (f.mml) /AFRelationship /Source /EF << /F 41 0 R >> >>"
+                    .to_vec(),
+            ),
+            (
+                41,
+                stream_obj("/Type /EmbeddedFile", b"<math>SECRETSOURCE</math>"),
+            ),
+        ],
+    );
+    let r = run(&pdf).unwrap();
+    assert!(!contains(&r.output, b"SECRETSOUND"));
+    assert!(!contains(&r.output, b"SECRETSOURCE"));
+    assert_eq!(r.structure_items_removed, 1);
+}

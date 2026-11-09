@@ -954,6 +954,62 @@ fn annotation_geometry_bounds(
     Ok(b)
 }
 
+/// How far past its geometry (and border) a reader draws an annotation
+/// without an appearance stream: line endings (`/LE`, sized by each
+/// reader: Poppler and MuPDF reach up to 9.5 × the border width, and
+/// about 9.3 at the least — 15 × the width, at least 15, is taken) and leader
+/// lines (`/LL`, `/LLE`, `/LLO`). A caption (`/Cap`) and a cloudy border
+/// (`/BE /S /C`) are drawn to no known extent: refused.
+fn decoration_reach(doc: &Document, d: &Dict, w: f64) -> Result<f64, Error> {
+    let refuse = |what: &str| Error::Unsupported {
+        feature: "redaction on a page with an annotation drawn to no known extent",
+        detail: format!("no appearance stream and {what}"),
+    };
+    let num = |k: &[u8]| -> Result<f64, Error> {
+        Ok(match d.get(k) {
+            Some(o) => doc.deref(o)?.as_number().unwrap_or(0.0).abs(),
+            None => 0.0,
+        })
+    };
+    if d.get(b"Cap".as_slice())
+        .map(|c| doc.deref(c))
+        .transpose()?
+        .and_then(|c| c.as_bool())
+        == Some(true)
+    {
+        return Err(refuse("a caption (/Cap)"));
+    }
+    if let Some(be) = d.get(b"BE".as_slice()) {
+        let be = doc.deref(be)?;
+        if be
+            .as_dict()
+            .and_then(|b| b.get(b"S".as_slice()))
+            .and_then(|s| s.as_name())
+            == Some(b"C")
+        {
+            return Err(refuse("a cloudy border (/BE)"));
+        }
+    }
+    let mut reach = num(b"LL")? + num(b"LLE")? + num(b"LLO")?;
+    if let Some(le) = d.get(b"LE".as_slice()) {
+        let le = doc.deref(le)?;
+        let ends: Vec<Object> = match le {
+            Object::Array(a) => a,
+            o => vec![o],
+        };
+        if ends
+            .iter()
+            .any(|e| !matches!(e.as_name(), None | Some(b"None")))
+        {
+            reach += (15.0 * w).max(15.0);
+        }
+    }
+    if !reach.is_finite() {
+        return Err(refuse("geometry that is not finite"));
+    }
+    Ok(reach)
+}
+
 /// The border width a reader strokes an annotation without an
 /// appearance stream with: `/BS /W`, else `/Border [h v w]`, else 1.
 fn border_width(doc: &Document, d: &Dict) -> Result<f64, Error> {
@@ -1241,8 +1297,15 @@ pub(crate) fn regions_edit_session_with<'a>(
                         boxes.push(g);
                     }
                     let w = border_width(doc, &d)?;
+                    let m = w + decoration_reach(doc, &d, w).map_err(|e| match e {
+                        Error::Unsupported { feature, detail } => Error::Unsupported {
+                            feature,
+                            detail: format!("/Annots[{i}]: {detail}"),
+                        },
+                        e => e,
+                    })?;
                     for b in &mut boxes {
-                        *b = (b.0 - w, b.1 - w, b.2 + w, b.3 + w);
+                        *b = (b.0 - m, b.1 - m, b.2 + m, b.3 + m);
                     }
                 }
                 let hit = boxes.iter().any(|&(x0, y0, x1, y1)| {

@@ -30,11 +30,15 @@ use crate::limits::Limits;
 pub(crate) struct CMap {
     /// `(byte length, low, high)` codespace ranges.
     codespaces: Vec<(u8, u32, u32)>,
-    /// Single-code mappings.
-    single: HashMap<u32, u32>,
-    /// `(byte length, low, high, first cid)` range mappings, in file
-    /// order (later entries override — searched last-to-first).
-    ranges: Vec<(u8, u32, u32, u32)>,
+    /// Single-code mappings: `(byte length, code)` → `(cid, order)`.
+    single: HashMap<(u8, u32), (u32, u32)>,
+    /// `(byte length, low, high, first cid, order)` range mappings, in
+    /// file order. `order` counts definitions of either kind in file
+    /// order (a base CMap's first): the latest definition of a code
+    /// wins, as Poppler, MuPDF and pdf.js read it.
+    ranges: Vec<(u8, u32, u32, u32, u32)>,
+    /// The next definition's `order`.
+    order: u32,
     /// `(byte length, low, high, cid)` notdef mappings (`beginnotdefchar`
     /// entries have `low == high`): every code in a range maps to the
     /// same CID. Searched last-to-first, after the defined mappings.
@@ -129,8 +133,18 @@ impl CMap {
                 // Base mappings go first: later entries override.
                 let mut merged = base;
                 merged.codespaces.extend(std::mem::take(&mut cm.codespaces));
-                merged.ranges.extend(std::mem::take(&mut cm.ranges));
-                merged.single.extend(std::mem::take(&mut cm.single));
+                // Definitions made before the `usecmap` (rare) still
+                // follow the base's.
+                let shift = merged.order;
+                merged.ranges.extend(
+                    cm.ranges
+                        .drain(..)
+                        .map(|(l, lo, hi, c, o)| (l, lo, hi, c, o + shift)),
+                );
+                merged
+                    .single
+                    .extend(cm.single.drain().map(|(k, (c, o))| (k, (c, o + shift))));
+                merged.order += cm.order;
                 merged.notdef.extend(std::mem::take(&mut cm.notdef));
                 merged.vertical |= cm.vertical;
                 merged.identity_base |= cm.identity_base;
@@ -257,7 +271,8 @@ impl CMap {
                             if notdef {
                                 cm.notdef.push((lo.len() as u8, l, h, cid));
                             } else {
-                                cm.ranges.push((lo.len() as u8, l, h, cid));
+                                cm.ranges.push((lo.len() as u8, l, h, cid, cm.order));
+                                cm.order += 1;
                             }
                         }
                     }
@@ -294,7 +309,9 @@ impl CMap {
                                 let c = be(&code);
                                 cm.notdef.push((code.len() as u8, c, c, cid));
                             } else if cm.single.len() < cap as usize {
-                                cm.single.insert(be(&code), cid);
+                                cm.single
+                                    .insert((code.len() as u8, be(&code)), (cid, cm.order));
+                                cm.order += 1;
                             }
                         }
                     }
@@ -429,13 +446,17 @@ impl CMap {
     /// a defined mapping (`cidchar`, `cidrange`, an Identity base);
     /// else, for a code in the codespace, a notdef mapping; else CID 0.
     pub(crate) fn lookup(&self, code: u32, len: usize) -> (u32, Mapping) {
-        if let Some(c) = self.single.get(&code) {
-            return (*c, Mapping::Defined);
+        if let Some(cid) = self.defined(code, len) {
+            return (cid, Mapping::Defined);
         }
-        for (l, lo, hi, cid) in self.ranges.iter().rev() {
-            if *l as usize == len && code >= *lo && code <= *hi {
-                return (cid + (code - lo), Mapping::Defined);
-            }
+        // Defined only for another length: read by value, as pdf.js and
+        // MuPDF do (Poppler does not; redaction refuses such a code,
+        // `length_ambiguous`).
+        if let Some(cid) = (1..=4usize)
+            .filter(|l| *l != len)
+            .find_map(|l| self.defined(code, l))
+        {
+            return (cid, Mapping::Defined);
         }
         let valid = self.in_codespace(code, len);
         if self.identity_base {
@@ -455,6 +476,32 @@ impl CMap {
             }
         }
         (0, Mapping::Unmapped)
+    }
+
+    /// The latest `cidchar` / `cidrange` definition of the `len`-byte
+    /// `code`.
+    fn defined(&self, code: u32, len: usize) -> Option<u32> {
+        let single = self.single.get(&(len as u8, code)).copied();
+        let range = self
+            .ranges
+            .iter()
+            .rev()
+            .find(|(l, lo, hi, _, _)| *l as usize == len && code >= *lo && code <= *hi)
+            .map(|(_, lo, _, cid, o)| (cid + (code - lo), *o));
+        match (single, range) {
+            (Some(s), Some(r)) => Some(if s.1 > r.1 { s.0 } else { r.0 }),
+            (s, r) => s.or(r).map(|x| x.0),
+        }
+    }
+
+    /// Whether the same code value is also defined for another byte
+    /// length with another CID: pdf.js and MuPDF key mappings by value,
+    /// Poppler by bytes, so readers may take either.
+    pub(crate) fn length_ambiguous(&self, code: u32, len: usize) -> bool {
+        let mine = self.defined(code, len);
+        (1..=4usize)
+            .filter(|l| *l != len && (code as u64) < (1u64 << (8 * *l)))
+            .any(|l| matches!(self.defined(code, l), Some(c) if Some(c) != mine))
     }
 
     /// `true` when every code is two bytes (so a `/ToUnicode` CMap

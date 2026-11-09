@@ -82,9 +82,9 @@ pub enum DataRole {
     Halftone,
     /// A template page (`/Names /Templates`, `/Names /Pages`).
     Template,
-    /// A form XObject nothing draws (a named appearance, an icon, an
-    /// unused resource): its content is not searched.
-    UndrawnForm,
+    /// An image or form XObject nothing draws (a named appearance, an
+    /// icon, an unused resource): not shown, its content not searched.
+    Undrawn,
     /// A stream under a key no modelled structure names.
     UnknownStream,
     /// An entry of the catalog, the page tree or a page that no
@@ -109,7 +109,7 @@ impl DataRole {
             DataRole::PostScript => "remove the PostScript or OPI data",
             DataRole::Halftone => "review the halftone",
             DataRole::Template => "review or remove the template pages",
-            DataRole::UndrawnForm => "remove the unused form, or review its content",
+            DataRole::Undrawn => "remove the unused image or form, or review it",
             DataRole::UnknownStream | DataRole::UnknownEntry => "review the data or remove it",
             DataRole::Unreachable => "none: redact does not write it",
         }
@@ -176,6 +176,12 @@ enum Ctx {
     Page,
     Contents,
     Resources,
+    /// Resources of a pattern, a Type 3 font, a soft mask or a form's
+    /// default resources: what they draw is not followed by the content
+    /// walk that decides what is drawn.
+    ResourcesOther,
+    XObjectOther,
+    FormOther,
     /// A resource dictionary of `Ctx` values (`/Font`, `/XObject` …).
     Map(Sub),
     Font,
@@ -224,6 +230,7 @@ enum Ctx {
 enum Sub {
     Font,
     XObject,
+    XObjectOther,
     ExtGState,
     ColorSpace,
     Pattern,
@@ -231,7 +238,7 @@ enum Sub {
     Generic,
     FileSpec,
     Action,
-    UndrawnForm,
+    Undrawn,
     Template,
     Multimedia,
 }
@@ -241,6 +248,7 @@ impl Sub {
         match self {
             Sub::Font => Ctx::Font,
             Sub::XObject => Ctx::XObject,
+            Sub::XObjectOther => Ctx::XObjectOther,
             Sub::ExtGState => Ctx::ExtGState,
             Sub::ColorSpace => Ctx::ColorSpace,
             Sub::Pattern => Ctx::Pattern,
@@ -248,7 +256,7 @@ impl Sub {
             Sub::Generic => Ctx::Generic,
             Sub::FileSpec => Ctx::FileSpec,
             Sub::Action => Ctx::Action,
-            Sub::UndrawnForm => Ctx::Opaque(DataRole::UndrawnForm),
+            Sub::Undrawn => Ctx::Opaque(DataRole::Undrawn),
             Sub::Template => Ctx::Opaque(DataRole::Template),
             Sub::Multimedia => Ctx::Opaque(DataRole::Multimedia),
         }
@@ -322,16 +330,19 @@ pub fn uninspected_data(doc: &Document, limits: &Limits) -> Result<DataInventory
         known: HashSet::new(),
         streams: HashMap::new(),
         direct_unknown: Vec::new(),
+        paths: Vec::new(),
         budget: limits.max_audit_elements,
         complete: true,
     };
     // Breadth first: the path recorded is a shortest one.
-    let mut queue: VecDeque<(Object, Ctx, String)> = VecDeque::new();
+    let mut queue: VecDeque<(Object, Ctx, usize)> = VecDeque::new();
     if let Some(r) = doc.trailer().get(b"Root".as_slice()) {
-        queue.push_back((r.clone(), Ctx::Catalog, "/Root".into()));
+        let p = w.child(usize::MAX, "/Root".into());
+        queue.push_back((r.clone(), Ctx::Catalog, p));
     }
     if let Some(i) = doc.trailer().get(b"Info".as_slice()) {
-        queue.push_back((i.clone(), Ctx::Generic, "/Info".into()));
+        let p = w.child(usize::MAX, "/Info".into());
+        queue.push_back((i.clone(), Ctx::Generic, p));
     }
     while let Some((o, ctx, via)) = queue.pop_front() {
         if !w.visit(o, ctx, via, &drawn, &mut queue)? {
@@ -356,16 +367,17 @@ pub fn uninspected_data(doc: &Document, limits: &Limits) -> Result<DataInventory
         }
         if status == DataStatus::Uninspected {
             inv.uninspected += 1;
-            items.push(item(doc, Some(*r), s.role, status, s.via.clone()));
+            items.push(item(doc, Some(*r), s.role, status, w.render(s.via)));
         }
     }
     for (holder, via) in &w.direct_unknown {
+        let via = w.render(*via);
         inv.uninspected += 1;
         items.push(DataItem {
             object: *holder,
             role: DataRole::UnknownEntry,
             status: DataStatus::Uninspected,
-            via: via.clone(),
+            via,
             stream_bytes: None,
             filters: Vec::new(),
         });
@@ -446,7 +458,10 @@ struct StreamUse {
     /// uninspected in.
     best: DataStatus,
     role: DataRole,
-    via: String,
+    via: usize,
+    /// Reached in a role whose bytes a reader hands out as they are
+    /// (an attachment, metadata …): uninspected whatever else it is.
+    sticky: bool,
 }
 
 impl StreamUse {
@@ -466,7 +481,10 @@ struct Walk<'d> {
     known: HashSet<IndirectRef>,
     streams: HashMap<IndirectRef, StreamUse>,
     /// Unknown entries holding a direct value: the holder and the path.
-    direct_unknown: Vec<(Option<IndirectRef>, String)>,
+    direct_unknown: Vec<(Option<IndirectRef>, usize)>,
+    /// Paths, each a step from its parent (`usize::MAX` for none):
+    /// shared, so their size grows with the steps, not their depth.
+    paths: Vec<(usize, String)>,
     budget: u64,
     complete: bool,
 }
@@ -477,9 +495,9 @@ impl Walk<'_> {
         &mut self,
         o: Object,
         ctx: Ctx,
-        via: String,
+        via: usize,
         drawn: &Option<HashMap<IndirectRef, std::collections::BTreeSet<usize>>>,
-        queue: &mut VecDeque<(Object, Ctx, String)>,
+        queue: &mut VecDeque<(Object, Ctx, usize)>,
     ) -> Result<bool, Error> {
         if self.budget == 0 {
             self.complete = false;
@@ -508,6 +526,8 @@ impl Walk<'_> {
             {
                 Ctx::Page
             }
+            // An appearance: a form, or a dictionary of states.
+            (Ctx::ApState, Object::Stream { .. }) => Ctx::Form,
             _ => ctx,
         };
         if let (Some(r), false) = (r, matches!(body, Object::Stream { .. })) {
@@ -522,15 +542,15 @@ impl Walk<'_> {
                 return Ok(true);
             }
             if let Some(r) = r {
-                self.note_stream(r, DataStatus::Uninspected, DataRole::UnknownEntry, &via);
+                self.note_stream(r, DataStatus::Uninspected, DataRole::UnknownEntry, via);
             }
             // Its contents are unknown too, but listed through it.
-            self.push_children(&body, Ctx::Generic, &via, queue);
+            self.push_children(&body, Ctx::Generic, via, queue);
             return Ok(true);
         }
         if let (Some(r), Object::Stream { dict, .. }) = (r, &body) {
             let (status, role) = stream_status(ctx, dict, r, drawn);
-            self.note_stream(r, status, role, &via);
+            self.note_stream(r, status, role, via);
         }
         let d = match &body {
             Object::Dict(d) => Some(d),
@@ -544,20 +564,20 @@ impl Walk<'_> {
                     c => c,
                 };
                 for (i, x) in a.iter().enumerate() {
-                    queue.push_back((x.clone(), each, format!("{via}[{i}]")));
+                    queue.push_back((x.clone(), each, self.child(via, format!("[{i}]"))));
                 }
             }
             (Ctx::Contents, Object::Array(a)) => {
                 for (i, x) in a.iter().enumerate() {
-                    queue.push_back((x.clone(), Ctx::Contents, format!("{via}[{i}]")));
+                    queue.push_back((x.clone(), Ctx::Contents, self.child(via, format!("[{i}]"))));
                 }
             }
             (Ctx::Annots, Object::Array(a)) => {
                 for (i, x) in a.iter().enumerate() {
-                    queue.push_back((x.clone(), Ctx::Annot, format!("{via}[{i}]")));
+                    queue.push_back((x.clone(), Ctx::Annot, self.child(via, format!("[{i}]"))));
                 }
             }
-            (Ctx::ColorSpace, Object::Array(a)) => self.color_space(a, &via, queue),
+            (Ctx::ColorSpace, Object::Array(a)) => self.color_space(a, via, queue),
             (Ctx::Function, Object::Array(a))
             | (Ctx::Font, Object::Array(a))
             | (Ctx::FileSpec, Object::Array(a))
@@ -567,28 +587,61 @@ impl Walk<'_> {
             | (Ctx::Opaque(_), Object::Array(a))
             | (Ctx::Generic, Object::Array(a)) => {
                 for (i, x) in a.iter().enumerate() {
-                    queue.push_back((x.clone(), ctx, format!("{via}[{i}]")));
+                    queue.push_back((x.clone(), ctx, self.child(via, format!("[{i}]"))));
                 }
             }
             (Ctx::NameTree(sub), Object::Array(a)) => {
                 // A `/Names` array: keys and values alternate.
                 for (i, x) in a.iter().enumerate() {
                     if i % 2 == 1 {
-                        queue.push_back((x.clone(), sub.ctx(), format!("{via}[{i}]")));
+                        queue.push_back((x.clone(), sub.ctx(), self.child(via, format!("[{i}]"))));
                     }
                 }
             }
             _ => {
                 if let Some(d) = d {
-                    self.dict(ctx, d, r, &via, queue);
+                    self.dict(ctx, d, r, via, queue);
                 }
             }
         }
         Ok(true)
     }
 
-    fn note_stream(&mut self, r: IndirectRef, status: DataStatus, role: DataRole, via: &str) {
+    /// A path one step below `parent`.
+    fn child(&mut self, parent: usize, step: String) -> usize {
+        self.paths.push((parent, step));
+        self.paths.len() - 1
+    }
+
+    /// A path written out (its last 32 steps).
+    fn render(&self, mut at: usize) -> String {
+        let mut steps = Vec::new();
+        while at != usize::MAX {
+            if steps.len() == 32 {
+                steps.push("…");
+                break;
+            }
+            let (parent, step) = &self.paths[at];
+            steps.push(step.as_str());
+            at = *parent;
+        }
+        steps.reverse();
+        steps.concat()
+    }
+
+    fn note_stream(&mut self, r: IndirectRef, status: DataStatus, role: DataRole, via: usize) {
+        let sticky = status == DataStatus::Uninspected
+            && !matches!(
+                role,
+                DataRole::UnknownStream | DataRole::UnknownEntry | DataRole::Undrawn
+            );
         match self.streams.get_mut(&r) {
+            Some(u) if u.sticky => {}
+            Some(u) if sticky => {
+                u.best = status;
+                u.role = role;
+                u.sticky = true;
+            }
             Some(u) => {
                 let vaguer = matches!(u.role, DataRole::UnknownStream | DataRole::UnknownEntry);
                 if status < u.best || (status == u.best && vaguer) {
@@ -602,7 +655,8 @@ impl Walk<'_> {
                     StreamUse {
                         best: status,
                         role,
-                        via: via.to_string(),
+                        via,
+                        sticky,
                     },
                 );
             }
@@ -613,18 +667,18 @@ impl Walk<'_> {
         &mut self,
         o: &Object,
         ctx: Ctx,
-        via: &str,
-        queue: &mut VecDeque<(Object, Ctx, String)>,
+        via: usize,
+        queue: &mut VecDeque<(Object, Ctx, usize)>,
     ) {
         match o {
             Object::Array(a) => {
                 for (i, x) in a.iter().enumerate() {
-                    queue.push_back((x.clone(), ctx, format!("{via}[{i}]")));
+                    queue.push_back((x.clone(), ctx, self.child(via, format!("[{i}]"))));
                 }
             }
             Object::Dict(d) | Object::Stream { dict: d, .. } => {
                 for (k, v) in d {
-                    queue.push_back((v.clone(), ctx, format!("{via}/{}", name(k))));
+                    queue.push_back((v.clone(), ctx, self.child(via, format!("/{}", name(k)))));
                 }
             }
             _ => {}
@@ -634,8 +688,8 @@ impl Walk<'_> {
     fn color_space(
         &mut self,
         a: &[Object],
-        via: &str,
-        queue: &mut VecDeque<(Object, Ctx, String)>,
+        via: usize,
+        queue: &mut VecDeque<(Object, Ctx, usize)>,
     ) {
         let family = a.first().and_then(|f| f.as_name());
         for (i, x) in a.iter().enumerate().skip(1) {
@@ -649,7 +703,7 @@ impl Walk<'_> {
                 (Some(b"Pattern"), 1) => Ctx::ColorSpace,
                 _ => Ctx::Generic,
             };
-            queue.push_back((x.clone(), c, format!("{via}[{i}]")));
+            queue.push_back((x.clone(), c, self.child(via, format!("[{i}]"))));
         }
     }
 
@@ -658,8 +712,8 @@ impl Walk<'_> {
         ctx: Ctx,
         d: &Dict,
         holder: Option<IndirectRef>,
-        via: &str,
-        queue: &mut VecDeque<(Object, Ctx, String)>,
+        via: usize,
+        queue: &mut VecDeque<(Object, Ctx, usize)>,
     ) {
         for (k, v) in d {
             let key = k.as_slice();
@@ -667,12 +721,12 @@ impl Walk<'_> {
                 Some(c) => c,
                 None => continue,
             };
-            let path = format!("{via}/{}", name(k));
+            let path = self.child(via, format!("/{}", name(k)));
             if child == Ctx::Unknown && !matches!(v, Object::Ref(_)) && !is_scalar(v) {
                 // A direct value under an unknown entry: listed at its
                 // holder.
-                self.direct_unknown.push((holder, path.clone()));
-                self.push_children(v, Ctx::Generic, &path, queue);
+                self.direct_unknown.push((holder, path));
+                self.push_children(v, Ctx::Generic, path, queue);
                 continue;
             }
             queue.push_back((v.clone(), child, path));
@@ -692,8 +746,9 @@ fn name(k: &[u8]) -> String {
     String::from_utf8_lossy(k).into_owned()
 }
 
-/// The role of `d`'s entry `key` when `d` is reached as `ctx`; `None`
-/// for a back edge not followed (`/Parent`, `/P`). Keys naming
+/// The role of `d`'s entry `key` when `d` is reached as `ctx` (a back
+/// edge — `/Parent`, `/P` — is followed with no role: what only it
+/// reaches is still classified, conservatively). Keys naming
 /// uninspected data wherever they appear (`/Metadata`, `/PieceInfo`,
 /// `/Thumb`) are taken so under any structure.
 fn child_ctx(ctx: Ctx, d: &Dict, key: &[u8]) -> Option<Ctx> {
@@ -726,14 +781,14 @@ fn child_ctx_in(ctx: Ctx, d: &Dict, key: &[u8]) -> Option<Ctx> {
             _ => Ctx::Unknown,
         },
         Ctx::Pages => match key {
-            b"Parent" => return None,
+            b"Parent" => Ctx::Generic,
             b"Kids" => Ctx::Pages,
             b"Resources" => Ctx::Resources,
             k if PAGES_KEYS.contains(&k) => Ctx::Generic,
             _ => Ctx::Unknown,
         },
         Ctx::Page => match key {
-            b"Parent" => return None,
+            b"Parent" => Ctx::Generic,
             b"Contents" => Ctx::Contents,
             b"Resources" => Ctx::Resources,
             b"Annots" => Ctx::Annots,
@@ -746,6 +801,19 @@ fn child_ctx_in(ctx: Ctx, d: &Dict, key: &[u8]) -> Option<Ctx> {
             b"OutputIntents" => Ctx::OutputIntents,
             k if PAGE_KEYS.contains(&k) => Ctx::Generic,
             _ => Ctx::Unknown,
+        },
+        Ctx::ResourcesOther => match key {
+            b"XObject" => Ctx::Map(Sub::XObjectOther),
+            _ => return child_ctx_in(Ctx::Resources, d, key),
+        },
+        Ctx::XObjectOther => match subtype {
+            Some(b"Image") => return child_ctx_in(Ctx::Image, d, key),
+            Some(b"Form") => return child_ctx_in(Ctx::FormOther, d, key),
+            _ => Ctx::Generic,
+        },
+        Ctx::FormOther => match key {
+            b"Resources" => Ctx::ResourcesOther,
+            _ => return child_ctx_in(Ctx::Form, d, key),
         },
         Ctx::Resources => match key {
             b"Font" => Ctx::Map(Sub::Font),
@@ -762,7 +830,7 @@ fn child_ctx_in(ctx: Ctx, d: &Dict, key: &[u8]) -> Option<Ctx> {
             b"ToUnicode" | b"Encoding" | b"CIDToGIDMap" => Ctx::Cmap,
             b"DescendantFonts" => Ctx::Font,
             b"CharProcs" => Ctx::CharProcs,
-            b"Resources" => Ctx::Resources,
+            b"Resources" => Ctx::ResourcesOther,
             _ => Ctx::Generic,
         },
         Ctx::FontDescriptor => match key {
@@ -798,7 +866,7 @@ fn child_ctx_in(ctx: Ctx, d: &Dict, key: &[u8]) -> Option<Ctx> {
             _ => Ctx::Generic,
         },
         Ctx::Pattern => match key {
-            b"Resources" => Ctx::Resources,
+            b"Resources" => Ctx::ResourcesOther,
             b"Shading" => Ctx::Shading,
             b"ExtGState" => Ctx::ExtGState,
             _ => Ctx::Generic,
@@ -820,7 +888,7 @@ fn child_ctx_in(ctx: Ctx, d: &Dict, key: &[u8]) -> Option<Ctx> {
             _ => Ctx::Generic,
         },
         Ctx::SoftMask => match key {
-            b"G" => Ctx::Form,
+            b"G" => Ctx::FormOther,
             b"TR" => Ctx::Function,
             _ => Ctx::Generic,
         },
@@ -840,7 +908,7 @@ fn child_ctx_in(ctx: Ctx, d: &Dict, key: &[u8]) -> Option<Ctx> {
             _ => Ctx::Generic,
         },
         Ctx::Annot => match key {
-            b"P" | b"Parent" => return None,
+            b"P" | b"Parent" => Ctx::Generic,
             b"AP" => Ctx::Appearance,
             b"A" => Ctx::Action,
             b"AA" => Ctx::Aa,
@@ -849,8 +917,8 @@ fn child_ctx_in(ctx: Ctx, d: &Dict, key: &[u8]) -> Option<Ctx> {
             b"RC" | b"RV" | b"V" | b"DV" => Ctx::Opaque(DataRole::RichText),
             b"Sound" | b"Movie" | b"RichMediaContent" | b"RichMediaSettings" | b"3DD" | b"3DA"
             | b"3DV" => Ctx::Opaque(DataRole::Multimedia),
-            b"MK" => Ctx::Map(Sub::UndrawnForm),
-            b"DR" => Ctx::Resources,
+            b"MK" => Ctx::Map(Sub::Undrawn),
+            b"DR" => Ctx::ResourcesOther,
             _ => Ctx::Generic,
         },
         Ctx::Appearance => match key {
@@ -869,7 +937,7 @@ fn child_ctx_in(ctx: Ctx, d: &Dict, key: &[u8]) -> Option<Ctx> {
         Ctx::Names => match key {
             b"EmbeddedFiles" => Ctx::NameTree(Sub::FileSpec),
             b"JavaScript" => Ctx::NameTree(Sub::Action),
-            b"AP" => Ctx::NameTree(Sub::UndrawnForm),
+            b"AP" => Ctx::NameTree(Sub::Undrawn),
             b"Pages" | b"Templates" => Ctx::NameTree(Sub::Template),
             b"AlternatePresentations" | b"Renditions" => Ctx::NameTree(Sub::Multimedia),
             b"Dests" | b"IDS" | b"URLS" => Ctx::NameTree(Sub::Generic),
@@ -888,12 +956,12 @@ fn child_ctx_in(ctx: Ctx, d: &Dict, key: &[u8]) -> Option<Ctx> {
         Ctx::Ef => Ctx::Opaque(DataRole::EmbeddedFile),
         Ctx::AcroForm => match key {
             b"Fields" => Ctx::Annot,
-            b"DR" => Ctx::Resources,
+            b"DR" => Ctx::ResourcesOther,
             b"XFA" => Ctx::Opaque(DataRole::Xfa),
             _ => Ctx::Generic,
         },
         Ctx::Outline => match key {
-            b"Parent" | b"Prev" => return None,
+            b"Parent" | b"Prev" => Ctx::Generic,
             b"First" | b"Next" | b"Last" => Ctx::Outline,
             b"A" => Ctx::Action,
             _ => Ctx::Generic,
@@ -919,17 +987,24 @@ fn stream_status(
     drawn: &Option<HashMap<IndirectRef, std::collections::BTreeSet<usize>>>,
 ) -> (DataStatus, DataRole) {
     let subtype = dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name());
-    let form = |r: IndirectRef| {
-        if drawn.as_ref().is_some_and(|d| d.contains_key(&r)) {
-            (DataStatus::Searched, DataRole::UndrawnForm)
+    let shown = drawn.as_ref().is_some_and(|d| d.contains_key(&r));
+    let form = |_: IndirectRef| {
+        if shown {
+            (DataStatus::Searched, DataRole::Undrawn)
         } else {
-            (DataStatus::Uninspected, DataRole::UndrawnForm)
+            (DataStatus::Uninspected, DataRole::Undrawn)
         }
     };
     match ctx {
         Ctx::Contents => (DataStatus::Searched, DataRole::UnknownStream),
+        Ctx::XObjectOther | Ctx::FormOther => match subtype {
+            Some(b"Image") | Some(b"Form") => (DataStatus::Interpreted, DataRole::UnknownStream),
+            Some(b"PS") => (DataStatus::Uninspected, DataRole::PostScript),
+            _ => (DataStatus::Uninspected, DataRole::UnknownStream),
+        },
         Ctx::XObject => match subtype {
-            Some(b"Image") => (DataStatus::Interpreted, DataRole::UnknownStream),
+            Some(b"Image") if shown => (DataStatus::Interpreted, DataRole::UnknownStream),
+            Some(b"Image") => (DataStatus::Uninspected, DataRole::Undrawn),
             Some(b"Form") => form(r),
             Some(b"PS") => (DataStatus::Uninspected, DataRole::PostScript),
             _ => (DataStatus::Uninspected, DataRole::UnknownStream),
@@ -942,7 +1017,7 @@ fn stream_status(
         | Ctx::Shading
         | Ctx::Pattern
         | Ctx::Icc => (DataStatus::Interpreted, DataRole::UnknownStream),
-        Ctx::Opaque(DataRole::UndrawnForm) => form(r),
+        Ctx::Opaque(DataRole::Undrawn) => form(r),
         Ctx::Opaque(role) => (DataStatus::Uninspected, role),
         _ => (DataStatus::Uninspected, DataRole::UnknownStream),
     }

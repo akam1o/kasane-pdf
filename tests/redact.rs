@@ -5113,3 +5113,39 @@ fn soft_masks() {
         .iter()
         .any(|e| e.removed == kasane_pdf::Removed::Image));
 }
+
+/// An appearance-less line's endings reach past its geometry — up to
+/// 9.5 × the border width in Poppler and MuPDF: they make it a hit.
+/// A caption or a cloudy border is drawn to no known extent: refused.
+/// (Independent review, P0.)
+#[test]
+fn appearance_less_line_endings_and_decorations() {
+    let line = |extra: &str| {
+        annot_page(
+            "30 0 R",
+            vec![(
+                30,
+                format!(
+                    "<< /Type /Annot /Subtype /Line /Rect [170 170 190 190] \
+                     /L [80 80 110 80] /C [0 0 0] /IC [0 0 0] /BS << /W 2 >> {extra} >>"
+                )
+                .into_bytes(),
+            )],
+        )
+    };
+    // Without endings the line (y 80 ± 2) is clear of the rect (y ≥ 90).
+    assert_eq!(annots_run(&line("")).unwrap().annotations_removed, 0);
+    let r = annots_run(&line("/LE [/ClosedArrow /None]")).unwrap();
+    assert_eq!(r.annotations_removed, 1, "the arrowhead reaches the rect");
+    assert!(
+        unsupported(run(&line("/LE [/ClosedArrow /None]"), vec![RECT]))
+            .contains("other than a link")
+    );
+    assert_eq!(
+        annots_run(&line("/LL 15")).unwrap().annotations_removed,
+        1,
+        "a leader line"
+    );
+    assert!(unsupported(annots_run(&line("/Cap true"))).contains("no known extent"));
+    assert!(unsupported(annots_run(&line("/BE << /S /C /I 1 >>"))).contains("no known extent"));
+}

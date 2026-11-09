@@ -189,3 +189,41 @@ fn notdef_does_not_lift_the_literal_code_refusal() {
     .unwrap_err();
     assert!(e.to_string().contains("codes written as strings"), "{e}");
 }
+
+/// The later of a `cidchar` and a `cidrange` defining the same code
+/// wins, as Poppler, MuPDF and pdf.js read it: glyphs are placed with
+/// the later CID's width, and redaction follows. (Independent review,
+/// P0: the `cidchar` used to win whatever the order.)
+#[test]
+fn the_latest_definition_wins_across_kinds() {
+    let pdf = page("1 begincidrange <41> <41> 37 endcidrange", "4141");
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
+    // CID 37 advances 2000: the second glyph starts 20 pt after the first.
+    let x: Vec<f64> = t.chars.iter().map(|c| c.origin.0).collect();
+    assert!((x[1] - x[0] - 20.0).abs() < 1e-6, "{x:?}");
+    redact(
+        &doc,
+        &[(0, vec![(29.0, 95.0, 50.0, 115.0)])],
+        &RedactOptions::new(),
+    )
+    .unwrap();
+}
+
+/// The same value defined for another code length: pdf.js and MuPDF
+/// read mappings by value, Poppler by bytes — refused in redaction.
+#[test]
+fn a_value_defined_for_another_length_is_refused() {
+    let pdf = page(
+        "1 begincidchar <8142> 38 endcidchar 1 begincidchar <0041> 37 endcidchar",
+        "41",
+    );
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let e = redact(
+        &doc,
+        &[(0, vec![(5.0, 95.0, 50.0, 115.0)])],
+        &RedactOptions::new(),
+    )
+    .unwrap_err();
+    assert!(e.to_string().contains("another code length"), "{e}");
+}

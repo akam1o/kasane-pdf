@@ -7,8 +7,13 @@
 //! ([`Touched`]). A structure element is touched when one of its
 //! content items is (an `MCID` integer or `/MCR`, an `/OBJR`), or one
 //! of its descendants is. Each touched element loses its text —
-//! `/Alt`, `/ActualText`, `/E` and `/T` — whole: which part of it
-//! describes the removed content is not known, so none of it is kept.
+//! `/Alt`, `/ActualText`, `/E`, `/T`, `/Phoneme` — whole: which part of
+//! it describes the removed content is not known, so none of it is
+//! kept; its associated files (`/AF`); and every string of its
+//! attribute objects (`/A`, and the `/ClassMap` entries of its classes
+//! `/C` — shared ones for every element using them): a table's
+//! `/Summary`, any other text an attribute carries. Other attributes
+//! (layout, numbers, names) stay.
 //! Its ancestors are touched too (their text covers it). An `/OBJR` to
 //! a removed annotation or an edited original, and an `/MCR` into an
 //! edited form's original, leave the element's `/K` (they would keep
@@ -21,17 +26,19 @@
 //! touched when an edited form drawn on the page without
 //! `/StructParents` (so without MCIDs of its own) uses that number; a
 //! sequence whose `MCID` cannot be read (named properties that do not
-//! resolve) touches every `MCID` of its stream. Elements are found from
-//! the root's `/K` and from `/ParentTree`, and ancestors through both
-//! the tree and `/P`.
+//! resolve) touches every `MCID` of its stream. Every element the tree
+//! refers to is read — from the root's `/K`, every `/ParentTree` entry
+//! and `/IDTree` — and matched by its own `/K`; ancestors are found
+//! through both the tree and `/P`.
 //!
 //! Refused: a cycle among elements, a kid that is not an element,
 //! `MCID`, `/MCR`, `/OBJR` or null, an `/MCR` without an integer
 //! `/MCID`, an `/OBJR` whose `/Obj` is not a reference, and an element
 //! that needs editing but is written directly inside another object.
 //! Verification re-reads the output's tree: no element may carry a text
-//! that was removed, unless an untouched element of the input carried
-//! the same text (reported in `elsewhere`, like any copy).
+//! or attribute string that was removed, unless an untouched element of
+//! the input carried the same text (reported in `elsewhere`, like any
+//! copy).
 
 use crate::content::Operation;
 use crate::document::Document;
@@ -41,8 +48,9 @@ use crate::object::{Dict, IndirectRef, Object};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 /// The keys of a structure element holding text about its content:
-/// alternate description, replacement text, expansion, title.
-const TEXT_KEYS: [&[u8]; 4] = [b"Alt", b"ActualText", b"E", b"T"];
+/// alternate description, replacement text, expansion, title,
+/// pronunciation (PDF 2.0).
+const TEXT_KEYS: [&[u8]; 5] = [b"Alt", b"ActualText", b"E", b"T", b"Phoneme"];
 
 /// Number trees deeper than this are refused.
 const MAX_NUMBER_TREE_DEPTH: usize = 64;
@@ -559,7 +567,173 @@ fn read_tree(
             }
         }
     }
+    // Every element the tree refers to is read, whichever way: those of
+    // every `/ParentTree` entry and of `/IDTree` too.
+    let values: Vec<Object> = tree.parent_tree.values().flatten().cloned().collect();
+    for v in values {
+        match deref_cur(doc, overlay, &v)? {
+            Object::Array(a) => {
+                for e in a {
+                    tree.add(doc, overlay, e, None, budget)?;
+                }
+            }
+            _ => {
+                tree.add(doc, overlay, v, None, budget)?;
+            }
+        }
+    }
+    if let Some(ids) = root.get(b"IDTree".as_slice()) {
+        let mut seen = HashSet::new();
+        let mut stack = vec![(ids.clone(), 0usize)];
+        while let Some((node, depth)) = stack.pop() {
+            budget.charge()?;
+            if depth > MAX_NUMBER_TREE_DEPTH {
+                return Err(refuse("/IDTree is nested too deeply"));
+            }
+            if let Object::Ref(r) = &node {
+                if !seen.insert(*r) {
+                    return Err(Error::CycleDetected {
+                        context: "structure tree /IDTree",
+                    });
+                }
+            }
+            let node = deref_cur(doc, overlay, &node)?;
+            let Some(nd) = node.as_dict() else {
+                continue;
+            };
+            if let Some(names) = nd.get(b"Names".as_slice()) {
+                let names = deref_cur(doc, overlay, names)?;
+                for pair in names.as_array().unwrap_or(&[]).chunks(2) {
+                    if let [_, e] = pair {
+                        tree.add(doc, overlay, e.clone(), None, budget)?;
+                    }
+                }
+            }
+            if let Some(kids) = nd.get(b"Kids".as_slice()) {
+                let kids = deref_cur(doc, overlay, kids)?;
+                stack.extend(
+                    kids.as_array()
+                        .unwrap_or(&[])
+                        .iter()
+                        .map(|k| (k.clone(), depth + 1)),
+                );
+            }
+        }
+    }
     Ok(tree)
+}
+
+/// Strings in a structure attribute object or a list of them (`/A`, a
+/// `/ClassMap` entry): a table's `/Summary`, any other text an
+/// attribute carries. Each entry whose value is a string, or an array
+/// holding one, is removed — in the overlay for an indirect object, in
+/// the returned copy for a direct one. The removed strings go to
+/// `removed`; `Some` when a direct value changed.
+fn strip_attribute_strings(
+    doc: &Document,
+    overlay: &mut HashMap<(u32, u16), Object>,
+    o: &Object,
+    removed: &mut Vec<String>,
+    budget: &mut Budget,
+) -> Result<Option<Object>, Error> {
+    fn strings(
+        doc: &Document,
+        overlay: &HashMap<(u32, u16), Object>,
+        v: &Object,
+    ) -> Result<Vec<String>, Error> {
+        Ok(match deref_cur(doc, overlay, v)? {
+            Object::String(s) => vec![crate::annot_text::text_string(&s)],
+            Object::Array(a) => {
+                let mut out = Vec::new();
+                for x in &a {
+                    if let Object::String(s) = deref_cur(doc, overlay, x)? {
+                        out.push(crate::annot_text::text_string(&s));
+                    }
+                }
+                out
+            }
+            _ => Vec::new(),
+        })
+    }
+    budget.charge()?;
+    match o {
+        Object::Ref(r) => {
+            let body = current(doc, overlay, *r)?;
+            if let Some(new) = strip_attribute_strings(doc, overlay, &body, removed, budget)? {
+                overlay.insert((r.number, r.generation), new);
+            }
+            Ok(None)
+        }
+        Object::Array(a) => {
+            let mut new = a.clone();
+            let mut changed = false;
+            for x in new.iter_mut() {
+                if let Some(n) = strip_attribute_strings(doc, overlay, x, removed, budget)? {
+                    *x = n;
+                    changed = true;
+                }
+            }
+            Ok(changed.then_some(Object::Array(new)))
+        }
+        Object::Dict(_) | Object::Stream { .. } => {
+            let mut o = o.clone();
+            let d = match &mut o {
+                Object::Dict(d) => d,
+                Object::Stream { dict, .. } => dict,
+                _ => unreachable!(),
+            };
+            let mut gone = Vec::new();
+            for (k, v) in d.iter() {
+                let found = strings(doc, overlay, v)?;
+                if !found.is_empty() {
+                    gone.push(k.clone());
+                    removed.extend(found);
+                }
+            }
+            for k in &gone {
+                d.remove(k);
+            }
+            Ok((!gone.is_empty()).then_some(o))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// The strings an attribute object or a list of them holds (one level
+/// into arrays, as [`strip_attribute_strings`] removes them).
+fn attribute_strings(
+    doc: &Document,
+    overlay: &HashMap<(u32, u16), Object>,
+    o: &Object,
+    budget: &mut Budget,
+) -> Result<Vec<String>, Error> {
+    let mut out = Vec::new();
+    let mut stack = vec![(o.clone(), 0u32)];
+    while let Some((o, depth)) = stack.pop() {
+        budget.charge()?;
+        match deref_cur(doc, overlay, &o)? {
+            Object::String(s) => out.push(crate::annot_text::text_string(&s)),
+            Object::Array(a) if depth < 3 => stack.extend(a.into_iter().map(|x| (x, depth + 1))),
+            Object::Dict(d) | Object::Stream { dict: d, .. } if depth < 3 => {
+                stack.extend(d.into_values().map(|x| (x, depth + 1)))
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+/// The attribute objects `/ClassMap` gives the classes of an element's
+/// `/C` (a name, or an array of names and revision numbers).
+fn class_names(d: &Dict) -> Vec<Vec<u8>> {
+    match d.get(b"C".as_slice()) {
+        Some(Object::Name(n)) => vec![n.clone()],
+        Some(Object::Array(a)) => a
+            .iter()
+            .filter_map(|x| x.as_name().map(|n| n.to_vec()))
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// The values `/ParentTree` holds for `key`, flattened: the element of
@@ -745,14 +919,86 @@ pub(crate) fn edit_tree(
     }
     tree.check_acyclic()?;
 
-    // Edit the touched elements.
+    // Edit the touched elements: their attribute objects' strings, the
+    // classes' they name, their text, the items that go.
+    let mut classes: BTreeSet<Vec<u8>> = BTreeSet::new();
+    let mut attr_edits: HashMap<usize, Object> = HashMap::new();
     for (i, e) in tree.elements.iter().enumerate() {
-        let strip = hit.contains(&i) && TEXT_KEYS.iter().any(|k| e.dict.contains_key(*k));
+        if !hit.contains(&i) {
+            continue;
+        }
+        classes.extend(class_names(&e.dict));
+        if let Some(a) = e.dict.get(b"A".as_slice()) {
+            let before = out.removed.len();
+            if let Some(new) =
+                strip_attribute_strings(doc, overlay, a, &mut out.removed, &mut budget)?
+            {
+                attr_edits.insert(i, new);
+            }
+            out.texts_removed += (out.removed.len() - before) as u64;
+        }
+    }
+    if !classes.is_empty() {
+        let root = deref_cur(doc, overlay, &root_obj)?;
+        if let Some(cm) = root
+            .as_dict()
+            .and_then(|r| r.get(b"ClassMap".as_slice()))
+            .cloned()
+        {
+            let (holder, mut map) = match &cm {
+                Object::Ref(r) => (Some(*r), current(doc, overlay, *r)?),
+                o => (None, o.clone()),
+            };
+            let mut changed = false;
+            if let Some(m) = map.as_dict().cloned() {
+                let mut m2 = m.clone();
+                for c in &classes {
+                    if let Some(v) = m.get(c) {
+                        let before = out.removed.len();
+                        if let Some(new) =
+                            strip_attribute_strings(doc, overlay, v, &mut out.removed, &mut budget)?
+                        {
+                            m2.insert(c.clone(), new);
+                            changed = true;
+                        }
+                        out.texts_removed += (out.removed.len() - before) as u64;
+                    }
+                }
+                map = Object::Dict(m2);
+            }
+            if changed {
+                match (holder, &root_obj) {
+                    (Some(r), _) => {
+                        overlay.insert((r.number, r.generation), map);
+                    }
+                    (None, Object::Ref(rr)) => {
+                        let mut rd = root.as_dict().cloned().unwrap_or_default();
+                        rd.insert(b"ClassMap".to_vec(), map);
+                        overlay.insert((rr.number, rr.generation), Object::Dict(rd));
+                    }
+                    _ => return Err(refuse("a direct /StructTreeRoot whose /ClassMap changes")),
+                }
+            }
+        }
+    }
+    for (i, e) in tree.elements.iter().enumerate() {
+        // Associated files (PDF 2.0: a formula's source, a table's data)
+        // are content about the element too.
+        let strip = hit.contains(&i)
+            && (TEXT_KEYS.iter().any(|k| e.dict.contains_key(*k))
+                || e.dict.contains_key(b"AF".as_slice()));
+        let attr = attr_edits.remove(&i);
         let drops = drop_items.get(&i);
-        if !strip && drops.is_none() {
+        if !strip && drops.is_none() && attr.is_none() {
             for k in TEXT_KEYS {
                 if let Some(t) = text_of(doc, overlay, e.dict.get(k))? {
                     out.kept.insert(t);
+                }
+            }
+            if let Some(a) = e.dict.get(b"A".as_slice()) {
+                if !hit.contains(&i) {
+                    out.kept
+                        .extend(attribute_strings(doc, overlay, a, &mut budget)?);
                 }
             }
             continue;
@@ -763,7 +1009,13 @@ pub(crate) fn edit_tree(
             ));
         };
         let mut d = e.dict.clone();
+        if let Some(a) = attr {
+            d.insert(b"A".to_vec(), a);
+        }
         if strip {
+            if d.remove(b"AF".as_slice()).is_some() {
+                out.items_removed += 1;
+            }
             for k in TEXT_KEYS {
                 if let Some(v) = d.remove(k) {
                     out.texts_removed += 1;
@@ -935,6 +1187,32 @@ pub(crate) fn verify(out: &Document, edit: &StructureEdit, limits: &Limits) -> R
             if let Object::Dict(d) = out.deref(&e)? {
                 dicts.push(d);
             }
+        }
+    }
+    let root_d = out.deref(&root)?;
+    let class_map = root_d
+        .as_dict()
+        .and_then(|r| r.get(b"ClassMap".as_slice()))
+        .map(|c| out.deref(c))
+        .transpose()?;
+    let fail = |what: &str| Error::Unsupported {
+        feature: "redaction output failed verification",
+        detail: format!("a structure element still carries a removed {what}"),
+    };
+    for d in &dicts {
+        let mut attrs = Vec::new();
+        if let Some(a) = d.get(b"A".as_slice()) {
+            attrs.extend(attribute_strings(out, &overlay, a, &mut budget)?);
+        }
+        if let Some(Object::Dict(cm)) = &class_map {
+            for c in class_names(d) {
+                if let Some(v) = cm.get(&c) {
+                    attrs.extend(attribute_strings(out, &overlay, v, &mut budget)?);
+                }
+            }
+        }
+        if attrs.iter().any(|t| gone.contains(t)) {
+            return Err(fail("attribute string"));
         }
     }
     for d in dicts {
