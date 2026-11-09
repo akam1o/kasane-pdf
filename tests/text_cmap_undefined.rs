@@ -202,12 +202,20 @@ fn the_latest_definition_wins_across_kinds() {
     // CID 37 advances 2000: the second glyph starts 20 pt after the first.
     let x: Vec<f64> = t.chars.iter().map(|c| c.origin.0).collect();
     assert!((x[1] - x[0] - 20.0).abs() < 1e-6, "{x:?}");
-    redact(
+    // Readers draw the second glyph at x 30–50: that is what the rect
+    // removes, and nothing of it is left there.
+    let r = redact(
         &doc,
         &[(0, vec![(29.0, 95.0, 50.0, 115.0)])],
         &RedactOptions::new(),
     )
     .unwrap();
+    assert_eq!(r.codes_removed, 1);
+    let out = Document::from_bytes(&r.output).unwrap();
+    let t = extract_text(&out, &out.pages()[0], &TextOptions::default()).unwrap();
+    let x: Vec<f64> = t.chars.iter().map(|c| c.origin.0).collect();
+    assert_eq!(x.len(), 1, "{x:?}");
+    assert!((x[0] - 10.0).abs() < 1e-6, "{x:?}");
 }
 
 /// The same value defined for another code length: pdf.js and MuPDF
