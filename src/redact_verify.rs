@@ -580,3 +580,157 @@ pub(crate) fn check_removed_annotations(
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pdf(objs: &[(u32, &[u8])]) -> Vec<u8> {
+        let mut out = b"%PDF-1.7\n".to_vec();
+        let mut offs = std::collections::BTreeMap::new();
+        for (n, b) in objs {
+            offs.insert(*n, out.len());
+            out.extend_from_slice(format!("{n} 0 obj\n").as_bytes());
+            out.extend_from_slice(b);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let size = offs.keys().max().unwrap() + 1;
+        let x = out.len();
+        out.extend_from_slice(format!("xref\n0 {size}\n0000000000 65535 f \n").as_bytes());
+        for i in 1..size {
+            match offs.get(&i) {
+                Some(o) => out.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes()),
+                None => out.extend_from_slice(b"0000000000 65535 f \n"),
+            }
+        }
+        out.extend_from_slice(
+            format!("trailer\n<< /Size {size} /Root 1 0 R >>\nstartxref\n{x}\n%%EOF\n").as_bytes(),
+        );
+        out
+    }
+
+    fn stream(data: &str) -> Vec<u8> {
+        format!("<< /Length {} >>\nstream\n{data}\nendstream", data.len()).into_bytes()
+    }
+
+    const PAGES: &[u8] = b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>";
+    const P1: &[u8] = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >>";
+    const P2: &[u8] = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 6 0 R \
+        /Annots [7 0 R] >>";
+    const NOTE: &[u8] = b"<< /Type /Annot /Subtype /Text /Rect [1 1 2 2] /Contents (note) >>";
+
+    fn input() -> Vec<u8> {
+        pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+            (2, PAGES),
+            (3, P1),
+            (4, &stream("0 0 10 10 re f 50 50 10 10 re f")),
+            (5, P2),
+            (6, &stream("20 20 5 5 re f")),
+            (7, NOTE),
+        ])
+    }
+
+    fn check(out: &[u8]) -> Result<(), Error> {
+        let l = Limits::default();
+        let a = Document::from_bytes(&input()).unwrap();
+        let b = Document::from_bytes(out).unwrap();
+        let idx = Index::build(&b, &l)?;
+        let graph = RefGraph::build(&b, &idx, &l)?;
+        check_reachable(&idx, &graph)?;
+        let edited: BTreeSet<usize> = [0].into();
+        check_use(&a, &b, &idx, &graph, &edited, &l)?;
+        check_removed_annotations(&a, &b, &idx, &graph, &edited)
+    }
+
+    /// The invariants alone — no record of the edit — accept a clean
+    /// output and fail each way removed data stayed in past versions.
+    #[test]
+    fn invariants_without_the_edits_record() {
+        let new4 = stream("0 0 10 10 re f");
+        let old4 = stream("0 0 10 10 re f 50 50 10 10 re f");
+        let clean = pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+            (2, PAGES),
+            (3, P1),
+            (4, &new4),
+            (5, P2),
+            (6, &stream("20 20 5 5 re f")),
+            (7, NOTE),
+        ]);
+        check(&clean).unwrap();
+        // The original content kept through a private catalog entry.
+        let aliased = pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R /XPriv 8 0 R >>"),
+            (2, PAGES),
+            (3, P1),
+            (4, &new4),
+            (5, P2),
+            (6, &stream("20 20 5 5 re f")),
+            (7, NOTE),
+            (8, &old4),
+        ]);
+        let e = check(&aliased).unwrap_err().to_string();
+        assert!(e.contains("object 8 0 R") && e.contains("/Root/XPriv"), "{e}");
+        // A page not edited drawing differently.
+        let changed = pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+            (2, PAGES),
+            (3, P1),
+            (4, &new4),
+            (5, P2),
+            (6, &stream("20 20 6 6 re f")),
+            (7, NOTE),
+        ]);
+        let e = check(&changed).unwrap_err().to_string();
+        assert!(e.contains("page 2 (not edited)"), "{e}");
+        // An object nothing refers to.
+        let orphan = pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
+            (2, PAGES),
+            (3, P1),
+            (4, &new4),
+            (5, P2),
+            (6, &stream("20 20 5 5 re f")),
+            (7, NOTE),
+            (9, b"<< /Anything 1 >>"),
+        ]);
+        let e = check(&orphan).unwrap_err().to_string();
+        assert!(e.contains("object 9 0 R"), "{e}");
+    }
+
+    /// An annotation the edited page lost, kept as a stream's dictionary
+    /// (whatever its stream keys), fails.
+    #[test]
+    fn a_removed_annotation_as_a_stream_dictionary() {
+        let annotated = |p1: &[u8], extra: &[(u32, &[u8])]| {
+            let mut objs: Vec<(u32, &[u8])> = vec![
+                (1, b"<< /Type /Catalog /Pages 2 0 R /XPriv 9 0 R >>"),
+                (2, PAGES),
+                (3, p1),
+                (5, P2),
+                (7, NOTE),
+            ];
+            objs.extend_from_slice(extra);
+            pdf(&objs)
+        };
+        let l = Limits::default();
+        let p1 = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Annots [8 0 R] >>";
+        let annot = b"<< /Type /Annot /Subtype /Text /Rect [5 5 9 9] /Contents (removed) >>";
+        let a = annotated(p1, &[(8, annot), (9, b"<< >>"), (6, &stream("20 20 5 5 re f"))]);
+        let copy = b"<< /Type /Annot /Subtype /Text /Rect [5 5 9 9] /Contents (removed) /Length 3 \
+            /Filter /ASCIIHexDecode >>\nstream\n00>\nendstream";
+        let b = annotated(
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>",
+            &[(9, copy), (6, &stream("20 20 5 5 re f"))],
+        );
+        let a = Document::from_bytes(&a).unwrap();
+        let b = Document::from_bytes(&b).unwrap();
+        let idx = Index::build(&b, &l).unwrap();
+        let graph = RefGraph::build(&b, &idx, &l).unwrap();
+        let e = check_removed_annotations(&a, &b, &idx, &graph, &[0].into())
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("object 9 0 R"), "{e}");
+    }
+}
