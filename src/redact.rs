@@ -412,6 +412,31 @@ fn redact_doc(
     } else {
         0
     };
+    // A removed annotation or field still reached by something kept
+    // would be written whole (by identity: later passes, the JavaScript
+    // one among them, may have changed its content, so its print would
+    // no longer match).
+    let mut gone: HashSet<IndirectRef> = s.touched.removed_annotations.clone();
+    gone.extend(forms.gone.iter().copied());
+    if let Some((r, path)) =
+        crate::redact_forms::removed_still_reached(doc, &s.edit.overlay, &gone, limits)?
+    {
+        return Err(Error::Unsupported {
+            feature: "redaction output failed verification",
+            detail: format!(
+                "object {r} is a removed annotation or form field that the document still \
+                 refers to (by {path})"
+            ),
+        });
+    }
+    // Prints of what the edit left of them too (a copy edited the same
+    // way matches these).
+    for r in &gone {
+        if let Some(Object::Dict(d)) = s.edit.overlay.get(&(r.number, r.generation)) {
+            s.removed_annot_prints
+                .push(crate::remove_region::annotation_print(d));
+        }
+    }
     let output = s
         .edit
         .rewrite_with_overrides(&crate::rewrite::RewriteOverrides {

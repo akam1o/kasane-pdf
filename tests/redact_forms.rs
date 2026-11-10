@@ -260,3 +260,63 @@ fn values(out: &[u8]) -> Vec<String> {
     }
     v
 }
+
+/// A removed widget, field or markup annotation that something kept still
+/// refers to is refused — also when `remove_javascript` edits it (its
+/// content then no longer matches what was removed). (Review.)
+#[test]
+fn removed_objects_still_referred_to_are_refused() {
+    let js = "/A << /S /JavaScript /JS (app.alert(1)) >>";
+    let field = |extra: &str| {
+        format!(
+            "<< /Type /Annot /Subtype /Widget /FT /Tx /T (s) /V (SECRETVALUE) \
+             /Rect [70 90 110 100] {extra} >>"
+        )
+        .into_bytes()
+    };
+    let markup = format!(
+        "<< /Type /Annot /Subtype /FreeText /Rect [70 90 110 100] /DA (/Helv 9 Tf) \
+         /Contents (SECRETNOTE) {js} >>"
+    );
+    for (name, cat_extra, obj) in [
+        ("field", "/XPriv 10 0 R", field("")),
+        ("field-js", "/XPriv 10 0 R", field(js)),
+        ("markup-js", "/XPriv 10 0 R", markup.into_bytes()),
+    ] {
+        let pdf = build_pdf(&[
+            (
+                1,
+                format!(
+                    "<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [10 0 R] >> {cat_extra} >>"
+                )
+                .into_bytes(),
+            ),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R \
+                  /Annots [10 0 R] >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", b"0 0 10 10 re f")),
+            (10, obj),
+        ]);
+        let doc = Document::from_bytes(&pdf).unwrap();
+        for javascript in [false, true] {
+            let r = redact(
+                &doc,
+                &[(0, vec![RECT])],
+                &RedactOptions::new()
+                    .remove_annotations(true)
+                    .remove_javascript(javascript),
+            );
+            match r {
+                Ok(r) => panic!(
+                    "{name} (javascript {javascript}): accepted, secret kept: {}",
+                    contains(&r.output, b"SECRET")
+                ),
+                Err(e) => assert!(e.to_string().contains("failed verification"), "{name}: {e}"),
+            }
+        }
+    }
+}

@@ -30,6 +30,8 @@ pub(crate) struct FieldsEdit {
     pub(crate) removed_text: Vec<String>,
     /// Prints of the removed field dictionaries (verified absent).
     pub(crate) prints: Vec<[u8; 32]>,
+    /// The removed field objects (merged field-widgets included).
+    pub(crate) gone: HashSet<IndirectRef>,
 }
 
 fn refuse(detail: impl Into<String>) -> Error {
@@ -291,6 +293,7 @@ pub(crate) fn edit_fields(
             overlay.insert((root.number, root.generation), Object::Dict(c));
         }
     }
+    out.gone = gone.clone();
     // What the removed fields held.
     for r in &gone {
         let d = &dicts[r];
@@ -330,4 +333,78 @@ pub(crate) fn edit_fields(
         }
     }
     Ok(out)
+}
+
+/// The first of `gone` (removed annotations and fields) that the
+/// document as edited still reaches from its trailer — through any key,
+/// a kept action's `/Fields`, a private entry, an object stream's member
+/// — with the path, or `None`. The rewrite writes what the trailer
+/// reaches, so such an object would be written whole, whatever later
+/// passes did to its content. The trailer's `/Info` and the catalog's
+/// `/Metadata` are left out: the rewrite drops them.
+pub(crate) fn removed_still_reached(
+    doc: &Document,
+    overlay: &Overlay,
+    gone: &HashSet<IndirectRef>,
+    limits: &Limits,
+) -> Result<Option<(IndirectRef, String)>, Error> {
+    if gone.is_empty() {
+        return Ok(None);
+    }
+    let mut seen: HashSet<IndirectRef> = HashSet::new();
+    let mut queue: std::collections::VecDeque<(IndirectRef, String)> = Default::default();
+    let mut budget: u64 = 0;
+    // Direct values walked in place, references queued.
+    let mut scan = |o: &Object,
+                    path: &str,
+                    top: Option<&[u8]>,
+                    queue: &mut std::collections::VecDeque<(IndirectRef, String)>|
+     -> Result<(), Error> {
+        let mut stack: Vec<(&Object, String)> = vec![(o, path.to_string())];
+        while let Some((o, p)) = stack.pop() {
+            budget += 1;
+            if budget > limits.max_audit_elements {
+                return Err(Error::LimitExceeded {
+                    limit: "max_audit_elements",
+                    max: limits.max_audit_elements,
+                });
+            }
+            match o {
+                Object::Ref(r) => queue.push_back((*r, p)),
+                Object::Array(a) => {
+                    for (i, v) in a.iter().enumerate() {
+                        stack.push((v, format!("{p}[{i}]")));
+                    }
+                }
+                Object::Dict(d) | Object::Stream { dict: d, .. } => {
+                    for (k, v) in d {
+                        if top.is_some_and(|t| t == k.as_slice()) && p == path {
+                            continue;
+                        }
+                        stack.push((v, format!("{p}/{}", String::from_utf8_lossy(k))));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    };
+    let trailer = Object::Dict(doc.trailer().clone());
+    scan(&trailer, "", Some(b"Info"), &mut queue)?;
+    while let Some((r, path)) = queue.pop_front() {
+        if gone.contains(&r) {
+            return Ok(Some((r, path)));
+        }
+        if !seen.insert(r) {
+            continue;
+        }
+        let o = match current(doc, overlay, r) {
+            Ok(o) => o,
+            Err(Error::MissingReference(_)) => continue,
+            Err(e) => return Err(e),
+        };
+        let skip: Option<&[u8]> = (path == "/Root").then_some(b"Metadata".as_slice());
+        scan(&o, &path, skip, &mut queue)?;
+    }
+    Ok(None)
 }
