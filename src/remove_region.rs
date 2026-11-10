@@ -1555,22 +1555,43 @@ pub(crate) fn regions_edit_session_with<'a>(
                     });
                 }
             }
-            let refers = |d: &Dict, key: &[u8], to: Option<IndirectRef>| {
-                to.is_some() && matches!(d.get(key), Some(Object::Ref(r)) if Some(*r) == to)
+            // What the removed annotations tie to, kept as sets (one pass
+            // per round, not a scan of every pair: pages with tens of
+            // thousands of annotations).
+            let link = |d: &Dict, key: &[u8]| match d.get(key) {
+                Some(Object::Ref(r)) => Some(*r),
+                _ => None,
             };
             loop {
                 let mut changed = false;
+                let mut gone_refs: HashSet<IndirectRef> = HashSet::new();
+                let mut popups: HashSet<IndirectRef> = HashSet::new();
+                let mut popup_parents: HashSet<IndirectRef> = HashSet::new();
+                for ((rr, rd, _), &gone) in entries.iter().zip(&removed) {
+                    if !gone {
+                        continue;
+                    }
+                    if let Some(r) = rr {
+                        gone_refs.insert(*r);
+                    }
+                    if let Some(p) = link(rd, b"Popup") {
+                        popups.insert(p);
+                    }
+                    if subtype(rd) == b"Popup" {
+                        if let Some(p) = link(rd, b"Parent") {
+                            popup_parents.insert(p);
+                        }
+                    }
+                }
                 for k in 0..entries.len() {
                     if removed[k] {
                         continue;
                     }
                     let (kr, kd, _) = &entries[k];
-                    let tied = entries.iter().zip(&removed).any(|((rr, rd, _), &gone)| {
-                        gone && (refers(rd, b"Popup", *kr)
-                            || refers(kd, b"Parent", *rr)
-                            || refers(kd, b"IRT", *rr)
-                            || refers(rd, b"Parent", *kr) && subtype(rd) == b"Popup")
-                    });
+                    let tied = kr
+                        .is_some_and(|r| popups.contains(&r) || popup_parents.contains(&r))
+                        || link(kd, b"Parent").is_some_and(|r| gone_refs.contains(&r))
+                        || link(kd, b"IRT").is_some_and(|r| gone_refs.contains(&r));
                     if tied {
                         let st = subtype(kd);
                         if st != b"Link" && !REMOVABLE_ANNOTS.contains(&st.as_slice()) {
