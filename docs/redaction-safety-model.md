@@ -74,9 +74,12 @@ property cannot be decided).
   `/Phoneme`, `/AF`, the strings of their attribute objects and their
   user-properties lists; marked-content property lists in edited
   content lose them too. The output's tree is re-read and checked.
-- **G** — A removed annotation (a link meeting a rect; any annotation
-  meeting a rect with `remove_annotations`) is in no dictionary of the
-  output, a stream's dictionary included; its appearance streams and
+- **G** — A removed widget's form field leaves the interactive form
+  with its value when no widget of it is left; a field keeping a widget
+  keeps its value (still shown, reported in `elsewhere`).
+- **G** — A removed annotation (a link meeting a rect; a markup
+  annotation or widget meeting a rect with `remove_annotations`) is in
+  no dictionary of the output, a stream's dictionary included; its appearance streams and
   what they draw are gone or still drawn by something else.
 - **G** — `/Info` and catalog `/Metadata` are removed; an edited page's
   thumbnail is removed (from every page sharing it).
@@ -86,9 +89,11 @@ property cannot be decided).
   defines are kept. Page-level and object-level `/Metadata` streams
   other than the catalog's are kept and reported as uninspected.
 - **X** — Trees that cannot be edited exactly (cycles, kids of unknown
-  kinds, a touched element written inside another object); widgets and
-  other non-markup annotations meeting a rect; XFA forms with
-  `remove_javascript`; signed and encrypted documents.
+  kinds, a touched element written inside another object); annotations
+  other than links, markup and widgets meeting a rect, and widgets of
+  signature fields, XFA forms or field trees that cannot be edited
+  exactly; XFA forms with `remove_javascript`; signed and encrypted
+  documents.
 
 ### 2.4 Original data left in objects and streams
 

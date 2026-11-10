@@ -132,8 +132,11 @@ impl RedactOptions {
     /// even where they lie outside the rect — together with what
     /// belongs to it on the page: its popup, the annotation a removed
     /// popup belongs to, and replies to it (`/IRT`), transitively.
-    /// Other subtypes meeting a rect (widgets, signatures, media,
-    /// file attachments …) stay refused. Its appearance streams may not
+    /// A widget meeting a rect is removed too, and its form field with
+    /// it when no widget of the field is left (`Redaction::fields_removed`;
+    /// a signature field, an XFA form or a field tree that cannot be
+    /// edited exactly is refused). Other subtypes meeting a rect
+    /// (signatures, media, file attachments …) stay refused. Its appearance streams may not
     /// stay in the output unless something still draws them (checked
     /// like an edited image's original), and its text is searched for
     /// in `elsewhere`. The structure tree's reference to it goes, and
@@ -242,6 +245,9 @@ pub struct Redaction {
     /// Thumbnails (`/Thumb`) removed from edited pages: they picture
     /// the page as it was.
     pub thumbnails_removed: u64,
+    /// Form fields removed with the widgets `remove_annotations` removed
+    /// (a field all of whose widgets are gone goes, its value with it).
+    pub fields_removed: u64,
     /// The residual-information audit of the *output*: annotations,
     /// attachments, form values, actions, outlines' targets … that
     /// the positional redaction does not touch. Review before
@@ -316,6 +322,7 @@ impl std::fmt::Debug for Redaction {
             .field("elsewhere", &self.elsewhere)
             .field("uninspected", &self.uninspected.uninspected)
             .field("thumbnails_removed", &self.thumbnails_removed)
+            .field("fields_removed", &self.fields_removed)
             .field("residual_findings", &self.residual.findings.len())
             .finish()
     }
@@ -391,6 +398,15 @@ fn redact_doc(
             .overlay
             .insert((root.number, root.generation), Object::Dict(catalog));
     }
+    // The form fields of removed widgets.
+    let forms = crate::redact_forms::edit_fields(
+        doc,
+        &mut s.edit.overlay,
+        &s.touched.removed_widgets,
+        limits,
+    )?;
+    s.removed_text.extend(forms.removed_text.iter().cloned());
+    s.removed_annot_prints.extend(forms.prints.iter().copied());
     let javascript_removed = if options.remove_javascript {
         crate::redact_js::strip_javascript(doc, &mut s.edit.overlay, limits)?
     } else {
@@ -542,6 +558,7 @@ fn redact_doc(
         elsewhere_unsearched_pages,
         uninspected,
         thumbnails_removed: s.thumbnails_removed_total,
+        fields_removed: forms.fields_removed,
         residual,
     })
 }

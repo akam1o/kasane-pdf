@@ -2090,16 +2090,20 @@ fn popups_and_replies_go_with_a_removed_annotation() {
 }
 
 #[test]
-fn widgets_stay_refused_and_tagged_annotations_leave_the_tree() {
+fn widgets_go_with_remove_annotations_and_tagged_annotations_leave_the_tree() {
+    // A widget of no interactive form: removed whole, its value with it
+    // (0.9; refused before). Form fields: tests/redact_forms.rs.
     let widget = annot_page(
         "30 0 R",
         vec![(
             30,
-            b"<< /Type /Annot /Subtype /Widget /FT /Tx /Rect [60 95 70 105] /V (SECRET) >>"
+            b"<< /Type /Annot /Subtype /Widget /FT /Tx /Rect [60 95 70 105] /V (WIDGETVALUE) >>"
                 .to_vec(),
         )],
     );
-    assert!(unsupported(annots_run(&widget)).contains("other than a link"));
+    let r = annots_run(&widget).unwrap();
+    assert_eq!(r.annotations_removed, 1);
+    assert!(!contains(&r.output, b"WIDGETVALUE"));
     let tagged = one_page(
         SECRET,
         "/Annots [30 0 R] /StructParents 1",

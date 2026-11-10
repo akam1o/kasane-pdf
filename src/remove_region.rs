@@ -1529,13 +1529,24 @@ pub(crate) fn regions_edit_session_with<'a>(
                     || opts.remove_annotations && REMOVABLE_ANNOTS.contains(&st.as_slice())
                 {
                     removed[k] = true;
+                } else if opts.remove_annotations && st == b"Widget" {
+                    // A form field's annotation: its field is edited too
+                    // (`redact_forms`), which needs the widget's object.
+                    let Some(r) = entries[k].0 else {
+                        return Err(Error::Unsupported {
+                            feature: "redaction of a direct widget",
+                            detail: format!("/Annots[{k}] is not an indirect object"),
+                        });
+                    };
+                    touched.removed_widgets.insert(r);
+                    removed[k] = true;
                 } else {
                     return Err(Error::Unsupported {
                         feature: "redaction of an annotation other than a link meeting a rect",
                         detail: format!(
                             "/Annots[{k}] (/{}) — its content is not edited{}",
                             String::from_utf8_lossy(&st),
-                            if REMOVABLE_ANNOTS.contains(&st.as_slice()) {
+                            if REMOVABLE_ANNOTS.contains(&st.as_slice()) || st == b"Widget" {
                                 "; RedactOptions::remove_annotations removes it whole"
                             } else {
                                 ""
