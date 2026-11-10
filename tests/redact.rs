@@ -5539,6 +5539,17 @@ fn removed_appearances_through_shared_resources_are_refused() {
         ),
         ("", b"/Pattern cs /P scn 0 0 40 10 re f"),
         ("", b"/G gs 0 0 40 10 re f"),
+        // Resources of its own that lack the name: resolved elsewhere.
+        (
+            "/Resources << /ProcSet [/PDF] >>",
+            b"/Pattern cs /P scn 0 0 40 10 re f",
+        ),
+        ("/Resources << /Pattern << >> >>", b"/P1 gs 0 0 40 10 re f"),
+        ("/Resources 5", b"0 0 40 10 re f"),
+        (
+            "/Resources << /ExtGState << /G << /Font [20 0 R 12] >> >> >>",
+            b"/G gs BT (x) Tj ET",
+        ),
     ] {
         let e = unsupported(annots_run(&ap(res, body)));
         assert!(e.contains("resources it shares"), "{res}: {e}");

@@ -54,8 +54,8 @@ pub(crate) struct CMap {
     pub(crate) literal_codes: bool,
     /// A construction Poppler, MuPDF and pdf.js read differently, when
     /// the CMap has one: bf blocks in an encoding CMap, definitions after
-    /// `endcmap` or a second `begincmap`, an Identity base with declared
-    /// codespace ranges, a `/WMode` other than 0 or 1, an odd-length hex
+    /// `endcmap` or a second `begincmap`, an Identity base with
+    /// definitions of its own, a `/WMode` other than 0 or 1, an odd-length hex
     /// code, a stray token in a block, codespace ranges of different
     /// lengths sharing leading bytes. Redaction refuses such a font.
     pub(crate) reader_dependent: Option<&'static str>,
@@ -451,6 +451,9 @@ impl CMap {
         if lx.odd_hex_strings != 0 {
             cm.reader_dependent.get_or_insert("an odd-length hex code");
         }
+        // An Identity base with codespace ranges of its own: readers
+        // split codes by one or the other. (With mappings only, a code the
+        // CMap does not list is reader-dependent: `Mapping::Fallthrough`.)
         if cm.identity_base && !cm.codespaces.is_empty() {
             cm.reader_dependent
                 .get_or_insert("an Identity base with codespace ranges of its own");
@@ -556,10 +559,16 @@ impl CMap {
             return found(cid);
         }
         if self.identity_base {
-            let m = if valid {
-                Mapping::Defined
-            } else {
+            // A code an Identity base passes through while the CMap adds
+            // mappings of its own: Poppler gives it CID 0, MuPDF and
+            // pdf.js the code.
+            let own = !(self.single.is_empty() && self.ranges.is_empty() && self.notdef.is_empty());
+            let m = if !valid {
                 Mapping::Invalid
+            } else if own {
+                Mapping::Fallthrough
+            } else {
+                Mapping::Defined
             };
             return (code, m);
         }
@@ -610,6 +619,9 @@ impl CMap {
 /// How [`CMap::lookup`] found a code's CID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mapping {
+    /// Passed through an Identity base by a CMap with mappings of its
+    /// own (readers disagree).
+    Fallthrough,
     /// `cidchar`, `cidrange` or an Identity base.
     Defined,
     /// A notdef mapping: a code in the codespace with no defined one.
@@ -730,14 +742,16 @@ mod tests {
         assert_eq!(cm.cid(0x45, 1), 51);
         assert_eq!(cm.lookup(0x46, 1), (39, Mapping::Notdef));
         assert_eq!(cm.lookup(0x47, 1), (38, Mapping::Notdef));
-        // An Identity base maps every two-byte code: no notdef applies.
+        // An Identity base maps every two-byte code: no notdef applies
+        // here — but readers do not agree on a code passed through a base
+        // the CMap adds mappings to (Poppler gives CID 0).
         let cm = CMap::parse(
             b"/Identity-H usecmap 1 beginnotdefrange <0000> <00FF> 7 endnotdefrange",
             None,
             &Limits::default(),
         )
         .unwrap();
-        assert_eq!(cm.lookup(0x0041, 2), (0x41, Mapping::Defined));
+        assert_eq!(cm.lookup(0x0041, 2), (0x41, Mapping::Fallthrough));
         assert_eq!(cm.next_code(b"\x00\x41", 0), (0x41, 2));
     }
 

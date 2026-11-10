@@ -1122,9 +1122,9 @@ fn appearance_closure(
 /// Refuse removing an annotation whose appearance draws through anything
 /// but forms, images and fonts with glyph programs: what a pattern, a
 /// shading, a soft mask group or a Type 3 glyph holds is not followed by
-/// [`appearance_closure`], so it could stay unchecked. A form of the
-/// closure without `/Resources` of its own that names any resource is
-/// refused too (it would resolve them in resources it shares).
+/// [`appearance_closure`], so it could stay unchecked. Every name a form
+/// of the closure uses must resolve in its own `/Resources` (readers
+/// resolve a missing one in resources it shares).
 fn removable_appearance(
     doc: &Document,
     closure: &[IndirectRef],
@@ -1134,6 +1134,12 @@ fn removable_appearance(
         feature: "redaction of an annotation whose appearance draws through resources it shares",
         detail,
     };
+    let device = |n: &[u8]| {
+        matches!(
+            n,
+            b"DeviceGray" | b"DeviceRGB" | b"DeviceCMYK" | b"G" | b"RGB" | b"CMYK" | b"Pattern"
+        )
+    };
     for &r in closure {
         let Object::Stream { dict, data } = doc.resolve(r)? else {
             continue;
@@ -1142,43 +1148,16 @@ fn removable_appearance(
             continue;
         }
         let res = match dict.get(b"Resources".as_slice()) {
-            None | Some(Object::Null) => None,
-            Some(o) => Some(doc.deref(o)?),
-        };
-        let Some(res) = res else {
-            let decoded = doc.decode_stream(&dict, &data)?;
-            let mut warnings = Vec::new();
-            let ops = crate::content::parse_content_stream(
-                &[decoded],
-                limits,
-                doc.recovery_mode(),
-                &mut warnings,
-            )?;
-            let device = |n: &[u8]| {
-                matches!(
-                    n,
-                    b"DeviceGray" | b"DeviceRGB" | b"DeviceCMYK" | b"G" | b"RGB" | b"CMYK"
-                )
-            };
-            let names = ops.iter().any(|op| match op {
-                Operation::Do(_)
-                | Operation::SetExtGState(_)
-                | Operation::Shading(_)
-                | Operation::SetTextFont { .. } => true,
-                Operation::SetColorFill(v) | Operation::SetColorStroke(v) => {
-                    matches!(v.last(), Some(Object::Name(_)))
+            None | Some(Object::Null) => Dict::new(),
+            Some(o) => match doc.deref(o)? {
+                Object::Dict(d) => d,
+                _ => {
+                    return Err(refuse(format!(
+                        "appearance object {r} has /Resources that is not a dictionary"
+                    )))
                 }
-                Operation::SetColorSpaceFill(n) | Operation::SetColorSpaceStroke(n) => !device(n),
-                _ => false,
-            });
-            if names {
-                return Err(refuse(format!(
-                    "appearance object {r} names resources it does not have"
-                )));
-            }
-            continue;
+            },
         };
-        let Some(res) = res.as_dict() else { continue };
         for key in [b"Pattern".as_slice(), b"Shading"] {
             if let Some(v) = res.get(key) {
                 if doc.deref(v)?.as_dict().is_some_and(|d| !d.is_empty()) {
@@ -1189,40 +1168,76 @@ fn removable_appearance(
                 }
             }
         }
-        if let Some(gs) = res.get(b"ExtGState".as_slice()) {
-            for g in doc
-                .deref(gs)?
-                .as_dict()
-                .map(|d| d.values().cloned().collect::<Vec<_>>())
-                .unwrap_or_default()
-            {
-                let g = doc.deref(&g)?;
-                let soft = g
-                    .as_dict()
-                    .and_then(|d| d.get(b"SMask".as_slice()))
-                    .map(|m| doc.deref(m))
-                    .transpose()?
-                    .is_some_and(|m| m.as_name() != Some(b"None"));
-                if soft {
-                    return Err(refuse(format!("appearance object {r} uses a soft mask")));
-                }
+        let category = |cat: &[u8]| -> Result<Dict, Error> {
+            Ok(match res.get(cat) {
+                Some(o) => doc.deref(o)?.as_dict().cloned().unwrap_or_default(),
+                None => Dict::new(),
+            })
+        };
+        let gstates = category(b"ExtGState")?;
+        for g in gstates.values() {
+            let g = doc.deref(g)?;
+            let Some(g) = g.as_dict() else { continue };
+            let soft = g
+                .get(b"SMask".as_slice())
+                .map(|m| doc.deref(m))
+                .transpose()?
+                .is_some_and(|m| m.as_name() != Some(b"None"));
+            if soft {
+                return Err(refuse(format!("appearance object {r} uses a soft mask")));
+            }
+            if g.contains_key(b"Font".as_slice()) {
+                return Err(refuse(format!(
+                    "appearance object {r} sets a font by ExtGState"
+                )));
             }
         }
-        if let Some(fonts) = res.get(b"Font".as_slice()) {
-            for f in doc
-                .deref(fonts)?
-                .as_dict()
-                .map(|d| d.values().cloned().collect::<Vec<_>>())
-                .unwrap_or_default()
+        let fonts = category(b"Font")?;
+        for f in fonts.values() {
+            let f = doc.deref(f)?;
+            if f.as_dict()
+                .and_then(|d| d.get(b"Subtype".as_slice()))
+                .and_then(|s| s.as_name())
+                == Some(b"Type3")
             {
-                let f = doc.deref(&f)?;
-                if f.as_dict()
-                    .and_then(|d| d.get(b"Subtype".as_slice()))
-                    .and_then(|s| s.as_name())
-                    == Some(b"Type3")
-                {
-                    return Err(refuse(format!("appearance object {r} uses a Type 3 font")));
+                return Err(refuse(format!("appearance object {r} uses a Type 3 font")));
+            }
+        }
+        let xobjects = category(b"XObject")?;
+        let spaces = category(b"ColorSpace")?;
+        let props = category(b"Properties")?;
+        let decoded = doc.decode_stream(&dict, &data)?;
+        let mut warnings = Vec::new();
+        let ops = crate::content::parse_content_stream(
+            &[decoded],
+            limits,
+            doc.recovery_mode(),
+            &mut warnings,
+        )?;
+        for op in &ops {
+            let missing = match op {
+                Operation::Do(n) => !xobjects.contains_key(n),
+                Operation::SetExtGState(n) => !gstates.contains_key(n),
+                Operation::SetTextFont { font, .. } => !fonts.contains_key(font),
+                // A shading or pattern is refused above when present.
+                Operation::Shading(_) => true,
+                Operation::SetColorFill(v) | Operation::SetColorStroke(v) => {
+                    matches!(v.last(), Some(Object::Name(_)))
                 }
+                Operation::SetColorSpaceFill(n) | Operation::SetColorSpaceStroke(n) => {
+                    !device(n) && !spaces.contains_key(n)
+                }
+                Operation::BeginMarkedContentWithProps {
+                    properties: Object::Name(n),
+                    ..
+                } => !props.contains_key(n),
+                _ => false,
+            };
+            if missing {
+                return Err(refuse(format!(
+                    "appearance object {r} uses a resource ({}) it does not have",
+                    op.name()
+                )));
             }
         }
     }

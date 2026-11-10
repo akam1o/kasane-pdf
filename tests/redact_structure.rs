@@ -1046,15 +1046,19 @@ fn user_properties_go_whole() {
         "",
         "31 0 R",
         "<< /Nums [0 [31 0 R]] >>",
-        vec![(
-            31,
-            b"<< /S /P /P 30 0 R /Pg 3 0 R /K 0 /A << /O /UserProperties \
-              /P [<< /N (Account) /V 4111111111111111 >> << /N (Name) /V /SECRETNAME >>] >> >>"
-                .to_vec(),
-        )],
+        vec![
+            (
+                31,
+                b"<< /S /P /P 30 0 R /Pg 3 0 R /K 0 /A [<< /O /UserProperties \
+              /P [<< /N (Account) /V 4111111111111111 >> << /N (Name) /V /SECRETNAME >>] >> \
+              << /O 40 0 R /P [<< /N (Other) /V /SECRETOTHER >>] >>] >>"
+                    .to_vec(),
+            ),
+            (40, b"/UserProperties".to_vec()),
+        ],
     );
     let r = run(&pdf).unwrap();
-    assert!(!contains(&r.output, b"SECRETNAME"));
+    assert!(!contains(&r.output, b"SECRETNAME") && !contains(&r.output, b"SECRETOTHER"));
     let out = String::from_utf8_lossy(&r.output).into_owned();
     assert!(!out.contains("4111111111111111"));
 }

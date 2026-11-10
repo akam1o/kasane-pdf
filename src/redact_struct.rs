@@ -711,8 +711,11 @@ fn strip_attribute_strings(
                 let mut changed = false;
                 // User properties describe the content by name and value,
                 // numbers and names too: the whole list goes.
-                if d.get(b"O".as_slice()).and_then(|o| o.as_name()) == Some(b"UserProperties")
-                    && d.remove(b"P".as_slice()).is_some()
+                let owner = match d.get(b"O".as_slice()) {
+                    Some(o) => deref_cur(doc, overlay, o)?,
+                    None => Object::Null,
+                };
+                if owner.as_name() == Some(b"UserProperties") && d.remove(b"P".as_slice()).is_some()
                 {
                     changed = true;
                 }

@@ -162,7 +162,7 @@ different glyphs at different widths) or whose value another code
 length maps to another CID (readers key mappings by value or by bytes),
 text in a CMap with constructions readers read differently (bf mappings
 in an encoding CMap, definitions after `endcmap` or a second
-`begincmap`, an Identity base with codespace ranges of its own, a
+`begincmap`, an Identity base with codespace ranges of its own (or an unlisted code through one with mappings of its own), a
 `/WMode` other than 0 or 1, defined twice or disagreeing between the
 CMap's dictionary and program, odd-length hex codes, stray tokens in a
 block, codespace ranges of different lengths sharing leading bytes),
