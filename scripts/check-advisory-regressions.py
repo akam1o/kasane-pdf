@@ -8,7 +8,8 @@ Each input of `tests/redact_advisories.rs` is run with the arguments in
 `manifest-*.tsv` (alternative commands separated by `|`: the first the CLI's usage
 lists is run) and judged with tools that share no code with kasane:
 
-- `refused`: SAFE when no output is written, else LEAK;
+- `refused`: SAFE when the CLI refuses with a typed error, else LEAK (or
+  CRASH: no output without a typed error);
 - `safe-text:T`: SAFE when refused or when `pdftotext` does not extract T;
 - `safe-bytes:T` (`hex:..` for bytes): SAFE when refused or when T is not
   in the output after `qpdf --qdf --object-streams=disable
@@ -65,7 +66,10 @@ def main():
             elif timed_out:
                 verdict = "SLOW"
             elif not os.path.exists(out):
-                verdict = "SAFE (refused)"
+                # A refusal is a typed error (exit status 1, an "error ["
+                # line); a crash or a signal is not a refusal.
+                refused = p is not None and p.returncode == 1 and "error [" in p.stderr
+                verdict = "SAFE (refused)" if refused else f"CRASH (exit {p.returncode})"
             elif expect == "refused":
                 verdict = "LEAK (accepted)"
             elif expect.startswith("safe-text:"):

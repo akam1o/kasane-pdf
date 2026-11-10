@@ -150,6 +150,49 @@ fn ccitt_and_jbig2_images() {
             assert_eq!(sample_at(&data, 8, 1, 1, x, y, 0), 0);
         }
     }
+    // The same image as an embedded JBIG2 stream (page information and
+    // an immediate MMR generic region): columns 0 and 1 (outside) keep
+    // their white samples, the rest become 0; with a file header it is
+    // refused (readers disagree on it).
+    let seg = |num: u32, kind: u8, data: &[u8]| {
+        let mut s = num.to_be_bytes().to_vec();
+        s.extend_from_slice(&[kind, 0, 1]);
+        s.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        s.extend_from_slice(data);
+        s
+    };
+    let mut info = Vec::new();
+    for v in [8u32, 2, 0, 0] {
+        info.extend_from_slice(&v.to_be_bytes());
+    }
+    info.extend_from_slice(&[0, 0, 0]);
+    let mut region = Vec::new();
+    for v in [8u32, 2, 0, 0] {
+        region.extend_from_slice(&v.to_be_bytes());
+    }
+    region.extend_from_slice(&[0, 1]);
+    region.extend_from_slice(G4);
+    let mut jb = seg(0, 48, &info);
+    jb.extend_from_slice(&seg(1, 38, &region));
+    let jbig2 = |data: &[u8]| {
+        stream_obj(
+            "/Type /XObject /Subtype /Image /Width 8 /Height 2 /ColorSpace /DeviceGray \
+             /BitsPerComponent 1 /Filter /JBIG2Decode",
+            data,
+        )
+    };
+    let r = run(&page(jbig2(&jb))).unwrap();
+    let (dict, data) = out_image(&r.output);
+    assert!(!dict.contains_key(b"Filter".as_slice()));
+    for y in 0..2 {
+        for x in 0..8 {
+            let want = u32::from(x < 2);
+            assert_eq!(sample_at(&data, 8, 1, 1, x, y, 0), want, "JBIG2 ({x},{y})");
+        }
+    }
+    let mut with_header = b"\x97JB2\r\n\x1a\n\x01\x00\x00\x00\x01".to_vec();
+    with_header.extend_from_slice(&jb);
+    assert!(run(&page(jbig2(&with_header))).is_err());
     // JBIG2 with shared globals: refused (the symbol dictionary other
     // images use stays as it is).
     let jb = build_pdf(&[

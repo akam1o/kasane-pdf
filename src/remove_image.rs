@@ -1117,6 +1117,14 @@ pub(crate) fn decode_image(
                 crate::bilevel::ccitt_decode(&buf, parm, expected.0, expected.1, limits)?
             }
             b"JBIG2Decode" => {
+                // A file header (§7.4.7 forbids it in a PDF stream) is
+                // read by some readers and not others.
+                if buf.starts_with(b"\x97JB2\r\n\x1a\n") {
+                    return Err(Error::Unsupported {
+                        feature: "image stream filter",
+                        detail: "JBIG2 data with a file header (readers disagree on it)".into(),
+                    });
+                }
                 crate::bilevel::jbig2_decode(&buf, None, expected.0, expected.1, limits)?
             }
             f if general_filter(f) => {

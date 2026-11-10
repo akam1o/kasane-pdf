@@ -491,7 +491,9 @@ impl<'a> Signatures<'a> {
             if let Some(d) = self.memo.get(r) {
                 return Ok(*d);
             }
-            if !self.open.insert(*r) || self.open.len() > 256 {
+            // A cycle, or too deep a chain: no signature (the page is
+            // walked).
+            if self.open.len() >= 256 || !self.open.insert(*r) {
                 return Ok(None);
             }
             let t = self.doc.resolve(*r)?;
