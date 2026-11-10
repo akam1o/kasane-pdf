@@ -1214,11 +1214,24 @@ fn removable_appearance(
             doc.recovery_mode(),
             &mut warnings,
         )?;
+        // An entry that is there but unusable (a reference to nothing, a
+        // value of the wrong kind) is passed over by Poppler for the
+        // resources it shares: it counts as missing.
+        let usable = |cat: &Dict, n: &[u8], stream: bool| -> Result<bool, Error> {
+            let Some(v) = cat.get(n) else {
+                return Ok(false);
+            };
+            Ok(match doc.deref(v)? {
+                Object::Stream { .. } => true,
+                Object::Dict(_) => !stream,
+                _ => false,
+            })
+        };
         for op in &ops {
             let missing = match op {
-                Operation::Do(n) => !xobjects.contains_key(n),
-                Operation::SetExtGState(n) => !gstates.contains_key(n),
-                Operation::SetTextFont { font, .. } => !fonts.contains_key(font),
+                Operation::Do(n) => !usable(&xobjects, n, true)?,
+                Operation::SetExtGState(n) => !usable(&gstates, n, false)?,
+                Operation::SetTextFont { font, .. } => !usable(&fonts, font, false)?,
                 // A shading or pattern is refused above when present.
                 Operation::Shading(_) => true,
                 Operation::SetColorFill(v) | Operation::SetColorStroke(v) => {
@@ -1230,7 +1243,7 @@ fn removable_appearance(
                 Operation::BeginMarkedContentWithProps {
                     properties: Object::Name(n),
                     ..
-                } => !props.contains_key(n),
+                } => !usable(&props, n, false)?,
                 _ => false,
             };
             if missing {

@@ -162,7 +162,7 @@ different glyphs at different widths) or whose value another code
 length maps to another CID (readers key mappings by value or by bytes),
 text in a CMap with constructions readers read differently (bf mappings
 in an encoding CMap, definitions after `endcmap` or a second
-`begincmap`, an Identity base with codespace ranges of its own (or an unlisted code through one with mappings of its own), a
+`begincmap`, codes an embedded CMap passes through an Identity base (`usecmap` Identity) rather than listing them, a
 `/WMode` other than 0 or 1, defined twice or disagreeing between the
 CMap's dictionary and program, odd-length hex codes, stray tokens in a
 block, codespace ranges of different lengths sharing leading bytes),
@@ -393,7 +393,10 @@ Each of these is refused with a typed error, not approximated:
   embedded CMap writes codes as literal strings.
 - **CMap codes**: a shown Type 0 code that its CMap (embedded or
   predefined, with what it inherits by `usecmap`) maps by no `cidchar`
-  or `cidrange` and no Identity base. Fonts that declare notdef
+  or `cidrange` (a code an embedded CMap only passes through an
+  Identity base counts as unmapped: Poppler gives it CID 0, MuPDF and
+  pdf.js the code; the predefined `/Identity-H` and `/Identity-V`
+  encodings are not affected). Fonts that declare notdef
   mappings or leave codes unmapped redact as long as the codes they
   show are mapped. Readers measured on synthetic Type 0 fonts (Poppler
   26.10, MuPDF 1.28.6, pdf.js 6.5.438):

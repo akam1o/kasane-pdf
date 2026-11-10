@@ -2521,7 +2521,7 @@ impl Font {
             crate::cmap::Mapping::Defined => None,
             crate::cmap::Mapping::Notdef => Some("mapped only by a notdef mapping"),
             crate::cmap::Mapping::Fallthrough => {
-                Some("a CMap adding mappings to an Identity base does not list")
+                Some("an embedded CMap passes through an Identity base")
             }
             crate::cmap::Mapping::Unmapped => Some("mapped to no CID"),
             crate::cmap::Mapping::Invalid => Some("in no codespace range"),

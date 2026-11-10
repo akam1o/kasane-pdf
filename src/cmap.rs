@@ -55,7 +55,7 @@ pub(crate) struct CMap {
     /// A construction Poppler, MuPDF and pdf.js read differently, when
     /// the CMap has one: bf blocks in an encoding CMap, definitions after
     /// `endcmap` or a second `begincmap`, an Identity base with
-    /// definitions of its own, a `/WMode` other than 0 or 1, an odd-length hex
+    /// codespace ranges of its own, a `/WMode` other than 0 or 1, an odd-length hex
     /// code, a stray token in a block, codespace ranges of different
     /// lengths sharing leading bytes. Redaction refuses such a font.
     pub(crate) reader_dependent: Option<&'static str>,
@@ -452,8 +452,8 @@ impl CMap {
             cm.reader_dependent.get_or_insert("an odd-length hex code");
         }
         // An Identity base with codespace ranges of its own: readers
-        // split codes by one or the other. (With mappings only, a code the
-        // CMap does not list is reader-dependent: `Mapping::Fallthrough`.)
+        // split codes by one or the other. (Any code passed through the
+        // base is reader-dependent: `Mapping::Fallthrough`.)
         if cm.identity_base && !cm.codespaces.is_empty() {
             cm.reader_dependent
                 .get_or_insert("an Identity base with codespace ranges of its own");
@@ -530,7 +530,8 @@ impl CMap {
     }
 
     /// CID for `code` (of `len` bytes) and how it was found (§9.7.6.3):
-    /// a defined mapping (`cidchar`, `cidrange`, an Identity base);
+    /// a defined mapping (`cidchar`, `cidrange`), a code passed through
+    /// an Identity base;
     /// else, for a code in the codespace, a notdef mapping; else CID 0.
     pub(crate) fn lookup(&self, code: u32, len: usize) -> (u32, Mapping) {
         // Bytes in no codespace range are invalid whatever a mapping
@@ -559,16 +560,13 @@ impl CMap {
             return found(cid);
         }
         if self.identity_base {
-            // A code an Identity base passes through while the CMap adds
-            // mappings of its own: Poppler gives it CID 0, MuPDF and
-            // pdf.js the code.
-            let own = !(self.single.is_empty() && self.ranges.is_empty() && self.notdef.is_empty());
-            let m = if !valid {
-                Mapping::Invalid
-            } else if own {
+            // A code an embedded CMap passes through an Identity base:
+            // MuPDF and pdf.js give it the code, Poppler CID 0 (or, with
+            // no definitions of its own, reads one-byte codes).
+            let m = if valid {
                 Mapping::Fallthrough
             } else {
-                Mapping::Defined
+                Mapping::Invalid
             };
             return (code, m);
         }
@@ -619,10 +617,10 @@ impl CMap {
 /// How [`CMap::lookup`] found a code's CID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mapping {
-    /// Passed through an Identity base by a CMap with mappings of its
-    /// own (readers disagree).
+    /// Passed through an Identity base by an embedded CMap (readers
+    /// disagree).
     Fallthrough,
-    /// `cidchar`, `cidrange` or an Identity base.
+    /// `cidchar` or `cidrange`.
     Defined,
     /// A notdef mapping: a code in the codespace with no defined one.
     Notdef,

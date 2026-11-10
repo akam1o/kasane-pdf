@@ -68,7 +68,7 @@ versions follow [Semantic Versioning](https://semver.org/).
   fonts, or names resources it does not have, is refused.
 - `redact` refuses text in a CMap with constructions Poppler, MuPDF and
   pdf.js read differently (bf mappings in an encoding CMap, definitions
-  after `endcmap`, an Identity base with codespace ranges of its own (or an unlisted code through one with mappings of its own), a `/WMode`
+  after `endcmap`, codes an embedded CMap passes through an Identity base (`usecmap` Identity) rather than listing them, a `/WMode`
   other than 0 or 1 or defined twice, odd-length hex codes, stray
   tokens, codespace ranges of different lengths sharing leading bytes).
 - `Diagnosis` is `#[non_exhaustive]` and gains `data`; its image

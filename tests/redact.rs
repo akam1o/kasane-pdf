@@ -5550,6 +5550,22 @@ fn removed_appearances_through_shared_resources_are_refused() {
             "/Resources << /ExtGState << /G << /Font [20 0 R 12] >> >> >>",
             b"/G gs BT (x) Tj ET",
         ),
+        // Entries that are there but unusable: Poppler resolves the name
+        // in the resources it shares.
+        ("/Resources << /XObject << /X1 99 0 R >> >>", b"/X1 Do"),
+        ("/Resources << /XObject << /X1 5 >> >>", b"/X1 Do"),
+        (
+            "/Resources << /Font << /T3 99 0 R >> >>",
+            b"BT /T3 12 Tf (x) Tj ET",
+        ),
+        (
+            "/Resources << /Font << /T3 5 >> >>",
+            b"BT /T3 12 Tf (x) Tj ET",
+        ),
+        (
+            "/Resources << /Font << /T3 /None >> >>",
+            b"BT /T3 12 Tf (x) Tj ET",
+        ),
     ] {
         let e = unsupported(annots_run(&ap(res, body)));
         assert!(e.contains("resources it shares"), "{res}: {e}");
