@@ -1462,6 +1462,16 @@ impl<'a> DiagWalker<'a> {
             O::EndText => self.in_text = false,
             O::SetTextFont { font, size } => {
                 let f = crate::font::load_font(self.doc, &self.resources, font, self.limits)?;
+                if let (true, Some(why)) = (self.redaction_mode, f.reader_dependent_cmap()) {
+                    return Err(Error::Unsupported {
+                        feature: "redaction of text in a CMap readers read differently",
+                        detail: format!(
+                            "/{} — its CMap has {why}: Poppler, MuPDF and pdf.js do not \
+                             agree on its codes, so on where its glyphs fall",
+                            String::from_utf8_lossy(font)
+                        ),
+                    });
+                }
                 if self.redaction_mode && f.reader_dependent_codes() {
                     return Err(Error::Unsupported {
                         feature: "redaction of text in a CMap with codes written as strings",

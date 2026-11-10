@@ -565,7 +565,9 @@ fn form_content() {
     assert!(!contains(&r.output, b"SECRETTEXT") && !contains(&r.output, b"SECRETALT"));
     let els = elements(&r.output);
     assert!(!has_text(elem(&els, "P")));
-    assert!(has_text(elem(&els, "H1")), "page MCID 0 is not the form's");
+    // A tree may name the form's MCID 0 as the page's, and readers
+    // resolve it so: page MCID 0 is taken as touched too.
+    assert!(!has_text(elem(&els, "H1")));
     tree_resolves(&r.output);
     let doc = Document::from_bytes(&r.output).unwrap();
     let size = doc.trailer()[b"Size".as_slice()].as_i64().unwrap() as u32;
@@ -1032,4 +1034,27 @@ fn page_stream_references_direct_annotations_and_parent_links() {
     );
     let r = run(&pdf).unwrap();
     assert!(!contains(&r.output, b"SECRETANCESTOR"));
+}
+
+/// Attribute values that are not strings describe content too: a
+/// touched element's user properties go whole. (Release review.)
+#[test]
+fn user_properties_go_whole() {
+    let pdf = tagged(
+        TWO,
+        "",
+        "",
+        "31 0 R",
+        "<< /Nums [0 [31 0 R]] >>",
+        vec![(
+            31,
+            b"<< /S /P /P 30 0 R /Pg 3 0 R /K 0 /A << /O /UserProperties \
+              /P [<< /N (Account) /V 4111111111111111 >> << /N (Name) /V /SECRETNAME >>] >> >>"
+                .to_vec(),
+        )],
+    );
+    let r = run(&pdf).unwrap();
+    assert!(!contains(&r.output, b"SECRETNAME"));
+    let out = String::from_utf8_lossy(&r.output).into_owned();
+    assert!(!out.contains("4111111111111111"));
 }

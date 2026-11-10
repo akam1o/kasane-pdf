@@ -10,7 +10,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 - `redact` keeps and edits the structure tree instead of refusing one
-  with alternate text: every element whose content the edit touches
+  with alternate text: every element the tree's references tie to
+  content the edit touches
   (matched by `MCID` through `/K`, `/ParentTree`, `/IDTree`, `/MCR`,
   `/OBJR`), and its ancestors, loses `/Alt`, `/ActualText`, `/E`, `/T`,
   `/Phoneme`, `/AF` and the strings of its attribute objects; references
@@ -62,7 +63,14 @@ versions follow [Semantic Versioning](https://semver.org/).
   removed link's appearance, the masks of removed images, a removed Type 3
   glyph's procedure or the font's former `/ToUnicode`, a removed
   annotation's dictionary as a stream's dictionary, or an edited page's
-  thumbnail — through any reference.
+  thumbnail — whatever refers to it; removing an annotation whose
+  appearance draws through patterns, shadings, soft mask groups or Type 3
+  fonts, or names resources it does not have, is refused.
+- `redact` refuses text in a CMap with constructions Poppler, MuPDF and
+  pdf.js read differently (bf mappings in an encoding CMap, definitions
+  after `endcmap`, an Identity base with codespace ranges, a `/WMode`
+  other than 0 or 1 or defined twice, odd-length hex codes, stray
+  tokens, codespace ranges of different lengths sharing leading bytes).
 - `Diagnosis` is `#[non_exhaustive]` and gains `data`; its image
   blockers list a soft mask only when `redact` cannot edit it.
 - An appearance-less Highlight, Underline, StrikeOut or Squiggly reaches

@@ -5495,3 +5495,143 @@ fn removed_objects_do_not_stay_through_other_references() {
     );
     refused(&pdf, "thumbnail");
 }
+
+/// A removed annotation's appearance drawing through a pattern, a soft
+/// mask group or a Type 3 font, or naming resources it does not have, is
+/// refused: what those hold would not be checked. (Release review.)
+#[test]
+fn removed_appearances_through_shared_resources_are_refused() {
+    let ap = |res: &str, body: &[u8]| {
+        annot_page(
+            "30 0 R",
+            vec![
+                (
+                    30,
+                    b"<< /Type /Annot /Subtype /Stamp /Rect [60 95 100 105] /AP << /N 31 0 R >> >>"
+                        .to_vec(),
+                ),
+                (
+                    31,
+                    stream_obj(
+                        &format!("/Type /XObject /Subtype /Form /BBox [0 0 40 10] {res}"),
+                        body,
+                    ),
+                ),
+                (
+                    32,
+                    stream_obj(
+                        "/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 \
+                         /BBox [0 0 1 1] /XStep 1 /YStep 1 /Resources << >>",
+                        b"0 0 1 1 re f",
+                    ),
+                ),
+            ],
+        )
+    };
+    for (res, body) in [
+        (
+            "/Resources << /Pattern << /P 32 0 R >> >>",
+            &b"/Pattern cs /P scn 0 0 40 10 re f"[..],
+        ),
+        (
+            "/Resources << /ExtGState << /G << /SMask << /S /Luminosity /G 32 0 R >> >> >> >>",
+            b"/G gs 0 0 40 10 re f",
+        ),
+        ("", b"/Pattern cs /P scn 0 0 40 10 re f"),
+        ("", b"/G gs 0 0 40 10 re f"),
+    ] {
+        let e = unsupported(annots_run(&ap(res, body)));
+        assert!(e.contains("resources it shares"), "{res}: {e}");
+    }
+    // Plain drawing in an appearance without resources is removed.
+    assert_eq!(
+        annots_run(&ap("", b"0 0 40 10 re f"))
+            .unwrap()
+            .annotations_removed,
+        1
+    );
+}
+
+/// A removed Type 3 glyph's procedure kept as some dictionary's
+/// `/ToUnicode` is not a font's glyph: verification fails.
+/// (Release review.)
+#[test]
+fn a_removed_glyph_procedure_is_not_excused_as_a_tounicode() {
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << \
+              /Font << /F 20 0 R /G 21 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (
+            4,
+            stream_obj(
+                "",
+                b"BT /F 12 Tf 50 100 Td (A) Tj ET BT /F 12 Tf 10 20 Td (B) Tj ET",
+            ),
+        ),
+        (
+            20,
+            b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 600 700] \
+              /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /A 41 0 R /B 42 0 R >> \
+              /Encoding << /Differences [65 /A /B] >> /FirstChar 65 /LastChar 66 \
+              /Widths [600 600] /Resources << >> >>"
+                .to_vec(),
+        ),
+        (
+            21,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 41 0 R >>".to_vec(),
+        ),
+        (
+            41,
+            stream_obj("", b"600 0 d0 0 0 500 700 re f % SECRETGLYPH"),
+        ),
+        (42, stream_obj("", b"600 0 d0 0 0 100 700 re f")),
+    ]);
+    let e = unsupported(run(&pdf, vec![RECT]));
+    assert!(e.contains("glyph's procedure"), "{e}");
+}
+
+/// A thumbnail an edited page shares with another page leaves both.
+#[test]
+fn a_shared_thumbnail_leaves_every_page() {
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (
+            2,
+            b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec(),
+        ),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 20 0 R >> >> /Contents 4 0 R /Thumb 30 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", SECRET.as_bytes())),
+        (
+            5,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R \
+              /Thumb 30 0 R >>"
+                .to_vec(),
+        ),
+        (6, stream_obj("", b"")),
+        (
+            30,
+            stream_obj(
+                "/Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8",
+                &[1, 2, 3, 4],
+            ),
+        ),
+    ];
+    objs.extend(font_objs());
+    let r = run(&build_pdf(&objs), vec![RECT]).unwrap();
+    assert_eq!(r.thumbnails_removed, 2);
+    let doc = Document::from_bytes(&r.output).unwrap();
+    for p in doc.pages() {
+        let d = doc.resolve(p.object_ref().unwrap()).unwrap();
+        assert!(!d.as_dict().unwrap().contains_key(b"Thumb".as_slice()));
+    }
+}

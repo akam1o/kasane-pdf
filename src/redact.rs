@@ -113,11 +113,12 @@ impl RedactOptions {
     /// edited, scripts, XFA, rich text, multimedia, application data,
     /// forms nothing draws, streams under keys no modelled structure
     /// names, unknown entries of the catalog or a page — or when that
-    /// inventory could not be completed. Images, fonts and the other
-    /// data shown only through the pages are not refused (they are
-    /// interpreted, not searched). This narrows a success to "every
-    /// stream carried is of a kind `redact` reads or interprets"; it is
-    /// still not a proof that no copy of the removed content remains.
+    /// inventory could not be completed. Images, fonts and other data
+    /// in a known role are not refused (they are interpreted: not
+    /// searched, and — but for forms and images — not checked to be
+    /// used). This narrows a success to "every stream carried is
+    /// reached in a role whose format `redact` reads or interprets"; it
+    /// is still not a proof that no copy of the removed content remains.
     pub fn refuse_uninspected(mut self, refuse: bool) -> Self {
         self.refuse_uninspected = refuse;
         self
@@ -404,10 +405,10 @@ fn redact_doc(
         })?;
 
     // Type 3 glyph definitions the output no longer shows go too.
-    let (output, glyph_images, glyph_procs) =
+    let (output, glyph_images, glyph_procs, glyph_tounicodes) =
         match crate::redact_type3::prune_type3(doc, &output, limits)? {
-            Some(p) => (p.output, p.images, p.procs),
-            None => (output, Vec::new(), Vec::new()),
+            Some(p) => (p.output, p.images, p.procs, p.tounicodes),
+            None => (output, Vec::new(), Vec::new(), Vec::new()),
         };
 
     // Every object the output carries was read by now. A literal string
@@ -440,7 +441,9 @@ fn redact_doc(
         session,
     )?;
     verify_original_contents(&out, &s.original_contents_digests)?;
-    verify_removed_streams(&out, &s.removed_stream_digests, &glyph_procs)?;
+    let mut gone_whole = s.removed_stream_digests.clone();
+    gone_whole.extend(glyph_tounicodes);
+    verify_removed_streams(&out, &gone_whole, &glyph_procs)?;
     crate::redact_struct::verify(&out, &structure, limits)?;
     if options.remove_javascript {
         if let Some(r) = crate::redact_js::find_javascript(&out, limits)? {
@@ -769,11 +772,11 @@ fn verify_original_contents(out: &Document, digests: &[[u8; 32]]) -> Result<(), 
     Ok(())
 }
 
-/// No stream of `out` is a removed thumbnail (`removed`, by digest) but
-/// another page's own `/Thumb` (the same picture), and
-/// none is a removed Type 3 glyph's procedure or a replaced `/ToUnicode`
-/// (`procs`) except as a Type 3 font's CharProc or a font's `/ToUnicode`
-/// (the same bytes still in use elsewhere).
+/// No stream of `out` is what was removed whole (`removed`, by digest: a
+/// thumbnail — but another page's own `/Thumb`, the same picture — or a
+/// replaced `/ToUnicode`), and none is a removed Type 3 glyph's procedure
+/// (`procs`) except as a Type 3 font's CharProc (the same bytes still a
+/// glyph there).
 fn verify_removed_streams(
     out: &Document,
     removed: &[[u8; 32]],
@@ -806,9 +809,6 @@ fn verify_removed_streams(
         let Object::Dict(d) = out.resolve(r)? else {
             continue;
         };
-        if let Some(Object::Ref(t)) = d.get(b"ToUnicode".as_slice()) {
-            in_use.insert(*t);
-        }
         if d.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Type3") {
             if let Some(cp) = d.get(b"CharProcs".as_slice()) {
                 if let Some(cp) = out.deref(cp)?.as_dict() {
@@ -829,15 +829,16 @@ fn verify_removed_streams(
         if is(&removed) && !thumbs.contains(&r) {
             return Err(Error::Unsupported {
                 feature: "redaction output failed verification",
-                detail: format!("object {r} holds an edited page's removed thumbnail"),
+                detail: format!(
+                    "object {r} holds what the redaction removed whole (a thumbnail, a \
+                     replaced /ToUnicode)"
+                ),
             });
         }
         if is(&procs) && !in_use.contains(&r) {
             return Err(Error::Unsupported {
                 feature: "redaction output failed verification",
-                detail: format!(
-                    "object {r} holds a removed Type 3 glyph's procedure or a replaced /ToUnicode"
-                ),
+                detail: format!("object {r} holds a removed Type 3 glyph's procedure"),
             });
         }
     }

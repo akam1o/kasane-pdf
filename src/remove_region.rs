@@ -1074,6 +1074,7 @@ fn appearance_closure(
     limits: &Limits,
 ) -> Result<Vec<IndirectRef>, Error> {
     let mut seen: Vec<IndirectRef> = roots.to_vec();
+    let mut known: HashSet<IndirectRef> = seen.iter().copied().collect();
     let mut k = 0;
     while k < seen.len() {
         if seen.len() as u64 > limits.max_diag_items {
@@ -1090,7 +1091,7 @@ fn appearance_closure(
         // An image's masks hold its shape as much as its samples.
         for key in [b"SMask".as_slice(), b"Mask"] {
             if let Some(Object::Ref(r)) = dict.get(key) {
-                if !seen.contains(r) {
+                if known.insert(*r) {
                     seen.push(*r);
                 }
             }
@@ -1109,13 +1110,123 @@ fn appearance_closure(
             .unwrap_or_default()
         {
             if let Object::Ref(r) = v {
-                if !seen.contains(r) {
+                if known.insert(*r) {
                     seen.push(*r);
                 }
             }
         }
     }
     Ok(seen)
+}
+
+/// Refuse removing an annotation whose appearance draws through anything
+/// but forms, images and fonts with glyph programs: what a pattern, a
+/// shading, a soft mask group or a Type 3 glyph holds is not followed by
+/// [`appearance_closure`], so it could stay unchecked. A form of the
+/// closure without `/Resources` of its own that names any resource is
+/// refused too (it would resolve them in resources it shares).
+fn removable_appearance(
+    doc: &Document,
+    closure: &[IndirectRef],
+    limits: &Limits,
+) -> Result<(), Error> {
+    let refuse = |detail: String| Error::Unsupported {
+        feature: "redaction of an annotation whose appearance draws through resources it shares",
+        detail,
+    };
+    for &r in closure {
+        let Object::Stream { dict, data } = doc.resolve(r)? else {
+            continue;
+        };
+        if dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Image") {
+            continue;
+        }
+        let res = match dict.get(b"Resources".as_slice()) {
+            None | Some(Object::Null) => None,
+            Some(o) => Some(doc.deref(o)?),
+        };
+        let Some(res) = res else {
+            let decoded = doc.decode_stream(&dict, &data)?;
+            let mut warnings = Vec::new();
+            let ops = crate::content::parse_content_stream(
+                &[decoded],
+                limits,
+                doc.recovery_mode(),
+                &mut warnings,
+            )?;
+            let device = |n: &[u8]| {
+                matches!(
+                    n,
+                    b"DeviceGray" | b"DeviceRGB" | b"DeviceCMYK" | b"G" | b"RGB" | b"CMYK"
+                )
+            };
+            let names = ops.iter().any(|op| match op {
+                Operation::Do(_)
+                | Operation::SetExtGState(_)
+                | Operation::Shading(_)
+                | Operation::SetTextFont { .. } => true,
+                Operation::SetColorFill(v) | Operation::SetColorStroke(v) => {
+                    matches!(v.last(), Some(Object::Name(_)))
+                }
+                Operation::SetColorSpaceFill(n) | Operation::SetColorSpaceStroke(n) => !device(n),
+                _ => false,
+            });
+            if names {
+                return Err(refuse(format!(
+                    "appearance object {r} names resources it does not have"
+                )));
+            }
+            continue;
+        };
+        let Some(res) = res.as_dict() else { continue };
+        for key in [b"Pattern".as_slice(), b"Shading"] {
+            if let Some(v) = res.get(key) {
+                if doc.deref(v)?.as_dict().is_some_and(|d| !d.is_empty()) {
+                    return Err(refuse(format!(
+                        "appearance object {r} uses /{}",
+                        String::from_utf8_lossy(key)
+                    )));
+                }
+            }
+        }
+        if let Some(gs) = res.get(b"ExtGState".as_slice()) {
+            for g in doc
+                .deref(gs)?
+                .as_dict()
+                .map(|d| d.values().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+            {
+                let g = doc.deref(&g)?;
+                let soft = g
+                    .as_dict()
+                    .and_then(|d| d.get(b"SMask".as_slice()))
+                    .map(|m| doc.deref(m))
+                    .transpose()?
+                    .is_some_and(|m| m.as_name() != Some(b"None"));
+                if soft {
+                    return Err(refuse(format!("appearance object {r} uses a soft mask")));
+                }
+            }
+        }
+        if let Some(fonts) = res.get(b"Font".as_slice()) {
+            for f in doc
+                .deref(fonts)?
+                .as_dict()
+                .map(|d| d.values().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+            {
+                let f = doc.deref(&f)?;
+                if f.as_dict()
+                    .and_then(|d| d.get(b"Subtype".as_slice()))
+                    .and_then(|s| s.as_name())
+                    == Some(b"Type3")
+                {
+                    return Err(refuse(format!("appearance object {r} uses a Type 3 font")));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// An annotation's appearance streams (`/AP` `/N`, `/R`, `/D`, each a
@@ -1232,6 +1343,7 @@ pub(crate) fn regions_edit_session_with<'a>(
     let mut thumbnails_removed_total: u64 = 0;
     let mut original_contents_digests: Vec<[u8; 32]> = Vec::new();
     let mut removed_stream_digests: Vec<[u8; 32]> = Vec::new();
+    let mut removed_thumbs: HashSet<IndirectRef> = HashSet::new();
     let mut annots_removed_total: u64 = 0;
     // Removed links and annotations, by content (`annotation_print`):
     // verification fails if the output still holds one.
@@ -1462,7 +1574,15 @@ pub(crate) fn regions_edit_session_with<'a>(
                 // masks they draw, transitively — may not stay unless
                 // still invoked (checked by digest on the output); a
                 // link's as much as any annotation's.
-                for r in appearance_closure(doc, &annotation_appearances(doc, d)?, limits)? {
+                let closure = appearance_closure(doc, &annotation_appearances(doc, d)?, limits)?;
+                removable_appearance(doc, &closure, limits).map_err(|e| match e {
+                    Error::Unsupported { feature, detail } => Error::Unsupported {
+                        feature,
+                        detail: format!("/Annots[{k}]: {detail}"),
+                    },
+                    e => e,
+                })?;
+                for r in closure {
                     if let Object::Stream { dict, data } = doc.resolve(r)? {
                         original_digests
                             .extend([sha256(&doc.decode_stream(&dict, &data)?), sha256(&data)]);
@@ -2115,7 +2235,6 @@ pub(crate) fn regions_edit_session_with<'a>(
                             crate::redact_struct::Owner::Form {
                                 form: *form,
                                 page: page_ref,
-                                tagged: node.dict.contains_key(b"StructParents".as_slice()),
                             },
                         )?;
                     }
@@ -2413,6 +2532,9 @@ pub(crate) fn regions_edit_session_with<'a>(
         if mode == SessionMode::Redact {
             if let Some(t) = page_dict.remove(b"Thumb".as_slice()) {
                 thumbnails_removed_total += 1;
+                if let Object::Ref(r) = &t {
+                    removed_thumbs.insert(*r);
+                }
                 if let Object::Stream { dict, data } = doc.deref(&t)? {
                     removed_stream_digests
                         .extend([sha256(&doc.decode_stream(&dict, &data)?), sha256(&data)]);
@@ -2539,6 +2661,27 @@ pub(crate) fn regions_edit_session_with<'a>(
             (page_ref.number, page_ref.generation),
             Object::Dict(page_dict),
         );
+    }
+    // A thumbnail an edited page shares with another page pictures the
+    // edited page as much: it leaves that page too.
+    if !removed_thumbs.is_empty() {
+        for p in doc.pages() {
+            let Some(pr) = p.object_ref() else { continue };
+            let key = (pr.number, pr.generation);
+            let mut d = match edit.overlay.get(&key) {
+                Some(Object::Dict(d)) => d.clone(),
+                _ => match doc.resolve(pr)? {
+                    Object::Dict(d) => d,
+                    _ => continue,
+                },
+            };
+            if matches!(d.get(b"Thumb".as_slice()), Some(Object::Ref(t)) if removed_thumbs.contains(t))
+            {
+                d.remove(b"Thumb".as_slice());
+                edit.overlay.insert(key, Object::Dict(d));
+                thumbnails_removed_total += 1;
+            }
+        }
     }
     touched.objects.extend(edited_originals.keys().copied());
     let names_pruned_total = if mode == SessionMode::Redact && !edited_originals.is_empty() {

@@ -46,7 +46,8 @@ pub enum DataStatus {
     /// Its text is extracted and searched for copies of the removed
     /// content.
     Searched,
-    /// A known format in a known role, shown only through the pages;
+    /// A known format in a known role (its use is not checked, but for
+    /// forms and images);
     /// not searched.
     Interpreted,
     /// Carried as it is; never read.
@@ -573,17 +574,17 @@ impl Walk<'_> {
                     c => c,
                 };
                 for (i, x) in a.iter().enumerate() {
-                    queue.push_back((x.clone(), each, self.child(via, format!("[{i}]"))));
+                    self.push(queue, x, each, via, format!("[{i}]"));
                 }
             }
             (Ctx::Contents, Object::Array(a)) => {
                 for (i, x) in a.iter().enumerate() {
-                    queue.push_back((x.clone(), Ctx::Contents, self.child(via, format!("[{i}]"))));
+                    self.push(queue, x, Ctx::Contents, via, format!("[{i}]"));
                 }
             }
             (Ctx::Annots, Object::Array(a)) => {
                 for (i, x) in a.iter().enumerate() {
-                    queue.push_back((x.clone(), Ctx::Annot, self.child(via, format!("[{i}]"))));
+                    self.push(queue, x, Ctx::Annot, via, format!("[{i}]"));
                 }
             }
             (Ctx::ColorSpace, Object::Array(a)) => self.color_space(a, via, queue),
@@ -596,14 +597,14 @@ impl Walk<'_> {
             | (Ctx::Opaque(_), Object::Array(a))
             | (Ctx::Generic, Object::Array(a)) => {
                 for (i, x) in a.iter().enumerate() {
-                    queue.push_back((x.clone(), ctx, self.child(via, format!("[{i}]"))));
+                    self.push(queue, x, ctx, via, format!("[{i}]"));
                 }
             }
             (Ctx::NameTree(sub), Object::Array(a)) => {
                 // A `/Names` array: keys and values alternate.
                 for (i, x) in a.iter().enumerate() {
                     if i % 2 == 1 {
-                        queue.push_back((x.clone(), sub.ctx(), self.child(via, format!("[{i}]"))));
+                        self.push(queue, x, sub.ctx(), via, format!("[{i}]"));
                     }
                 }
             }
@@ -672,6 +673,28 @@ impl Walk<'_> {
         }
     }
 
+    /// Queue `o` as `ctx`, one step below `via` — only what can lead to
+    /// a stream (a reference or a container): strings, names and numbers
+    /// are not walked (strings are searched as text; unknown entries
+    /// holding direct values are listed by `dict`).
+    fn push(
+        &mut self,
+        queue: &mut VecDeque<(Object, Ctx, usize)>,
+        o: &Object,
+        ctx: Ctx,
+        via: usize,
+        step: String,
+    ) {
+        if !matches!(
+            o,
+            Object::Ref(_) | Object::Dict(_) | Object::Array(_) | Object::Stream { .. }
+        ) {
+            return;
+        }
+        let p = self.child(via, step);
+        queue.push_back((o.clone(), ctx, p));
+    }
+
     fn push_children(
         &mut self,
         o: &Object,
@@ -682,12 +705,12 @@ impl Walk<'_> {
         match o {
             Object::Array(a) => {
                 for (i, x) in a.iter().enumerate() {
-                    queue.push_back((x.clone(), ctx, self.child(via, format!("[{i}]"))));
+                    self.push(queue, x, ctx, via, format!("[{i}]"));
                 }
             }
             Object::Dict(d) | Object::Stream { dict: d, .. } => {
                 for (k, v) in d {
-                    queue.push_back((v.clone(), ctx, self.child(via, format!("/{}", name(k)))));
+                    self.push(queue, v, ctx, via, format!("/{}", name(k)));
                 }
             }
             _ => {}
@@ -709,10 +732,12 @@ impl Walk<'_> {
                 (Some(b"Indexed") | Some(b"I"), 3) => Ctx::Function,
                 (Some(b"Separation"), 2) | (Some(b"DeviceN"), 2) => Ctx::ColorSpace,
                 (Some(b"Separation"), 3) | (Some(b"DeviceN"), 3) => Ctx::Function,
+                // DeviceN attributes: /Colorants, /Process /ColorSpace.
+                (Some(b"DeviceN"), 4) => Ctx::ColorSpace,
                 (Some(b"Pattern"), 1) => Ctx::ColorSpace,
                 _ => Ctx::Generic,
             };
-            queue.push_back((x.clone(), c, self.child(via, format!("[{i}]"))));
+            self.push(queue, x, c, via, format!("[{i}]"));
         }
     }
 
@@ -730,15 +755,15 @@ impl Walk<'_> {
                 Some(c) => c,
                 None => continue,
             };
-            let path = self.child(via, format!("/{}", name(k)));
             if child == Ctx::Unknown && !matches!(v, Object::Ref(_)) && !is_scalar(v) {
                 // A direct value under an unknown entry: listed at its
                 // holder.
+                let path = self.child(via, format!("/{}", name(k)));
                 self.direct_unknown.push((holder, path));
                 self.push_children(v, Ctx::Generic, path, queue);
                 continue;
             }
-            queue.push_back((v.clone(), child, path));
+            self.push(queue, v, child, via, format!("/{}", name(k)));
         }
     }
 }
@@ -908,6 +933,7 @@ fn child_ctx_in(ctx: Ctx, d: &Dict, key: &[u8]) -> Option<Ctx> {
             // A colour space dictionary (CalRGB, Lab) or DeviceN
             // attributes: colourants are colour spaces.
             b"Colorants" => Ctx::Map(Sub::ColorSpace),
+            b"Process" | b"ColorSpace" => Ctx::ColorSpace,
             _ => Ctx::Generic,
         },
         Ctx::Group => match key {

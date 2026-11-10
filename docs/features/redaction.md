@@ -105,13 +105,17 @@ Three separate statements; none implies the next:
   `elsewhere` either way, and `refuse_copies_elsewhere` refuses it. Any
   other copy — one only named in some resources, or reachable
   otherwise — fails.
-- No stream of the output holds what the redaction removed whole, by
-  any reference: a removed link's or annotation's appearance streams and
-  the forms, images and masks they draw (unless still drawn), a removed
-  annotation's dictionary (also as a stream's dictionary), a removed
-  Type 3 glyph's procedure and the font's former `/ToUnicode` (unless
-  still a font's), the masks of images only removed glyphs drew, an
-  edited page's thumbnail (unless another page's own).
+- No stream of the output holds, by digest, these objects the
+  redaction removed whole, whatever refers to them: a removed link's or
+  annotation's appearance streams and the forms, images and masks they
+  draw (unless still drawn; an appearance drawing through patterns,
+  shadings, soft mask groups or Type 3 fonts, or naming resources it
+  does not have, is refused instead), a removed annotation's dictionary
+  (also as a stream's dictionary), a removed Type 3 glyph's procedure
+  (unless still a Type 3 font's glyph), the font's former `/ToUnicode`,
+  the masks of images only removed glyphs drew, an edited page's
+  thumbnail (unless another page's own, a different object; one shared
+  with another page leaves that page too).
 - No stream of the output holds an edited page's original content
   (stored or decoded digest), except one that a page still draws as its
   `/Contents` (a content stream the edited page shared with another
@@ -156,6 +160,15 @@ Type 0 code its CMap maps by no `cidchar` / `cidrange` (a notdef
 mapping, no mapping, or bytes in no codespace range: readers draw
 different glyphs at different widths) or whose value another code
 length maps to another CID (readers key mappings by value or by bytes),
+text in a CMap with constructions readers read differently (bf mappings
+in an encoding CMap, definitions after `endcmap` or a second
+`begincmap`, an Identity base with codespace ranges of its own, a
+`/WMode` other than 0 or 1, defined twice or disagreeing between the
+CMap's dictionary and program, odd-length hex codes, stray tokens in a
+block, codespace ranges of different lengths sharing leading bytes),
+removing an annotation whose appearance draws through patterns,
+shadings, soft mask groups or Type 3 fonts or names resources it does
+not have,
 an appearance-less annotation with a caption or a cloudy border, `/ActualText`, `/Alt` or `/E` in named marked-content
 properties or on a marked-content point,
 text in a clipping mode (`Tr` 4–7),
@@ -195,7 +208,10 @@ an element across a rect loses all of its text, accessibility of the
 kept part included), and every string of its attribute objects (`/A`;
 for its classes `/C`, the `/ClassMap` entries — shared, so for every
 element using that class): a table's `/Summary` and any other text an
-attribute carries; other attributes (layout, numbers, names) stay. The
+attribute carries — and a user-properties attribute (`/O /UserProperties`)
+loses its whole property list; other attributes (layout, numbers,
+names) stay, as do an element's `/ID`, `/Lang` and keys no structure
+names. The
 removed texts are searched for in `elsewhere`. `/OBJR` items to removed
 annotations or edited originals, and `/MCR` items into an edited form's
 original, leave `/K` (they would keep those objects reachable); a
@@ -205,8 +221,9 @@ tree names). Elements are not split or duplicated.
 
 Matching is conservative: an `MCID` whose page is not known is touched
 when that number is touched on any page or form; a page `MCID` is also
-touched when a form drawn on the page without `/StructParents` (so with
-no MCIDs of its own) touches that number; a sequence whose `MCID`
+touched when a form drawn on the page touches that number (a tree may
+name a form's MCIDs as the page's, and readers resolve them so, whether
+or not the form has `/StructParents`); a sequence whose `MCID`
 cannot be read (named `/Properties` that do not resolve) touches every
 `MCID` of its stream. Edited content outside every marked-content
 sequence relates to no element: the tree keeps its text (a copy of
@@ -231,7 +248,7 @@ every stream by the role it is reached in from the trailer:
 | status | what |
 | --- | --- |
 | `Searched` | its text is extracted and searched for `elsewhere`: page content, forms drawn by pages and annotation appearances |
-| `Interpreted` | a known format in a known role, shown only through the pages, not searched: images drawn, font programs and CMaps, functions, shading and pattern streams, ICC profiles, Type 3 glyph procedures, the XObjects of patterns, Type 3 fonts and soft masks |
+| `Interpreted` | a known format in a known role, not searched: images drawn, font programs and CMaps, functions, shading and pattern streams, ICC profiles, Type 3 glyph procedures, the XObjects of patterns, Type 3 fonts and soft masks. The role is what is classified: whether such data is used (a pattern, font, function or profile named but never drawn) is not checked, except for forms and images |
 | `Uninspected` | carried as it is, never read: attachments (`/EF`, `/RF`), XMP metadata (other than the catalog's, which is removed), thumbnails, JavaScript source, XFA, rich text, multimedia and 3D, `/PieceInfo`, PostScript and OPI, halftones, template pages, images and forms nothing draws, streams under a key no modelled structure names, and any entry of the catalog, the page tree or a page that none names (unless it holds only a number, boolean or null) |
 | `NotCarried` | nothing refers to it (input only: `redact` writes what is reachable) |
 
@@ -245,9 +262,11 @@ stored length and filters — never content; the walk is bounded by
 
 `refuse_uninspected(true)` (CLI `--refuse-uninspected`) refuses an
 output with any uninspected item or an incomplete inventory. This
-narrows a success to "every stream carried is of a kind `redact` reads
-or interprets". It is **not** a proof that no copy of the removed
-content remains: interpreted data is not searched (text in an image's
+narrows a success to "every stream carried is reached in a role whose
+format `redact` reads or interprets". It is **not** a proof that no copy
+of the removed content remains: interpreted data is not searched, nor
+checked to be used (an unused pattern, font, function or profile may
+hold anything), text in an image's
 pixels or a font program), non-stream objects' strings are searched
 only as text, and nothing searches bytes — compression, encryption,
 encodings and application formats make a byte search no evidence of

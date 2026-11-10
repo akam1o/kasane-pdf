@@ -251,3 +251,29 @@ fn a_mapping_does_not_make_an_invalid_code_valid() {
     .unwrap_err();
     assert!(e.to_string().contains("no codespace range"), "{e}");
 }
+
+/// CMap constructions readers read differently refuse the font in
+/// redaction: bf mappings in an encoding CMap, definitions after
+/// `endcmap`, an Identity base with codespace ranges, a `/WMode` other
+/// than 0 or 1. (Release review.)
+#[test]
+fn reader_dependent_cmap_constructions_are_refused() {
+    for m in [
+        "1 beginbfchar <41> <0042> endbfchar",
+        "endcmap 1 begincidchar <42> 37 endcidchar",
+        "/WMode 2 def",
+    ] {
+        let pdf = page(m, "41");
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let e = redact(
+            &doc,
+            &[(0, vec![(5.0, 95.0, 50.0, 115.0)])],
+            &RedactOptions::new(),
+        )
+        .unwrap_err();
+        assert!(
+            e.to_string().contains("readers read differently"),
+            "{m}: {e}"
+        );
+    }
+}

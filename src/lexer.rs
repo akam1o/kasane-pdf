@@ -78,6 +78,9 @@ pub(crate) struct Lexer<'a> {
     /// feed, as §7.3.4.2 says; Poppler and pdf.js keep the bytes —
     /// readers disagree on what such a string holds.
     pub(crate) raw_cr_strings: u64,
+    /// Hex strings with an odd number of digits read so far (the last
+    /// digit taken as a high nibble, §7.3.4.3).
+    pub(crate) odd_hex_strings: u64,
 }
 
 impl<'a> Lexer<'a> {
@@ -87,6 +90,7 @@ impl<'a> Lexer<'a> {
             pos: 0,
             limits,
             raw_cr_strings: 0,
+            odd_hex_strings: 0,
         }
     }
 
@@ -391,6 +395,7 @@ impl<'a> Lexer<'a> {
         // Odd nibble count: final nibble is the high half of the last byte.
         if nibbles.len() % 2 == 1 {
             nibbles.push(0);
+            self.odd_hex_strings += 1;
         }
         Ok(nibbles.chunks(2).map(|c| (c[0] << 4) | c[1]).collect())
     }

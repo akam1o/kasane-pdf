@@ -486,3 +486,30 @@ fn associated_files_anywhere() {
     let inv = uninspected_data(&d, &Limits::default()).unwrap();
     assert_eq!(roles(&inv), vec![DataRole::EmbeddedFile]);
 }
+
+/// DeviceN attributes are colour-space data (their colorants' tint
+/// functions are interpreted). (Release review.)
+#[test]
+fn devicen_attributes() {
+    let img = stream_obj(
+        "/Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 \
+         /ColorSpace [/DeviceN [/Spot] /DeviceCMYK 31 0 R \
+         << /Colorants << /Spot [/Separation /Spot /DeviceCMYK 32 0 R] >> \
+         /Process << /ColorSpace /DeviceCMYK /Components [/Cyan] >> >>]",
+        &[7],
+    );
+    let f = stream_obj(
+        "/FunctionType 4 /Domain [0 1] /Range [0 1 0 1 0 1 0 1]",
+        b"{ 0 0 0 }",
+    );
+    let pdf = doc(
+        &format!("{TEXT} q 10 0 0 10 150 150 cm /Im Do Q"),
+        "/XObject << /Im 30 0 R >>",
+        "",
+        "",
+        vec![(30, img), (31, f.clone()), (32, f)],
+    );
+    let d = Document::from_bytes(&pdf).unwrap();
+    let inv = uninspected_data(&d, &Limits::default()).unwrap();
+    assert_eq!(inv.uninspected, 0, "{:?}", inv.items);
+}

@@ -1693,6 +1693,9 @@ pub(crate) struct CompositeFont {
     cmap: Option<crate::cmap::CMap>,
     /// Vertical writing mode (`Identity-V` or CMap `/WMode 1`).
     vertical: bool,
+    /// The CMap stream's dictionary and program disagree on `/WMode`, or
+    /// give one other than 0 or 1 (readers take one or the other).
+    wmode_conflict: Option<&'static str>,
     /// Default glyph width (1/1000 em), from `/DW`. Default 1000.
     dw: f64,
     /// Width overrides from `/W` — sorted `(first_cid, last_cid, width)`.
@@ -1733,6 +1736,7 @@ fn load_composite_font(
     dict: &Dict,
     limits: &Limits,
 ) -> Result<Rc<CompositeFont>, Error> {
+    let mut wmode_conflict = None;
     let (cmap, mut vertical) = match dict.get(b"Encoding".as_slice()) {
         Some(Object::Name(n)) if n.as_slice() == b"Identity-H" => (None, false),
         Some(Object::Name(n)) if n.as_slice() == b"Identity-V" => (None, true),
@@ -1762,7 +1766,14 @@ fn load_composite_font(
             let bytes = doc.decode_stream(sd, raw)?;
             let use_cmap = sd.get(b"UseCMap".as_slice()).and_then(|o| o.as_name());
             let cm = crate::cmap::CMap::parse(&bytes, use_cmap, limits)?;
-            let wmode = sd.get(b"WMode".as_slice()).and_then(|o| o.as_i64()) == Some(1);
+            let dict_wmode = sd.get(b"WMode".as_slice()).and_then(|o| o.as_i64());
+            let wmode = dict_wmode == Some(1);
+            // Readers take the stream's `/WMode` or the dictionary's.
+            if dict_wmode.is_some_and(|w| !(0..=1).contains(&w))
+                || dict_wmode.is_some_and(|w| (w == 1) != cm.vertical)
+            {
+                wmode_conflict = Some("a /WMode the CMap's dictionary and stream disagree on");
+            }
             let v = cm.vertical || wmode;
             (Some(cm), v)
         }
@@ -2109,6 +2120,7 @@ fn load_composite_font(
         cid_to_gid,
         cmap,
         vertical,
+        wmode_conflict,
         dw,
         w,
         dw2,
@@ -2475,6 +2487,19 @@ impl Font {
         match self {
             Font::Composite(f) => f.cmap.as_ref().is_some_and(|c| c.literal_codes),
             _ => false,
+        }
+    }
+
+    /// A construction of this font's CMap (or its `/WMode`) that readers
+    /// read differently (see `CMap::reader_dependent`).
+    pub(crate) fn reader_dependent_cmap(&self) -> Option<&'static str> {
+        match self {
+            Font::Composite(f) => f
+                .cmap
+                .as_ref()
+                .and_then(|c| c.reader_dependent)
+                .or(f.wmode_conflict),
+            _ => None,
         }
     }
 
