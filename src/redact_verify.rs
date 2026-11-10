@@ -584,11 +584,14 @@ fn annotation_print(d: &crate::object::Dict) -> [u8; 32] {
         b"Filter",
         b"DecodeParms",
         b"DL",
-        b"F",
         b"FFilter",
         b"FDecodeParms",
     ] {
         d.remove(k);
+    }
+    // A stream's file specification, not an annotation's flags.
+    if !matches!(d.get(b"F".as_slice()), Some(Object::Integer(_)) | None) {
+        d.remove(b"F".as_slice());
     }
     crate::remove_region::annotation_print(&d)
 }
@@ -618,9 +621,14 @@ pub(crate) fn check_removed_annotations(
         }
         Ok(set)
     };
+    // What the output's pages still show is not removed, wherever an
+    // identical annotation was (the same footer link on every page).
+    let mut kept: HashSet<[u8; 32]> = HashSet::new();
+    for i in 0..out.pages().len() {
+        kept.extend(prints(out, i)?);
+    }
     let mut removed: HashSet<[u8; 32]> = HashSet::new();
     for &i in edited {
-        let kept = prints(out, i)?;
         removed.extend(prints(input, i)?.into_iter().filter(|p| !kept.contains(p)));
     }
     if removed.is_empty() {
@@ -650,6 +658,23 @@ pub(crate) fn check_removed_annotations(
         }
     }
     Ok(())
+}
+
+/// The prints ([`crate::remove_region::annotation_print`]) of every
+/// annotation the output's pages hold: an identical removed annotation's
+/// print excuses nothing more than these show.
+pub(crate) fn shown_annotation_prints(out: &Document) -> Result<HashSet<[u8; 32]>, Error> {
+    let mut set = HashSet::new();
+    for page in out.pages() {
+        if let Some(a) = crate::redact_diag::page_dict_entry(out, page, b"Annots")? {
+            for x in out.deref(&a)?.as_array().unwrap_or(&[]) {
+                if let Some(d) = out.deref(x)?.as_dict() {
+                    set.insert(crate::remove_region::annotation_print(d));
+                }
+            }
+        }
+    }
+    Ok(set)
 }
 
 #[cfg(test)]

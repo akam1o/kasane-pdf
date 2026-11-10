@@ -5895,3 +5895,45 @@ fn a_long_document_sharing_an_edited_image() {
     let r = redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()).unwrap();
     assert_eq!(r.images_edited, 1);
 }
+
+/// The same link on every page: the one meeting the rect goes, the
+/// identical ones on other pages stay (refused before). (Review.)
+#[test]
+fn identical_links_on_other_pages_stay() {
+    let link = b"<< /Type /Annot /Subtype /Link /Rect [70 90 110 100] /A << /S /URI /URI (https://example.com/) >> >>";
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [10 0 R] >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"0 0 5 5 re f")),
+        (
+            5,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [11 0 R] >>"
+                .to_vec(),
+        ),
+        (10, link.to_vec()),
+        (11, link.to_vec()),
+    ]);
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let r = redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()).unwrap();
+    assert_eq!(r.links_removed, 1);
+    let out = Document::from_bytes(&r.output).unwrap();
+    let annots = |i: usize| {
+        out.deref(
+            out.resolve(out.pages()[i].object_ref().unwrap())
+                .unwrap()
+                .as_dict()
+                .unwrap()
+                .get(b"Annots".as_slice())
+                .unwrap_or(&kasane_pdf::Object::Null),
+        )
+        .unwrap()
+        .as_array()
+        .map_or(0, |a| a.len())
+    };
+    assert_eq!((annots(0), annots(1)), (0, 1));
+}

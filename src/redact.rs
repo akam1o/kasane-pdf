@@ -653,7 +653,15 @@ fn verify(
     // refers to it (an action, another annotation, the structure tree,
     // an outline …): every dictionary written is compared.
     if !removed_annots.is_empty() {
-        let prints: HashSet<[u8; 32]> = removed_annots.iter().copied().collect();
+        // Removed annotations are refused by identity before the
+        // rewrite; this catches copies. One identical to an annotation a
+        // page still holds is that annotation.
+        let shown = crate::redact_verify::shown_annotation_prints(&out)?;
+        let prints: HashSet<[u8; 32]> = removed_annots
+            .iter()
+            .copied()
+            .filter(|p| !shown.contains(p))
+            .collect();
         // Every nested dictionary, at any depth (iteratively).
         fn find(o: &Object, prints: &HashSet<[u8; 32]>) -> bool {
             let mut stack = vec![o];
