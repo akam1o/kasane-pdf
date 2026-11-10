@@ -473,6 +473,36 @@ pub fn make(mut rng: Rng<'_>, v: u32, font: &[u8]) -> (Vec<u8>, Vec<Vec<String>>
         );
         annots.push(a);
     }
+    // Form fields: a widget inside the rect showing a secret value, a
+    // widget outside showing a public one (0.9).
+    let mut form_fields: Vec<u32> = Vec::new();
+    if g.rng.chance(1, 3) {
+        let ap = g.d.add(stream_obj(
+            &format!("/Type /XObject /Subtype /Form /BBox [0 0 40 10] /Resources << /Font << /F1 {FONT} 0 R >> >>"),
+            format!("BT /F1 6 Tf 0 0 Td ({}) Tj ET", secret(v, 950, 5)).as_bytes(),
+        ));
+        g.d.secret_objs.push(ap);
+        let w = g.d.add(
+            format!(
+                "<< /Type /Annot /Subtype /Widget /FT /Tx /T (s{}) /V ({}) /Rect [80 100 120 110] \
+                 /AP << /N {ap} 0 R >> >>",
+                g.k,
+                secret(v, 951, 6)
+            )
+            .into_bytes(),
+        );
+        g.d.secret_objs.push(w);
+        annots.push(w);
+        form_fields.push(w);
+        if g.rng.chance(1, 2) {
+            let k = g.d.add(
+                b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (kept) /V (PUBLICFIELD) /Rect [10 160 50 170] >>"
+                    .to_vec(),
+            );
+            annots.push(k);
+            form_fields.push(k);
+        }
+    }
     for (p, c) in contents.iter().enumerate() {
         let cs = g.d.add(stream_obj("", c.ops.as_bytes()));
         if p == 0 {
@@ -515,6 +545,16 @@ pub fn make(mut rng: Rng<'_>, v: u32, font: &[u8]) -> (Vec<u8>, Vec<Vec<String>>
     }
     // Hostile references to secret objects from places that draw nothing.
     let mut cat_extra = String::new();
+    if !form_fields.is_empty() {
+        cat_extra.push_str(&format!(
+            " /AcroForm << /Fields [{}] >>",
+            form_fields
+                .iter()
+                .map(|f| format!("{f} 0 R"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        ));
+    }
     let mut page_extra: Vec<String> = vec![String::new(); pages];
     let targets = g.d.secret_objs.clone();
     for i in 0..g.rng.below(4) {
