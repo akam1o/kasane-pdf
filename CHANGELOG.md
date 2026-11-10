@@ -6,7 +6,29 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.8.0] - unreleased (the date is set when the release is tagged)
+## [0.8.0] - 2026-11-10
+
+### Security
+- Removed data kept through other references (GHSA-cjhc-76x8-crrq,
+  Medium): when something else in the document (a private catalog or page
+  entry, `/PieceInfo`, an attachment, a structure `/MCR /Stm`) referred to
+  an object `redact` replaced or removed whole, it was written to the
+  output unchanged: an edited page's original content stream and a removed
+  link's appearance with what it draws (0.6.0–0.7.0); masks of removed
+  annotation images and content they draw through patterns or soft mask
+  groups, a removed annotation's dictionary as a stream's, removed Type 3
+  glyph procedures and the font's former `/ToUnicode` (0.7.0). Verification now
+  fails on any such copy, and removing an annotation whose appearance draws
+  through resources it shares is refused.
+- Readers disagreeing on CMaps (GHSA-3f9j-35f2-6659, Low): `redact`
+  (0.6.0–0.7.0) read some embedded CMap constructions differently from
+  Poppler, MuPDF and pdf.js — a code defined by `cidchar` and a later
+  `cidrange`, the same value at two code lengths, bf mappings, definitions
+  after `endcmap`, codes passed through an Identity base, `/WMode` 2,
+  odd-length hex codes, stray tokens, overlapping codespace lengths — so
+  glyphs it kept could be drawn inside the rect by those readers. The
+  latest definition now wins, by code length, and the other constructions
+  are refused.
 
 ### Added
 - `redact` keeps and edits the structure tree instead of refusing one
