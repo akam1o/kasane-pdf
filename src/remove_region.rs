@@ -775,6 +775,10 @@ pub(crate) struct RegionsEdit<'a> {
     pub(crate) touched: crate::redact_struct::Touched,
     /// Redaction mode only: `/Thumb` removed from edited pages.
     pub(crate) thumbnails_removed_total: u64,
+    /// Redaction mode only: digests (decoded, stored) of the edited
+    /// pages' original content streams — each may stay in the output
+    /// only as a page's `/Contents`.
+    pub(crate) original_contents_digests: Vec<[u8; 32]>,
     /// Redaction mode only: annotations other than links removed
     /// whole (`remove_annotations`), with the popups and replies tied
     /// to them.
@@ -1001,12 +1005,13 @@ fn decoration_reach(doc: &Document, d: &Dict, w: f64) -> Result<f64, Error> {
     ) {
         if let Some(q) = d.get(b"QuadPoints".as_slice()) {
             let q = doc.deref(q)?;
-            let nums: Vec<f64> = q
-                .as_array()
-                .unwrap_or(&[])
-                .iter()
-                .filter_map(|v| v.as_number())
-                .collect();
+            let mut nums: Vec<f64> = Vec::new();
+            for v in q.as_array().unwrap_or(&[]) {
+                match doc.deref(v)?.as_number() {
+                    Some(n) if n.is_finite() => nums.push(n),
+                    _ => return Err(refuse("quadrilaterals that are not numbers")),
+                }
+            }
             let mut h: f64 = 0.0;
             for quad in nums.chunks_exact(8) {
                 let side =
@@ -1022,10 +1027,13 @@ fn decoration_reach(doc: &Document, d: &Dict, w: f64) -> Result<f64, Error> {
             Object::Array(a) => a,
             o => vec![o],
         };
-        if ends
-            .iter()
-            .any(|e| !matches!(e.as_name(), None | Some(b"None")))
-        {
+        let mut drawn = false;
+        for e in &ends {
+            // An ending that is not the name /None (an indirect name,
+            // anything else) may be drawn.
+            drawn |= doc.deref(e)?.as_name() != Some(b"None");
+        }
+        if drawn {
             reach += (15.0 * w).max(15.0);
         }
     }
@@ -1210,6 +1218,7 @@ pub(crate) fn regions_edit_session_with<'a>(
     let mut paths_cut_total: u64 = 0;
     let mut touched = crate::redact_struct::Touched::default();
     let mut thumbnails_removed_total: u64 = 0;
+    let mut original_contents_digests: Vec<[u8; 32]> = Vec::new();
     let mut annots_removed_total: u64 = 0;
     // Removed links and annotations, by content (`annotation_print`):
     // verification fails if the output still holds one.
@@ -1467,6 +1476,11 @@ pub(crate) fn regions_edit_session_with<'a>(
                 if let Some(r) = entries[k].0 {
                     touched.objects.insert(r);
                     touched.removed_annotations.insert(r);
+                }
+                // A direct annotation has no reference for an `/OBJR`,
+                // but its `/ParentTree` entry still names its element.
+                if let Some(Object::Integer(key)) = d.get(b"StructParent".as_slice()) {
+                    touched.removed_parent_keys.insert(*key);
                 }
             }
             kept_annots = Some(kept);
@@ -2385,6 +2399,20 @@ pub(crate) fn regions_edit_session_with<'a>(
         if mode == SessionMode::Redact && page_dict.remove(b"Thumb".as_slice()).is_some() {
             thumbnails_removed_total += 1;
         }
+        // The original content streams hold what the rects removed:
+        // something else referring to one would carry it (checked by
+        // digest on the output; a tree's `/MCR /Stm` to one goes).
+        if mode == SessionMode::Redact {
+            for r in original_content_streams(doc, &page_obj)? {
+                touched.objects.insert(r);
+                if let Object::Stream { dict, data } = doc.resolve(r)? {
+                    let decoded = doc.decode_stream(&dict, &data)?;
+                    if decoded.iter().any(|b| !b.is_ascii_whitespace()) {
+                        original_contents_digests.extend([sha256(&decoded), sha256(&data)]);
+                    }
+                }
+            }
+        }
         match kept_annots {
             Some(k) if k.is_empty() => {
                 page_dict.remove(b"Annots".as_slice());
@@ -2532,11 +2560,29 @@ pub(crate) fn regions_edit_session_with<'a>(
         links_removed_total,
         touched,
         thumbnails_removed_total,
+        original_contents_digests,
         annots_removed_total,
         removed_annot_prints,
         paths_cut_total,
         forms_edited_total,
     })
+}
+
+/// The content streams a page dictionary names: its `/Contents` stream,
+/// or the streams of its array (direct or indirect).
+fn original_content_streams(doc: &Document, page: &Object) -> Result<Vec<IndirectRef>, Error> {
+    let Some(c) = page.as_dict().and_then(|d| d.get(b"Contents".as_slice())) else {
+        return Ok(Vec::new());
+    };
+    let items = match c {
+        Object::Ref(r) => match doc.resolve(*r)? {
+            Object::Array(a) => a,
+            _ => return Ok(vec![*r]),
+        },
+        Object::Array(a) => a.clone(),
+        _ => return Ok(Vec::new()),
+    };
+    Ok(items.iter().filter_map(|o| o.as_ref()).collect())
 }
 
 /// A soft mask edited for the rects: its copy, the samples changed, the

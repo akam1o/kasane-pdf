@@ -5239,3 +5239,95 @@ fn diagnosis_soft_mask_blockers() {
     assert!(!blockers(&make("")).contains("SMask"));
     assert!(blockers(&make("/Matte [0 0 0]")).contains("/SMask"));
 }
+
+/// An edited page's original content stream may not stay in the output
+/// by any route — a private catalog entry, application data, an
+/// attachment: verification fails, nothing is written. A content stream
+/// another page still draws stays, its text reported. (Release review.)
+#[test]
+fn an_edited_pages_original_content_does_not_stay() {
+    for (cat, page_extra) in [
+        ("/XYZPrivate 4 0 R", ""),
+        ("/PieceInfo << /App << /Private 4 0 R >> >>", ""),
+        (
+            "/Names << /EmbeddedFiles << /Names [(x) << /Type /Filespec /F (x) \
+             /EF << /F 4 0 R >> >>] >> >>",
+            "",
+        ),
+        ("", "/PieceInfo << /App << /Private 4 0 R >> >>"),
+    ] {
+        let pdf = one_page(SECRET, page_extra, cat, vec![]);
+        let e = unsupported(run(&pdf, vec![RECT]));
+        assert!(e.contains("original content"), "{cat}{page_extra}: {e}");
+    }
+    // Shared with a page that is not edited: kept there, reported.
+    let pdf = build_pdf(&{
+        let mut o = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (
+                2,
+                b"<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 >>".to_vec(),
+            ),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /Font << /F1 20 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", SECRET.as_bytes())),
+            (
+                8,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /Font << /F1 20 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+        ];
+        o.extend(font_objs());
+        o
+    });
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert!(r
+        .elsewhere
+        .iter()
+        .any(|e| e.location == ElsewhereLocation::Page(1)));
+}
+
+/// Decorations given indirectly count too: an indirect line ending, a
+/// highlight whose quadrilateral coordinates are references.
+/// (Release review.)
+#[test]
+fn indirect_annotation_decorations() {
+    let pdf = annot_page(
+        "30 0 R",
+        vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Line /Rect [170 170 190 190] \
+                  /L [80 80 110 80] /LE [31 0 R /None] /C [0 0 0] /BS << /W 2 >> >>"
+                    .to_vec(),
+            ),
+            (31, b"/ClosedArrow".to_vec()),
+        ],
+    );
+    assert_eq!(annots_run(&pdf).unwrap().annotations_removed, 1);
+    let pdf = annot_page(
+        "30 0 R",
+        vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Highlight /Rect [10 150 40 170] \
+                  /QuadPoints [10 31 0 R 40 31 0 R 10 150 40 150] /C [1 1 0] >>"
+                    .to_vec(),
+            ),
+            (31, b"170".to_vec()),
+        ],
+    );
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let r = redact(
+        &doc,
+        &[(0, vec![RECT, (42.0, 150.0, 60.0, 170.0)])],
+        &RedactOptions::new().remove_annotations(true),
+    )
+    .unwrap();
+    assert_eq!(r.annotations_removed, 1);
+}

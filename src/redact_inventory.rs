@@ -759,13 +759,16 @@ fn name(k: &[u8]) -> String {
 /// edge — `/Parent`, `/P` — is followed with no role: what only it
 /// reaches is still classified, conservatively). Keys naming
 /// uninspected data wherever they appear (`/Metadata`, `/PieceInfo`,
-/// `/Thumb`) are taken so under any structure.
+/// `/Thumb`, `/AF`) are taken so under any structure.
 fn child_ctx(ctx: Ctx, d: &Dict, key: &[u8]) -> Option<Ctx> {
     Some(match child_ctx_in(ctx, d, key)? {
         Ctx::Generic => match key {
             b"Metadata" => Ctx::Opaque(DataRole::Metadata),
             b"PieceInfo" => Ctx::Opaque(DataRole::PrivateData),
             b"Thumb" => Ctx::Opaque(DataRole::Thumbnail),
+            // Associated files (PDF 2.0) hang off any object: structure
+            // elements, annotations, forms, marked content.
+            b"AF" => Ctx::FileSpec,
             _ => Ctx::Generic,
         },
         c => c,

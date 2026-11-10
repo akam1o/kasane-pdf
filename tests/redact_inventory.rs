@@ -466,3 +466,23 @@ fn undrawn_images_and_attachments_used_as_content() {
     let inv = uninspected_data(&d, &Limits::default()).unwrap();
     assert_eq!(roles(&inv), vec![DataRole::EmbeddedFile]);
 }
+
+/// Associated files hang off any object — here a structure element —
+/// and stay uninspected whatever else their stream is (a page's
+/// content). (Release review.)
+#[test]
+fn associated_files_anywhere() {
+    let pdf = doc(
+        TEXT,
+        "",
+        "",
+        "/StructTreeRoot << /K 30 0 R >>",
+        vec![(
+            30,
+            b"<< /S /Figure /AF [<< /Type /Filespec /F (a) /EF << /F 4 0 R >> >>] >>".to_vec(),
+        )],
+    );
+    let d = Document::from_bytes(&pdf).unwrap();
+    let inv = uninspected_data(&d, &Limits::default()).unwrap();
+    assert_eq!(roles(&inv), vec![DataRole::EmbeddedFile]);
+}

@@ -970,3 +970,66 @@ fn nested_indirect_and_cyclic_attributes() {
     let r = run(&cyclic).unwrap();
     assert!(!contains(&r.output, b"SECRETCYCLE") && !contains(&r.output, b"SECRETALT"));
 }
+
+/// An `/MCR /Stm` naming the page's own content stream would keep the
+/// original; a direct tagged annotation's `/StructParent` still names
+/// its element; an element only an untouched element's `/P` reaches is
+/// read. (Release review.)
+#[test]
+fn page_stream_references_direct_annotations_and_parent_links() {
+    let pdf = tagged(
+        TWO,
+        "",
+        "",
+        "[31 0 R 32 0 R]",
+        "<< /Nums [0 [31 0 R 32 0 R]] >>",
+        vec![
+            (
+                31,
+                b"<< /S /P /P 30 0 R /Pg 3 0 R /Alt (SECRETALT) \
+                  /K << /Type /MCR /Stm 4 0 R /MCID 0 >> >>"
+                    .to_vec(),
+            ),
+            (
+                32,
+                b"<< /S /H1 /P 30 0 R /Pg 3 0 R /K 1 /Alt (PUBLICALT) >>".to_vec(),
+            ),
+        ],
+    );
+    let r = run(&pdf).unwrap();
+    assert!(!contains(&r.output, b"SECRETTEXT") && !contains(&r.output, b"SECRETALT"));
+    tree_resolves(&r.output);
+
+    let pdf = tagged(
+        TWO,
+        "",
+        "/Annots [<< /Type /Annot /Subtype /Link /Rect [50 95 120 110] /StructParent 1 \
+         /A << /S /URI /URI (https://example.com/x) >> >>]",
+        "31 0 R",
+        "<< /Nums [0 [null null] 1 31 0 R] >>",
+        vec![(
+            31,
+            b"<< /S /Link /P 30 0 R /Pg 3 0 R /Alt (SECRETANNOT) >>".to_vec(),
+        )],
+    );
+    let r = run(&pdf).unwrap();
+    assert_eq!(r.links_removed, 1);
+    assert!(!contains(&r.output, b"SECRETANNOT"));
+
+    let pdf = tagged(
+        TWO,
+        "",
+        "",
+        "32 0 R",
+        "<< /Nums [] >>",
+        vec![
+            (
+                31,
+                b"<< /S /Sect /P 30 0 R /Pg 3 0 R /K 0 /Alt (SECRETANCESTOR) >>".to_vec(),
+            ),
+            (32, b"<< /S /P /P 31 0 R /Pg 3 0 R /K 1 >>".to_vec()),
+        ],
+    );
+    let r = run(&pdf).unwrap();
+    assert!(!contains(&r.output, b"SECRETANCESTOR"));
+}

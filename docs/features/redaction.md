@@ -135,7 +135,8 @@ than 16 deep or cyclic, inline images meeting a rect
 form or reached from elsewhere, tiling patterns painting across a rect, in a form, under text
 meeting a rect or reached from elsewhere,
 ExtGState with a soft mask or `/Font`, literal strings holding an
-unescaped carriage return anywhere in the document (readers do not agree
+unescaped carriage return in any object of the output, in an edited
+page's content or the forms it draws, or in a CMap (readers do not agree
 on the bytes they hold), text in a font whose embedded CMap writes codes
 as literal strings (Poppler rejects them, other readers do not), a
 Type 0 code its CMap maps by no `cidchar` / `cidrange` (a notdef
@@ -354,7 +355,9 @@ Each of these is refused with a typed error, not approximated:
   inside forms or shared; shading patterns with their own ExtGState;
   soft masks; `/Font` set by ExtGState.
 - **Strings**: a document with a literal string holding an unescaped
-  carriage return (in content, objects or a CMap); text in a font whose
+  carriage return (in an object of the output, an edited page's content
+  or the forms it draws, or a CMap; the content of pages not edited is
+  not checked, nothing there is placed by the redaction); text in a font whose
   embedded CMap writes codes as literal strings.
 - **CMap codes**: a shown Type 0 code that its CMap (embedded or
   predefined, with what it inherits by `usecmap`) maps by no `cidchar`

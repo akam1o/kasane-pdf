@@ -73,6 +73,9 @@ pub(crate) struct Touched {
     pub(crate) objects: HashSet<IndirectRef>,
     /// Of those, the removed annotations (their `/ParentTree` entries go).
     pub(crate) removed_annotations: HashSet<IndirectRef>,
+    /// The `/StructParent` keys of every removed annotation, direct ones
+    /// included.
+    pub(crate) removed_parent_keys: BTreeSet<i64>,
 }
 
 impl Touched {
@@ -620,6 +623,18 @@ fn read_tree(
             }
         }
     }
+    // And every element some element names as its parent (`/P`), up
+    // to the root: a tree whose `/K` and `/P` disagree is read both ways.
+    let mut i = 0;
+    while i < tree.elements.len() {
+        if let Some(p) = tree.elements[i].dict.get(b"P".as_slice()).cloned() {
+            let to_root = matches!((&p, tree.root), (Object::Ref(a), Some(b)) if *a == b);
+            if !to_root && matches!(p, Object::Ref(_)) {
+                tree.add(doc, overlay, p, None, budget)?;
+            }
+        }
+        i += 1;
+    }
     Ok(tree)
 }
 
@@ -896,6 +911,17 @@ pub(crate) fn edit_tree(
                 removed_keys.insert(*k);
             }
         }
+    }
+    for &k in &touched.removed_parent_keys {
+        seeds.extend(parent_tree_elements(
+            doc,
+            overlay,
+            &tree,
+            &Object::Integer(k),
+            None,
+            &mut budget,
+        )?);
+        removed_keys.insert(k);
     }
     let mut hit: HashSet<usize> = HashSet::new();
     for e in seeds {

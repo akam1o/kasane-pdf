@@ -438,6 +438,7 @@ fn redact_doc(
         &s.removed_annot_prints,
         session,
     )?;
+    verify_original_contents(&out, &s.original_contents_digests)?;
     crate::redact_struct::verify(&out, &structure, limits)?;
     if options.remove_javascript {
         if let Some(r) = crate::redact_js::find_javascript(&out, limits)? {
@@ -708,6 +709,57 @@ fn verify(
     }
     let residual = audit_residuals(&out, limits)?;
     Ok((out, residual, shown))
+}
+
+/// No stream of `out` holds an edited page's original content (stored or
+/// decoded), unless a page of `out` draws it as its `/Contents` (a
+/// content stream the edited page shared with another page).
+fn verify_original_contents(out: &Document, digests: &[[u8; 32]]) -> Result<(), Error> {
+    if digests.is_empty() {
+        return Ok(());
+    }
+    let gone: HashSet<[u8; 32]> = digests.iter().copied().collect();
+    let mut contents: HashSet<IndirectRef> = HashSet::new();
+    for page in out.pages() {
+        let Some(r) = page.object_ref() else { continue };
+        let obj = out.resolve(r)?;
+        let Some(c) = obj.as_dict().and_then(|d| d.get(b"Contents".as_slice())) else {
+            continue;
+        };
+        match c {
+            Object::Ref(r) => match out.resolve(*r)? {
+                Object::Array(a) => contents.extend(a.iter().filter_map(|o| o.as_ref())),
+                _ => {
+                    contents.insert(*r);
+                }
+            },
+            Object::Array(a) => contents.extend(a.iter().filter_map(|o| o.as_ref())),
+            _ => {}
+        }
+    }
+    let refs: Vec<_> = out
+        .xref_entries()
+        .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
+        .map(|(r, _)| r)
+        .collect();
+    for r in refs {
+        let Object::Stream { dict, data } = out.resolve(r)? else {
+            continue;
+        };
+        let held = gone.contains(&sha256(&data))
+            || out
+                .decode_stream(&dict, &data)
+                .is_ok_and(|d| gone.contains(&sha256(&d)));
+        if held && !contents.contains(&r) {
+            return Err(Error::Unsupported {
+                feature: "redaction output failed verification",
+                detail: format!(
+                    "object {r} holds an edited page's original content (something refers to it)"
+                ),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Every XObject a page of `out` invokes — by a `Do` in its content or
