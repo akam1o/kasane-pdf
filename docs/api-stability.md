@@ -104,7 +104,7 @@ patch release.
   class of input is refused with `max_pattern_tiles`, and `rewrite`
   carries `/OCProperties`.
 
-## Unreleased (0.8)
+## 0.8.0
 
 - Added: `uninspected_data`, `DataInventory`, `DataItem`, `DataRole`,
   `DataStatus` (all `#[non_exhaustive]`); `RedactOptions::refuse_uninspected`;
@@ -112,7 +112,8 @@ patch release.
   uninspected, thumbnails_removed}`.
 - Breaking (allowed by a minor bump): `Diagnosis` becomes
   `#[non_exhaustive]` (a struct literal no longer compiles; it is a
-  result) and gains `data`.
+  result) and gains `data`. `cargo semver-checks` against 0.7.0 reports
+  only that (`struct_marked_non_exhaustive`).
 - Behaviour: a structure tree with alternate text is edited instead of
   refused; tagged annotations removed with a rect no longer refuse;
   edited pages lose `/Thumb`; Type 0 codes readers map differently are

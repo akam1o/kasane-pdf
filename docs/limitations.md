@@ -203,7 +203,24 @@ are on the [roadmap](architecture.md#roadmap).
   keep the CR), and an embedded CMap's codes written as literal strings
   are read like hex codes (Poppler rejects them). Rendering and
   extraction follow that reading; `redact` refuses such documents and
-  fonts.
+  fonts. In Type 0 CMaps (0.8) notdef mappings are honoured (§9.7.6.3)
+  and the latest `cidchar` / `cidrange` definition of a code wins, by
+  code length; `redact` refuses text showing a code readers map
+  differently (notdef only, unmapped, in no codespace range, or defined
+  for another code length).
+- **Redaction and the structure tree** (0.8): the tree is kept; the
+  elements whose content a redaction touches — and their ancestors —
+  lose their text, associated files and attribute strings whole
+  (elements are not split, so an element across a rect loses the
+  accessibility text of its kept part too). Content outside every
+  marked-content sequence relates to no element. Trees that cannot be
+  edited exactly (cycles, kids of unknown kinds, a touched element
+  written inside another object) are refused.
+- **Uninspected data** (0.8): `redact` reports the data it carries
+  without reading it (`Redaction::uninspected`) and refuses it with
+  `refuse_uninspected`; that mode is not a proof that no copy of the
+  removed content remains (images and fonts are interpreted, not
+  searched; no byte search is made).
 - **Incremental save** cannot delete bytes (a removed annotation's
   object stays in the file), refuses recovered documents, encrypted
   documents and non-zero-generation references, and only appends the

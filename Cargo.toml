@@ -1,13 +1,12 @@
 [package]
 name = "kasane-pdf"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
 rust-version = "1.92"
 authors = ["akam1o <5158577+akam1o@users.noreply.github.com>"]
 description = "Independent PDF engine: parsing, rendering, text extraction, rewriting and incremental editing with strict resource limits"
 license = "Apache-2.0"
 repository = "https://github.com/akam1o/kasane-pdf"
-homepage = "https://github.com/akam1o/kasane-pdf"
 readme = "README.md"
 keywords = ["pdf", "parser", "renderer", "rasterizer", "document"]
 categories = ["parser-implementations", "rendering", "text-processing", "multimedia::images"]

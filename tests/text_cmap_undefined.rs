@@ -202,12 +202,20 @@ fn the_latest_definition_wins_across_kinds() {
     // CID 37 advances 2000: the second glyph starts 20 pt after the first.
     let x: Vec<f64> = t.chars.iter().map(|c| c.origin.0).collect();
     assert!((x[1] - x[0] - 20.0).abs() < 1e-6, "{x:?}");
-    redact(
+    // Readers draw the second glyph at x 30–50: that is what the rect
+    // removes, and nothing of it is left there.
+    let r = redact(
         &doc,
         &[(0, vec![(29.0, 95.0, 50.0, 115.0)])],
         &RedactOptions::new(),
     )
     .unwrap();
+    assert_eq!(r.codes_removed, 1);
+    let out = Document::from_bytes(&r.output).unwrap();
+    let t = extract_text(&out, &out.pages()[0], &TextOptions::default()).unwrap();
+    let x: Vec<f64> = t.chars.iter().map(|c| c.origin.0).collect();
+    assert_eq!(x.len(), 1, "{x:?}");
+    assert!((x[0] - 10.0).abs() < 1e-6, "{x:?}");
 }
 
 /// The same value defined for another code length: pdf.js and MuPDF
@@ -242,4 +250,151 @@ fn a_mapping_does_not_make_an_invalid_code_valid() {
     )
     .unwrap_err();
     assert!(e.to_string().contains("no codespace range"), "{e}");
+}
+
+/// CMap constructions readers read differently refuse the font in
+/// redaction: bf mappings in an encoding CMap, definitions after
+/// `endcmap`, codes an embedded CMap passes through an Identity base (`usecmap` Identity) rather than listing them, a `/WMode` other
+/// than 0 or 1. (Release review.)
+#[test]
+fn reader_dependent_cmap_constructions_are_refused() {
+    for m in [
+        "1 beginbfchar <41> <0042> endbfchar",
+        "endcmap 1 begincidchar <42> 37 endcidchar",
+        "/WMode 2 def",
+    ] {
+        let pdf = page(m, "41");
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let e = redact(
+            &doc,
+            &[(0, vec![(5.0, 95.0, 50.0, 115.0)])],
+            &RedactOptions::new(),
+        )
+        .unwrap_err();
+        assert!(
+            e.to_string().contains("readers read differently"),
+            "{m}: {e}"
+        );
+    }
+}
+
+/// A CMap adding mappings to an Identity base: a code it does not list
+/// is passed through (MuPDF, pdf.js) or given CID 0 (Poppler) —
+/// refused; listed codes redact. (Release review.)
+#[test]
+fn an_identity_base_with_mappings_of_its_own() {
+    use common::{build_pdf, stream_obj};
+    let make = |show: &str| {
+        let cmap = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+            /Identity-H usecmap 1 begincidchar <0041> 36 endcidchar \
+            endcmap CMapName currentdict /CMap defineresource pop end end";
+        let font = liberation();
+        build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] \
+                  /Resources << /Font << /F 5 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (
+                4,
+                stream_obj(
+                    "",
+                    format!("BT /F 10 Tf 10 100 Td <{show}> Tj ET").as_bytes(),
+                ),
+            ),
+            (
+                5,
+                b"<< /Type /Font /Subtype /Type0 /BaseFont /LiberationSans /Encoding 9 0 R \
+                  /DescendantFonts [8 0 R] >>"
+                    .to_vec(),
+            ),
+            (
+                6,
+                b"<< /Type /FontDescriptor /FontName /LiberationSans /Flags 32 \
+                  /FontBBox [-200 -300 1200 1000] /ItalicAngle 0 /Ascent 900 /Descent -200 \
+                  /CapHeight 700 /StemV 80 /FontFile2 7 0 R >>"
+                    .to_vec(),
+            ),
+            (7, stream_obj(&format!("/Length1 {}", font.len()), &font)),
+            (
+                8,
+                b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /LiberationSans \
+                  /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+                  /DW 500 /CIDToGIDMap /Identity /FontDescriptor 6 0 R >>"
+                    .to_vec(),
+            ),
+            (9, stream_obj("/Type /CMap /CMapName /Test", cmap)),
+        ])
+    };
+    let run = |show: &str| {
+        let doc = Document::from_bytes(&make(show)).unwrap();
+        redact(
+            &doc,
+            &[(0, vec![(5.0, 95.0, 50.0, 115.0)])],
+            &RedactOptions::new(),
+        )
+    };
+    run("00410041").unwrap();
+    let e = run("00360041").unwrap_err();
+    assert!(e.to_string().contains("Identity base"), "{e}");
+}
+
+/// An embedded CMap that is only an Identity base (`/Identity-H usecmap`
+/// and nothing else): Poppler reads one-byte codes with CID 0, MuPDF
+/// and pdf.js Identity — refused. (Release review.)
+#[test]
+fn an_embedded_cmap_that_is_only_an_identity_base() {
+    use common::{build_pdf, stream_obj};
+    for body in [&b""[..], b"0 begincidchar endcidchar"] {
+        let mut cmap = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+            /Identity-H usecmap "
+            .to_vec();
+        cmap.extend_from_slice(body);
+        cmap.extend_from_slice(b" endcmap CMapName currentdict /CMap defineresource pop end end");
+        let font = liberation();
+        let pdf = build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] \
+                  /Resources << /Font << /F 5 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", b"BT /F 10 Tf 10 100 Td <00410042> Tj ET")),
+            (
+                5,
+                b"<< /Type /Font /Subtype /Type0 /BaseFont /LiberationSans /Encoding 9 0 R \
+                  /DescendantFonts [8 0 R] >>"
+                    .to_vec(),
+            ),
+            (
+                6,
+                b"<< /Type /FontDescriptor /FontName /LiberationSans /Flags 32 \
+                  /FontBBox [-200 -300 1200 1000] /ItalicAngle 0 /Ascent 900 /Descent -200 \
+                  /CapHeight 700 /StemV 80 /FontFile2 7 0 R >>"
+                    .to_vec(),
+            ),
+            (7, stream_obj(&format!("/Length1 {}", font.len()), &font)),
+            (
+                8,
+                b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /LiberationSans \
+                  /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+                  /DW 500 /CIDToGIDMap /Identity /FontDescriptor 6 0 R >>"
+                    .to_vec(),
+            ),
+            (9, stream_obj("/Type /CMap /CMapName /Test", &cmap)),
+        ]);
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let e = redact(
+            &doc,
+            &[(0, vec![(5.0, 95.0, 50.0, 115.0)])],
+            &RedactOptions::new(),
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("Identity base"), "{e}");
+    }
 }

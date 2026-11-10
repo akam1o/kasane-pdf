@@ -23,8 +23,9 @@
 //! Content items are matched as conservatively as the tree allows: an
 //! `MCID` whose page is not known (no `/Pg` on it or its element) is
 //! touched when that number is touched anywhere; a page `MCID` is also
-//! touched when an edited form drawn on the page without
-//! `/StructParents` (so without MCIDs of its own) uses that number; a
+//! touched when an edited form drawn on the page uses that number (a
+//! tree may name a form's MCIDs as the page's, and readers resolve them
+//! so); a
 //! sequence whose `MCID` cannot be read (named properties that do not
 //! resolve) touches every `MCID` of its stream. Every element the tree
 //! refers to is read — from the root's `/K`, every `/ParentTree` entry
@@ -63,8 +64,7 @@ pub(crate) struct Touched {
     /// Per form XObject (the original): the `MCID`s of its sequences
     /// holding an edit.
     pub(crate) form_mcids: HashMap<IndirectRef, BTreeSet<i64>>,
-    /// Per page: the `MCID`s touched in the forms it draws that have no
-    /// `/StructParents`.
+    /// Per page: the `MCID`s touched in the forms it draws.
     pub(crate) page_form_mcids: HashMap<IndirectRef, BTreeSet<i64>>,
     /// Pages and forms with an edited sequence whose `MCID` could not
     /// be read: every `MCID` of theirs is touched.
@@ -73,6 +73,9 @@ pub(crate) struct Touched {
     pub(crate) objects: HashSet<IndirectRef>,
     /// Of those, the removed annotations (their `/ParentTree` entries go).
     pub(crate) removed_annotations: HashSet<IndirectRef>,
+    /// The `/StructParent` keys of every removed annotation, direct ones
+    /// included.
+    pub(crate) removed_parent_keys: BTreeSet<i64>,
 }
 
 impl Touched {
@@ -92,17 +95,17 @@ impl Touched {
         }
         let (r, set) = match owner {
             Owner::Page(p) => (p, self.page_mcids.entry(p).or_default()),
-            Owner::Form { form, page, tagged } => {
-                // A form without `/StructParents` has no MCIDs of its
-                // own: a tree may name them as the page's.
-                if !tagged {
-                    self.page_form_mcids
-                        .entry(page)
-                        .or_default()
-                        .extend(mcids.iter().copied());
-                    if unreadable {
-                        self.all_mcids.insert(page);
-                    }
+            Owner::Form { form, page } => {
+                // A tree may name a form's MCIDs as the page's (an
+                // integer kid on its /Pg, the page's /ParentTree array),
+                // and readers resolve them so, whether or not the form
+                // has /StructParents of its own.
+                self.page_form_mcids
+                    .entry(page)
+                    .or_default()
+                    .extend(mcids.iter().copied());
+                if unreadable {
+                    self.all_mcids.insert(page);
                 }
                 (form, self.form_mcids.entry(form).or_default())
             }
@@ -140,12 +143,10 @@ impl Touched {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Owner {
     Page(IndirectRef),
-    /// A form's original, drawn on `page`; `tagged` when it has
-    /// `/StructParents`.
+    /// A form's original, drawn on `page`.
     Form {
         form: IndirectRef,
         page: IndirectRef,
-        tagged: bool,
     },
 }
 
@@ -620,6 +621,18 @@ fn read_tree(
             }
         }
     }
+    // And every element some element names as its parent (`/P`), up
+    // to the root: a tree whose `/K` and `/P` disagree is read both ways.
+    let mut i = 0;
+    while i < tree.elements.len() {
+        if let Some(p) = tree.elements[i].dict.get(b"P".as_slice()).cloned() {
+            let to_root = matches!((&p, tree.root), (Object::Ref(a), Some(b)) if *a == b);
+            if !to_root && matches!(p, Object::Ref(_)) {
+                tree.add(doc, overlay, p, None, budget)?;
+            }
+        }
+        i += 1;
+    }
     Ok(tree)
 }
 
@@ -696,6 +709,16 @@ fn strip_attribute_strings(
                     _ => unreachable!(),
                 };
                 let mut changed = false;
+                // User properties describe the content by name and value,
+                // numbers and names too: the whole list goes.
+                let owner = match d.get(b"O".as_slice()) {
+                    Some(o) => deref_cur(doc, overlay, o)?,
+                    None => Object::Null,
+                };
+                if owner.as_name() == Some(b"UserProperties") && d.remove(b"P".as_slice()).is_some()
+                {
+                    changed = true;
+                }
                 let keys: Vec<Vec<u8>> = d.keys().cloned().collect();
                 for k in keys {
                     let v = d[k.as_slice()].clone();
@@ -896,6 +919,17 @@ pub(crate) fn edit_tree(
                 removed_keys.insert(*k);
             }
         }
+    }
+    for &k in &touched.removed_parent_keys {
+        seeds.extend(parent_tree_elements(
+            doc,
+            overlay,
+            &tree,
+            &Object::Integer(k),
+            None,
+            &mut budget,
+        )?);
+        removed_keys.insert(k);
     }
     let mut hit: HashSet<usize> = HashSet::new();
     for e in seeds {

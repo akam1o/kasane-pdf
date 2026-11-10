@@ -52,6 +52,13 @@ pub(crate) struct CMap {
     /// here and by pdf.js, rejected by Poppler — readers place glyphs
     /// differently.
     pub(crate) literal_codes: bool,
+    /// A construction Poppler, MuPDF and pdf.js read differently, when
+    /// the CMap has one: bf blocks in an encoding CMap, definitions after
+    /// `endcmap` or a second `begincmap`, an Identity base with
+    /// codespace ranges of its own, a `/WMode` other than 0 or 1, an odd-length hex
+    /// code, a stray token in a block, codespace ranges of different
+    /// lengths sharing leading bytes. Redaction refuses such a font.
+    pub(crate) reader_dependent: Option<&'static str>,
 }
 
 impl CMap {
@@ -148,6 +155,8 @@ impl CMap {
                 merged.notdef.extend(std::mem::take(&mut cm.notdef));
                 merged.vertical |= cm.vertical;
                 merged.identity_base |= cm.identity_base;
+                merged.literal_codes |= cm.literal_codes;
+                merged.reader_dependent = cm.reader_dependent.or(merged.reader_dependent);
                 *cm = merged;
             }
         }
@@ -165,6 +174,8 @@ impl CMap {
             Self::use_base(&mut cm, name, limits, depth)?;
         }
         let mut lx = Lexer::new(data, limits);
+        let (mut begun, mut ended) = (false, false);
+        let mut wmode_seen: Option<u32> = None;
         // Operand stack of the few token kinds a CMap body uses.
         let mut stack: Vec<Token> = Vec::new();
         let mut entries: u64 = 0;
@@ -183,6 +194,10 @@ impl CMap {
             match &tok {
                 Token::Word { bytes, .. } => match bytes.as_slice() {
                     b"begincodespacerange" => {
+                        if ended {
+                            cm.reader_dependent
+                                .get_or_insert("definitions after endcmap");
+                        }
                         stack.clear();
                         loop {
                             let lo = match lx.next_token()? {
@@ -196,7 +211,12 @@ impl CMap {
                                     cm.literal_codes = true;
                                     value
                                 }
-                                Some(_) => continue,
+                                Some(_) => {
+                                    // A stray token: readers skip it differently.
+                                    cm.reader_dependent
+                                        .get_or_insert("a stray token in a block");
+                                    continue;
+                                }
                                 None => return Err(eof("codespacerange")),
                             };
                             let hi = match lx.next_token()? {
@@ -223,6 +243,10 @@ impl CMap {
                     }
                     b"begincidrange" | b"beginnotdefrange" => {
                         let notdef = bytes.as_slice() == b"beginnotdefrange";
+                        if ended {
+                            cm.reader_dependent
+                                .get_or_insert("definitions after endcmap");
+                        }
                         let (end, kind): (&[u8], &'static str) = if notdef {
                             (b"endnotdefrange", "notdefrange")
                         } else {
@@ -237,7 +261,12 @@ impl CMap {
                                     cm.literal_codes = true;
                                     value
                                 }
-                                Some(_) => continue,
+                                Some(_) => {
+                                    // A stray token: readers skip it differently.
+                                    cm.reader_dependent
+                                        .get_or_insert("a stray token in a block");
+                                    continue;
+                                }
                                 None => return Err(eof(kind)),
                             };
                             let hi = match lx.next_token()? {
@@ -278,6 +307,10 @@ impl CMap {
                     }
                     b"begincidchar" | b"beginnotdefchar" => {
                         let notdef = bytes.as_slice() == b"beginnotdefchar";
+                        if ended {
+                            cm.reader_dependent
+                                .get_or_insert("definitions after endcmap");
+                        }
                         let (end, kind): (&[u8], &'static str) = if notdef {
                             (b"endnotdefchar", "notdefchar")
                         } else {
@@ -292,7 +325,12 @@ impl CMap {
                                     cm.literal_codes = true;
                                     value
                                 }
-                                Some(_) => continue,
+                                Some(_) => {
+                                    // A stray token: readers skip it differently.
+                                    cm.reader_dependent
+                                        .get_or_insert("a stray token in a block");
+                                    continue;
+                                }
                                 None => return Err(eof(kind)),
                             };
                             let cid = match lx.next_token()? {
@@ -335,15 +373,38 @@ impl CMap {
                                 (&stack[stack.len() - 2], &stack[stack.len() - 1])
                             {
                                 if value == b"WMode" {
-                                    cm.vertical = int(bytes)? == 1;
+                                    let w = int(bytes)?;
+                                    if w > 1 {
+                                        cm.reader_dependent
+                                            .get_or_insert("a /WMode other than 0 or 1");
+                                    }
+                                    if wmode_seen.is_some_and(|v| v != w) {
+                                        cm.reader_dependent.get_or_insert("/WMode defined twice");
+                                    }
+                                    wmode_seen = Some(w);
+                                    cm.vertical = w == 1;
                                 }
                             }
                         }
                         stack.clear();
                     }
+                    b"endcmap" => {
+                        ended = true;
+                        stack.clear();
+                    }
+                    b"begincmap" => {
+                        if begun || ended {
+                            cm.reader_dependent.get_or_insert("a second begincmap");
+                        }
+                        begun = true;
+                        stack.clear();
+                    }
                     b"begin" | b"end" | b"pop" | b"findresource" | b"dict" | b"currentdict"
-                    | b"defineresource" | b"CMapName" | b"endcmap" | b"begincmap" => stack.clear(),
+                    | b"defineresource" | b"CMapName" => stack.clear(),
                     b"beginbfchar" | b"beginbfrange" => {
+                        cm.reader_dependent.get_or_insert(
+                            "bf mappings in an encoding CMap (MuPDF and pdf.js apply them)",
+                        );
                         // Not meaningful in an encoding CMap; skip to the end marker.
                         let end: &[u8] = match bytes.as_slice() {
                             b"beginbfchar" => b"endbfchar",
@@ -387,6 +448,32 @@ impl CMap {
         // A code written as a literal string with an unescaped CR is a
         // line feed here (§7.3.4.2) and a CR to other readers: which
         // codes the CMap maps, and so where glyphs fall, would differ.
+        if lx.odd_hex_strings != 0 {
+            cm.reader_dependent.get_or_insert("an odd-length hex code");
+        }
+        // An Identity base with codespace ranges of its own: readers
+        // split codes by one or the other. (Any code passed through the
+        // base is reader-dependent: `Mapping::Fallthrough`.)
+        if cm.identity_base && !cm.codespaces.is_empty() {
+            cm.reader_dependent
+                .get_or_insert("an Identity base with codespace ranges of its own");
+        }
+        // Codespace ranges of different lengths where a shorter one
+        // holds the leading bytes of a longer one: readers split codes
+        // by the shortest or the longest match.
+        for (la, loa, hia) in &cm.codespaces {
+            for (lb, lob, hib) in &cm.codespaces {
+                if la < lb {
+                    let shift = 8 * (*lb - *la) as u32;
+                    let (plo, phi) = (lob >> shift, hib >> shift);
+                    if plo <= *hia && phi >= *loa {
+                        cm.reader_dependent.get_or_insert(
+                            "codespace ranges of different lengths sharing leading bytes",
+                        );
+                    }
+                }
+            }
+        }
         if lx.raw_cr_strings != 0 {
             return Err(Error::Unsupported {
                 feature: "CMap code with an unescaped carriage return",
@@ -443,7 +530,8 @@ impl CMap {
     }
 
     /// CID for `code` (of `len` bytes) and how it was found (§9.7.6.3):
-    /// a defined mapping (`cidchar`, `cidrange`, an Identity base);
+    /// a defined mapping (`cidchar`, `cidrange`), a code passed through
+    /// an Identity base;
     /// else, for a code in the codespace, a notdef mapping; else CID 0.
     pub(crate) fn lookup(&self, code: u32, len: usize) -> (u32, Mapping) {
         // Bytes in no codespace range are invalid whatever a mapping
@@ -472,8 +560,11 @@ impl CMap {
             return found(cid);
         }
         if self.identity_base {
+            // A code an embedded CMap passes through an Identity base:
+            // MuPDF and pdf.js give it the code, Poppler CID 0 (or, with
+            // no definitions of its own, reads one-byte codes).
             let m = if valid {
-                Mapping::Defined
+                Mapping::Fallthrough
             } else {
                 Mapping::Invalid
             };
@@ -526,7 +617,10 @@ impl CMap {
 /// How [`CMap::lookup`] found a code's CID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mapping {
-    /// `cidchar`, `cidrange` or an Identity base.
+    /// Passed through an Identity base by an embedded CMap (readers
+    /// disagree).
+    Fallthrough,
+    /// `cidchar` or `cidrange`.
     Defined,
     /// A notdef mapping: a code in the codespace with no defined one.
     Notdef,
@@ -646,14 +740,16 @@ mod tests {
         assert_eq!(cm.cid(0x45, 1), 51);
         assert_eq!(cm.lookup(0x46, 1), (39, Mapping::Notdef));
         assert_eq!(cm.lookup(0x47, 1), (38, Mapping::Notdef));
-        // An Identity base maps every two-byte code: no notdef applies.
+        // An Identity base maps every two-byte code: no notdef applies
+        // here — but readers do not agree on a code passed through a base
+        // the CMap adds mappings to (Poppler gives CID 0).
         let cm = CMap::parse(
             b"/Identity-H usecmap 1 beginnotdefrange <0000> <00FF> 7 endnotdefrange",
             None,
             &Limits::default(),
         )
         .unwrap();
-        assert_eq!(cm.lookup(0x0041, 2), (0x41, Mapping::Defined));
+        assert_eq!(cm.lookup(0x0041, 2), (0x41, Mapping::Fallthrough));
         assert_eq!(cm.next_code(b"\x00\x41", 0), (0x41, 2));
     }
 
@@ -717,5 +813,44 @@ mod tests {
             CMap::parse(src.as_bytes(), None, &limits),
             Err(Error::LimitExceeded { .. })
         ));
+    }
+
+    /// Constructions readers read differently are flagged; a plain CMap
+    /// and the bundled predefined ones are not.
+    #[test]
+    fn reader_dependent_constructions() {
+        let l = Limits::default();
+        let flag = |src: &str| {
+            CMap::parse(src.as_bytes(), None, &l)
+                .unwrap()
+                .reader_dependent
+        };
+        let cs = "1 begincodespacerange <00> <7F> endcodespacerange ";
+        assert_eq!(
+            flag(&format!(
+                "begincmap {cs} 1 begincidchar <41> 36 endcidchar endcmap"
+            )),
+            None
+        );
+        for src in [
+            format!("{cs} 1 beginbfchar <41> <0042> endbfchar"),
+            format!("begincmap {cs} endcmap 1 begincidchar <41> 36 endcidchar"),
+            format!("begincmap {cs} endcmap begincmap endcmap"),
+            "/Identity-H usecmap 1 begincodespacerange <0000> <FFFF> endcodespacerange".into(),
+            format!("/WMode 2 def {cs}"),
+            format!("/WMode 0 def /WMode 1 def {cs}"),
+            format!("{cs} 1 begincidchar <4> 36 endcidchar"),
+            format!("{cs} 1 begincidchar <41> 36 /x endcidchar"),
+            "2 begincodespacerange <00> <7F> <4100> <41FF> endcodespacerange".into(),
+        ] {
+            assert!(flag(&src).is_some(), "{src}");
+        }
+        if cfg!(feature = "cjk-fallback") {
+            for name in crate::cjk::predefined_cmap_names() {
+                if let Some(cm) = CMap::predefined(name.as_bytes(), &l).unwrap() {
+                    assert_eq!(cm.reader_dependent, None, "{name}");
+                }
+            }
+        }
     }
 }

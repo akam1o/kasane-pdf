@@ -5149,3 +5149,521 @@ fn appearance_less_line_endings_and_decorations() {
     assert!(unsupported(annots_run(&line("/Cap true"))).contains("no known extent"));
     assert!(unsupported(annots_run(&line("/BE << /S /C /I 1 >>"))).contains("no known extent"));
 }
+
+/// An appearance-less highlight's rounded ends reach past its
+/// quadrilaterals (0.19 × their height in Poppler and MuPDF): 2 pt from
+/// a rect, a 20 pt high highlight meets it. (Release review: the
+/// extent was the quadrilaterals grown by the border width.)
+#[test]
+fn appearance_less_highlight_ends() {
+    let pdf = annot_page(
+        "30 0 R",
+        vec![(
+            30,
+            b"<< /Type /Annot /Subtype /Highlight /Rect [10 150 40 170] \
+              /QuadPoints [10 170 40 170 10 150 40 150] /C [1 1 0] >>"
+                .to_vec(),
+        )],
+    );
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let rects = vec![RECT, (42.0, 150.0, 60.0, 170.0)];
+    let r = redact(
+        &doc,
+        &[(0, rects.clone())],
+        &RedactOptions::new().remove_annotations(true),
+    )
+    .unwrap();
+    assert_eq!(r.annotations_removed, 1);
+    let far = vec![RECT, (55.0, 150.0, 60.0, 170.0)];
+    let r = redact(
+        &doc,
+        &[(0, far)],
+        &RedactOptions::new().remove_annotations(true),
+    )
+    .unwrap();
+    assert_eq!(r.annotations_removed, 0, "beyond half its height: kept");
+}
+
+/// The diagnosis lists a soft mask among an image's blockers only when
+/// redaction cannot edit it.
+#[test]
+fn diagnosis_soft_mask_blockers() {
+    let make = |mask_extra: &str| {
+        build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", b"q 100 0 0 100 50 50 cm /Im1 Do Q")),
+            (
+                5,
+                stream_obj(
+                    "/Type /XObject /Subtype /Image /Width 16 /Height 16 \
+                     /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask 6 0 R",
+                    &secret_samples(),
+                ),
+            ),
+            (
+                6,
+                stream_obj(
+                    &format!(
+                        "/Type /XObject /Subtype /Image /Width 16 /Height 16 \
+                         /ColorSpace /DeviceGray /BitsPerComponent 8 {mask_extra}"
+                    ),
+                    &[7u8; 256],
+                ),
+            ),
+        ])
+    };
+    let blockers = |pdf: &[u8]| {
+        let doc = Document::from_bytes(pdf).unwrap();
+        let d = kasane_pdf::diagnose_redaction(
+            &doc,
+            0,
+            &[(40.0, 40.0, 100.0, 100.0)],
+            &kasane_pdf::Limits::default(),
+        )
+        .unwrap();
+        d.targets
+            .iter()
+            .filter_map(|t| match &t.detail {
+                kasane_pdf::TargetDetail::Image { blockers, .. } => Some(blockers.join(" ")),
+                _ => None,
+            })
+            .collect::<String>()
+    };
+    assert!(!blockers(&make("")).contains("SMask"));
+    assert!(blockers(&make("/Matte [0 0 0]")).contains("/SMask"));
+}
+
+/// An edited page's original content stream may not stay in the output
+/// by any route — a private catalog entry, application data, an
+/// attachment: verification fails, nothing is written. A content stream
+/// another page still draws stays, its text reported. (Release review.)
+#[test]
+fn an_edited_pages_original_content_does_not_stay() {
+    for (cat, page_extra) in [
+        ("/XYZPrivate 4 0 R", ""),
+        ("/PieceInfo << /App << /Private 4 0 R >> >>", ""),
+        (
+            "/Names << /EmbeddedFiles << /Names [(x) << /Type /Filespec /F (x) \
+             /EF << /F 4 0 R >> >>] >> >>",
+            "",
+        ),
+        ("", "/PieceInfo << /App << /Private 4 0 R >> >>"),
+    ] {
+        let pdf = one_page(SECRET, page_extra, cat, vec![]);
+        let e = unsupported(run(&pdf, vec![RECT]));
+        assert!(e.contains("original content"), "{cat}{page_extra}: {e}");
+    }
+    // Shared with a page that is not edited: kept there, reported.
+    let pdf = build_pdf(&{
+        let mut o = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (
+                2,
+                b"<< /Type /Pages /Kids [3 0 R 8 0 R] /Count 2 >>".to_vec(),
+            ),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /Font << /F1 20 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", SECRET.as_bytes())),
+            (
+                8,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /Font << /F1 20 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+        ];
+        o.extend(font_objs());
+        o
+    });
+    let r = run(&pdf, vec![RECT]).unwrap();
+    assert!(r
+        .elsewhere
+        .iter()
+        .any(|e| e.location == ElsewhereLocation::Page(1)));
+}
+
+/// Decorations given indirectly count too: an indirect line ending, a
+/// highlight whose quadrilateral coordinates are references.
+/// (Release review.)
+#[test]
+fn indirect_annotation_decorations() {
+    let pdf = annot_page(
+        "30 0 R",
+        vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Line /Rect [170 170 190 190] \
+                  /L [80 80 110 80] /LE [31 0 R /None] /C [0 0 0] /BS << /W 2 >> >>"
+                    .to_vec(),
+            ),
+            (31, b"/ClosedArrow".to_vec()),
+        ],
+    );
+    assert_eq!(annots_run(&pdf).unwrap().annotations_removed, 1);
+    let pdf = annot_page(
+        "30 0 R",
+        vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Highlight /Rect [10 150 40 170] \
+                  /QuadPoints [10 31 0 R 40 31 0 R 10 150 40 150] /C [1 1 0] >>"
+                    .to_vec(),
+            ),
+            (31, b"170".to_vec()),
+        ],
+    );
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let r = redact(
+        &doc,
+        &[(0, vec![RECT, (42.0, 150.0, 60.0, 170.0)])],
+        &RedactOptions::new().remove_annotations(true),
+    )
+    .unwrap();
+    assert_eq!(r.annotations_removed, 1);
+}
+
+/// What `redact` removes may not stay through another reference (here a
+/// private catalog entry): a removed link's or annotation's appearance,
+/// the images and masks it draws, a copy of the annotation dictionary
+/// as a stream's dictionary, a removed Type 3 glyph's procedure, the
+/// font's former `/ToUnicode` and the masks of images only removed
+/// glyphs drew, an edited page's thumbnail. Verification fails; nothing
+/// is written. (Release review.)
+#[test]
+fn removed_objects_do_not_stay_through_other_references() {
+    let image = "/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceGray \
+                 /BitsPerComponent 8";
+    let mask: Vec<u8> = vec![
+        10, 230, 40, 180, 70, 110, 50, 240, 120, 45, 90, 210, 30, 160, 80, 220,
+    ];
+    let page =
+        |content: &str, res: &str, page_extra: &str, cat: &str, extra: Vec<(u32, Vec<u8>)>| {
+            let mut objs = vec![
+                (
+                    1,
+                    format!("<< /Type /Catalog /Pages 2 0 R {cat} >>").into_bytes(),
+                ),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+                (
+                    3,
+                    format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << {res} >> \
+                     /Contents 4 0 R {page_extra} >>"
+                )
+                    .into_bytes(),
+                ),
+                (4, stream_obj("", content.as_bytes())),
+            ];
+            objs.extend(extra);
+            build_pdf(&objs)
+        };
+    let opts = RedactOptions::new().remove_annotations(true);
+    let refused = |pdf: &[u8], what: &str| {
+        let doc = Document::from_bytes(pdf).unwrap();
+        let e = unsupported(redact(&doc, &[(0, vec![RECT])], &opts));
+        assert!(e.contains("failed verification"), "{what}: {e}");
+    };
+    // Appearances of a removed link and stamp: the form, its image, the mask.
+    for subtype in ["Link", "Stamp"] {
+        for alias in [41, 42, 43] {
+            let pdf = page(
+                "",
+                "",
+                "/Annots [40 0 R]",
+                &format!("/Alias {alias} 0 R"),
+                vec![
+                    (
+                        40,
+                        format!(
+                            "<< /Type /Annot /Subtype /{subtype} /Rect [50 100 70 110] \
+                             /AP << /N 41 0 R >> >>"
+                        )
+                        .into_bytes(),
+                    ),
+                    (
+                        41,
+                        stream_obj(
+                            "/Type /XObject /Subtype /Form /BBox [0 0 20 10] \
+                             /Resources << /XObject << /Im 42 0 R >> >>",
+                            b"q 20 0 0 10 0 0 cm /Im Do Q",
+                        ),
+                    ),
+                    (
+                        42,
+                        stream_obj(&format!("{image} /SMask 43 0 R"), &[0u8; 16]),
+                    ),
+                    (43, stream_obj(image, &mask)),
+                ],
+            );
+            refused(&pdf, &format!("{subtype} {alias}"));
+        }
+    }
+    // A removed annotation's dictionary kept as a stream's dictionary.
+    let annot = "/Type /Annot /Subtype /Text /Rect [50 100 70 110] /Contents (SECRETANNOT)";
+    let pdf = page(
+        "",
+        "",
+        "/Annots [40 0 R]",
+        "/Alias 41 0 R",
+        vec![
+            (40, format!("<< {annot} /Length 0 >>").into_bytes()),
+            (41, stream_obj(annot, b"")),
+        ],
+    );
+    refused(&pdf, "annotation dictionary as a stream's");
+    // Type 3: the removed glyph's procedure, the font's former
+    // ToUnicode, the mask of the image only the removed glyph drew.
+    let t3 = |procs: &str, extra: Vec<(u32, Vec<u8>)>, alias: u32| {
+        let mut objs = vec![(
+            20,
+            format!(
+                "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 600 700] \
+                 /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs {procs} \
+                 /Encoding << /Differences [65 /A /B] >> /FirstChar 65 /LastChar 66 \
+                 /Widths [600 600] /Resources << /XObject << /Im 44 0 R >> >> /ToUnicode 46 0 R >>"
+            )
+            .into_bytes(),
+        )];
+        objs.extend(extra);
+        page(
+            "BT /F 12 Tf 50 100 Td (A) Tj ET BT /F 12 Tf 10 20 Td (B) Tj ET",
+            "/Font << /F 20 0 R >>",
+            "",
+            &format!("/Alias {alias} 0 R"),
+            objs,
+        )
+    };
+    let common = || {
+        vec![
+            (40, b"<< /A 41 0 R /B 42 0 R >>".to_vec()),
+            (
+                41,
+                stream_obj("", b"600 0 d0 q 500 0 0 700 0 0 cm /Im Do Q"),
+            ),
+            (42, stream_obj("", b"600 0 d0 0 0 100 700 re f")),
+            (
+                44,
+                stream_obj(&format!("{image} /SMask 45 0 R"), &[0u8; 16]),
+            ),
+            (45, stream_obj(image, &mask)),
+            (
+                46,
+                stream_obj(
+                    "",
+                    b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+                      /CMapName /TU def 1 begincodespacerange <00> <FF> endcodespacerange \
+                      2 beginbfchar <41> <0053> <42> <0042> endbfchar endcmap \
+                      CMapName currentdict /CMap defineresource pop end end",
+                ),
+            ),
+        ]
+    };
+    for (what, alias) in [
+        ("procedure", 41),
+        ("procedures", 40),
+        ("mask", 45),
+        ("ToUnicode", 46),
+    ] {
+        refused(&t3("40 0 R", common(), alias), what);
+    }
+    // An edited page's thumbnail.
+    let pdf = page(
+        "q 40 0 0 40 50 90 cm /Im Do Q",
+        "/XObject << /Im 42 0 R >>",
+        "/Thumb 40 0 R",
+        "/Alias 40 0 R",
+        vec![
+            (
+                40,
+                stream_obj(
+                    "/Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8",
+                    &[1, 2, 3, 4],
+                ),
+            ),
+            (42, stream_obj(image, &(0..16).collect::<Vec<u8>>())),
+        ],
+    );
+    refused(&pdf, "thumbnail");
+}
+
+/// A removed annotation's appearance drawing through a pattern, a soft
+/// mask group or a Type 3 font, or naming resources it does not have, is
+/// refused: what those hold would not be checked. (Release review.)
+#[test]
+fn removed_appearances_through_shared_resources_are_refused() {
+    let ap = |res: &str, body: &[u8]| {
+        annot_page(
+            "30 0 R",
+            vec![
+                (
+                    30,
+                    b"<< /Type /Annot /Subtype /Stamp /Rect [60 95 100 105] /AP << /N 31 0 R >> >>"
+                        .to_vec(),
+                ),
+                (
+                    31,
+                    stream_obj(
+                        &format!("/Type /XObject /Subtype /Form /BBox [0 0 40 10] {res}"),
+                        body,
+                    ),
+                ),
+                (
+                    32,
+                    stream_obj(
+                        "/Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 \
+                         /BBox [0 0 1 1] /XStep 1 /YStep 1 /Resources << >>",
+                        b"0 0 1 1 re f",
+                    ),
+                ),
+            ],
+        )
+    };
+    for (res, body) in [
+        (
+            "/Resources << /Pattern << /P 32 0 R >> >>",
+            &b"/Pattern cs /P scn 0 0 40 10 re f"[..],
+        ),
+        (
+            "/Resources << /ExtGState << /G << /SMask << /S /Luminosity /G 32 0 R >> >> >> >>",
+            b"/G gs 0 0 40 10 re f",
+        ),
+        ("", b"/Pattern cs /P scn 0 0 40 10 re f"),
+        ("", b"/G gs 0 0 40 10 re f"),
+        // Resources of its own that lack the name: resolved elsewhere.
+        (
+            "/Resources << /ProcSet [/PDF] >>",
+            b"/Pattern cs /P scn 0 0 40 10 re f",
+        ),
+        ("/Resources << /Pattern << >> >>", b"/P1 gs 0 0 40 10 re f"),
+        ("/Resources 5", b"0 0 40 10 re f"),
+        (
+            "/Resources << /ExtGState << /G << /Font [20 0 R 12] >> >> >>",
+            b"/G gs BT (x) Tj ET",
+        ),
+        // Entries that are there but unusable: Poppler resolves the name
+        // in the resources it shares.
+        ("/Resources << /XObject << /X1 99 0 R >> >>", b"/X1 Do"),
+        ("/Resources << /XObject << /X1 5 >> >>", b"/X1 Do"),
+        (
+            "/Resources << /Font << /T3 99 0 R >> >>",
+            b"BT /T3 12 Tf (x) Tj ET",
+        ),
+        (
+            "/Resources << /Font << /T3 5 >> >>",
+            b"BT /T3 12 Tf (x) Tj ET",
+        ),
+        // A stream is no font dictionary (Poppler passes it over).
+        (
+            "/Resources << /Font << /T3 32 0 R >> >>",
+            b"BT /T3 12 Tf (x) Tj ET",
+        ),
+        (
+            "/Resources << /Font << /T3 /None >> >>",
+            b"BT /T3 12 Tf (x) Tj ET",
+        ),
+    ] {
+        let e = unsupported(annots_run(&ap(res, body)));
+        assert!(e.contains("resources it shares"), "{res}: {e}");
+    }
+    // Plain drawing in an appearance without resources is removed.
+    assert_eq!(
+        annots_run(&ap("", b"0 0 40 10 re f"))
+            .unwrap()
+            .annotations_removed,
+        1
+    );
+}
+
+/// A removed Type 3 glyph's procedure kept as some dictionary's
+/// `/ToUnicode` is not a font's glyph: verification fails.
+/// (Release review.)
+#[test]
+fn a_removed_glyph_procedure_is_not_excused_as_a_tounicode() {
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << \
+              /Font << /F 20 0 R /G 21 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (
+            4,
+            stream_obj(
+                "",
+                b"BT /F 12 Tf 50 100 Td (A) Tj ET BT /F 12 Tf 10 20 Td (B) Tj ET",
+            ),
+        ),
+        (
+            20,
+            b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 600 700] \
+              /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs << /A 41 0 R /B 42 0 R >> \
+              /Encoding << /Differences [65 /A /B] >> /FirstChar 65 /LastChar 66 \
+              /Widths [600 600] /Resources << >> >>"
+                .to_vec(),
+        ),
+        (
+            21,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /ToUnicode 41 0 R >>".to_vec(),
+        ),
+        (
+            41,
+            stream_obj("", b"600 0 d0 0 0 500 700 re f % SECRETGLYPH"),
+        ),
+        (42, stream_obj("", b"600 0 d0 0 0 100 700 re f")),
+    ]);
+    let e = unsupported(run(&pdf, vec![RECT]));
+    assert!(e.contains("glyph's procedure"), "{e}");
+}
+
+/// A thumbnail an edited page shares with another page leaves both.
+#[test]
+fn a_shared_thumbnail_leaves_every_page() {
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (
+            2,
+            b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec(),
+        ),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 20 0 R >> >> /Contents 4 0 R /Thumb 30 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", SECRET.as_bytes())),
+        (
+            5,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R \
+              /Thumb 30 0 R >>"
+                .to_vec(),
+        ),
+        (6, stream_obj("", b"")),
+        (
+            30,
+            stream_obj(
+                "/Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8",
+                &[1, 2, 3, 4],
+            ),
+        ),
+    ];
+    objs.extend(font_objs());
+    let r = run(&build_pdf(&objs), vec![RECT]).unwrap();
+    assert_eq!(r.thumbnails_removed, 2);
+    let doc = Document::from_bytes(&r.output).unwrap();
+    for p in doc.pages() {
+        let d = doc.resolve(p.object_ref().unwrap()).unwrap();
+        assert!(!d.as_dict().unwrap().contains_key(b"Thumb".as_slice()));
+    }
+}

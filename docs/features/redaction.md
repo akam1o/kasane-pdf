@@ -40,7 +40,7 @@ kasane-pdf redact in.pdf --page 1 --rect 72 600 300 640 \
 | painted paths wholly inside one rect | the path and its painting op are deleted |
 | painted paths crossing a rect's edge | cut there (`paths_cut`): filled axis-aligned rectangles become their difference with the rects (exact; several only when they do not overlap); stroked straight segments are cut, in user space where the stroke is defined, at the centreline positions whose cross-section (and cap) would reach the rect — exact for butt caps; for square and round caps the cut end is pulled back by the cap's square: a square cap then ends the band exactly at the rect, and a round-capped piece whose both ends are cuts is stroked with square caps for the same result, while a round-capped piece keeping one of the path's own ends keeps its round caps and loses the two corners of the cut cap's square (≈ 0.21 × the squared half width each). A crossing that is not perpendicular also loses the sliver of band beyond the perpendicular cut; a corner kept near a rect must clear it by its join (the exact miter, or the bevel/round extent). A dashed stroke's pieces each restart the pattern at the phase where they start on the original subpath (an odd array written out in full, the phase reduced into one period), so the dashes outside fall where they did (a closed dashed outline is not rejoined at its start); each piece is its own stroke, so a dashed stroke that is not opaque in the Normal blend mode (`/CA` < 1, another `/BM`) is refused when cut into pieces. Stroked curves are cut by subdivision: a sub-curve (an exact de Casteljau piece of the original) is kept when its control points' bounds, grown by √2 × half the width under the CTM's largest stretch, clear every rect, and a part still near a rect after 14 halvings is removed — so up to that reach plus the last piece's length of band next to the rect is lost, and nothing reaches inside. Dashed curves cut at a rect, curved fills, degenerate dash patterns, other fill shapes and overlapping rectangles near a rect are refused |
 | `/Link` annotations whose `/Rect` meets a rect | removed with their action or destination (`links_removed`); links outside every rect are kept. A removed link the structure tree refers to (`/StructParent`, an `/OBJR`) leaves the tree (see the structure tree row) |
-| other annotations clear of every rect | kept as they are. Their appearance is drawn into `/Rect`; without one, a reader draws the annotation from its geometry (`/L`, `/QuadPoints`, `/InkList`, `/Vertices`, `/CL`), inside `/Rect` or not, so `/Rect` and the geometry's bounds are each tested, grown by the border width and by the decorations a reader adds: line endings (`/LE`: Poppler and MuPDF reach up to 9.5 × the border width, about 9.3 at the least; 15 × the width, at least 15, is taken) and leader lines (`/LL`, `/LLE`, `/LLO`). A caption (`/Cap`) or a cloudy border (`/BE /S /C`) on such an annotation is drawn to no known extent: refused. Their text is still searched for `elsewhere` |
+| other annotations clear of every rect | kept as they are. Their appearance is drawn into `/Rect`; without one, a reader draws the annotation from its geometry (`/L`, `/QuadPoints`, `/InkList`, `/Vertices`, `/CL`), inside `/Rect` or not, so `/Rect` and the geometry's bounds are each tested, grown by the border width and by the decorations a reader adds: line endings (`/LE`: Poppler and MuPDF reach up to 9.5 × the border width, about 9.3 at the least; 15 × the width, at least 15, is taken), leader lines (`/LL`, `/LLE`, `/LLO`) and, for text markup (Highlight, Underline, StrikeOut, Squiggly), half the height of its tallest quadrilateral (a highlight's rounded ends reach 0.19 × the height in Poppler and MuPDF). A caption (`/Cap`) or a cloudy border (`/BE /S /C`) on such an annotation is drawn to no known extent: refused. Their text is still searched for `elsewhere` |
 | markup annotations meeting a rect, with `remove_annotations(true)` (CLI `--remove-annotations`) | refused by default. On request a Text, FreeText, Line, Square, Circle, Polygon, PolyLine, Highlight, Underline, Squiggly, StrikeOut, Caret, Stamp, Ink or Popup annotation whose `/Rect` meets a rect is removed **whole** — its appearance and text go even where they lie outside the rect (`annotations_removed`) — with its popup, the annotation a removed popup belongs to, and replies to it (`/IRT`), transitively. Its appearance streams and the forms and images they draw may not stay unless still drawn (checked by digest); its `/Contents`, `/T`, `/RC` (string or stream), `/Subj` are searched for in `elsewhere`. A removed link or annotation may not stay in the output by any route — an action, another page's annotation or reply, a kept annotation's popup, the form, an outline, the structure tree: verification compares every dictionary written with each removed one (by content, references aside) and fails on a match. Widgets, signatures, media, file attachments and other subtypes meeting a rect stay refused. One the structure tree refers to leaves the tree (see the structure tree row) |
 | shading patterns as fill or stroke colour | a pattern paints only inside what it fills, so the path or glyph is removed or cut as with any colour; shading patterns with their own `/ExtGState` (which may carry a soft mask) are refused |
 | tiling patterns as fill or stroke colour (page content) | decided where the pattern paints: a path it paints clear of every rect is kept; one wholly inside a rect is removed, and the pattern leaves the page's `/Resources /Pattern` with the `scn` that selected it, with everything it reaches; verification checks by content digest that it is not in the output. A pattern that also paints kept content (paths and glyphs clear of the rects, image masks and forms drawn while it is selected; images with their own colours do not use it) is refused when one of its uses is removed — the cell the kept use shows is the cell the removed one did — and so is one sharing any object it reaches with anything else. A path it paints crossing a rect is refused (the cell is content a cut would only hide: clipping it leaves its data), as are text painted with one meeting a rect, a path in a form painted with one, and a pattern reached from anywhere else (another page, a form, shared resources) |
@@ -105,6 +105,23 @@ Three separate statements; none implies the next:
   `elsewhere` either way, and `refuse_copies_elsewhere` refuses it. Any
   other copy — one only named in some resources, or reachable
   otherwise — fails.
+- No stream of the output holds, by digest, these objects the
+  redaction removed whole, whatever refers to them: a removed link's or
+  annotation's appearance streams and the forms, images and masks they
+  draw (unless still drawn; an appearance drawing through patterns,
+  shadings, soft mask groups or Type 3 fonts, or naming resources it
+  does not have, is refused instead), a removed annotation's dictionary
+  (also as a stream's dictionary), a removed Type 3 glyph's procedure
+  (unless still a Type 3 font's glyph), the font's former `/ToUnicode`,
+  the masks of images only removed glyphs drew, an edited page's
+  thumbnail (unless another page's own, a different object; one shared
+  with another page leaves that page too).
+- No stream of the output holds an edited page's original content
+  (stored or decoded digest), except one that a page still draws as its
+  `/Contents` (a content stream the edited page shared with another
+  page, whose text `elsewhere` then reports). Anything else referring to
+  it — a catalog or page entry, application data, an attachment — fails;
+  a structure element's `/MCR /Stm` to it leaves the tree.
 - The output carries no object stream or cross-reference stream (the
   rewrite writes neither; one carried because something referred to it
   would hold the input's objects as they were).
@@ -135,13 +152,23 @@ than 16 deep or cyclic, inline images meeting a rect
 form or reached from elsewhere, tiling patterns painting across a rect, in a form, under text
 meeting a rect or reached from elsewhere,
 ExtGState with a soft mask or `/Font`, literal strings holding an
-unescaped carriage return anywhere in the document (readers do not agree
+unescaped carriage return in any object of the output, in an edited
+page's content or the forms it draws, or in a CMap (readers do not agree
 on the bytes they hold), text in a font whose embedded CMap writes codes
 as literal strings (Poppler rejects them, other readers do not), a
 Type 0 code its CMap maps by no `cidchar` / `cidrange` (a notdef
 mapping, no mapping, or bytes in no codespace range: readers draw
 different glyphs at different widths) or whose value another code
 length maps to another CID (readers key mappings by value or by bytes),
+text in a CMap with constructions readers read differently (bf mappings
+in an encoding CMap, definitions after `endcmap` or a second
+`begincmap`, codes an embedded CMap passes through an Identity base (`usecmap` Identity) rather than listing them, a
+`/WMode` other than 0 or 1, defined twice or disagreeing between the
+CMap's dictionary and program, odd-length hex codes, stray tokens in a
+block, codespace ranges of different lengths sharing leading bytes),
+removing an annotation whose appearance draws through patterns,
+shadings, soft mask groups or Type 3 fonts or names resources it does
+not have,
 an appearance-less annotation with a caption or a cloudy border, `/ActualText`, `/Alt` or `/E` in named marked-content
 properties or on a marked-content point,
 text in a clipping mode (`Tr` 4–7),
@@ -181,7 +208,10 @@ an element across a rect loses all of its text, accessibility of the
 kept part included), and every string of its attribute objects (`/A`;
 for its classes `/C`, the `/ClassMap` entries — shared, so for every
 element using that class): a table's `/Summary` and any other text an
-attribute carries; other attributes (layout, numbers, names) stay. The
+attribute carries — and a user-properties attribute (`/O /UserProperties`)
+loses its whole property list; other attributes (layout, numbers,
+names) stay, as do an element's `/ID`, `/Lang` and keys no structure
+names. The
 removed texts are searched for in `elsewhere`. `/OBJR` items to removed
 annotations or edited originals, and `/MCR` items into an edited form's
 original, leave `/K` (they would keep those objects reachable); a
@@ -191,8 +221,9 @@ tree names). Elements are not split or duplicated.
 
 Matching is conservative: an `MCID` whose page is not known is touched
 when that number is touched on any page or form; a page `MCID` is also
-touched when a form drawn on the page without `/StructParents` (so with
-no MCIDs of its own) touches that number; a sequence whose `MCID`
+touched when a form drawn on the page touches that number (a tree may
+name a form's MCIDs as the page's, and readers resolve them so, whether
+or not the form has `/StructParents`); a sequence whose `MCID`
 cannot be read (named `/Properties` that do not resolve) touches every
 `MCID` of its stream. Edited content outside every marked-content
 sequence relates to no element: the tree keeps its text (a copy of
@@ -217,7 +248,7 @@ every stream by the role it is reached in from the trailer:
 | status | what |
 | --- | --- |
 | `Searched` | its text is extracted and searched for `elsewhere`: page content, forms drawn by pages and annotation appearances |
-| `Interpreted` | a known format in a known role, shown only through the pages, not searched: images drawn, font programs and CMaps, functions, shading and pattern streams, ICC profiles, Type 3 glyph procedures, the XObjects of patterns, Type 3 fonts and soft masks |
+| `Interpreted` | a known format in a known role, not searched: images drawn, font programs and CMaps, functions, shading and pattern streams, ICC profiles, Type 3 glyph procedures, the XObjects of patterns, Type 3 fonts and soft masks. The role is what is classified: whether such data is used (a pattern, font, function or profile named but never drawn) is not checked, except for forms and images |
 | `Uninspected` | carried as it is, never read: attachments (`/EF`, `/RF`), XMP metadata (other than the catalog's, which is removed), thumbnails, JavaScript source, XFA, rich text, multimedia and 3D, `/PieceInfo`, PostScript and OPI, halftones, template pages, images and forms nothing draws, streams under a key no modelled structure names, and any entry of the catalog, the page tree or a page that none names (unless it holds only a number, boolean or null) |
 | `NotCarried` | nothing refers to it (input only: `redact` writes what is reachable) |
 
@@ -231,9 +262,11 @@ stored length and filters — never content; the walk is bounded by
 
 `refuse_uninspected(true)` (CLI `--refuse-uninspected`) refuses an
 output with any uninspected item or an incomplete inventory. This
-narrows a success to "every stream carried is of a kind `redact` reads
-or interprets". It is **not** a proof that no copy of the removed
-content remains: interpreted data is not searched (text in an image's
+narrows a success to "every stream carried is reached in a role whose
+format `redact` reads or interprets". It is **not** a proof that no copy
+of the removed content remains: interpreted data is not searched, nor
+checked to be used (an unused pattern, font, function or profile may
+hold anything), text in an image's
 pixels or a font program), non-stream objects' strings are searched
 only as text, and nothing searches bytes — compression, encryption,
 encodings and application formats make a byte search no evidence of
@@ -354,11 +387,16 @@ Each of these is refused with a typed error, not approximated:
   inside forms or shared; shading patterns with their own ExtGState;
   soft masks; `/Font` set by ExtGState.
 - **Strings**: a document with a literal string holding an unescaped
-  carriage return (in content, objects or a CMap); text in a font whose
+  carriage return (in an object of the output, an edited page's content
+  or the forms it draws, or a CMap; the content of pages not edited is
+  not checked, nothing there is placed by the redaction); text in a font whose
   embedded CMap writes codes as literal strings.
 - **CMap codes**: a shown Type 0 code that its CMap (embedded or
   predefined, with what it inherits by `usecmap`) maps by no `cidchar`
-  or `cidrange` and no Identity base. Fonts that declare notdef
+  or `cidrange` (a code an embedded CMap only passes through an
+  Identity base counts as unmapped: Poppler gives it CID 0, MuPDF and
+  pdf.js the code; the predefined `/Identity-H` and `/Identity-V`
+  encodings are not affected). Fonts that declare notdef
   mappings or leave codes unmapped redact as long as the codes they
   show are mapped. Readers measured on synthetic Type 0 fonts (Poppler
   26.10, MuPDF 1.28.6, pdf.js 6.5.438):

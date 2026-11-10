@@ -31,7 +31,7 @@ def generate(FF, OUT):
     BASE=[(1,b"<< /Type /Catalog /Pages 2 0 R >>"),
           (9,b"<< /Type /FontDescriptor /FontName /LiberationSans /Flags 32 /FontBBox [-200 -300 1200 1000] /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 10 0 R >>"),
           (10,stream(b"/Length1 %d"%len(FF),FF))]
-    SECRET=b"BT /F0 12 Tf 100 100 Td (SECRET) Tj ET "
+    TARGET=b"BT /F0 12 Tf 100 100 Td (SECRET) Tj ET "
     def doc(pages, extra=[]):
         # pages: list of (content bytes, resources bytes, page extra bytes)
         objs=list(BASE)+extra
@@ -47,36 +47,36 @@ def generate(FF, OUT):
     for N in (400,800,1600):
         fonts=[font(20+i) for i in range(N)]
         res=b"/Font << "+b" ".join(b"/F%d %d 0 R"%(i,20+i) for i in range(N))+b" >>"
-        c=SECRET+b"".join(b"BT /F%d 8 Tf %d %d Td (w%d) Tj ET "%(i,10+(i%20)*28,780-(i//20)*9,i) for i in range(1,N))
+        c=TARGET+b"".join(b"BT /F%d 8 Tf %d %d Td (w%d) Tj ET "%(i,10+(i%20)*28,780-(i//20)*9,i) for i in range(1,N))
         write(f"fonts{N}",doc([(c,res,b"")],fonts))
     # 2. 200 pages, the same font, text on each.
     txt=lambda p: b"".join(b"BT /F0 10 Tf 40 %d Td (line %d of page %d with words) Tj ET "%(760-l*12,l,p) for l in range(50))
-    write("pages200-samefont",doc([((SECRET if p==0 else b"")+txt(p),b"/Font << /F0 20 0 R >>",b"") for p in range(200)],[font(20)]))
+    write("pages200-samefont",doc([((TARGET if p==0 else b"")+txt(p),b"/Font << /F0 20 0 R >>",b"") for p in range(200)],[font(20)]))
     # 3. 200 pages, 8 distinct font dicts per page (1,600 font dicts, one program).
     pages=[]; fonts=[]
     for p in range(200):
         names=b" ".join(b"/F%d %d 0 R"%(k,20+p*8+k) for k in range(8)); fonts+= [font(20+p*8+k) for k in range(8)]
-        c=(SECRET if p==0 else b"")+b"".join(b"BT /F%d 10 Tf 40 %d Td (font %d page %d) Tj ET "%(k,700-k*20,k,p) for k in range(8))
+        c=(TARGET if p==0 else b"")+b"".join(b"BT /F%d 10 Tf 40 %d Td (font %d page %d) Tj ET "%(k,700-k*20,k,p) for k in range(8))
         pages.append((c,b"/Font << "+names+b" >>",b""))
     write("pages200-manyfonts",doc(pages,fonts))
     # 4. A /Resources with 5,000 unused XObject names and 5,000 ExtGStates.
     xo=[(20000+i,stream(b"/Type /XObject /Subtype /Form /BBox [0 0 1 1]",b"")) for i in range(5000)]
     res=b"/Font << /F0 20 0 R >> /XObject << "+b" ".join(b"/X%d %d 0 R"%(i,20000+i) for i in range(5000))+b" >> /ExtGState << "+b" ".join(b"/G%d << /CA 1 >>"%i for i in range(5000))+b" >>"
-    write("bigresources",doc([(SECRET+txt(0)+b"/G7 gs /X3 Do",res,b"")],[font(20)]+xo))
+    write("bigresources",doc([(TARGET+txt(0)+b"/G7 gs /X3 Do",res,b"")],[font(20)]+xo))
     # 5. Forms nested 15 deep, text at each level.
     forms=[]
     for d in range(15):
         inner=b"/Fm%d Do"%(d+1) if d<14 else b""
         forms.append((30000+d,stream(b"/Type /XObject /Subtype /Form /BBox [0 0 600 800] /Resources << /Font << /F0 20 0 R >> /XObject << /Fm%d %d 0 R >> >>"%(d+1,30001+d),b"BT /F0 9 Tf 300 %d Td (level %d) Tj ET "%(700-d*15,d)+inner)))
-    write("nestedforms",doc([(SECRET+b"/Fm0 Do",b"/Font << /F0 20 0 R >> /XObject << /Fm0 30000 0 R >>",b"")],[font(20)]+forms))
+    write("nestedforms",doc([(TARGET+b"/Fm0 Do",b"/Font << /F0 20 0 R >> /XObject << /Fm0 30000 0 R >>",b"")],[font(20)]+forms))
     # 6. Lots of text: 20,000 shows on page 1, 50 pages.
     big=b"".join(b"BT /F0 4 Tf %d %d Td (t%d) Tj ET "%(10+(i%100)*5.8,790-(i//100)*3.9,i%97) for i in range(20000))
-    write("bigtext",doc([(SECRET+big if p==0 else big,b"/Font << /F0 20 0 R >>",b"") for p in range(50)],[font(20)]))
+    write("bigtext",doc([(TARGET+big if p==0 else big,b"/Font << /F0 20 0 R >>",b"") for p in range(50)],[font(20)]))
     # 7. 2,000 annotations on page 1 (clear of the rect), 2,000 on page 2.
     ann=[(40000+i,b"<< /Type /Annot /Subtype /Square /Rect [%d %d %d %d] /Contents (note %d) >>"%(300+i%50*5,400+i//50*5,302+i%50*5,402+i//50*5,i)) for i in range(4000)]
     a1=b"/Annots ["+b" ".join(b"%d 0 R"%(40000+i) for i in range(2000))+b"]"
     a2=b"/Annots ["+b" ".join(b"%d 0 R"%(42000+i) for i in range(2000))+b"]"
-    write("annots",doc([(SECRET+txt(0),b"/Font << /F0 20 0 R >>",a1),(txt(1),b"/Font << /F0 20 0 R >>",a2)],[font(20)]+ann))
+    write("annots",doc([(TARGET+txt(0),b"/Font << /F0 20 0 R >>",a1),(txt(1),b"/Font << /F0 20 0 R >>",a2)],[font(20)]+ann))
 
 
 def main():
