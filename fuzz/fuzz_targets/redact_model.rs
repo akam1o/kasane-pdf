@@ -21,13 +21,15 @@ const FONT: &[u8] = include_bytes!("../../fonts/liberation/LiberationSans-Regula
 
 fuzz_target!(|data: &[u8]| {
     let (annotations, data) = match data.split_first() {
-        Some((b, rest)) => (b & 1 == 1, rest),
-        None => (false, data),
+        Some((b, rest)) => (*b, rest),
+        None => (0, data),
     };
+    let (annotations, javascript) = (annotations & 1 == 1, annotations & 3 == 3);
     let (a, public) = make(Rng::from_bytes(data), 1, FONT);
     let (b, _) = make(Rng::from_bytes(data), 2, FONT);
     let opts = RedactOptions::new()
         .remove_annotations(annotations)
+        .remove_javascript(javascript)
         .with_limits(kasane_pdf_fuzz::limits());
     let run = |pdf: &[u8]| {
         let doc = Document::from_bytes(pdf).expect("a generated document parses");

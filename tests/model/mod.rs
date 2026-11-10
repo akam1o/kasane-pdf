@@ -455,10 +455,16 @@ pub fn make(mut rng: Rng<'_>, v: u32, font: &[u8]) -> (Vec<u8>, Vec<Vec<String>>
             format!("BT /F1 6 Tf 0 0 Td ({}) Tj ET", secret(v, 900, 5)).as_bytes(),
         ));
         g.d.secret_objs.push(ap);
+        // Sometimes with a script (`remove_javascript` edits it).
+        let js = if g.rng.chance(1, 2) {
+            "/A << /S /JavaScript /JS (app.alert(1)) >>"
+        } else {
+            ""
+        };
         let a = g.d.add(
             format!(
                 "<< /Type /Annot /Subtype /Stamp /Rect [80 80 110 90] /AP << /N {ap} 0 R >> \
-                 /Contents ({}) >>",
+                 /Contents ({}) {js} >>",
                 secret(v, 901, 6)
             )
             .into_bytes(),

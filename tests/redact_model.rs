@@ -45,7 +45,10 @@ struct Tally {
 }
 
 fn check(seed: u64, annotations: bool, t: &mut Tally, font: &[u8]) {
-    let opts = RedactOptions::new().remove_annotations(annotations);
+    // With annotations removed, every other seed removes scripts too.
+    let opts = RedactOptions::new()
+        .remove_annotations(annotations)
+        .remove_javascript(annotations && seed % 2 == 1);
     let (a, public) = make(Rng::seeded(seed), 1, font);
     let (b, _) = make(Rng::seeded(seed), 2, font);
     assert!(a != b, "seed {seed}: the variants do not differ");
