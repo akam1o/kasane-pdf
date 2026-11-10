@@ -5562,6 +5562,11 @@ fn removed_appearances_through_shared_resources_are_refused() {
             "/Resources << /Font << /T3 5 >> >>",
             b"BT /T3 12 Tf (x) Tj ET",
         ),
+        // A stream is no font dictionary (Poppler passes it over).
+        (
+            "/Resources << /Font << /T3 32 0 R >> >>",
+            b"BT /T3 12 Tf (x) Tj ET",
+        ),
         (
             "/Resources << /Font << /T3 /None >> >>",
             b"BT /T3 12 Tf (x) Tj ET",

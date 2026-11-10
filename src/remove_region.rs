@@ -1221,8 +1221,9 @@ fn removable_appearance(
             let Some(v) = cat.get(n) else {
                 return Ok(false);
             };
+            // A stream only for `Do`, a dictionary for the others.
             Ok(match doc.deref(v)? {
-                Object::Stream { .. } => true,
+                Object::Stream { .. } => stream,
                 Object::Dict(_) => !stream,
                 _ => false,
             })
