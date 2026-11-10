@@ -5766,3 +5766,76 @@ fn removed_appearance_colour_data_does_not_stay() {
         assert!(e.contains("failed verification"), "{name}: {e}");
     }
 }
+
+/// A removed link's appearance may stay only where a reader draws it:
+/// not as a Hidden annotation's appearance, another annotation's down
+/// appearance, an unselected state, or a form under optional content.
+/// (Review.)
+#[test]
+fn removed_appearance_is_not_excused_by_what_is_not_drawn() {
+    let page_with = |annot2: &str, content: &str, res: &str| {
+        build_pdf(&[
+            (
+                1,
+                b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [40 0 R] /D << /OFF [40 0 R] >> >> >>"
+                    .to_vec(),
+            ),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R \
+                     /Resources << {res} >> /Annots [30 0 R 32 0 R] >>"
+                )
+                .into_bytes(),
+            ),
+            (4, stream_obj("", content.as_bytes())),
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Link /Rect [70 90 110 100] /AP << /N 31 0 R >> >>".to_vec(),
+            ),
+            (
+                31,
+                stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 40 10]", b"0 0 40 10 re f 1 1 3 3 re f"),
+            ),
+            (32, annot2.as_bytes().to_vec()),
+            (
+                33,
+                stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 40 40]", b"0 0 9 9 re f"),
+            ),
+            (40, b"<< /Type /OCG /Name (off) >>".to_vec()),
+        ])
+    };
+    let other =
+        |extra: &str| format!("<< /Type /Annot /Subtype /Link /Rect [150 150 190 190] {extra} >>");
+    for (name, pdf) in [
+        (
+            "hidden",
+            page_with(&other("/F 2 /AP << /N 31 0 R >>"), "0 0 5 5 re f", ""),
+        ),
+        (
+            "down",
+            page_with(&other("/AP << /N 33 0 R /D 31 0 R >>"), "0 0 5 5 re f", ""),
+        ),
+        (
+            "state",
+            page_with(
+                &other("/AS /Off /AP << /N << /Off 33 0 R /On 31 0 R >> >>"),
+                "0 0 5 5 re f",
+                "",
+            ),
+        ),
+        (
+            "optional content",
+            page_with(
+                &other(""),
+                "/OC /L BDC q 1 0 0 1 150 150 cm /Fm Do Q EMC",
+                "/XObject << /Fm 31 0 R >> /Properties << /L 40 0 R >>",
+            ),
+        ),
+    ] {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let e = unsupported(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()));
+        assert!(e.contains("failed verification"), "{name}: {e}");
+    }
+}

@@ -207,6 +207,28 @@ fn device(default: &'static [u8]) -> Paint {
     }
 }
 
+/// Whether `op` draws (or invokes something that may).
+fn draws(op: &Operation) -> bool {
+    matches!(
+        op,
+        Operation::Do(_)
+            | Operation::InlineImage { .. }
+            | Operation::Shading(_)
+            | Operation::ShowText(_)
+            | Operation::NextLineShowText(_)
+            | Operation::SetSpacingNextLineShowText { .. }
+            | Operation::ShowTextAdjusted(_)
+            | Operation::Fill
+            | Operation::FillEvenOdd
+            | Operation::Stroke
+            | Operation::CloseAndStroke
+            | Operation::FillAndStroke
+            | Operation::FillAndStrokeEvenOdd
+            | Operation::CloseFillAndStroke
+            | Operation::CloseFillAndStrokeEvenOdd
+    )
+}
+
 /// The `Default*` resource a device colour space name is replaced by.
 fn default_of(n: &[u8]) -> Option<&'static [u8]> {
     match n {
@@ -388,18 +410,47 @@ impl Walk<'_> {
             for a in annots.as_array().unwrap_or(&[]) {
                 let a = doc.deref(a)?;
                 let Some(ad) = a.as_dict() else { continue };
+                // Under: only what a reader draws — the normal appearance
+                // in the state `/AS` selects, of an annotation neither
+                // Hidden nor NoView nor under optional content.
+                let under = self.bound == Bound::Under;
+                if under {
+                    let flags = match ad.get(b"F".as_slice()) {
+                        Some(f) => doc.deref(f)?.as_i64().unwrap_or(0),
+                        None => 0,
+                    };
+                    if flags & (2 | 32) != 0 || ad.contains_key(b"OC".as_slice()) {
+                        continue;
+                    }
+                }
+                let selected = match ad.get(b"AS".as_slice()).map(|a| doc.deref(a)).transpose()? {
+                    Some(Object::Name(n)) => Some(n),
+                    _ => None,
+                };
                 if let Some(ap) = ad.get(b"AP".as_slice()) {
                     let ap = doc.deref(ap)?;
-                    for k in [b"N".as_slice(), b"R", b"D"] {
-                        let Some(v) = ap.as_dict().and_then(|d| d.get(k)) else {
+                    let keys: &[&[u8]] = if under { &[b"N"] } else { &[b"N", b"R", b"D"] };
+                    for k in keys {
+                        let Some(v) = ap.as_dict().and_then(|d| d.get(*k)) else {
                             continue;
+                        };
+                        let pick = |s: crate::object::Dict| -> Vec<Object> {
+                            if under {
+                                selected
+                                    .as_ref()
+                                    .and_then(|n| s.get(n.as_slice()).cloned())
+                                    .into_iter()
+                                    .collect()
+                            } else {
+                                s.values().cloned().collect()
+                            }
                         };
                         let states: Vec<Object> = match v {
                             Object::Ref(r) => match doc.resolve(*r)? {
-                                Object::Dict(s) => s.values().cloned().collect(),
+                                Object::Dict(s) => pick(s),
                                 _ => vec![v.clone()],
                             },
-                            Object::Dict(s) => s.values().cloned().collect(),
+                            Object::Dict(s) => pick(s.clone()),
                             _ => Vec::new(),
                         };
                         for s in states {
@@ -538,7 +589,24 @@ impl Walk<'_> {
         self.tick(f.ops.len() as u64)?;
         let mut st = f.state.clone();
         let mut saved: Vec<State> = Vec::new();
+        // Under: marked content under optional content (`BDC /OC`) is
+        // not counted as drawn (a reader may hide it).
+        let mut marked: Vec<bool> = Vec::new();
+        let mut hidden = 0usize;
         for op in &f.ops {
+            match op {
+                Operation::BeginMarkedContent(_) => marked.push(false),
+                Operation::BeginMarkedContentWithProps { tag, .. } => {
+                    let oc = self.bound == Bound::Under && tag.as_slice() == b"OC";
+                    hidden += usize::from(oc);
+                    marked.push(oc);
+                }
+                Operation::EndMarkedContent if marked.pop() == Some(true) => hidden -= 1,
+                _ => {}
+            }
+            if hidden > 0 && draws(op) {
+                continue;
+            }
             match op {
                 Operation::SaveState => saved.push(st.clone()),
                 Operation::RestoreState => st = saved.pop().unwrap_or_default(),
@@ -659,6 +727,10 @@ impl Walk<'_> {
                         self.undecided(format!("XObject {r} is not a stream"));
                         continue;
                     };
+                    // Under: an XObject under optional content may be hidden.
+                    if self.bound == Bound::Under && dict.contains_key(b"OC".as_slice()) {
+                        continue;
+                    }
                     match dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) {
                         Some(b"Image") => {
                             // A stencil mask paints with the fill colour.
