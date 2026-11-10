@@ -57,6 +57,8 @@ versions follow [Semantic Versioning](https://semver.org/).
   readers draw it: `/Rect` and its geometry (formerly refused when the
   geometry left `/Rect`), grown by line endings and leader lines; one
   with a caption or a cloudy border is refused.
+- `redact`'s verification also fails when the output holds an edited
+  page's original content stream other than as a page's `/Contents`.
 - `Diagnosis` is `#[non_exhaustive]` and gains `data`; its image
   blockers list a soft mask only when `redact` cannot edit it.
 - An appearance-less Highlight, Underline, StrikeOut or Squiggly reaches

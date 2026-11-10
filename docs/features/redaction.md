@@ -105,6 +105,12 @@ Three separate statements; none implies the next:
   `elsewhere` either way, and `refuse_copies_elsewhere` refuses it. Any
   other copy — one only named in some resources, or reachable
   otherwise — fails.
+- No stream of the output holds an edited page's original content
+  (stored or decoded digest), except one that a page still draws as its
+  `/Contents` (a content stream the edited page shared with another
+  page, whose text `elsewhere` then reports). Anything else referring to
+  it — a catalog or page entry, application data, an attachment — fails;
+  a structure element's `/MCR /Stm` to it leaves the tree.
 - The output carries no object stream or cross-reference stream (the
   rewrite writes neither; one carried because something referred to it
   would hold the input's objects as they were).
