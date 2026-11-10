@@ -295,6 +295,9 @@ pub(crate) fn usage(
             continue;
         }
         w.page = i;
+        // Each page within the bound on its own: a long document of
+        // ordinary pages is not refused for its length.
+        w.budget = 0;
         w.seen_frames.clear();
         w.seen_fonts.clear();
         w.undecided_here = false;

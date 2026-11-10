@@ -301,9 +301,15 @@ pub(crate) fn check_use(
             let mut left: Vec<&(IndirectRef, [u8; 32])> =
                 held.iter().filter(|(_, x)| !live.contains(x)).collect();
             if !left.is_empty() {
-                let rest = usage(out, &|i| !is_edited(i), Bound::Under, limits)?;
-                live.extend(content(used_digests(out, &rest, Some(idx))?));
-                left.retain(|(_, x)| !live.contains(x));
+                // Page by page, until every copy is found used.
+                for i in (0..out.pages().len()).filter(|i| !is_edited(*i)) {
+                    let rest = usage(out, &|p| p == i, Bound::Under, limits)?;
+                    live.extend(content(used_digests(out, &rest, Some(idx))?));
+                    left.retain(|(_, x)| !live.contains(x));
+                    if left.is_empty() {
+                        break;
+                    }
+                }
             }
             if let Some((r, x)) = left.into_iter().min_by_key(|(r, _)| *r) {
                 let roles: Vec<String> = wanted[x].iter().map(|u| format!("{u:?}")).collect();

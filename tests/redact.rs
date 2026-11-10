@@ -5839,3 +5839,59 @@ fn removed_appearance_is_not_excused_by_what_is_not_drawn() {
         assert!(e.contains("failed verification"), "{name}: {e}");
     }
 }
+
+/// An image shared by every page of a long document, edited on one: the
+/// pages not edited are walked within the operation bound each, not all
+/// together. (Review: 0.9 refused this for its length.)
+#[test]
+fn a_long_document_sharing_an_edited_image() {
+    let pages = 120;
+    let mut filler = String::new();
+    for _ in 0..1000 {
+        filler.push_str("0 0 1 1 re n ");
+    }
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (
+            2,
+            format!(
+                "<< /Type /Pages /Kids [{}] /Count {pages} >>",
+                (0..pages)
+                    .map(|i| format!("{} 0 R", 100 + 2 * i))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            )
+            .into_bytes(),
+        ),
+        (
+            5,
+            stream_obj(
+                "/Type /XObject /Subtype /Image /Width 2 /Height 2 /ColorSpace /DeviceGray \
+                 /BitsPerComponent 8",
+                &[11, 22, 33, 44],
+            ),
+        ),
+    ];
+    for i in 0..pages {
+        objs.push((
+            100 + 2 * i,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents {} 0 R \
+                 /Resources << /XObject << /Im 5 0 R >> >> >>",
+                101 + 2 * i
+            )
+            .into_bytes(),
+        ));
+        objs.push((
+            101 + 2 * i,
+            stream_obj(
+                "",
+                format!("{filler} q 40 0 0 40 40 80 cm /Im Do Q").as_bytes(),
+            ),
+        ));
+    }
+    let pdf = build_pdf(&objs);
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let r = redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()).unwrap();
+    assert_eq!(r.images_edited, 1);
+}
