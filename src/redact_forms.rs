@@ -237,6 +237,9 @@ pub(crate) fn edit_fields(
             }
         }
     }
+    check_kept_fields(
+        doc, overlay, removed, &gone, &parent, &kids, &dicts, &mut out,
+    )?;
     // Rewrite the kids of the fields kept, and /Fields, /CO.
     let keep = |list: &[Object]| -> Vec<Object> {
         list.iter()
@@ -407,4 +410,182 @@ pub(crate) fn removed_still_reached(
         scan(&o, &path, skip, &mut queue)?;
     }
     Ok(None)
+}
+
+/// The fields that keep some widget while losing others: each must still
+/// show a widget (on a page's `/Annots`, not Hidden or NoView), and its
+/// value must be one a kept widget shows — a button group whose on-state
+/// was a removed widget's is refused; a choice's array and a stream value
+/// are reported in `elsewhere` like a string; any other value is refused.
+#[allow(clippy::too_many_arguments)]
+fn check_kept_fields(
+    doc: &Document,
+    overlay: &Overlay,
+    removed: &HashSet<IndirectRef>,
+    gone: &HashSet<IndirectRef>,
+    parent: &HashMap<IndirectRef, Option<IndirectRef>>,
+    kids: &HashMap<IndirectRef, Vec<IndirectRef>>,
+    dicts: &HashMap<IndirectRef, Dict>,
+    out: &mut FieldsEdit,
+) -> Result<(), Error> {
+    // The kept fields nearest each removed widget.
+    let mut affected: HashSet<IndirectRef> = HashSet::new();
+    for w in removed.iter().filter(|w| parent.contains_key(w)) {
+        let mut cur = parent[w];
+        while let Some(c) = cur {
+            if !gone.contains(&c) {
+                affected.insert(c);
+                break;
+            }
+            cur = parent[&c];
+        }
+    }
+    if affected.is_empty() {
+        return Ok(());
+    }
+    // Widgets a reader shows: on a page's /Annots, not Hidden or NoView.
+    let mut on_pages: HashSet<IndirectRef> = HashSet::new();
+    for page in doc.pages() {
+        let Some(pr) = page.object_ref() else {
+            continue;
+        };
+        let Object::Dict(pd) = current(doc, overlay, pr)? else {
+            continue;
+        };
+        if let Some(a) = pd.get(b"Annots".as_slice()) {
+            for x in deref_cur(doc, overlay, a)?.as_array().unwrap_or(&[]) {
+                if let Object::Ref(r) = x {
+                    on_pages.insert(*r);
+                }
+            }
+        }
+    }
+    let shown = |r: IndirectRef| -> Result<bool, Error> {
+        if !on_pages.contains(&r) {
+            return Ok(false);
+        }
+        let flags = match dicts[&r].get(b"F".as_slice()) {
+            Some(f) => deref_cur(doc, overlay, f)?.as_i64().unwrap_or(0),
+            None => 0,
+        };
+        Ok(flags & (2 | 32) == 0)
+    };
+    let inherited = |r: IndirectRef, key: &[u8]| -> Option<Object> {
+        let mut cur = Some(r);
+        let mut n = 0;
+        while let Some(c) = cur {
+            if let Some(v) = dicts[&c].get(key) {
+                return Some(v.clone());
+            }
+            cur = parent[&c];
+            n += 1;
+            if n > 64 {
+                return None;
+            }
+        }
+        None
+    };
+    let mut affected: Vec<IndirectRef> = affected.into_iter().collect();
+    affected.sort();
+    for f in affected {
+        // Its widgets left and removed (leaves of its subtree).
+        let (mut left, mut lost) = (Vec::new(), Vec::new());
+        let mut stack = vec![f];
+        while let Some(c) = stack.pop() {
+            if kids[&c].is_empty() {
+                if gone.contains(&c) {
+                    lost.push(c);
+                } else {
+                    left.push(c);
+                }
+            } else {
+                stack.extend(kids[&c].iter().copied());
+            }
+        }
+        let mut visible = false;
+        for w in &left {
+            visible |= shown(*w)?;
+        }
+        if !visible {
+            return Err(refuse(format!(
+                "field {f} keeps only widgets no page shows (hidden, or on no page's /Annots)"
+            )));
+        }
+        for key in [b"V".as_slice(), b"DV", b"RV"] {
+            let Some(v) = inherited(f, key) else { continue };
+            match deref_cur(doc, overlay, &v)? {
+                Object::String(_) | Object::Null => {}
+                Object::Array(a) => {
+                    for x in a {
+                        if let Object::String(t) = deref_cur(doc, overlay, &x)? {
+                            out.removed_text.push(crate::annot_text::text_string(&t));
+                        }
+                    }
+                }
+                Object::Stream { dict, data } => out.removed_text.push(
+                    crate::annot_text::text_string(&doc.decode_stream(&dict, &data)?),
+                ),
+                Object::Name(n) => {
+                    // A button's state (its `/AS` or an appearance state):
+                    // shown by a kept widget only if one of them has it.
+                    let has_state = |w: &IndirectRef| -> Result<bool, Error> {
+                        if let Some(st) = dicts[w].get(b"AS".as_slice()) {
+                            if deref_cur(doc, overlay, st)?.as_name() == Some(n.as_slice()) {
+                                return Ok(true);
+                            }
+                        }
+                        let Some(ap) = dicts[w].get(b"AP".as_slice()) else {
+                            return Ok(false);
+                        };
+                        let ap = deref_cur(doc, overlay, ap)?;
+                        let Some(normal) = ap.as_dict().and_then(|d| d.get(b"N".as_slice())) else {
+                            return Ok(false);
+                        };
+                        Ok(deref_cur(doc, overlay, normal)?
+                            .as_dict()
+                            .is_some_and(|d| d.contains_key(n.as_slice())))
+                    };
+                    if n.as_slice() != b"Off" {
+                        let mut kept_has = false;
+                        for w in &left {
+                            kept_has |= has_state(w)?;
+                        }
+                        let mut lost_has = false;
+                        for w in &lost {
+                            lost_has |= has_state(w)?;
+                        }
+                        if lost_has && !kept_has {
+                            return Err(refuse(format!(
+                                "field {f}'s value /{} is the state of a removed widget",
+                                String::from_utf8_lossy(&n)
+                            )));
+                        }
+                    }
+                }
+                _ => {
+                    return Err(refuse(format!(
+                        "field {f} keeps a value that is neither a string, a name nor an array"
+                    )))
+                }
+            }
+        }
+        // Choice options a removed widget may have shown.
+        for key in [b"Opt".as_slice()] {
+            if let Some(v) = inherited(f, key) {
+                for x in deref_cur(doc, overlay, &v)?.as_array().unwrap_or(&[]) {
+                    let x = deref_cur(doc, overlay, x)?;
+                    let items: Vec<Object> = match x {
+                        Object::Array(a) => a,
+                        o => vec![o],
+                    };
+                    for i in items {
+                        if let Object::String(t) = deref_cur(doc, overlay, &i)? {
+                            out.removed_text.push(crate::annot_text::text_string(&t));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }

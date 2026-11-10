@@ -320,3 +320,72 @@ fn removed_objects_still_referred_to_are_refused() {
         }
     }
 }
+
+/// A field keeping widgets: refused when no kept widget is shown (on no
+/// page, or Hidden) or when its button value is a removed widget's
+/// state; a choice's array value is reported in `elsewhere`. (Review.)
+#[test]
+fn kept_fields_show_what_they_keep() {
+    let two = |field: &str, kept: &str, gone: &str, annots: &str| {
+        doc(
+            "<< /Fields [10 0 R] >>",
+            annots,
+            vec![
+                (10, format!("<< {field} /Kids [11 0 R 12 0 R] >>").into_bytes()),
+                (
+                    11,
+                    format!("<< /Type /Annot /Subtype /Widget /Parent 10 0 R /Rect [70 90 110 100] {gone} >>")
+                        .into_bytes(),
+                ),
+                (
+                    12,
+                    format!("<< /Type /Annot /Subtype /Widget /Parent 10 0 R /Rect [10 180 50 190] {kept} >>")
+                        .into_bytes(),
+                ),
+            ],
+        )
+    };
+    let radio = "/FT /Btn /Ff 49152 /T (r) /V /Secretopt";
+    for (name, pdf) in [
+        (
+            "radio",
+            two(radio, "/AS /Off", "/AS /Secretopt", "11 0 R 12 0 R"),
+        ),
+        (
+            "orphan",
+            two("/FT /Tx /T (t) /V (SECRETVALUE)", "", "", "11 0 R"),
+        ),
+        (
+            "hidden",
+            two(
+                "/FT /Tx /T (t) /V (SECRETVALUE)",
+                "/F 2",
+                "",
+                "11 0 R 12 0 R",
+            ),
+        ),
+    ] {
+        let e = run(&pdf, true).unwrap_err().to_string();
+        assert!(e.contains("cannot be edited exactly"), "{name}: {e}");
+    }
+    // The kept widget shows the radio's state: accepted.
+    assert!(run(
+        &two(radio, "/AS /Secretopt", "/AS /Off", "11 0 R 12 0 R"),
+        true
+    )
+    .is_ok());
+    let choice = two(
+        "/FT /Ch /Ff 2097152 /T (c) /V [(CHOSENONE) (CHOSENTWO)] /Opt [(CHOSENONE) (CHOSENTWO)]",
+        "",
+        "",
+        "11 0 R 12 0 R",
+    );
+    let r = run(&choice, true).unwrap();
+    assert!(
+        r.elsewhere
+            .iter()
+            .any(|e| matches!(&e.removed, kasane_pdf::Removed::Text(t) if t == "CHOSENONE")),
+        "{:?}",
+        r.elsewhere
+    );
+}
