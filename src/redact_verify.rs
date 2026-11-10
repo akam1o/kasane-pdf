@@ -85,6 +85,13 @@ impl StreamDigests {
 }
 
 impl Index {
+    /// The streams, in object order, with their digests.
+    pub(crate) fn streams(&self) -> impl Iterator<Item = (IndirectRef, StreamDigests)> + '_ {
+        self.objects
+            .iter()
+            .filter_map(|(r, _)| self.digests.get(r).map(|d| (*r, *d)))
+    }
+
     pub(crate) fn build(doc: &Document, limits: &Limits) -> Result<Index, Error> {
         let refs: Vec<IndirectRef> = doc
             .xref_entries()
@@ -445,26 +452,43 @@ impl<'a> Signatures<'a> {
         Ok(Some(sha256(&parts)))
     }
 
+    /// The digest of `o`: references are digested once (memoized) and
+    /// written as their digest; direct values are written inline.
     fn value(&mut self, o: &Object, limits: &Limits) -> Result<Option<[u8; 32]>, Error> {
+        if let Object::Ref(r) = o {
+            if let Some(d) = self.memo.get(r) {
+                return Ok(*d);
+            }
+            if !self.open.insert(*r) || self.open.len() > 256 {
+                return Ok(None);
+            }
+            let t = self.doc.resolve(*r)?;
+            let mut buf = Vec::new();
+            let ok = self.write(&t, &mut buf, limits)?;
+            let d = ok.then(|| sha256(&buf));
+            self.open.remove(r);
+            self.memo.insert(*r, d);
+            return Ok(d);
+        }
+        let mut buf = Vec::new();
+        Ok(self.write(o, &mut buf, limits)?.then(|| sha256(&buf)))
+    }
+
+    /// Write `o` canonically into `out`; `false` on a cycle or too much
+    /// work.
+    fn write(&mut self, o: &Object, out: &mut Vec<u8>, limits: &Limits) -> Result<bool, Error> {
         self.work += 1;
         if self.work > limits.max_audit_elements {
-            return Ok(None);
+            return Ok(false);
         }
-        let mut out = Vec::new();
         match o {
-            Object::Ref(r) => {
-                if let Some(d) = self.memo.get(r) {
-                    return Ok(*d);
+            Object::Ref(_) => match self.value(o, limits)? {
+                Some(d) => {
+                    out.push(b'R');
+                    out.extend_from_slice(&d);
                 }
-                if !self.open.insert(*r) || self.open.len() > 256 {
-                    return Ok(None);
-                }
-                let t = self.doc.resolve(*r)?;
-                let d = self.value(&t, limits)?;
-                self.open.remove(r);
-                self.memo.insert(*r, d);
-                return Ok(d);
-            }
+                None => return Ok(false),
+            },
             Object::Dict(d) | Object::Stream { dict: d, .. } => {
                 if let Object::Stream { data, .. } = o {
                     out.push(b'S');
@@ -479,27 +503,45 @@ impl<'a> Signatures<'a> {
                 for k in keys {
                     out.extend_from_slice(&(k.len() as u64).to_be_bytes());
                     out.extend_from_slice(k);
-                    match self.value(&d[k], limits)? {
-                        Some(x) => out.extend_from_slice(&x),
-                        None => return Ok(None),
+                    if !self.write(&d[k], out, limits)? {
+                        return Ok(false);
                     }
                 }
+                out.push(b'>');
             }
             Object::Array(a) => {
                 out.push(b'[');
+                out.extend_from_slice(&(a.len() as u64).to_be_bytes());
                 for v in a {
-                    match self.value(v, limits)? {
-                        Some(x) => out.extend_from_slice(&x),
-                        None => return Ok(None),
+                    if !self.write(v, out, limits)? {
+                        return Ok(false);
                     }
                 }
+            }
+            Object::Integer(i) => {
+                out.push(b'i');
+                out.extend_from_slice(&i.to_be_bytes());
+            }
+            Object::Real(f) => {
+                out.push(b'f');
+                out.extend_from_slice(&f.to_bits().to_be_bytes());
+            }
+            Object::Name(n) => {
+                out.push(b'n');
+                out.extend_from_slice(&(n.len() as u64).to_be_bytes());
+                out.extend_from_slice(n);
+            }
+            Object::String(t) => {
+                out.push(b's');
+                out.extend_from_slice(&(t.len() as u64).to_be_bytes());
+                out.extend_from_slice(t);
             }
             other => {
                 out.push(b'.');
                 out.extend_from_slice(format!("{other:?}").as_bytes());
             }
         }
-        Ok(Some(sha256(&out)))
+        Ok(true)
     }
 }
 
