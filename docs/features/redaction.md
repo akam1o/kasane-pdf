@@ -1,5 +1,9 @@
 # Redaction (`redact`, CLI `redact`)
 
+The safety model — what is guaranteed, reported, not guaranteed or
+refused, per surface, and why — is
+[`../redaction-safety-model.md`](../redaction-safety-model.md).
+
 `redact(&Document, &[PageSpec], &RedactOptions) -> Result<Redaction,
 Error>` removes what is drawn inside page rectangles and returns a new
 single-revision PDF **only after checking the written bytes**. It is
@@ -128,6 +132,18 @@ Three separate statements; none implies the next:
 - No object of the output is a removed shading or tiling pattern
   (compared by content, references replaced by what they refer to, so
   renumbering does not hide one).
+
+- Independently of what the edit recorded, the input and the output
+  are compared (`docs/redaction-safety-model.md`, section 4): every
+  content-bearing stream an edited page used (contents, forms,
+  appearances, images and masks, Type 3 procedures of glyphs shown,
+  patterns and soft mask groups painted with, shadings, functions,
+  colour lookup tables, thumbnails) is used again by the output or
+  absent from it — by digest, whatever object number or reference keeps
+  a copy; pages not edited draw from the same streams; an annotation an
+  edited page lost is in no dictionary of the output; every object is
+  reachable from the trailer. A name that resolves to nothing counts,
+  over the input, as using everything the page reaches.
 
 A failed check is an error (`Unsupported { feature: "redaction output
 failed verification", .. }`), never a returned PDF.
