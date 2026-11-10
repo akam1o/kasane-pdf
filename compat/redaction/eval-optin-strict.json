@@ -8,7 +8,7 @@
     115.58,
     634.56
    ],
-   "seconds": 0.011,
+   "seconds": 0.012,
    "elsewhere": 0,
    "outside_words": 4,
    "outside_words_lost": 0,
@@ -70,7 +70,7 @@
     396.88,
     561.28
    ],
-   "seconds": 0.01,
+   "seconds": 0.011,
    "elsewhere": 0,
    "outside_words": 5,
    "outside_words_lost": 0,
@@ -117,10 +117,10 @@
     612.0,
     611.02
    ],
-   "seconds": 0.012,
+   "seconds": 0.033,
    "outcome": "refused",
-   "reason": "redaction of an annotation other than a link meeting a rect",
-   "detail": "/Annots[7] (/Widget) \u2014 its content is not edited",
+   "reason": "redaction of a widget whose form field cannot be edited exactly",
+   "detail": "an XFA form (its datasets hold the field values too",
    "id": "annotation-button-widget",
    "category": "annotations",
    "producer": "LiveCycle Designer"
@@ -180,7 +180,7 @@
     612.0,
     703.8
    ],
-   "seconds": 0.009,
+   "seconds": 0.008,
    "elsewhere": 0,
    "outside_words": 4,
    "outside_words_lost": 0,
@@ -211,7 +211,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.009,
+   "seconds": 0.008,
    "elsewhere": 0,
    "outside_words": 9,
    "outside_words_lost": 0,
@@ -273,7 +273,7 @@
     612.0,
     714.16
    ],
-   "seconds": 0.02,
+   "seconds": 0.022,
    "elsewhere": 4,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -304,7 +304,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.021,
+   "seconds": 0.023,
    "elsewhere": 0,
    "outside_words": 4,
    "outside_words_lost": 0,
@@ -366,7 +366,7 @@
     594.96,
     794.61
    ],
-   "seconds": 0.009,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -413,7 +413,7 @@
     360.83,
     401.5
    ],
-   "seconds": 0.019,
+   "seconds": 0.02,
    "elsewhere": 1,
    "outside_words": 255,
    "outside_words_lost": 0,
@@ -444,7 +444,7 @@
     612.0,
     401.5
    ],
-   "seconds": 0.018,
+   "seconds": 0.019,
    "elsewhere": 2,
    "outside_words": 232,
    "outside_words_lost": 0,
@@ -491,7 +491,7 @@
     342.47,
     401.59
    ],
-   "seconds": 0.025,
+   "seconds": 0.026,
    "elsewhere": 1,
    "outside_words": 898,
    "outside_words_lost": 0,
@@ -522,7 +522,7 @@
     612.0,
     401.59
    ],
-   "seconds": 0.025,
+   "seconds": 0.026,
    "elsewhere": 1,
    "outside_words": 856,
    "outside_words_lost": 0,
@@ -553,7 +553,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.024,
+   "seconds": 0.026,
    "elsewhere": 15,
    "outside_words": 687,
    "outside_words_lost": 0,
@@ -584,7 +584,7 @@
     37.84,
     109.12
    ],
-   "seconds": 0.019,
+   "seconds": 0.02,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -615,7 +615,7 @@
     200.0,
     109.12
    ],
-   "seconds": 0.019,
+   "seconds": 0.02,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -646,10 +646,25 @@
     133.33,
     133.33
    ],
-   "seconds": 0.011,
-   "outcome": "refused",
-   "reason": "redaction of an annotation other than a link meeting a rect",
-   "detail": "/Annots[1] (/Widget) \u2014 its content is not edited",
+   "seconds": 0.021,
+   "elsewhere": 0,
+   "outside_words": 1,
+   "outside_words_lost": 0,
+   "outside_chars": 5,
+   "outside_chars_lost": 0,
+   "outside_chars_mupdf": 5,
+   "outside_chars_mupdf_lost": 0,
+   "outside_chars_mupdf_moved": 0,
+   "words_regrouped": 0,
+   "outside_pixels_changed": 217,
+   "unchanged_ink_inside": 0,
+   "codes_removed": 0,
+   "images_edited": 0,
+   "forms_edited": 0,
+   "paths_removed": 0,
+   "paths_cut_at_a_rect": 0,
+   "shadings_removed": 0,
+   "outcome": "ok",
    "id": "acroform_calculation_order",
    "category": "forms",
    "producer": "unknown"
@@ -693,7 +708,7 @@
     612.0,
     571.87
    ],
-   "seconds": 0.021,
+   "seconds": 0.022,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -724,10 +739,25 @@
     408.0,
     528.0
    ],
-   "seconds": 0.013,
-   "outcome": "refused",
-   "reason": "redaction of an annotation other than a link meeting a rect",
-   "detail": "/Annots[0] (/Widget) \u2014 its content is not edited",
+   "seconds": 0.023,
+   "elsewhere": 0,
+   "outside_words": 3,
+   "outside_words_lost": 0,
+   "outside_chars": 16,
+   "outside_chars_lost": 0,
+   "outside_chars_mupdf": 16,
+   "outside_chars_mupdf_lost": 0,
+   "outside_chars_mupdf_moved": 0,
+   "words_regrouped": 0,
+   "outside_pixels_changed": 0,
+   "unchanged_ink_inside": 0,
+   "codes_removed": 0,
+   "images_edited": 0,
+   "forms_edited": 0,
+   "paths_removed": 0,
+   "paths_cut_at_a_rect": 0,
+   "shadings_removed": 0,
+   "outcome": "ok",
    "id": "bug1947248_forms",
    "category": "forms",
    "producer": "Acrobat"
@@ -740,7 +770,7 @@
     91.22,
     728.26
    ],
-   "seconds": 0.013,
+   "seconds": 0.012,
    "elsewhere": 1,
    "outside_words": 9,
    "outside_words_lost": 0,
@@ -771,10 +801,25 @@
     595.28,
     728.26
    ],
-   "seconds": 0.003,
-   "outcome": "refused",
-   "reason": "redaction of an annotation other than a link meeting a rect",
-   "detail": "/Annots[1] (/Widget) \u2014 its content is not edited",
+   "seconds": 0.014,
+   "elsewhere": 1,
+   "outside_words": 5,
+   "outside_words_lost": 0,
+   "outside_chars": 20,
+   "outside_chars_lost": 0,
+   "outside_chars_mupdf": 20,
+   "outside_chars_mupdf_lost": 0,
+   "outside_chars_mupdf_moved": 0,
+   "words_regrouped": 0,
+   "outside_pixels_changed": 0,
+   "unchanged_ink_inside": 0,
+   "codes_removed": 21,
+   "images_edited": 0,
+   "forms_edited": 0,
+   "paths_removed": 0,
+   "paths_cut_at_a_rect": 0,
+   "shadings_removed": 0,
+   "outcome": "ok",
    "id": "checkbox-bad-appearance",
    "category": "forms",
    "producer": "mPDF"
@@ -787,7 +832,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.013,
+   "seconds": 0.012,
    "elsewhere": 0,
    "outside_words": 10,
    "outside_words_lost": 0,
@@ -818,7 +863,7 @@
     135.63,
     399.74
    ],
-   "seconds": 0.05,
+   "seconds": 0.064,
    "elsewhere": 1,
    "outside_words": 231,
    "outside_words_lost": 0,
@@ -849,7 +894,7 @@
     612.0,
     399.74
    ],
-   "seconds": 0.051,
+   "seconds": 0.061,
    "elsewhere": 1,
    "outside_words": 199,
    "outside_words_lost": 0,
@@ -912,7 +957,7 @@
     57.46,
     415.11
    ],
-   "seconds": 0.024,
+   "seconds": 0.026,
    "elsewhere": 0,
    "outside_words": 22,
    "outside_words_lost": 0,
@@ -943,7 +988,7 @@
     595.28,
     415.11
    ],
-   "seconds": 0.026,
+   "seconds": 0.027,
    "elsewhere": 1,
    "outside_words": 21,
    "outside_words_lost": 0,
@@ -975,7 +1020,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.034,
+   "seconds": 0.029,
    "elsewhere": 1,
    "outside_words": 21,
    "outside_words_lost": 0,
@@ -1010,7 +1055,7 @@
     169.49,
     571.87
    ],
-   "seconds": 0.012,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -1041,7 +1086,7 @@
     612.0,
     571.87
    ],
-   "seconds": 0.009,
+   "seconds": 0.011,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -1072,7 +1117,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.011,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 3,
    "outside_words_lost": 0,
@@ -1103,7 +1148,7 @@
     366.8,
     274.3
    ],
-   "seconds": 0.032,
+   "seconds": 0.035,
    "elsewhere": 1,
    "outside_words": 737,
    "outside_words_lost": 0,
@@ -1134,7 +1179,7 @@
     960.0,
     274.3
    ],
-   "seconds": 0.032,
+   "seconds": 0.034,
    "elsewhere": 0,
    "outside_words": 692,
    "outside_words_lost": 0,
@@ -1165,7 +1210,7 @@
     640.0,
     360.0
    ],
-   "seconds": 0.032,
+   "seconds": 0.034,
    "elsewhere": 0,
    "outside_words": 599,
    "outside_words_lost": 0,
@@ -1196,7 +1241,7 @@
     81.05,
     750.92
    ],
-   "seconds": 0.022,
+   "seconds": 0.023,
    "elsewhere": 0,
    "outside_words": 16,
    "outside_words_lost": 0,
@@ -1227,7 +1272,7 @@
     595.28,
     750.92
    ],
-   "seconds": 0.023,
+   "seconds": 0.024,
    "elsewhere": 0,
    "outside_words": 15,
    "outside_words_lost": 0,
@@ -1274,7 +1319,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.008,
+   "seconds": 0.006,
    "outcome": "refused",
    "reason": "redaction: the output carries uninspected data",
    "detail": "15 item(s) redact does not read: 14 0 R PrivateData, 15 0 R PrivateData, 16 0 R PrivateData, 17 0 R PrivateData, 18 0 R PrivateData",
@@ -1306,7 +1351,7 @@
     184.0,
     184.0
    ],
-   "seconds": 0.008,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -1400,7 +1445,7 @@
     396.67,
     561.33
    ],
-   "seconds": 0.011,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 10,
    "outside_words_lost": 0,
@@ -1431,7 +1476,7 @@
     516.96,
     134.34
    ],
-   "seconds": 0.045,
+   "seconds": 0.056,
    "elsewhere": 0,
    "outside_words": 98,
    "outside_words_lost": 12,
@@ -1462,7 +1507,7 @@
     612.0,
     134.34
    ],
-   "seconds": 0.045,
+   "seconds": 0.056,
    "elsewhere": 0,
    "outside_words": 98,
    "outside_words_lost": 12,
@@ -1493,7 +1538,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.05,
+   "seconds": 0.056,
    "elsewhere": 0,
    "outside_words": 83,
    "outside_words_lost": 9,
@@ -1555,7 +1600,7 @@
     756.0,
     366.81
    ],
-   "seconds": 0.007,
+   "seconds": 0.008,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -1617,10 +1662,26 @@
     266.67,
     266.67
    ],
-   "seconds": 0.002,
-   "outcome": "refused",
-   "reason": "image stream filter",
-   "detail": "[\"ASCIIHexDecode\", \"DCTDecode\"] \u2014 only none, FlateDecode, or DCTDecode are supported",
+   "seconds": 0.01,
+   "elsewhere": 0,
+   "outside_words": 0,
+   "outside_words_lost": 0,
+   "outside_chars": 0,
+   "outside_chars_lost": 0,
+   "outside_chars_mupdf": 0,
+   "outside_chars_mupdf_lost": 0,
+   "outside_chars_mupdf_moved": 0,
+   "words_regrouped": 0,
+   "outside_pixels_changed": 0,
+   "unchanged_ink_inside": 0,
+   "codes_removed": 0,
+   "images_edited": 1,
+   "forms_edited": 0,
+   "paths_removed": 0,
+   "paths_cut_at_a_rect": 0,
+   "shadings_removed": 0,
+   "images_unchanged": 0,
+   "outcome": "ok",
    "id": "pdfium-jpeg_reduced_size_with_smask",
    "category": "japanese",
    "producer": "unknown"
@@ -1633,7 +1694,7 @@
     177.1,
     397.55
    ],
-   "seconds": 0.268,
+   "seconds": 0.292,
    "elsewhere": 11,
    "outside_words": 451,
    "outside_words_lost": 0,
@@ -1664,7 +1725,7 @@
     612.0,
     397.55
    ],
-   "seconds": 0.264,
+   "seconds": 0.296,
    "elsewhere": 0,
    "outside_words": 438,
    "outside_words_lost": 0,
@@ -1695,7 +1756,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.269,
+   "seconds": 0.293,
    "elsewhere": 0,
    "outside_words": 311,
    "outside_words_lost": 0,
@@ -1726,7 +1787,7 @@
     140.32,
     386.87
    ],
-   "seconds": 0.747,
+   "seconds": 0.775,
    "elsewhere": 0,
    "outside_words": 908,
    "outside_words_lost": 0,
@@ -1757,7 +1818,7 @@
     612.0,
     386.87
    ],
-   "seconds": 0.764,
+   "seconds": 0.794,
    "elsewhere": 0,
    "outside_words": 906,
    "outside_words_lost": 0,
@@ -1788,7 +1849,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.764,
+   "seconds": 0.799,
    "elsewhere": 224,
    "outside_words": 748,
    "outside_words_lost": 0,
@@ -1819,7 +1880,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.011,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -1943,7 +2004,7 @@
     82.84,
     28.7
    ],
-   "seconds": 0.021,
+   "seconds": 0.023,
    "elsewhere": 0,
    "outside_words": 5,
    "outside_words_lost": 0,
@@ -1974,7 +2035,7 @@
     200.0,
     28.7
    ],
-   "seconds": 0.019,
+   "seconds": 0.021,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2005,7 +2066,7 @@
     133.33,
     33.33
    ],
-   "seconds": 0.021,
+   "seconds": 0.022,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -2052,7 +2113,7 @@
     105.51,
     720.99
    ],
-   "seconds": 0.022,
+   "seconds": 0.023,
    "elsewhere": 2,
    "outside_words": 1,
    "outside_words_lost": 0,
@@ -2083,7 +2144,7 @@
     612.0,
     720.99
    ],
-   "seconds": 0.02,
+   "seconds": 0.022,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2114,7 +2175,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.02,
+   "seconds": 0.022,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -2161,7 +2222,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.007,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2208,7 +2269,7 @@
     117.97,
     710.38
    ],
-   "seconds": 0.073,
+   "seconds": 0.081,
    "elsewhere": 2,
    "outside_words": 12,
    "outside_words_lost": 0,
@@ -2239,7 +2300,7 @@
     595.28,
     710.38
    ],
-   "seconds": 0.07,
+   "seconds": 0.077,
    "elsewhere": 2,
    "outside_words": 9,
    "outside_words_lost": 0,
@@ -2270,7 +2331,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.066,
+   "seconds": 0.073,
    "elsewhere": 0,
    "outside_words": 15,
    "outside_words_lost": 0,
@@ -2301,7 +2362,7 @@
     476.81,
     348.0
    ],
-   "seconds": 0.008,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 24,
    "outside_words_lost": 2,
@@ -2394,7 +2455,7 @@
     612.0,
     402.34
    ],
-   "seconds": 0.015,
+   "seconds": 0.016,
    "elsewhere": 0,
    "outside_words": 59,
    "outside_words_lost": 0,
@@ -2425,7 +2486,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.015,
+   "seconds": 0.016,
    "elsewhere": 0,
    "outside_words": 39,
    "outside_words_lost": 0,
@@ -2520,7 +2581,7 @@
     373.69,
     399.18
    ],
-   "seconds": 0.211,
+   "seconds": 0.214,
    "elsewhere": 0,
    "outside_words": 763,
    "outside_words_lost": 0,
@@ -2551,7 +2612,7 @@
     612.0,
     399.18
    ],
-   "seconds": 0.24,
+   "seconds": 0.225,
    "elsewhere": 0,
    "outside_words": 735,
    "outside_words_lost": 0,
@@ -2582,7 +2643,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.214,
+   "seconds": 0.217,
    "elsewhere": 6,
    "outside_words": 602,
    "outside_words_lost": 0,
@@ -2613,7 +2674,7 @@
     128.11,
     395.01
    ],
-   "seconds": 0.066,
+   "seconds": 0.068,
    "elsewhere": 0,
    "outside_words": 501,
    "outside_words_lost": 0,
@@ -2644,7 +2705,7 @@
     612.0,
     395.01
    ],
-   "seconds": 0.067,
+   "seconds": 0.069,
    "elsewhere": 0,
    "outside_words": 501,
    "outside_words_lost": 0,
@@ -2675,7 +2736,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.066,
+   "seconds": 0.069,
    "elsewhere": 121,
    "outside_words": 396,
    "outside_words_lost": 0,
@@ -2706,7 +2767,7 @@
     105.12,
     402.74
    ],
-   "seconds": 0.038,
+   "seconds": 0.041,
    "outcome": "refused",
    "reason": "redaction: the output carries uninspected data",
    "detail": "1 item(s) redact does not read: 618 0 R Metadata",
@@ -2722,7 +2783,7 @@
     612.0,
     402.74
    ],
-   "seconds": 0.041,
+   "seconds": 0.044,
    "outcome": "refused",
    "reason": "redaction: the output carries uninspected data",
    "detail": "1 item(s) redact does not read: 612 0 R Metadata",
@@ -2738,7 +2799,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.04,
+   "seconds": 0.044,
    "outcome": "refused",
    "reason": "redaction: the output carries uninspected data",
    "detail": "1 item(s) redact does not read: 614 0 R Metadata",
@@ -2754,7 +2815,7 @@
     119.11,
     399.19
    ],
-   "seconds": 0.292,
+   "seconds": 0.295,
    "elsewhere": 11,
    "outside_words": 463,
    "outside_words_lost": 0,
@@ -2785,7 +2846,7 @@
     612.0,
     399.19
    ],
-   "seconds": 0.404,
+   "seconds": 0.305,
    "elsewhere": 0,
    "outside_words": 448,
    "outside_words_lost": 0,
@@ -2816,7 +2877,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.287,
+   "seconds": 0.293,
    "elsewhere": 1,
    "outside_words": 311,
    "outside_words_lost": 0,
@@ -2863,7 +2924,7 @@
     592.67,
     600.0
    ],
-   "seconds": 0.022,
+   "seconds": 0.023,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2895,7 +2956,7 @@
     333.33,
     333.33
    ],
-   "seconds": 0.009,
+   "seconds": 0.008,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2957,10 +3018,29 @@
     396.85,
     561.26
    ],
-   "seconds": 0.002,
-   "outcome": "refused",
-   "reason": "image BitsPerComponent",
-   "detail": "1 (only 8 supported",
+   "seconds": 0.008,
+   "elsewhere": 0,
+   "outside_words": 0,
+   "outside_words_lost": 0,
+   "outside_chars": 0,
+   "outside_chars_lost": 0,
+   "outside_chars_mupdf": 0,
+   "outside_chars_mupdf_lost": 0,
+   "outside_chars_mupdf_moved": 0,
+   "words_regrouped": 0,
+   "outside_pixels_changed": 3882,
+   "unchanged_ink_inside": 18419,
+   "codes_removed": 0,
+   "images_edited": 2,
+   "forms_edited": 0,
+   "paths_removed": 0,
+   "paths_cut_at_a_rect": 1,
+   "shadings_removed": 0,
+   "images_unchanged": 8,
+   "check_by_hand": "verified: the unchanged ink inside is all image samples (zero inside the rect)",
+   "unchanged_ink_not_from_images": 0,
+   "outcome": "unexpected",
+   "reason": "18419 unchanged non-white pixel(s) inside the rect",
    "id": "ccitt_endofblock_false",
    "category": "scan",
    "producer": "unknown"
@@ -2973,7 +3053,7 @@
     266.24,
     266.88
    ],
-   "seconds": 0.016,
+   "seconds": 0.015,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -3008,7 +3088,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.035,
+   "seconds": 0.033,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -3072,7 +3152,7 @@
     193.33,
     193.33
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
    "reason": "region removal on a page with blockers: shading",
    "detail": "shading (sh): /Sh20 crosses a rect \u2014 its function and geometry inside cannot be separated from the rest (a clip would only hide them",
@@ -3119,7 +3199,7 @@
     198.88,
     422.04
    ],
-   "seconds": 0.022,
+   "seconds": 0.025,
    "elsewhere": 1,
    "outside_words": 24,
    "outside_words_lost": 0,
@@ -3181,7 +3261,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.022,
+   "seconds": 0.024,
    "elsewhere": 2,
    "outside_words": 13,
    "outside_words_lost": 0,
