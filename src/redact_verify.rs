@@ -671,7 +671,10 @@ mod tests {
             (8, &old4),
         ]);
         let e = check(&aliased).unwrap_err().to_string();
-        assert!(e.contains("object 8 0 R") && e.contains("/Root/XPriv"), "{e}");
+        assert!(
+            e.contains("object 8 0 R") && e.contains("/Root/XPriv"),
+            "{e}"
+        );
         // A page not edited drawing differently.
         let changed = pdf(&[
             (1, b"<< /Type /Catalog /Pages 2 0 R >>"),
@@ -717,7 +720,10 @@ mod tests {
         let l = Limits::default();
         let p1 = b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Annots [8 0 R] >>";
         let annot = b"<< /Type /Annot /Subtype /Text /Rect [5 5 9 9] /Contents (removed) >>";
-        let a = annotated(p1, &[(8, annot), (9, b"<< >>"), (6, &stream("20 20 5 5 re f"))]);
+        let a = annotated(
+            p1,
+            &[(8, annot), (9, b"<< >>"), (6, &stream("20 20 5 5 re f"))],
+        );
         let copy = b"<< /Type /Annot /Subtype /Text /Rect [5 5 9 9] /Contents (removed) /Length 3 \
             /Filter /ASCIIHexDecode >>\nstream\n00>\nendstream";
         let b = annotated(

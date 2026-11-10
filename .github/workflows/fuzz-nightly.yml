@@ -1,4 +1,6 @@
-# Nightly render fuzzing (v0.5.1 R4): each structured render target for
+# Nightly render fuzzing (v0.5.1 R4) and the redaction model (v0.9:
+# a false success — the two variants of a generated document redacting
+# differently — fails like a crash): each structured target for
 # 15 minutes from its committed seeds and the corpus the previous runs
 # left in the Actions cache. Independent of the corpus nightly (no
 # credentials, no documents): a crash, timeout or out-of-memory fails
@@ -40,7 +42,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [render_content, render_graph]
+        target: [render_content, render_graph, redact_model]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
