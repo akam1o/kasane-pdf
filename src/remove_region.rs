@@ -1555,60 +1555,62 @@ pub(crate) fn regions_edit_session_with<'a>(
                     });
                 }
             }
-            // What the removed annotations tie to, kept as sets (one pass
-            // per round, not a scan of every pair: pages with tens of
-            // thousands of annotations).
+            // What the removed annotations tie to, followed from each
+            // once (a worklist over reverse maps: linear in the
+            // annotations, however long a chain of replies).
             let link = |d: &Dict, key: &[u8]| match d.get(key) {
                 Some(Object::Ref(r)) => Some(*r),
                 _ => None,
             };
-            loop {
-                let mut changed = false;
-                let mut gone_refs: HashSet<IndirectRef> = HashSet::new();
-                let mut popups: HashSet<IndirectRef> = HashSet::new();
-                let mut popup_parents: HashSet<IndirectRef> = HashSet::new();
-                for ((rr, rd, _), &gone) in entries.iter().zip(&removed) {
-                    if !gone {
-                        continue;
-                    }
-                    if let Some(r) = rr {
-                        gone_refs.insert(*r);
-                    }
-                    if let Some(p) = link(rd, b"Popup") {
-                        popups.insert(p);
-                    }
-                    if subtype(rd) == b"Popup" {
-                        if let Some(p) = link(rd, b"Parent") {
-                            popup_parents.insert(p);
-                        }
+            let mut by_ref: HashMap<IndirectRef, Vec<usize>> = HashMap::new();
+            let mut by_parent: HashMap<IndirectRef, Vec<usize>> = HashMap::new();
+            let mut by_irt: HashMap<IndirectRef, Vec<usize>> = HashMap::new();
+            for (k, (kr, kd, _)) in entries.iter().enumerate() {
+                if let Some(r) = kr {
+                    by_ref.entry(*r).or_default().push(k);
+                }
+                if let Some(p) = link(kd, b"Parent") {
+                    by_parent.entry(p).or_default().push(k);
+                }
+                if let Some(p) = link(kd, b"IRT") {
+                    by_irt.entry(p).or_default().push(k);
+                }
+            }
+            let mut work: Vec<usize> = (0..entries.len()).filter(|&k| removed[k]).collect();
+            while let Some(k) = work.pop() {
+                let (kr, kd, _) = &entries[k];
+                let mut tied: Vec<usize> = Vec::new();
+                // Its popup; the annotation a removed popup belongs to.
+                if let Some(p) = link(kd, b"Popup") {
+                    tied.extend(by_ref.get(&p).into_iter().flatten());
+                }
+                if subtype(kd) == b"Popup" {
+                    if let Some(p) = link(kd, b"Parent") {
+                        tied.extend(by_ref.get(&p).into_iter().flatten());
                     }
                 }
-                for k in 0..entries.len() {
-                    if removed[k] {
+                // What names it as parent, and replies to it.
+                if let Some(r) = kr {
+                    tied.extend(by_parent.get(r).into_iter().flatten());
+                    tied.extend(by_irt.get(r).into_iter().flatten());
+                }
+                tied.sort_unstable();
+                for j in tied {
+                    if removed[j] {
                         continue;
                     }
-                    let (kr, kd, _) = &entries[k];
-                    let tied = kr
-                        .is_some_and(|r| popups.contains(&r) || popup_parents.contains(&r))
-                        || link(kd, b"Parent").is_some_and(|r| gone_refs.contains(&r))
-                        || link(kd, b"IRT").is_some_and(|r| gone_refs.contains(&r));
-                    if tied {
-                        let st = subtype(kd);
-                        if st != b"Link" && !REMOVABLE_ANNOTS.contains(&st.as_slice()) {
-                            return Err(Error::Unsupported {
-                                feature: "redaction of an annotation tied to a removed one",
-                                detail: format!(
-                                    "/Annots[{k}] (/{}) is its popup, parent or reply",
-                                    String::from_utf8_lossy(&st)
-                                ),
-                            });
-                        }
-                        removed[k] = true;
-                        changed = true;
+                    let st = subtype(&entries[j].1);
+                    if st != b"Link" && !REMOVABLE_ANNOTS.contains(&st.as_slice()) {
+                        return Err(Error::Unsupported {
+                            feature: "redaction of an annotation tied to a removed one",
+                            detail: format!(
+                                "/Annots[{j}] (/{}) is its popup, parent or reply",
+                                String::from_utf8_lossy(&st)
+                            ),
+                        });
                     }
-                }
-                if !changed {
-                    break;
+                    removed[j] = true;
+                    work.push(j);
                 }
             }
             // One drawn away from /Rect at other zooms and rotations
