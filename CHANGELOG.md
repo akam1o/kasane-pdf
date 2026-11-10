@@ -6,6 +6,39 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `redact` verifies its output against the input alone, independently of
+  what the edit recorded (`docs/redaction-safety-model.md`): every
+  content-bearing stream an edited page used is used again by the output
+  or absent from it, whatever object number or reference keeps a copy;
+  pages not edited draw from the same streams; an annotation an edited
+  page lost is in no dictionary of the output; every object is reachable
+  from the trailer. A name that resolves to nothing counts, over the
+  input, as using everything the page reaches.
+- `remove_annotations` also removes widgets meeting a rect, and their
+  form field when no widget of it is left — value and description with
+  it (`Redaction::fields_removed`, CLI `fields removed`). Signature
+  fields, XFA forms and field trees that cannot be edited exactly are
+  refused.
+- `redact` edits images at 1, 2 and 4 bits per component, through chains
+  of general filters, and in CCITTFax or JBIG2 (without
+  `/JBIG2Globals`); the edited copy is written unfiltered.
+- `docs/redaction-safety-model.md`: what `redact` guarantees, reports,
+  does not guarantee or refuses, per surface; the verification layers.
+- Tests: one regression test per published advisory
+  (`tests/redact_advisories.rs`, checked against every version by
+  `scripts/check-advisory-regressions.py`; results in
+  `docs/security/advisory-regressions.md`); generated non-interference
+  tests (`tests/redact_model.rs`) and the `redact_model` fuzz target,
+  where a false success fails like a crash.
+
+### Changed
+- The verification checks read one index of the output (each stream
+  decoded once); annotations tied to removed ones are found in linear
+  time (32,000 annotations: 3.7 s → 1.1 s); the uninspected-data walk no
+  longer copies direct values (300,000 structure attributes: preflight
+  peak memory 1.24 GB → 0.37 GB).
+
 ## [0.8.0] - 2026-11-10
 
 ### Security

@@ -216,6 +216,17 @@ are on the [roadmap](architecture.md#roadmap).
   marked-content sequence relates to no element. Trees that cannot be
   edited exactly (cycles, kids of unknown kinds, a touched element
   written inside another object) are refused.
+- **Redaction verification** (0.9): the use invariant compares streams
+  by digest — a copy re-encoded with other filters, or the same picture
+  stored differently, is not recognised; font programs, a font's code
+  data and ICC profiles are not held to it (a font only the removed text
+  used may stay in the page's resources with its program; it reveals
+  the font's glyph repertoire); dictionaries other than annotations are
+  compared only through the structure-tree and string checks.
+- **Form fields** (0.9): a widget's field leaves the form only when no
+  widget of it is left; a field keeping a widget keeps its value
+  (reported in `elsewhere`). Signature fields, XFA forms and JBIG2
+  images with shared `/JBIG2Globals` are refused.
 - **Uninspected data** (0.8): `redact` reports the data it carries
   without reading it (`Redaction::uninspected`) and refuses it with
   `refuse_uninspected`; that mode is not a proof that no copy of the

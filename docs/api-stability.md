@@ -104,6 +104,12 @@ patch release.
   class of input is refused with `max_pattern_tiles`, and `rewrite`
   carries `/OCProperties`.
 
+## Unreleased (0.9)
+
+- Additive: `Redaction::fields_removed` (the struct is
+  `#[non_exhaustive]`). `cargo semver-checks` against 0.8.0: no semver
+  update required.
+
 ## 0.8.0
 
 - Added: `uninspected_data`, `DataInventory`, `DataItem`, `DataRole`,
