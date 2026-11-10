@@ -782,10 +782,15 @@ pub(crate) fn validate_image(
         .get(b"BitsPerComponent".as_slice())
         .and_then(|o| o.as_i64())
         .ok_or_else(|| Error::Structure("image has no /BitsPerComponent".into()))?;
-    if bpc != 8 {
+    // Redaction also edits packed 1, 2 and 4-bit samples (written back
+    // raw at the same depth).
+    if bpc != 8 && !(redaction && matches!(bpc, 1 | 2 | 4)) {
         return Err(Error::Unsupported {
             feature: "image BitsPerComponent",
-            detail: format!("{bpc} (only 8 supported)"),
+            detail: format!(
+                "{bpc} (only {} supported)",
+                if redaction { "1, 2, 4 and 8" } else { "8" }
+            ),
         });
     }
     let cs_obj = dict
@@ -897,21 +902,41 @@ pub(crate) fn validate_image(
             detail: "a four-component or Indexed DCTDecode image is not rewritten".into(),
         });
     }
+    // Redaction decodes a chain whose filters but the last are general
+    // ones; the last may also be DCT (8-bit), or CCITT or JBIG2 for
+    // 1-bit grey (JBIG2 without shared `/JBIG2Globals`: a symbol
+    // dictionary other images use stays as it is).
+    let chain_ok = redaction
+        && filters.iter().rev().skip(1).all(|f| general_filter(f))
+        && filters.last().is_none_or(|f| {
+            general_filter(f)
+                || (matches!(f.as_slice(), b"DCTDecode" | b"DCT") && bpc == 8)
+                || (matches!(f.as_slice(), b"CCITTFaxDecode" | b"CCF") && bpc == 1 && ncomps == 1)
+                || (f.as_slice() == b"JBIG2Decode"
+                    && bpc == 1
+                    && ncomps == 1
+                    && !has_jbig2_globals(dict, filters.len()))
+        });
     match filters.len() {
+        _ if chain_ok => {}
         0 => {}
-        1 if filters[0] == b"FlateDecode"
-            || filters[0] == b"Fl"
-            || filters[0] == b"DCTDecode"
-            || filters[0] == b"DCT" => {}
+        1 if (filters[0] == b"FlateDecode" || filters[0] == b"Fl")
+            || ((filters[0] == b"DCTDecode" || filters[0] == b"DCT") && bpc == 8) => {}
         _ => {
             return Err(Error::Unsupported {
                 feature: "image stream filter",
                 detail: format!(
-                    "{:?} — only none, FlateDecode, or DCTDecode are supported",
+                    "{:?} — {}",
                     filters
                         .iter()
                         .map(|f| String::from_utf8_lossy(f).into_owned())
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<_>>(),
+                    if redaction {
+                        "general filters ending in FlateDecode, DCTDecode (8-bit), CCITTFaxDecode \
+                         or JBIG2Decode without globals (1-bit grey) are supported"
+                    } else {
+                        "only none, FlateDecode, or DCTDecode are supported"
+                    }
                 ),
             })
         }
@@ -920,6 +945,94 @@ pub(crate) fn validate_image(
     // For DCTDecode the JPEG's own header must agree with the PDF
     // dict — checked inside `decode_image` where the decoder runs.
     Ok((width as u32, height as u32, ncomps))
+}
+
+/// The filters that yield bytes, not samples (§7.4): they may precede
+/// an image filter in a chain redaction decodes.
+fn general_filter(f: &[u8]) -> bool {
+    matches!(
+        f,
+        b"FlateDecode"
+            | b"Fl"
+            | b"LZWDecode"
+            | b"LZW"
+            | b"ASCIIHexDecode"
+            | b"AHx"
+            | b"ASCII85Decode"
+            | b"A85"
+            | b"RunLengthDecode"
+            | b"RL"
+    )
+}
+
+/// Whether the image's last filter's parameters name `/JBIG2Globals`.
+fn has_jbig2_globals(dict: &Dict, n: usize) -> bool {
+    let parms = crate::filter::normalize_decode_parms(dict.get(b"DecodeParms".as_slice()), n)
+        .unwrap_or_default();
+    parms
+        .last()
+        .and_then(|p| p.as_ref())
+        .is_some_and(|p| p.contains_key(b"JBIG2Globals".as_slice()))
+}
+
+/// The bits per component of an image dictionary (8 when absent: an
+/// image mask, or JPX, which redaction refuses earlier).
+pub(crate) fn image_bpc(dict: &Dict) -> u32 {
+    dict.get(b"BitsPerComponent".as_slice())
+        .and_then(|o| o.as_i64())
+        .filter(|b| matches!(b, 1 | 2 | 4 | 8 | 16))
+        .map_or(8, |b| b as u32)
+}
+
+/// The byte length of `w × h` samples of `ncomps` components at `bpc`
+/// bits, each row padded to a byte (§8.9.3).
+pub(crate) fn sample_bytes(w: u32, h: u32, ncomps: usize, bpc: u32) -> Option<u64> {
+    let row_bits = (w as u64)
+        .checked_mul(ncomps as u64)?
+        .checked_mul(bpc as u64)?;
+    row_bits.div_ceil(8).checked_mul(h as u64)
+}
+
+/// Set to 0 every component of the pixels in `ranges` (`(x0, y0, x1,
+/// y1)`, half open) of packed `data`; the number of pixels changed.
+pub(crate) fn zero_samples(
+    data: &mut [u8],
+    w: u32,
+    ncomps: usize,
+    bpc: u32,
+    ranges: &[(u32, u32, u32, u32)],
+) -> u64 {
+    let row_bytes = ((w as u64) * (ncomps as u64) * (bpc as u64)).div_ceil(8) as usize;
+    let mut changed: u64 = 0;
+    for &(x0, y0, x1, y1) in ranges {
+        for y in y0..y1 {
+            let row = y as usize * row_bytes;
+            for x in x0..x1 {
+                let mut pixel = false;
+                for c in 0..ncomps {
+                    if bpc == 8 {
+                        let i = row + x as usize * ncomps + c;
+                        if data[i] != 0 {
+                            data[i] = 0;
+                            pixel = true;
+                        }
+                        continue;
+                    }
+                    let bit = (x as usize * ncomps + c) * bpc as usize;
+                    let (i, shift) = (row + bit / 8, 8 - bpc as usize - bit % 8);
+                    let mask = (((1u16 << bpc) - 1) as u8) << shift;
+                    if data[i] & mask != 0 {
+                        data[i] &= !mask;
+                        pixel = true;
+                    }
+                }
+                if pixel {
+                    changed += 1;
+                }
+            }
+        }
+    }
+    changed
 }
 
 /// Decode image sample data — reuses the stream decoder with the
@@ -1000,6 +1113,16 @@ pub(crate) fn decode_image(
                 crate::filter::apply_predictor(out, parm, limits)?
             }
             b"DCTDecode" | b"DCT" => dct_decode_for_edit(&buf, parm, limits, expected)?,
+            b"CCITTFaxDecode" | b"CCF" => {
+                crate::bilevel::ccitt_decode(&buf, parm, expected.0, expected.1, limits)?
+            }
+            b"JBIG2Decode" => {
+                crate::bilevel::jbig2_decode(&buf, None, expected.0, expected.1, limits)?
+            }
+            f if general_filter(f) => {
+                let mut warnings = Vec::new();
+                crate::filter::apply_one_filter(f, parm, &buf, limits, &mut warnings)?
+            }
             other => {
                 return Err(Error::Unsupported {
                     feature: "image stream filter",

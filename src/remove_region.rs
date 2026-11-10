@@ -2066,13 +2066,13 @@ pub(crate) fn regions_edit_session_with<'a>(
             if ranges.is_empty() {
                 continue;
             }
-            let expected = (width as u64)
-                .checked_mul(height as u64)
-                .and_then(|s| s.checked_mul(ncomps as u64))
-                .ok_or(Error::LimitExceeded {
+            let bpc = crate::remove_image::image_bpc(dict);
+            let expected = crate::remove_image::sample_bytes(width, height, ncomps, bpc).ok_or(
+                Error::LimitExceeded {
                     limit: "max_image_bytes",
                     max: limits.max_image_bytes,
-                })?;
+                },
+            )?;
             if expected > limits.max_image_bytes {
                 return Err(Error::LimitExceeded {
                     limit: "max_image_bytes",
@@ -2083,36 +2083,20 @@ pub(crate) fn regions_edit_session_with<'a>(
             let decoded = decode_image(dict, raw, limits, (width, height, ncomps))?;
             if decoded.len() as u64 != expected {
                 return Err(Error::Structure(format!(
-                    "image /{} data length {} does not match {}x{}x{} = {}",
+                    "image /{} data length {} does not match {}x{}x{} at {} bits = {}",
                     String::from_utf8_lossy(name),
                     decoded.len(),
                     width,
                     height,
                     ncomps,
+                    bpc,
                     expected
                 )));
             }
             let digests = (mode == SessionMode::Redact).then(|| [sha256(&decoded), sha256(raw)]);
             let mut new_data = decoded;
-            let mut changed_here: u64 = 0;
-            for &(x0, y0, x1, y1) in &ranges {
-                for y in y0..y1 {
-                    for x in x0..x1 {
-                        let idx = ((y as u64) * (width as u64) + (x as u64)) * (ncomps as u64);
-                        let mut pixel_changed = false;
-                        for c in 0..ncomps {
-                            let i = (idx + c as u64) as usize;
-                            if new_data[i] != 0 {
-                                new_data[i] = 0;
-                                pixel_changed = true;
-                            }
-                        }
-                        if pixel_changed {
-                            changed_here += 1;
-                        }
-                    }
-                }
-            }
+            let changed_here =
+                crate::remove_image::zero_samples(&mut new_data, width, ncomps, bpc, &ranges);
             // Redaction: a soft mask holds the shape of what is drawn —
             // its samples inside the rects go too (made opaque), even
             // where the colour samples were already black.
@@ -2823,6 +2807,11 @@ fn soft_mask_checked(
         }
     }
     let (w, h, n) = validate_image(dict, None, doc, limits, true)?;
+    // Its samples are edited one byte each (a chain of filters is
+    // decoded like the image's).
+    if crate::remove_image::image_bpc(dict) != 8 {
+        return Err(refuse("a soft mask that is not 8-bit"));
+    }
     if n != 1 {
         return Err(refuse("a soft mask that is not DeviceGray"));
     }

@@ -978,6 +978,23 @@ impl Walk<'_> {
         if let Some(cs) = dict.get(b"ColorSpace".as_slice()) {
             self.color_space(cs, res)?;
         }
+        // A JBIG2 image's shared symbol dictionary is read with it.
+        if let Some(p) = dict.get(b"DecodeParms".as_slice()) {
+            let p = doc.deref(p)?;
+            let parms: Vec<Object> = match p {
+                Object::Array(a) => a,
+                o => vec![o],
+            };
+            for x in parms {
+                if let Some(g) = doc
+                    .deref(&x)?
+                    .as_dict()
+                    .and_then(|d| d.get(b"JBIG2Globals".as_slice()))
+                {
+                    self.mark_stream(g, Use::Image)?;
+                }
+            }
+        }
         if let Some(alts) = dict.get(b"Alternates".as_slice()) {
             for a in doc.deref(alts)?.as_array().unwrap_or(&[]) {
                 if let Some(i) = doc
