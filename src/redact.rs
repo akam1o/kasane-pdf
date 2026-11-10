@@ -445,6 +445,16 @@ fn redact_doc(
     gone_whole.extend(glyph_tounicodes);
     verify_removed_streams(&out, &gone_whole, &glyph_procs)?;
     crate::redact_struct::verify(&out, &structure, limits)?;
+    // Invariants that compare the input with the output alone, whatever
+    // the edit recorded (see `redact_verify`).
+    {
+        let idx = crate::redact_verify::Index::build(&out, limits)?;
+        let graph = crate::redact_verify::RefGraph::build(&out, &idx, limits)?;
+        crate::redact_verify::check_reachable(&idx, &graph)?;
+        let edited: BTreeSet<usize> = specs.iter().map(|(p, _)| *p).collect();
+        crate::redact_verify::check_use(doc, &out, &idx, &graph, &edited, limits)?;
+        crate::redact_verify::check_removed_annotations(doc, &out, &idx, &graph, &edited)?;
+    }
     if options.remove_javascript {
         if let Some(r) = crate::redact_js::find_javascript(&out, limits)? {
             return Err(Error::Unsupported {

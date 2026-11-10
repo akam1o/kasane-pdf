@@ -117,6 +117,8 @@ mod redact_js;
 mod redact_struct;
 mod redact_textpos;
 mod redact_type3;
+mod redact_usage;
+mod redact_verify;
 pub mod remove_image;
 pub mod remove_metadata;
 pub mod remove_region;
