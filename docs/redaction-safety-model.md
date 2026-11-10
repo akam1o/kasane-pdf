@@ -75,12 +75,22 @@ property cannot be decided).
   user-properties lists; marked-content property lists in edited
   content lose them too. The output's tree is re-read and checked.
 - **G** — A removed widget's form field leaves the interactive form
-  with its value when no widget of it is left; a field keeping a widget
-  keeps its value (still shown, reported in `elsewhere`).
-- **G** — A removed annotation (a link meeting a rect; a markup
-  annotation or widget meeting a rect with `remove_annotations`) is in
-  no dictionary of the output, a stream's dictionary included; its appearance streams and
-  what they draw are gone or still drawn by something else.
+  with its value when no widget of it is left. A field keeping widgets
+  keeps its value only if a kept widget is shown (on a page's
+  `/Annots`, neither Hidden nor NoView) and, for a button, shows the
+  value's state; its string, array and stream values and `/Opt` are
+  reported in `elsewhere` (else **X**).
+- **G** — A removed annotation or form field is not reached by anything
+  the output keeps (checked by identity on the edited document before
+  it is written), and no dictionary of the output — a stream's
+  included — has its content, unless it is that of an annotation a page
+  of the output still holds. Its appearance streams and what they draw
+  are gone, or still drawn: as the normal appearance of the selected
+  state of an annotation neither Hidden nor NoView nor under optional
+  content, or by page content outside optional content (reported).
+- **N** — "Drawn" includes drawing outside the page's boxes: a removed
+  appearance also drawn off the page by another page's content stays
+  (reported in `elsewhere`; `refuse_copies_elsewhere` refuses it).
 - **G** — `/Info` and catalog `/Metadata` are removed; an edited page's
   thumbnail is removed (from every page sharing it).
 - **N** — Elements are not split: an element across a rect loses the
@@ -179,11 +189,13 @@ trust the edit's own record where that is possible (section 4).
    (`src/redact_verify.rs`), built on a use walk (`src/redact_usage.rs`)
    that both sides share and that does not consult the edit's record:
    - *use*: every content-bearing stream an edited page used in the input
-     is, in the output, used again or absent;
+     is, in the output, absent, or drawn again (in a content-bearing
+     role, under the lower bound below);
    - *non-interference*: pages not edited draw from the same
      content-bearing streams;
    - *removed annotations*: an annotation an edited page lost (compared
-     page to page) is in no dictionary of the output;
+     page to page, and held by no output page) is in no dictionary of
+     the output;
    - *reachability*: every output object is reachable from the trailer.
 3. **External checks** with tools that share no code with kasane:
    `scripts/verify-redact.py` (qpdf, pdftotext), the advisory
@@ -217,11 +229,21 @@ A failed check is an error and no output.
   excused copy. This is also how an appearance that a reader would
   resolve in the page's resources (a missing or unusable entry) is
   caught.
-- **Digests, not identities.** The rewrite renumbers objects and a copy
-  can be written under any number: streams are compared by the SHA-256
-  of their stored and of their decoded bytes. A copy is excused only
-  when the output uses the *same bytes* somewhere; empty and
-  whitespace-only streams carry nothing and are not compared.
+  Over the output the walk counts only what a reader draws: an
+  annotation's normal appearance in the state `/AS` selects, on an
+  annotation neither Hidden nor NoView nor under optional content;
+  page and form content outside `BDC /OC` sequences and XObjects with
+  `/OC`. Each page is walked within its own operation bound.
+- **Digests for copies, identities for removed objects.** The rewrite
+  renumbers objects and a copy can be written under any number: streams
+  are compared by the SHA-256 of their stored and of their decoded
+  bytes. A copy is excused only when the output draws the *same bytes*
+  in a content-bearing role; empty and whitespace-only *content
+  streams* carry nothing and are not compared (the same bytes as a
+  palette, samples or a function are). Removed annotations and fields
+  themselves are checked by identity on the edited document before it
+  is written: their content may have been edited by a later pass (the
+  JavaScript one), so a content print alone would miss them.
 - **Content-bearing roles.** The use invariant applies to streams that
   picture or spell content (contents, forms, appearances, images and
   masks, Type 3 procedures, patterns, soft mask groups, shadings,

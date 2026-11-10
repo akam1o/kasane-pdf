@@ -9,7 +9,7 @@ versions follow [Semantic Versioning](https://semver.org/).
 ### Added
 - `redact` verifies its output against the input alone, independently of
   what the edit recorded (`docs/redaction-safety-model.md`): every
-  content-bearing stream an edited page used is used again by the output
+  content-bearing stream an edited page used is drawn again by the output
   or absent from it, whatever object number or reference keeps a copy;
   pages not edited draw from the same streams; an annotation an edited
   page lost is in no dictionary of the output; every object is reachable
@@ -23,6 +23,10 @@ versions follow [Semantic Versioning](https://semver.org/).
 - `redact` edits images at 1, 2 and 4 bits per component, through chains
   of general filters, and in CCITTFax or JBIG2 (without
   `/JBIG2Globals`); the edited copy is written unfiltered.
+- A removed annotation or form field that anything kept still refers to
+  is refused (checked by identity before writing); a field keeping
+  widgets must still show one, and its button value must be a kept
+  widget's state.
 - `docs/redaction-safety-model.md`: what `redact` guarantees, reports,
   does not guarantee or refuses, per surface; the verification layers.
 - Tests: one regression test per published advisory

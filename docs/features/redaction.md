@@ -139,7 +139,9 @@ Three separate statements; none implies the next:
   content-bearing stream an edited page used (contents, forms,
   appearances, images and masks, Type 3 procedures of glyphs shown,
   patterns and soft mask groups painted with, shadings, functions,
-  colour lookup tables, thumbnails) is used again by the output or
+  colour lookup tables, thumbnails) is drawn again by the output (as a
+  reader draws it: the selected normal appearance of a shown annotation,
+  content outside optional content) or
   absent from it — by digest, whatever object number or reference keeps
   a copy; pages not edited draw from the same streams; an annotation an
   edited page lost is in no dictionary of the output; every object is
