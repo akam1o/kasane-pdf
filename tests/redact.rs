@@ -5671,3 +5671,98 @@ fn a_shared_thumbnail_leaves_every_page() {
         assert!(!d.as_dict().unwrap().contains_key(b"Thumb".as_slice()));
     }
 }
+
+/// What a removed link's appearance paints with — an Indexed palette (its
+/// bytes whitespace or not), a palette a form uses under an inherited
+/// colour, a transfer function a later `/SMask /None` does not end, a
+/// `/DefaultGray` space's tint function — may not stay through another
+/// reference, nor be excused as some font's `/ToUnicode`. (Review.)
+#[test]
+fn removed_appearance_colour_data_does_not_stay() {
+    let func = |data: &[u8]| {
+        stream_obj(
+            "/FunctionType 0 /Domain [0 1] /Range [0 1 0 1 0 1] /Size [2] /BitsPerSample 8",
+            data,
+        )
+    };
+    let link = |res: &str, body: &[u8], extra: Vec<(u32, Vec<u8>)>, cat: &str| {
+        let mut objs = vec![
+            (
+                1,
+                format!("<< /Type /Catalog /Pages 2 0 R {cat} >>").into_bytes(),
+            ),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R \
+                  /Annots [30 0 R] >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", b"0 0 5 5 re f")),
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Link /Rect [70 90 110 100] /AP << /N 31 0 R >> >>"
+                    .to_vec(),
+            ),
+            (
+                31,
+                stream_obj(
+                    &format!(
+                        "/Type /XObject /Subtype /Form /BBox [0 0 40 10] /Resources << {res} >>"
+                    ),
+                    body,
+                ),
+            ),
+        ];
+        objs.extend(extra);
+        build_pdf(&objs)
+    };
+    let cases: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "whitespace palette",
+            link(
+                "/ColorSpace << /C [/Indexed /DeviceRGB 0 40 0 R] >>",
+                b"/C cs 0 sc 0 0 10 10 re f",
+                vec![(40, stream_obj("", b" \t\n"))],
+                "/Private 40 0 R",
+            ),
+        ),
+        (
+            "inherited palette",
+            link(
+                "/ColorSpace << /C1 [/Indexed /DeviceRGB 0 40 0 R] /C2 [/Indexed /DeviceRGB 0 41 0 R] >> \
+                 /XObject << /Fm 42 0 R >>",
+                b"/C1 cs 0 sc /Fm Do /C2 cs 0 sc /Fm Do",
+                vec![
+                    (40, stream_obj("", b"\x10\x20\x30")),
+                    (41, stream_obj("", b"\x51\x62\x73")),
+                    (42, stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 10 10]", b"0 0 10 10 re f")),
+                ],
+                "/Private 41 0 R",
+            ),
+        ),
+        (
+            "transfer function past /SMask /None",
+            link(
+                "/ExtGState << /G << /TR 40 0 R >> /Clear << /SMask /None >> >>",
+                b"/G gs /Clear gs 0 0 10 10 re f",
+                vec![(40, func(b"\x00\x10\x20\xf0\xe0\xd0"))],
+                "/Private 40 0 R",
+            ),
+        ),
+        (
+            "default grey",
+            link(
+                "/ColorSpace << /DefaultGray [/Separation /S /DeviceRGB 40 0 R] >>",
+                b"0 g 0 0 10 10 re f",
+                vec![(40, func(b"\xff\x00\x00\x00\x00\xff"))],
+                "/Private 40 0 R",
+            ),
+        ),
+    ];
+    for (name, pdf) in cases {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let e = unsupported(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()));
+        assert!(e.contains("failed verification"), "{name}: {e}");
+    }
+}

@@ -243,7 +243,9 @@ fn used_digests(
                 _ => continue,
             },
         };
-        if d.blank {
+        // An empty or whitespace-only content stream carries nothing;
+        // the same bytes as samples, a palette or a function do.
+        if d.blank && roles.iter().all(|r| r.content_language()) {
             continue;
         }
         for x in d.each() {
@@ -276,18 +278,31 @@ pub(crate) fn check_use(
         let held: Vec<(IndirectRef, [u8; 32])> = idx
             .digests
             .iter()
-            .filter(|(_, d)| !d.blank)
-            .filter_map(|(r, d)| d.each().find(|x| wanted.contains_key(x)).map(|x| (*r, x)))
+            .filter_map(|(r, d)| {
+                d.each()
+                    .find(|x| wanted.contains_key(x))
+                    .map(|x| (*r, x, d.blank))
+            })
+            .filter(|(_, x, blank)| !(*blank && wanted[x].iter().all(|u| u.content_language())))
+            .map(|(r, x, _)| (r, x))
             .collect();
         if !held.is_empty() {
             let mut live: HashSet<[u8; 32]> = HashSet::new();
+            // Excused only by a use that pictures or spells content too:
+            // the same bytes as some font's `/ToUnicode` excuse nothing.
+            let content = |m: HashMap<[u8; 32], BTreeSet<Use>>| {
+                m.into_iter()
+                    .filter(|(_, roles)| roles.iter().any(|r| r.content_bearing()))
+                    .map(|(x, _)| x)
+                    .collect::<Vec<_>>()
+            };
             let after = usage(out, &is_edited, Bound::Under, limits)?;
-            live.extend(used_digests(out, &after, Some(idx))?.into_keys());
+            live.extend(content(used_digests(out, &after, Some(idx))?));
             let mut left: Vec<&(IndirectRef, [u8; 32])> =
                 held.iter().filter(|(_, x)| !live.contains(x)).collect();
             if !left.is_empty() {
                 let rest = usage(out, &|i| !is_edited(i), Bound::Under, limits)?;
-                live.extend(used_digests(out, &rest, Some(idx))?.into_keys());
+                live.extend(content(used_digests(out, &rest, Some(idx))?));
                 left.retain(|(_, x)| !live.contains(x));
             }
             if let Some((r, x)) = left.into_iter().min_by_key(|(r, _)| *r) {
@@ -399,14 +414,25 @@ struct Signatures<'a> {
     work: u64,
 }
 
-const BACK_LINKS: &[&[u8]] = &[
-    b"Parent",
-    b"P",
-    b"Popup",
-    b"IRT",
-    b"StructParent",
-    b"StructParents",
-];
+/// Whether `key` of `d` is a back link the page signature leaves out:
+/// a page tree node's, an annotation's or a field's `/Parent`, an
+/// annotation's `/P`, `/Popup` and `/IRT`, a structure element's `/P`.
+/// Decided by what `d` is, never by the key alone (a resource may be
+/// named `/P`).
+fn back_link(d: &crate::object::Dict, key: &[u8]) -> bool {
+    let has = |k: &[u8]| d.contains_key(k);
+    let is_type = |t: &[u8]| d.get(b"Type".as_slice()).and_then(|v| v.as_name()) == Some(t);
+    let annotation = is_type(b"Annot") || (has(b"Subtype") && has(b"Rect"));
+    let node = is_type(b"Page") || is_type(b"Pages");
+    let field = has(b"FT") || (has(b"T") && has(b"Kids"));
+    let element = is_type(b"StructElem") || (has(b"S") && has(b"P") && !annotation);
+    match key {
+        b"Parent" => node || annotation || field,
+        b"P" => annotation || element,
+        b"Popup" | b"IRT" => annotation,
+        _ => false,
+    }
+}
 
 impl<'a> Signatures<'a> {
     fn new(doc: &'a Document) -> Self {
@@ -495,10 +521,7 @@ impl<'a> Signatures<'a> {
                     out.extend_from_slice(&sha256(data));
                 }
                 out.push(b'<');
-                let mut keys: Vec<&Vec<u8>> = d
-                    .keys()
-                    .filter(|k| !BACK_LINKS.contains(&k.as_slice()))
-                    .collect();
+                let mut keys: Vec<&Vec<u8>> = d.keys().filter(|k| !back_link(d, k)).collect();
                 keys.sort();
                 for k in keys {
                     out.extend_from_slice(&(k.len() as u64).to_be_bytes());

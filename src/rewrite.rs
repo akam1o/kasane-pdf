@@ -599,6 +599,26 @@ fn trailer_id(doc: &Document, body: &[u8], carry: bool) -> ([u8; 16], Vec<u8>) {
 }
 
 /// Refusals — checked before any collection or output begins.
+/// The `/FT` of parent fields already read, by reference: a field with
+/// many kids is read once, not once per kid.
+type FtCache = std::collections::HashMap<crate::object::IndirectRef, Option<Vec<u8>>>;
+
+/// The `/FT` of the field `p` (a kid's `/Parent`).
+fn parent_ft(doc: &Document, p: &Object, cache: &mut FtCache) -> Option<Vec<u8>> {
+    let read = |p: &Object| {
+        deref_chain(doc, p).ok().and_then(|p| {
+            p.as_dict()
+                .and_then(|pd| pd.get(b"FT".as_slice()))
+                .and_then(|o| o.as_name())
+                .map(|n| n.to_vec())
+        })
+    };
+    match p.as_ref() {
+        Some(r) => cache.entry(r).or_insert_with(|| read(p)).clone(),
+        None => read(p),
+    }
+}
+
 /// Walk a field/widget array (and `/Kids`, depth ≤ 32) for a
 /// signature field that actually holds a signature: `/FT /Sig`
 /// (possibly inherited) with a `/V` that is a dictionary (normally
@@ -609,6 +629,7 @@ fn signed_field_in(
     fields: &[Object],
     depth: usize,
     seen: &mut std::collections::HashSet<crate::object::IndirectRef>,
+    cache: &mut FtCache,
 ) -> Result<Option<String>, Error> {
     if depth > 32 {
         return Ok(None);
@@ -629,13 +650,7 @@ fn signed_field_in(
             .map(|n| n.to_vec());
         if ft.is_none() {
             if let Some(p) = fd.get(b"Parent".as_slice()) {
-                if let Ok(p) = deref_chain(doc, p) {
-                    ft = p
-                        .as_dict()
-                        .and_then(|pd| pd.get(b"FT".as_slice()))
-                        .and_then(|o| o.as_name())
-                        .map(|n| n.to_vec());
-                }
+                ft = parent_ft(doc, p, cache);
             }
         }
         if ft.as_deref() == Some(b"Sig") {
@@ -659,7 +674,7 @@ fn signed_field_in(
         if let Some(kids) = fd.get(b"Kids".as_slice()) {
             let kids = deref_chain(doc, kids)?;
             if let Some(k) = kids.as_array() {
-                if let Some(w) = signed_field_in(doc, k, depth + 1, seen)? {
+                if let Some(w) = signed_field_in(doc, k, depth + 1, seen, cache)? {
                     return Ok(Some(w));
                 }
             }
@@ -1091,7 +1106,9 @@ fn check_refusals(
                 let fields = deref_chain(doc, fields_obj)?;
                 if let Some(fields) = fields.as_array() {
                     let mut seen = std::collections::HashSet::new();
-                    if let Some(what) = signed_field_in(doc, fields, 0, &mut seen)? {
+                    if let Some(what) =
+                        signed_field_in(doc, fields, 0, &mut seen, &mut FtCache::new())?
+                    {
                         return Err(Error::Unsupported {
                             feature: "signed signature field",
                             detail: format!(
@@ -1122,7 +1139,7 @@ fn check_refusals(
         let annots = deref_chain(doc, annots)?;
         if let Some(arr) = annots.as_array() {
             let mut seen = std::collections::HashSet::new();
-            if let Some(what) = signed_field_in(doc, arr, 0, &mut seen)? {
+            if let Some(what) = signed_field_in(doc, arr, 0, &mut seen, &mut FtCache::new())? {
                 return Err(Error::Unsupported {
                     feature: "signed signature field",
                     detail: format!(

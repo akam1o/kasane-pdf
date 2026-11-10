@@ -24,6 +24,7 @@
 //! decided counts (a copy there is then unexplained, never excused).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::content::{Operation, TJItem};
 use crate::document::Document;
@@ -81,6 +82,20 @@ impl Use {
     pub(crate) fn content_bearing(self) -> bool {
         !matches!(self, Use::IccProfile | Use::FontProgram | Use::FontData)
     }
+
+    /// Whether the role's bytes are a content stream (operators), where
+    /// whitespace means nothing; elsewhere every byte may be data.
+    pub(crate) fn content_language(self) -> bool {
+        matches!(
+            self,
+            Use::Contents
+                | Use::Appearance
+                | Use::Form
+                | Use::CharProc
+                | Use::Pattern
+                | Use::SoftMaskGroup
+        )
+    }
 }
 
 /// How an undecidable point is counted.
@@ -118,7 +133,7 @@ impl Usage {
 #[derive(Clone)]
 struct Frame {
     ops: Vec<Operation>,
-    res: Object,
+    res: Rc<Object>,
     res_id: ResId,
     depth: usize,
     /// The state in force where the stream is invoked (a form
@@ -135,10 +150,14 @@ struct State {
     font: Option<Type3>,
     fill: Paint,
     stroke: Paint,
-    /// ExtGState dictionaries in force (with the resources they were
-    /// selected in) whose soft mask, transfer functions or halftone
-    /// apply to what is painted next.
-    gs: Vec<(Object, Object, ResId)>,
+    /// The soft mask in force (the ExtGState that set it, with the
+    /// resources it was selected in), until something is painted under
+    /// it; `/SMask /None` ends it.
+    smask: Option<(Rc<Object>, Rc<Object>, ResId)>,
+    /// ExtGState dictionaries in force whose transfer functions or
+    /// halftone apply to what is painted next (a soft mask's end does
+    /// not end them).
+    params: Vec<Rc<Object>>,
     /// The text rendering mode (`Tr`).
     render: i64,
 }
@@ -148,8 +167,54 @@ struct State {
 /// the pattern (a resource entry).
 #[derive(Clone, Default)]
 struct Paint {
-    space: Option<(Object, Object)>,
+    space: Option<(Object, Rc<Object>)>,
     pattern: Option<Object>,
+    /// A device colour: the `Default*` space that would replace it
+    /// (`/DefaultGray`, `/DefaultRGB`, `/DefaultCMYK`, §8.6.5.6).
+    device: Option<&'static [u8]>,
+}
+
+impl State {
+    /// An identity of what a form invoked under this state may paint
+    /// with (its frame is walked once per such state).
+    fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for p in [&self.fill, &self.stroke] {
+            format!(
+                "{:?}{:?}{:?}",
+                p.space.as_ref().map(|s| &s.0),
+                p.pattern,
+                p.device
+            )
+            .hash(&mut h);
+        }
+        format!("{:?}", self.smask.as_ref().map(|s| &*s.0)).hash(&mut h);
+        for g in &self.params {
+            format!("{:?}", **g).hash(&mut h);
+        }
+        self.render.hash(&mut h);
+        h.finish()
+    }
+}
+
+/// A device colour painted with: its `Default*` substitute, if any.
+fn device(default: &'static [u8]) -> Paint {
+    Paint {
+        space: None,
+        pattern: None,
+        device: Some(default),
+    }
+}
+
+/// The `Default*` resource a device colour space name is replaced by.
+fn default_of(n: &[u8]) -> Option<&'static [u8]> {
+    match n {
+        b"DeviceGray" | b"G" => Some(b"DefaultGray"),
+        b"DeviceRGB" | b"RGB" => Some(b"DefaultRGB"),
+        b"DeviceCMYK" | b"CMYK" => Some(b"DefaultCMYK"),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -177,7 +242,7 @@ struct Walk<'a> {
     u: Usage,
     page: usize,
     budget: u64,
-    seen_frames: HashSet<(IndirectRef, ResId, Option<IndirectRef>)>,
+    seen_frames: HashSet<(IndirectRef, ResId, Option<IndirectRef>, u64)>,
     seen_fonts: HashSet<IndirectRef>,
     loaded: HashMap<IndirectRef, Option<Type3>>,
     undecided_here: bool,
@@ -305,10 +370,11 @@ impl Walk<'_> {
             }
         }
         let mut stack: Vec<Frame> = Vec::new();
+        let page_res = Rc::new(res.clone());
         match doc.page_operations(page) {
             Ok(ops) => stack.push(Frame {
                 ops,
-                res: res.clone(),
+                res: page_res.clone(),
                 res_id: ResId::Page,
                 depth: 0,
                 state: State::default(),
@@ -338,7 +404,7 @@ impl Walk<'_> {
                         };
                         for s in states {
                             if let Object::Ref(r) = s {
-                                let empty = Object::Dict(Dict::new());
+                                let empty = Rc::new(Object::Dict(Dict::new()));
                                 if let Some(f) = self.enter_form(
                                     r,
                                     Use::Appearance,
@@ -378,7 +444,7 @@ impl Walk<'_> {
         &mut self,
         r: IndirectRef,
         role: Use,
-        res: &Object,
+        res: &Rc<Object>,
         res_id: ResId,
         depth: usize,
         state: &State,
@@ -391,7 +457,7 @@ impl Walk<'_> {
         self.mark(r, role);
         let (res, res_id) = match dict.get(b"Resources".as_slice()) {
             None | Some(Object::Null) => (res.clone(), res_id),
-            Some(own) => (own.clone(), ResId::Own(r)),
+            Some(own) => (Rc::new(own.clone()), ResId::Own(r)),
         };
         if let Some(g) = dict.get(b"Group".as_slice()) {
             let g = doc.deref(g)?;
@@ -399,8 +465,13 @@ impl Walk<'_> {
                 self.color_space(cs, &res)?;
             }
         }
+        // Once per resources, font and painting state inherited: a form
+        // painting with an inherited colour reads that colour's data.
         let font_id = state.font.as_ref().and_then(|f| f.id);
-        if !self.seen_frames.insert((r, res_id, font_id)) {
+        if !self
+            .seen_frames
+            .insert((r, res_id, font_id, state.fingerprint()))
+        {
             return Ok(None);
         }
         if depth + 1 > self.limits.max_xobject_depth as usize {
@@ -495,16 +566,33 @@ impl Walk<'_> {
                     {
                         st.font = self.select_font(first)?;
                     }
-                    // `/SMask /None` ends the soft masks in force.
-                    let ends_mask = g
-                        .as_dict()
-                        .and_then(|d| d.get(b"SMask".as_slice()))
-                        .and_then(|m| m.as_name())
-                        == Some(b"None");
-                    if ends_mask {
-                        st.gs.clear();
+                    let g = Rc::new(g);
+                    if let Some(d) = g.as_dict() {
+                        // A soft mask, or `/SMask /None` ending one.
+                        match d
+                            .get(b"SMask".as_slice())
+                            .map(|m| doc.deref(m))
+                            .transpose()?
+                        {
+                            Some(Object::Name(n)) if n.as_slice() == b"None" => st.smask = None,
+                            Some(_) => st.smask = Some((g.clone(), f.res.clone(), f.res_id)),
+                            None => {}
+                        }
+                        if [
+                            b"TR".as_slice(),
+                            b"TR2",
+                            b"BG",
+                            b"BG2",
+                            b"UCR",
+                            b"UCR2",
+                            b"HT",
+                        ]
+                        .iter()
+                        .any(|k| d.contains_key(*k))
+                        {
+                            st.params.push(g.clone());
+                        }
                     }
-                    st.gs.push((g, f.res.clone(), f.res_id));
                 }
                 Operation::SetColorSpaceFill(n) | Operation::SetColorSpaceStroke(n) => {
                     let space = if is_device_space(n) {
@@ -516,6 +604,7 @@ impl Walk<'_> {
                     let p = Paint {
                         space,
                         pattern: None,
+                        device: default_of(n),
                     };
                     if matches!(op, Operation::SetColorSpaceFill(_)) {
                         st.fill = p;
@@ -534,12 +623,12 @@ impl Walk<'_> {
                         st.stroke.pattern = pattern;
                     }
                 }
-                Operation::SetGrayFill(_)
-                | Operation::SetRgbFill(..)
-                | Operation::SetCmykFill(..) => st.fill = Paint::default(),
-                Operation::SetGrayStroke(_)
-                | Operation::SetRgbStroke(..)
-                | Operation::SetCmykStroke(..) => st.stroke = Paint::default(),
+                Operation::SetGrayFill(_) => st.fill = device(b"DefaultGray"),
+                Operation::SetRgbFill(..) => st.fill = device(b"DefaultRGB"),
+                Operation::SetCmykFill(..) => st.fill = device(b"DefaultCMYK"),
+                Operation::SetGrayStroke(_) => st.stroke = device(b"DefaultGray"),
+                Operation::SetRgbStroke(..) => st.stroke = device(b"DefaultRGB"),
+                Operation::SetCmykStroke(..) => st.stroke = device(b"DefaultCMYK"),
                 Operation::Fill | Operation::FillEvenOdd => {
                     self.paint(&mut st, true, false, &f, stack)?
                 }
@@ -602,6 +691,9 @@ impl Walk<'_> {
                     let cs = dict
                         .get(b"CS".as_slice())
                         .or_else(|| dict.get(b"ColorSpace".as_slice()));
+                    if let Some(d) = cs.and_then(|c| c.as_name()).and_then(default_of) {
+                        self.default_space(d, &f.res)?;
+                    }
                     match cs {
                         Some(Object::Name(n))
                             if !is_device_space(n) && !is_inline_abbreviation(n) =>
@@ -668,8 +760,11 @@ impl Walk<'_> {
     ) -> Result<(), Error> {
         // Realized once: what they read is used from now on (marks do
         // not repeat), and a long run of `gs` stays linear.
-        for (g, res, res_id) in std::mem::take(&mut st.gs) {
-            self.ext_g_state(&g, &res, res_id, f.depth, stack)?;
+        if let Some((g, res, res_id)) = st.smask.take() {
+            self.soft_mask(&g, &res, res_id, f.depth, stack)?;
+        }
+        for g in std::mem::take(&mut st.params) {
+            self.gs_params(&g)?;
         }
         for (on, p) in [(fill, st.fill.clone()), (stroke, st.stroke.clone())] {
             if !on {
@@ -677,6 +772,9 @@ impl Walk<'_> {
             }
             if let Some((cs, res)) = &p.space {
                 self.color_space(cs, res)?;
+            }
+            if let Some(d) = p.device {
+                self.default_space(d, &f.res)?;
             }
             if let Some(pat) = &p.pattern {
                 self.pattern(pat, f, stack)?;
@@ -791,7 +889,7 @@ impl Walk<'_> {
         // A Type 3 font without `/Resources` resolves names in the
         // resources in force where it is used.
         let (res, res_id) = match t3.font.resources() {
-            Some(r) => (r.clone(), t3.id.map_or(f.res_id, ResId::Own)),
+            Some(r) => (Rc::new(r.clone()), t3.id.map_or(f.res_id, ResId::Own)),
             None => (f.res.clone(), f.res_id),
         };
         let mut procs: BTreeSet<IndirectRef> = BTreeSet::new();
@@ -812,12 +910,12 @@ impl Walk<'_> {
         Ok(())
     }
 
-    /// An ExtGState in force over something painted: its soft mask
-    /// group (run), transfer functions, halftone.
-    fn ext_g_state(
+    /// The soft mask group of an ExtGState in force over something
+    /// painted (run) and its transfer function.
+    fn soft_mask(
         &mut self,
         g: &Object,
-        res: &Object,
+        res: &Rc<Object>,
         res_id: ResId,
         depth: usize,
         stack: &mut Vec<Frame>,
@@ -843,6 +941,16 @@ impl Walk<'_> {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// The transfer functions and halftone of an ExtGState in force over
+    /// something painted.
+    fn gs_params(&mut self, g: &Object) -> Result<(), Error> {
+        let Some(g) = g.as_dict() else {
+            self.undecided("an ExtGState that is not a dictionary".into());
+            return Ok(());
+        };
         for k in [b"TR".as_slice(), b"TR2", b"BG", b"BG2", b"UCR", b"UCR2"] {
             if let Some(v) = g.get(k) {
                 self.function(v, 0)?;
@@ -852,6 +960,23 @@ impl Walk<'_> {
             self.halftone(ht, 0)?;
         }
         Ok(())
+    }
+
+    /// A device colour painted: the `Default*` space replacing it, if the
+    /// resources in force name one.
+    fn default_space(&mut self, name: &[u8], res: &Object) -> Result<(), Error> {
+        match self.doc.resolve_resource_raw(res, "ColorSpace", name) {
+            Ok(Some(cs)) => self.color_space_at(&cs, res, 1),
+            Ok(None) => Ok(()),
+            Err(e @ Error::LimitExceeded { .. }) => Err(e),
+            Err(e) => {
+                self.undecided(format!(
+                    "/ColorSpace /{}: {e}",
+                    String::from_utf8_lossy(name)
+                ));
+                Ok(())
+            }
+        }
     }
 
     fn halftone(&mut self, ht: &Object, depth: u32) -> Result<(), Error> {
@@ -953,7 +1078,8 @@ impl Walk<'_> {
                 }
                 if let Some(gs) = d.get(b"ExtGState".as_slice()) {
                     let gs = doc.deref(gs)?;
-                    self.ext_g_state(&gs, &f.res, f.res_id, f.depth, stack)?;
+                    self.soft_mask(&gs, &f.res, f.res_id, f.depth, stack)?;
+                    self.gs_params(&gs)?;
                 }
             }
             _ => self.undecided(format!("pattern {r} is neither a stream nor a dictionary")),
@@ -977,6 +1103,9 @@ impl Walk<'_> {
         }
         if let Some(cs) = dict.get(b"ColorSpace".as_slice()) {
             self.color_space(cs, res)?;
+            if let Some(d) = cs.as_name().and_then(default_of) {
+                self.default_space(d, res)?;
+            }
         }
         // A JBIG2 image's shared symbol dictionary is read with it.
         if let Some(p) = dict.get(b"DecodeParms".as_slice()) {

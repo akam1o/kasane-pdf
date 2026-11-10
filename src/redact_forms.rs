@@ -218,10 +218,18 @@ pub(crate) fn edit_fields(
     if gone.is_empty() {
         return Ok(out);
     }
+    // Each field's kids left, counted down as kids go (linear in the
+    // tree, however many widgets go).
+    let mut left: HashMap<IndirectRef, usize> = kids.iter().map(|(r, k)| (*r, k.len())).collect();
     let mut frontier: Vec<IndirectRef> = gone.iter().copied().collect();
     while let Some(c) = frontier.pop() {
         if let Some(Some(p)) = parent.get(&c) {
-            if !gone.contains(p) && kids[p].iter().all(|k| gone.contains(k)) {
+            if gone.contains(p) {
+                continue;
+            }
+            let n = left.get_mut(p).expect("a parent's kids are counted");
+            *n = n.saturating_sub(1);
+            if *n == 0 {
                 gone.insert(*p);
                 frontier.push(*p);
             }
