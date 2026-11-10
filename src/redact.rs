@@ -404,10 +404,11 @@ fn redact_doc(
         })?;
 
     // Type 3 glyph definitions the output no longer shows go too.
-    let (output, glyph_images) = match crate::redact_type3::prune_type3(doc, &output, limits)? {
-        Some(p) => (p.output, p.images),
-        None => (output, Vec::new()),
-    };
+    let (output, glyph_images, glyph_procs) =
+        match crate::redact_type3::prune_type3(doc, &output, limits)? {
+            Some(p) => (p.output, p.images, p.procs),
+            None => (output, Vec::new(), Vec::new()),
+        };
 
     // Every object the output carries was read by now. A literal string
     // holding an unescaped CR is a line feed here and a CR to some
@@ -439,6 +440,7 @@ fn redact_doc(
         session,
     )?;
     verify_original_contents(&out, &s.original_contents_digests)?;
+    verify_removed_streams(&out, &s.removed_stream_digests, &glyph_procs)?;
     crate::redact_struct::verify(&out, &structure, limits)?;
     if options.remove_javascript {
         if let Some(r) = crate::redact_js::find_javascript(&out, limits)? {
@@ -612,7 +614,12 @@ fn verify(
                         stack.extend(d.values());
                     }
                     Object::Array(a) => stack.extend(a.iter()),
-                    Object::Stream { dict, .. } => stack.extend(dict.values()),
+                    Object::Stream { dict, .. } => {
+                        if prints.contains(&crate::remove_region::annotation_print(dict)) {
+                            return true;
+                        }
+                        stack.extend(dict.values())
+                    }
                     _ => {}
                 }
             }
@@ -762,6 +769,81 @@ fn verify_original_contents(out: &Document, digests: &[[u8; 32]]) -> Result<(), 
     Ok(())
 }
 
+/// No stream of `out` is a removed thumbnail (`removed`, by digest) but
+/// another page's own `/Thumb` (the same picture), and
+/// none is a removed Type 3 glyph's procedure or a replaced `/ToUnicode`
+/// (`procs`) except as a Type 3 font's CharProc or a font's `/ToUnicode`
+/// (the same bytes still in use elsewhere).
+fn verify_removed_streams(
+    out: &Document,
+    removed: &[[u8; 32]],
+    procs: &[[u8; 32]],
+) -> Result<(), Error> {
+    if removed.is_empty() && procs.is_empty() {
+        return Ok(());
+    }
+    let removed: HashSet<[u8; 32]> = removed.iter().copied().collect();
+    let procs: HashSet<[u8; 32]> = procs.iter().copied().collect();
+    let refs: Vec<_> = out
+        .xref_entries()
+        .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
+        .map(|(r, _)| r)
+        .collect();
+    // Where such bytes may still be used.
+    let mut in_use: HashSet<IndirectRef> = HashSet::new();
+    let mut thumbs: HashSet<IndirectRef> = HashSet::new();
+    for page in out.pages() {
+        let Some(p) = page.object_ref() else { continue };
+        if let Some(Object::Ref(t)) = out
+            .resolve(p)?
+            .as_dict()
+            .and_then(|d| d.get(b"Thumb".as_slice()))
+        {
+            thumbs.insert(*t);
+        }
+    }
+    for &r in &refs {
+        let Object::Dict(d) = out.resolve(r)? else {
+            continue;
+        };
+        if let Some(Object::Ref(t)) = d.get(b"ToUnicode".as_slice()) {
+            in_use.insert(*t);
+        }
+        if d.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Type3") {
+            if let Some(cp) = d.get(b"CharProcs".as_slice()) {
+                if let Some(cp) = out.deref(cp)?.as_dict() {
+                    in_use.extend(cp.values().filter_map(|v| v.as_ref()));
+                }
+            }
+        }
+    }
+    for r in refs {
+        let Object::Stream { dict, data } = out.resolve(r)? else {
+            continue;
+        };
+        let digests = [
+            Some(sha256(&data)),
+            out.decode_stream(&dict, &data).ok().map(|d| sha256(&d)),
+        ];
+        let is = |set: &HashSet<[u8; 32]>| digests.iter().flatten().any(|d| set.contains(d));
+        if is(&removed) && !thumbs.contains(&r) {
+            return Err(Error::Unsupported {
+                feature: "redaction output failed verification",
+                detail: format!("object {r} holds an edited page's removed thumbnail"),
+            });
+        }
+        if is(&procs) && !in_use.contains(&r) {
+            return Err(Error::Unsupported {
+                feature: "redaction output failed verification",
+                detail: format!(
+                    "object {r} holds a removed Type 3 glyph's procedure or a replaced /ToUnicode"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Every XObject a page of `out` invokes — by a `Do` in its content or
 /// in an annotation's appearance stream (`/AP`, every state), or
 /// transitively in the forms those draw — with the pages invoking it.
@@ -796,9 +878,11 @@ pub(crate) fn drawn_xobjects(
             return Ok(None);
         };
         if dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Image") {
-            // Its soft mask is drawn with it.
-            if let Some(Object::Ref(m)) = dict.get(b"SMask".as_slice()) {
-                drawn.entry(*m).or_default().insert(page);
+            // Its masks are drawn with it.
+            for key in [b"SMask".as_slice(), b"Mask"] {
+                if let Some(Object::Ref(m)) = dict.get(key) {
+                    drawn.entry(*m).or_default().insert(page);
+                }
             }
             return Ok(None);
         }

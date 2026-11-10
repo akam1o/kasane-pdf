@@ -105,6 +105,13 @@ Three separate statements; none implies the next:
   `elsewhere` either way, and `refuse_copies_elsewhere` refuses it. Any
   other copy — one only named in some resources, or reachable
   otherwise — fails.
+- No stream of the output holds what the redaction removed whole, by
+  any reference: a removed link's or annotation's appearance streams and
+  the forms, images and masks they draw (unless still drawn), a removed
+  annotation's dictionary (also as a stream's dictionary), a removed
+  Type 3 glyph's procedure and the font's former `/ToUnicode` (unless
+  still a font's), the masks of images only removed glyphs drew, an
+  edited page's thumbnail (unless another page's own).
 - No stream of the output holds an edited page's original content
   (stored or decoded digest), except one that a page still draws as its
   `/Contents` (a content stream the edited page shared with another

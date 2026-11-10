@@ -477,6 +477,7 @@ fn pruned_font(
     keep: &BTreeSet<Vec<u8>>,
     limits: &Limits,
     gone: &mut Vec<[u8; 32]>,
+    procs: &mut Vec<[u8; 32]>,
 ) -> Result<Dict, Error> {
     let loaded = crate::font::load_font_dict(doc, dict, b"T3", limits)?;
     let t3 = loaded
@@ -494,6 +495,9 @@ fn pruned_font(
     for (n, v) in cp {
         if keep.contains(n) {
             new_cp.insert(n.clone(), v.clone());
+        } else if let Object::Stream { dict, data } = doc.deref(v)? {
+            // A removed glyph's procedure may not stay by another route.
+            procs.extend([sha256(&doc.decode_stream(&dict, &data)?), sha256(&data)]);
         }
     }
     // The images: those the kept glyphs draw stay in the font's
@@ -530,8 +534,19 @@ fn pruned_font(
         let mut new_xo = Dict::new();
         for (n, v) in xo {
             if gone_names.contains(n) {
-                if let Object::Stream { data, .. } = doc.deref(v)? {
+                if let Object::Stream { dict, data } = doc.deref(v)? {
                     gone.push(sha256(&data));
+                    // Its masks hold its shape.
+                    for key in [b"SMask".as_slice(), b"Mask"] {
+                        if let Some(m @ Object::Ref(_)) = dict.get(key) {
+                            if let Object::Stream { dict, data } = doc.deref(m)? {
+                                gone.extend([
+                                    sha256(&doc.decode_stream(&dict, &data)?),
+                                    sha256(&data),
+                                ]);
+                            }
+                        }
+                    }
                 }
             } else {
                 new_xo.insert(n.clone(), v.clone());
@@ -585,6 +600,8 @@ fn pruned_font(
             return Err(refuse("/ToUnicode is not a stream".into()));
         };
         let decoded = doc.decode_stream(&td, &data)?;
+        // The original maps the removed codes too.
+        procs.extend([sha256(&decoded), sha256(&data)]);
         let cmap = crate::tounicode::ToUnicode::parse(&decoded, limits)
             .map_err(|e| refuse(format!("its /ToUnicode is not rewritten: {e}")))?;
         if cmap.code_len() != 1 {
@@ -612,6 +629,10 @@ fn pruned_font(
 pub(crate) struct Pruned {
     pub(crate) output: Vec<u8>,
     pub(crate) images: Vec<[u8; 32]>,
+    /// Digests of the removed glyphs' procedures and of the replaced
+    /// `/ToUnicode` streams: each may stay only as a Type 3 font's
+    /// CharProc or a font's `/ToUnicode`.
+    pub(crate) procs: Vec<[u8; 32]>,
 }
 
 /// Prune the Type 3 glyph definitions `output` no longer shows that
@@ -772,8 +793,9 @@ pub(crate) fn prune_type3(
     }
     let mut edit = Edit::new(&out, limits.clone())?;
     let mut images = Vec::new();
+    let mut procs = Vec::new();
     for (f, dict, keep) in &plans {
-        let new = pruned_font(&out, &mut edit, dict, keep, limits, &mut images)?;
+        let new = pruned_font(&out, &mut edit, dict, keep, limits, &mut images, &mut procs)?;
         edit.overlay
             .insert((f.number, f.generation), Object::Dict(new));
     }
@@ -782,5 +804,9 @@ pub(crate) fn prune_type3(
         strip_metadata: true,
         ..Default::default()
     })?;
-    Ok(Some(Pruned { output, images }))
+    Ok(Some(Pruned {
+        output,
+        images,
+        procs,
+    }))
 }

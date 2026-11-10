@@ -5331,3 +5331,167 @@ fn indirect_annotation_decorations() {
     .unwrap();
     assert_eq!(r.annotations_removed, 1);
 }
+
+/// What `redact` removes may not stay through another reference (here a
+/// private catalog entry): a removed link's or annotation's appearance,
+/// the images and masks it draws, a copy of the annotation dictionary
+/// as a stream's dictionary, a removed Type 3 glyph's procedure, the
+/// font's former `/ToUnicode` and the masks of images only removed
+/// glyphs drew, an edited page's thumbnail. Verification fails; nothing
+/// is written. (Release review.)
+#[test]
+fn removed_objects_do_not_stay_through_other_references() {
+    let image = "/Type /XObject /Subtype /Image /Width 4 /Height 4 /ColorSpace /DeviceGray \
+                 /BitsPerComponent 8";
+    let mask: Vec<u8> = vec![
+        10, 230, 40, 180, 70, 110, 50, 240, 120, 45, 90, 210, 30, 160, 80, 220,
+    ];
+    let page =
+        |content: &str, res: &str, page_extra: &str, cat: &str, extra: Vec<(u32, Vec<u8>)>| {
+            let mut objs = vec![
+                (
+                    1,
+                    format!("<< /Type /Catalog /Pages 2 0 R {cat} >>").into_bytes(),
+                ),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+                (
+                    3,
+                    format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Resources << {res} >> \
+                     /Contents 4 0 R {page_extra} >>"
+                )
+                    .into_bytes(),
+                ),
+                (4, stream_obj("", content.as_bytes())),
+            ];
+            objs.extend(extra);
+            build_pdf(&objs)
+        };
+    let opts = RedactOptions::new().remove_annotations(true);
+    let refused = |pdf: &[u8], what: &str| {
+        let doc = Document::from_bytes(pdf).unwrap();
+        let e = unsupported(redact(&doc, &[(0, vec![RECT])], &opts));
+        assert!(e.contains("failed verification"), "{what}: {e}");
+    };
+    // Appearances of a removed link and stamp: the form, its image, the mask.
+    for subtype in ["Link", "Stamp"] {
+        for alias in [41, 42, 43] {
+            let pdf = page(
+                "",
+                "",
+                "/Annots [40 0 R]",
+                &format!("/Alias {alias} 0 R"),
+                vec![
+                    (
+                        40,
+                        format!(
+                            "<< /Type /Annot /Subtype /{subtype} /Rect [50 100 70 110] \
+                             /AP << /N 41 0 R >> >>"
+                        )
+                        .into_bytes(),
+                    ),
+                    (
+                        41,
+                        stream_obj(
+                            "/Type /XObject /Subtype /Form /BBox [0 0 20 10] \
+                             /Resources << /XObject << /Im 42 0 R >> >>",
+                            b"q 20 0 0 10 0 0 cm /Im Do Q",
+                        ),
+                    ),
+                    (
+                        42,
+                        stream_obj(&format!("{image} /SMask 43 0 R"), &[0u8; 16]),
+                    ),
+                    (43, stream_obj(image, &mask)),
+                ],
+            );
+            refused(&pdf, &format!("{subtype} {alias}"));
+        }
+    }
+    // A removed annotation's dictionary kept as a stream's dictionary.
+    let annot = "/Type /Annot /Subtype /Text /Rect [50 100 70 110] /Contents (SECRETANNOT)";
+    let pdf = page(
+        "",
+        "",
+        "/Annots [40 0 R]",
+        "/Alias 41 0 R",
+        vec![
+            (40, format!("<< {annot} /Length 0 >>").into_bytes()),
+            (41, stream_obj(annot, b"")),
+        ],
+    );
+    refused(&pdf, "annotation dictionary as a stream's");
+    // Type 3: the removed glyph's procedure, the font's former
+    // ToUnicode, the mask of the image only the removed glyph drew.
+    let t3 = |procs: &str, extra: Vec<(u32, Vec<u8>)>, alias: u32| {
+        let mut objs = vec![(
+            20,
+            format!(
+                "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 600 700] \
+                 /FontMatrix [0.001 0 0 0.001 0 0] /CharProcs {procs} \
+                 /Encoding << /Differences [65 /A /B] >> /FirstChar 65 /LastChar 66 \
+                 /Widths [600 600] /Resources << /XObject << /Im 44 0 R >> >> /ToUnicode 46 0 R >>"
+            )
+            .into_bytes(),
+        )];
+        objs.extend(extra);
+        page(
+            "BT /F 12 Tf 50 100 Td (A) Tj ET BT /F 12 Tf 10 20 Td (B) Tj ET",
+            "/Font << /F 20 0 R >>",
+            "",
+            &format!("/Alias {alias} 0 R"),
+            objs,
+        )
+    };
+    let common = || {
+        vec![
+            (40, b"<< /A 41 0 R /B 42 0 R >>".to_vec()),
+            (
+                41,
+                stream_obj("", b"600 0 d0 q 500 0 0 700 0 0 cm /Im Do Q"),
+            ),
+            (42, stream_obj("", b"600 0 d0 0 0 100 700 re f")),
+            (
+                44,
+                stream_obj(&format!("{image} /SMask 45 0 R"), &[0u8; 16]),
+            ),
+            (45, stream_obj(image, &mask)),
+            (
+                46,
+                stream_obj(
+                    "",
+                    b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+                      /CMapName /TU def 1 begincodespacerange <00> <FF> endcodespacerange \
+                      2 beginbfchar <41> <0053> <42> <0042> endbfchar endcmap \
+                      CMapName currentdict /CMap defineresource pop end end",
+                ),
+            ),
+        ]
+    };
+    for (what, alias) in [
+        ("procedure", 41),
+        ("procedures", 40),
+        ("mask", 45),
+        ("ToUnicode", 46),
+    ] {
+        refused(&t3("40 0 R", common(), alias), what);
+    }
+    // An edited page's thumbnail.
+    let pdf = page(
+        "q 40 0 0 40 50 90 cm /Im Do Q",
+        "/XObject << /Im 42 0 R >>",
+        "/Thumb 40 0 R",
+        "/Alias 40 0 R",
+        vec![
+            (
+                40,
+                stream_obj(
+                    "/Width 2 /Height 2 /ColorSpace /DeviceGray /BitsPerComponent 8",
+                    &[1, 2, 3, 4],
+                ),
+            ),
+            (42, stream_obj(image, &(0..16).collect::<Vec<u8>>())),
+        ],
+    );
+    refused(&pdf, "thumbnail");
+}

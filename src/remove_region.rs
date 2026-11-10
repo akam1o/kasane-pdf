@@ -779,6 +779,9 @@ pub(crate) struct RegionsEdit<'a> {
     /// pages' original content streams — each may stay in the output
     /// only as a page's `/Contents`.
     pub(crate) original_contents_digests: Vec<[u8; 32]>,
+    /// Redaction mode only: digests (decoded, stored) of streams removed
+    /// whole that nothing may keep (an edited page's thumbnail).
+    pub(crate) removed_stream_digests: Vec<[u8; 32]>,
     /// Redaction mode only: annotations other than links removed
     /// whole (`remove_annotations`), with the popups and replies tied
     /// to them.
@@ -1063,7 +1066,8 @@ fn border_width(doc: &Document, d: &Dict) -> Result<f64, Error> {
     Ok(1.0)
 }
 
-/// `roots` and every XObject their `/Resources` name, transitively.
+/// `roots` and every XObject their `/Resources` name, and every image's
+/// masks, transitively.
 fn appearance_closure(
     doc: &Document,
     roots: &[IndirectRef],
@@ -1083,6 +1087,14 @@ fn appearance_closure(
         let Object::Stream { dict, .. } = &obj else {
             continue;
         };
+        // An image's masks hold its shape as much as its samples.
+        for key in [b"SMask".as_slice(), b"Mask"] {
+            if let Some(Object::Ref(r)) = dict.get(key) {
+                if !seen.contains(r) {
+                    seen.push(*r);
+                }
+            }
+        }
         let Some(res) = dict.get(b"Resources".as_slice()) else {
             continue;
         };
@@ -1219,6 +1231,7 @@ pub(crate) fn regions_edit_session_with<'a>(
     let mut touched = crate::redact_struct::Touched::default();
     let mut thumbnails_removed_total: u64 = 0;
     let mut original_contents_digests: Vec<[u8; 32]> = Vec::new();
+    let mut removed_stream_digests: Vec<[u8; 32]> = Vec::new();
     let mut annots_removed_total: u64 = 0;
     // Removed links and annotations, by content (`annotation_print`):
     // verification fails if the output still holds one.
@@ -1445,21 +1458,21 @@ pub(crate) fn regions_edit_session_with<'a>(
                     continue;
                 }
                 removed_annot_prints.push(annotation_print(d));
+                // Its appearance streams — and the forms, images and
+                // masks they draw, transitively — may not stay unless
+                // still invoked (checked by digest on the output); a
+                // link's as much as any annotation's.
+                for r in appearance_closure(doc, &annotation_appearances(doc, d)?, limits)? {
+                    if let Object::Stream { dict, data } = doc.resolve(r)? {
+                        original_digests
+                            .extend([sha256(&doc.decode_stream(&dict, &data)?), sha256(&data)]);
+                    }
+                }
                 if subtype(d) == b"Link" {
                     links_removed += 1;
                 } else {
                     annots_removed += 1;
-                    // Its appearance streams may not stay unless still
-                    // invoked (checked by digest on the output), and
-                    // its text is searched for elsewhere.
-                    // The appearance streams and the forms and images they
-                    // draw, transitively.
-                    for r in appearance_closure(doc, &annotation_appearances(doc, d)?, limits)? {
-                        if let Object::Stream { dict, data } = doc.resolve(r)? {
-                            original_digests
-                                .extend([sha256(&doc.decode_stream(&dict, &data)?), sha256(&data)]);
-                        }
-                    }
+                    // Its text is searched for elsewhere.
                     for key in [b"Contents".as_slice(), b"T", b"RC", b"Subj"] {
                         match d.get(key).map(|o| doc.deref(o)).transpose()? {
                             Some(Object::String(t)) => {
@@ -2395,9 +2408,16 @@ pub(crate) fn regions_edit_session_with<'a>(
         // Rule: never write Contents separately from the
         // materialised Resources.
         page_dict.insert(b"Contents".to_vec(), Object::Ref(stream_ref));
-        // A thumbnail pictures the page as it was.
-        if mode == SessionMode::Redact && page_dict.remove(b"Thumb".as_slice()).is_some() {
-            thumbnails_removed_total += 1;
+        // A thumbnail pictures the page as it was: it goes, and may not
+        // stay through another reference (checked by digest).
+        if mode == SessionMode::Redact {
+            if let Some(t) = page_dict.remove(b"Thumb".as_slice()) {
+                thumbnails_removed_total += 1;
+                if let Object::Stream { dict, data } = doc.deref(&t)? {
+                    removed_stream_digests
+                        .extend([sha256(&doc.decode_stream(&dict, &data)?), sha256(&data)]);
+                }
+            }
         }
         // The original content streams hold what the rects removed:
         // something else referring to one would carry it (checked by
@@ -2561,6 +2581,7 @@ pub(crate) fn regions_edit_session_with<'a>(
         touched,
         thumbnails_removed_total,
         original_contents_digests,
+        removed_stream_digests,
         annots_removed_total,
         removed_annot_prints,
         paths_cut_total,
