@@ -1016,7 +1016,7 @@ fn decoration_reach(doc: &Document, d: &Dict, w: f64) -> Result<f64, Error> {
                 }
             }
             let mut h: f64 = 0.0;
-            for quad in nums.chunks_exact(8) {
+            for quad in nums.as_chunks::<8>().0 {
                 let side =
                     |a: usize, b: usize| (quad[a] - quad[b]).hypot(quad[a + 1] - quad[b + 1]);
                 h = h.max(side(0, 4)).max(side(2, 6));
