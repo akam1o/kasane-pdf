@@ -7100,6 +7100,15 @@ fn removed_data_classified_by_slot() {
             ),
         ),
         (
+            "its data under a key only another action type names by",
+            make(
+                "/XPriv 21 0 R",
+                "10 0 R",
+                "",
+                vec![(10, link("/A << /S /URI /URI (https://example.org/) /Fields [21 0 R] >>")), uri()],
+            ),
+        ),
+        (
             "its action as a movie's activation",
             make(
                 "",
@@ -7180,6 +7189,32 @@ fn removed_data_classified_by_slot() {
                         41,
                         b"<< /Type /StructElem /S /Figure /Alt 21 0 R >>".to_vec(),
                     ),
+                ],
+            ),
+        ),
+        (
+            "an action its /Next names with a kept link",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    (10, link("/A << /S /URI /URI (https://example.org/) /Next 20 0 R >>")),
+                    (20, b"<< /S /URI /URI (https://example.com/SLOTMARK) >>".to_vec()),
+                    (12, kept("/A 20 0 R")),
+                ],
+            ),
+        ),
+        (
+            "a procedure set with the page",
+            make(
+                "",
+                "10 0 R",
+                "/Resources << /ProcSet 23 0 R >>",
+                vec![
+                    (10, link("/AP << /N 11 0 R >>")),
+                    (11, stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /ProcSet 23 0 R >>", b"")),
+                    (23, b"[/PDF]".to_vec()),
                 ],
             ),
         ),

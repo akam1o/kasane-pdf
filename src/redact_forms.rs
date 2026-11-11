@@ -1110,13 +1110,29 @@ pub(crate) fn removed_data_kept(
             Held::Aa => hwork.extend(d.into_values().map(|v| (v, Held::Action))),
             Held::Next => hwork.push((Object::Dict(d), Held::Action)),
             Held::Action => {
-                let hide = d.get(b"S".as_slice()).and_then(|s| s.as_name()) == Some(b"Hide");
+                let s = d
+                    .get(b"S".as_slice())
+                    .and_then(|s| s.as_name())
+                    .unwrap_or(b"")
+                    .to_vec();
                 for (k, v) in d {
-                    let h = match k.as_slice() {
-                        b"Next" => Held::Next,
-                        b"SD" | b"Fields" | b"Annotation" | b"AN" | b"TA" => continue,
-                        b"T" if hide => continue,
-                        _ => Held::Own,
+                    // What its type only names: the target, not its data.
+                    let names = matches!(
+                        (s.as_slice(), k.as_slice()),
+                        (b"Hide", b"T")
+                            | (b"SubmitForm" | b"ResetForm", b"Fields")
+                            | (b"Movie", b"Annotation")
+                            | (b"Rendition", b"AN")
+                            | (b"GoTo3DView" | b"RichMediaExecute", b"TA")
+                            | (b"GoTo" | b"GoToR", b"SD")
+                    );
+                    if names {
+                        continue;
+                    }
+                    let h = if k.as_slice() == b"Next" {
+                        Held::Next
+                    } else {
+                        Held::Own
                     };
                     hwork.push((v, h));
                 }
@@ -1452,10 +1468,11 @@ pub(crate) fn removed_data_kept(
                             | b"Shading"
                             | b"XObject"
                             | b"Font"
-                            | b"ProcSet"
                             | b"Properties"
                     ) {
                         push(v, Use::Category);
+                    } else if k.as_slice() == b"ProcSet" {
+                        push(v, Use::Any);
                     }
                 }
             }
@@ -1595,9 +1612,12 @@ pub(crate) fn removed_data_kept(
     for (r, h) in &theirs {
         tick(1)?;
         let Some(seen) = kept.get(r) else { continue };
+        // A `/Next` that is one action (not an array) is an action.
+        let one_action = *h == Held::Next
+            && matches!(doc.resolve(*r), Ok(Object::Dict(_) | Object::Stream { .. }));
         let ok = seen.iter().any(|(u, inside, _)| match h {
             Held::Action => matches!(u, Use::Action | Use::Next),
-            Held::Next => *u == Use::Next,
+            Held::Next => *u == Use::Next || (one_action && *u == Use::Action),
             // Every trigger in it one of its user's.
             Held::Aa => match u {
                 Use::Aa(t) => match doc.resolve(*r) {
@@ -1614,25 +1634,27 @@ pub(crate) fn removed_data_kept(
             excused.insert(*r);
         }
     }
-    loop {
-        let mut more = Vec::new();
-        for (r, h) in &theirs {
+    // Own data held inside something of theirs excused, transitively.
+    let mut held_in: std::collections::HashMap<IndirectRef, Vec<IndirectRef>> = Default::default();
+    for (r, h) in &theirs {
+        if *h != Held::Own || excused.contains(r) {
+            continue;
+        }
+        for (_, inside, by) in kept.get(r).map(Vec::as_slice).unwrap_or(&[]) {
+            if let (true, Some(b)) = (*inside, by) {
+                tick(1)?;
+                held_in.entry(*b).or_default().push(*r);
+            }
+        }
+    }
+    let mut next: Vec<IndirectRef> = excused.iter().copied().collect();
+    while let Some(b) = next.pop() {
+        for r in held_in.remove(&b).unwrap_or_default() {
             tick(1)?;
-            if *h != Held::Own || excused.contains(r) {
-                continue;
-            }
-            let held_by_excused = kept.get(r).is_some_and(|seen| {
-                seen.iter()
-                    .any(|(_, inside, by)| *inside && by.is_some_and(|b| excused.contains(&b)))
-            });
-            if held_by_excused {
-                more.push(*r);
+            if excused.insert(r) {
+                next.push(r);
             }
         }
-        if more.is_empty() {
-            break;
-        }
-        excused.extend(more);
     }
     let left: HashSet<IndirectRef> = theirs
         .keys()
