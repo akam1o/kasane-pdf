@@ -5826,13 +5826,10 @@ fn removed_appearance_is_not_excused_by_what_is_not_drawn() {
             page_with(&other("/F 2 /AP << /N 31 0 R >>"), "0 0 5 5 re f", ""),
         ),
         (
-            "down",
-            page_with(&other("/AP << /N 33 0 R /D 31 0 R >>"), "0 0 5 5 re f", ""),
-        ),
-        (
-            "state",
+            "hidden widget's state",
             page_with(
-                &other("/AS /Off /AP << /N << /Off 33 0 R /On 31 0 R >> >>"),
+                &other("/Subtype /Widget /FT /Btn /F 2 /AS /Off /AP << /N << /Off 33 0 R /On 31 0 R >> >>")
+                    .replace("/Subtype /Link ", ""),
                 "0 0 5 5 re f",
                 "",
             ),
@@ -5888,10 +5885,12 @@ fn removed_appearance_is_not_excused_by_what_is_not_drawn() {
             ),
         ),
     ];
-    // A widget that does not present other states as it is used — a
-    // text field, a read-only checkbox, a field-less widget — does not
-    // keep it.
+    // A shown annotation kept as it was keeps all its own appearances —
+    // its down appearance, its other states, whatever its kind: its data,
+    // outside the rect (reported as the same bytes elsewhere).
     for (name, extra) in [
+        ("down", "/AP << /N 33 0 R /D 31 0 R >>"),
+        ("state", "/AS /Off /AP << /N << /Off 33 0 R /On 31 0 R >> >>"),
         (
             "text field",
             "/Subtype /Widget /FT /Tx /AS /Off /AP << /N << /Off 33 0 R /On 31 0 R >> >>",
@@ -5919,8 +5918,12 @@ fn removed_appearance_is_not_excused_by_what_is_not_drawn() {
             "",
         );
         let doc = Document::from_bytes(&pdf).unwrap();
-        let e = unsupported(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()));
-        assert!(e.contains("failed verification"), "{name}: {e}");
+        let r = redact(&doc, &[(0, vec![RECT])], &RedactOptions::new())
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(!r.elsewhere.is_empty(), "{name}: not reported");
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let strict = RedactOptions::new().refuse_copies_elsewhere(true);
+        assert!(redact(&doc, &[(0, vec![RECT])], &strict).is_err(), "{name}: not refused when asked");
     }
     for (name, pdf) in shown {
         let doc = Document::from_bytes(&pdf).unwrap();
@@ -6189,4 +6192,37 @@ fn an_appearance_without_resources_is_compared_on_other_pages() {
     let doc = Document::from_bytes(&make(b"0 0 1 1 re f")).unwrap();
     let e = unsupported(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()));
     assert!(e.contains("page 2 (not edited)"), "{e}");
+}
+
+/// A checkbox outside the rect with down appearances (a common form
+/// layout) does not stop a redaction that touches no annotation: its
+/// appearances are its own. (Review: refused during 0.9 development.)
+#[test]
+fn kept_widgets_keep_their_own_appearances() {
+    let ap = |b: &[u8]| stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 10 10]", b);
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R /AcroForm << /Fields [30 0 R] >> >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R \
+              /Resources << /Font << /F1 20 0 R >> >> /Annots [30 0 R] >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"0 0 5 5 re f 70 100 20 5 re f")),
+        (
+            30,
+            b"<< /Type /Annot /Subtype /Widget /FT /Btn /T (c) /V /Off /AS /Off /Rect [150 150 160 160] \
+              /AP << /N << /Yes 31 0 R /Off 32 0 R >> /D << /Yes 33 0 R /Off 34 0 R >> >> >>"
+                .to_vec(),
+        ),
+        (31, ap(b"0 0 10 10 re f")),
+        (32, ap(b"0 0 10 10 re S")),
+        (33, ap(b"1 1 8 8 re f")),
+        (34, ap(b"1 1 8 8 re S")),
+        (20, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec()),
+    ]);
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let r = redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()).unwrap();
+    assert_eq!(r.paths_removed, 1);
 }

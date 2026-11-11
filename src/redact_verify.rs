@@ -298,6 +298,11 @@ pub(crate) fn check_use(
             };
             let after = usage(out, &is_edited, Bound::Under, limits)?;
             live.extend(content(used_digests(out, &after, Some(idx))?));
+            // A shown annotation the edit left as it was keeps all its
+            // own appearances, the states and down or rollover ones a
+            // reader may not draw now: its data, outside the rects (the
+            // same bytes elsewhere are reported).
+            live.extend(kept_annotation_appearances(input, out, idx)?);
             let mut left: Vec<&(IndirectRef, [u8; 32])> =
                 held.iter().filter(|(_, x)| !live.contains(x)).collect();
             if !left.is_empty() {
@@ -326,6 +331,99 @@ pub(crate) fn check_use(
         }
     }
     non_interference(input, out, idx, edited, limits)
+}
+
+/// An annotation's print and its appearance streams' digests.
+type PrintedAppearances = ([u8; 32], Vec<[u8; 32]>);
+
+/// The digests of the appearance streams (every key and state) of the
+/// shown annotations each output page holds unchanged: an annotation whose
+/// print is that of one on the same page of the input, the stream one
+/// that input annotation had too.
+fn kept_annotation_appearances(
+    input: &Document,
+    out: &Document,
+    idx: &Index,
+) -> Result<HashSet<[u8; 32]>, Error> {
+    // Per annotation: its print and its appearance streams' digests.
+    let annots =
+        |doc: &Document, i: usize, idx: Option<&Index>| -> Result<Vec<PrintedAppearances>, Error> {
+            let mut v = Vec::new();
+            let Some(page) = doc.pages().get(i) else {
+                return Ok(v);
+            };
+            let Some(a) = crate::redact_diag::page_dict_entry(doc, page, b"Annots")? else {
+                return Ok(v);
+            };
+            for x in doc.deref(&a)?.as_array().unwrap_or(&[]) {
+                let Some(d) = doc.deref(x)?.as_dict().cloned() else {
+                    continue;
+                };
+                // A hidden one (Hidden, NoView, any /OC, a /F not an integer)
+                // excuses nothing: no reader shows it.
+                let flags = match d.get(b"F".as_slice()).map(|f| doc.deref(f)).transpose()? {
+                    None => Some(0),
+                    Some(Object::Integer(i)) => Some(i),
+                    Some(_) => None,
+                };
+                if !flags.is_some_and(|f| f & (2 | 32) == 0) || d.contains_key(b"OC".as_slice()) {
+                    continue;
+                }
+                let mut streams = Vec::new();
+                if let Some(ap) = d.get(b"AP".as_slice()) {
+                    let ap = doc.deref(ap)?;
+                    for v in ap
+                        .as_dict()
+                        .map(|a| a.values().cloned().collect::<Vec<_>>())
+                        .unwrap_or_default()
+                    {
+                        let states: Vec<Object> = match &v {
+                            Object::Ref(r) => match doc.resolve(*r)? {
+                                Object::Dict(s) => s.values().cloned().collect(),
+                                _ => vec![v.clone()],
+                            },
+                            Object::Dict(s) => s.values().cloned().collect(),
+                            _ => Vec::new(),
+                        };
+                        for st in states {
+                            let Object::Ref(r) = st else { continue };
+                            let dg = match idx.and_then(|i| i.digests.get(&r)) {
+                                Some(dg) => Some(dg.stored),
+                                None => match doc.resolve(r)? {
+                                    Object::Stream { data, .. } => Some(sha256(&data)),
+                                    _ => None,
+                                },
+                            };
+                            streams.extend(dg);
+                        }
+                    }
+                }
+                v.push((annotation_print(&d), streams));
+            }
+            Ok(v)
+        };
+    let mut kept: HashSet<[u8; 32]> = HashSet::new();
+    for i in 0..out.pages().len().min(input.pages().len()) {
+        let before = annots(input, i, None)?;
+        if before.is_empty() {
+            continue;
+        }
+        for (print, streams) in annots(out, i, Some(idx))? {
+            for (p, had) in &before {
+                if *p == print {
+                    kept.extend(streams.iter().filter(|s| had.contains(s)));
+                }
+            }
+        }
+    }
+    // Both digests of each such stream (stored and decoded).
+    let mut all = HashSet::new();
+    for d in idx.digests.values() {
+        if kept.contains(&d.stored) {
+            all.extend(d.each());
+        }
+    }
+    Ok(all)
 }
 
 /// Every page not edited uses the same streams in the output as in the

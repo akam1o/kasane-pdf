@@ -92,7 +92,11 @@ property cannot be decided).
   are gone, or still drawn as the lower bound of section 4.2 counts it
   (an annotation shown, its selected normal appearance — or a button's
   states and appearances as it presents them when used —, page content
-  outside optional content that is off) and reported in `elsewhere`.
+  outside optional content that is off), or as an appearance (any state,
+  down or rollover) of a shown annotation the output keeps as it was —
+  its own data, outside the rects — and reported in `elsewhere`
+  (`refuse_copies_elsewhere` refuses it). A hidden annotation's
+  appearances excuse nothing.
 - **N** — An indirect action or destination object a removed link
   shares with something kept (an outline, a private entry) stays; it is
   reported as residual action data and as uninspected

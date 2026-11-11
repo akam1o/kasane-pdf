@@ -2309,4 +2309,69 @@ mod tests {
             );
         }
     }
+
+    /// Over the output, a checkbox's two states count (it shows them as
+    /// it is used); a text field's, a read-only checkbox's or a push
+    /// button's unselected state does not; a push button's down
+    /// appearance counts with `/H /P` only.
+    #[test]
+    fn widget_appearances_as_readers_present_them() {
+        for (w, counted) in [
+            (
+                "/FT /Btn /AS /Off /AP << /N << /Off 6 0 R /Yes 5 0 R >> >>",
+                true,
+            ),
+            (
+                "/FT /Tx /AS /Off /AP << /N << /Off 6 0 R /Yes 5 0 R >> >>",
+                false,
+            ),
+            (
+                "/FT /Btn /Ff 1 /AS /Off /AP << /N << /Off 6 0 R /Yes 5 0 R >> >>",
+                false,
+            ),
+            (
+                "/FT /Btn /F 64 /AS /Off /AP << /N << /Off 6 0 R /Yes 5 0 R >> >>",
+                false,
+            ),
+            (
+                "/FT /Btn /Ff 65536 /AS /A /AP << /N << /A 6 0 R /B 5 0 R >> >>",
+                false,
+            ),
+            ("/FT /Btn /Ff 65536 /AP << /N 6 0 R /D 5 0 R >>", false),
+            ("/FT /Btn /Ff 65536 /H /P /AP << /N 6 0 R /D 5 0 R >>", true),
+            ("/FT /Btn /Ff 65536 /AP << /N 6 0 R /R 5 0 R >>", true),
+        ] {
+            let bytes = pdf(&[
+                (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Annots [4 0 R] >>"
+                        .to_vec(),
+                ),
+                (
+                    4,
+                    format!("<< /Type /Annot /Subtype /Widget /Rect [10 10 20 20] {w} >>")
+                        .into_bytes(),
+                ),
+                (
+                    5,
+                    stream(
+                        "/Type /XObject /Subtype /Form /BBox [0 0 10 10]",
+                        b"0 0 10 10 re f",
+                    ),
+                ),
+                (
+                    6,
+                    stream(
+                        "/Type /XObject /Subtype /Form /BBox [0 0 10 10]",
+                        b"0 0 10 10 re S",
+                    ),
+                ),
+            ]);
+            let doc = Document::from_bytes(&bytes).unwrap();
+            let u = usage(&doc, &|_| true, Bound::Under, &Limits::default()).unwrap();
+            assert_eq!(u.used.contains_key(&IndirectRef::new(5, 0)), counted, "{w}");
+        }
+    }
 }
