@@ -110,15 +110,21 @@ property cannot be decided).
   owner's trigger names only), a form field and the AcroForm's `/DR`
   and `/DA`, an outline item below the root, a destination (its page;
   operands by reference that are numbers), the catalog's settings, name
-  trees. An action, annotation or field of the removed one's is kept
-  only where it is used as one. Kept only through other entries
-  (private data), it is refused.
-- **N** — Below what is read by type — inside fonts, images, form
-  XObjects and appearance streams, a resource category's entries (used
-  or not by the content), the structure tree, optional content, page
-  labels, embedded files and other name trees' values — every entry
-  counts as used: plain data of a removed annotation (text, streams,
-  colour data) that a private key there refers to stays.
+  trees, the structure tree. What the removed annotation held is
+  classified by the slot it held it in: an action, an `/AA` dictionary
+  (its triggers all its new user's), a `/Next` array, a popup are kept
+  only where they are used as one; its own data (text, a link's
+  target, a file specification, a value) only where a slot defined for
+  it holds it, or inside own data kept that way (a file
+  specification's embedded file); its appearance and what that draws
+  by any use. Kept only through other entries (private data, a slot of
+  another kind, an undefined name tree), it is refused.
+- **N** — The appearance part of a removed annotation (its appearance
+  streams, their resources, fonts, images, colour data) counts as used
+  wherever the edited document reaches it, private keys inside fonts,
+  images and forms included. A resource category's entries count
+  whether the content uses them or not; a string counts when it is used
+  as a field name, a name-tree key or `/Lang`.
 - **N** — "Drawn" includes drawing outside the page's boxes: a removed
   appearance also drawn off the page by another page's content stays
   (reported in `elsewhere`; `refuse_copies_elsewhere` refuses it).

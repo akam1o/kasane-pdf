@@ -35,9 +35,10 @@ versions follow [Semantic Versioning](https://semver.org/).
   its appearance, streams or not — that the document keeps only through
   entries no reader uses (private data, an annotation key its subtype
   does not define, an `/AA` entry that names no trigger) is refused; the
-  use is read by type from the catalog and the pages, and an action,
-  annotation or field stays only where it is used as one. Limits:
-  `docs/limitations.md`.
+  use is read by type from the catalog and the pages; an action, `/AA`
+  dictionary or popup stays only where it is used as one, the
+  annotation's own data only where a slot defined for it holds it.
+  Limits: `docs/limitations.md`.
 - `docs/redaction-safety-model.md`: what `redact` guarantees, reports,
   does not guarantee or refuses, per surface; the verification layers.
 - Tests: one regression test per published advisory

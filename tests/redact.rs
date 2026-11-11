@@ -6951,3 +6951,257 @@ fn removed_data_kept_only_by_typed_use() {
         .unwrap_or_else(|e| panic!("{name}: {e}"));
     }
 }
+
+/// What a removed annotation held is classified by the slot it is held
+/// in, not by its shape: an `/AA` dictionary or `/Next` array of its own
+/// stays only where it is used as one; its own data (a link's target,
+/// a file specification) only where a slot defined for it holds it, not
+/// under a private key inside something read whole (an appearance
+/// dictionary, a font) or in a slot of another kind (a destination, a
+/// settings dictionary, an undefined name tree). Dictionaries that have
+/// `/S` without being actions (a border style, a transparency group) are
+/// shared as before. (Release review.)
+#[test]
+fn removed_data_classified_by_slot() {
+    let make = |cat: &str, annots: &str, page_extra: &str, extra: Vec<(u32, Vec<u8>)>| {
+        let mut objs = vec![
+            (1, format!("<< /Type /Catalog /Pages 2 0 R {cat} >>").into_bytes()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [{annots}] {page_extra} >>"
+                )
+                .into_bytes(),
+            ),
+            (4, stream_obj("", b"0 0 5 5 re f")),
+        ];
+        objs.extend(extra);
+        build_pdf(&objs)
+    };
+    let link = |a: &str| {
+        format!("<< /Type /Annot /Subtype /Link /Rect [70 90 130 110] {a} >>").into_bytes()
+    };
+    let kept = |a: &str| {
+        format!("<< /Type /Annot /Subtype /Link /Rect [150 150 190 190] {a} >>").into_bytes()
+    };
+    let uri = || (21, b"(https://example.com/SLOTMARK)".to_vec());
+    let form = || stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 1 1]", b"");
+    let refused: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "its /AA dictionary as a kept link's destination",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    (10, link("/AA 25 0 R")),
+                    (25, b"<< /U << /S /URI /URI (https://example.com/SLOTMARK) >> >>".to_vec()),
+                    (12, kept("/Dest 25 0 R")),
+                ],
+            ),
+        ),
+        (
+            "its /AA dictionary as the page's, with triggers no page has",
+            make(
+                "",
+                "10 0 R",
+                "/AA 25 0 R",
+                vec![
+                    (10, link("/AA 25 0 R")),
+                    (25, b"<< /U << /S /URI /URI (https://example.com/SLOTMARK) >> >>".to_vec()),
+                ],
+            ),
+        ),
+        (
+            "its /Next array as the fields a kept reset action names",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    (10, link("/A << /S /URI /URI (https://example.org/) /Next 26 0 R >>")),
+                    (26, b"[<< /S /URI /URI (https://example.com/SLOTMARK) >>]".to_vec()),
+                    (12, kept("/A << /S /ResetForm /Fields 26 0 R >>")),
+                ],
+            ),
+        ),
+        (
+            "its target under a private key of a kept appearance dictionary",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![(10, link("/A << /S /URI /URI 21 0 R >>")), uri(), (12, kept("/AP << /N 11 0 R /XPriv 21 0 R >>")), (11, form())],
+            ),
+        ),
+        (
+            "its target under a private key of a font",
+            make(
+                "",
+                "10 0 R",
+                "/Resources << /Font << /F 22 0 R >> >>",
+                vec![
+                    (10, link("/A << /S /URI /URI 21 0 R >>")),
+                    uri(),
+                    (22, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /XPriv 21 0 R >>".to_vec()),
+                ],
+            ),
+        ),
+        (
+            "its file specification as viewer preferences",
+            make(
+                "/ViewerPreferences 30 0 R",
+                "10 0 R",
+                "",
+                vec![
+                    (10, link("/A << /S /GoToR /F 30 0 R /D [0 /Fit] >>")),
+                    (30, b"<< /Type /Filespec /F (SLOTMARK.pdf) >>".to_vec()),
+                ],
+            ),
+        ),
+        (
+            "its target in a name tree no reader looks up",
+            make("/Names << /XPrivTree << /Names [(k) 21 0 R] >> >>", "10 0 R", "", vec![(10, link("/A << /S /URI /URI 21 0 R >>")), uri()]),
+        ),
+        (
+            "its action as the /Next of a dictionary that is no action",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    (10, link("/A 20 0 R")),
+                    (20, b"<< /S /URI /URI (https://example.com/SLOTMARK) >>".to_vec()),
+                    (12, kept("/A << /Next 20 0 R >>")),
+                ],
+            ),
+        ),
+        (
+            "its target under a key the kept action's type does not define",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![(10, link("/A << /S /URI /URI 21 0 R >>")), uri(), (12, kept("/A << /S /Named /N /NextPage /URI 21 0 R >>"))],
+            ),
+        ),
+        (
+            "its target as the options of a text field",
+            make(
+                "/AcroForm << /Fields [12 0 R] >>",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    (10, link("/A << /S /URI /URI 21 0 R >>")),
+                    uri(),
+                    (12, b"<< /Type /Annot /Subtype /Widget /Rect [150 150 190 190] /FT /Tx /T (f) /Opt 21 0 R >>".to_vec()),
+                ],
+            ),
+        ),
+        (
+            "its action as a movie's activation",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    (10, link("/A 20 0 R")),
+                    (20, b"<< /S /URI /URI (https://example.com/SLOTMARK) >>".to_vec()),
+                    (12, b"<< /Type /Annot /Subtype /Movie /Rect [150 150 190 190] /Movie << /F (m.mov) >> /A 20 0 R >>".to_vec()),
+                ],
+            ),
+        ),
+    ];
+    for (name, pdf) in refused {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let e = unsupported(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()));
+        assert!(e.contains("failed verification"), "{name}: {e}");
+    }
+    let shared: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "a border style",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    (10, link("/BS 15 0 R")),
+                    (12, kept("/BS 15 0 R")),
+                    (15, b"<< /Type /Border /W 1 /S /S >>".to_vec()),
+                ],
+            ),
+        ),
+        (
+            "a transparency group with the page",
+            make(
+                "",
+                "10 0 R",
+                "/Group 47 0 R",
+                vec![
+                    (10, link("/AP << /N 11 0 R >>")),
+                    (
+                        11,
+                        stream_obj(
+                            "/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Group 47 0 R",
+                            b"",
+                        ),
+                    ),
+                    (
+                        47,
+                        b"<< /Type /Group /S /Transparency /CS /DeviceRGB >>".to_vec(),
+                    ),
+                ],
+            ),
+        ),
+        (
+            "its target with a kept link",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    (10, link("/A << /S /URI /URI 21 0 R >>")),
+                    uri(),
+                    (12, kept("/A << /S /URI /URI 21 0 R >>")),
+                ],
+            ),
+        ),
+        (
+            "a string with a structure element's /Alt",
+            make(
+                "/StructTreeRoot << /Type /StructTreeRoot /K 41 0 R >>",
+                "10 0 R",
+                "",
+                vec![
+                    (10, link("/Contents 21 0 R")),
+                    uri(),
+                    (
+                        41,
+                        b"<< /Type /StructElem /S /Figure /Alt 21 0 R >>".to_vec(),
+                    ),
+                ],
+            ),
+        ),
+        (
+            "a structure destination",
+            make(
+                "/StructTreeRoot << /Type /StructTreeRoot /K 41 0 R >>",
+                "10 0 R",
+                "",
+                vec![
+                    (
+                        10,
+                        link("/A << /S /GoTo /D [3 0 R /Fit] /SD [41 0 R /Fit] >>"),
+                    ),
+                    (41, b"<< /Type /StructElem /S /P /Pg 3 0 R /K 0 >>".to_vec()),
+                ],
+            ),
+        ),
+    ];
+    for (name, pdf) in shared {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        redact(&doc, &[(0, vec![RECT])], &RedactOptions::new())
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+}
