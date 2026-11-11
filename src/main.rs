@@ -2109,6 +2109,7 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
     println!("paths removed: {}", r.paths_removed);
     println!("paths cut at a rect: {}", r.paths_cut);
     println!("shadings removed: {}", r.shadings_removed);
+    println!("shadings cut at a rect: {}", r.shadings_cut);
     println!("links removed: {}", r.links_removed);
     println!("annotations removed: {}", r.annotations_removed);
     println!("javascript removed: {}", r.javascript_removed);

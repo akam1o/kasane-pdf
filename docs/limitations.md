@@ -277,6 +277,19 @@ are on the [roadmap](architecture.md#roadmap).
   button, shows the value's state; otherwise refused. Signature fields,
   JBIG2 images with shared `/JBIG2Globals` or a file header are
   refused.
+- **Paths, shadings and patterns crossing a rect** (0.10): filled
+  shapes are clipped (pieces of curves that straddle a cut at the
+  subdivision limit become their chord); strokes are cut as before
+  (dashed curves refused). An `sh` crossing a rect is cut only when it
+  is an axial shading in page content, with an axis-aligned CTM and
+  `/BBox`, under a rectangular clip (or none), and every value of its
+  axis inside the rects is painted outside them; overlapping rects need
+  opaque paint. Radial, function-based and mesh shadings, and shadings
+  in forms, stay refused. A tiling pattern crossing a rect is cut only
+  as the fill of one axis-aligned rectangle in page content whose part
+  outside the rects holds a whole period; text, strokes and other
+  shapes painted with one stay refused. Cut shadings and patterns keep
+  their data whole (nothing in it only the rect showed).
 - **XFA forms** (0.10): with `remove_javascript`, or when
   `remove_annotations` edits form fields, an XFA form beside its
   AcroForm is removed (`Redaction::xfa_removed`): its packets hold the

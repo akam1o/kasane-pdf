@@ -119,6 +119,16 @@ pub struct Target {
     pub detail: TargetDetail,
 }
 
+/// A clip a cut shading is painted under (user space): first `area`
+/// (`re W n`), then, with holes, `outer` and the holes even-odd
+/// (`re … W* n`) — the area less the holes, painted once.
+#[derive(Debug, Clone)]
+pub(crate) struct ShadingClip {
+    pub(crate) area: (f64, f64, f64, f64),
+    pub(crate) outer: (f64, f64, f64, f64),
+    pub(crate) holes: Vec<(f64, f64, f64, f64)>,
+}
+
 /// Kind-specific payload of a [`Target`].
 #[derive(Debug, Clone)]
 pub enum TargetDetail {
@@ -742,6 +752,9 @@ struct StrokeState {
     opaque: (bool, bool),
     /// `/SA` — automatic stroke adjustment (§10.7.5) is on.
     adjust: bool,
+    /// Filling is opaque (`/ca` 1): with `/BM` Normal, painting a spot
+    /// twice shows the same as once.
+    fill_opaque: bool,
 }
 
 /// The *whole* graphics state a diagnosis tracks — saved and restored
@@ -761,6 +774,10 @@ pub(crate) struct DiagGs {
     /// page space, so `clip` is the clip region itself, not just its
     /// bounds.
     clip_exact: bool,
+    /// Holes in the clip (page space): an even-odd clip of an outer
+    /// rectangle and disjoint rectangles inside it (`clip_exact`), the
+    /// region being `clip` less these.
+    clip_holes: Vec<(f64, f64, f64, f64)>,
     /// Stroke state — saved/restored by `q`/`Q`.
     stroke: StrokeState,
     /// Text state — `Tc`/`Tw`/`Tz`/`TL`/`Ts`/`Tr`/`Tf`/`Tmode` are
@@ -799,7 +816,12 @@ pub(crate) struct DiagWalker<'a> {
     /// whether a current point exists (for `l`/`c`/`v`/`y` validity).
     path_bounds: Option<(f64, f64, f64, f64)>,
     path_has_point: bool,
-    pending_clip: Option<()>,
+    /// A clip pending (installed by the next painting op), and whether
+    /// it is even-odd.
+    pending_clip: Option<bool>,
+    /// The path's subpaths when each is a rectangle under an
+    /// axis-aligned CTM (page space), in order; `None` otherwise.
+    path_rects: Option<Vec<(f64, f64, f64, f64)>>,
     /// The path being built is one `re` under an axis-aligned CTM.
     path_single_rect: bool,
     /// Targets that meet a rect only through the *bounds* of a clip
@@ -840,6 +862,12 @@ pub(crate) struct DiagWalker<'a> {
     /// The stroke state and CTM at each painted path target, keyed
     /// like `show_states` — what `redact` needs to cut a path.
     pub(crate) path_states: BTreeMap<(Vec<FormFrame>, usize), crate::redact_geom::PathPaintState>,
+    /// Shadings (`sh`, page content) crossing a rect that are cut: per
+    /// op index, the clips (user space) it is painted under instead.
+    pub(crate) shading_cuts: BTreeMap<usize, Vec<ShadingClip>>,
+    /// The page's visible box (MediaBox ∩ CropBox): what an unclipped
+    /// `sh` paints.
+    page_box: (f64, f64, f64, f64),
     /// Whether `capture_show_state` records — `false` for
     /// `diagnose_redaction` (the diagnosis reports targets and never
     /// rewrites ops, so it doesn't pay the map's memory).
@@ -966,6 +994,7 @@ impl<'a> DiagWalker<'a> {
                 ctm: crate::matrix::Matrix::IDENTITY,
                 clip: None,
                 clip_exact: true,
+                clip_holes: Vec::new(),
                 stroke: StrokeState {
                     width: 1.0,
                     cap: 0,
@@ -974,6 +1003,7 @@ impl<'a> DiagWalker<'a> {
                     dash: None,
                     opaque: (true, true),
                     adjust: false,
+                    fill_opaque: true,
                 },
                 text: TextState {
                     h_scale: 1.0,
@@ -992,6 +1022,7 @@ impl<'a> DiagWalker<'a> {
             path_has_point: false,
             pending_clip: None,
             path_single_rect: false,
+            path_rects: Some(Vec::new()),
             clip_undecided_hits: 0,
             code_index: 0,
             text_tm: crate::matrix::Matrix::IDENTITY,
@@ -1003,6 +1034,16 @@ impl<'a> DiagWalker<'a> {
             blockers: Vec::new(),
             show_states: BTreeMap::new(),
             path_states: BTreeMap::new(),
+            shading_cuts: BTreeMap::new(),
+            page_box: {
+                let (m, c) = (page.media_box(), page.crop_box());
+                (
+                    m.llx.min(m.urx).max(c.llx.min(c.urx)),
+                    m.lly.min(m.ury).max(c.lly.min(c.ury)),
+                    m.llx.max(m.urx).min(c.llx.max(c.urx)),
+                    m.lly.max(m.ury).min(c.lly.max(c.ury)),
+                )
+            },
             record_show_states,
             redaction_mode: false,
             type3_cache: std::collections::HashMap::new(),
@@ -1095,6 +1136,7 @@ impl<'a> DiagWalker<'a> {
                     }
                 }
                 b"CA" => st.opaque.0 = v.as_number() == Some(1.0),
+                b"ca" => st.fill_opaque = v.as_number() == Some(1.0),
                 b"BM" => {
                     let first = match &v {
                         Object::Array(a) => a.first().and_then(|x| x.as_name()),
@@ -1170,14 +1212,245 @@ impl<'a> DiagWalker<'a> {
         Ok(b.filter(|b| [b.0, b.1, b.2, b.3].iter().all(|v| v.is_finite())))
     }
 
+    /// For `sh` with the shading `name` crossing a rect, in page content:
+    /// the user-space rectangles to paint it in instead — the area it
+    /// paints less the rects (grown by the cut's slack), as overlapping
+    /// strips — and the area's page bounds; `None` when it may not be
+    /// cut. Cut only when nothing the rects showed is shown by it alone:
+    /// an axial shading (type 2), whose colour depends on the position
+    /// only through `s`, the position along its axis — affine in page
+    /// space, so its range over a rectangle is its corners' — and whose
+    /// values of `s` inside the rects are all painted outside them (each
+    /// clamped to the domain, or dropped where not extended). The area
+    /// must be exact: a clip that is a rectangle (or none: the page's
+    /// box), an axis-aligned CTM and `/BBox`; filling opaque in the
+    /// Normal blend mode when the rects overlap (it is then painted in
+    /// overlapping strips; else once, the rects as holes of a clip).
+    #[allow(clippy::type_complexity)]
+    fn shading_cut(
+        &self,
+        name: &[u8],
+    ) -> Result<Option<(Vec<ShadingClip>, (f64, f64, f64, f64))>, Error> {
+        let m = self.gs.ctm;
+        let axis = (m.b == 0.0 && m.c == 0.0) || (m.a == 0.0 && m.d == 0.0);
+        if !axis || !self.gs.clip_exact || !self.gs.clip_holes.is_empty() {
+            return Ok(None);
+        }
+        let Some(sh) = self
+            .doc
+            .resolve_resource(&self.resources, "Shading", name)?
+        else {
+            return Ok(None);
+        };
+        let d = match &sh {
+            Object::Dict(d) => d,
+            Object::Stream { dict, .. } => dict,
+            _ => return Ok(None),
+        };
+        if d.get(b"ShadingType".as_slice()).and_then(|t| t.as_i64()) != Some(2) {
+            return Ok(None);
+        }
+        let nums = |k: &[u8]| -> Result<Option<Vec<f64>>, Error> {
+            Ok(match d.get(k) {
+                Some(o) => self
+                    .doc
+                    .deref(o)?
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .map(|x| x.as_number())
+                            .collect::<Option<Vec<f64>>>()
+                    })
+                    .unwrap_or(None),
+                None => None,
+            })
+        };
+        let Some(c) = nums(b"Coords")?.filter(|c| c.len() == 4) else {
+            return Ok(None);
+        };
+        let ext = match d.get(b"Extend".as_slice()) {
+            Some(o) => match self.doc.deref(o)?.as_array() {
+                Some([a, b]) => match (a.as_bool(), b.as_bool()) {
+                    (Some(a), Some(b)) => (a, b),
+                    _ => return Ok(None),
+                },
+                _ => return Ok(None),
+            },
+            None => (false, false),
+        };
+        // The painted area, exact.
+        let Some(area) = (match self.gs.clip {
+            Some(_) => self.shading_extent(name)?,
+            None => {
+                let pb = self.page_box;
+                match self.shading_extent(name)? {
+                    Some(b) => Some((b.0.max(pb.0), b.1.max(pb.1), b.2.min(pb.2), b.3.min(pb.3))),
+                    None => Some(pb),
+                }
+            }
+        }) else {
+            return Ok(None);
+        };
+        if !(area.0 < area.2 && area.1 < area.3) {
+            return Ok(None);
+        }
+        // `s` at a page point: the user point's projection on the axis.
+        let Some(inv) = crate::redact_geom::invert(&m) else {
+            return Ok(None);
+        };
+        let (dx, dy) = (c[2] - c[0], c[3] - c[1]);
+        let dd = dx * dx + dy * dy;
+        if !(dd.is_finite() && dd > 0.0) {
+            return Ok(None);
+        }
+        let s_range = |b: &(f64, f64, f64, f64)| {
+            let mut lo = f64::INFINITY;
+            let mut hi = f64::NEG_INFINITY;
+            for (x, y) in [(b.0, b.1), (b.2, b.1), (b.0, b.3), (b.2, b.3)] {
+                let (ux, uy) = inv.transform(x, y);
+                let s = ((ux - c[0]) * dx + (uy - c[1]) * dy) / dd;
+                lo = lo.min(s);
+                hi = hi.max(s);
+            }
+            (lo, hi)
+        };
+        // The values of `s` painted over an interval: its part in [0, 1],
+        // and 0 or 1 where extended beyond.
+        let painted = |(lo, hi): (f64, f64)| -> (Option<(f64, f64)>, bool, bool) {
+            let core = (lo.max(0.0) <= hi.min(1.0)).then(|| (lo.max(0.0), hi.min(1.0)));
+            (core, lo < 0.0 && ext.0, hi > 1.0 && ext.1)
+        };
+        // The area less the rects (grown by the cut's slack), as
+        // overlapping strips, rect by rect.
+        let slack = 2.0 * crate::redact_geom::SLACK;
+        let mut pieces = vec![area];
+        let mut inside = Vec::new();
+        for r in self.rects {
+            let (x0, y0, x1, y1) = (r.llx - slack, r.lly - slack, r.urx + slack, r.ury + slack);
+            let mut next = Vec::new();
+            for p in pieces {
+                if p.2 <= x0 || p.0 >= x1 || p.3 <= y0 || p.1 >= y1 {
+                    next.push(p);
+                    continue;
+                }
+                inside.push((p.0.max(x0), p.1.max(y0), p.2.min(x1), p.3.min(y1)));
+                for q in [
+                    (p.0, p.1, x0.min(p.2), p.3),
+                    (x1.max(p.0), p.1, p.2, p.3),
+                    (p.0, p.1, p.2, y0.min(p.3)),
+                    (p.0, y1.max(p.1), p.2, p.3),
+                ] {
+                    if q.0 < q.2 && q.1 < q.3 {
+                        next.push(q);
+                    }
+                }
+            }
+            pieces = next;
+            if pieces.len() > 1000 {
+                return Ok(None);
+            }
+        }
+        if inside.is_empty() {
+            return Ok(None);
+        }
+        // What the outside shows: intervals of `s`, and the extended ends.
+        let mut cores: Vec<(f64, f64)> = Vec::new();
+        let (mut at0, mut at1) = (false, false);
+        for p in &pieces {
+            let (core, e0, e1) = painted(s_range(p));
+            if let Some(c) = core {
+                at0 |= c.0 <= 0.0;
+                at1 |= c.1 >= 1.0;
+                cores.push(c);
+            }
+            at0 |= e0;
+            at1 |= e1;
+        }
+        cores.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut merged: Vec<(f64, f64)> = Vec::new();
+        for c in cores {
+            match merged.last_mut() {
+                Some(l) if c.0 <= l.1 => l.1 = l.1.max(c.1),
+                _ => merged.push(c),
+            }
+        }
+        for q in &inside {
+            let (core, e0, e1) = painted(s_range(q));
+            if let Some(c) = core {
+                if !merged.iter().any(|l| l.0 <= c.0 && c.1 <= l.1) {
+                    return Ok(None);
+                }
+            }
+            if (e0 && !at0) || (e1 && !at1) {
+                return Ok(None);
+            }
+        }
+        // In user space (an axis-aligned CTM keeps rectangles so).
+        let user = |p: &(f64, f64, f64, f64)| {
+            let (a, b) = (inv.transform(p.0, p.1), inv.transform(p.2, p.3));
+            (a.0.min(b.0), a.1.min(b.1), a.0.max(b.0), a.1.max(b.1))
+        };
+        // The rects meeting the area as holes, when they do not overlap:
+        // painted once, so translucent paint shows as before.
+        let holes: Vec<(f64, f64, f64, f64)> = self
+            .rects
+            .iter()
+            .map(|r| (r.llx - slack, r.lly - slack, r.urx + slack, r.ury + slack))
+            .filter(|h| h.0 < area.2 && area.0 < h.2 && h.1 < area.3 && area.1 < h.3)
+            .collect();
+        let disjoint = holes.iter().enumerate().all(|(i, a)| {
+            holes[i + 1..]
+                .iter()
+                .all(|b| a.2 <= b.0 || b.2 <= a.0 || a.3 <= b.1 || b.3 <= a.1)
+        });
+        let clips = if disjoint {
+            let outer = holes.iter().fold(
+                (area.0 - 1.0, area.1 - 1.0, area.2 + 1.0, area.3 + 1.0),
+                |o, h| {
+                    (
+                        o.0.min(h.0 - 1.0),
+                        o.1.min(h.1 - 1.0),
+                        o.2.max(h.2 + 1.0),
+                        o.3.max(h.3 + 1.0),
+                    )
+                },
+            );
+            vec![ShadingClip {
+                area: user(&area),
+                outer: user(&outer),
+                holes: holes.iter().map(user).collect(),
+            }]
+        } else if self.gs.stroke.fill_opaque && self.gs.stroke.opaque.1 {
+            // Overlapping strips: opaque paint shows the same twice.
+            pieces
+                .iter()
+                .map(|p| ShadingClip {
+                    area: user(p),
+                    outer: user(p),
+                    holes: Vec::new(),
+                })
+                .collect()
+        } else {
+            return Ok(None);
+        };
+        Ok(Some((clips, area)))
+    }
+
     /// The clip in force is exactly a rectangle (`clip_exact`) that
     /// meets no rect: nothing drawn now can paint inside one.
     fn clipped_away_from_rects(&self) -> bool {
         self.gs.clip_exact
-            && self
-                .gs
-                .clip
-                .is_some_and(|c| hits_for(&c, self.rects).is_empty())
+            && self.gs.clip.is_some_and(|c| {
+                // Each rect clear of the clip, or inside one of its holes.
+                self.rects.iter().all(|r| {
+                    hits_for(&c, std::slice::from_ref(r)).is_empty()
+                        || self
+                            .gs
+                            .clip_holes
+                            .iter()
+                            .any(|h| h.0 <= r.llx && h.1 <= r.lly && r.urx <= h.2 && r.ury <= h.3)
+                })
+            })
     }
 
     fn bump_reported(&mut self) -> Result<(), Error> {
@@ -1383,6 +1656,7 @@ impl<'a> DiagWalker<'a> {
             | O::SetCmykStroke(..) => self.gs.tiling[1] = None,
             O::MoveTo(x, y) => {
                 self.path_single_rect = false;
+                self.path_rects = None;
                 self.path_point(*x, *y);
                 self.path_has_point = true;
             }
@@ -1428,6 +1702,14 @@ impl<'a> DiagWalker<'a> {
                 let m = self.gs.ctm;
                 self.path_single_rect = self.path_bounds.is_none()
                     && ((m.b == 0.0 && m.c == 0.0) || (m.a == 0.0 && m.d == 0.0));
+                if (m.b == 0.0 && m.c == 0.0) || (m.a == 0.0 && m.d == 0.0) {
+                    let (p, q) = (m.transform(*x, *y), m.transform(*x + *w, *y + *h));
+                    if let Some(v) = &mut self.path_rects {
+                        v.push((p.0.min(q.0), p.1.min(q.1), p.0.max(q.0), p.1.max(q.1)));
+                    }
+                } else {
+                    self.path_rects = None;
+                }
                 // All four corners: under a rotated or skewed CTM two
                 // opposite corners do not bound the rectangle.
                 self.path_point(*x, *y);
@@ -1441,7 +1723,7 @@ impl<'a> DiagWalker<'a> {
                 // A clip path constrains later painting — record its
                 // bounds as the clip rect (conservative: the *path*
                 // bounds, exact intersection is not computed).
-                self.pending_clip = Some(());
+                self.pending_clip = Some(matches!(op, O::ClipEvenOdd));
             }
             O::Stroke
             | O::CloseAndStroke
@@ -1623,8 +1905,9 @@ impl<'a> DiagWalker<'a> {
             O::Shading(_) if self.redaction_mode && self.clipped_away_from_rects() => {}
             // Redaction: a shading wholly inside a rect (what it may
             // paint — its clip's bounds, its /BBox — inside one) is
-            // removed whole. One crossing a rect is refused: its
-            // function and geometry are data a clip would only hide.
+            // removed whole. One crossing a rect is refused — its
+            // function and geometry are data a clip would only hide —
+            // unless it is an axial one cut below (`shading_cut`).
             O::Shading(n)
                 if self.redaction_mode
                     && self.xobject_stack.is_empty()
@@ -1643,6 +1926,26 @@ impl<'a> DiagWalker<'a> {
                     hits: hits_for(&b, self.rects),
                     detail: TargetDetail::Other {
                         what: format!("sh /{}", String::from_utf8_lossy(n)),
+                    },
+                });
+            }
+            // Redaction: an axial shading crossing a rect whose colours
+            // inside are all shown outside too is cut (`shading_cut`).
+            O::Shading(n)
+                if self.redaction_mode
+                    && self.xobject_stack.is_empty()
+                    && matches!(self.shading_cut(n), Ok(Some(_))) =>
+            {
+                let (pieces, b) = self.shading_cut(n)?.expect("checked");
+                self.shading_cuts.insert(self.op_index, pieces);
+                self.bump_reported()?;
+                self.targets.push(Target {
+                    kind: TargetKind::Shading,
+                    site: self.site(),
+                    bounds: b,
+                    hits: hits_for(&b, self.rects),
+                    detail: TargetDetail::Other {
+                        what: format!("sh /{} (cut)", String::from_utf8_lossy(n)),
                     },
                 });
             }
@@ -1776,6 +2079,72 @@ impl<'a> DiagWalker<'a> {
         }
     }
 
+    /// Whether some part of the page-space rectangle `b` outside every
+    /// rect holds the bounds of one period of the tiling pattern `n`
+    /// (its `/XStep` × `/YStep` cell under its `/Matrix`, page content's
+    /// pattern space being default user space).
+    fn tiling_period_shown(&self, n: &[u8], b: &(f64, f64, f64, f64)) -> Result<bool, Error> {
+        let Some(p) = self.doc.resolve_resource(&self.resources, "Pattern", n)? else {
+            return Ok(false);
+        };
+        let Object::Stream { dict, .. } = p else {
+            return Ok(false);
+        };
+        if dict.get(b"PatternType".as_slice()).and_then(|t| t.as_i64()) != Some(1) {
+            return Ok(false);
+        }
+        let num = |k: &[u8]| -> Result<Option<f64>, Error> {
+            Ok(match dict.get(k) {
+                Some(o) => self.doc.deref(o)?.as_number(),
+                None => None,
+            })
+        };
+        let (Some(xs), Some(ys)) = (num(b"XStep")?, num(b"YStep")?) else {
+            return Ok(false);
+        };
+        let m = match dict.get(b"Matrix".as_slice()) {
+            Some(o) => {
+                let a = self.doc.deref(o)?;
+                let v: Vec<f64> = a
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|x| x.as_number()).collect())
+                    .unwrap_or_default();
+                if v.len() != 6 {
+                    return Ok(false);
+                }
+                v
+            }
+            None => vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+        };
+        // The period's two vectors in page space, and their bounds.
+        let (v1, v2) = ((m[0] * xs, m[1] * xs), (m[2] * ys, m[3] * ys));
+        let (w, h) = (v1.0.abs() + v2.0.abs(), v1.1.abs() + v2.1.abs());
+        if !(w.is_finite() && h.is_finite()) || xs == 0.0 || ys == 0.0 {
+            return Ok(false);
+        }
+        // `b` less the rects (rect by rect), as rectangles.
+        let mut parts = vec![*b];
+        for r in self.rects {
+            let mut next = Vec::new();
+            for p in parts {
+                if p.2 <= r.llx || p.0 >= r.urx || p.3 <= r.lly || p.1 >= r.ury {
+                    next.push(p);
+                    continue;
+                }
+                next.push((p.0, p.1, r.llx.min(p.2), p.3));
+                next.push((r.urx.max(p.0), p.1, p.2, p.3));
+                let (x0, x1) = (r.llx.max(p.0), r.urx.min(p.2));
+                next.push((x0, p.1, x1, r.lly.min(p.3)));
+                next.push((x0, r.ury.max(p.1), x1, p.3));
+            }
+            parts = next;
+        }
+        // With a point of margin for the cut's own slack.
+        Ok(parts
+            .iter()
+            .any(|p| p.2 - p.0 >= w + 1.0 && p.3 - p.1 >= h + 1.0))
+    }
+
     fn paint_path_target(&mut self, op: &crate::content::Operation) -> Result<(), Error> {
         use crate::content::Operation as O;
         let is_paint = !matches!(op, O::EndPath);
@@ -1842,16 +2211,49 @@ impl<'a> DiagWalker<'a> {
                     } else {
                         // A tiling pattern paints its cell: a path it
                         // paints may only be removed whole (its cell then
-                        // left unused) or stay clear of the rects.
+                        // left unused), stay clear of the rects, or — a
+                        // rectangle — be cut where a whole period stays
+                        // shown outside (`tiling_period_shown`).
                         if self.redaction_mode {
                             let fills = !matches!(op, O::Stroke | O::CloseAndStroke);
                             let sides = [fills, stroked];
                             let tiled = (0..2).any(|i| sides[i] && self.gs.tiling[i].is_some());
-                            let meets = !hits_for(&b, self.rects).is_empty();
+                            // A path of axis-aligned rectangles meets a
+                            // rect only if one of them does (a cut's
+                            // pieces lie around it).
+                            let meets = match (&self.path_rects, stroked) {
+                                (Some(v), false) if !v.is_empty() => {
+                                    v.iter().any(|p| !hits_for(p, self.rects).is_empty())
+                                }
+                                _ => !hits_for(&b, self.rects).is_empty(),
+                            };
                             let inside = self.rects.iter().any(|r| {
                                 b.0 >= r.llx && b.1 >= r.lly && b.2 <= r.urx && b.3 <= r.ury
                             });
-                            if tiled && meets && (!inside || !self.xobject_stack.is_empty()) {
+                            // A rectangle filled with a tiling pattern
+                            // crossing a rect is cut like any rectangle
+                            // when what stays outside still shows a
+                            // whole period of the pattern: every part of
+                            // the cell the rect showed is shown there
+                            // too, so the cut removes nothing only it
+                            // held.
+                            let periodic = tiled
+                                && meets
+                                && !inside
+                                && fills
+                                && self.xobject_stack.is_empty()
+                                && self.path_single_rect
+                                && !(stroked && self.gs.tiling[1].is_some())
+                                && match self.gs.tiling[0].clone() {
+                                    Some(n) => self.tiling_period_shown(&n, &b)?,
+                                    None => false,
+                                };
+                            if periodic {
+                                if let Some(n) = &self.gs.tiling[0] {
+                                    self.tiling_kept.insert(n.clone());
+                                }
+                            } else if tiled && meets && (!inside || !self.xobject_stack.is_empty())
+                            {
                                 self.push_uncertain(Uncertain {
                                     kind: TargetKind::Path,
                                     site: self.site(),
@@ -1906,8 +2308,28 @@ impl<'a> DiagWalker<'a> {
             }
         }
         // Install a pending clip as the *path's* bounds (approximation).
-        if self.pending_clip.take().is_some() {
-            if !self.path_single_rect {
+        if let Some(even_odd) = self.pending_clip.take() {
+            // An even-odd clip of an outer rectangle and disjoint
+            // rectangles inside it: the outer less the holes, exact.
+            let frame = match (&self.path_rects, even_odd) {
+                (Some(v), true) if v.len() >= 2 && self.gs.clip_holes.is_empty() => {
+                    let o = v[0];
+                    let holes = &v[1..];
+                    let inside = holes
+                        .iter()
+                        .all(|h| o.0 <= h.0 && o.1 <= h.1 && h.2 <= o.2 && h.3 <= o.3);
+                    let disjoint = holes.iter().enumerate().all(|(i, a)| {
+                        holes[i + 1..]
+                            .iter()
+                            .all(|b| a.2 <= b.0 || b.2 <= a.0 || a.3 <= b.1 || b.3 <= a.1)
+                    });
+                    (inside && disjoint).then(|| holes.to_vec())
+                }
+                _ => None,
+            };
+            if let Some(holes) = frame {
+                self.gs.clip_holes = holes;
+            } else if !self.path_single_rect {
                 self.gs.clip_exact = false;
             }
             if let Some(b) = self.path_bounds {
@@ -1919,6 +2341,7 @@ impl<'a> DiagWalker<'a> {
         }
         self.path_bounds = None;
         self.path_has_point = false;
+        self.path_rects = Some(Vec::new());
         self.path_single_rect = false;
         Ok(())
     }

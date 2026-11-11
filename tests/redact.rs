@@ -307,10 +307,14 @@ fn paths() {
         .collect();
     assert_eq!(rects.len(), 1, "the rect outside stays");
 
-    // A curve crossing a rect's edge is refused.
+    // A curve crossing a rect's edge is cut (0.10).
     let crossing = one_page("0 0 1 rg 30 60 m 90 60 90 90 30 90 c f", "", "", vec![]);
-    let e = unsupported(run(&crossing, vec![(40.0, 40.0, 160.0, 160.0)]));
-    assert!(e.contains("crossing a rect's edge"), "{e}");
+    assert_eq!(
+        run(&crossing, vec![(40.0, 40.0, 160.0, 160.0)])
+            .unwrap()
+            .paths_cut,
+        1
+    );
     let clipping = one_page("q 60 60 30 30 re W f Q", "", "", vec![]);
     let e = unsupported(run(&clipping, vec![(40.0, 40.0, 160.0, 160.0)]));
     assert!(e.contains("also clips"), "{e}");
@@ -550,12 +554,15 @@ fn links() {
 // Independent review (P0s, all fixed): content the walker placed
 // wrongly was kept while verification, using the same walker, agreed.
 
-/// A rectangle under a rotated CTM is bounded by all four corners.
+/// A rectangle under a rotated CTM is bounded by all four corners (cut
+/// where it crosses a rect, 0.10).
 #[test]
 fn rotated_rectangle_path_is_located() {
     let pdf = one_page("q 1 1 -1 1 100 20 cm 0 0 40 40 re f Q", "", "", vec![]);
-    let e = unsupported(run(&pdf, vec![(70.0, 50.0, 80.0, 60.0)]));
-    assert!(e.contains("crossing a rect's edge"), "{e}");
+    let rect = (70.0, 50.0, 80.0, 60.0);
+    let r = run(&pdf, vec![rect]).unwrap();
+    assert_eq!(r.paths_cut, 1);
+    let _ = lost_outside(&reds(&pdf), &reds(&r.output), rect);
     let r = run(&pdf, vec![(40.0, 0.0, 160.0, 120.0)]).unwrap();
     assert_eq!(r.paths_removed, 1);
 }
@@ -2375,7 +2382,8 @@ fn optional_content_is_taken_as_drawn() {
 }
 
 /// A shading fills the clip: accepted under a rectangular clip clear of
-/// the rects, refused otherwise.
+/// the rects; crossing one, cut when its colours inside are shown
+/// outside too (0.10).
 #[test]
 fn a_shading_clipped_away_from_the_rects_is_kept() {
     let sh = "/Shading << /Sh << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 200 0] \
@@ -2390,12 +2398,12 @@ fn a_shading_clipped_away_from_the_rects_is_kept() {
     let r = run(&ok, vec![RECT]).unwrap();
     assert_eq!(r.codes_removed, 10);
     assert_ne!(at(&r.output, 100, 20), 255, "the shading is kept");
-    let refused = doc_with(
+    let crossing = doc_with(
         &format!("/Font << /F1 20 0 R >> {sh}"),
         &[format!("{SECRET} q 0 0 200 100 re W n /Sh sh Q").as_bytes()],
         objs,
     );
-    assert!(unsupported(run(&refused, vec![RECT])).contains("shading"));
+    assert_eq!(run(&crossing, vec![RECT]).unwrap().shadings_cut, 1);
 }
 
 // Pre-release review (P0s, fixed).
@@ -2754,7 +2762,8 @@ fn embedded_substitutes_use_canonical_glyph_names() {
 }
 
 // Curves crossing a rect: stroked curves are cut by subdivision into
-// exact sub-curves; fills and dashed curves stay refused.
+// exact sub-curves, filled shapes clipped (0.10); dashed curves stay
+// refused.
 
 #[test]
 fn stroked_curves_crossing_a_rect_are_cut() {
@@ -2797,10 +2806,7 @@ fn stroked_curves_crossing_a_rect_are_cut() {
 }
 
 #[test]
-fn curved_fills_and_dashed_curves_are_refused() {
-    let fill = one_page("0 0 1 rg 30 60 m 90 60 90 90 30 90 c f", "", "", vec![]);
-    assert!(unsupported(run(&fill, vec![(40.0, 40.0, 160.0, 160.0)]))
-        .contains("crossing a rect's edge"));
+fn dashed_curves_are_refused() {
     let dashed = one_page(
         "[4 2] 0 d 2 w 20 100 m 60 180 140 20 180 100 c S",
         "",
@@ -4436,8 +4442,11 @@ fn shadings_inside_a_rect_are_removed() {
     assert!(!raw_contains(&r.output, b"0.456"));
 }
 
-/// A shading crossing a rect, unbounded, shared with another page,
-/// drawn in a form or also painted elsewhere on the page is refused.
+/// A shading crossing a rect (0.10: cut when its colours inside are
+/// shown outside too, here one colour everywhere) — clipped, unbounded,
+/// shared with another page — is cut; one drawn in a form, a
+/// function-based one, and one wholly inside a rect also painted
+/// elsewhere on the page are refused.
 #[test]
 fn shadings_that_cannot_be_removed_alone() {
     let page_res = "/Font << /F1 20 0 R >> /Shading << /S1 30 0 R >>";
@@ -4448,23 +4457,18 @@ fn shadings_that_cannot_be_removed_alone() {
         format!("{SECRET} /S1 sh"),
     ] {
         let pdf = doc_with(page_res, &[c.as_bytes()], objs.clone());
-        let e = unsupported(run(&pdf, vec![RECT]));
-        assert!(e.contains("shading"), "{c}: {e}");
+        assert_eq!(run(&pdf, vec![RECT]).unwrap().shadings_cut, 1, "{c}");
     }
     // Page 2 uses the same shading object.
     let pdf = doc_with(
         page_res,
         &[
-            format!("{SECRET} q 60 95 20 10 re W n /S1 sh Q").as_bytes(),
+            format!("{SECRET} q 30 95 50 10 re W n /S1 sh Q").as_bytes(),
             b"q 0 0 5 5 re W n /S1 sh Q",
         ],
         objs.clone(),
     );
-    let e = unsupported(run(&pdf, vec![RECT]));
-    assert!(
-        e.contains("shading used elsewhere") || e.contains("shared"),
-        "{e}"
-    );
+    assert_eq!(run(&pdf, vec![RECT]).unwrap().shadings_cut, 1);
     // In a form.
     let mut o2 = objs.clone();
     o2.push((
@@ -4480,8 +4484,23 @@ fn shadings_that_cannot_be_removed_alone() {
         o2,
     );
     assert!(unsupported(run(&pdf, vec![RECT])).contains("shading"));
-    // Still painted elsewhere on the page: refused — the kept use would
-    // keep the function over the part painted inside.
+    // Function-based: its colour depends on the position itself.
+    let mut o3 = font_objs();
+    o3.push((
+        30,
+        b"<< /ShadingType 1 /ColorSpace /DeviceGray /Domain [0 200 0 200] \
+          /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >>"
+            .to_vec(),
+    ));
+    let pdf = doc_with(
+        page_res,
+        &[format!("{SECRET} q 30 95 50 10 re W n /S1 sh Q").as_bytes()],
+        o3,
+    );
+    assert!(unsupported(run(&pdf, vec![RECT])).contains("shading"));
+    // Wholly inside a rect (removed) and still painted elsewhere on the
+    // page: refused — the kept use would keep the function over the part
+    // painted inside.
     let pdf = doc_with(
         page_res,
         &[format!("{SECRET} q 60 95 20 10 re W n /S1 sh Q q 0 0 5 5 re W n /S1 sh Q").as_bytes()],
@@ -4540,12 +4559,30 @@ fn tiling_patterns_follow_their_uses() {
     let ops = doc.page_operations(&doc.pages()[0]).unwrap();
     let shown: Vec<String> = ops.iter().map(|o| o.to_string()).collect();
     assert!(!shown.iter().any(|o| o.contains("/P1")), "{shown:?}");
-    // Crossing, and text painted with it meeting the rect: refused.
+    // Crossing, what stays outside showing a whole period (4 × 4 in a
+    // 15 × 10 strip): cut (0.10).
+    let pdf = doc_with(
+        res,
+        &[format!("{SECRET} /Pattern cs /P1 scn 30 95 50 10 re f").as_bytes()],
+        objs.clone(),
+    );
+    assert_eq!(run(&pdf, vec![RECT]).unwrap().paths_cut, 1);
+    // Crossing with a period larger than what stays outside, and text
+    // painted with one meeting the rect: refused.
+    let mut big = objs.clone();
+    big.push((
+        31,
+        stream_obj(
+            "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 20 /YStep 20 /Resources << >>",
+            b"0.321 0.654 0.987 rg 0 0 2 2 re f",
+        ),
+    ));
+    let res_big = "/Font << /F1 20 0 R >> /Pattern << /P1 30 0 R /P2 31 0 R >>";
     for c in [
-        format!("{SECRET} /Pattern cs /P1 scn 30 95 50 10 re f"),
+        format!("{SECRET} /Pattern cs /P2 scn 30 95 50 10 re f"),
         "/Pattern cs /P1 scn BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET".to_string(),
     ] {
-        let pdf = doc_with(res, &[c.as_bytes()], objs.clone());
+        let pdf = doc_with(res_big, &[c.as_bytes()], big.clone());
         let e = unsupported(run(&pdf, vec![RECT]));
         assert!(e.contains("tiling pattern"), "{c}: {e}");
     }
@@ -7609,4 +7646,242 @@ fn non_embedded_truetype_text_is_redacted_after_embedding() {
     }
     let pdf = make("ArialMT", 4);
     assert!(embed_run(&pdf, vec![RECT]).is_err(), "symbolic");
+}
+
+/// Filled shapes other than disjoint rectangles — curves, polygons,
+/// self-intersecting stars under either fill rule, a ring with a hole,
+/// overlapping or rotated rectangles, under a skewed CTM, filled and
+/// stroked — crossing a rect are clipped to the plane outside it: no ink
+/// inside, none lost away from the rect, no point of the output's paths
+/// inside the rect, and the output redacted again is unchanged. (0.10)
+#[test]
+fn filled_shapes_crossing_a_rect_are_cut() {
+    let circle = "100 160 m 133.1 160 160 133.1 160 100 c 160 66.9 133.1 40 100 40 c \
+                  66.9 40 40 66.9 40 100 c 40 133.1 66.9 160 100 160 c h";
+    let star = "100 180 m 150 20 l 20 120 l 180 120 l 50 20 l h";
+    let ring = "20 20 m 180 20 l 180 180 l 20 180 l h 60 60 m 60 140 l 140 140 l 140 60 l h";
+    let shapes = [
+        format!("{circle} f"),
+        format!("{star} f"),
+        format!("{star} f*"),
+        format!("{ring} f"),
+        format!("{ring} f*"),
+        "20 20 100 100 re 60 60 100 100 re f".to_string(),
+        "q 0.8 0.6 -0.6 0.8 100 0 cm 0 0 120 60 re f Q".to_string(),
+        format!("q 1 0.3 0.2 1 -10 -20 cm {circle} f Q"),
+        format!("0 0 1 RG 1 w {circle} B"),
+    ];
+    let inside = |x: f64, y: f64, r: (f64, f64, f64, f64)| x > r.0 && x < r.2 && y > r.1 && y < r.3;
+    for rects in [
+        vec![(85.0, 80.0, 115.0, 175.0)],
+        vec![(85.0, 80.0, 115.0, 175.0), (30.0, 30.0, 70.0, 60.0)],
+    ] {
+        for c in &shapes {
+            let pdf = one_page(&format!("0 g {c}"), "", "", vec![]);
+            let r = run(&pdf, rects.clone()).unwrap_or_else(|e| panic!("{c}: {e}"));
+            assert_eq!(r.paths_cut, 1, "{c}");
+            let (a, b) = (reds(&pdf), reds(&r.output));
+            for rect in &rects {
+                // No ink inside (`lost_outside` asserts it); nothing lost
+                // more than the cut's anti-aliased edge away from it.
+                let _ = lost_outside(&a, &b, *rect);
+            }
+            // Away from the rects no ink is lost; the kept sub-curves are
+            // the original geometry, which a rasteriser flattens a little
+            // differently, so anti-aliased edge pixels may shift.
+            let mut shifted = 0;
+            for y in 0..200u32 {
+                for x in 0..200u32 {
+                    let (xf, yf) = (x as f64 + 0.5, 199.5 - y as f64);
+                    let near = rects.iter().any(|q| {
+                        xf > q.0 - 2.0 && xf < q.2 + 2.0 && yf > q.1 - 2.0 && yf < q.3 + 2.0
+                    });
+                    let i = (y * 200 + x) as usize;
+                    if !near {
+                        assert!(
+                            !(a[i] < 64 && b[i] > 192),
+                            "{c}: ink lost at ({x}, {y}) {} → {}",
+                            a[i],
+                            b[i]
+                        );
+                        shifted += usize::from(a[i] != b[i]);
+                    }
+                }
+            }
+            assert!(
+                shifted < 60,
+                "{c}: {shifted} pixels changed away from the rects"
+            );
+            // No point of a path, in page space, inside a rect.
+            let doc = Document::from_bytes(&r.output).unwrap();
+            let mut ctm = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0f64];
+            let mut stack = Vec::new();
+            for o in doc.page_operations(&doc.pages()[0]).unwrap() {
+                use kasane_pdf::Operation as O;
+                let pts: Vec<(f64, f64)> = match o {
+                    O::SaveState => {
+                        stack.push(ctm);
+                        vec![]
+                    }
+                    O::RestoreState => {
+                        ctm = stack.pop().unwrap();
+                        vec![]
+                    }
+                    O::ConcatMatrix(m) => {
+                        let n = [m.a, m.b, m.c, m.d, m.e, m.f];
+                        ctm = [
+                            n[0] * ctm[0] + n[1] * ctm[2],
+                            n[0] * ctm[1] + n[1] * ctm[3],
+                            n[2] * ctm[0] + n[3] * ctm[2],
+                            n[2] * ctm[1] + n[3] * ctm[3],
+                            n[4] * ctm[0] + n[5] * ctm[2] + ctm[4],
+                            n[4] * ctm[1] + n[5] * ctm[3] + ctm[5],
+                        ];
+                        vec![]
+                    }
+                    O::MoveTo(x, y) | O::LineTo(x, y) => vec![(x, y)],
+                    O::CurveTo(a, b, c, d, e, f) => vec![(a, b), (c, d), (e, f)],
+                    O::Rectangle(x, y, w, h) => vec![(x, y), (x + w, y + h)],
+                    _ => vec![],
+                };
+                for (x, y) in pts {
+                    let (px, py) = (
+                        ctm[0] * x + ctm[2] * y + ctm[4],
+                        ctm[1] * x + ctm[3] * y + ctm[5],
+                    );
+                    assert!(
+                        !rects.iter().any(|q| inside(px, py, *q)),
+                        "{c}: a point inside ({px}, {py})"
+                    );
+                }
+            }
+            // Idempotent: nothing left to cut.
+            let again = run(&r.output, rects.clone()).unwrap();
+            assert_eq!(again.paths_cut + again.paths_removed, 0, "{c}");
+        }
+    }
+}
+
+/// An axial shading (`sh`) crossing a rect is painted outside it only
+/// when every colour it showed inside is shown outside too: under an
+/// even-odd clip with the rect as a hole (translucent paint shows as
+/// before), or in overlapping strips for opaque paint when rects
+/// overlap. Refused: values of the axis only the rect showed, a
+/// function-based or radial shading, overlapping rects with translucent
+/// paint. Nothing is painted inside; the output redacted again is
+/// unchanged. (0.10)
+#[test]
+fn axial_shadings_crossing_a_rect() {
+    let make = |content: &str, shading: &str| {
+        one_page(
+            content,
+            "/Resources << /Shading << /Sh 30 0 R >> /ExtGState << /G << /ca 0.5 >> >> >>",
+            "",
+            vec![(30, shading.as_bytes().to_vec())],
+        )
+    };
+    let axial = |extend: &str| {
+        format!(
+            "<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [20 0 180 0] /Extend [{extend}] \
+             /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >> >>"
+        )
+    };
+    let rect = (60.0, 60.0, 120.0, 120.0);
+    let both = vec![rect, (100.0, 100.0, 150.0, 150.0)];
+    for (name, content, rects) in [
+        ("clipped", "q 0 0 200 200 re W n /Sh sh Q", vec![rect]),
+        ("unclipped", "/Sh sh", vec![rect]),
+        (
+            "translucent",
+            "q /G gs 10 10 180 180 re W n /Sh sh Q",
+            vec![rect],
+        ),
+        (
+            "overlapping rects, opaque",
+            "q 0 0 200 200 re W n /Sh sh Q",
+            both.clone(),
+        ),
+    ] {
+        let pdf = make(content, &axial("true true"));
+        let r = run(&pdf, rects.clone()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(r.shadings_cut, 1, "{name}");
+        let (a, b) = (reds(&pdf), reds(&r.output));
+        for q in &rects {
+            let lost = lost_outside(&a, &b, *q);
+            // Only the cut's edge may differ (anti-aliasing): the other
+            // rect's cut when there are two.
+            assert!(
+                rects.len() > 1 || lost < 400,
+                "{name}: {lost} pixels changed outside"
+            );
+        }
+        let again = run(&r.output, rects).unwrap();
+        assert_eq!(again.shadings_cut + again.shadings_removed, 0, "{name}");
+    }
+    for (name, content, shading, rects) in [
+        (
+            "values only the rect shows",
+            "q 0 0 200 200 re W n /Sh sh Q",
+            axial("false false"),
+            vec![(150.0, 0.0, 200.0, 200.0)],
+        ),
+        (
+            "translucent, overlapping rects",
+            "q /G gs 0 0 200 200 re W n /Sh sh Q",
+            axial("true true"),
+            both.clone(),
+        ),
+        (
+            "radial",
+            "q 0 0 200 200 re W n /Sh sh Q",
+            "<< /ShadingType 3 /ColorSpace /DeviceRGB /Coords [100 100 0 100 100 90] \
+             /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >> >>"
+                .to_string(),
+            vec![rect],
+        ),
+        (
+            "function-based",
+            "q 0 0 200 200 re W n /Sh sh Q",
+            "<< /ShadingType 1 /ColorSpace /DeviceGray /Domain [0 200 0 200] \
+             /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >>"
+                .to_string(),
+            vec![rect],
+        ),
+    ] {
+        let e = unsupported(run(&make(content, &shading), rects));
+        assert!(e.contains("shading"), "{name}: {e}");
+    }
+}
+
+/// A rectangle filled with a tiling pattern crossing a rect is cut
+/// when what stays outside shows a whole period of the pattern (every
+/// part of the cell the rect showed is shown there too); refused when
+/// it does not. (0.10)
+#[test]
+fn tiling_pattern_fills_crossing_a_rect() {
+    let make = |step: u32, fill: &str| {
+        one_page(
+            &format!("/Pattern cs /P scn {fill} f"),
+            "/Resources << /Pattern << /P 30 0 R >> >>",
+            "",
+            vec![(
+                30,
+                stream_obj(
+                    &format!(
+                        "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 {step} {step}] \
+                         /XStep {step} /YStep {step} /Resources << >>"
+                    ),
+                    format!("0 0 1 rg 0 0 {} {} re f", step / 2, step / 2).as_bytes(),
+                ),
+            )],
+        )
+    };
+    let rect = (60.0, 60.0, 120.0, 120.0);
+    let pdf = make(10, "0 0 200 200 re");
+    let r = run(&pdf, vec![rect]).unwrap();
+    assert_eq!(r.paths_cut, 1);
+    let _ = lost_outside(&reds(&pdf), &reds(&r.output), rect);
+    // A period larger than anything left outside.
+    let e = unsupported(run(&make(100, "50 50 80 80 re"), vec![rect]));
+    assert!(e.contains("tiling pattern"), "{e}");
 }

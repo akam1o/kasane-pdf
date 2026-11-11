@@ -16,6 +16,13 @@ versions follow [Semantic Versioning](https://semver.org/).
   non-symbolic simple TrueType font named after a Standard 14 font or
   its alias (ArialMT, TimesNewRomanPSMT …).
 
+- `redact` cuts more of what crosses a rect: any filled shape (curves,
+  polygons, overlapping or rotated rectangles; it was refused unless
+  disjoint axis-aligned rectangles), an axial shading whose colours
+  inside are all shown outside (`Redaction::shadings_cut`), and a
+  rectangle filled with a tiling pattern whose part outside shows a
+  whole period.
+
 ### Changed
 - With `remove_javascript`, what is left of the catalog's `/AA` after
   its scripts are removed is carried (it was refused whole).

@@ -199,6 +199,10 @@ pub struct Redaction {
     /// Shadings (`sh`) removed, each painting only inside a rect; the
     /// shading resources only they used are not carried.
     pub shadings_removed: u64,
+    /// Axial shadings (`sh`) crossing a rect, painted outside it only:
+    /// every colour they showed inside is shown outside too, so the
+    /// shading keeps nothing only the rect showed.
+    pub shadings_cut: u64,
     /// `/Link` annotations removed because their `/Rect` met a rect
     /// (with their action or destination); links outside are kept.
     pub links_removed: u64,
@@ -321,6 +325,7 @@ impl std::fmt::Debug for Redaction {
             .field("paths_removed", &self.paths_removed)
             .field("paths_cut", &self.paths_cut)
             .field("shadings_removed", &self.shadings_removed)
+            .field("shadings_cut", &self.shadings_cut)
             .field("links_removed", &self.links_removed)
             .field("annotations_removed", &self.annotations_removed)
             .field("original_names_removed", &self.original_names_removed)
@@ -618,6 +623,7 @@ fn redact_doc(
         paths_removed: s.paths_removed_total,
         paths_cut: s.paths_cut_total,
         shadings_removed: s.shadings_removed_total,
+        shadings_cut: s.shadings_cut_total,
         links_removed: s.links_removed_total,
         annotations_removed: s.annots_removed_total,
         original_names_removed: s.names_pruned_total,
@@ -684,17 +690,20 @@ fn verify(
         + again.pixels_changed_total
         + again.paths_removed_total
         + again.paths_cut_total
+        + again.shadings_removed_total
+        + again.shadings_cut_total
         + again.links_removed_total
         + again.annots_removed_total
         != 0
     {
         return Err(fail(format!(
-            "the rects still hit {} codes, {} nonzero pixels, {} paths, {} paths to cut, {} links, \
-             {} annotations",
+            "the rects still hit {} codes, {} nonzero pixels, {} paths, {} paths to cut, {} \
+             shadings, {} links, {} annotations",
             again.codes_removed_total,
             again.pixels_changed_total,
             again.paths_removed_total,
             again.paths_cut_total,
+            again.shadings_removed_total + again.shadings_cut_total,
             again.links_removed_total,
             again.annots_removed_total
         )));

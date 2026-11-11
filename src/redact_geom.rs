@@ -4,9 +4,11 @@
 //! paints reaches inside the rect, while what it paints outside stays:
 //!
 //! - **Fills** of axis-aligned rectangles (in page space) become the
-//!   rectangles' difference with the rects — exact. Several rectangles
-//!   are cut only when they do not overlap (so the fill rule does not
-//!   matter).
+//!   rectangles' difference with the rects — exact — when they do not
+//!   overlap. Any other filled shape (curves, polygons, overlapping or
+//!   rotated rectangles) is clipped to the plane outside the rects
+//!   (`cut_fill`): curves stay exact where they do not cross a cut,
+//!   and the fill rule is kept.
 //! - **Strokes** of straight segments are cut in user space along
 //!   their centreline, where the segment's cross-section (and cap)
 //!   would reach the rect's parallelogram, so the remaining band, caps
@@ -16,9 +18,7 @@
 //!   pattern's phase set to where the piece starts on the original
 //!   subpath (in `q … Q`), so the dashes outside fall where they did.
 //!
-//! Anything else that comes near a rect — curves, other fill shapes,
-//! overlapping rectangles — refuses. A path that keeps clear of every
-//! rect is left exactly as it was.
+//! A path that keeps clear of every rect is left exactly as it was.
 
 use crate::content::Operation;
 use crate::error::Error;
@@ -252,28 +252,28 @@ pub(crate) fn cut_path(
 
     // ---- fill --------------------------------------------------------
     let mut fill_rects: Option<Vec<[f64; 4]>> = None; // page-space pieces
+    let mut fill_loops: Option<Vec<Vec<USeg>>> = None; // user-space pieces
     if fill {
         let hull = |s: &Subpath| bbox(&s.pts);
         let near: Vec<bool> = subs
             .iter()
             .map(|s| tested.iter().any(|r| overlaps_open(&hull(s), r)))
             .collect();
-        if near.iter().any(|&n| n) {
-            let boxes: Vec<[f64; 4]> = subs
-                .iter()
-                .map(|s| {
-                    axis_rect(s).ok_or_else(|| {
-                        unsupported("a filled shape that is not an axis-aligned rectangle")
-                    })
-                })
-                .collect::<Result<_, _>>()?;
-            for (i, a) in boxes.iter().enumerate() {
-                for b in &boxes[i + 1..] {
-                    if a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3] {
-                        return Err(unsupported("overlapping filled rectangles"));
-                    }
-                }
-            }
+        let boxes: Option<Vec<[f64; 4]>> = subs.iter().map(axis_rect).collect();
+        let disjoint = boxes.as_ref().is_some_and(|boxes| {
+            boxes.iter().enumerate().all(|(i, a)| {
+                boxes[i + 1..]
+                    .iter()
+                    .all(|b| !(a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]))
+            })
+        });
+        if near.iter().any(|&n| n) && !disjoint {
+            // Any other shape: each subpath near a rect clipped to the
+            // plane outside the rects, curves kept exact where they do
+            // not cross a cut (`cut_fill`).
+            fill_loops = Some(cut_fill(&subs, &near, &m, rects)?);
+        } else if near.iter().any(|&n| n) {
+            let boxes = boxes.expect("disjoint rectangles");
             let _ = even_odd; // disjoint pieces fill alike under either rule
             let mut pieces = Vec::new();
             for b in boxes {
@@ -605,7 +605,7 @@ pub(crate) fn cut_path(
         }
     }
 
-    if fill_rects.is_none() && stroke_lines.is_none() {
+    if fill_rects.is_none() && fill_loops.is_none() && stroke_lines.is_none() {
         return Ok(Cut::Unchanged);
     }
 
@@ -613,9 +613,28 @@ pub(crate) fn cut_path(
     let back = |p: (f64, f64)| inv.transform(p.0, p.1);
     let mut ops = Vec::new();
     if fill {
-        match &fill_rects {
-            Some(rs) => {
+        match (&fill_rects, &fill_loops) {
+            (_, Some(loops)) => {
+                // One path, one fill: the pieces' windings add up to the
+                // original's outside the rects (see `cut_fill`).
+                for l in loops {
+                    push_segments(&mut ops, l, true);
+                }
+                if !loops.is_empty() {
+                    ops.push(if even_odd { O::FillEvenOdd } else { O::Fill });
+                }
+            }
+            (Some(rs), None) => {
+                let axis = (m.b == 0.0 && m.c == 0.0) || (m.a == 0.0 && m.d == 0.0);
                 for r in rs {
+                    // Under an axis-aligned CTM a piece is a rectangle in
+                    // user space too: written as one (`re`).
+                    if axis {
+                        let (p, q) = (back((r[0], r[1])), back((r[2], r[3])));
+                        let (x0, y0) = (p.0.min(q.0), p.1.min(q.1));
+                        ops.push(O::Rectangle(x0, y0, p.0.max(q.0) - x0, p.1.max(q.1) - y0));
+                        continue;
+                    }
                     let a = back((r[0], r[1]));
                     let b = back((r[2], r[1]));
                     let c = back((r[2], r[3]));
@@ -632,7 +651,7 @@ pub(crate) fn cut_path(
                     ops.push(O::Fill);
                 }
             }
-            None => {
+            (None, None) => {
                 // The fill is untouched: paint it as before (rule kept).
                 ops.extend(construction.iter().cloned());
                 ops.push(if even_odd { O::FillEvenOdd } else { O::Fill });
@@ -706,6 +725,183 @@ pub(crate) fn cut_path(
     Ok(Cut::Replace(ops))
 }
 
+/// The most pieces one filled path is cut into.
+const MAX_FILL_PIECES: usize = 10_000;
+
+/// The filled subpaths cut at `rects` (page space): each subpath that
+/// comes near a rect is clipped, rect by rect, to the four strips that
+/// make up the plane outside it (grown by twice the slack) — `x ≤ x0`,
+/// `x ≥ x1`, and between them `y ≤ y0`, `y ≥ y1` — the others are kept
+/// as they are. A clip to a convex region keeps the winding number of
+/// every point inside it and gives 0 outside (Sutherland–Hodgman: what
+/// it drops is closed loops of the outer half-plane), and the strips do
+/// not overlap, so the pieces filled as one path, under the original
+/// rule, paint what the original painted outside the rects and nothing
+/// inside. Closed loops in user space.
+fn cut_fill(
+    subs: &[Subpath],
+    near: &[bool],
+    m: &Matrix,
+    rects: &[Rect],
+) -> Result<Vec<Vec<USeg>>, Error> {
+    let mut budget = MAX_CURVE_PIECES;
+    // A page-space half-plane `α x + β y ≤ γ` in user space.
+    let user = |(al, be, ga): (f64, f64, f64)| {
+        (
+            al * m.a + be * m.b,
+            al * m.c + be * m.d,
+            ga - al * m.e - be * m.f,
+        )
+    };
+    let page_box = |l: &[USeg]| {
+        let pts: Vec<P2> = l
+            .iter()
+            .flat_map(|g| g.points())
+            .map(|p| m.transform(p.0, p.1))
+            .collect();
+        bbox(&pts)
+    };
+    let mut out = Vec::new();
+    for (s, &is_near) in subs.iter().zip(near) {
+        // The subpath as a closed loop (a fill closes it), without the
+        // segments that draw nothing.
+        let mut lp: Vec<USeg> = s
+            .segs
+            .iter()
+            .copied()
+            .filter(|g| g.points().iter().any(|q| *q != g.start()))
+            .collect();
+        let start = s.upts[0];
+        let last = lp.last().map(|g| g.end()).unwrap_or(start);
+        if last != start {
+            lp.push(USeg::Line(last, start));
+        }
+        if lp.len() < 2 {
+            continue; // fills nothing
+        }
+        if !is_near {
+            out.push(lp);
+            continue;
+        }
+        let mut pieces = vec![lp];
+        for r in rects {
+            let g = grow(r, 2.0 * SLACK);
+            let strips: [Vec<(f64, f64, f64)>; 4] = [
+                vec![(1.0, 0.0, g.llx)],
+                vec![(-1.0, 0.0, -g.urx)],
+                vec![(-1.0, 0.0, -g.llx), (1.0, 0.0, g.urx), (0.0, 1.0, g.lly)],
+                vec![(-1.0, 0.0, -g.llx), (1.0, 0.0, g.urx), (0.0, -1.0, -g.ury)],
+            ];
+            let mut next = Vec::new();
+            for p in pieces {
+                if !overlaps_open(&page_box(&p), &g) {
+                    next.push(p);
+                    continue;
+                }
+                for strip in &strips {
+                    let mut q = p.clone();
+                    for h in strip {
+                        q = clip_half(&q, user(*h), &mut budget)?;
+                        if q.is_empty() {
+                            break;
+                        }
+                    }
+                    if q.len() >= 2 {
+                        next.push(q);
+                    }
+                }
+            }
+            if next.len() > MAX_FILL_PIECES {
+                return Err(unsupported(
+                    "a filled shape that would cut into too many pieces",
+                ));
+            }
+            pieces = next;
+        }
+        out.extend(pieces);
+    }
+    Ok(out)
+}
+
+/// The closed loop `lp` clipped to the half-plane `a x + b y ≤ c`: its
+/// segments inside kept (a curve crossing the boundary halved until its
+/// parts are on one side, or at `MAX_SPLIT` replaced by its chord), the
+/// gaps closed along the boundary.
+fn clip_half(lp: &[USeg], h: (f64, f64, f64), budget: &mut u64) -> Result<Vec<USeg>, Error> {
+    let side = |p: P2| h.0 * p.0 + h.1 * p.1 - h.2;
+    fn split_line(a: P2, b: P2, sa: f64, sb: f64) -> Option<USeg> {
+        match (sa <= 0.0, sb <= 0.0) {
+            (true, true) => Some(USeg::Line(a, b)),
+            (false, false) => None,
+            _ => {
+                let t = sa / (sa - sb);
+                let m = (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t);
+                Some(if sa <= 0.0 {
+                    USeg::Line(a, m)
+                } else {
+                    USeg::Line(m, b)
+                })
+            }
+        }
+    }
+    fn classify(
+        g: USeg,
+        side: &dyn Fn(P2) -> f64,
+        depth: u32,
+        out: &mut Vec<USeg>,
+        budget: &mut u64,
+    ) -> Result<(), Error> {
+        if *budget == 0 {
+            return Err(unsupported(
+                "a filled shape that would split into too many pieces",
+            ));
+        }
+        *budget -= 1;
+        let v: Vec<f64> = g.points().into_iter().map(side).collect();
+        if !v.iter().all(|x| x.is_finite()) {
+            return Err(unsupported("non-finite geometry"));
+        }
+        if v.iter().all(|x| *x <= 0.0) {
+            out.push(g);
+            return Ok(());
+        }
+        if v.iter().all(|x| *x >= 0.0) {
+            return Ok(());
+        }
+        match g {
+            USeg::Line(a, b) => out.extend(split_line(a, b, v[0], v[1])),
+            USeg::Cubic(a, _, _, d) if depth >= MAX_SPLIT => {
+                out.extend(split_line(a, d, v[0], v[3]))
+            }
+            USeg::Cubic(..) => {
+                let (l, r) = g.split();
+                classify(l, side, depth + 1, out, budget)?;
+                classify(r, side, depth + 1, out, budget)?;
+            }
+        }
+        Ok(())
+    }
+    let mut kept = Vec::new();
+    for g in lp {
+        classify(*g, &side, 0, &mut kept, budget)?;
+    }
+    let mut res: Vec<USeg> = Vec::with_capacity(kept.len() + 2);
+    for g in kept {
+        if let Some(e) = res.last().map(|l: &USeg| l.end()) {
+            if e != g.start() {
+                res.push(USeg::Line(e, g.start()));
+            }
+        }
+        res.push(g);
+    }
+    if let (Some(f), Some(l)) = (res.first().map(|g| g.start()), res.last().map(|g| g.end())) {
+        if f != l {
+            res.push(USeg::Line(l, f));
+        }
+    }
+    Ok(res)
+}
+
 fn push_segments(ops: &mut Vec<Operation>, segs: &[USeg], closed: bool) {
     let Some(first) = segs.first() else { return };
     let s = first.start();
@@ -754,6 +950,15 @@ fn keep_clear(
         out.push(Some(g));
         return Ok(());
     }
+    // Within `reach` of a rect everywhere: no part of it would ever
+    // clear the rect (a part's bounds lie in its own), so it is removed
+    // now rather than halved to the limit.
+    if boxes.iter().any(|r| {
+        r.llx - reach < b[0] && b[2] < r.urx + reach && r.lly - reach < b[1] && b[3] < r.ury + reach
+    }) {
+        out.push(None);
+        return Ok(());
+    }
     if depth >= MAX_SPLIT {
         out.push(None);
         return Ok(());
@@ -783,7 +988,7 @@ fn push_polyline(ops: &mut Vec<Operation>, pts: &[(f64, f64)], closed: bool) {
 
 /// Page-space margin, far above rounding error and far below anything
 /// visible (a millionth of a point).
-const SLACK: f64 = 1e-6;
+pub(crate) const SLACK: f64 = 1e-6;
 
 fn grow(r: &Rect, d: f64) -> Rect {
     Rect {
@@ -794,7 +999,7 @@ fn grow(r: &Rect, d: f64) -> Rect {
     }
 }
 
-fn invert(m: &Matrix) -> Option<Matrix> {
+pub(crate) fn invert(m: &Matrix) -> Option<Matrix> {
     let det = m.a * m.d - m.b * m.c;
     if det == 0.0 || !det.is_finite() {
         return None;
