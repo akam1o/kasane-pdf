@@ -5908,6 +5908,10 @@ fn removed_appearance_is_not_excused_by_what_is_not_drawn() {
             "push button down",
             "/Subtype /Widget /FT /Btn /Ff 65536 /AP << /N 33 0 R /D 31 0 R >>",
         ),
+        (
+            "push button unselected state",
+            "/Subtype /Widget /FT /Btn /Ff 65536 /H /P /AS /A /AP << /N << /A 33 0 R /B 31 0 R >> >>",
+        ),
     ] {
         let pdf = page_with(
             &other(extra).replace("/Subtype /Link ", ""),

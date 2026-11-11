@@ -407,12 +407,14 @@ fn usage_turns_off(doc: &Document, u: &Object) -> Result<bool, Error> {
 }
 
 /// The value of field attribute `key` of widget `ad`, its own or
-/// inherited through `/Parent` (§12.7.4.1).
-fn field_attr(doc: &Document, ad: &Dict, key: &[u8]) -> Result<Option<Object>, Error> {
+/// inherited through `/Parent` (§12.7.4.1): `Ok(Some(None))` when no
+/// field in the chain sets it, `Ok(None)` when the chain is too long (or
+/// a cycle) to tell.
+fn field_attr(doc: &Document, ad: &Dict, key: &[u8]) -> Result<Option<Option<Object>>, Error> {
     let mut cur = ad.clone();
     for _ in 0..32 {
         if let Some(v) = cur.get(key) {
-            return Ok(Some(doc.deref(v)?));
+            return Ok(Some(Some(doc.deref(v)?)));
         }
         match cur
             .get(b"Parent".as_slice())
@@ -420,7 +422,7 @@ fn field_attr(doc: &Document, ad: &Dict, key: &[u8]) -> Result<Option<Object>, E
             .transpose()?
         {
             Some(Object::Dict(p)) => cur = p,
-            _ => return Ok(None),
+            _ => return Ok(Some(None)),
         }
     }
     Ok(None)
@@ -435,17 +437,19 @@ fn interactive_appearances(doc: &Document, ad: &Dict) -> Result<Option<Interacti
     if ad.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) != Some(b"Widget") {
         return Ok(None);
     }
-    if field_attr(doc, ad, b"FT")?
-        .as_ref()
-        .and_then(|f| f.as_name())
-        != Some(b"Btn")
-    {
+    // An attribute that cannot be told (too long a chain, a cycle): not
+    // interactive.
+    let Some(ft) = field_attr(doc, ad, b"FT")? else {
+        return Ok(None);
+    };
+    if ft.as_ref().and_then(|f| f.as_name()) != Some(b"Btn") {
         return Ok(None);
     }
     let ff = match field_attr(doc, ad, b"Ff")? {
-        None => 0,
-        Some(Object::Integer(i)) => i,
-        Some(_) => return Ok(None),
+        None => return Ok(None),
+        Some(None) => 0,
+        Some(Some(Object::Integer(i))) => i,
+        Some(Some(_)) => return Ok(None),
     };
     let flags = match ad.get(b"F".as_slice()).map(|f| doc.deref(f)).transpose()? {
         None => 0,
@@ -852,8 +856,9 @@ impl Walk<'_> {
                                 && s.contains_key(b"Off".as_slice())
                         };
                         let pick = |s: crate::object::Dict| -> Vec<Object> {
-                            let push = matches!(interactive, Some(Interactive::PushButton { .. }));
-                            if under && !toggles(&s) && !push {
+                            // A push button has no states to switch: of a
+                            // state dictionary, the selected entry only.
+                            if under && !toggles(&s) {
                                 selected
                                     .as_ref()
                                     .and_then(|n| s.get(n.as_slice()).cloned())
@@ -2256,6 +2261,52 @@ mod tests {
                 let u = usage(&doc, &|_| true, b, &Limits::default()).unwrap();
                 assert!(u.used.contains_key(&IndirectRef::new(8, 0)), "{d} {b:?}");
             }
+        }
+    }
+
+    /// A button's read-only flag inherited from farther up than the
+    /// chain is followed: not interactive (unknown is not "no flag").
+    /// (Review.)
+    #[test]
+    fn an_untold_field_attribute_is_not_interactive() {
+        for depth in [3u32, 40] {
+            let mut objs: Vec<(u32, Vec<u8>)> = vec![
+                (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] >>".to_vec(),
+                ),
+            ];
+            // Fields 100 (the root: a read-only checkbox) .. 100 + depth.
+            objs.push((100, b"<< /FT /Btn /Ff 1 /T (r) >>".to_vec()));
+            for i in 1..=depth {
+                objs.push((
+                    100 + i,
+                    format!("<< /Parent {} 0 R /T (k{i}) >>", 99 + i).into_bytes(),
+                ));
+            }
+            let doc = Document::from_bytes(&pdf(&objs)).unwrap();
+            let mut d = Dict::new();
+            d.insert(b"Subtype".to_vec(), Object::Name(b"Widget".to_vec()));
+            d.insert(b"FT".to_vec(), Object::Name(b"Btn".to_vec()));
+            d.insert(
+                b"Rect".to_vec(),
+                Object::Array(vec![
+                    Object::Integer(0),
+                    Object::Integer(0),
+                    Object::Integer(10),
+                    Object::Integer(10),
+                ]),
+            );
+            d.insert(
+                b"Parent".to_vec(),
+                Object::Ref(IndirectRef::new(100 + depth, 0)),
+            );
+            assert!(
+                interactive_appearances(&doc, &d).unwrap().is_none(),
+                "depth {depth}"
+            );
         }
     }
 }

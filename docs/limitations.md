@@ -226,6 +226,12 @@ are on the [roadmap](architecture.md#roadmap).
 - **Actions of removed links** (0.9): an indirect action or destination
   object a removed link shares with something kept stays (reported as a
   residual action and as uninspected data).
+- **Optional content over the output** (0.9): content under a group is
+  counted as drawn only when the default viewing configuration turns
+  it on, no automatic state (`/AS`) names it and its `/Usage` turns
+  nothing off; a configuration with another or an empty `/Intent`, or
+  `/BaseState /Unchanged`, counts as off. Some documents all readers
+  draw are refused for this (the safe direction).
 - **Drawn off the page** (0.9): a removed appearance or edited original
   that another page's content still draws counts as drawn even when it
   lies outside that page's boxes; it is reported in `elsewhere`, and
