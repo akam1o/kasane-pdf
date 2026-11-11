@@ -227,9 +227,15 @@ are on the [roadmap](architecture.md#roadmap).
   field held stays when something that uses it keeps it — a kept link,
   widget or screen's action (a hidden, zero-area or off-page kept link
   counts), any kept annotation's defined keys, a form field (one without
-  widgets too), an outline item, a destination, the catalog's actions, a
-  name tree. Readers that ignore generation numbers (MuPDF) may read a
-  reference to another generation as the object kasane leaves alone.
+  widgets too), an outline item, a destination, the catalog's actions
+  and settings, a name tree. Inside fonts, images, forms, appearance
+  streams, resource categories (entries the content does not use
+  included), the structure tree, optional content, page labels and
+  name-tree values every entry counts as used, so plain data (text,
+  streams, colour data, not an action, annotation or field) a private
+  key there refers to stays. Readers that ignore generation numbers
+  (MuPDF) may read a reference to another generation as the object
+  kasane leaves alone.
 - **Appearances of kept annotations** (0.9): a shown annotation kept as
   it was keeps its own appearance streams (every state, down and
   rollover), and the same bytes as removed content there are reported;

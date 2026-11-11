@@ -6694,3 +6694,260 @@ fn removed_annotations_own_data() {
             .unwrap_or_else(|e| panic!("{name}: {e}"));
     }
 }
+
+/// Only the entries a reader uses keep a removed annotation's data: not
+/// a private key inside a kept action or the AcroForm dictionary, not an
+/// `/AA` entry that names no trigger, not a key the kept annotation's
+/// subtype does not define, not an action stored where a destination
+/// belongs. A shared outline title, page label, page box, indirect
+/// destination operand or reference chain to a shared destination keeps
+/// it. (Release review.)
+#[test]
+fn removed_data_kept_only_by_typed_use() {
+    let make = |cat: &str, annots: &str, page_extra: &str, extra: Vec<(u32, Vec<u8>)>| {
+        let mut objs = vec![
+            (1, format!("<< /Type /Catalog /Pages 2 0 R {cat} >>").into_bytes()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [{annots}] {page_extra} >>"
+                )
+                .into_bytes(),
+            ),
+            (4, stream_obj("", b"0 0 5 5 re f")),
+        ];
+        objs.extend(extra);
+        build_pdf(&objs)
+    };
+    let removed_link = |a: &str| {
+        (
+            10,
+            format!("<< /Type /Annot /Subtype /Link /Rect [70 90 130 110] {a} >>").into_bytes(),
+        )
+    };
+    let removed_square = |a: &str| {
+        (
+            10,
+            format!("<< /Type /Annot /Subtype /Square /Rect [70 90 130 110] {a} >>").into_bytes(),
+        )
+    };
+    let kept_link = |a: &str| {
+        (
+            12,
+            format!("<< /Type /Annot /Subtype /Link /Rect [150 150 190 190] {a} >>").into_bytes(),
+        )
+    };
+    let action = || {
+        (
+            20,
+            b"<< /S /URI /URI (https://example.com/TYPEDMARK) >>".to_vec(),
+        )
+    };
+    let text = || (20, b"(TYPEDMARK)".to_vec());
+    let refused: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "private key inside a kept action",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    removed_link("/A 20 0 R"),
+                    kept_link("/A 21 0 R"),
+                    (
+                        21,
+                        b"<< /S /URI /URI (https://example.org/) /XPriv 20 0 R >>".to_vec(),
+                    ),
+                    action(),
+                ],
+            ),
+        ),
+        (
+            "private key in the AcroForm dictionary",
+            make(
+                "/AcroForm << /Fields [] /XPriv 20 0 R >>",
+                "10 0 R",
+                "",
+                vec![removed_link("/A 20 0 R"), action()],
+            ),
+        ),
+        (
+            "an /AA entry that names no trigger",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    removed_link("/A 20 0 R"),
+                    kept_link("/AA << /Zz 20 0 R >>"),
+                    action(),
+                ],
+            ),
+        ),
+        (
+            "a key the kept link does not define",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    removed_square("/Contents 20 0 R"),
+                    kept_link("/Opt 20 0 R"),
+                    text(),
+                ],
+            ),
+        ),
+        (
+            "private key in a kept appearance dictionary",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    removed_link("/A 20 0 R"),
+                    kept_link("/AP << /N 23 0 R /XPriv 20 0 R >>"),
+                    (23, stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 1 1]", b"")),
+                    action(),
+                ],
+            ),
+        ),
+        (
+            "private key in page resources",
+            make("", "10 0 R", "/Resources << /XPriv 20 0 R >>", vec![removed_link("/A 20 0 R"), action()]),
+        ),
+        (
+            "colour table under a private viewer preference",
+            make(
+                "/ViewerPreferences << /XPriv 24 0 R >>",
+                "10 0 R",
+                "",
+                vec![
+                    removed_link("/AP << /N 23 0 R >>"),
+                    (
+                        23,
+                        stream_obj(
+                            "/Type /XObject /Subtype /Form /BBox [0 0 60 20] /Resources << /ColorSpace << /C 24 0 R >> >>",
+                            b"/C cs 1 sc 0 0 10 10 re f",
+                        ),
+                    ),
+                    (24, b"[/Indexed /DeviceRGB 1 <123456abcdef>]".to_vec()),
+                ],
+            ),
+        ),
+        (
+            "an action where a destination belongs",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    removed_link("/A 20 0 R"),
+                    kept_link("/Dest 20 0 R"),
+                    action(),
+                ],
+            ),
+        ),
+    ];
+    for (name, pdf) in refused {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let e = unsupported(redact(
+            &doc,
+            &[(0, vec![RECT])],
+            &RedactOptions::new().remove_annotations(true),
+        ));
+        assert!(e.contains("failed verification"), "{name}: {e}");
+    }
+    let kept: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "an outline title",
+            make(
+                "/Outlines 50 0 R",
+                "10 0 R",
+                "",
+                vec![
+                    removed_square("/Contents 20 0 R"),
+                    text(),
+                    (
+                        50,
+                        b"<< /Type /Outlines /First 51 0 R /Last 51 0 R /Count 1 >>".to_vec(),
+                    ),
+                    (
+                        51,
+                        b"<< /Title 20 0 R /Parent 50 0 R /Dest [3 0 R /Fit] >>".to_vec(),
+                    ),
+                ],
+            ),
+        ),
+        (
+            "a page label",
+            make(
+                "/PageLabels << /Nums [0 << /P 20 0 R >>] >>",
+                "10 0 R",
+                "",
+                vec![removed_square("/Contents 20 0 R"), text()],
+            ),
+        ),
+        (
+            "a page box",
+            make(
+                "",
+                "10 0 R",
+                "/CropBox 20 0 R",
+                vec![
+                    removed_square("/Contents (x) /RD 20 0 R"),
+                    (20, b"[0 0 200 200]".to_vec()),
+                ],
+            ),
+        ),
+        (
+            "an indirect destination operand",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    removed_link("/Dest [3 0 R /XYZ 21 0 R 200 1]"),
+                    kept_link("/Dest [3 0 R /XYZ 21 0 R 200 1]"),
+                    (21, b"10".to_vec()),
+                ],
+            ),
+        ),
+        (
+            "a reset action naming a kept field",
+            make(
+                "/AcroForm << /Fields [70 0 R] >>",
+                "10 0 R 71 0 R",
+                "",
+                vec![
+                    removed_link("/A << /S /ResetForm /Fields [70 0 R] >>"),
+                    (70, b"<< /FT /Tx /T (f) /Kids [71 0 R] >>".to_vec()),
+                    (71, b"<< /Type /Annot /Subtype /Widget /Rect [150 150 190 190] /Parent 70 0 R >>".to_vec()),
+                ],
+            ),
+        ),
+        (
+            "a chain to a shared destination",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    removed_link("/Dest 21 0 R"),
+                    kept_link("/Dest 21 0 R"),
+                    (21, b"22 0 R".to_vec()),
+                    (22, b"[3 0 R /Fit]".to_vec()),
+                ],
+            ),
+        ),
+    ];
+    for (name, pdf) in kept {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        redact(
+            &doc,
+            &[(0, vec![RECT])],
+            &RedactOptions::new().remove_annotations(true),
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+}

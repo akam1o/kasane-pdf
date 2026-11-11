@@ -661,11 +661,77 @@ fn current_hop(doc: &Document, overlay: &Overlay, r: IndirectRef) -> Result<Obje
 /// field: what they refer to is not the annotation's own data.
 const LINKS_OUT: &[&[u8]] = &[b"P", b"Parent", b"Popup", b"IRT"];
 
-/// The keys of a kept annotation whose values a reader uses (ISO 32000-2
-/// §12.5.2, §12.5.6): the common and markup keys and those of the
-/// subtypes; `/A`, `/AA`, `/Dest` and `/PA` only on the subtypes that act
-/// (links, widgets, screens).
-fn annotation_key_used(subtype: &[u8], key: &[u8]) -> bool {
+/// How a reader uses a value of the edited document: what of it is
+/// followed. `Any` follows every entry (content, resources below their
+/// categories, metadata); the others only the entries ISO 32000-2
+/// defines for what the value is.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Use {
+    Any,
+    /// The object itself (a reference chain to it), nothing it refers to.
+    Mark,
+    /// A dictionary of which only these keys are read (each whole).
+    Keys(&'static [&'static [u8]]),
+    /// An array of objects used themselves.
+    MarkList,
+    Action,
+    /// An action's `/Next`: an action or an array of them.
+    Next,
+    Dest,
+    /// An additional-actions dictionary, with the triggers of its owner.
+    Aa(Triggers),
+    Annot,
+    AnnotList,
+    Field,
+    FieldList,
+    Resources,
+    AcroForm,
+    OutlineRoot,
+    Outline,
+    NamesDict,
+    DestsDict,
+    NameNode(NameUse),
+    NameArray(NameUse),
+    NameKids(NameUse),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Triggers {
+    Annot,
+    Widget,
+    Field,
+    Page,
+    Catalog,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum NameUse {
+    Dest,
+    Action,
+    Any,
+}
+
+/// Whether `key` names a trigger event of an `/AA` dictionary owned by
+/// `t` (ISO 32000-2 §12.6.3).
+fn trigger(t: Triggers, key: &[u8]) -> bool {
+    const ANNOT: &[&[u8]] = &[
+        b"E", b"X", b"D", b"U", b"Fo", b"Bl", b"PO", b"PC", b"PV", b"PI",
+    ];
+    const FIELD: &[&[u8]] = &[b"K", b"F", b"V", b"C"];
+    match t {
+        Triggers::Annot => ANNOT.contains(&key),
+        Triggers::Widget => ANNOT.contains(&key) || FIELD.contains(&key),
+        Triggers::Field => FIELD.contains(&key),
+        Triggers::Page => matches!(key, b"O" | b"C"),
+        Triggers::Catalog => matches!(key, b"WC" | b"WS" | b"DS" | b"WP" | b"DP"),
+    }
+}
+
+/// How a reader uses the value of `key` in a kept annotation of
+/// `subtype` (ISO 32000-2 §12.5.2, §12.5.6): the common keys, the markup
+/// keys on markup annotations, each subtype's own; `None` for a key the
+/// subtype does not define, or one leading to the page.
+fn annotation_use(subtype: &[u8], key: &[u8]) -> Option<Use> {
     const COMMON: &[&[u8]] = &[
         b"Type",
         b"Subtype",
@@ -685,6 +751,8 @@ fn annotation_key_used(subtype: &[u8], key: &[u8]) -> bool {
         b"CA",
         b"BM",
         b"Lang",
+    ];
+    const MARKUP: &[&[u8]] = &[
         b"T",
         b"RC",
         b"CreationDate",
@@ -692,51 +760,131 @@ fn annotation_key_used(subtype: &[u8], key: &[u8]) -> bool {
         b"RT",
         b"IT",
         b"ExData",
-        b"BS",
-        b"BE",
-        b"L",
-        b"LE",
-        b"IC",
-        b"LL",
-        b"LLE",
-        b"Cap",
-        b"LLO",
-        b"CP",
-        b"Measure",
-        b"CO",
-        b"QuadPoints",
-        b"InkList",
-        b"Vertices",
-        b"Path",
-        b"DA",
-        b"Q",
-        b"DS",
-        b"RD",
-        b"Name",
-        b"FS",
-        b"Sound",
-        b"Open",
-        b"State",
-        b"StateModel",
-        b"MK",
-        b"H",
-        b"FT",
-        b"V",
-        b"DV",
-        b"Opt",
-        b"TU",
-        b"TM",
-        b"Ff",
-        b"MaxLen",
-        b"I",
-        b"TI",
-        b"RV",
     ];
-    if COMMON.contains(&key) {
-        return true;
+    let markup = matches!(
+        subtype,
+        b"Text"
+            | b"FreeText"
+            | b"Line"
+            | b"Square"
+            | b"Circle"
+            | b"Polygon"
+            | b"PolyLine"
+            | b"Highlight"
+            | b"Underline"
+            | b"Squiggly"
+            | b"StrikeOut"
+            | b"Caret"
+            | b"Stamp"
+            | b"Ink"
+            | b"FileAttachment"
+            | b"Sound"
+            | b"Redact"
+            | b"Projection"
+    );
+    let own: &[&[u8]] = match subtype {
+        b"Text" => &[b"Open", b"Name", b"State", b"StateModel"],
+        b"Link" => &[b"H", b"QuadPoints", b"BS"],
+        b"FreeText" => &[b"DA", b"Q", b"DS", b"CL", b"BE", b"RD", b"BS", b"LE"],
+        b"Line" => &[
+            b"L", b"BS", b"LE", b"IC", b"LL", b"LLE", b"Cap", b"LLO", b"CP", b"Measure", b"CO",
+        ],
+        b"Square" | b"Circle" => &[b"BS", b"IC", b"BE", b"RD"],
+        b"Polygon" | b"PolyLine" => &[b"Vertices", b"LE", b"BS", b"IC", b"BE", b"Measure", b"Path"],
+        b"Highlight" | b"Underline" | b"Squiggly" | b"StrikeOut" => &[b"QuadPoints"],
+        b"Caret" => &[b"RD", b"Sy"],
+        b"Stamp" => &[b"Name"],
+        b"Ink" => &[b"InkList", b"BS", b"Path"],
+        b"Popup" => &[b"Open"],
+        b"FileAttachment" => &[b"FS", b"Name"],
+        b"Sound" => &[b"Sound", b"Name"],
+        b"Movie" => &[b"T", b"Movie"],
+        b"Screen" => &[b"T", b"MK"],
+        b"Widget" => &[
+            b"H", b"MK", b"BS", b"FT", b"T", b"TU", b"TM", b"Ff", b"V", b"DV", b"DA", b"Q", b"DS",
+            b"RV", b"MaxLen", b"Opt", b"TI", b"I", b"Lock", b"SV",
+        ],
+        b"PrinterMark" => &[b"MN"],
+        b"TrapNet" => &[b"LastModified", b"Version", b"AnnotStates", b"FontFauxing"],
+        b"Watermark" => &[b"FixedPrint"],
+        b"Redact" => &[
+            b"QuadPoints",
+            b"IC",
+            b"RO",
+            b"OverlayText",
+            b"Repeat",
+            b"DA",
+            b"Q",
+        ],
+        b"3D" => &[b"3DD", b"3DV", b"3DA", b"3DI", b"3DB"],
+        b"RichMedia" => &[b"RichMediaContent", b"RichMediaSettings"],
+        _ => &[],
+    };
+    let acts = matches!(subtype, b"Link" | b"Widget" | b"Screen");
+    Some(match key {
+        b"P" => return None,
+        b"Popup" if markup => Use::Annot,
+        b"IRT" if markup => Use::Mark,
+        b"Parent" if subtype == b"Widget" => Use::Field,
+        b"Parent" if subtype == b"Popup" => Use::Mark,
+        b"Kids" if subtype == b"Widget" => Use::FieldList,
+        b"A" if acts || subtype == b"Movie" => Use::Action,
+        b"PA" if subtype == b"Link" => Use::Action,
+        b"Dest" if subtype == b"Link" => Use::Dest,
+        b"AA" if acts => Use::Aa(if subtype == b"Widget" {
+            Triggers::Widget
+        } else {
+            Triggers::Annot
+        }),
+        k if COMMON.contains(&k) || (markup && MARKUP.contains(&k)) || own.contains(&k) => Use::Any,
+        _ => return None,
+    })
+}
+
+/// Whether `o` is what a slot of use `u` holds: an action is a
+/// dictionary with `/S`, a destination an array or a dictionary without
+/// one, and so on.
+fn holds(u: Use, o: &Object) -> bool {
+    let action = |o: &Object| matches!(o, Object::Dict(d) if d.contains_key(b"S".as_slice()));
+    match u {
+        Use::Any | Use::Mark => true,
+        Use::Action => action(o),
+        Use::Next => action(o) || matches!(o, Object::Array(_)),
+        Use::Dest => matches!(o, Object::Array(_)) || (matches!(o, Object::Dict(_)) && !action(o)),
+        Use::Aa(_) => matches!(o, Object::Dict(_)) && !action(o),
+        Use::MarkList | Use::AnnotList | Use::FieldList | Use::NameArray(_) | Use::NameKids(_) => {
+            matches!(o, Object::Array(_))
+        }
+        Use::Annot
+        | Use::Keys(_)
+        | Use::Field
+        | Use::Resources
+        | Use::AcroForm
+        | Use::OutlineRoot
+        | Use::Outline
+        | Use::NamesDict
+        | Use::DestsDict
+        | Use::NameNode(_) => matches!(o, Object::Dict(_)),
     }
-    matches!(key, b"A" | b"AA" | b"Dest" | b"PA")
-        && matches!(subtype, b"Link" | b"Widget" | b"Screen")
+}
+
+/// How a reader uses the value of `key` in a kept action whose type is
+/// `s` (ISO 32000-2 §12.6.4); `None` for a key no action type defines.
+fn action_use(s: &[u8], key: &[u8]) -> Option<Use> {
+    Some(match key {
+        b"Next" => Use::Next,
+        b"D" if matches!(s, b"GoTo" | b"GoToR" | b"GoToE") => Use::Dest,
+        b"T" if s == b"Hide" => Use::MarkList,
+        b"Fields" => Use::MarkList,
+        b"Annotation" | b"AN" | b"TA" => Use::Mark,
+        b"Type" | b"S" | b"D" | b"T" | b"URI" | b"IsMap" | b"SD" | b"F" | b"NewWindow" | b"Win"
+        | b"Mac" | b"Unix" | b"B" | b"H" | b"N" | b"Flags" | b"CharSet" | b"JS" | b"State"
+        | b"PreserveRB" | b"R" | b"OP" | b"Trans" | b"V" | b"TI" | b"CMD" | b"Sound"
+        | b"Volume" | b"Synchronous" | b"Repeat" | b"Mix" | b"Mode" | b"Operation" | b"Dp" => {
+            Use::Any
+        }
+        _ => return None,
+    })
 }
 
 /// The first object [`removed_data_kept`] finds, with its path, and the
@@ -749,12 +897,13 @@ pub(crate) type HeldData = (Option<(IndirectRef, String)>, HashSet<IndirectRef>)
 /// targets, appearance resources, rich text, attachments …; not its page,
 /// field, popup or reply links, not pages, not other removed objects)
 /// that is reached only through entries no reader uses — a private
-/// entry, an annotation's key its subtype does not define, the outline
-/// root's own keys, an action stored where a destination belongs. What a
-/// kept page draws, a kept annotation or form field uses, an outline item
-/// or a destination names, the catalog acts on or a name tree holds is
-/// theirs too and stays. The first such object, with the path it is
-/// reached by, and the full set (to check the rewrite's output too).
+/// entry, an annotation's key its subtype does not define, an `/AA`
+/// entry that names no trigger, the outline root's own keys, an action
+/// stored where a destination belongs. The use is walked by type ([`Use`])
+/// from the catalog and the pages; an action, annotation or field of
+/// theirs counts only where it is used as one. The first such object,
+/// with the path it is reached by, and the full set (to check the
+/// rewrite's output too).
 pub(crate) fn removed_data_kept(
     doc: &Document,
     overlay: &Overlay,
@@ -777,9 +926,7 @@ pub(crate) fn removed_data_kept(
         Ok(())
     };
     // The closure of `start` (values, not entered when pages or removed
-    // objects), one hop at a time, in the input or the edited document.
-    // Dictionary keys in `skip` are not followed at the top of a removed
-    // object.
+    // objects), one hop at a time.
     fn closure(
         start: Vec<Object>,
         body: &dyn Fn(IndirectRef) -> Result<Object, Error>,
@@ -827,82 +974,61 @@ pub(crate) fn removed_data_kept(
     if theirs.is_empty() {
         return Ok((None, HashSet::new()));
     }
-    // What uses objects in the edited document: values to close over.
-    let mut used: Vec<Object> = Vec::new();
-    // Objects used themselves, not what they refer to (an /Annots array,
-    // a name tree node, a destination array by reference).
-    let mut marks: Vec<IndirectRef> = Vec::new();
-    let catalog = match doc.trailer().get(b"Root".as_slice()) {
-        Some(Object::Ref(r)) => current(doc, overlay, *r)?,
-        _ => Object::Null,
+    // What uses objects in the edited document, walked by what each
+    // value is: from the catalog and the pages.
+    let mut work: Vec<(Object, Use)> = Vec::new();
+    let root = match doc.trailer().get(b"Root".as_slice()) {
+        Some(Object::Ref(r)) => Some(*r),
+        _ => None,
     };
-    let catalog = catalog.as_dict().cloned().unwrap_or_default();
-    // A destination: an array (its page is a page; nothing else in it is
-    // read) or a dictionary's `/D`.
-    let dest =
-        |o: &Object, used: &mut Vec<Object>, marks: &mut Vec<IndirectRef>| -> Result<(), Error> {
-            match deref_cur(doc, overlay, o)? {
-                // A destination dictionary (`/D`); an action is not one.
-                Object::Dict(d) if !d.contains_key(b"S".as_slice()) => {
-                    if let Some(v) = d.get(b"D".as_slice()) {
-                        used.push(v.clone());
-                    }
-                }
-                Object::Array(_) | Object::String(_) | Object::Name(_) => {}
-                _ => return Ok(()),
-            }
-            // The destination object itself (an array by reference) is used.
-            if let Object::Ref(r) = o {
-                marks.push(*r);
-            }
-            Ok(())
-        };
-    // An action (closed over whole, `/Next` included); a destination array
-    // where an action belongs (`/OpenAction`) is a destination.
-    let action =
-        |o: &Object, used: &mut Vec<Object>, marks: &mut Vec<IndirectRef>| -> Result<(), Error> {
-            match deref_cur(doc, overlay, o)? {
-                Object::Dict(_) => used.push(o.clone()),
-                _ => dest(o, used, marks)?,
-            }
-            Ok(())
-        };
-    // `/AA` (by reference or direct): its trigger values are actions.
-    let additional =
-        |o: &Object, used: &mut Vec<Object>, marks: &mut Vec<IndirectRef>| -> Result<(), Error> {
-            // A trigger dictionary (an action where one belongs is not).
-            if let Object::Dict(aa) = deref_cur(doc, overlay, o)? {
-                if aa.contains_key(b"S".as_slice()) {
-                    return Ok(());
-                }
-                if let Object::Ref(r) = o {
-                    marks.push(*r);
-                }
-                for v in aa.values() {
-                    action(v, used, marks)?;
-                }
-            }
-            Ok(())
-        };
-    if let Some(v) = catalog.get(b"OpenAction".as_slice()) {
-        action(v, &mut used, &mut marks)?;
-    }
-    if let Some(v) = catalog.get(b"AA".as_slice()) {
-        additional(v, &mut used, &mut marks)?;
-    }
-    for k in [
-        b"OCProperties".as_slice(),
-        b"AF",
-        b"URI",
-        b"Lang",
-        b"ViewerPreferences",
-    ] {
-        if let Some(v) = catalog.get(k) {
-            used.push(v.clone());
+    let catalog = match root {
+        Some(r) => current(doc, overlay, r)?,
+        None => Object::Null,
+    };
+    if let Object::Dict(c) = &catalog {
+        for (k, v) in c {
+            let u = match k.as_slice() {
+                // A destination array where an action belongs.
+                b"OpenAction" => match deref_cur(doc, overlay, v)? {
+                    Object::Array(_) => Use::Dest,
+                    _ => Use::Action,
+                },
+                b"AA" => Use::Aa(Triggers::Catalog),
+                b"Names" => Use::NamesDict,
+                b"Dests" => Use::DestsDict,
+                b"Outlines" => Use::OutlineRoot,
+                b"AcroForm" => Use::AcroForm,
+                b"ViewerPreferences" => Use::Keys(&[
+                    b"HideToolbar",
+                    b"HideMenubar",
+                    b"HideWindowUI",
+                    b"FitWindow",
+                    b"CenterWindow",
+                    b"DisplayDocTitle",
+                    b"NonFullScreenPageMode",
+                    b"Direction",
+                    b"ViewArea",
+                    b"ViewClip",
+                    b"PrintArea",
+                    b"PrintClip",
+                    b"PrintScaling",
+                    b"Duplex",
+                    b"PickTrayByPDFSize",
+                    b"PrintPageRange",
+                    b"NumCopies",
+                    b"Enforce",
+                ]),
+                b"MarkInfo" => Use::Keys(&[b"Marked", b"UserProperties", b"Suspects"]),
+                b"URI" => Use::Keys(&[b"Base"]),
+                b"OCProperties" | b"AF" | b"Lang" | b"PageLabels" | b"StructTreeRoot"
+                | b"OutputIntents" | b"Metadata" | b"Collection" | b"Threads" | b"Legal"
+                | b"Perms" | b"Requirements" | b"Extensions" | b"DSS" | b"Version"
+                | b"PageMode" | b"PageLayout" | b"NeedsRendering" => Use::Any,
+                _ => continue,
+            };
+            work.push((v.clone(), u));
         }
     }
-    // Pages: what they draw and act on, and their annotations.
-    let mut kept_annots: Vec<IndirectRef> = Vec::new();
     for page in doc.pages() {
         tick(1)?;
         let Some(pr) = page.object_ref() else {
@@ -911,185 +1037,321 @@ pub(crate) fn removed_data_kept(
         let Object::Dict(pd) = current(doc, overlay, pr)? else {
             continue;
         };
-        for k in [
-            b"Contents".as_slice(),
-            b"Group",
-            b"Thumb",
-            b"B",
-            b"Metadata",
-        ] {
-            if let Some(v) = pd.get(k) {
-                used.push(v.clone());
+        for (k, v) in &pd {
+            let u = match k.as_slice() {
+                b"Resources" => Use::Resources,
+                b"AA" => Use::Aa(Triggers::Page),
+                b"Annots" => Use::AnnotList,
+                b"Group" => Use::Keys(&[b"Type", b"S", b"CS", b"I", b"K"]),
+                b"Contents"
+                | b"Thumb"
+                | b"B"
+                | b"Metadata"
+                | b"MediaBox"
+                | b"CropBox"
+                | b"BleedBox"
+                | b"TrimBox"
+                | b"ArtBox"
+                | b"BoxColorInfo"
+                | b"Rotate"
+                | b"UserUnit"
+                | b"VP"
+                | b"Dur"
+                | b"Trans"
+                | b"PresSteps"
+                | b"Tabs"
+                | b"TemplateInstantiated"
+                | b"StructParents"
+                | b"ID"
+                | b"PZ"
+                | b"SeparationInfo"
+                | b"AF"
+                | b"OutputIntents"
+                | b"DPart" => Use::Any,
+                _ => continue,
+            };
+            work.push((v.clone(), u));
+        }
+        // Attributes the page inherits from its tree.
+        let mut up = pd.get(b"Parent".as_slice()).cloned();
+        let mut depth = 0;
+        while let Some(Object::Ref(nr)) = up {
+            depth += 1;
+            if depth > 64 || pages.contains(&nr) {
+                break;
             }
-        }
-        if let Some(v) = page.resources() {
-            used.push(v.clone());
-        }
-        if let Some(v) = pd.get(b"AA".as_slice()) {
-            additional(v, &mut used, &mut marks)?;
-        }
-        if let Some(a) = pd.get(b"Annots".as_slice()) {
-            if let Object::Ref(ar) = a {
-                marks.push(*ar);
-            }
-            for x in deref_cur(doc, overlay, a)?.as_array().unwrap_or(&[]) {
-                tick(1)?;
-                let Some(xr) = x.as_ref() else {
-                    // A direct annotation: its values.
-                    if let Object::Dict(d) = x {
-                        kept_annotation(d, &mut used, &mut marks, &action, &dest, &additional)?;
-                    }
-                    continue;
-                };
-                if removed.contains(&xr) {
-                    continue;
-                }
-                kept_annots.push(xr);
-                marks.push(xr);
-            }
-        }
-    }
-    type Slot<'a> =
-        &'a dyn Fn(&Object, &mut Vec<Object>, &mut Vec<IndirectRef>) -> Result<(), Error>;
-    fn kept_annotation(
-        d: &Dict,
-        used: &mut Vec<Object>,
-        marks: &mut Vec<IndirectRef>,
-        action: Slot<'_>,
-        dest: Slot<'_>,
-        additional: Slot<'_>,
-    ) -> Result<(), Error> {
-        let st = d
-            .get(b"Subtype".as_slice())
-            .and_then(|s| s.as_name())
-            .unwrap_or(b"");
-        for (k, v) in d {
-            let k = k.as_slice();
-            if LINKS_OUT.contains(&k) || !annotation_key_used(st, k) {
-                continue;
-            }
-            match k {
-                b"A" | b"PA" => action(v, used, marks)?,
-                b"Dest" => dest(v, used, marks)?,
-                b"AA" => additional(v, used, marks)?,
-                _ => used.push(v.clone()),
-            }
-        }
-        Ok(())
-    }
-    for r in &kept_annots {
-        if let Object::Dict(d) = current(doc, overlay, *r)? {
-            kept_annotation(&d, &mut used, &mut marks, &action, &dest, &additional)?;
-        }
-    }
-    // Outline items (below the root), form fields, name trees, /Dests.
-    let mut stack: Vec<(Object, u8)> = Vec::new();
-    if let Some(o) = catalog.get(b"Outlines".as_slice()) {
-        if let Object::Dict(root) = deref_cur(doc, overlay, o)? {
-            if let Some(f) = root.get(b"First".as_slice()) {
-                stack.push((f.clone(), b'o'));
-            }
-        }
-    }
-    if let Some(f) = catalog.get(b"AcroForm".as_slice()) {
-        if let Object::Dict(f) = deref_cur(doc, overlay, f)? {
-            for (k, v) in &f {
-                match k.as_slice() {
-                    b"Fields" => stack.push((v.clone(), b'f')),
-                    b"CO" | b"XFA" => {}
-                    _ => used.push(v.clone()),
+            tick(1)?;
+            let Object::Dict(nd) = current(doc, overlay, nr)? else {
+                break;
+            };
+            for (k, u) in [
+                (b"Resources".as_slice(), Use::Resources),
+                (b"MediaBox", Use::Any),
+                (b"CropBox", Use::Any),
+                (b"Rotate", Use::Any),
+            ] {
+                if let Some(v) = nd.get(k) {
+                    work.push((v.clone(), u));
                 }
             }
+            up = nd.get(b"Parent".as_slice()).cloned();
         }
     }
-    if let Some(n) = catalog.get(b"Names".as_slice()) {
-        if let Object::Dict(n) = deref_cur(doc, overlay, n)? {
-            for (k, t) in &n {
-                stack.push((
-                    t.clone(),
-                    if k.as_slice() == b"Dests" { b'd' } else { b'n' },
-                ));
-            }
-        }
-    }
-    if let Some(d) = catalog.get(b"Dests".as_slice()) {
-        if let Object::Dict(d) = deref_cur(doc, overlay, d)? {
-            for v in d.values() {
-                dest(v, &mut used, &mut marks)?;
-            }
-        }
-    }
-    let mut seen: HashSet<IndirectRef> = HashSet::new();
-    while let Some((o, kind)) = stack.pop() {
+    let stop_used = |r: IndirectRef| pages.contains(&r) || removed.contains(&r) || Some(r) == root;
+    // Each object used, with the use it is reached by.
+    let mut kept: HashSet<(IndirectRef, Use)> = HashSet::new();
+    let mut walked: HashSet<(IndirectRef, Use)> = HashSet::new();
+    while let Some((o, u)) = work.pop() {
         tick(1)?;
-        if let Object::Ref(r) = &o {
-            if !seen.insert(*r) || removed.contains(r) {
+        let d = match o {
+            // A reference (chain): its links are used when what it ends
+            // at is what the slot holds.
+            Object::Ref(r) => {
+                if stop_used(r) || !walked.insert((r, u)) {
+                    continue;
+                }
+                let mut links = vec![r];
+                let body = loop {
+                    tick(1)?;
+                    match edited(*links.last().unwrap_or(&r)) {
+                        Ok(Object::Ref(n)) => {
+                            if stop_used(n) || links.contains(&n) {
+                                break None;
+                            }
+                            links.push(n);
+                        }
+                        Ok(b) => break Some(b),
+                        Err(Error::MissingReference(_)) => break None,
+                        Err(e) => return Err(e),
+                    }
+                };
+                if let Some(b) = body.filter(|b| holds(u, b)) {
+                    kept.extend(links.into_iter().map(|l| (l, u)));
+                    work.push((b, u));
+                }
                 continue;
             }
-        }
-        match deref_cur(doc, overlay, &o)? {
-            Object::Array(a) if kind == b'f' => stack.extend(a.into_iter().map(|x| (x, kind))),
-            Object::Dict(d) => match kind {
-                b'o' => {
-                    if let Some(v) = d.get(b"A".as_slice()) {
-                        action(v, &mut used, &mut marks)?;
-                    }
-                    if let Some(v) = d.get(b"Dest".as_slice()) {
-                        dest(v, &mut used, &mut marks)?;
-                    }
-                    for k in [b"First".as_slice(), b"Next"] {
-                        if let Some(v) = d.get(k) {
-                            stack.push((v.clone(), kind));
+            Object::Array(a) => {
+                let each = match u {
+                    Use::Any => Use::Any,
+                    Use::MarkList => Use::Mark,
+                    Use::Next => Use::Action,
+                    Use::AnnotList => Use::Annot,
+                    Use::FieldList => Use::Field,
+                    Use::NameKids(n) => Use::NameNode(n),
+                    Use::NameArray(n) => {
+                        let value = match n {
+                            NameUse::Dest => Use::Dest,
+                            NameUse::Action => Use::Action,
+                            NameUse::Any => Use::Any,
+                        };
+                        for (i, v) in a.into_iter().enumerate() {
+                            work.push((v, if i % 2 == 0 { Use::Mark } else { value }));
                         }
+                        continue;
                     }
-                }
-                b'f' => {
-                    for (k, v) in &d {
-                        match k.as_slice() {
-                            b"Kids" => stack.push((v.clone(), kind)),
-                            b"Parent" | b"P" | b"Popup" | b"IRT" => {}
-                            b"AA" => additional(v, &mut used, &mut marks)?,
-                            b"A" => action(v, &mut used, &mut marks)?,
-                            _ => used.push(v.clone()),
-                        }
-                    }
-                }
-                _ => {
-                    // A name tree node: its values (destinations in
-                    // /Dests), its kids.
-                    if let Some(Object::Array(names)) = d
-                        .get(b"Names".as_slice())
-                        .map(|n| deref_cur(doc, overlay, n))
-                        .transpose()?
-                    {
-                        for v in names.into_iter().skip(1).step_by(2) {
-                            if kind == b'd' {
-                                dest(&v, &mut used, &mut marks)?;
-                            } else {
-                                used.push(v);
+                    // A destination: its page is a page; an operand given
+                    // by reference is used when it is a number or null.
+                    Use::Dest => {
+                        for v in a {
+                            let Object::Ref(mut at) = v else { continue };
+                            let mut links = Vec::new();
+                            loop {
+                                tick(1)?;
+                                if pages.contains(&at) {
+                                    break;
+                                }
+                                links.push(at);
+                                match edited(at) {
+                                    Ok(Object::Ref(n)) if !links.contains(&n) => at = n,
+                                    Ok(Object::Integer(_) | Object::Real(_) | Object::Null) => {
+                                        break
+                                    }
+                                    _ => {
+                                        links.clear();
+                                        break;
+                                    }
+                                }
                             }
+                            kept.extend(links.into_iter().map(|l| (l, Use::Mark)));
                         }
+                        continue;
                     }
-                    if let Some(k) = d.get(b"Kids".as_slice()) {
-                        if let Object::Ref(r) = k {
-                            marks.push(*r);
-                        }
-                        if let Object::Array(kids) = deref_cur(doc, overlay, k)? {
-                            stack.extend(kids.into_iter().map(|x| (x, kind)));
-                        }
-                    }
-                    if let Object::Ref(r) = &o {
-                        marks.push(*r);
+                    _ => continue,
+                };
+                work.extend(a.into_iter().map(|v| (v, each)));
+                continue;
+            }
+            Object::Dict(d) => d,
+            Object::Stream { dict, .. } if u == Use::Any => dict,
+            _ => continue,
+        };
+        let get_name = |k: &[u8]| d.get(k).and_then(|s| s.as_name()).unwrap_or(b"").to_vec();
+        match u {
+            Use::Any => work.extend(d.into_values().map(|v| (v, Use::Any))),
+            Use::Keys(keys) => {
+                for (k, v) in d {
+                    if keys.contains(&k.as_slice()) {
+                        work.push((v, Use::Any));
                     }
                 }
-            },
+            }
+            Use::Action => {
+                let s = get_name(b"S");
+                for (k, v) in d {
+                    if let Some(u) = action_use(&s, &k) {
+                        work.push((v, u));
+                    }
+                }
+            }
+            Use::Next => work.push((Object::Dict(d), Use::Action)),
+            // A destination dictionary (an action is not one).
+            Use::Dest if !d.contains_key(b"S".as_slice()) => {
+                if let Some(v) = d.get(b"D".as_slice()) {
+                    work.push((v.clone(), Use::Dest));
+                }
+            }
+            Use::Aa(t) if !d.contains_key(b"S".as_slice()) => {
+                for (k, v) in d {
+                    if trigger(t, &k) {
+                        work.push((v, Use::Action));
+                    }
+                }
+            }
+            Use::Annot => {
+                let st = get_name(b"Subtype");
+                for (k, v) in d {
+                    if let Some(u) = annotation_use(&st, &k) {
+                        work.push((v, u));
+                    }
+                }
+            }
+            Use::Field => {
+                for (k, v) in d {
+                    let u = match k.as_slice() {
+                        b"Kids" => Use::FieldList,
+                        b"Parent" => Use::Field,
+                        b"AA" => Use::Aa(Triggers::Field),
+                        b"FT" | b"T" | b"TU" | b"TM" | b"Ff" | b"V" | b"DV" | b"DA" | b"Q"
+                        | b"DS" | b"RV" | b"MaxLen" | b"Opt" | b"TI" | b"I" | b"Lock" | b"SV" => {
+                            Use::Any
+                        }
+                        _ => continue,
+                    };
+                    work.push((v, u));
+                }
+            }
+            Use::Resources => {
+                for (k, v) in d {
+                    if matches!(
+                        k.as_slice(),
+                        b"ExtGState"
+                            | b"ColorSpace"
+                            | b"Pattern"
+                            | b"Shading"
+                            | b"XObject"
+                            | b"Font"
+                            | b"ProcSet"
+                            | b"Properties"
+                    ) {
+                        work.push((v, Use::Any));
+                    }
+                }
+            }
+            Use::AcroForm => {
+                for (k, v) in d {
+                    let u = match k.as_slice() {
+                        b"Fields" | b"CO" => Use::FieldList,
+                        b"DR" | b"DA" => Use::Any,
+                        _ => continue,
+                    };
+                    work.push((v, u));
+                }
+            }
+            Use::OutlineRoot => {
+                if let Some(v) = d.get(b"First".as_slice()) {
+                    work.push((v.clone(), Use::Outline));
+                }
+            }
+            Use::Outline => {
+                for (k, v) in d {
+                    let u = match k.as_slice() {
+                        b"A" => Use::Action,
+                        b"Dest" => Use::Dest,
+                        b"First" | b"Next" => Use::Outline,
+                        b"Title" | b"SE" | b"C" => Use::Any,
+                        _ => continue,
+                    };
+                    work.push((v, u));
+                }
+            }
+            Use::NamesDict => {
+                for (k, v) in d {
+                    let n = match k.as_slice() {
+                        b"Dests" => NameUse::Dest,
+                        b"JavaScript" => NameUse::Action,
+                        _ => NameUse::Any,
+                    };
+                    work.push((v, Use::NameNode(n)));
+                }
+            }
+            Use::DestsDict => work.extend(d.into_values().map(|v| (v, Use::Dest))),
+            Use::NameNode(n) => {
+                for (k, v) in d {
+                    let u = match k.as_slice() {
+                        b"Names" => Use::NameArray(n),
+                        b"Kids" => Use::NameKids(n),
+                        b"Limits" => Use::Any,
+                        _ => continue,
+                    };
+                    work.push((v, u));
+                }
+            }
             _ => {}
         }
     }
-    let stop_used = |r: IndirectRef| pages.contains(&r) || removed.contains(&r);
-    let mut kept = closure(used, &edited, &stop_used, &mut tick)?;
-    kept.extend(marks);
-    let left: HashSet<IndirectRef> = theirs.difference(&kept).copied().collect();
+    // An action, annotation or field of theirs is kept only where it is
+    // used as one: a reference to it from inside something used whole
+    // (a private key of a resource or settings dictionary) does not act
+    // on it.
+    let mut uses: std::collections::HashMap<IndirectRef, Vec<Use>> = Default::default();
+    for (r, u) in kept {
+        uses.entry(r).or_default().push(u);
+    }
+    let mut left: HashSet<IndirectRef> = HashSet::new();
+    for r in theirs {
+        tick(1)?;
+        let Some(us) = uses.get(&r) else {
+            left.insert(r);
+            continue;
+        };
+        let fits: &[Use] = match doc.resolve(r) {
+            Ok(Object::Dict(d)) if d.contains_key(b"S".as_slice()) => &[Use::Action, Use::Next],
+            Ok(Object::Dict(d))
+                if d.contains_key(b"Subtype".as_slice())
+                    && (d.contains_key(b"Rect".as_slice())
+                        || d.get(b"Type".as_slice()).and_then(|t| t.as_name())
+                            == Some(b"Annot")) =>
+            {
+                &[Use::Annot, Use::Mark]
+            }
+            Ok(Object::Dict(d))
+                if !d.contains_key(b"Subtype".as_slice())
+                    && (d.contains_key(b"FT".as_slice())
+                        || (d.contains_key(b"T".as_slice())
+                            && (d.contains_key(b"Kids".as_slice())
+                                || d.contains_key(b"Parent".as_slice())))) =>
+            {
+                &[Use::Field, Use::Mark]
+            }
+            _ => {
+                continue;
+            }
+        };
+        if !us.iter().any(|u| fits.contains(u)) {
+            left.insert(r);
+        }
+    }
     let first = removed_still_reached(doc, overlay, &left, limits)?;
     Ok((first, left))
 }

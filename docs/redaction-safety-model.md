@@ -100,13 +100,25 @@ property cannot be decided).
 - **G** — Anything a removed annotation or form field held (every
   object reachable from it but its page, field and reply links: actions
   and their targets, indirect and rich text, its popup, the objects of
-  its appearance, streams or not) stays only where something that uses
-  it keeps it: what a kept page draws, a kept annotation's keys its
-  subtype defines (`/A`, `/AA`, `/Dest`, `/PA` only on links, widgets
-  and screens), a form field, an outline item's action or destination,
-  a destination's page, the catalog's `/OpenAction`, `/AA` and
-  optional content, a name tree. Kept only through other entries
+  its appearance, streams or not) stays only where the edited document
+  uses it, read by type from the catalog and the pages: the entries ISO
+  32000-2 defines for a page (its boxes, resources by category,
+  contents, `/AA` with page triggers), a kept annotation of each subtype
+  (`/A`, `/AA`, `/Dest`, `/PA` only on links, widgets and screens), an
+  action of each type (`/Next`, a GoTo's destination; the fields and
+  annotations it names, as themselves), an `/AA` dictionary (its
+  owner's trigger names only), a form field and the AcroForm's `/DR`
+  and `/DA`, an outline item below the root, a destination (its page;
+  operands by reference that are numbers), the catalog's settings, name
+  trees. An action, annotation or field of the removed one's is kept
+  only where it is used as one. Kept only through other entries
   (private data), it is refused.
+- **N** — Below what is read by type — inside fonts, images, form
+  XObjects and appearance streams, a resource category's entries (used
+  or not by the content), the structure tree, optional content, page
+  labels, embedded files and other name trees' values — every entry
+  counts as used: plain data of a removed annotation (text, streams,
+  colour data) that a private key there refers to stays.
 - **N** — "Drawn" includes drawing outside the page's boxes: a removed
   appearance also drawn off the page by another page's content stays
   (reported in `elsewhere`; `refuse_copies_elsewhere` refuses it).
