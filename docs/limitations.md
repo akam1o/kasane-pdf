@@ -223,10 +223,13 @@ are on the [roadmap](architecture.md#roadmap).
   used may stay in the page's resources with its program; it reveals
   the font's glyph repertoire); dictionaries other than annotations are
   compared only through the structure-tree and string checks.
-- **Actions of removed links** (0.9): an indirect action or destination
-  object a removed link shares with a kept link, an outline item, a form
-  field or the catalog stays — it is theirs too; one only entries that do
-  not act on it refer to is refused.
+- **Data of removed annotations** (0.9): what a removed annotation or
+  field held stays when something that uses it keeps it — a kept link,
+  widget or screen's action (a hidden, zero-area or off-page kept link
+  counts), any kept annotation's defined keys, a form field (one without
+  widgets too), an outline item, a destination, the catalog's actions, a
+  name tree. Readers that ignore generation numbers (MuPDF) may read a
+  reference to another generation as the object kasane leaves alone.
 - **Appearances of kept annotations** (0.9): a shown annotation kept as
   it was keeps its own appearance streams (every state, down and
   rollover), and the same bytes as removed content there are reported;

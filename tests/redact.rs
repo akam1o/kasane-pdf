@@ -6357,10 +6357,7 @@ fn actions_of_removed_links() {
                     match other {
                         "private" | "private next" => {
                             let e = unsupported(r);
-                            assert!(
-                                e.contains("action or destination of a removed"),
-                                "{name}: {e}"
-                            );
+                            assert!(e.contains("data of a removed annotation"), "{name}: {e}");
                         }
                         "only" => {
                             let out = r.unwrap_or_else(|e| panic!("{name}: {e}")).output;
@@ -6483,4 +6480,217 @@ fn one_annotation_listed_in_several_places() {
     let doc = Document::from_bytes(&make("10 0 R", "10 0 R")).unwrap();
     let e = unsupported(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()));
     assert!(e.contains("failed verification"), "{e}");
+}
+
+/// Whatever a removed annotation or field holds — rich text, an indirect
+/// `/AA`, a popup, colour data of its appearance that is not a stream, a
+/// link target through a reference chain — stays only where something
+/// that uses it keeps it. Kept: a link's explicit destination page, a
+/// destination shared with an outline item or a named destination, an
+/// action a page's `/AA` uses. Refused: the same data under a private
+/// entry, or under a kept annotation's key its subtype does not use.
+/// (Release review.)
+#[test]
+fn removed_annotations_own_data() {
+    let make = |annot: &str, cat: &str, page_extra: &str, extra: Vec<(u32, Vec<u8>)>| {
+        let mut objs = vec![
+            (1, format!("<< /Type /Catalog /Pages 2 0 R {cat} >>").into_bytes()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R {page_extra} >>"
+                )
+                .into_bytes(),
+            ),
+            (4, stream_obj("", b"0 0 5 5 re f")),
+            (10, annot.as_bytes().to_vec()),
+        ];
+        objs.extend(extra);
+        build_pdf(&objs)
+    };
+    let link = |a: &str| format!("<< /Type /Annot /Subtype /Link /Rect [70 90 130 110] {a} >>");
+    let markup = |a: &str| {
+        format!("<< /Type /Annot /Subtype /Square /Rect [70 90 130 110] /Contents (x) {a} >>")
+    };
+    let action = || {
+        (
+            20,
+            b"<< /S /URI /URI (https://example.com/OWNMARK) >>".to_vec(),
+        )
+    };
+    let ap = |res: &str, body: &[u8]| {
+        stream_obj(
+            &format!("/Type /XObject /Subtype /Form /BBox [0 0 60 20] /Resources {res}"),
+            body,
+        )
+    };
+    let refused: Vec<(&str, Vec<u8>, bool)> = vec![
+        (
+            "rich text stream",
+            make(
+                &markup("/RC 20 0 R"),
+                "/XPriv 20 0 R",
+                "/Annots [10 0 R]",
+                vec![(20, stream_obj("", b"<body>OWNMARK</body>"))],
+            ),
+            true,
+        ),
+        (
+            "additional actions by reference",
+            make(
+                &link("/AA 21 0 R"),
+                "/XPriv 21 0 R",
+                "/Annots [10 0 R]",
+                vec![(21, b"<< /E 20 0 R >>".to_vec()), action()],
+            ),
+            false,
+        ),
+        (
+            "a popup not listed",
+            make(
+                &markup("/Popup 22 0 R"),
+                "/XPriv 22 0 R",
+                "/Annots [10 0 R]",
+                vec![(
+                    22,
+                    b"<< /Type /Annot /Subtype /Popup /Rect [0 0 1 1] /Contents (OWNMARK) >>"
+                        .to_vec(),
+                )],
+            ),
+            true,
+        ),
+        (
+            "colour table in an indirect array",
+            make(
+                &link("/AP << /N 23 0 R >>"),
+                "/XPriv 24 0 R",
+                "/Annots [10 0 R]",
+                vec![
+                    (
+                        23,
+                        ap(
+                            "<< /ColorSpace << /C 24 0 R >> >>",
+                            b"/C cs 1 sc 0 0 10 10 re f",
+                        ),
+                    ),
+                    (24, b"[/Indexed /DeviceRGB 1 <123456abcdef>]".to_vec()),
+                ],
+            ),
+            false,
+        ),
+        (
+            "a type 2 function",
+            make(
+                &link("/AP << /N 23 0 R >>"),
+                "/XPriv 25 0 R",
+                "/Annots [10 0 R]",
+                vec![
+                    (
+                        23,
+                        ap(
+                            "<< /ColorSpace << /S [/Separation /Ink /DeviceRGB 25 0 R] >> >>",
+                            b"/S cs 1 scn 0 0 10 10 re f",
+                        ),
+                    ),
+                    (
+                        25,
+                        b"<< /FunctionType 2 /Domain [0 1] /C0 [0 0 0] /C1 [0.1 0.2 0.3] /N 1 >>"
+                            .to_vec(),
+                    ),
+                ],
+            ),
+            false,
+        ),
+        (
+            "a reference chain",
+            make(
+                &link("/A 20 0 R"),
+                "/XPriv 21 0 R",
+                "/Annots [10 0 R]",
+                vec![(21, b"20 0 R".to_vec()), action()],
+            ),
+            false,
+        ),
+        (
+            "a kept square's /A",
+            make(
+                &link("/A 20 0 R"),
+                "",
+                "/Annots [10 0 R 26 0 R]",
+                vec![
+                    (
+                        26,
+                        b"<< /Type /Annot /Subtype /Square /Rect [150 150 190 190] /A 20 0 R >>"
+                            .to_vec(),
+                    ),
+                    action(),
+                ],
+            ),
+            false,
+        ),
+    ];
+    for (name, pdf, annotations) in refused {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let e = unsupported(redact(
+            &doc,
+            &[(0, vec![RECT])],
+            &RedactOptions::new().remove_annotations(annotations),
+        ));
+        assert!(e.contains("failed verification"), "{name}: {e}");
+    }
+    let kept: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "explicit destination",
+            make(&link("/Dest [3 0 R /Fit]"), "", "/Annots [10 0 R]", vec![]),
+        ),
+        (
+            "indirect destination",
+            make(
+                &link("/Dest 27 0 R"),
+                "",
+                "/Annots [10 0 R]",
+                vec![(27, b"[3 0 R /XYZ 0 200 0]".to_vec())],
+            ),
+        ),
+        (
+            "destination of an outline item",
+            make(
+                &link("/Dest 27 0 R"),
+                "/Outlines 50 0 R",
+                "/Annots [10 0 R]",
+                vec![
+                    (27, b"[3 0 R /XYZ 0 200 0]".to_vec()),
+                    (
+                        50,
+                        b"<< /Type /Outlines /First 51 0 R /Last 51 0 R /Count 1 >>".to_vec(),
+                    ),
+                    (51, b"<< /Title (C) /Parent 50 0 R /Dest 27 0 R >>".to_vec()),
+                ],
+            ),
+        ),
+        (
+            "named destination",
+            make(
+                &link("/A << /S /GoTo /D (n) >>"),
+                "/Names << /Dests << /Names [(n) 27 0 R] >> >>",
+                "/Annots [10 0 R]",
+                vec![(27, b"<< /D [3 0 R /Fit] >>".to_vec())],
+            ),
+        ),
+        (
+            "page actions",
+            make(
+                &link("/A 20 0 R"),
+                "",
+                "/Annots [10 0 R] /AA << /O 20 0 R >>",
+                vec![action()],
+            ),
+        ),
+    ];
+    for (name, pdf) in kept {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        redact(&doc, &[(0, vec![RECT])], &RedactOptions::new())
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
 }

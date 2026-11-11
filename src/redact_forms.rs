@@ -356,17 +356,46 @@ pub(crate) fn removed_still_reached(
     if gone.is_empty() {
         return Ok(None);
     }
+    // Breadth first; each reference queued with the step from the object
+    // that holds it (its index in `steps`), the path built only when
+    // reported (a long chain would otherwise copy ever longer paths).
+    let mut steps: Vec<(usize, String)> = Vec::new();
     let mut seen: HashSet<IndirectRef> = HashSet::new();
-    let mut queue: std::collections::VecDeque<(IndirectRef, String)> = Default::default();
+    let mut queue: std::collections::VecDeque<(IndirectRef, usize)> = Default::default();
     let mut budget: u64 = 0;
-    // Direct values walked in place, references queued.
-    let mut scan = |o: &Object,
-                    path: &str,
-                    top: Option<&[u8]>,
-                    queue: &mut std::collections::VecDeque<(IndirectRef, String)>|
-     -> Result<(), Error> {
-        let mut stack: Vec<(&Object, String)> = vec![(o, path.to_string())];
-        while let Some((o, p)) = stack.pop() {
+    let path_of = |steps: &Vec<(usize, String)>, mut at: usize| {
+        let mut parts = Vec::new();
+        while at != usize::MAX {
+            let (up, step) = &steps[at];
+            parts.push(step.clone());
+            at = *up;
+        }
+        parts.reverse();
+        parts.concat()
+    };
+    if let Some(Object::Ref(root)) = doc.trailer().get(b"Root".as_slice()) {
+        steps.push((usize::MAX, "/Root".into()));
+        queue.push_back((*root, 0));
+    }
+    while let Some((r, at)) = queue.pop_front() {
+        if gone.contains(&r) {
+            return Ok(Some((r, path_of(&steps, at))));
+        }
+        if !seen.insert(r) {
+            continue;
+        }
+        // One hop: a chain's links are objects the writer writes.
+        let o = match current_hop(doc, overlay, r) {
+            Ok(o) => o,
+            Err(Error::MissingReference(_)) => continue,
+            Err(e) => return Err(e),
+        };
+        // The catalog's /Metadata is not written.
+        let catalog = at == 0;
+        // Direct values walked in place (with their key path inside the
+        // object), references queued.
+        let mut stack: Vec<(&Object, String)> = vec![(&o, String::new())];
+        while let Some((v, p)) = stack.pop() {
             budget += 1;
             if budget > limits.max_audit_elements {
                 return Err(Error::LimitExceeded {
@@ -374,8 +403,11 @@ pub(crate) fn removed_still_reached(
                     max: limits.max_audit_elements,
                 });
             }
-            match o {
-                Object::Ref(r) => queue.push_back((*r, p)),
+            match v {
+                Object::Ref(x) => {
+                    steps.push((at, p));
+                    queue.push_back((*x, steps.len() - 1));
+                }
                 Object::Array(a) => {
                     for (i, v) in a.iter().enumerate() {
                         stack.push((v, format!("{p}[{i}]")));
@@ -383,7 +415,7 @@ pub(crate) fn removed_still_reached(
                 }
                 Object::Dict(d) | Object::Stream { dict: d, .. } => {
                     for (k, v) in d {
-                        if top.is_some_and(|t| t == k.as_slice()) && p == path {
+                        if catalog && p.is_empty() && k.as_slice() == b"Metadata" {
                             continue;
                         }
                         stack.push((v, format!("{p}/{}", String::from_utf8_lossy(k))));
@@ -392,25 +424,6 @@ pub(crate) fn removed_still_reached(
                 _ => {}
             }
         }
-        Ok(())
-    };
-    if let Some(Object::Ref(root)) = doc.trailer().get(b"Root".as_slice()) {
-        queue.push_back((*root, "/Root".into()));
-    }
-    while let Some((r, path)) = queue.pop_front() {
-        if gone.contains(&r) {
-            return Ok(Some((r, path)));
-        }
-        if !seen.insert(r) {
-            continue;
-        }
-        let o = match current(doc, overlay, r) {
-            Ok(o) => o,
-            Err(Error::MissingReference(_)) => continue,
-            Err(e) => return Err(e),
-        };
-        let skip: Option<&[u8]> = (path == "/Root").then_some(b"Metadata".as_slice());
-        scan(&o, &path, skip, &mut queue)?;
     }
     Ok(None)
 }
@@ -634,119 +647,128 @@ fn check_kept_fields(
     Ok(())
 }
 
-/// The indirect actions and destinations a removed annotation names —
-/// its `/A`, the actions of its `/AA`, `/PA`, an indirect `/Dest`, and
-/// what they chain to by `/Next` — that the edited document keeps only
-/// through something that does not act: a reference from a private
-/// entry, not from a kept annotation, an outline item, a form field,
-/// the catalog's `/OpenAction` or `/AA`, or the `/Dests` and
-/// `/JavaScript` name trees. Such an object is the removed annotation's
-/// own data (its link target, say) and would be written whole: the
-/// first, with the path it is reached by.
-pub(crate) fn removed_actions_kept(
+/// One hop of the edited document: the body of `r` as written (a
+/// reference chain's links are objects of their own, as the writer
+/// writes them).
+fn current_hop(doc: &Document, overlay: &Overlay, r: IndirectRef) -> Result<Object, Error> {
+    match overlay.get(&(r.number, r.generation)) {
+        Some(o) => Ok(o.clone()),
+        None => doc.resolve_one_hop(r),
+    }
+}
+
+/// Keys of an annotation that lead to other annotations, its page or its
+/// field: what they refer to is not the annotation's own data.
+const LINKS_OUT: &[&[u8]] = &[b"P", b"Parent", b"Popup", b"IRT"];
+
+/// The keys of a kept annotation whose values a reader uses (ISO 32000-2
+/// §12.5.2, §12.5.6): the common and markup keys and those of the
+/// subtypes; `/A`, `/AA`, `/Dest` and `/PA` only on the subtypes that act
+/// (links, widgets, screens).
+fn annotation_key_used(subtype: &[u8], key: &[u8]) -> bool {
+    const COMMON: &[&[u8]] = &[
+        b"Type",
+        b"Subtype",
+        b"Rect",
+        b"Contents",
+        b"NM",
+        b"M",
+        b"F",
+        b"AP",
+        b"AS",
+        b"Border",
+        b"C",
+        b"StructParent",
+        b"OC",
+        b"AF",
+        b"ca",
+        b"CA",
+        b"BM",
+        b"Lang",
+        b"T",
+        b"RC",
+        b"CreationDate",
+        b"Subj",
+        b"RT",
+        b"IT",
+        b"ExData",
+        b"BS",
+        b"BE",
+        b"L",
+        b"LE",
+        b"IC",
+        b"LL",
+        b"LLE",
+        b"Cap",
+        b"LLO",
+        b"CP",
+        b"Measure",
+        b"CO",
+        b"QuadPoints",
+        b"InkList",
+        b"Vertices",
+        b"Path",
+        b"DA",
+        b"Q",
+        b"DS",
+        b"RD",
+        b"Name",
+        b"FS",
+        b"Sound",
+        b"Open",
+        b"State",
+        b"StateModel",
+        b"MK",
+        b"H",
+        b"FT",
+        b"V",
+        b"DV",
+        b"Opt",
+        b"TU",
+        b"TM",
+        b"Ff",
+        b"MaxLen",
+        b"I",
+        b"TI",
+        b"RV",
+    ];
+    if COMMON.contains(&key) {
+        return true;
+    }
+    matches!(key, b"A" | b"AA" | b"Dest" | b"PA")
+        && matches!(subtype, b"Link" | b"Widget" | b"Screen")
+}
+
+/// The first object [`removed_data_kept`] finds, with its path, and the
+/// whole set it found.
+pub(crate) type HeldData = (Option<(IndirectRef, String)>, HashSet<IndirectRef>);
+
+/// What a removed annotation or form field holds that the edited
+/// document still writes but nothing that uses it keeps: every object
+/// reachable from the removed dictionaries (its text, actions and their
+/// targets, appearance resources, rich text, attachments …; not its page,
+/// field, popup or reply links, not pages, not other removed objects)
+/// that is reached only through entries no reader uses — a private
+/// entry, an annotation's key its subtype does not define, the outline
+/// root's own keys, an action stored where a destination belongs. What a
+/// kept page draws, a kept annotation or form field uses, an outline item
+/// or a destination names, the catalog acts on or a name tree holds is
+/// theirs too and stays. The first such object, with the path it is
+/// reached by, and the full set (to check the rewrite's output too).
+pub(crate) fn removed_data_kept(
     doc: &Document,
     overlay: &Overlay,
     removed: &HashSet<IndirectRef>,
     limits: &Limits,
-) -> Result<Option<(IndirectRef, String)>, Error> {
+) -> Result<HeldData, Error> {
     if removed.is_empty() {
-        return Ok(None);
+        return Ok((None, HashSet::new()));
     }
-    // The action-bearing values of an annotation or outline item.
-    fn action_values(d: &Dict, out: &mut Vec<Object>) {
-        for k in [b"A".as_slice(), b"Dest", b"PA"] {
-            if let Some(v) = d.get(k) {
-                out.push(v.clone());
-            }
-        }
-        if let Some(Object::Dict(aa)) = d.get(b"AA".as_slice()) {
-            out.extend(aa.values().cloned());
-        }
-    }
-    // Close `start` over `/Next` (and `/AA` given by reference): every
-    // indirect object reached.
-    let close = |start: Vec<Object>,
-                 cur: &dyn Fn(IndirectRef) -> Result<Object, Error>|
-     -> Result<HashSet<IndirectRef>, Error> {
-        let mut set = HashSet::new();
-        let mut stack = start;
-        let mut n: u64 = 0;
-        while let Some(o) = stack.pop() {
-            n += 1;
-            if n > limits.max_audit_elements {
-                return Err(Error::LimitExceeded {
-                    limit: "max_audit_elements",
-                    max: limits.max_audit_elements,
-                });
-            }
-            let d = match o {
-                Object::Ref(r) => {
-                    if !set.insert(r) {
-                        continue;
-                    }
-                    match cur(r) {
-                        Ok(o) => o,
-                        Err(Error::MissingReference(_)) => continue,
-                        Err(e) => return Err(e),
-                    }
-                }
-                o => o,
-            };
-            match d {
-                Object::Dict(d) => {
-                    if let Some(nx) = d.get(b"Next".as_slice()) {
-                        match nx {
-                            Object::Array(a) => stack.extend(a.iter().cloned()),
-                            o => stack.push(o.clone()),
-                        }
-                    }
-                }
-                Object::Array(a) => stack.extend(a),
-                _ => {}
-            }
-        }
-        Ok(set)
-    };
-    // What the removed annotations name (as the input had them).
-    let mut named = Vec::new();
-    for r in removed {
-        if let Object::Dict(d) = doc.resolve(*r)? {
-            if let Some(aa) = d.get(b"AA".as_slice()) {
-                if let Object::Dict(aa) = doc.deref(aa)? {
-                    named.extend(aa.values().cloned());
-                }
-            }
-            action_values(&d, &mut named);
-        }
-    }
-    let input = |r: IndirectRef| doc.resolve(r);
-    let theirs: HashSet<IndirectRef> = close(named, &input)?
-        .into_iter()
-        .filter(|r| !removed.contains(r))
-        .collect();
-    if theirs.is_empty() {
-        return Ok(None);
-    }
-    // What acts in the edited document.
-    let edited = |r: IndirectRef| current(doc, overlay, r);
-    let mut roots = Vec::new();
-    let catalog = match doc.trailer().get(b"Root".as_slice()) {
-        Some(Object::Ref(r)) => current(doc, overlay, *r)?,
-        _ => Object::Null,
-    };
-    let catalog = catalog.as_dict().cloned().unwrap_or_default();
-    if let Some(v) = catalog.get(b"OpenAction".as_slice()) {
-        roots.push(v.clone());
-    }
-    if let Some(aa) = catalog.get(b"AA".as_slice()) {
-        if let Object::Dict(aa) = deref_cur(doc, overlay, aa)? {
-            roots.extend(aa.values().cloned());
-        }
-    }
+    let pages: HashSet<IndirectRef> = doc.pages().iter().filter_map(|p| p.object_ref()).collect();
     let mut budget: u64 = 0;
-    let mut tick = || -> Result<(), Error> {
-        budget += 1;
-        if budget > limits.max_audit_elements {
+    let mut tick = |n: u64| -> Result<(), Error> {
+        budget += n;
+        if budget > limits.max_audit_elements.saturating_mul(2) {
             return Err(Error::LimitExceeded {
                 limit: "max_audit_elements",
                 max: limits.max_audit_elements,
@@ -754,62 +776,254 @@ pub(crate) fn removed_actions_kept(
         }
         Ok(())
     };
-    // Annotations on the pages.
+    // The closure of `start` (values, not entered when pages or removed
+    // objects), one hop at a time, in the input or the edited document.
+    // Dictionary keys in `skip` are not followed at the top of a removed
+    // object.
+    fn closure(
+        start: Vec<Object>,
+        body: &dyn Fn(IndirectRef) -> Result<Object, Error>,
+        stop: &dyn Fn(IndirectRef) -> bool,
+        tick: &mut dyn FnMut(u64) -> Result<(), Error>,
+    ) -> Result<HashSet<IndirectRef>, Error> {
+        let mut set = HashSet::new();
+        let mut stack = start;
+        while let Some(o) = stack.pop() {
+            tick(1)?;
+            match o {
+                Object::Ref(r) => {
+                    if stop(r) || !set.insert(r) {
+                        continue;
+                    }
+                    match body(r) {
+                        Ok(o) => stack.push(o),
+                        Err(Error::MissingReference(_)) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                Object::Array(a) => stack.extend(a),
+                Object::Dict(d) | Object::Stream { dict: d, .. } => stack.extend(d.into_values()),
+                _ => {}
+            }
+        }
+        Ok(set)
+    }
+    let input = |r: IndirectRef| doc.resolve_one_hop(r);
+    let edited = |r: IndirectRef| current_hop(doc, overlay, r);
+    // What the removed objects hold (as the input had them).
+    let mut start = Vec::new();
+    for r in removed {
+        if let Object::Dict(d) = doc.resolve(*r)? {
+            for (k, v) in d {
+                // Its popup is its own (a listed one is removed with it).
+                if k.as_slice() == b"Popup" || !LINKS_OUT.contains(&k.as_slice()) {
+                    start.push(v);
+                }
+            }
+        }
+    }
+    let stop_theirs = |r: IndirectRef| pages.contains(&r) || removed.contains(&r);
+    let theirs = closure(start, &input, &stop_theirs, &mut tick)?;
+    if theirs.is_empty() {
+        return Ok((None, HashSet::new()));
+    }
+    // What uses objects in the edited document: values to close over.
+    let mut used: Vec<Object> = Vec::new();
+    // Objects used themselves, not what they refer to (an /Annots array,
+    // a name tree node, a destination array by reference).
+    let mut marks: Vec<IndirectRef> = Vec::new();
+    let catalog = match doc.trailer().get(b"Root".as_slice()) {
+        Some(Object::Ref(r)) => current(doc, overlay, *r)?,
+        _ => Object::Null,
+    };
+    let catalog = catalog.as_dict().cloned().unwrap_or_default();
+    // A destination: an array (its page is a page; nothing else in it is
+    // read) or a dictionary's `/D`.
+    let dest =
+        |o: &Object, used: &mut Vec<Object>, marks: &mut Vec<IndirectRef>| -> Result<(), Error> {
+            match deref_cur(doc, overlay, o)? {
+                // A destination dictionary (`/D`); an action is not one.
+                Object::Dict(d) if !d.contains_key(b"S".as_slice()) => {
+                    if let Some(v) = d.get(b"D".as_slice()) {
+                        used.push(v.clone());
+                    }
+                }
+                Object::Array(_) | Object::String(_) | Object::Name(_) => {}
+                _ => return Ok(()),
+            }
+            // The destination object itself (an array by reference) is used.
+            if let Object::Ref(r) = o {
+                marks.push(*r);
+            }
+            Ok(())
+        };
+    // An action (closed over whole, `/Next` included); a destination array
+    // where an action belongs (`/OpenAction`) is a destination.
+    let action =
+        |o: &Object, used: &mut Vec<Object>, marks: &mut Vec<IndirectRef>| -> Result<(), Error> {
+            match deref_cur(doc, overlay, o)? {
+                Object::Dict(_) => used.push(o.clone()),
+                _ => dest(o, used, marks)?,
+            }
+            Ok(())
+        };
+    // `/AA` (by reference or direct): its trigger values are actions.
+    let additional =
+        |o: &Object, used: &mut Vec<Object>, marks: &mut Vec<IndirectRef>| -> Result<(), Error> {
+            // A trigger dictionary (an action where one belongs is not).
+            if let Object::Dict(aa) = deref_cur(doc, overlay, o)? {
+                if aa.contains_key(b"S".as_slice()) {
+                    return Ok(());
+                }
+                if let Object::Ref(r) = o {
+                    marks.push(*r);
+                }
+                for v in aa.values() {
+                    action(v, used, marks)?;
+                }
+            }
+            Ok(())
+        };
+    if let Some(v) = catalog.get(b"OpenAction".as_slice()) {
+        action(v, &mut used, &mut marks)?;
+    }
+    if let Some(v) = catalog.get(b"AA".as_slice()) {
+        additional(v, &mut used, &mut marks)?;
+    }
+    for k in [
+        b"OCProperties".as_slice(),
+        b"AF",
+        b"URI",
+        b"Lang",
+        b"ViewerPreferences",
+    ] {
+        if let Some(v) = catalog.get(k) {
+            used.push(v.clone());
+        }
+    }
+    // Pages: what they draw and act on, and their annotations.
+    let mut kept_annots: Vec<IndirectRef> = Vec::new();
     for page in doc.pages() {
+        tick(1)?;
         let Some(pr) = page.object_ref() else {
             continue;
         };
         let Object::Dict(pd) = current(doc, overlay, pr)? else {
             continue;
         };
-        let Some(a) = pd.get(b"Annots".as_slice()) else {
-            continue;
-        };
-        for x in deref_cur(doc, overlay, a)?.as_array().unwrap_or(&[]) {
-            tick()?;
-            if let Object::Dict(d) = deref_cur(doc, overlay, x)? {
-                if let Some(aa) = d.get(b"AA".as_slice()) {
-                    roots.push(aa.clone());
-                    if let Object::Dict(aa) = deref_cur(doc, overlay, aa)? {
-                        roots.extend(aa.values().cloned());
+        for k in [
+            b"Contents".as_slice(),
+            b"Group",
+            b"Thumb",
+            b"B",
+            b"Metadata",
+        ] {
+            if let Some(v) = pd.get(k) {
+                used.push(v.clone());
+            }
+        }
+        if let Some(v) = page.resources() {
+            used.push(v.clone());
+        }
+        if let Some(v) = pd.get(b"AA".as_slice()) {
+            additional(v, &mut used, &mut marks)?;
+        }
+        if let Some(a) = pd.get(b"Annots".as_slice()) {
+            if let Object::Ref(ar) = a {
+                marks.push(*ar);
+            }
+            for x in deref_cur(doc, overlay, a)?.as_array().unwrap_or(&[]) {
+                tick(1)?;
+                let Some(xr) = x.as_ref() else {
+                    // A direct annotation: its values.
+                    if let Object::Dict(d) = x {
+                        kept_annotation(d, &mut used, &mut marks, &action, &dest, &additional)?;
                     }
+                    continue;
+                };
+                if removed.contains(&xr) {
+                    continue;
                 }
-                action_values(&d, &mut roots);
+                kept_annots.push(xr);
+                marks.push(xr);
             }
         }
     }
-    // Outline items, form fields, the name trees: by their tree links.
+    type Slot<'a> =
+        &'a dyn Fn(&Object, &mut Vec<Object>, &mut Vec<IndirectRef>) -> Result<(), Error>;
+    fn kept_annotation(
+        d: &Dict,
+        used: &mut Vec<Object>,
+        marks: &mut Vec<IndirectRef>,
+        action: Slot<'_>,
+        dest: Slot<'_>,
+        additional: Slot<'_>,
+    ) -> Result<(), Error> {
+        let st = d
+            .get(b"Subtype".as_slice())
+            .and_then(|s| s.as_name())
+            .unwrap_or(b"");
+        for (k, v) in d {
+            let k = k.as_slice();
+            if LINKS_OUT.contains(&k) || !annotation_key_used(st, k) {
+                continue;
+            }
+            match k {
+                b"A" | b"PA" => action(v, used, marks)?,
+                b"Dest" => dest(v, used, marks)?,
+                b"AA" => additional(v, used, marks)?,
+                _ => used.push(v.clone()),
+            }
+        }
+        Ok(())
+    }
+    for r in &kept_annots {
+        if let Object::Dict(d) = current(doc, overlay, *r)? {
+            kept_annotation(&d, &mut used, &mut marks, &action, &dest, &additional)?;
+        }
+    }
+    // Outline items (below the root), form fields, name trees, /Dests.
     let mut stack: Vec<(Object, u8)> = Vec::new();
     if let Some(o) = catalog.get(b"Outlines".as_slice()) {
-        stack.push((o.clone(), b'o'));
+        if let Object::Dict(root) = deref_cur(doc, overlay, o)? {
+            if let Some(f) = root.get(b"First".as_slice()) {
+                stack.push((f.clone(), b'o'));
+            }
+        }
     }
     if let Some(f) = catalog.get(b"AcroForm".as_slice()) {
         if let Object::Dict(f) = deref_cur(doc, overlay, f)? {
-            if let Some(fs) = f.get(b"Fields".as_slice()) {
-                stack.push((fs.clone(), b'f'));
+            for (k, v) in &f {
+                match k.as_slice() {
+                    b"Fields" => stack.push((v.clone(), b'f')),
+                    b"CO" | b"XFA" => {}
+                    _ => used.push(v.clone()),
+                }
             }
         }
     }
     if let Some(n) = catalog.get(b"Names".as_slice()) {
         if let Object::Dict(n) = deref_cur(doc, overlay, n)? {
-            for k in [b"Dests".as_slice(), b"JavaScript"] {
-                if let Some(t) = n.get(k) {
-                    stack.push((t.clone(), b'n'));
-                }
+            for (k, t) in &n {
+                stack.push((
+                    t.clone(),
+                    if k.as_slice() == b"Dests" { b'd' } else { b'n' },
+                ));
             }
         }
     }
     if let Some(d) = catalog.get(b"Dests".as_slice()) {
-        roots.push(d.clone());
         if let Object::Dict(d) = deref_cur(doc, overlay, d)? {
-            roots.extend(d.values().cloned());
+            for v in d.values() {
+                dest(v, &mut used, &mut marks)?;
+            }
         }
     }
     let mut seen: HashSet<IndirectRef> = HashSet::new();
     while let Some((o, kind)) = stack.pop() {
-        tick()?;
+        tick(1)?;
         if let Object::Ref(r) = &o {
-            if !seen.insert(*r) {
+            if !seen.insert(*r) || removed.contains(r) {
                 continue;
             }
         }
@@ -817,7 +1031,12 @@ pub(crate) fn removed_actions_kept(
             Object::Array(a) if kind == b'f' => stack.extend(a.into_iter().map(|x| (x, kind))),
             Object::Dict(d) => match kind {
                 b'o' => {
-                    action_values(&d, &mut roots);
+                    if let Some(v) = d.get(b"A".as_slice()) {
+                        action(v, &mut used, &mut marks)?;
+                    }
+                    if let Some(v) = d.get(b"Dest".as_slice()) {
+                        dest(v, &mut used, &mut marks)?;
+                    }
                     for k in [b"First".as_slice(), b"Next"] {
                         if let Some(v) = d.get(k) {
                             stack.push((v.clone(), kind));
@@ -825,37 +1044,52 @@ pub(crate) fn removed_actions_kept(
                     }
                 }
                 b'f' => {
-                    if let Some(aa) = d.get(b"AA".as_slice()) {
-                        roots.push(aa.clone());
-                        if let Object::Dict(aa) = deref_cur(doc, overlay, aa)? {
-                            roots.extend(aa.values().cloned());
+                    for (k, v) in &d {
+                        match k.as_slice() {
+                            b"Kids" => stack.push((v.clone(), kind)),
+                            b"Parent" | b"P" | b"Popup" | b"IRT" => {}
+                            b"AA" => additional(v, &mut used, &mut marks)?,
+                            b"A" => action(v, &mut used, &mut marks)?,
+                            _ => used.push(v.clone()),
                         }
-                    }
-                    if let Some(k) = d.get(b"Kids".as_slice()) {
-                        stack.push((k.clone(), kind));
                     }
                 }
                 _ => {
+                    // A name tree node: its values (destinations in
+                    // /Dests), its kids.
                     if let Some(Object::Array(names)) = d
                         .get(b"Names".as_slice())
                         .map(|n| deref_cur(doc, overlay, n))
                         .transpose()?
                     {
-                        roots.extend(names.into_iter().skip(1).step_by(2));
+                        for v in names.into_iter().skip(1).step_by(2) {
+                            if kind == b'd' {
+                                dest(&v, &mut used, &mut marks)?;
+                            } else {
+                                used.push(v);
+                            }
+                        }
                     }
-                    if let Some(Object::Array(kids)) = d
-                        .get(b"Kids".as_slice())
-                        .map(|n| deref_cur(doc, overlay, n))
-                        .transpose()?
-                    {
-                        stack.extend(kids.into_iter().map(|x| (x, kind)));
+                    if let Some(k) = d.get(b"Kids".as_slice()) {
+                        if let Object::Ref(r) = k {
+                            marks.push(*r);
+                        }
+                        if let Object::Array(kids) = deref_cur(doc, overlay, k)? {
+                            stack.extend(kids.into_iter().map(|x| (x, kind)));
+                        }
+                    }
+                    if let Object::Ref(r) = &o {
+                        marks.push(*r);
                     }
                 }
             },
             _ => {}
         }
     }
-    let acting = close(roots, &edited)?;
-    let left: HashSet<IndirectRef> = theirs.difference(&acting).copied().collect();
-    removed_still_reached(doc, overlay, &left, limits)
+    let stop_used = |r: IndirectRef| pages.contains(&r) || removed.contains(&r);
+    let mut kept = closure(used, &edited, &stop_used, &mut tick)?;
+    kept.extend(marks);
+    let left: HashSet<IndirectRef> = theirs.difference(&kept).copied().collect();
+    let first = removed_still_reached(doc, overlay, &left, limits)?;
+    Ok((first, left))
 }

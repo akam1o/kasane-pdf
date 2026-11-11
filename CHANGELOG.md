@@ -30,9 +30,13 @@ versions follow [Semantic Versioning](https://semver.org/).
   rewrite's object map); a field keeping widgets must still show one,
   and a button value other than `/Off` must be the current state of a
   shown kept widget.
-- An action or destination of a removed annotation that the document
-  keeps only through entries that do not act on it is refused; one a
-  kept link, an outline item, a form field or the catalog acts on stays.
+- Anything a removed annotation or form field held — its actions and
+  their targets, indirect text and rich text, its popup, the objects of
+  its appearance, streams or not — that the document keeps only through
+  entries no reader uses (private data, an annotation key its subtype
+  does not define) is refused; what a kept page draws, a kept annotation
+  or field uses, an outline item or destination names, the catalog acts
+  on or a name tree holds stays.
 - `docs/redaction-safety-model.md`: what `redact` guarantees, reports,
   does not guarantee or refuses, per surface; the verification layers.
 - Tests: one regression test per published advisory

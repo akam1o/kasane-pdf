@@ -97,11 +97,16 @@ property cannot be decided).
   its own data, outside the rects — and reported in `elsewhere`
   (`refuse_copies_elsewhere` refuses it). A hidden annotation's
   appearances excuse nothing.
-- **G** — An indirect action or destination object of a removed
-  annotation stays only when something that acts on it keeps it (a kept
-  annotation, an outline item, a form field, the catalog's
-  `/OpenAction` or `/AA`, the `/Dests` and `/JavaScript` name trees);
-  kept only by other entries (private data), it is refused.
+- **G** — Anything a removed annotation or form field held (every
+  object reachable from it but its page, field and reply links: actions
+  and their targets, indirect and rich text, its popup, the objects of
+  its appearance, streams or not) stays only where something that uses
+  it keeps it: what a kept page draws, a kept annotation's keys its
+  subtype defines (`/A`, `/AA`, `/Dest`, `/PA` only on links, widgets
+  and screens), a form field, an outline item's action or destination,
+  a destination's page, the catalog's `/OpenAction`, `/AA` and
+  optional content, a name tree. Kept only through other entries
+  (private data), it is refused.
 - **N** — "Drawn" includes drawing outside the page's boxes: a removed
   appearance also drawn off the page by another page's content stays
   (reported in `elsewhere`; `refuse_copies_elsewhere` refuses it).
