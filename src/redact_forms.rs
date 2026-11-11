@@ -343,8 +343,10 @@ pub(crate) fn edit_fields(
 /// a kept action's `/Fields`, a private entry, an object stream's member
 /// — with the path, or `None`. The rewrite writes what the trailer
 /// reaches, so such an object would be written whole, whatever later
-/// passes did to its content. The trailer's `/Info` and the catalog's
-/// `/Metadata` are left out: the rewrite drops them.
+/// passes did to its content. It walks what `redact`'s rewrite writes:
+/// the trailer's `/Root` and what it reaches, but the catalog's
+/// `/Metadata` (dropped, like the trailer's `/Info` and every other
+/// trailer key). `redact` also checks the rewrite's object map itself.
 pub(crate) fn removed_still_reached(
     doc: &Document,
     overlay: &Overlay,
@@ -392,8 +394,9 @@ pub(crate) fn removed_still_reached(
         }
         Ok(())
     };
-    let trailer = Object::Dict(doc.trailer().clone());
-    scan(&trailer, "", Some(b"Info"), &mut queue)?;
+    if let Some(Object::Ref(root)) = doc.trailer().get(b"Root".as_slice()) {
+        queue.push_back((*root, "/Root".into()));
+    }
     while let Some((r, path)) = queue.pop_front() {
         if gone.contains(&r) {
             return Ok(Some((r, path)));
@@ -464,18 +467,27 @@ fn check_kept_fields(
         if !on_pages.contains(&r) {
             return Ok(false);
         }
-        let flags = match dicts[&r].get(b"F".as_slice()) {
-            Some(f) => deref_cur(doc, overlay, f)?.as_i64().unwrap_or(0),
+        // `/F` an integer without Hidden or NoView (a real is not
+        // allowed, and readers read it differently), and no `/OC`.
+        let d = &dicts[&r];
+        let flags = match d
+            .get(b"F".as_slice())
+            .map(|f| deref_cur(doc, overlay, f))
+            .transpose()?
+        {
             None => 0,
+            Some(Object::Integer(i)) => i,
+            Some(_) => return Ok(false),
         };
-        Ok(flags & (2 | 32) == 0)
+        Ok(flags & (2 | 32) == 0 && !d.contains_key(b"OC".as_slice()))
     };
-    let inherited = |r: IndirectRef, key: &[u8]| -> Option<Object> {
+    // The value of `key` in effect at `r`, and the field holding it.
+    let inherited_at = |r: IndirectRef, key: &[u8]| -> Option<(IndirectRef, Object)> {
         let mut cur = Some(r);
         let mut n = 0;
         while let Some(c) = cur {
             if let Some(v) = dicts[&c].get(key) {
-                return Some(v.clone());
+                return Some((c, v.clone()));
             }
             cur = parent[&c];
             n += 1;
@@ -484,6 +496,22 @@ fn check_kept_fields(
             }
         }
         None
+    };
+    let inherited = |r: IndirectRef, key: &[u8]| inherited_at(r, key).map(|(_, v)| v);
+    // The widgets left under field `h` (leaves of its subtree not gone).
+    let leaves_left = |h: IndirectRef| -> Vec<IndirectRef> {
+        let mut out = Vec::new();
+        let mut stack = vec![h];
+        while let Some(c) = stack.pop() {
+            if kids[&c].is_empty() {
+                if !gone.contains(&c) {
+                    out.push(c);
+                }
+            } else {
+                stack.extend(kids[&c].iter().copied());
+            }
+        }
+        out
     };
     let mut affected: Vec<IndirectRef> = affected.into_iter().collect();
     affected.sort();
@@ -512,7 +540,9 @@ fn check_kept_fields(
             )));
         }
         for key in [b"V".as_slice(), b"DV", b"RV"] {
-            let Some(v) = inherited(f, key) else { continue };
+            let Some((holder, v)) = inherited_at(f, key) else {
+                continue;
+            };
             match deref_cur(doc, overlay, &v)? {
                 Object::String(_) | Object::Null => {}
                 Object::Array(a) => {
@@ -525,43 +555,48 @@ fn check_kept_fields(
                 Object::Stream { dict, data } => out.removed_text.push(
                     crate::annot_text::text_string(&doc.decode_stream(&dict, &data)?),
                 ),
-                Object::Name(n) => {
-                    // A button's state (its `/AS` or an appearance state):
-                    // shown by a kept widget only if one of them has it.
-                    let has_state = |w: &IndirectRef| -> Result<bool, Error> {
-                        if let Some(st) = dicts[w].get(b"AS".as_slice()) {
-                            if deref_cur(doc, overlay, st)?.as_name() == Some(n.as_slice()) {
-                                return Ok(true);
-                            }
+                // A button's state: a widget the output shows must show it
+                // (`/V`: in that state now, its `/AS`; `/DV`: having it in
+                // its normal appearance). Whatever a removed or unshown
+                // widget had excuses nothing; undecidable is refused.
+                Object::Name(n) if n.as_slice() != b"Off" => {
+                    let mut shows = false;
+                    for w in leaves_left(holder) {
+                        if !shown(w)? {
+                            continue;
                         }
-                        let Some(ap) = dicts[w].get(b"AP".as_slice()) else {
-                            return Ok(false);
+                        let d = &dicts[&w];
+                        let state = match d.get(b"AS".as_slice()) {
+                            Some(a) => deref_cur(doc, overlay, a)?.as_name().map(|x| x.to_vec()),
+                            None => None,
                         };
-                        let ap = deref_cur(doc, overlay, ap)?;
-                        let Some(normal) = ap.as_dict().and_then(|d| d.get(b"N".as_slice())) else {
-                            return Ok(false);
+                        let normal = match d.get(b"AP".as_slice()) {
+                            Some(ap) => match deref_cur(doc, overlay, ap)?
+                                .as_dict()
+                                .and_then(|a| a.get(b"N".as_slice()).cloned())
+                            {
+                                Some(nm) => deref_cur(doc, overlay, &nm)?
+                                    .as_dict()
+                                    .is_some_and(|a| a.contains_key(n.as_slice())),
+                                None => false,
+                            },
+                            None => false,
                         };
-                        Ok(deref_cur(doc, overlay, normal)?
-                            .as_dict()
-                            .is_some_and(|d| d.contains_key(n.as_slice())))
-                    };
-                    if n.as_slice() != b"Off" {
-                        let mut kept_has = false;
-                        for w in &left {
-                            kept_has |= has_state(w)?;
-                        }
-                        let mut lost_has = false;
-                        for w in &lost {
-                            lost_has |= has_state(w)?;
-                        }
-                        if lost_has && !kept_has {
-                            return Err(refuse(format!(
-                                "field {f}'s value /{} is the state of a removed widget",
-                                String::from_utf8_lossy(&n)
-                            )));
-                        }
+                        shows |= if key == b"V" {
+                            state.as_deref() == Some(n.as_slice()) && normal
+                        } else {
+                            normal
+                        };
+                    }
+                    if !shows {
+                        return Err(refuse(format!(
+                            "field {holder}'s /{} /{} is a state no widget the output shows has",
+                            String::from_utf8_lossy(key),
+                            String::from_utf8_lossy(&n)
+                        )));
                     }
                 }
+                Object::Name(_) => {}
                 _ => {
                     return Err(refuse(format!(
                         "field {f} keeps a value that is neither a string, a name nor an array"

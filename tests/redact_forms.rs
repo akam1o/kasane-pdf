@@ -345,12 +345,7 @@ fn kept_fields_show_what_they_keep() {
             ],
         )
     };
-    let radio = "/FT /Btn /Ff 49152 /T (r) /V /Secretopt";
     for (name, pdf) in [
-        (
-            "radio",
-            two(radio, "/AS /Off", "/AS /Secretopt", "11 0 R 12 0 R"),
-        ),
         (
             "orphan",
             two("/FT /Tx /T (t) /V (SECRETVALUE)", "", "", "11 0 R"),
@@ -364,16 +359,28 @@ fn kept_fields_show_what_they_keep() {
                 "11 0 R 12 0 R",
             ),
         ),
+        (
+            "real flags",
+            two(
+                "/FT /Tx /T (t) /V (SECRETVALUE)",
+                "/F 4.0",
+                "",
+                "11 0 R 12 0 R",
+            ),
+        ),
+        (
+            "optional content",
+            two(
+                "/FT /Tx /T (t) /V (SECRETVALUE)",
+                "/OC 30 0 R",
+                "",
+                "11 0 R 12 0 R",
+            ),
+        ),
     ] {
         let e = run(&pdf, true).unwrap_err().to_string();
         assert!(e.contains("cannot be edited exactly"), "{name}: {e}");
     }
-    // The kept widget shows the radio's state: accepted.
-    assert!(run(
-        &two(radio, "/AS /Secretopt", "/AS /Off", "11 0 R 12 0 R"),
-        true
-    )
-    .is_ok());
     let choice = two(
         "/FT /Ch /Ff 2097152 /T (c) /V [(CHOSENONE) (CHOSENTWO)] /Opt [(CHOSENONE) (CHOSENTWO)]",
         "",
@@ -388,4 +395,83 @@ fn kept_fields_show_what_they_keep() {
         "{:?}",
         r.elsewhere
     );
+}
+
+/// A button field losing a widget keeps its value only if a widget the
+/// output shows is in that state now (`/AS`, with that state in its
+/// normal appearance): what the removed widget had, or what a Hidden or
+/// optional-content widget has, excuses nothing. (Review.)
+#[test]
+fn a_kept_button_value_is_shown_by_a_kept_widget() {
+    let states = "/AP << /N << /Secretopt 20 0 R /Off 20 0 R >> >>";
+    // Field 10: widget 11 inside the rect (removed); 12 and 13 outside.
+    let radio = |v: &str, w11: &str, w12: &str, w13: &str| {
+        doc(
+            "<< /Fields [10 0 R] >>",
+            "11 0 R 12 0 R 13 0 R",
+            vec![
+                (
+                    10,
+                    format!("<< /FT /Btn /Ff 49152 /T (r) /V {v} /Kids [11 0 R 12 0 R 13 0 R] >>")
+                        .into_bytes(),
+                ),
+                (
+                    11,
+                    format!("<< /Type /Annot /Subtype /Widget /Parent 10 0 R /Rect [70 90 110 100] {w11} >>")
+                        .into_bytes(),
+                ),
+                (
+                    12,
+                    format!("<< /Type /Annot /Subtype /Widget /Parent 10 0 R /Rect [10 180 50 190] {w12} >>")
+                        .into_bytes(),
+                ),
+                (
+                    13,
+                    format!("<< /Type /Annot /Subtype /Widget /Parent 10 0 R /Rect [150 180 190 190] {w13} >>")
+                        .into_bytes(),
+                ),
+                (20, ap("state")),
+                (30, b"<< /Type /OCG /Name (l) >>".to_vec()),
+            ],
+        )
+    };
+    let on = format!("/AS /Secretopt {states}");
+    let off = format!("/AS /Off {states}");
+    let refused = [
+        // The removed widget was the selected one; the others are off.
+        ("removed selected", radio("/Secretopt", &on, &off, &off)),
+        // The removed widget names no state at all.
+        (
+            "removed without states",
+            radio("/Secretopt", "", &off, &off),
+        ),
+        // The only kept widget in that state is Hidden, or under /OC, or
+        // its /F is a real.
+        (
+            "hidden in state",
+            radio("/Secretopt", &on, &off, &format!("/F 2 {on}")),
+        ),
+        (
+            "optional content in state",
+            radio("/Secretopt", &on, &off, &format!("/OC 30 0 R {on}")),
+        ),
+        (
+            "real flags in state",
+            radio("/Secretopt", &on, &off, &format!("/F 4.0 {on}")),
+        ),
+        // A kept widget has the state in its appearances but shows /Off.
+        ("state not selected", radio("/Secretopt", "", &off, &off)),
+        // In that state, but with no appearance for it.
+        (
+            "no appearance",
+            radio("/Secretopt", "", "/AS /Secretopt", &off),
+        ),
+    ];
+    for (name, pdf) in refused {
+        let e = run(&pdf, true).unwrap_err().to_string();
+        assert!(e.contains("cannot be edited exactly"), "{name}: {e}");
+    }
+    // A shown kept widget in the state: accepted; /Off needs nothing.
+    assert!(run(&radio("/Secretopt", &off, &on, &off), true).is_ok());
+    assert!(run(&radio("/Off", &on, &off, &off), true).is_ok());
 }
