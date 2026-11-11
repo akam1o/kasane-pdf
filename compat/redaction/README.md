@@ -15,11 +15,13 @@ starts from them. See [`../../docs/testing.md`](../../docs/testing.md)
 
 Reading them: a run is `ok`, `refused` (a typed refusal, nothing
 written) or `unexpected` (a success failing a check, or an untyped
-failure). The two `unexpected` runs, `scan-bitmap-composite-and-xnor-text`
-block and (with the opt-ins) `blendmode` block, are the known false
-signal (zeroed image samples that were already black look like
-unchanged ink, `check_by_hand`); their outputs were checked by hand:
-the unchanged pixels lie in edited images, black before and after. A
+failure). The `unexpected` runs — `scan-bitmap-composite-and-xnor-text`
+block and `ccitt_endofblock_false` block, and with the opt-ins
+`blendmode` block and `alphatrans` block — are the known false signal:
+zeroed image samples that were already black (or grey under a soft
+mask) look like unchanged ink. Each is checked mechanically
+(`check_by_hand`, `unchanged_ink_not_from_images` 0): with no image of
+the output drawn, no unchanged ink stays inside the rect. A
 "lost" word can be pdftotext regrouping kept glyphs once a neighbour is
 removed (per-glyph words in vertical CJK text). MuPDF characters
 "moved" are its integer-rounded widths (Poppler places those glyphs

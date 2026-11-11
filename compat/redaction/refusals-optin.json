@@ -1,33 +1,28 @@
 {
  "summary": {
-  "refused_runs": 20,
+  "refused_runs": 14,
   "first_reasons": {
    "JavaScript name tree": 4,
-   "region removal on a page with blockers: shading": 3,
-   "region removal on a page with uncertain content": 3,
    "other: signature policy": 3,
-   "redaction of a path crossing a rect's edge": 2,
+   "region removal on a page with uncertain content": 2,
    "other: invalid document structure": 2,
-   "redaction on a page with a NoZoom or NoRotate annotation": 1,
    "other: parse error": 1,
-   "catalog entry outside profile": 1
+   "catalog entry outside profile": 1,
+   "region removal on a page with blockers: shading": 1
   },
-  "walk_refusals": 6,
+  "walk_refusals": 3,
   "walk_refusals_with_several_categories": 0,
   "walk_category_runs": {
-   "shading (sh)": 3,
    "tiling pattern": 2,
-   "non-embedded font": 1
+   "shading (sh)": 1
   },
   "walk_category_files": {
-   "shading (sh)": 3,
    "tiling pattern": 2,
-   "non-embedded font": 1
+   "shading (sh)": 1
   },
   "would_pass_the_walk_if_only_this_were_supported": {
-   "shading (sh)": 3,
    "tiling pattern": 2,
-   "non-embedded font": 1
+   "shading (sh)": 1
   }
  },
  "runs": [
@@ -81,99 +76,6 @@
    "walk_categories": [],
    "walk_findings": 0,
    "examples": {}
-  },
-  {
-   "id": "bug1974436",
-   "kind": "block",
-   "rect": [
-    198.32,
-    280.64,
-    396.64,
-    561.28
-   ],
-   "first_reason": "redaction on a page with a NoZoom or NoRotate annotation",
-   "first_detail": "/Annots[1] — its appearance is not placed by /Rect (a Text annotation's icon always behaves so",
-   "refused_by_walk": false,
-   "walk_error": null,
-   "walk_categories": [],
-   "walk_findings": 0,
-   "examples": {}
-  },
-  {
-   "id": "chrome-article-columns-0",
-   "kind": "block",
-   "rect": [
-    204.0,
-    264.0,
-    408.0,
-    528.0
-   ],
-   "first_reason": "redaction of a path crossing a rect's edge",
-   "first_detail": "op #367: a filled shape that is not an axis-aligned rectangle",
-   "refused_by_walk": false,
-   "walk_error": null,
-   "walk_categories": [],
-   "walk_findings": 0,
-   "examples": {}
-  },
-  {
-   "id": "chrome-form-controls-0",
-   "kind": "block",
-   "rect": [
-    204.0,
-    264.0,
-    408.0,
-    528.0
-   ],
-   "first_reason": "redaction of a path crossing a rect's edge",
-   "first_detail": "op #737: a filled shape that is not an axis-aligned rectangle",
-   "refused_by_walk": false,
-   "walk_error": null,
-   "walk_categories": [],
-   "walk_findings": 0,
-   "examples": {}
-  },
-  {
-   "id": "axial_shading_many_inputs",
-   "kind": "block",
-   "rect": [
-    204.0,
-    264.0,
-    408.0,
-    528.0
-   ],
-   "first_reason": "region removal on a page with blockers: shading",
-   "first_detail": "shading (sh): /S0 — shading fills an area we cannot bound",
-   "refused_by_walk": true,
-   "walk_error": null,
-   "walk_categories": [
-    "shading (sh)"
-   ],
-   "walk_findings": 16,
-   "examples": {
-    "shading (sh)": "shading (sh): /S0 — shading fills an area we cannot bound"
-   }
-  },
-  {
-   "id": "alphatrans",
-   "kind": "block",
-   "rect": [
-    198.43,
-    280.63,
-    396.85,
-    561.26
-   ],
-   "first_reason": "region removal on a page with blockers: shading",
-   "first_detail": "shading (sh): /Sh1 crosses a rect — its function and geometry inside cannot be separated from the rest (a clip would only hide them",
-   "refused_by_walk": true,
-   "walk_error": null,
-   "walk_categories": [
-    "shading (sh)"
-   ],
-   "walk_findings": 1,
-   "examples": {
-    "shading (sh)": "shading (sh): /Sh1 crosses a rect — its function and geometry inside cannot be separated from the rest (a clip would only hide them)"
-   }
   },
   {
    "id": "colorkeymask",
@@ -314,27 +216,6 @@
    "walk_categories": [],
    "walk_findings": 0,
    "examples": {}
-  },
-  {
-   "id": "issue10301",
-   "kind": "block",
-   "rect": [
-    198.4,
-    280.56,
-    396.8,
-    561.12
-   ],
-   "first_reason": "region removal on a page with uncertain content",
-   "first_detail": "glyph 0x61 — outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/ArialMT is drawn with the bundled LiberationSans-Regular — its true ink extent is unknown",
-   "refused_by_walk": true,
-   "walk_error": null,
-   "walk_categories": [
-    "non-embedded font"
-   ],
-   "walk_findings": 6,
-   "examples": {
-    "non-embedded font": "glyph 0x61 — outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/ArialMT is drawn with the bundled LiberationSans-Regular "
-   }
   },
   {
    "id": "verapdf_verapdf-test-suite-6-1-12-t02-pass-l",
