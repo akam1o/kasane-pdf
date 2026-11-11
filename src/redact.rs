@@ -437,13 +437,27 @@ fn redact_doc(
                 .push(crate::remove_region::annotation_print(d));
         }
     }
-    let output = s
-        .edit
-        .rewrite_with_overrides(&crate::rewrite::RewriteOverrides {
-            strip_info: true,
-            strip_metadata: true,
-            javascript_removed: options.remove_javascript,
-        })?;
+    let (output, written) =
+        s.edit
+            .rewrite_with_overrides_mapped(&crate::rewrite::RewriteOverrides {
+                strip_info: true,
+                strip_metadata: true,
+                javascript_removed: options.remove_javascript,
+            })?;
+    // The same, on what the rewrite actually wrote (its object map is the
+    // output's object set): no removed annotation or field among it.
+    if let Some(r) = gone
+        .iter()
+        .filter(|r| written.contains_key(&(r.number, r.generation)))
+        .min()
+    {
+        return Err(Error::Unsupported {
+            feature: "redaction output failed verification",
+            detail: format!(
+                "object {r} is a removed annotation or form field the output still writes"
+            ),
+        });
+    }
 
     // Type 3 glyph definitions the output no longer shows go too.
     let (output, glyph_images, glyph_procs, glyph_tounicodes) =
@@ -653,40 +667,16 @@ fn verify(
     // refers to it (an action, another annotation, the structure tree,
     // an outline …): every dictionary written is compared.
     if !removed_annots.is_empty() {
-        // Removed annotations are refused by identity before the
-        // rewrite; this catches copies. One identical to an annotation a
-        // page still holds is that annotation.
-        let shown = crate::redact_verify::shown_annotation_prints(&out)?;
-        let prints: HashSet<[u8; 32]> = removed_annots
-            .iter()
-            .copied()
-            .filter(|p| !shown.contains(p))
-            .collect();
-        // Every nested dictionary, at any depth (iteratively).
-        fn find(o: &Object, prints: &HashSet<[u8; 32]>) -> bool {
-            let mut stack = vec![o];
-            while let Some(o) = stack.pop() {
-                match o {
-                    Object::Dict(d) => {
-                        if prints.contains(&crate::remove_region::annotation_print(d)) {
-                            return true;
-                        }
-                        stack.extend(d.values());
-                    }
-                    Object::Array(a) => stack.extend(a.iter()),
-                    Object::Stream { dict, .. } => {
-                        if prints.contains(&crate::remove_region::annotation_print(dict)) {
-                            return true;
-                        }
-                        stack.extend(dict.values())
-                    }
-                    _ => {}
-                }
-            }
-            false
-        }
+        // The removed annotations themselves are refused by identity
+        // when the edit is written; this catches copies. What the
+        // output's pages hold is excused by identity, never by content
+        // (two annotations alike are not the same annotation).
+        let prints: HashSet<[u8; 32]> = removed_annots.iter().copied().collect();
+        let entries = crate::redact_verify::AnnotEntries::of(&out)?;
         for (r, o) in &idx.objects {
-            if find(o, &prints) {
+            if entries.find(*r, o, &|d| {
+                prints.contains(&crate::remove_region::annotation_print(d))
+            }) {
                 return Err(fail(format!(
                     "object {r} still holds a removed link or annotation (something refers to it)"
                 )));

@@ -557,6 +557,22 @@ impl<'a> Edit<'a> {
         )
     }
 
+    /// [`Self::rewrite_with_overrides`], also returning the object map
+    /// (`(old number, generation) → new number` of every object written).
+    pub(crate) fn rewrite_with_overrides_mapped(
+        mut self,
+        overrides: &rewrite::RewriteOverrides,
+    ) -> Result<(Vec<u8>, rewrite::ObjectMap), Error> {
+        self.commit()?;
+        rewrite::rewrite_overlay_mapped(
+            self.doc,
+            &self.overlay,
+            &self.synth_numbers,
+            &self.limits,
+            overrides,
+        )
+    }
+
     /// Build the annotation dicts + appearance streams and splice them
     /// into the overlay's page dicts.
     fn commit(&mut self) -> Result<(), Error> {

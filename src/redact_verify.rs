@@ -37,7 +37,7 @@ use crate::document::Document;
 use crate::error::Error;
 use crate::limits::Limits;
 use crate::object::{IndirectRef, Object};
-use crate::redact_usage::{usage, Bound, Usage, Use};
+use crate::redact_usage::{usage, usage_of, Bound, Usage, Use};
 use crate::remove_region::sha256;
 
 fn fail(detail: String) -> Error {
@@ -303,7 +303,7 @@ pub(crate) fn check_use(
             if !left.is_empty() {
                 // Page by page, until every copy is found used.
                 for i in (0..out.pages().len()).filter(|i| !is_edited(*i)) {
-                    let rest = usage(out, &|p| p == i, Bound::Under, limits)?;
+                    let rest = usage_of(out, &[i], Bound::Under, limits)?;
                     live.extend(content(used_digests(out, &rest, Some(idx))?));
                     left.retain(|(_, x)| !live.contains(x));
                     if left.is_empty() {
@@ -362,9 +362,12 @@ fn non_interference(
     if walk.is_empty() {
         return Ok(());
     }
-    let sel = |i: usize| walk.contains(&i);
-    let a = usage(input, &sel, Bound::Under, limits)?;
-    let b = usage(out, &sel, Bound::Under, limits)?;
+    // Everything a reader may draw, both sides: every appearance state,
+    // Hidden annotations, optional content (a narrower set would let an
+    // edit of hidden content on another page through).
+    let sel: Vec<usize> = walk.iter().copied().collect();
+    let a = usage_of(input, &sel, Bound::Complete, limits)?;
+    let b = usage_of(out, &sel, Bound::Complete, limits)?;
     for &i in &walk {
         let set = |doc: &Document,
                    u: &Usage,
@@ -409,41 +412,35 @@ fn non_interference(
 
 /// A digest of what a page draws from — its content streams, its
 /// resources in force, annotations and thumbnail — as a graph
-/// (references replaced by what they refer to; back links to the page
-/// tree and between annotations left out), so the same in an output
+/// (references replaced by what they refer to; a page by its index; the
+/// back links of each `/Annots` entry — its `/P`, `/Parent`, `/Popup`,
+/// `/IRT` — left out there and nowhere else), so the same in an output
 /// that renumbered its objects. `None` when the graph has a cycle or
 /// is too large to digest.
 struct Signatures<'a> {
     doc: &'a Document,
+    /// Every page object, with its index.
+    pages: HashMap<IndirectRef, usize>,
     memo: HashMap<IndirectRef, Option<[u8; 32]>>,
     open: HashSet<IndirectRef>,
     work: u64,
 }
 
-/// Whether `key` of `d` is a back link the page signature leaves out:
-/// a page tree node's, an annotation's or a field's `/Parent`, an
-/// annotation's `/P`, `/Popup` and `/IRT`, a structure element's `/P`.
-/// Decided by what `d` is, never by the key alone (a resource may be
-/// named `/P`).
-fn back_link(d: &crate::object::Dict, key: &[u8]) -> bool {
-    let has = |k: &[u8]| d.contains_key(k);
-    let is_type = |t: &[u8]| d.get(b"Type".as_slice()).and_then(|v| v.as_name()) == Some(t);
-    let annotation = is_type(b"Annot") || (has(b"Subtype") && has(b"Rect"));
-    let node = is_type(b"Page") || is_type(b"Pages");
-    let field = has(b"FT") || (has(b"T") && has(b"Kids"));
-    let element = is_type(b"StructElem") || (has(b"S") && has(b"P") && !annotation);
-    match key {
-        b"Parent" => node || annotation || field,
-        b"P" => annotation || element,
-        b"Popup" | b"IRT" => annotation,
-        _ => false,
-    }
-}
+/// The keys of an annotation (an entry of a page's `/Annots`) that
+/// link back to its page, field or other annotations; the signature
+/// leaves them out there, and only there.
+const ANNOT_BACK_LINKS: &[&[u8]] = &[b"P", b"Parent", b"Popup", b"IRT"];
 
 impl<'a> Signatures<'a> {
     fn new(doc: &'a Document) -> Self {
         Signatures {
             doc,
+            pages: doc
+                .pages()
+                .iter()
+                .enumerate()
+                .filter_map(|(i, p)| p.object_ref().map(|r| (r, i)))
+                .collect(),
             memo: HashMap::new(),
             open: HashSet::new(),
             work: 0,
@@ -463,7 +460,41 @@ impl<'a> Signatures<'a> {
             _ => return Ok(None),
         };
         let mut parts = Vec::new();
-        for k in [b"Contents".as_slice(), b"Annots", b"Thumb", b"Group"] {
+        // The annotations: each entry's own dictionary without its back
+        // links, its values digested as anywhere else.
+        parts.extend_from_slice(b"Annots");
+        match pd.get(b"Annots".as_slice()) {
+            None => parts.push(0),
+            Some(a) => {
+                let a = self.doc.deref(a)?;
+                let Some(a) = a.as_array() else {
+                    return Ok(None);
+                };
+                parts.extend_from_slice(&(a.len() as u64).to_be_bytes());
+                for e in a {
+                    let d = self.doc.deref(e)?;
+                    let Some(d) = d.as_dict() else {
+                        return Ok(None);
+                    };
+                    let mut keys: Vec<&Vec<u8>> = d
+                        .keys()
+                        .filter(|k| !ANNOT_BACK_LINKS.contains(&k.as_slice()))
+                        .collect();
+                    keys.sort();
+                    parts.push(b'<');
+                    for k in keys {
+                        parts.extend_from_slice(&(k.len() as u64).to_be_bytes());
+                        parts.extend_from_slice(k);
+                        match self.value(&d[k.as_slice()], limits)? {
+                            Some(x) => parts.extend_from_slice(&x),
+                            None => return Ok(None),
+                        }
+                    }
+                    parts.push(b'>');
+                }
+            }
+        }
+        for k in [b"Contents".as_slice(), b"Thumb", b"Group"] {
             parts.extend_from_slice(k);
             match pd.get(k) {
                 Some(v) => match self.value(v, limits)? {
@@ -488,6 +519,13 @@ impl<'a> Signatures<'a> {
     /// written as their digest; direct values are written inline.
     fn value(&mut self, o: &Object, limits: &Limits) -> Result<Option<[u8; 32]>, Error> {
         if let Object::Ref(r) = o {
+            // A page (a destination's, an annotation's `/P` deeper down)
+            // by its place in the page tree, the same in both files.
+            if let Some(i) = self.pages.get(r) {
+                let mut b = b"page".to_vec();
+                b.extend_from_slice(&(*i as u64).to_be_bytes());
+                return Ok(Some(sha256(&b)));
+            }
             if let Some(d) = self.memo.get(r) {
                 return Ok(*d);
             }
@@ -529,7 +567,7 @@ impl<'a> Signatures<'a> {
                     out.extend_from_slice(&sha256(data));
                 }
                 out.push(b'<');
-                let mut keys: Vec<&Vec<u8>> = d.keys().filter(|k| !back_link(d, k)).collect();
+                let mut keys: Vec<&Vec<u8>> = d.keys().collect();
                 keys.sort();
                 for k in keys {
                     out.extend_from_slice(&(k.len() as u64).to_be_bytes());
@@ -598,10 +636,96 @@ fn annotation_print(d: &crate::object::Dict) -> [u8; 32] {
     crate::remove_region::annotation_print(&d)
 }
 
+/// The annotations the output's pages hold, by identity: the
+/// references in their `/Annots`, and the objects holding direct ones
+/// (a page whose `/Annots` is a direct array, an `/Annots` array object).
+pub(crate) struct AnnotEntries {
+    refs: HashSet<IndirectRef>,
+    holders: HashSet<IndirectRef>,
+}
+
+impl AnnotEntries {
+    pub(crate) fn of(out: &Document) -> Result<AnnotEntries, Error> {
+        let mut e = AnnotEntries {
+            refs: HashSet::new(),
+            holders: HashSet::new(),
+        };
+        for page in out.pages() {
+            let Some(pr) = page.object_ref() else {
+                continue;
+            };
+            let Object::Dict(pd) = out.resolve(pr)? else {
+                continue;
+            };
+            let arr = match pd.get(b"Annots".as_slice()) {
+                Some(Object::Ref(ar)) => {
+                    e.holders.insert(*ar);
+                    out.resolve(*ar)?
+                }
+                Some(a) => {
+                    e.holders.insert(pr);
+                    a.clone()
+                }
+                None => continue,
+            };
+            for x in arr.as_array().unwrap_or(&[]) {
+                if let Object::Ref(r) = x {
+                    e.refs.insert(*r);
+                }
+            }
+        }
+        Ok(e)
+    }
+
+    /// The first dictionary in object `r` (`o`), a stream's included, at
+    /// any depth, for which `hit` holds — leaving out the dictionaries
+    /// that are themselves entries of a page's `/Annots` (what a page
+    /// still holds is not a copy, whatever its content), not their
+    /// values.
+    pub(crate) fn find(
+        &self,
+        r: IndirectRef,
+        o: &Object,
+        hit: &dyn Fn(&crate::object::Dict) -> bool,
+    ) -> bool {
+        // (value, whether it is an /Annots entry, whether it is the
+        // /Annots array of the holder)
+        let mut stack: Vec<(&Object, bool, bool)> =
+            vec![(o, self.refs.contains(&r), self.holders.contains(&r))];
+        let top = self.holders.contains(&r);
+        let mut first = true;
+        while let Some((o, entry, annots_array)) = stack.pop() {
+            match o {
+                Object::Array(a) => {
+                    for v in a {
+                        stack.push((v, annots_array, false));
+                    }
+                }
+                Object::Dict(d) | Object::Stream { dict: d, .. } => {
+                    if !entry && hit(d) {
+                        return true;
+                    }
+                    // A page holding a direct /Annots array.
+                    let page_holder = first && top && d.contains_key(b"Annots".as_slice());
+                    for (k, v) in d {
+                        let annots = page_holder && k.as_slice() == b"Annots";
+                        stack.push((v, false, annots));
+                    }
+                }
+                _ => {}
+            }
+            first = false;
+        }
+        false
+    }
+}
+
 /// No annotation an edited page had in the input and does not have in
 /// the output is still in the output, as any dictionary or a stream's
-/// dictionary, whatever refers to it (the removed annotations are found
-/// by comparing the pages, not from the edit's record).
+/// dictionary, whatever refers to it. The removed annotations are found
+/// by comparing each edited page's annotations (prints, counted: of two
+/// alike, one removed is removed), not from the edit's record; what the
+/// output's pages hold is excused by identity only.
 pub(crate) fn check_removed_annotations(
     input: &Document,
     out: &Document,
@@ -609,74 +733,45 @@ pub(crate) fn check_removed_annotations(
     graph: &RefGraph,
     edited: &BTreeSet<usize>,
 ) -> Result<(), Error> {
-    let prints = |doc: &Document, i: usize| -> Result<HashSet<[u8; 32]>, Error> {
-        let mut set = HashSet::new();
+    let prints = |doc: &Document, i: usize| -> Result<HashMap<[u8; 32], usize>, Error> {
+        let mut set = HashMap::new();
         let Some(page) = doc.pages().get(i) else {
             return Ok(set);
         };
         if let Some(a) = crate::redact_diag::page_dict_entry(doc, page, b"Annots")? {
             for x in doc.deref(&a)?.as_array().unwrap_or(&[]) {
                 if let Some(d) = doc.deref(x)?.as_dict() {
-                    set.insert(annotation_print(d));
+                    *set.entry(annotation_print(d)).or_insert(0) += 1;
                 }
             }
         }
         Ok(set)
     };
-    // What the output's pages still show is not removed, wherever an
-    // identical annotation was (the same footer link on every page).
-    let mut kept: HashSet<[u8; 32]> = HashSet::new();
-    for i in 0..out.pages().len() {
-        kept.extend(prints(out, i)?);
-    }
     let mut removed: HashSet<[u8; 32]> = HashSet::new();
     for &i in edited {
-        removed.extend(prints(input, i)?.into_iter().filter(|p| !kept.contains(p)));
+        let kept = prints(out, i)?;
+        for (p, n) in prints(input, i)? {
+            if kept.get(&p).copied().unwrap_or(0) < n {
+                removed.insert(p);
+            }
+        }
     }
     if removed.is_empty() {
         return Ok(());
     }
+    let entries = AnnotEntries::of(out)?;
     for (r, o) in &idx.objects {
-        let mut stack: Vec<&Object> = vec![o];
-        while let Some(o) = stack.pop() {
-            let d = match o {
-                Object::Dict(d) | Object::Stream { dict: d, .. } => d,
-                Object::Array(a) => {
-                    stack.extend(a.iter());
-                    continue;
-                }
-                _ => continue,
-            };
-            if removed.contains(&annotation_print(d)) {
-                return Err(fail(format!(
-                    "object {r} holds an annotation an edited page no longer has{}",
-                    graph
-                        .path_to(*r)
-                        .map(|p| format!(" (reached by {p})"))
-                        .unwrap_or_default()
-                )));
-            }
-            stack.extend(d.values());
+        if entries.find(*r, o, &|d| removed.contains(&annotation_print(d))) {
+            return Err(fail(format!(
+                "object {r} holds an annotation an edited page no longer has{}",
+                graph
+                    .path_to(*r)
+                    .map(|p| format!(" (reached by {p})"))
+                    .unwrap_or_default()
+            )));
         }
     }
     Ok(())
-}
-
-/// The prints ([`crate::remove_region::annotation_print`]) of every
-/// annotation the output's pages hold: an identical removed annotation's
-/// print excuses nothing more than these show.
-pub(crate) fn shown_annotation_prints(out: &Document) -> Result<HashSet<[u8; 32]>, Error> {
-    let mut set = HashSet::new();
-    for page in out.pages() {
-        if let Some(a) = crate::redact_diag::page_dict_entry(out, page, b"Annots")? {
-            for x in out.deref(&a)?.as_array().unwrap_or(&[]) {
-                if let Some(d) = out.deref(x)?.as_dict() {
-                    set.insert(crate::remove_region::annotation_print(d));
-                }
-            }
-        }
-    }
-    Ok(set)
 }
 
 #[cfg(test)]
@@ -836,5 +931,102 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("object 9 0 R"), "{e}");
+    }
+
+    fn streamd(dict: &str, data: &[u8]) -> Vec<u8> {
+        let mut v = format!("<< {dict} /Length {} >>\nstream\n", data.len()).into_bytes();
+        v.extend_from_slice(data);
+        v.extend_from_slice(b"\nendstream");
+        v
+    }
+
+    fn check_pair(a: &[u8], b: &[u8]) -> Result<(), Error> {
+        let l = Limits::default();
+        let a = Document::from_bytes(a).unwrap();
+        let b = Document::from_bytes(b).unwrap();
+        let idx = Index::build(&b, &l)?;
+        let graph = RefGraph::build(&b, &idx, &l)?;
+        check_use(&a, &b, &idx, &graph, &[0].into(), &l)
+    }
+
+    /// Non-interference compares all a reader may draw on a page not
+    /// edited: content under optional content, an XObject with `/OC`, a
+    /// rollover appearance. (Review.)
+    #[test]
+    fn non_interference_compares_everything_drawn() {
+        for kind in ["xobject", "bdc", "rollover"] {
+            let make = |body: &[u8]| {
+                let (content, oc, resources, annots): (&[u8], &str, &str, &str) = match kind {
+                    "xobject" => (b"/P Do", "/OC 8 0 R", "/XObject << /P 7 0 R >>", ""),
+                    "bdc" => (
+                        b"/OC /L BDC /P Do EMC",
+                        "",
+                        "/XObject << /P 7 0 R >> /Properties << /L 8 0 R >>",
+                        "",
+                    ),
+                    _ => (b"", "", "", "/Annots [9 0 R]"),
+                };
+                let p2 = format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 6 0 R /Resources << {resources} >> {annots} >>"
+                );
+                let fm = streamd(
+                    &format!(
+                        "/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << >> {oc}"
+                    ),
+                    body,
+                );
+                let mut objs: Vec<(u32, Vec<u8>)> = vec![
+                    (1, b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [8 0 R] /D << /BaseState /ON >> >> >>".to_vec()),
+                    (2, PAGES.to_vec()),
+                    (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >>".to_vec()),
+                    (4, stream("0 0 1 1 re f")),
+                    (5, p2.into_bytes()),
+                    (6, streamd("", content)),
+                    (7, fm),
+                    (8, b"<< /Type /OCG /Name (layer) >>".to_vec()),
+                ];
+                if kind == "rollover" {
+                    objs.push((9, b"<< /Type /Annot /Subtype /Stamp /Rect [0 0 100 100] /AP << /N 10 0 R /R 7 0 R >> >>".to_vec()));
+                    objs.push((
+                        10,
+                        streamd(
+                            "/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << >>",
+                            b"",
+                        ),
+                    ));
+                }
+                let refs: Vec<(u32, &[u8])> =
+                    objs.iter().map(|(n, b)| (*n, b.as_slice())).collect();
+                pdf(&refs)
+            };
+            let e = check_pair(&make(b"0 0 10 10 re f"), &make(b"50 50 10 10 re f"))
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("page 2 (not edited)"), "{kind}: {e}");
+        }
+    }
+
+    /// The page signature leaves out back links only in `/Annots`
+    /// entries: resources named `/P` and `/S` are compared. (Review.)
+    #[test]
+    fn signature_back_links_by_context() {
+        let make = |body: &[u8]| {
+            let objs: Vec<(u32, Vec<u8>)> = vec![
+                (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+                (2, PAGES.to_vec()),
+                (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R >>".to_vec()),
+                (4, stream("0 0 1 1 re f")),
+                (5, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 6 0 R /Resources << /XObject << /P 7 0 R /S 8 0 R >> >> >>".to_vec()),
+                (6, stream("/P Do")),
+                (7, streamd("/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << >>", body)),
+                (8, streamd("/Type /XObject /Subtype /Form /BBox [0 0 100 100] /Resources << >>", b"")),
+            ];
+            let refs: Vec<(u32, &[u8])> = objs.iter().map(|(n, b)| (*n, b.as_slice())).collect();
+            pdf(&refs)
+        };
+        let e = check_pair(&make(b"0 0 10 10 re f"), &make(b"50 50 10 10 re f"))
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("page 2 (not edited)"), "{e}");
     }
 }

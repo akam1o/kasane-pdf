@@ -5751,6 +5751,18 @@ fn removed_appearance_colour_data_does_not_stay() {
             ),
         ),
         (
+            "default grey inherited by a form",
+            link(
+                "/ColorSpace << /DefaultGray [/Separation /S /DeviceRGB 40 0 R] >> /XObject << /Fm 41 0 R >>",
+                b"0 g /Fm Do",
+                vec![
+                    (40, func(b"\xff\x00\x00\x00\x00\xff")),
+                    (41, stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 10 10] /Resources << >>", b"0 0 10 10 re f")),
+                ],
+                "/Private 40 0 R",
+            ),
+        ),
+        (
             "default grey",
             link(
                 "/ColorSpace << /DefaultGray [/Separation /S /DeviceRGB 40 0 R] >>",
@@ -5936,4 +5948,46 @@ fn identical_links_on_other_pages_stay() {
         .map_or(0, |a| a.len())
     };
     assert_eq!((annots(0), annots(1)), (0, 1));
+}
+
+/// A copy of a removed link is refused even when another page keeps a
+/// link that looks the same: annotations alike are not the same
+/// annotation (their references, here the actions, differ). Only the
+/// entries of an output page's `/Annots` are excused, by identity.
+/// (Review.)
+#[test]
+fn a_look_alike_on_another_page_does_not_excuse_a_copy() {
+    let make = |copy: &str| {
+        build_pdf(&[
+            (1, format!("<< /Type /Catalog /Pages 2 0 R /XPriv {copy} >>").into_bytes()),
+            (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [10 0 R] >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", b"0 0 5 5 re f")),
+            (
+                5,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [11 0 R] >>"
+                    .to_vec(),
+            ),
+            (10, b"<< /Type /Annot /Subtype /Link /Rect [70 90 110 100] /A 15 0 R >>".to_vec()),
+            (11, b"<< /Type /Annot /Subtype /Link /Rect [70 90 110 100] /A 16 0 R >>".to_vec()),
+            (12, b"<< /Type /Annot /Subtype /Link /Rect [70 90 110 100] /A 15 0 R >>".to_vec()),
+            (15, b"<< /S /URI /URI (https://secret.example/LOOKSAME) >>".to_vec()),
+            (16, b"<< /S /URI /URI (https://public.example/) >>".to_vec()),
+        ])
+    };
+    for (name, copy) in [
+        ("indirect copy", "12 0 R"),
+        (
+            "direct copy",
+            "<< /Type /Annot /Subtype /Link /Rect [70 90 110 100] /A 15 0 R >>",
+        ),
+    ] {
+        let doc = Document::from_bytes(&make(copy)).unwrap();
+        let e = unsupported(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()));
+        assert!(e.contains("failed verification"), "{name}: {e}");
+    }
 }

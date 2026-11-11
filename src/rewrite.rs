@@ -161,6 +161,19 @@ pub(crate) fn rewrite_overlay_with(
     rewrite_core(doc, overlay, synth_numbers, limits, overrides, false, false).map(|(out, ..)| out)
 }
 
+/// [`rewrite_overlay_with`], also returning which input objects were
+/// written (the object map): exactly the output's object set.
+pub(crate) fn rewrite_overlay_mapped(
+    doc: &Document,
+    overlay: &HashMap<(u32, u16), Object>,
+    synth_numbers: &HashSet<(u32, u16)>,
+    limits: &Limits,
+    overrides: &RewriteOverrides,
+) -> Result<(Vec<u8>, ObjectMap), Error> {
+    rewrite_core(doc, overlay, synth_numbers, limits, overrides, false, false)
+        .map(|(out, map, _)| (out, map))
+}
+
 /// `(old number, old generation) → new number` of a rewrite.
 pub(crate) type ObjectMap = HashMap<(u32, u16), u32>;
 
