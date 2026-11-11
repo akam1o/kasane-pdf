@@ -2,8 +2,9 @@
 //! meeting a rect goes, and its field with it when no widget of the
 //! field is left — the value, its description and its place in `/CO`
 //! too. A field keeping a widget elsewhere keeps its value (shown there,
-//! reported). XFA forms, signature fields and trees that cannot be
-//! edited exactly are refused.
+//! reported). Dynamic XFA forms, signature fields and trees that cannot
+//! be edited exactly are refused (a hybrid XFA form goes, the AcroForm
+//! stays).
 
 mod common;
 
@@ -182,7 +183,7 @@ fn a_field_keeping_a_widget_keeps_its_value() {
     assert!(values(&r.output).is_empty());
 }
 
-/// Refused: an XFA form, a signature field (the type inherited), a
+/// Refused: a dynamic XFA form, a signature field (the type inherited), a
 /// widget whose /Parent is not the field above it, a direct widget.
 #[test]
 fn forms_that_cannot_be_edited_exactly() {
@@ -191,8 +192,8 @@ fn forms_that_cannot_be_edited_exactly() {
     };
     for (name, form, annots, extra) in [
         (
-            "xfa",
-            "<< /Fields [10 0 R] /XFA 11 0 R >>",
+            "dynamic xfa",
+            "<< /Fields [10 0 R] /XFA 11 0 R >> /NeedsRendering true",
             "10 0 R",
             vec![
                 (10, widget("/FT /Tx /T (a) /V (x)")),

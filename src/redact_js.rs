@@ -40,14 +40,8 @@ pub(crate) fn strip_javascript(
     overlay: &mut HashMap<(u32, u16), Object>,
     limits: &Limits,
 ) -> Result<u64, Error> {
-    if let Some(af) = doc.catalog().get(b"AcroForm".as_slice()) {
-        if doc
-            .deref(af)?
-            .as_dict()
-            .is_some_and(|d| d.contains_key(b"XFA".as_slice()))
-        {
-            return Err(refuse("an XFA form: its scripts are not edited".into()));
-        }
+    if crate::redact_forms::has_xfa(doc, overlay)? {
+        return Err(refuse("an XFA form: its scripts are not edited".into()));
     }
     let snapshot = overlay.clone();
     let body = |r: IndirectRef| -> Result<Object, Error> {

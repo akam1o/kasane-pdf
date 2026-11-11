@@ -4984,8 +4984,15 @@ fn javascript_removal_keeps_what_is_not_a_script() {
     let source = || (51, stream_obj("", b"var s = 'SCRIPTSOURCE';"));
     let e = go("/OpenAction 50 0 R /Cache 51 0 R", vec![script(), source()]).unwrap_err();
     assert!(e.to_string().contains("also referred to"), "{e}");
-    let e = go(
+    // A hybrid XFA form goes with its scripts; a dynamic one is refused.
+    let r = go(
         "/AcroForm << /Fields [] /XFA 52 0 R >>",
+        vec![(52, stream_obj("", b"<xdp:xdp/>"))],
+    )
+    .unwrap();
+    assert!(r.xfa_removed);
+    let e = go(
+        "/AcroForm << /Fields [] /XFA 52 0 R >> /NeedsRendering true",
         vec![(52, stream_obj("", b"<xdp:xdp/>"))],
     )
     .unwrap_err();
@@ -7416,4 +7423,190 @@ fn removed_data_walk_reads_a_flat_page_tree_once() {
         "{:?}",
         start.elapsed()
     );
+}
+
+/// An XFA form beside its AcroForm (a hybrid form): with
+/// `remove_javascript`, or when `remove_annotations` removes a widget,
+/// the XFA packets go (scripts and the datasets' copy of the values) and
+/// the AcroForm stays; refused when readers must render the form from
+/// XFA alone (`/NeedsRendering`), or when something else still refers to
+/// a packet. Not touched otherwise.
+#[test]
+fn hybrid_xfa_forms() {
+    let make = |cat: &str, annots: &str, extra: Vec<(u32, Vec<u8>)>| {
+        let mut objs = vec![
+            (1, format!("<< /Type /Catalog /Pages 2 0 R /AcroForm 30 0 R {cat} >>").into_bytes()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [{annots}] >>")
+                    .into_bytes(),
+            ),
+            (4, stream_obj("", b"0 0 5 5 re f")),
+            (30, b"<< /Fields [31 0 R] /XFA [(template) 32 0 R (datasets) 33 0 R] >>".to_vec()),
+            (31, b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (f) /V (VALUEMARK) /Rect [70 95 130 110] >>".to_vec()),
+            (32, stream_obj("", b"<template><script>XFAMARK</script></template>")),
+            (33, stream_obj("", b"<xfa:datasets><f>VALUEMARK</f></xfa:datasets>")),
+        ];
+        objs.extend(extra);
+        build_pdf(&objs)
+    };
+    // remove_annotations removes the widget: the field and XFA go.
+    let doc = Document::from_bytes(&make("", "31 0 R", vec![])).unwrap();
+    let r = redact(
+        &doc,
+        &[(0, vec![RECT])],
+        &RedactOptions::new().remove_annotations(true),
+    )
+    .unwrap();
+    assert!(r.xfa_removed);
+    assert!(!contains(&r.output, b"VALUEMARK") && !contains(&r.output, b"XFAMARK"));
+    // remove_javascript, the widget outside: XFA goes, the field stays.
+    let doc = Document::from_bytes(&make("", "31 0 R", vec![])).unwrap();
+    let far = (150.0, 150.0, 190.0, 190.0);
+    let r = redact(
+        &doc,
+        &[(0, vec![far])],
+        &RedactOptions::new().remove_javascript(true),
+    )
+    .unwrap();
+    assert!(r.xfa_removed);
+    assert!(!contains(&r.output, b"XFAMARK"));
+    assert!(
+        contains(&r.output, b"VALUEMARK"),
+        "the kept field keeps its value"
+    );
+    // Neither option: the XFA form is carried as it was.
+    let doc = Document::from_bytes(&make("", "", vec![])).unwrap();
+    let r = redact(&doc, &[(0, vec![far])], &RedactOptions::new()).unwrap();
+    assert!(!r.xfa_removed);
+    // A dynamic XFA form, and a packet something else refers to: refused.
+    for (name, cat) in [
+        ("dynamic", "/NeedsRendering true"),
+        ("packet kept", "/XPriv 33 0 R"),
+    ] {
+        let doc = Document::from_bytes(&make(cat, "31 0 R", vec![])).unwrap();
+        let e = unsupported(redact(
+            &doc,
+            &[(0, vec![RECT])],
+            &RedactOptions::new().remove_annotations(true),
+        ));
+        assert!(
+            e.contains("XFA") || e.contains("failed verification"),
+            "{name}: {e}"
+        );
+    }
+}
+
+/// With `remove_javascript`, the catalog's `/AA` scripts go and what is
+/// left of it is carried (it was refused whole).
+#[test]
+fn catalog_additional_actions_without_scripts() {
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R /AA << /WP 5 0 R /DC << /S /Named /N /FirstPage >> >> >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>".to_vec()),
+        (4, stream_obj("", b"0 0 5 5 re f")),
+        (5, b"<< /S /JavaScript /JS (print\\(\\)) >>".to_vec()),
+    ]);
+    let doc = Document::from_bytes(&pdf).unwrap();
+    assert!(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()).is_err());
+    let r = redact(
+        &doc,
+        &[(0, vec![RECT])],
+        &RedactOptions::new().remove_javascript(true),
+    )
+    .unwrap();
+    assert_eq!(r.javascript_removed, 1);
+    assert!(!contains(&r.output, b"JavaScript"));
+    assert!(contains(&r.output, b"FirstPage"));
+}
+
+/// A NoZoom popup without an appearance stream draws nothing on the
+/// page: kept on an edited page. One with an appearance, and a Text
+/// annotation (its icon), are still refused when kept.
+#[test]
+fn nozoom_popups_without_appearance() {
+    let make = |annot: &str| {
+        build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [10 0 R] >>".to_vec()),
+            (4, stream_obj("", b"0 0 5 5 re f")),
+            (10, annot.as_bytes().to_vec()),
+            (11, stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 10 10]", b"0 0 10 10 re f")),
+        ])
+    };
+    let far = "/Rect [170 170 190 190]";
+    let doc = Document::from_bytes(&make(&format!(
+        "<< /Type /Annot /Subtype /Popup {far} /F 28 /Open false >>"
+    )))
+    .unwrap();
+    redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()).unwrap();
+    for a in [
+        format!("<< /Type /Annot /Subtype /Popup {far} /F 28 /AP << /N 11 0 R >> >>"),
+        format!("<< /Type /Annot /Subtype /Text {far} /Contents (x) >>"),
+    ] {
+        let doc = Document::from_bytes(&make(&a)).unwrap();
+        let e = unsupported(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()));
+        assert!(e.contains("NoZoom"), "{a}: {e}");
+    }
+}
+
+/// A non-embedded simple TrueType font named after a Standard 14 font's
+/// metric-compatible alias (ArialMT, TimesNewRomanPSMT): with
+/// `embed_substitute_fonts` its substitute is embedded and the text is
+/// redacted by ink, as for the Type 1 fonts. A symbolic one stays refused.
+#[test]
+fn non_embedded_truetype_text_is_redacted_after_embedding() {
+    let make = |base: &str, flags: u32| {
+        doc_with(
+            "/Font << /H 50 0 R >>",
+            &[b"BT /H 12 Tf 20 100 Td (PUBLIC SECRETWORD MORE) Tj ET"],
+            vec![
+                (
+                    50,
+                    format!(
+                        "<< /Type /Font /Subtype /TrueType /BaseFont /{base} /Encoding /WinAnsiEncoding \
+                         /FirstChar 32 /LastChar 126 /Widths [{}] /FontDescriptor 51 0 R >>",
+                        ["600"; 95].join(" ")
+                    )
+                    .into_bytes(),
+                ),
+                (
+                    51,
+                    format!(
+                        "<< /Type /FontDescriptor /FontName /{base} /Flags {flags} /FontBBox [0 -200 1000 900] \
+                         /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 >>"
+                    )
+                    .into_bytes(),
+                ),
+            ],
+        )
+    };
+    for base in ["ArialMT", "TimesNewRomanPSMT"] {
+        let pdf = make(base, 32);
+        assert!(
+            unsupported(run(&pdf, vec![RECT])).contains("non-embedded"),
+            "{base}"
+        );
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
+        let rect = (
+            t.chars[7].origin.0 + 0.5,
+            95.0,
+            t.chars[17].origin.0 - 0.5,
+            112.0,
+        );
+        let r = embed_run(&pdf, vec![rect]).unwrap();
+        assert_eq!(r.fonts_embedded, 1, "{base}");
+        let text = page_text(&r.output, 0);
+        assert!(
+            !text.contains("SECRET") && text.contains("PUBLIC") && text.contains("MORE"),
+            "{base}: {text}"
+        );
+        assert!(!contains(&r.output, b"SECRETWORD"));
+    }
+    let pdf = make("ArialMT", 4);
+    assert!(embed_run(&pdf, vec![RECT]).is_err(), "symbolic");
 }

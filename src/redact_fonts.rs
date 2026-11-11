@@ -9,7 +9,8 @@
 //! and redaction can decide by ink as for any embedded font.
 //!
 //! Each non-embedded Latin Standard 14 Type 1 font (or a
-//! metric-compatible alias such as Arial) is replaced, document-wide,
+//! metric-compatible alias such as Arial), and each non-symbolic simple
+//! TrueType font naming one (ArialMT …), is replaced, document-wide,
 //! by a non-symbolic TrueType font with the bundled Liberation face as
 //! `/FontFile2`:
 //!
@@ -24,9 +25,9 @@
 //! - `/ToUnicode` is kept.
 //!
 //! The glyph shapes become Liberation's everywhere the font is used —
-//! the visible change this mode makes. Symbol, ZapfDingbats, other
-//! non-embedded fonts and CID fonts are not embedded (and stay
-//! refused by `redact`).
+//! the visible change this mode makes. Symbol, ZapfDingbats, symbolic
+//! TrueType fonts, other non-embedded fonts and CID fonts are not
+//! embedded (and stay refused by `redact`).
 
 use crate::document::Document;
 use crate::edit::Edit;
@@ -58,15 +59,27 @@ pub(crate) fn embed_substitutes(
         let Some(d) = obj.as_dict() else { continue };
         let name = |k: &[u8]| d.get(k).and_then(|v| v.as_name());
         if name(b"Type") != Some(b"Font")
-            || !matches!(name(b"Subtype"), Some(b"Type1" | b"MMType1"))
+            || !matches!(name(b"Subtype"), Some(b"Type1" | b"MMType1" | b"TrueType"))
         {
             continue;
         }
-        let Some(font) = crate::font::load_type1_dict(doc, d, limits)? else {
-            continue;
-        };
-        let Some((face, names, widths)) = font.substitute_for_embedding() else {
-            continue;
+        let owned;
+        let type1;
+        let (face, names, widths) = if name(b"Subtype") == Some(b"TrueType") {
+            let Some(s) = crate::font::truetype_substitute_for_embedding(doc, d, limits)? else {
+                continue;
+            };
+            owned = s;
+            (&owned.0, owned.1.clone(), owned.2.clone())
+        } else {
+            let Some(font) = crate::font::load_type1_dict(doc, d, limits)? else {
+                continue;
+            };
+            type1 = font;
+            let Some(s) = type1.substitute_for_embedding() else {
+                continue;
+            };
+            s
         };
         let e = match &mut edit {
             Some(e) => e,

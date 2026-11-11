@@ -6,6 +6,22 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- `Redaction::xfa_removed`: with `remove_javascript`, or when
+  `remove_annotations` edits form fields, an XFA form beside its
+  AcroForm is removed (its packets hold the scripts and a copy of the
+  field values) instead of refusing the document; a dynamic XFA form
+  (`/NeedsRendering`) stays refused.
+- `embed_substitute_fonts` also embeds the substitute of a non-embedded,
+  non-symbolic simple TrueType font named after a Standard 14 font or
+  its alias (ArialMT, TimesNewRomanPSMT …).
+
+### Changed
+- With `remove_javascript`, what is left of the catalog's `/AA` after
+  its scripts are removed is carried (it was refused whole).
+- A NoZoom or NoRotate popup without an appearance stream, kept on an
+  edited page, is no longer refused: it draws nothing on the page.
+
 ## [0.9.0] - 2026-11-11
 
 ### Added

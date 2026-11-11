@@ -90,7 +90,10 @@ impl RedactOptions {
     /// catalog runs scripts. A script may hold any of the document's
     /// text and is not redacted, so it is removed whole: the output's
     /// forms no longer calculate, validate or format, and nothing runs
-    /// when it opens. Verification checks that no JavaScript is left.
+    /// when it opens. An XFA form, whose scripts are not edited, is
+    /// removed with its scripts ([`Redaction::xfa_removed`]); one readers
+    /// must render from XFA alone is refused. Verification checks that no
+    /// JavaScript is left.
     pub fn remove_javascript(mut self, remove: bool) -> Self {
         self.remove_javascript = remove;
         self
@@ -134,8 +137,9 @@ impl RedactOptions {
     /// popup belongs to, and replies to it (`/IRT`), transitively.
     /// A widget meeting a rect is removed too, and its form field with
     /// it when no widget of the field is left (`Redaction::fields_removed`;
-    /// a signature field, an XFA form or a field tree that cannot be
-    /// edited exactly is refused). Other subtypes meeting a rect
+    /// a signature field or a field tree that cannot be edited exactly is
+    /// refused; an XFA form goes, see [`Redaction::xfa_removed`], unless
+    /// readers must render it from XFA alone, which is refused). Other subtypes meeting a rect
     /// (signatures, media, file attachments …) stay refused. Its appearance streams may not
     /// stay in the output unless something still draws them (checked
     /// like an edited image's original), and its text is searched for
@@ -148,7 +152,8 @@ impl RedactOptions {
 
     /// Before redacting, replace each non-embedded Latin Standard 14
     /// font (Times, Helvetica, Courier and their metric-compatible
-    /// aliases such as Arial) — document-wide — by a TrueType font
+    /// aliases such as Arial), Type 1 or non-symbolic simple TrueType
+    /// (ArialMT, TimesNewRomanPSMT …) — document-wide — by a TrueType font
     /// embedding the bundled substitute (Liberation), with every code's
     /// glyph name and advance written out, so that every reader draws
     /// exactly the embedded glyphs at the same positions. The glyphs'
@@ -159,8 +164,9 @@ impl RedactOptions {
     /// The output then shows Liberation's glyph shapes wherever those
     /// fonts are used (metric-compatible: the same advances, slightly
     /// different shapes) and is larger by the embedded programs (about
-    /// 0.3–0.4 MB per face). Symbol, ZapfDingbats, other non-embedded
-    /// fonts and CID fonts are not embedded and stay refused.
+    /// 0.3–0.4 MB per face). Symbol, ZapfDingbats, symbolic TrueType
+    /// fonts, other non-embedded fonts and CID fonts are not embedded
+    /// and stay refused.
     /// [`Redaction::fonts_embedded`] counts the fonts replaced.
     pub fn embed_substitute_fonts(mut self, embed: bool) -> Self {
         self.embed_substitute_fonts = embed;
@@ -248,6 +254,11 @@ pub struct Redaction {
     /// Form fields removed with the widgets `remove_annotations` removed
     /// (a field all of whose widgets are gone goes, its value with it).
     pub fields_removed: u64,
+    /// The AcroForm's XFA form (its template, scripts and a copy of the
+    /// field values) was removed: with `remove_javascript`, or when
+    /// `remove_annotations` edited form fields. Readers use the AcroForm
+    /// that stays.
+    pub xfa_removed: bool,
     /// The residual-information audit of the *output*: annotations,
     /// attachments, form values, actions, outlines' targets … that
     /// the positional redaction does not touch. Review before
@@ -398,6 +409,15 @@ fn redact_doc(
             .overlay
             .insert((root.number, root.generation), Object::Dict(catalog));
     }
+    // The XFA form, when scripts are removed or fields edited: its
+    // packets hold both (the AcroForm stays).
+    let xfa_packets = if options.remove_javascript || !s.touched.removed_widgets.is_empty() {
+        crate::redact_forms::remove_xfa(doc, &mut s.edit.overlay)?
+    } else {
+        None
+    };
+    let xfa_removed = xfa_packets.is_some();
+    let xfa_packets = xfa_packets.unwrap_or_default();
     // The form fields of removed widgets.
     let forms = crate::redact_forms::edit_fields(
         doc,
@@ -418,6 +438,8 @@ fn redact_doc(
     // no longer match).
     let mut gone: HashSet<IndirectRef> = s.touched.removed_annotations.clone();
     gone.extend(forms.gone.iter().copied());
+    // The XFA packets removed go whole too.
+    gone.extend(xfa_packets.iter().copied());
     if let Some((r, path)) =
         crate::redact_forms::removed_still_reached(doc, &s.edit.overlay, &gone, limits)?
     {
@@ -611,6 +633,7 @@ fn redact_doc(
         uninspected,
         thumbnails_removed: s.thumbnails_removed_total,
         fields_removed: forms.fields_removed,
+        xfa_removed,
         residual,
     })
 }

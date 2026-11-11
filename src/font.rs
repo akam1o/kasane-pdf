@@ -262,6 +262,54 @@ pub(crate) type EmbeddableSubstitute<'a> = (
     Vec<f64>,
 );
 
+/// [`EmbeddableSubstitute`] with the substitute owned.
+pub(crate) type OwnedSubstitute = (crate::fontsubst::SubstFace, Vec<Option<String>>, Vec<f64>);
+
+/// For a non-embedded, non-symbolic simple TrueType font named after a
+/// Latin Standard 14 font or a metric-compatible alias (Arial, Times
+/// New Roman, Courier New …): its bundled substitute, and per code the
+/// glyph it draws (the `/Encoding` name, canonically `uniXXXX`; `None`
+/// when the substitute lacks it) and the advance (`/Widths`). What
+/// `redact` needs to embed the substitute, as for the Type 1 fonts.
+pub(crate) fn truetype_substitute_for_embedding(
+    doc: &Document,
+    dict: &Dict,
+    limits: &Limits,
+) -> Result<Option<OwnedSubstitute>, Error> {
+    let Font::Simple(f) = load_font_dict(doc, dict, b"", limits)? else {
+        return Ok(None);
+    };
+    if f.subst.is_none() || f.symbolic {
+        return Ok(None);
+    }
+    let base = dict
+        .get(b"BaseFont".as_slice())
+        .and_then(|o| o.as_name())
+        .unwrap_or(b"");
+    let fd = dict
+        .get(b"FontDescriptor".as_slice())
+        .map(|o| doc.deref(o))
+        .transpose()?
+        .and_then(|o| o.as_dict().cloned());
+    let Some(face) = crate::fontsubst::pick(base, fd.as_ref())? else {
+        return Ok(None);
+    };
+    use crate::fontsubst::SubstKind as K;
+    if !matches!(face.kind, K::Standard14 | K::Alias) || face.builtin_encoding.is_some() {
+        return Ok(None);
+    }
+    let names = (0..=255u8)
+        .map(|c| {
+            let n = f.glyph_name(c)?;
+            face.glyph_for_name(n).filter(|g| g.0 != 0)?;
+            let u = crate::fontsubst::glyph_name_unicode(n)?;
+            (u <= 0xFFFF).then(|| format!("uni{u:04X}"))
+        })
+        .collect();
+    let widths = (0..=255u8).map(|c| f.width(c)).collect();
+    Ok(Some((face, names, widths)))
+}
+
 /// The [`Type1Font`] behind a font dictionary, when it is one.
 pub(crate) fn load_type1_dict(
     doc: &Document,

@@ -2121,6 +2121,9 @@ fn run_redact(args: &[String]) -> Result<(), Error> {
     println!("structure items removed: {}", r.structure_items_removed);
     println!("thumbnails removed: {}", r.thumbnails_removed);
     println!("fields removed: {}", r.fields_removed);
+    if r.xfa_removed {
+        println!("XFA form removed (the AcroForm stays)");
+    }
     print_data_inventory(&r.uninspected);
     for e in &r.elsewhere {
         let what = match e.removed {

@@ -1457,7 +1457,13 @@ pub(crate) fn regions_edit_session_with<'a>(
                 // whatever its flags (§12.5.6.4).
                 let text_icon =
                     d.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Text");
-                let off_rect = flags & (8 | 16) != 0 || text_icon;
+                // A popup without an appearance stream draws nothing on
+                // the page (readers open a window with its parent's text,
+                // which is the parent's, kept or removed with it).
+                let bare_popup = d.get(b"Subtype".as_slice()).and_then(|s| s.as_name())
+                    == Some(b"Popup")
+                    && !has_normal_appearance(doc, &d)?;
+                let off_rect = (flags & (8 | 16) != 0 || text_icon) && !bare_popup;
                 // A watermark's /FixedPrint matrix moves it when printed.
                 if d.contains_key(b"FixedPrint".as_slice()) {
                     return Err(Error::Unsupported {

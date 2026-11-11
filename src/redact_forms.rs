@@ -1729,3 +1729,100 @@ pub(crate) fn removed_data_kept(
     let first = removed_still_reached(doc, overlay, &left, limits)?;
     Ok((first, left))
 }
+
+/// Remove the AcroForm's `/XFA` (the XFA packets: the form's template,
+/// scripts and a copy of its field values, `datasets`) from the edited
+/// document, leaving the AcroForm every other reader uses. For
+/// `remove_javascript` (XFA scripts are not edited) and when form fields
+/// are edited (their values are in the datasets too). A form readers
+/// must render from XFA alone (`/NeedsRendering true`) is refused. The
+/// packets removed (to verify the output does not carry them), `None`
+/// when there is no XFA.
+pub(crate) fn remove_xfa(
+    doc: &Document,
+    overlay: &mut Overlay,
+) -> Result<Option<HashSet<IndirectRef>>, Error> {
+    let mut packets = HashSet::new();
+    let root = match doc.trailer().get(b"Root".as_slice()) {
+        Some(Object::Ref(r)) => *r,
+        _ => return Ok(None),
+    };
+    let Object::Dict(mut catalog) = current(doc, overlay, root)? else {
+        return Ok(None);
+    };
+    let (form_ref, mut form) = match catalog.get(b"AcroForm".as_slice()) {
+        Some(Object::Ref(r)) => match current(doc, overlay, *r)? {
+            Object::Dict(d) => (Some(*r), d),
+            _ => return Ok(None),
+        },
+        Some(Object::Dict(d)) => (None, d.clone()),
+        _ => return Ok(None),
+    };
+    let Some(xfa) = form.remove(b"XFA".as_slice()) else {
+        return Ok(None);
+    };
+    if deref_cur(
+        doc,
+        overlay,
+        catalog
+            .get(b"NeedsRendering".as_slice())
+            .unwrap_or(&Object::Null),
+    )?
+    .as_bool()
+        == Some(true)
+    {
+        return Err(refuse(
+            "a dynamic XFA form (/NeedsRendering): it has no AcroForm to keep",
+        ));
+    }
+    // The packets: one stream, or an array of names and streams.
+    let items = match &xfa {
+        Object::Ref(_) => vec![xfa.clone()],
+        Object::Array(a) => a.clone(),
+        _ => Vec::new(),
+    };
+    for i in items {
+        if let Object::Ref(r) = i {
+            packets.insert(r);
+        }
+    }
+    if let Object::Ref(r) = xfa {
+        // An array of packets given by reference.
+        if !matches!(current(doc, overlay, r)?, Object::Stream { .. }) {
+            if let Object::Array(a) = current(doc, overlay, r)? {
+                for i in a {
+                    if let Object::Ref(p) = i {
+                        packets.insert(p);
+                    }
+                }
+            }
+        }
+    }
+    match form_ref {
+        Some(r) => {
+            overlay.insert((r.number, r.generation), Object::Dict(form));
+        }
+        None => {
+            catalog.insert(b"AcroForm".to_vec(), Object::Dict(form));
+            overlay.insert((root.number, root.generation), Object::Dict(catalog));
+        }
+    }
+    Ok(Some(packets))
+}
+
+/// Whether the edited document's AcroForm still has an XFA form.
+pub(crate) fn has_xfa(doc: &Document, overlay: &Overlay) -> Result<bool, Error> {
+    let root = match doc.trailer().get(b"Root".as_slice()) {
+        Some(Object::Ref(r)) => *r,
+        _ => return Ok(false),
+    };
+    let Object::Dict(catalog) = current(doc, overlay, root)? else {
+        return Ok(false);
+    };
+    let Some(f) = catalog.get(b"AcroForm".as_slice()) else {
+        return Ok(false);
+    };
+    Ok(deref_cur(doc, overlay, f)?
+        .as_dict()
+        .is_some_and(|d| d.contains_key(b"XFA".as_slice())))
+}
