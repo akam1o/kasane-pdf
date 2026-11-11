@@ -421,7 +421,12 @@ struct Signatures<'a> {
     doc: &'a Document,
     /// Every page object, with its index.
     pages: HashMap<IndirectRef, usize>,
-    memo: HashMap<IndirectRef, Option<[u8; 32]>>,
+    /// By reference and whether a page may stand for its index there.
+    memo: HashMap<(IndirectRef, bool), Option<[u8; 32]>>,
+    /// Digesting what an annotation links to (`/Dest`, actions), where a
+    /// page is a destination, by index; elsewhere a page reached means
+    /// no signature (the page is walked).
+    links: bool,
     open: HashSet<IndirectRef>,
     work: u64,
 }
@@ -442,6 +447,7 @@ impl<'a> Signatures<'a> {
                 .filter_map(|(i, p)| p.object_ref().map(|r| (r, i)))
                 .collect(),
             memo: HashMap::new(),
+            links: false,
             open: HashSet::new(),
             work: 0,
         }
@@ -485,7 +491,10 @@ impl<'a> Signatures<'a> {
                     for k in keys {
                         parts.extend_from_slice(&(k.len() as u64).to_be_bytes());
                         parts.extend_from_slice(k);
-                        match self.value(&d[k.as_slice()], limits)? {
+                        self.links = matches!(k.as_slice(), b"Dest" | b"A" | b"AA" | b"PA");
+                        let v = self.value(&d[k.as_slice()], limits);
+                        self.links = false;
+                        match v? {
                             Some(x) => parts.extend_from_slice(&x),
                             None => return Ok(None),
                         }
@@ -519,14 +528,18 @@ impl<'a> Signatures<'a> {
     /// written as their digest; direct values are written inline.
     fn value(&mut self, o: &Object, limits: &Limits) -> Result<Option<[u8; 32]>, Error> {
         if let Object::Ref(r) = o {
-            // A page (a destination's, an annotation's `/P` deeper down)
-            // by its place in the page tree, the same in both files.
+            // A page: in what an annotation links to, by its place in
+            // the page tree (the same in both files); anywhere else it
+            // may be read as something drawn, and is not digested.
             if let Some(i) = self.pages.get(r) {
+                if !self.links {
+                    return Ok(None);
+                }
                 let mut b = b"page".to_vec();
                 b.extend_from_slice(&(*i as u64).to_be_bytes());
                 return Ok(Some(sha256(&b)));
             }
-            if let Some(d) = self.memo.get(r) {
+            if let Some(d) = self.memo.get(&(*r, self.links)) {
                 return Ok(*d);
             }
             // A cycle, or too deep a chain: no signature (the page is
@@ -539,7 +552,7 @@ impl<'a> Signatures<'a> {
             let ok = self.write(&t, &mut buf, limits)?;
             let d = ok.then(|| sha256(&buf));
             self.open.remove(r);
-            self.memo.insert(*r, d);
+            self.memo.insert((*r, self.links), d);
             return Ok(d);
         }
         let mut buf = Vec::new();
@@ -640,15 +653,20 @@ fn annotation_print(d: &crate::object::Dict) -> [u8; 32] {
 /// references in their `/Annots`, and the objects holding direct ones
 /// (a page whose `/Annots` is a direct array, an `/Annots` array object).
 pub(crate) struct AnnotEntries {
+    /// The references an output page's `/Annots` array lists.
     refs: HashSet<IndirectRef>,
-    holders: HashSet<IndirectRef>,
+    /// `/Annots` arrays written as objects of their own.
+    arrays: HashSet<IndirectRef>,
+    /// Pages whose `/Annots` is a direct array.
+    pages: HashSet<IndirectRef>,
 }
 
 impl AnnotEntries {
     pub(crate) fn of(out: &Document) -> Result<AnnotEntries, Error> {
         let mut e = AnnotEntries {
             refs: HashSet::new(),
-            holders: HashSet::new(),
+            arrays: HashSet::new(),
+            pages: HashSet::new(),
         };
         for page in out.pages() {
             let Some(pr) = page.object_ref() else {
@@ -657,16 +675,21 @@ impl AnnotEntries {
             let Object::Dict(pd) = out.resolve(pr)? else {
                 continue;
             };
+            // Only an array is an /Annots readers read; anything else
+            // excuses nothing.
             let arr = match pd.get(b"Annots".as_slice()) {
-                Some(Object::Ref(ar)) => {
-                    e.holders.insert(*ar);
-                    out.resolve(*ar)?
-                }
-                Some(a) => {
-                    e.holders.insert(pr);
+                Some(Object::Ref(ar)) => match out.resolve(*ar)? {
+                    a @ Object::Array(_) => {
+                        e.arrays.insert(*ar);
+                        a
+                    }
+                    _ => continue,
+                },
+                Some(a @ Object::Array(_)) => {
+                    e.pages.insert(pr);
                     a.clone()
                 }
-                None => continue,
+                _ => continue,
             };
             for x in arr.as_array().unwrap_or(&[]) {
                 if let Object::Ref(r) = x {
@@ -688,33 +711,36 @@ impl AnnotEntries {
         o: &Object,
         hit: &dyn Fn(&crate::object::Dict) -> bool,
     ) -> bool {
-        // (value, whether it is an /Annots entry, whether it is the
-        // /Annots array of the holder)
+        // (value, whether it is an /Annots entry, whether its elements
+        // are)
+        let entries_below = match o {
+            Object::Array(_) => self.arrays.contains(&r),
+            _ => false,
+        };
         let mut stack: Vec<(&Object, bool, bool)> =
-            vec![(o, self.refs.contains(&r), self.holders.contains(&r))];
-        let top = self.holders.contains(&r);
-        let mut first = true;
-        while let Some((o, entry, annots_array)) = stack.pop() {
+            vec![(o, self.refs.contains(&r), entries_below)];
+        let page = self.pages.contains(&r) && matches!(o, Object::Dict(_));
+        let mut top = true;
+        while let Some((o, entry, entries)) = stack.pop() {
             match o {
                 Object::Array(a) => {
                     for v in a {
-                        stack.push((v, annots_array, false));
+                        stack.push((v, entries, false));
                     }
                 }
                 Object::Dict(d) | Object::Stream { dict: d, .. } => {
                     if !entry && hit(d) {
                         return true;
                     }
-                    // A page holding a direct /Annots array.
-                    let page_holder = first && top && d.contains_key(b"Annots".as_slice());
                     for (k, v) in d {
-                        let annots = page_holder && k.as_slice() == b"Annots";
-                        stack.push((v, false, annots));
+                        // The direct /Annots array of a page.
+                        let annots = top && page && k.as_slice() == b"Annots";
+                        stack.push((v, false, annots && matches!(v, Object::Array(_))));
                     }
                 }
                 _ => {}
             }
-            first = false;
+            top = false;
         }
         false
     }
@@ -1027,6 +1053,32 @@ mod tests {
         let e = check_pair(&make(b"0 0 10 10 re f"), &make(b"50 50 10 10 re f"))
             .unwrap_err()
             .to_string();
+        assert!(e.contains("page 2 (not edited)"), "{e}");
+    }
+
+    /// A page dictionary read as another page's shading: the signature
+    /// does not stand a page for its index there. (Review.)
+    #[test]
+    fn a_page_used_as_a_resource_is_compared() {
+        let make = |data: &[u8]| {
+            let objs: Vec<(u32, Vec<u8>)> = vec![
+                (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+                (2, PAGES.to_vec()),
+                (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R /Resources << >> /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 100 0] /Extend [true true] /Function 8 0 R >>".to_vec()),
+                (4, stream("")),
+                (5, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 6 0 R /Resources << /Shading << /S 3 0 R >> >> >>".to_vec()),
+                (6, stream("/S sh")),
+                (8, streamd("/FunctionType 0 /Domain [0 1] /Range [0 1 0 1 0 1] /Size [2] /BitsPerSample 8", data)),
+            ];
+            let refs: Vec<(u32, &[u8])> = objs.iter().map(|(n, b)| (*n, b.as_slice())).collect();
+            pdf(&refs)
+        };
+        let e = check_pair(
+            &make(b"\xff\x00\x00\x00\x00\xff"),
+            &make(b"\x00\xff\x00\x00\x00\x00"),
+        )
+        .unwrap_err()
+        .to_string();
         assert!(e.contains("page 2 (not edited)"), "{e}");
     }
 }

@@ -166,22 +166,45 @@ struct State {
     /// Transfer function, black generation, undercolour removal and
     /// halftone in force and not yet painted under: the slot's name and
     /// value (`/TR2` replaces `/TR`, and so on, §8.4.5 Table 57).
-    params: BTreeMap<&'static [u8], Object>,
+    params: BTreeMap<&'static [u8], (Object, Canon)>,
     /// The text rendering mode (`Tr`).
     render: i64,
 }
 
-/// A resource value with the resources it was selected in.
+/// A resource value with the resources it was selected in, and the
+/// canonical form of what identifies it in a [`StateKey`].
 #[derive(Clone)]
 struct Scoped {
     value: Object,
     res: Rc<Object>,
     res_id: ResId,
+    canon: Canon,
 }
 
 impl Scoped {
-    fn key(&self) -> (Vec<u8>, ResId) {
-        (canon(&self.value), self.res_id)
+    fn key(&self) -> (Canon, ResId) {
+        (self.canon.clone(), self.res_id)
+    }
+}
+
+/// Canonical bytes ([`canon`]), interned per walk: equal bytes are one
+/// allocation, so two are equal exactly when they are the same
+/// allocation (compared and hashed by address, in constant time; the
+/// intern table compares the bytes themselves).
+#[derive(Clone)]
+struct Canon(Rc<[u8]>);
+
+impl PartialEq for Canon {
+    fn eq(&self, o: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &o.0)
+    }
+}
+
+impl Eq for Canon {}
+
+impl std::hash::Hash for Canon {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        (Rc::as_ptr(&self.0) as *const u8 as usize).hash(h)
     }
 }
 
@@ -204,44 +227,23 @@ struct Paint {
 struct StateKey {
     font: Option<FontKey>,
     paints: [PaintKey; 2],
-    smask: Option<(Vec<u8>, ResId)>,
-    params: Vec<(&'static [u8], Vec<u8>)>,
+    smask: Option<(Canon, ResId)>,
+    params: Vec<(&'static [u8], Canon)>,
     render: i64,
 }
 
 type PaintKey = (
-    Option<(Vec<u8>, ResId)>,
-    Option<(Vec<u8>, ResId)>,
+    Option<(Canon, ResId)>,
+    Option<(Canon, ResId)>,
     Option<(&'static [u8], ResId)>,
 );
 
-/// A Type 3 font's identity: its reference, or (direct) the loaded font
-/// itself — held, so its address is not reused while the key lives.
-#[derive(Clone)]
+/// A Type 3 font's identity: its reference, or (a direct dictionary)
+/// its canonical bytes — which include its own `/Resources`.
+#[derive(Clone, PartialEq, Eq, Hash)]
 enum FontKey {
     Ref(IndirectRef),
-    Direct(Rc<crate::font::Type3Font>),
-}
-
-impl PartialEq for FontKey {
-    fn eq(&self, o: &Self) -> bool {
-        match (self, o) {
-            (FontKey::Ref(a), FontKey::Ref(b)) => a == b,
-            (FontKey::Direct(a), FontKey::Direct(b)) => Rc::ptr_eq(a, b),
-            _ => false,
-        }
-    }
-}
-
-impl Eq for FontKey {}
-
-impl std::hash::Hash for FontKey {
-    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
-        match self {
-            FontKey::Ref(r) => (0u8, r).hash(h),
-            FontKey::Direct(f) => (1u8, Rc::as_ptr(f) as usize).hash(h),
-        }
-    }
+    Direct(Canon),
 }
 
 impl State {
@@ -254,32 +256,91 @@ impl State {
             )
         };
         StateKey {
-            font: self.font.as_ref().map(|t| match t.id {
-                Some(r) => FontKey::Ref(r),
-                None => FontKey::Direct(t.font.clone()),
-            }),
+            font: self.font.as_ref().map(|t| t.key.clone()),
             paints: [paint(&self.fill), paint(&self.stroke)],
-            smask: self.smask.as_ref().map(|m| {
-                let v = m.value.as_dict().and_then(|d| d.get(b"SMask".as_slice()));
-                (v.map(canon).unwrap_or_default(), m.res_id)
-            }),
-            params: self.params.iter().map(|(k, v)| (*k, canon(v))).collect(),
+            smask: self.smask.as_ref().map(Scoped::key),
+            params: self
+                .params
+                .iter()
+                .map(|(k, (_, c))| (*k, c.clone()))
+                .collect(),
             render: self.render,
         }
     }
 }
 
-/// Whether a reader shows annotation `ad` by its flags and optional
-/// content: `/F` an integer without Hidden (2) or NoView (32), and no
-/// `/OC`. A `/F` of another type (a real, which §12.5.3 does not allow
-/// and readers read differently) counts as not shown.
-pub(crate) fn shown_annotation(doc: &Document, ad: &Dict) -> Result<bool, Error> {
+/// Whether annotation `ad`'s flags let a reader show it: `/F` an integer
+/// without Hidden (2) or NoView (32). A `/F` of another type (a real,
+/// which §12.5.3 does not allow and readers read differently) counts as
+/// not shown.
+fn flags_shown(doc: &Document, ad: &Dict) -> Result<bool, Error> {
     let flags = match ad.get(b"F".as_slice()).map(|f| doc.deref(f)).transpose()? {
         None => 0,
         Some(Object::Integer(i)) => i,
         Some(_) => return Ok(false),
     };
-    Ok(flags & (2 | 32) == 0 && !ad.contains_key(b"OC".as_slice()))
+    Ok(flags & (2 | 32) == 0)
+}
+
+/// Which optional content groups the document's default configuration
+/// shows (`/OCProperties /D`, §8.11.4.3): `/BaseState` (`/ON` when
+/// absent) with its `/ON` and `/OFF` exceptions.
+struct OcDefault {
+    base_on: bool,
+    on: HashSet<IndirectRef>,
+    off: HashSet<IndirectRef>,
+}
+
+impl OcDefault {
+    fn of(doc: &Document) -> Result<OcDefault, Error> {
+        let mut oc = OcDefault {
+            base_on: true,
+            on: HashSet::new(),
+            off: HashSet::new(),
+        };
+        let Some(p) = doc.catalog().get(b"OCProperties".as_slice()) else {
+            return Ok(oc);
+        };
+        let p = doc.deref(p)?;
+        let Some(d) = p.as_dict().and_then(|p| p.get(b"D".as_slice())) else {
+            return Ok(oc);
+        };
+        let d = doc.deref(d)?;
+        let Some(d) = d.as_dict() else { return Ok(oc) };
+        if let Some(b) = d.get(b"BaseState".as_slice()) {
+            oc.base_on = doc.deref(b)?.as_name() == Some(b"ON");
+        }
+        for (k, set) in [(b"ON".as_slice(), &mut oc.on), (b"OFF", &mut oc.off)] {
+            if let Some(a) = d.get(k) {
+                for x in doc.deref(a)?.as_array().unwrap_or(&[]) {
+                    if let Object::Ref(r) = x {
+                        set.insert(*r);
+                    }
+                }
+            }
+        }
+        Ok(oc)
+    }
+
+    /// Whether content under `oc` (an `/OC` value, a `BDC /OC`
+    /// properties entry) is shown by default: only a group, by
+    /// reference, that the default configuration turns on. A membership
+    /// dictionary or anything else counts as hidden.
+    fn shows(&self, doc: &Document, oc: &Object) -> Result<bool, Error> {
+        let Object::Ref(r) = oc else { return Ok(false) };
+        let is_group = doc
+            .resolve(*r)?
+            .as_dict()
+            .and_then(|d| d.get(b"Type".as_slice()))
+            .and_then(|t| t.as_name())
+            == Some(b"OCG");
+        Ok(is_group
+            && if self.base_on {
+                !self.off.contains(r)
+            } else {
+                self.on.contains(r)
+            })
+    }
 }
 
 /// `o` written canonically (references as references, dictionary keys
@@ -377,6 +438,17 @@ fn default_of(n: &[u8]) -> Option<&'static [u8]> {
     }
 }
 
+/// The canonical forms a selected resource entry contributes.
+#[derive(Clone)]
+enum Selected {
+    Value(Canon),
+    Gs {
+        /// `Some(None)`: `/SMask /None`, ending a mask.
+        smask: Option<Option<Canon>>,
+        params: Vec<(&'static [u8], Object, Canon)>,
+    },
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum ResId {
     /// The page's (inherited) resources.
@@ -385,8 +457,7 @@ enum ResId {
     Own(IndirectRef),
     /// None (an appearance without `/Resources`).
     Empty,
-    /// Resources of a direct Type 3 font: a number of their own each
-    /// time (never the same as any other's).
+    /// Resources of a direct Type 3 font, numbered by the font's bytes.
     Anon(u64),
 }
 
@@ -394,7 +465,7 @@ enum ResId {
 /// direct) and the loaded font.
 #[derive(Clone)]
 struct Type3 {
-    id: Option<IndirectRef>,
+    key: FontKey,
     font: std::rc::Rc<crate::font::Type3Font>,
 }
 
@@ -406,7 +477,18 @@ struct Walk<'a> {
     page: usize,
     budget: u64,
     seen_frames: HashSet<(IndirectRef, ResId, StateKey)>,
-    anon: u64,
+    /// Direct Type 3 fonts: their resources' identity, and the fonts
+    /// loaded.
+    anon_ids: HashMap<Canon, u64>,
+    loaded_direct: HashMap<Canon, Option<Type3>>,
+    /// Canonical bytes, interned for the whole walk.
+    interned: HashSet<Rc<[u8]>>,
+    /// Per page: what a resource entry selected contributes to a state
+    /// key, by resources, category and name (a colour space or pattern:
+    /// its canonical value; an ExtGState: its soft mask's and each
+    /// parameter slot's).
+    selected: HashMap<(ResId, &'static str, Vec<u8>), Selected>,
+    oc: OcDefault,
     seen_fonts: HashSet<IndirectRef>,
     loaded: HashMap<IndirectRef, Option<Type3>>,
     undecided_here: bool,
@@ -440,7 +522,11 @@ pub(crate) fn usage_of(
         page: 0,
         budget: 0,
         seen_frames: HashSet::new(),
-        anon: 0,
+        anon_ids: HashMap::new(),
+        loaded_direct: HashMap::new(),
+        interned: HashSet::new(),
+        selected: HashMap::new(),
+        oc: OcDefault::of(doc)?,
         seen_fonts: HashSet::new(),
         loaded: HashMap::new(),
         undecided_here: false,
@@ -453,6 +539,7 @@ pub(crate) fn usage_of(
         // ordinary pages is not refused for its length.
         w.budget = 0;
         w.seen_frames.clear();
+        w.selected.clear();
         w.seen_fonts.clear();
         w.undecided_here = false;
         w.walk_page(page)?;
@@ -571,9 +658,21 @@ impl Walk<'_> {
                 // in the state `/AS` selects, of an annotation neither
                 // Hidden nor NoView nor under optional content.
                 let under = self.bound == Bound::Under;
-                if under && !shown_annotation(doc, ad)? {
-                    continue;
+                if under {
+                    let oc_shown = match ad.get(b"OC".as_slice()) {
+                        Some(o) => self.oc.shows(doc, o)?,
+                        None => true,
+                    };
+                    if !flags_shown(doc, ad)? || !oc_shown {
+                        continue;
+                    }
                 }
+                // A widget shows every state and its down and rollover
+                // appearances as it is used; other annotations show the
+                // normal appearance in the state `/AS` selects.
+                let interactive =
+                    ad.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Widget");
+                let under = under && !interactive;
                 let selected = match ad.get(b"AS".as_slice()).map(|a| doc.deref(a)).transpose()? {
                     Some(Object::Name(n)) => Some(n),
                     _ => None,
@@ -606,12 +705,22 @@ impl Walk<'_> {
                         };
                         for s in states {
                             if let Object::Ref(r) = s {
-                                let empty = Rc::new(Object::Dict(Dict::new()));
+                                // An appearance without `/Resources`:
+                                // some readers resolve its names in the
+                                // page's (mutool, Poppler), others in
+                                // none (pdf.js). Over the output to
+                                // excuse a copy, none; otherwise the
+                                // page's, so what they draw is counted.
+                                let (res, res_id) = if self.bound == Bound::Under {
+                                    (Rc::new(Object::Dict(Dict::new())), ResId::Empty)
+                                } else {
+                                    (page_res.clone(), ResId::Page)
+                                };
                                 if let Some(f) = self.enter_form(
                                     r,
                                     Use::Appearance,
-                                    &empty,
-                                    ResId::Empty,
+                                    &res,
+                                    res_id,
                                     0,
                                     &State::default(),
                                 )? {
@@ -743,8 +852,10 @@ impl Walk<'_> {
         for op in &f.ops {
             match op {
                 Operation::BeginMarkedContent(_) => marked.push(false),
-                Operation::BeginMarkedContentWithProps { tag, .. } => {
-                    let oc = self.bound == Bound::Under && tag.as_slice() == b"OC";
+                Operation::BeginMarkedContentWithProps { tag, properties } => {
+                    let oc = self.bound == Bound::Under
+                        && tag.as_slice() == b"OC"
+                        && !self.marked_visible(properties, &f.res)?;
                     hidden += usize::from(oc);
                     marked.push(oc);
                 }
@@ -782,32 +893,53 @@ impl Walk<'_> {
                         st.font = self.select_font(first)?;
                     }
                     if let Some(d) = g.as_dict() {
-                        // A soft mask, or `/SMask /None` ending one.
-                        match d
-                            .get(b"SMask".as_slice())
-                            .map(|m| doc.deref(m))
-                            .transpose()?
-                        {
-                            Some(Object::Name(n)) if n.as_slice() == b"None" => st.smask = None,
-                            Some(_) => {
-                                st.smask = Some(Scoped {
-                                    value: g.clone(),
-                                    res: f.res.clone(),
-                                    res_id: f.res_id,
-                                })
+                        let k = (f.res_id, "ExtGState", name.to_vec());
+                        let sel = match self.selected.get(&k) {
+                            Some(s @ Selected::Gs { .. }) => s.clone(),
+                            _ => {
+                                // A soft mask (`/None` ends one), and each
+                                // slot's value; the `2` form wins within
+                                // one dictionary.
+                                let smask = match d
+                                    .get(b"SMask".as_slice())
+                                    .map(|m| doc.deref(m))
+                                    .transpose()?
+                                {
+                                    Some(Object::Name(n)) if n.as_slice() == b"None" => Some(None),
+                                    Some(v) => Some(Some(self.intern(&v))),
+                                    None => None,
+                                };
+                                let mut params = Vec::new();
+                                for (slot, keys) in [
+                                    (b"TR".as_slice(), [b"TR2".as_slice(), b"TR"]),
+                                    (b"BG", [b"BG2", b"BG"]),
+                                    (b"UCR", [b"UCR2", b"UCR"]),
+                                    (b"HT", [b"HT", b"HT"]),
+                                ] {
+                                    if let Some(v) = keys.iter().find_map(|k| d.get(*k)) {
+                                        params.push((slot, v.clone(), self.intern(v)));
+                                    }
+                                }
+                                let s = Selected::Gs { smask, params };
+                                self.selected.insert(k, s.clone());
+                                s
                             }
-                            None => {}
-                        }
-                        // Each slot's latest value; the `2` form wins
-                        // within one dictionary.
-                        for (slot, keys) in [
-                            (b"TR".as_slice(), [b"TR2".as_slice(), b"TR"]),
-                            (b"BG", [b"BG2", b"BG"]),
-                            (b"UCR", [b"UCR2", b"UCR"]),
-                            (b"HT", [b"HT", b"HT"]),
-                        ] {
-                            if let Some(v) = keys.iter().find_map(|k| d.get(*k)) {
-                                st.params.insert(slot, v.clone());
+                        };
+                        if let Selected::Gs { smask, params } = sel {
+                            match smask {
+                                Some(None) => st.smask = None,
+                                Some(Some(c)) => {
+                                    st.smask = Some(Scoped {
+                                        value: g.clone(),
+                                        res: f.res.clone(),
+                                        res_id: f.res_id,
+                                        canon: c,
+                                    })
+                                }
+                                None => {}
+                            }
+                            for (slot, v, c) in params {
+                                st.params.insert(slot, (v, c));
                             }
                         }
                     }
@@ -817,6 +949,7 @@ impl Walk<'_> {
                         None
                     } else {
                         self.resource(&f.res, "ColorSpace", n).map(|cs| Scoped {
+                            canon: self.selected_value(f.res_id, "ColorSpace", n, &cs),
                             value: cs,
                             res: f.res.clone(),
                             res_id: f.res_id,
@@ -837,6 +970,7 @@ impl Walk<'_> {
                     let pattern = match v.last() {
                         Some(Object::Name(n)) => {
                             self.resource(&f.res, "Pattern", n).map(|p| Scoped {
+                                canon: self.selected_value(f.res_id, "Pattern", n, &p),
                                 value: p,
                                 res: f.res.clone(),
                                 res_id: f.res_id,
@@ -889,8 +1023,12 @@ impl Walk<'_> {
                         continue;
                     };
                     // Under: an XObject under optional content may be hidden.
-                    if self.bound == Bound::Under && dict.contains_key(b"OC".as_slice()) {
-                        continue;
+                    if self.bound == Bound::Under {
+                        if let Some(oc) = dict.get(b"OC".as_slice()) {
+                            if !self.oc.shows(doc, oc)? {
+                                continue;
+                            }
+                        }
                     }
                     match dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) {
                         Some(b"Image") => {
@@ -958,6 +1096,49 @@ impl Walk<'_> {
         Ok(())
     }
 
+    /// `o`'s canonical bytes, interned.
+    fn intern(&mut self, o: &Object) -> Canon {
+        let b = canon(o);
+        if let Some(x) = self.interned.get(b.as_slice()) {
+            return Canon(x.clone());
+        }
+        let x: Rc<[u8]> = Rc::from(b);
+        self.interned.insert(x.clone());
+        Canon(x)
+    }
+
+    /// The canonical value of resource `name` in `category` (a colour
+    /// space or a pattern) of resources `res_id`, once per page.
+    fn selected_value(
+        &mut self,
+        res_id: ResId,
+        category: &'static str,
+        name: &[u8],
+        value: &Object,
+    ) -> Canon {
+        let k = (res_id, category, name.to_vec());
+        if let Some(Selected::Value(c)) = self.selected.get(&k) {
+            return c.clone();
+        }
+        let c = self.intern(value);
+        self.selected.insert(k, Selected::Value(c.clone()));
+        c
+    }
+
+    /// Whether a `BDC /OC` sequence (its properties operand, a name in
+    /// `/Properties` or a direct dictionary) is shown by default.
+    fn marked_visible(&mut self, properties: &Object, res: &Object) -> Result<bool, Error> {
+        let Object::Name(n) = properties else {
+            return Ok(false);
+        };
+        match self.doc.resolve_resource_raw(res, "Properties", n) {
+            Ok(Some(o)) => self.oc.shows(self.doc, &o),
+            Ok(None) => Ok(false),
+            Err(e @ Error::LimitExceeded { .. }) => Err(e),
+            Err(_) => Ok(false),
+        }
+    }
+
     /// Text shown: painted with the fill and/or stroke colour as the
     /// rendering mode says (modes 3 and 7 paint nothing), and a Type 3
     /// font's procedures run.
@@ -996,7 +1177,7 @@ impl Walk<'_> {
         if let Some(m) = st.smask.take() {
             self.soft_mask(&m.value, &m.res, m.res_id, f.depth, stack)?;
         }
-        for (slot, v) in std::mem::take(&mut st.params) {
+        for (slot, (v, _)) in std::mem::take(&mut st.params) {
             if slot == b"HT" {
                 self.halftone(&v, 0)?;
             } else {
@@ -1048,10 +1229,23 @@ impl Walk<'_> {
             self.seen_fonts.insert(r);
         }
         self.font_data(&d, 0)?;
-        let t3 = if d.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Type3") {
+        let is_type3 = d.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Type3");
+        // A direct Type 3 font: by its bytes, loaded once.
+        let key = match id {
+            Some(r) => FontKey::Ref(r),
+            None if is_type3 => {
+                let c = self.intern(&Object::Dict(d.clone()));
+                if let Some(t3) = self.loaded_direct.get(&c) {
+                    return Ok(t3.clone());
+                }
+                FontKey::Direct(c)
+            }
+            None => return Ok(None),
+        };
+        let t3 = if is_type3 {
             match crate::font::load_font_dict(doc, &d, b"F", self.limits) {
                 Ok(f) => f.as_type3().map(|t| Type3 {
-                    id,
+                    key: key.clone(),
                     font: t.clone(),
                 }),
                 Err(e @ Error::LimitExceeded { .. }) => return Err(e),
@@ -1063,8 +1257,13 @@ impl Walk<'_> {
         } else {
             None
         };
-        if let Some(r) = id {
-            self.loaded.insert(r, t3.clone());
+        match &key {
+            FontKey::Ref(r) => {
+                self.loaded.insert(*r, t3.clone());
+            }
+            FontKey::Direct(c) => {
+                self.loaded_direct.insert(c.clone(), t3.clone());
+            }
         }
         Ok(t3)
     }
@@ -1128,11 +1327,12 @@ impl Walk<'_> {
         let (res, res_id) = match t3.font.resources() {
             Some(r) => (
                 Rc::new(r.clone()),
-                match t3.id {
-                    Some(id) => ResId::Own(id),
-                    None => {
-                        self.anon += 1;
-                        ResId::Anon(self.anon)
+                match &t3.key {
+                    FontKey::Ref(id) => ResId::Own(*id),
+                    // The same bytes, the same resources.
+                    FontKey::Direct(c) => {
+                        let next = self.anon_ids.len() as u64;
+                        ResId::Anon(*self.anon_ids.entry(c.clone()).or_insert(next))
                     }
                 },
             ),
@@ -1768,5 +1968,54 @@ mod tests {
         let u = usage(&doc, &|_| true, Bound::Under, &Limits::default()).unwrap();
         assert!(u.used.contains_key(&IndirectRef::new(6, 0)));
         assert!(t.elapsed().as_secs() < 10, "{:?}", t.elapsed());
+    }
+
+    /// A direct Type 3 font with resources, shown many times: its glyph
+    /// procedures are walked once (the font is known by its bytes), and a
+    /// large direct value in the graphics state costs once, not per
+    /// `Do`. (Review.)
+    #[test]
+    fn repeated_direct_values_are_walked_once() {
+        let font = "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 600 700] /FontMatrix [0.01 0 0 0.01 0 0] \
+             /CharProcs << /a 5 0 R >> /Encoding << /Type /Encoding /Differences [97 /a] >> \
+             /FirstChar 97 /LastChar 97 /Widths [500] /Resources << /XObject << >> >> >>";
+        let mut glyph = b"500 0 d0".to_vec();
+        for _ in 0..100 {
+            glyph.extend_from_slice(b" 0 0 1 1 re f");
+        }
+        let mut c = Vec::new();
+        for _ in 0..3000 {
+            c.extend_from_slice(b"BT /T 10 Tf 0 0 Td (a) Tj ET ");
+        }
+        let bytes = pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (3, format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R /Resources << /Font << /T {font} >> >> >>").into_bytes()),
+            (4, stream("", &c)),
+            (5, stream("", &glyph)),
+        ]);
+        let doc = Document::from_bytes(&bytes).unwrap();
+        let u = usage(&doc, &|_| true, Bound::Under, &Limits::default()).unwrap();
+        assert!(u.used.contains_key(&IndirectRef::new(5, 0)));
+        // A 1 MiB direct transfer function, then 2,048 `Do`.
+        let big = format!(
+            "<< /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 /Private ({}) >>",
+            "a".repeat(1 << 20)
+        );
+        let mut c = b"/G gs ".to_vec();
+        for _ in 0..2048 {
+            c.extend_from_slice(b"/X Do ");
+        }
+        let bytes = pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (3, format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R /Resources << /XObject << /X 6 0 R >> /ExtGState << /G << /TR {big} >> >> >> >>").into_bytes()),
+            (4, stream("", &c)),
+            (6, stream("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << >>", b"")),
+        ]);
+        let doc = Document::from_bytes(&bytes).unwrap();
+        let t = std::time::Instant::now();
+        usage(&doc, &|_| true, Bound::Under, &Limits::default()).unwrap();
+        assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
     }
 }

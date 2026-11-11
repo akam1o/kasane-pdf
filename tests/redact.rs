@@ -5850,6 +5850,50 @@ fn removed_appearance_is_not_excused_by_what_is_not_drawn() {
         let e = unsupported(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()));
         assert!(e.contains("failed verification"), "{name}: {e}");
     }
+    // What a reader does draw keeps it (reported): page content under a
+    // group the default configuration shows, a widget's other state.
+    let shown = [
+        (
+            "group shown",
+            build_pdf(&[
+                (
+                    1,
+                    b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [40 0 R] /D << >> >> >>".to_vec(),
+                ),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R \
+                      /Resources << /XObject << /Fm 31 0 R >> /Properties << /L 40 0 R >> >> /Annots [30 0 R] >>"
+                        .to_vec(),
+                ),
+                (4, stream_obj("", b"/OC /L BDC q 1 0 0 1 150 150 cm /Fm Do Q EMC")),
+                (
+                    30,
+                    b"<< /Type /Annot /Subtype /Link /Rect [70 90 110 100] /AP << /N 31 0 R >> >>".to_vec(),
+                ),
+                (
+                    31,
+                    stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 40 10]", b"0 0 40 10 re f 1 1 3 3 re f"),
+                ),
+                (40, b"<< /Type /OCG /Name (on) >>".to_vec()),
+            ]),
+        ),
+        (
+            "widget state",
+            page_with(
+                &other("/Subtype /Widget /AS /Off /AP << /N << /Off 33 0 R /On 31 0 R >> >>").replace("/Subtype /Link ", ""),
+                "0 0 5 5 re f",
+                "",
+            ),
+        ),
+    ];
+    for (name, pdf) in shown {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let r = redact(&doc, &[(0, vec![RECT])], &RedactOptions::new())
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert!(!r.elsewhere.is_empty(), "{name}: not reported");
+    }
 }
 
 /// An image shared by every page of a long document, edited on one: the
@@ -5990,4 +6034,125 @@ fn a_look_alike_on_another_page_does_not_excuse_a_copy() {
         let e = unsupported(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()));
         assert!(e.contains("failed verification"), "{name}: {e}");
     }
+}
+
+/// Only an `/Annots` array excuses its entries: a page whose `/Annots`
+/// refers to a dictionary or a stream holding a copy of a removed link,
+/// or a copy nested deeper in an array, is refused; a twin listed
+/// directly in another page's `/Annots` stays. (Review.)
+#[test]
+fn only_annots_arrays_excuse_their_entries() {
+    const LINK: &str = "<< /Type /Annot /Subtype /Link /Rect [70 90 110 100] /A 15 0 R >>";
+    let make = |p2_annots: &str, extra: Vec<(u32, Vec<u8>)>| {
+        let mut objs = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [11 0 R] >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", b"0 0 5 5 re f")),
+            (
+                5,
+                format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots {p2_annots} >>")
+                    .into_bytes(),
+            ),
+            (11, LINK.as_bytes().to_vec()),
+            (15, b"<< /S /URI /URI (https://secret.example/HOLDER) >>".to_vec()),
+        ];
+        objs.extend(extra);
+        build_pdf(&objs)
+    };
+    for (name, pdf) in [
+        (
+            "dictionary holder",
+            make(
+                "30 0 R",
+                vec![(30, format!("<< /Annots [ {LINK} ] >>").into_bytes())],
+            ),
+        ),
+        (
+            "stream holder",
+            make(
+                "30 0 R",
+                vec![(30, stream_obj(&format!("/Annots [ {LINK} ]"), b""))],
+            ),
+        ),
+        ("nested array", make(&format!("[ [ {LINK} ] ]"), vec![])),
+        ("wrapped", make(&format!("[ << /X {LINK} >> ]"), vec![])),
+    ] {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let e = unsupported(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()));
+        assert!(e.contains("failed verification"), "{name}: {e}");
+    }
+    for (name, pdf) in [
+        ("direct twin", make(&format!("[ {LINK} ]"), vec![])),
+        (
+            "array object",
+            make("30 0 R", vec![(30, format!("[ {LINK} ]").into_bytes())]),
+        ),
+    ] {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        redact(&doc, &[(0, vec![RECT])], &RedactOptions::new())
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+}
+
+/// A stamp on a page not edited whose appearance has no `/Resources`
+/// shows a Type 3 glyph through the page's resources (as mutool and
+/// Poppler read it); removing the glyph's last use on the edited page
+/// must not take it from that stamp unnoticed. (Review.)
+#[test]
+fn an_appearance_without_resources_is_compared_on_other_pages() {
+    let t3 = b"<< /Type /Font /Subtype /Type3 /FontBBox [0 0 600 700] /FontMatrix [0.01 0 0 0.01 0 0] \
+        /CharProcs << /a 21 0 R /b 22 0 R >> /Encoding << /Type /Encoding /Differences [97 /a /b] >> \
+        /FirstChar 97 /LastChar 98 /Widths [500 500] /Resources << >> >>";
+    let make = |p2_content: &[u8]| {
+        build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (
+                2,
+                b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec(),
+            ),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R \
+                  /Resources << /Font << /T 20 0 R >> >> >>"
+                    .to_vec(),
+            ),
+            (
+                4,
+                stream_obj(
+                    "",
+                    b"BT /T 10 Tf 80 100 Td (b) Tj ET BT /T 10 Tf 10 10 Td (a) Tj ET",
+                ),
+            ),
+            (
+                5,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 6 0 R \
+                  /Resources << /Font << /T 20 0 R >> >> /Annots [30 0 R] >>"
+                    .to_vec(),
+            ),
+            (6, stream_obj("", p2_content)),
+            (20, t3.to_vec()),
+            (21, stream_obj("", b"500 0 d0 0 0 400 300 re f")),
+            (22, stream_obj("", b"500 0 d0 0 0 300 600 re f")),
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Stamp /Rect [20 20 80 80] /AP << /N 31 0 R >> >>"
+                    .to_vec(),
+            ),
+            (
+                31,
+                stream_obj(
+                    "/Type /XObject /Subtype /Form /BBox [0 0 60 60]",
+                    b"BT /T 10 Tf 5 5 Td (b) Tj ET",
+                ),
+            ),
+        ])
+    };
+    let doc = Document::from_bytes(&make(b"0 0 1 1 re f")).unwrap();
+    let e = unsupported(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()));
+    assert!(e.contains("page 2 (not edited)"), "{e}");
 }

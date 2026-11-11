@@ -466,6 +466,25 @@ fn a_kept_button_value_is_shown_by_a_kept_widget() {
             "no appearance",
             radio("/Secretopt", "", "/AS /Secretopt", &off),
         ),
+        // In that state, but the state's entry is not a stream.
+        (
+            "state not a stream",
+            radio(
+                "/Secretopt",
+                "",
+                "/AS /Secretopt /AP << /N << /Secretopt 0 /Off 20 0 R >> >>",
+                &off,
+            ),
+        ),
+        (
+            "state a dictionary",
+            radio(
+                "/Secretopt",
+                "",
+                "/AS /Secretopt /AP << /N << /Secretopt << >> /Off 20 0 R >> >>",
+                &off,
+            ),
+        ),
     ];
     for (name, pdf) in refused {
         let e = run(&pdf, true).unwrap_err().to_string();

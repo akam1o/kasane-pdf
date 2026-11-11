@@ -575,9 +575,18 @@ fn check_kept_fields(
                                 .as_dict()
                                 .and_then(|a| a.get(b"N".as_slice()).cloned())
                             {
-                                Some(nm) => deref_cur(doc, overlay, &nm)?
+                                // The state's appearance: a stream (anything
+                                // else draws nothing).
+                                Some(nm) => match deref_cur(doc, overlay, &nm)?
                                     .as_dict()
-                                    .is_some_and(|a| a.contains_key(n.as_slice())),
+                                    .and_then(|a| a.get(n.as_slice()).cloned())
+                                {
+                                    Some(st) => matches!(
+                                        deref_cur(doc, overlay, &st)?,
+                                        Object::Stream { .. }
+                                    ),
+                                    None => false,
+                                },
                                 None => false,
                             },
                             None => false,
