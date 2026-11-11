@@ -390,8 +390,11 @@ fn kept_annotation_appearances(
                         };
                         for st in states {
                             let Object::Ref(r) = st else { continue };
-                            let dg = match idx.and_then(|i| i.digests.get(&r)) {
-                                Some(dg) => Some(dg.stored),
+                            // The output's from its index (a reference not
+                            // in it holds no stream); the input's cached —
+                            // never one for the other.
+                            let dg = match idx {
+                                Some(i) => i.digests.get(&r).map(|d| d.stored),
                                 None => match digests.get(&r) {
                                     Some(d) => *d,
                                     None => {

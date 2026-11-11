@@ -6226,3 +6226,53 @@ fn kept_widgets_keep_their_own_appearances() {
     let r = redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()).unwrap();
     assert_eq!(r.paths_removed, 1);
 }
+
+/// The appearances kept annotations excuse are the output's own, never
+/// confused with input objects of the same number: a removed appearance
+/// kept only by a hidden annotation is refused whatever the numbering.
+/// (Review.)
+#[test]
+fn kept_appearances_are_not_confused_across_documents() {
+    let ap = |b: &[u8]| stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 80 20]", b);
+    for x in [6u32, 13] {
+        let pdf = build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R \
+                  /Annots [11 0 R 12 0 R 31 0 R] >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", b"150 150 10 10 re f")),
+            (
+                11,
+                format!("<< /Type /Annot /Subtype /Square /Rect 50 0 R /P 3 0 R /AP << /N {x} 0 R /D 60 0 R >> >>")
+                    .into_bytes(),
+            ),
+            (
+                12,
+                b"<< /Type /Annot /Subtype /Square /Rect 51 0 R /P 3 0 R /AP << /N 14 0 R /D 61 0 R >> >>".to_vec(),
+            ),
+            (
+                31,
+                format!("<< /Type /Annot /Subtype /Square /Rect [100 150 140 170] /P 3 0 R /F 2 /AP << /N {x} 0 R >> >>")
+                    .into_bytes(),
+            ),
+            (x, ap(b"0 0 80 20 re f 3 3 9 9 re f")),
+            (14, ap(b"0 0 80 20 re S")),
+            (50, b"[60 95 90 110]".to_vec()),
+            (51, b"[150 10 190 30]".to_vec()),
+            (60, b"<< /A 14 0 R >>".to_vec()),
+            (61, b"<< /A 62 0 R >>".to_vec()),
+            (62, b"<< /Zz 1 >>".to_vec()),
+        ]);
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let e = unsupported(redact(
+            &doc,
+            &[(0, vec![RECT])],
+            &RedactOptions::new().remove_annotations(true),
+        ));
+        assert!(e.contains("failed verification"), "{x}: {e}");
+    }
+}
