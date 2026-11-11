@@ -226,6 +226,12 @@ are on the [roadmap](architecture.md#roadmap).
 - **Actions of removed links** (0.9): an indirect action or destination
   object a removed link shares with something kept stays (reported as a
   residual action and as uninspected data).
+- **Appearances of kept annotations** (0.9): a shown annotation kept as
+  it was keeps its own appearance streams (every state, down and
+  rollover), and the same bytes as removed content there are reported;
+  what an appearance it does not draw now draws in turn (a nested form,
+  an image) is not excused, so such a page may be refused although the
+  redaction touches no annotation (the safe direction).
 - **Optional content over the output** (0.9): content under a group is
   counted as drawn only when the default viewing configuration turns
   it on, no automatic state (`/AS`) names it and its `/Usage` turns

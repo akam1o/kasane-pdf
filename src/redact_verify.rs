@@ -346,7 +346,10 @@ fn kept_annotation_appearances(
     idx: &Index,
 ) -> Result<HashSet<[u8; 32]>, Error> {
     // Per annotation: its print and its appearance streams' digests.
-    let annots =
+    // Input digests by reference, computed once (the output's are in
+    // its index).
+    let mut digests: HashMap<IndirectRef, Option<[u8; 32]>> = HashMap::new();
+    let mut annots =
         |doc: &Document, i: usize, idx: Option<&Index>| -> Result<Vec<PrintedAppearances>, Error> {
             let mut v = Vec::new();
             let Some(page) = doc.pages().get(i) else {
@@ -389,9 +392,16 @@ fn kept_annotation_appearances(
                             let Object::Ref(r) = st else { continue };
                             let dg = match idx.and_then(|i| i.digests.get(&r)) {
                                 Some(dg) => Some(dg.stored),
-                                None => match doc.resolve(r)? {
-                                    Object::Stream { data, .. } => Some(sha256(&data)),
-                                    _ => None,
+                                None => match digests.get(&r) {
+                                    Some(d) => *d,
+                                    None => {
+                                        let d = match doc.resolve(r)? {
+                                            Object::Stream { data, .. } => Some(sha256(&data)),
+                                            _ => None,
+                                        };
+                                        digests.insert(r, d);
+                                        d
+                                    }
                                 },
                             };
                             streams.extend(dg);
@@ -404,15 +414,18 @@ fn kept_annotation_appearances(
         };
     let mut kept: HashSet<[u8; 32]> = HashSet::new();
     for i in 0..out.pages().len().min(input.pages().len()) {
-        let before = annots(input, i, None)?;
+        // The input page's annotations by print: the streams each print
+        // had.
+        let mut before: HashMap<[u8; 32], HashSet<[u8; 32]>> = HashMap::new();
+        for (p, had) in annots(input, i, None)? {
+            before.entry(p).or_default().extend(had);
+        }
         if before.is_empty() {
             continue;
         }
         for (print, streams) in annots(out, i, Some(idx))? {
-            for (p, had) in &before {
-                if *p == print {
-                    kept.extend(streams.iter().filter(|s| had.contains(s)));
-                }
+            if let Some(had) = before.get(&print) {
+                kept.extend(streams.iter().filter(|s| had.contains(*s)));
             }
         }
     }
