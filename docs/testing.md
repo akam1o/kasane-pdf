@@ -135,6 +135,27 @@ but external tools are used to *confirm* behaviour on real files:
 - [`../tests/redact_inventory.rs`](../tests/redact_inventory.rs) — the
   inventory of uninspected data and `refuse_uninspected`.
 
+### Redaction: generated documents and advisories (0.9)
+
+- `tests/redact_model.rs` (generator: `tests/model/mod.rs`) builds
+  documents in two variants that differ only in what lies inside the
+  rect on page 1 — text, image samples, glyph procedures, appearance
+  drawings, alternate text, annotation text, form field values — with
+  shared and nested forms, inherited resources, annotations, form
+  fields, a structure tree, Type 3 fonts, references to secret objects
+  from places that draw nothing, identical copies, dangling,
+  wrong-generation and cyclic references, object streams and incremental
+  updates. Both variants must redact to the same bytes (or be refused
+  alike), and a success must keep every public text. 160 seeds by
+  default; `KASANE_MODEL_SEEDS=N` for more.
+- `fuzz/fuzz_targets/redact_model.rs` drives the same generator from the
+  fuzzer's bytes: a false success fails like a crash (PR smoke, nightly).
+- `tests/redact_advisories.rs`: one test per published advisory;
+  `KASANE_ADVISORY_DUMP=dir` writes its inputs for
+  `scripts/check-advisory-regressions.py`, which judges any CLI with
+  qpdf and pdftotext (PR workflow, `--expect-safe`). Results per version:
+  `docs/security/advisory-regressions.md`.
+
 ## Compatibility suite
 
 `compat/runner` (`kasane-compat`) runs the real-world corpus through

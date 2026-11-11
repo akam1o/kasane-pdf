@@ -46,7 +46,7 @@ use crate::error::Error;
 use crate::limits::Limits;
 use crate::object::{Dict, IndirectRef, Object};
 use crate::redact_diag::Site;
-use crate::remove_region::{regions_edit_session_with, sha256, PageSpec, SessionMode};
+use crate::remove_region::{regions_edit_session_with, PageSpec, SessionMode};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Options for [`redact`].
@@ -132,8 +132,11 @@ impl RedactOptions {
     /// even where they lie outside the rect — together with what
     /// belongs to it on the page: its popup, the annotation a removed
     /// popup belongs to, and replies to it (`/IRT`), transitively.
-    /// Other subtypes meeting a rect (widgets, signatures, media,
-    /// file attachments …) stay refused. Its appearance streams may not
+    /// A widget meeting a rect is removed too, and its form field with
+    /// it when no widget of the field is left (`Redaction::fields_removed`;
+    /// a signature field, an XFA form or a field tree that cannot be
+    /// edited exactly is refused). Other subtypes meeting a rect
+    /// (signatures, media, file attachments …) stay refused. Its appearance streams may not
     /// stay in the output unless something still draws them (checked
     /// like an edited image's original), and its text is searched for
     /// in `elsewhere`. The structure tree's reference to it goes, and
@@ -242,6 +245,9 @@ pub struct Redaction {
     /// Thumbnails (`/Thumb`) removed from edited pages: they picture
     /// the page as it was.
     pub thumbnails_removed: u64,
+    /// Form fields removed with the widgets `remove_annotations` removed
+    /// (a field all of whose widgets are gone goes, its value with it).
+    pub fields_removed: u64,
     /// The residual-information audit of the *output*: annotations,
     /// attachments, form values, actions, outlines' targets … that
     /// the positional redaction does not touch. Review before
@@ -316,6 +322,7 @@ impl std::fmt::Debug for Redaction {
             .field("elsewhere", &self.elsewhere)
             .field("uninspected", &self.uninspected.uninspected)
             .field("thumbnails_removed", &self.thumbnails_removed)
+            .field("fields_removed", &self.fields_removed)
             .field("residual_findings", &self.residual.findings.len())
             .finish()
     }
@@ -391,18 +398,66 @@ fn redact_doc(
             .overlay
             .insert((root.number, root.generation), Object::Dict(catalog));
     }
+    // The form fields of removed widgets.
+    let forms = crate::redact_forms::edit_fields(
+        doc,
+        &mut s.edit.overlay,
+        &s.touched.removed_widgets,
+        limits,
+    )?;
+    s.removed_text.extend(forms.removed_text.iter().cloned());
+    s.removed_annot_prints.extend(forms.prints.iter().copied());
     let javascript_removed = if options.remove_javascript {
         crate::redact_js::strip_javascript(doc, &mut s.edit.overlay, limits)?
     } else {
         0
     };
-    let output = s
-        .edit
-        .rewrite_with_overrides(&crate::rewrite::RewriteOverrides {
-            strip_info: true,
-            strip_metadata: true,
-            javascript_removed: options.remove_javascript,
-        })?;
+    // A removed annotation or field still reached by something kept
+    // would be written whole (by identity: later passes, the JavaScript
+    // one among them, may have changed its content, so its print would
+    // no longer match).
+    let mut gone: HashSet<IndirectRef> = s.touched.removed_annotations.clone();
+    gone.extend(forms.gone.iter().copied());
+    if let Some((r, path)) =
+        crate::redact_forms::removed_still_reached(doc, &s.edit.overlay, &gone, limits)?
+    {
+        return Err(Error::Unsupported {
+            feature: "redaction output failed verification",
+            detail: format!(
+                "object {r} is a removed annotation or form field that the document still \
+                 refers to (by {path})"
+            ),
+        });
+    }
+    // Prints of what the edit left of them too (a copy edited the same
+    // way matches these).
+    for r in &gone {
+        if let Some(Object::Dict(d)) = s.edit.overlay.get(&(r.number, r.generation)) {
+            s.removed_annot_prints
+                .push(crate::remove_region::annotation_print(d));
+        }
+    }
+    let (output, written) =
+        s.edit
+            .rewrite_with_overrides_mapped(&crate::rewrite::RewriteOverrides {
+                strip_info: true,
+                strip_metadata: true,
+                javascript_removed: options.remove_javascript,
+            })?;
+    // The same, on what the rewrite actually wrote (its object map is the
+    // output's object set): no removed annotation or field among it.
+    if let Some(r) = gone
+        .iter()
+        .filter(|r| written.contains_key(&(r.number, r.generation)))
+        .min()
+    {
+        return Err(Error::Unsupported {
+            feature: "redaction output failed verification",
+            detail: format!(
+                "object {r} is a removed annotation or form field the output still writes"
+            ),
+        });
+    }
 
     // Type 3 glyph definitions the output no longer shows go too.
     let (output, glyph_images, glyph_procs, glyph_tounicodes) =
@@ -431,7 +486,7 @@ fn redact_doc(
     // edited originals: gone, or still drawn (reported).
     let mut originals = s.original_digests.clone();
     originals.extend(glyph_images);
-    let (out, residual, shown) = verify(
+    let (out, residual, shown, idx) = verify(
         &output,
         specs,
         limits,
@@ -440,11 +495,20 @@ fn redact_doc(
         &s.removed_annot_prints,
         session,
     )?;
-    verify_original_contents(&out, &s.original_contents_digests)?;
+    verify_original_contents(&out, &idx, &s.original_contents_digests)?;
     let mut gone_whole = s.removed_stream_digests.clone();
     gone_whole.extend(glyph_tounicodes);
-    verify_removed_streams(&out, &gone_whole, &glyph_procs)?;
+    verify_removed_streams(&out, &idx, &gone_whole, &glyph_procs)?;
     crate::redact_struct::verify(&out, &structure, limits)?;
+    // Invariants that compare the input with the output alone, whatever
+    // the edit recorded (see `redact_verify`).
+    {
+        let graph = crate::redact_verify::RefGraph::build(&out, &idx, limits)?;
+        crate::redact_verify::check_reachable(&idx, &graph)?;
+        let edited: BTreeSet<usize> = specs.iter().map(|(p, _)| *p).collect();
+        crate::redact_verify::check_use(doc, &out, &idx, &graph, &edited, limits)?;
+        crate::redact_verify::check_removed_annotations(doc, &out, &idx, &graph, &edited)?;
+    }
     if options.remove_javascript {
         if let Some(r) = crate::redact_js::find_javascript(&out, limits)? {
             return Err(Error::Unsupported {
@@ -532,6 +596,7 @@ fn redact_doc(
         elsewhere_unsearched_pages,
         uninspected,
         thumbnails_removed: s.thumbnails_removed_total,
+        fields_removed: forms.fields_removed,
         residual,
     })
 }
@@ -549,12 +614,15 @@ fn verify(
     originals: &[[u8; 32]],
     removed_annots: &[[u8; 32]],
     session: crate::remove_region::SessionOptions,
-) -> Result<(Document, ResidualAudit, Shown), Error> {
+) -> Result<(Document, ResidualAudit, Shown, crate::redact_verify::Index), Error> {
     let fail = |detail: String| Error::Unsupported {
         feature: "redaction output failed verification",
         detail,
     };
     let out = Document::from_bytes_with_limits(output, limits.clone())?;
+    // Every object, resolved once, with its stream digests: the checks
+    // below and the invariants after them read this, not the file again.
+    let idx = crate::redact_verify::Index::build(&out, limits)?;
     if out.xref_section_offsets().len() != 1 {
         return Err(fail("the output has more than one revision".into()));
     }
@@ -562,13 +630,8 @@ fn verify(
     // streams: one in the output is an input's, carried because
     // something referred to it, and holds the input's objects as they
     // were — edited and removed ones included.
-    let streams: Vec<_> = out
-        .xref_entries()
-        .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
-        .map(|(r, _)| r)
-        .collect();
-    for r in streams {
-        if let Object::Stream { dict, .. } = out.resolve(r)? {
+    for (r, o) in &idx.objects {
+        if let Object::Stream { dict, .. } = o {
             let t = dict.get(b"Type".as_slice()).and_then(|t| t.as_name());
             if matches!(t, Some(b"ObjStm") | Some(b"XRef")) {
                 return Err(fail(format!(
@@ -604,37 +667,16 @@ fn verify(
     // refers to it (an action, another annotation, the structure tree,
     // an outline …): every dictionary written is compared.
     if !removed_annots.is_empty() {
+        // The removed annotations themselves are refused by identity
+        // when the edit is written; this catches copies. What the
+        // output's pages hold is excused by identity, never by content
+        // (two annotations alike are not the same annotation).
         let prints: HashSet<[u8; 32]> = removed_annots.iter().copied().collect();
-        // Every nested dictionary, at any depth (iteratively).
-        fn find(o: &Object, prints: &HashSet<[u8; 32]>) -> bool {
-            let mut stack = vec![o];
-            while let Some(o) = stack.pop() {
-                match o {
-                    Object::Dict(d) => {
-                        if prints.contains(&crate::remove_region::annotation_print(d)) {
-                            return true;
-                        }
-                        stack.extend(d.values());
-                    }
-                    Object::Array(a) => stack.extend(a.iter()),
-                    Object::Stream { dict, .. } => {
-                        if prints.contains(&crate::remove_region::annotation_print(dict)) {
-                            return true;
-                        }
-                        stack.extend(dict.values())
-                    }
-                    _ => {}
-                }
-            }
-            false
-        }
-        let refs: Vec<_> = out
-            .xref_entries()
-            .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
-            .map(|(r, _)| r)
-            .collect();
-        for r in refs {
-            if find(&out.resolve(r)?, &prints) {
+        let entries = crate::redact_verify::AnnotEntries::of(&out)?;
+        for (r, o) in &idx.objects {
+            if entries.find(*r, o, &|d| {
+                prints.contains(&crate::remove_region::annotation_print(d))
+            }) {
                 return Err(fail(format!(
                     "object {r} still holds a removed link or annotation (something refers to it)"
                 )));
@@ -647,22 +689,16 @@ fn verify(
     let mut shown: BTreeSet<(usize, bool)> = BTreeSet::new();
     if !originals.is_empty() {
         let drawn = drawn_xobjects(&out, limits)?;
-        let refs: Vec<_> = out
-            .xref_entries()
-            .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
-            .map(|(r, _)| r)
-            .collect();
-        for r in refs {
-            let obj = out.resolve(r)?;
-            let Object::Stream { dict, data } = &obj else {
+        for (r, obj) in &idx.objects {
+            let Object::Stream { dict, .. } = obj else {
                 continue;
             };
-            let stored = sha256(data);
-            let decoded = out.decode_stream(dict, data).ok().map(|d| sha256(&d));
-            if !(originals.contains(&stored) || decoded.is_some_and(|d| originals.contains(&d))) {
+            let d = &idx.digests[r];
+            if !(originals.contains(&d.stored) || d.decoded.is_some_and(|x| originals.contains(&x)))
+            {
                 continue;
             }
-            let Some(pages) = drawn.get(&r) else {
+            let Some(pages) = drawn.get(r) else {
                 return Err(fail(format!(
                     "object {r} holds an edited image's or form's original data"
                 )));
@@ -675,20 +711,14 @@ fn verify(
     // does not hide it).
     if !shadings.is_empty() {
         let gone: HashSet<[u8; 32]> = shadings.iter().copied().collect();
-        let refs: Vec<_> = out
-            .xref_entries()
-            .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
-            .map(|(r, _)| r)
-            .collect();
         let resource = |d: &Dict| {
             d.contains_key(b"ShadingType".as_slice()) || d.contains_key(b"PatternType".as_slice())
         };
         let mut elements: u64 = 0;
-        for r in refs {
-            let obj = out.resolve(r)?;
+        for (r, obj) in &idx.objects {
             // The object itself and every dictionary written inside it
             // (a copy may sit in a pattern, a resource dictionary …).
-            let mut stack: Vec<&Object> = vec![&obj];
+            let mut stack: Vec<&Object> = vec![obj];
             while let Some(o) = stack.pop() {
                 elements += 1;
                 if elements > limits.max_audit_elements {
@@ -718,13 +748,17 @@ fn verify(
         }
     }
     let residual = audit_residuals(&out, limits)?;
-    Ok((out, residual, shown))
+    Ok((out, residual, shown, idx))
 }
 
 /// No stream of `out` holds an edited page's original content (stored or
 /// decoded), unless a page of `out` draws it as its `/Contents` (a
 /// content stream the edited page shared with another page).
-fn verify_original_contents(out: &Document, digests: &[[u8; 32]]) -> Result<(), Error> {
+fn verify_original_contents(
+    out: &Document,
+    idx: &crate::redact_verify::Index,
+    digests: &[[u8; 32]],
+) -> Result<(), Error> {
     if digests.is_empty() {
         return Ok(());
     }
@@ -747,19 +781,9 @@ fn verify_original_contents(out: &Document, digests: &[[u8; 32]]) -> Result<(), 
             _ => {}
         }
     }
-    let refs: Vec<_> = out
-        .xref_entries()
-        .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
-        .map(|(r, _)| r)
-        .collect();
-    for r in refs {
-        let Object::Stream { dict, data } = out.resolve(r)? else {
-            continue;
-        };
-        let held = gone.contains(&sha256(&data))
-            || out
-                .decode_stream(&dict, &data)
-                .is_ok_and(|d| gone.contains(&sha256(&d)));
+    // In object order: the first failure is the same for every run.
+    for (r, d) in idx.streams() {
+        let held = gone.contains(&d.stored) || d.decoded.is_some_and(|x| gone.contains(&x));
         if held && !contents.contains(&r) {
             return Err(Error::Unsupported {
                 feature: "redaction output failed verification",
@@ -779,6 +803,7 @@ fn verify_original_contents(out: &Document, digests: &[[u8; 32]]) -> Result<(), 
 /// glyph there).
 fn verify_removed_streams(
     out: &Document,
+    idx: &crate::redact_verify::Index,
     removed: &[[u8; 32]],
     procs: &[[u8; 32]],
 ) -> Result<(), Error> {
@@ -787,11 +812,6 @@ fn verify_removed_streams(
     }
     let removed: HashSet<[u8; 32]> = removed.iter().copied().collect();
     let procs: HashSet<[u8; 32]> = procs.iter().copied().collect();
-    let refs: Vec<_> = out
-        .xref_entries()
-        .filter(|(_, e)| !matches!(e, crate::xref::XrefEntry::Free { .. }))
-        .map(|(r, _)| r)
-        .collect();
     // Where such bytes may still be used.
     let mut in_use: HashSet<IndirectRef> = HashSet::new();
     let mut thumbs: HashSet<IndirectRef> = HashSet::new();
@@ -805,8 +825,8 @@ fn verify_removed_streams(
             thumbs.insert(*t);
         }
     }
-    for &r in &refs {
-        let Object::Dict(d) = out.resolve(r)? else {
+    for (_, o) in &idx.objects {
+        let Object::Dict(d) = o else {
             continue;
         };
         if d.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Type3") {
@@ -817,14 +837,8 @@ fn verify_removed_streams(
             }
         }
     }
-    for r in refs {
-        let Object::Stream { dict, data } = out.resolve(r)? else {
-            continue;
-        };
-        let digests = [
-            Some(sha256(&data)),
-            out.decode_stream(&dict, &data).ok().map(|d| sha256(&d)),
-        ];
+    for (r, d) in idx.streams() {
+        let digests = [Some(d.stored), d.decoded];
         let is = |set: &HashSet<[u8; 32]>| digests.iter().flatten().any(|d| set.contains(d));
         if is(&removed) && !thumbs.contains(&r) {
             return Err(Error::Unsupported {

@@ -1,6 +1,6 @@
 {
  "summary": {
-  "refused_runs": 56,
+  "refused_runs": 54,
   "first_reasons": {
    "region removal on a page with uncertain content": 29,
    "redaction of an annotation other than a link meeting a rect": 10,
@@ -10,10 +10,8 @@
    "other: invalid document structure": 2,
    "other: signature policy": 2,
    "redaction on a page with a NoZoom or NoRotate annotation": 1,
-   "image stream filter": 1,
    "other: parse error": 1,
-   "catalog entry outside profile": 1,
-   "image BitsPerComponent": 1
+   "catalog entry outside profile": 1
   },
   "walk_refusals": 32,
   "walk_refusals_with_several_categories": 1,
@@ -61,7 +59,7 @@
     611.02
    ],
    "first_reason": "redaction of an annotation other than a link meeting a rect",
-   "first_detail": "/Annots[7] (/Widget) — its content is not edited",
+   "first_detail": "/Annots[7] (/Widget) — its content is not edited; RedactOptions::remove_annotations removes it whole",
    "refused_by_walk": false,
    "walk_error": null,
    "walk_categories": [],
@@ -285,7 +283,7 @@
     133.33
    ],
    "first_reason": "redaction of an annotation other than a link meeting a rect",
-   "first_detail": "/Annots[1] (/Widget) — its content is not edited",
+   "first_detail": "/Annots[1] (/Widget) — its content is not edited; RedactOptions::remove_annotations removes it whole",
    "refused_by_walk": false,
    "walk_error": null,
    "walk_categories": [
@@ -306,7 +304,7 @@
     528.0
    ],
    "first_reason": "redaction of an annotation other than a link meeting a rect",
-   "first_detail": "/Annots[0] (/Widget) — its content is not edited",
+   "first_detail": "/Annots[0] (/Widget) — its content is not edited; RedactOptions::remove_annotations removes it whole",
    "refused_by_walk": false,
    "walk_error": null,
    "walk_categories": [],
@@ -323,7 +321,7 @@
     728.26
    ],
    "first_reason": "redaction of an annotation other than a link meeting a rect",
-   "first_detail": "/Annots[1] (/Widget) — its content is not edited",
+   "first_detail": "/Annots[1] (/Widget) — its content is not edited; RedactOptions::remove_annotations removes it whole",
    "refused_by_walk": false,
    "walk_error": null,
    "walk_categories": [],
@@ -516,23 +514,6 @@
    "examples": {
     "tiling pattern": "a path painted with a tiling pattern crossing a rect (or in a form) — its cell is content a cut would only hide"
    }
-  },
-  {
-   "id": "pdfium-jpeg_reduced_size_with_smask",
-   "kind": "block",
-   "rect": [
-    133.33,
-    133.33,
-    266.67,
-    266.67
-   ],
-   "first_reason": "image stream filter",
-   "first_detail": "[\"ASCIIHexDecode\", \"DCTDecode\"] — only none, FlateDecode, or DCTDecode are supported",
-   "refused_by_walk": false,
-   "walk_error": null,
-   "walk_categories": [],
-   "walk_findings": 0,
-   "examples": {}
   },
   {
    "id": "arxiv-2204.06125",
@@ -961,7 +942,7 @@
     528.0
    ],
    "first_reason": "redaction of an annotation other than a link meeting a rect",
-   "first_detail": "/Annots[42] (/Widget) — its content is not edited",
+   "first_detail": "/Annots[42] (/Widget) — its content is not edited; RedactOptions::remove_annotations removes it whole",
    "refused_by_walk": false,
    "walk_error": null,
    "walk_categories": [],
@@ -1002,23 +983,6 @@
    "first_detail": "error [invalid document structure]: invalid document structure: Tj before Tf — no font selected",
    "refused_by_walk": false,
    "walk_error": "error [invalid document structure]: invalid document structure: Tj before Tf — no font selected",
-   "walk_categories": [],
-   "walk_findings": 0,
-   "examples": {}
-  },
-  {
-   "id": "ccitt_endofblock_false",
-   "kind": "block",
-   "rect": [
-    198.43,
-    280.63,
-    396.85,
-    561.26
-   ],
-   "first_reason": "image BitsPerComponent",
-   "first_detail": "1 (only 8 supported",
-   "refused_by_walk": false,
-   "walk_error": null,
    "walk_categories": [],
    "walk_findings": 0,
    "examples": {}

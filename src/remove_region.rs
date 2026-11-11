@@ -1529,13 +1529,24 @@ pub(crate) fn regions_edit_session_with<'a>(
                     || opts.remove_annotations && REMOVABLE_ANNOTS.contains(&st.as_slice())
                 {
                     removed[k] = true;
+                } else if opts.remove_annotations && st == b"Widget" {
+                    // A form field's annotation: its field is edited too
+                    // (`redact_forms`), which needs the widget's object.
+                    let Some(r) = entries[k].0 else {
+                        return Err(Error::Unsupported {
+                            feature: "redaction of a direct widget",
+                            detail: format!("/Annots[{k}] is not an indirect object"),
+                        });
+                    };
+                    touched.removed_widgets.insert(r);
+                    removed[k] = true;
                 } else {
                     return Err(Error::Unsupported {
                         feature: "redaction of an annotation other than a link meeting a rect",
                         detail: format!(
                             "/Annots[{k}] (/{}) — its content is not edited{}",
                             String::from_utf8_lossy(&st),
-                            if REMOVABLE_ANNOTS.contains(&st.as_slice()) {
+                            if REMOVABLE_ANNOTS.contains(&st.as_slice()) || st == b"Widget" {
                                 "; RedactOptions::remove_annotations removes it whole"
                             } else {
                                 ""
@@ -1544,39 +1555,62 @@ pub(crate) fn regions_edit_session_with<'a>(
                     });
                 }
             }
-            let refers = |d: &Dict, key: &[u8], to: Option<IndirectRef>| {
-                to.is_some() && matches!(d.get(key), Some(Object::Ref(r)) if Some(*r) == to)
+            // What the removed annotations tie to, followed from each
+            // once (a worklist over reverse maps: linear in the
+            // annotations, however long a chain of replies).
+            let link = |d: &Dict, key: &[u8]| match d.get(key) {
+                Some(Object::Ref(r)) => Some(*r),
+                _ => None,
             };
-            loop {
-                let mut changed = false;
-                for k in 0..entries.len() {
-                    if removed[k] {
-                        continue;
-                    }
-                    let (kr, kd, _) = &entries[k];
-                    let tied = entries.iter().zip(&removed).any(|((rr, rd, _), &gone)| {
-                        gone && (refers(rd, b"Popup", *kr)
-                            || refers(kd, b"Parent", *rr)
-                            || refers(kd, b"IRT", *rr)
-                            || refers(rd, b"Parent", *kr) && subtype(rd) == b"Popup")
-                    });
-                    if tied {
-                        let st = subtype(kd);
-                        if st != b"Link" && !REMOVABLE_ANNOTS.contains(&st.as_slice()) {
-                            return Err(Error::Unsupported {
-                                feature: "redaction of an annotation tied to a removed one",
-                                detail: format!(
-                                    "/Annots[{k}] (/{}) is its popup, parent or reply",
-                                    String::from_utf8_lossy(&st)
-                                ),
-                            });
-                        }
-                        removed[k] = true;
-                        changed = true;
+            let mut by_ref: HashMap<IndirectRef, Vec<usize>> = HashMap::new();
+            let mut by_parent: HashMap<IndirectRef, Vec<usize>> = HashMap::new();
+            let mut by_irt: HashMap<IndirectRef, Vec<usize>> = HashMap::new();
+            for (k, (kr, kd, _)) in entries.iter().enumerate() {
+                if let Some(r) = kr {
+                    by_ref.entry(*r).or_default().push(k);
+                }
+                if let Some(p) = link(kd, b"Parent") {
+                    by_parent.entry(p).or_default().push(k);
+                }
+                if let Some(p) = link(kd, b"IRT") {
+                    by_irt.entry(p).or_default().push(k);
+                }
+            }
+            let mut work: Vec<usize> = (0..entries.len()).filter(|&k| removed[k]).collect();
+            while let Some(k) = work.pop() {
+                let (kr, kd, _) = &entries[k];
+                let mut tied: Vec<usize> = Vec::new();
+                // Its popup; the annotation a removed popup belongs to.
+                if let Some(p) = link(kd, b"Popup") {
+                    tied.extend(by_ref.get(&p).into_iter().flatten());
+                }
+                if subtype(kd) == b"Popup" {
+                    if let Some(p) = link(kd, b"Parent") {
+                        tied.extend(by_ref.get(&p).into_iter().flatten());
                     }
                 }
-                if !changed {
-                    break;
+                // What names it as parent, and replies to it.
+                if let Some(r) = kr {
+                    tied.extend(by_parent.get(r).into_iter().flatten());
+                    tied.extend(by_irt.get(r).into_iter().flatten());
+                }
+                tied.sort_unstable();
+                for j in tied {
+                    if removed[j] {
+                        continue;
+                    }
+                    let st = subtype(&entries[j].1);
+                    if st != b"Link" && !REMOVABLE_ANNOTS.contains(&st.as_slice()) {
+                        return Err(Error::Unsupported {
+                            feature: "redaction of an annotation tied to a removed one",
+                            detail: format!(
+                                "/Annots[{j}] (/{}) is its popup, parent or reply",
+                                String::from_utf8_lossy(&st)
+                            ),
+                        });
+                    }
+                    removed[j] = true;
+                    work.push(j);
                 }
             }
             // One drawn away from /Rect at other zooms and rotations
@@ -2066,13 +2100,13 @@ pub(crate) fn regions_edit_session_with<'a>(
             if ranges.is_empty() {
                 continue;
             }
-            let expected = (width as u64)
-                .checked_mul(height as u64)
-                .and_then(|s| s.checked_mul(ncomps as u64))
-                .ok_or(Error::LimitExceeded {
+            let bpc = crate::remove_image::image_bpc(dict);
+            let expected = crate::remove_image::sample_bytes(width, height, ncomps, bpc).ok_or(
+                Error::LimitExceeded {
                     limit: "max_image_bytes",
                     max: limits.max_image_bytes,
-                })?;
+                },
+            )?;
             if expected > limits.max_image_bytes {
                 return Err(Error::LimitExceeded {
                     limit: "max_image_bytes",
@@ -2083,36 +2117,20 @@ pub(crate) fn regions_edit_session_with<'a>(
             let decoded = decode_image(dict, raw, limits, (width, height, ncomps))?;
             if decoded.len() as u64 != expected {
                 return Err(Error::Structure(format!(
-                    "image /{} data length {} does not match {}x{}x{} = {}",
+                    "image /{} data length {} does not match {}x{}x{} at {} bits = {}",
                     String::from_utf8_lossy(name),
                     decoded.len(),
                     width,
                     height,
                     ncomps,
+                    bpc,
                     expected
                 )));
             }
             let digests = (mode == SessionMode::Redact).then(|| [sha256(&decoded), sha256(raw)]);
             let mut new_data = decoded;
-            let mut changed_here: u64 = 0;
-            for &(x0, y0, x1, y1) in &ranges {
-                for y in y0..y1 {
-                    for x in x0..x1 {
-                        let idx = ((y as u64) * (width as u64) + (x as u64)) * (ncomps as u64);
-                        let mut pixel_changed = false;
-                        for c in 0..ncomps {
-                            let i = (idx + c as u64) as usize;
-                            if new_data[i] != 0 {
-                                new_data[i] = 0;
-                                pixel_changed = true;
-                            }
-                        }
-                        if pixel_changed {
-                            changed_here += 1;
-                        }
-                    }
-                }
-            }
+            let changed_here =
+                crate::remove_image::zero_samples(&mut new_data, width, ncomps, bpc, &ranges);
             // Redaction: a soft mask holds the shape of what is drawn —
             // its samples inside the rects go too (made opaque), even
             // where the colour samples were already black.
@@ -2166,12 +2184,13 @@ pub(crate) fn regions_edit_session_with<'a>(
             new_dict.insert(b"Length".to_vec(), Object::Integer(new_data.len() as i64));
             if let Some(d) = dict.get(b"Decode".as_slice()) {
                 // An Indexed space's default is [0 2^bpc−1] (§8.9.5.2,
-                // Table 90): 8-bit samples are the indices themselves.
+                // Table 90): the samples are the indices themselves.
+                let top = ((1u32 << bpc) - 1) as f64;
                 let indexed_default = mode == SessionMode::Redact
                     && d.as_array().is_some_and(|a| {
                         a.len() == 2
                             && a[0].as_number() == Some(0.0)
-                            && a[1].as_number() == Some(255.0)
+                            && a[1].as_number() == Some(top)
                     })
                     && crate::remove_image::image_space_is_indexed(
                         doc,
@@ -2823,6 +2842,11 @@ fn soft_mask_checked(
         }
     }
     let (w, h, n) = validate_image(dict, None, doc, limits, true)?;
+    // Its samples are edited one byte each (a chain of filters is
+    // decoded like the image's).
+    if crate::remove_image::image_bpc(dict) != 8 {
+        return Err(refuse("a soft mask that is not 8-bit"));
+    }
     if n != 1 {
         return Err(refuse("a soft mask that is not DeviceGray"));
     }

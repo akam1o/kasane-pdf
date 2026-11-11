@@ -76,6 +76,9 @@ pub(crate) struct Touched {
     /// The `/StructParent` keys of every removed annotation, direct ones
     /// included.
     pub(crate) removed_parent_keys: BTreeSet<i64>,
+    /// Of the removed annotations, the widgets (their form fields are
+    /// edited by `redact_forms`).
+    pub(crate) removed_widgets: HashSet<IndirectRef>,
 }
 
 impl Touched {

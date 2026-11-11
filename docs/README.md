@@ -77,6 +77,8 @@ PDFium / MuPDF / Poppler. The documentation is split into
 | [`plans/v0.4.0.md`](plans/v0.4.0.md) | v0.4.0 analysis and plan: strict-blocker classes, fidelity findings (incl. the FontMatrix misrender), writer audit, CJK status, corpus coverage, prioritised roadmap |
 | [`plans/v0.5.0.md`](plans/v0.5.0.md) | v0.5.0 plan and results: rewrite gaps, the rewrite-policy decisions (D1, D2), each phase's corpus results and reviews, the release scope (§24) |
 | [`plans/rewrite-policy.md`](plans/rewrite-policy.md) | design of `rewrite_with`'s policies: executable content, usage-rights removal, the report, the semantic checks |
+| [`redaction-safety-model.md`](redaction-safety-model.md) | the redaction safety model: guarantees per surface, the four kinds of data, the verification layers and their design decisions |
+| [`security/advisory-regressions.md`](security/advisory-regressions.md) | every published advisory's regression test and its result on every version |
 | [`releases/v0.5.0.md`](releases/v0.5.0.md) | v0.5.0 release notes |
 | [`plans/v0.5.1.md`](plans/v0.5.1.md) | v0.5.1 plan and results: the measured `max_xobject_depth`, structured render fuzzing and its CI, clip-mask memory, the dashed-stroke fix, the corpus and the reviews |
 | [`releases/v0.5.1.md`](releases/v0.5.1.md) | v0.5.1 release notes |

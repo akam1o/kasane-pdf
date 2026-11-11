@@ -216,6 +216,38 @@ are on the [roadmap](architecture.md#roadmap).
   marked-content sequence relates to no element. Trees that cannot be
   edited exactly (cycles, kids of unknown kinds, a touched element
   written inside another object) are refused.
+- **Redaction verification** (0.9): the use invariant compares streams
+  by digest — a copy re-encoded with other filters, or the same picture
+  stored differently, is not recognised; font programs, a font's code
+  data and ICC profiles are not held to it (a font only the removed text
+  used may stay in the page's resources with its program; it reveals
+  the font's glyph repertoire); dictionaries other than annotations are
+  compared only through the structure-tree and string checks.
+- **Actions of removed links** (0.9): an indirect action or destination
+  object a removed link shares with something kept stays (reported as a
+  residual action and as uninspected data).
+- **Appearances of kept annotations** (0.9): a shown annotation kept as
+  it was keeps its own appearance streams (every state, down and
+  rollover), and the same bytes as removed content there are reported;
+  what an appearance it does not draw now draws in turn (a nested form,
+  an image) is not excused, so such a page may be refused although the
+  redaction touches no annotation (the safe direction).
+- **Optional content over the output** (0.9): content under a group is
+  counted as drawn only when the default viewing configuration turns
+  it on, no automatic state (`/AS`) names it and its `/Usage` turns
+  nothing off; a configuration with another or an empty `/Intent`, or
+  `/BaseState /Unchanged`, counts as off. Some documents all readers
+  draw are refused for this (the safe direction).
+- **Drawn off the page** (0.9): a removed appearance or edited original
+  that another page's content still draws counts as drawn even when it
+  lies outside that page's boxes; it is reported in `elsewhere`, and
+  `refuse_copies_elsewhere` refuses it.
+- **Form fields** (0.9): a widget's field leaves the form only when no
+  widget of it is left; a field keeping a widget keeps its value
+  (reported in `elsewhere`) if a kept widget is shown and, for a
+  button, shows the value's state; otherwise refused. Signature fields,
+  XFA forms, JBIG2 images with shared `/JBIG2Globals` or a file header
+  are refused.
 - **Uninspected data** (0.8): `redact` reports the data it carries
   without reading it (`Redaction::uninspected`) and refuses it with
   `refuse_uninspected`; that mode is not a proof that no copy of the

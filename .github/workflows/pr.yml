@@ -83,7 +83,8 @@ jobs:
       - run: cargo test --no-default-features --features cjk-fallback --doc
 
   render-fuzz-smoke:
-    # The structured render fuzz targets (v0.5.1 R4): the committed seeds
+    # The structured render fuzz targets (v0.5.1 R4) and the redaction
+    # model (v0.9, a false success is a failure): the committed seeds
     # replayed (the same inputs every run), then 3000 new inputs from
     # libFuzzer seed 1 (bounded in count and time; which inputs it reaches
     # can vary, since coverage feedback depends on the library's hash
@@ -109,6 +110,7 @@ jobs:
         run: |
           cargo +nightly-2026-10-29 fuzz build -O render_content
           cargo +nightly-2026-10-29 fuzz build -O render_graph
+          cargo +nightly-2026-10-29 fuzz build -O redact_model
       - name: replay the seeds; the pages they render must paint
         run: |
           for t in render_content render_graph; do
@@ -116,9 +118,11 @@ jobs:
             echo "$t pages:"; sort "/tmp/reach-$t" | uniq -c | sort -rn
             grep -q "^ok painted" "/tmp/reach-$t" || { echo "::error::$t seeds painted nothing"; exit 1; }
           done
+          # The redaction model: a false success fails as a crash.
+          fuzz/ci-run.sh redact_model fuzz/seeds/redact_model -- -runs=0
       - name: 3000 new inputs per target (libFuzzer seed 1, at most 180 s each)
         run: |
-          for t in render_content render_graph; do
+          for t in render_content render_graph redact_model; do
             mkdir -p "/tmp/corpus-$t" && cp "fuzz/seeds/$t"/* "/tmp/corpus-$t/"
             fuzz/ci-run.sh "$t" "/tmp/corpus-$t" -- -seed=1 -runs=3000 -max_total_time=180 || exit 1
           done
@@ -248,6 +252,10 @@ jobs:
         run: |
           cargo build --release --bin kasane-pdf
           python3 scripts/verify-redact.py target/release/kasane-pdf
+      - name: advisory regressions checked by qpdf and pdftotext (synthetic inputs)
+        run: |
+          KASANE_ADVISORY_DUMP=/tmp/advisories cargo test --release --test redact_advisories
+          python3 scripts/check-advisory-regressions.py target/release/kasane-pdf /tmp/advisories --expect-safe
       - name: regression check vs committed baseline
         run: |
           python3 scripts/ci-regression.py check /tmp/smoke/latest.json compat/baselines/fixtures-smoke.json \

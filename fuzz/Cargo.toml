@@ -94,3 +94,10 @@ path = "fuzz_targets/ci_selftest.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "redact_model"
+path = "fuzz_targets/redact_model.rs"
+test = false
+doc = false
+bench = false

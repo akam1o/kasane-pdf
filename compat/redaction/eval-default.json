@@ -8,7 +8,7 @@
     115.58,
     634.56
    ],
-   "seconds": 0.517,
+   "seconds": 0.012,
    "elsewhere": 0,
    "outside_words": 4,
    "outside_words_lost": 0,
@@ -39,7 +39,7 @@
     595.32,
     634.56
    ],
-   "seconds": 0.013,
+   "seconds": 0.012,
    "elsewhere": 0,
    "outside_words": 4,
    "outside_words_lost": 0,
@@ -70,7 +70,7 @@
     396.88,
     561.28
    ],
-   "seconds": 0.01,
+   "seconds": 0.011,
    "elsewhere": 0,
    "outside_words": 5,
    "outside_words_lost": 0,
@@ -120,7 +120,7 @@
    "seconds": 0.002,
    "outcome": "refused",
    "reason": "redaction of an annotation other than a link meeting a rect",
-   "detail": "/Annots[7] (/Widget) \u2014 its content is not edited",
+   "detail": "/Annots[7] (/Widget) \u2014 its content is not edited; RedactOptions::remove_annotations removes it whole",
    "id": "annotation-button-widget",
    "category": "annotations",
    "producer": "LiveCycle Designer"
@@ -149,7 +149,7 @@
     88.16,
     703.8
    ],
-   "seconds": 0.002,
+   "seconds": 0.003,
    "outcome": "refused",
    "reason": "redaction of an annotation other than a link meeting a rect",
    "detail": "/Annots[0] (/Highlight) \u2014 its content is not edited; RedactOptions::remove_annotations removes it whole",
@@ -181,7 +181,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.008,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 9,
    "outside_words_lost": 0,
@@ -212,7 +212,7 @@
     167.16,
     714.16
    ],
-   "seconds": 0.002,
+   "seconds": 0.003,
    "outcome": "refused",
    "reason": "redaction of an annotation other than a link meeting a rect",
    "detail": "/Annots[0] (/Ink) \u2014 its content is not edited; RedactOptions::remove_annotations removes it whole",
@@ -260,7 +260,7 @@
     74.99,
     794.61
    ],
-   "seconds": 0.008,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 5,
    "outside_words_lost": 0,
@@ -323,7 +323,7 @@
     360.83,
     401.5
    ],
-   "seconds": 0.019,
+   "seconds": 0.02,
    "elsewhere": 1,
    "outside_words": 255,
    "outside_words_lost": 0,
@@ -354,7 +354,7 @@
     612.0,
     401.5
    ],
-   "seconds": 0.02,
+   "seconds": 0.019,
    "elsewhere": 2,
    "outside_words": 232,
    "outside_words_lost": 0,
@@ -432,7 +432,7 @@
     612.0,
     401.59
    ],
-   "seconds": 0.027,
+   "seconds": 0.026,
    "elsewhere": 1,
    "outside_words": 856,
    "outside_words_lost": 0,
@@ -494,7 +494,7 @@
     37.84,
     109.12
    ],
-   "seconds": 0.002,
+   "seconds": 0.003,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x48 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Helvetica is drawn with the bundled LiberationSans-Regular \u2014 its true ink extent is unknown",
@@ -529,7 +529,7 @@
    "seconds": 0.002,
    "outcome": "refused",
    "reason": "redaction of an annotation other than a link meeting a rect",
-   "detail": "/Annots[1] (/Widget) \u2014 its content is not edited",
+   "detail": "/Annots[1] (/Widget) \u2014 its content is not edited; RedactOptions::remove_annotations removes it whole",
    "id": "acroform_calculation_order",
    "category": "forms",
    "producer": "unknown"
@@ -607,7 +607,7 @@
    "seconds": 0.003,
    "outcome": "refused",
    "reason": "redaction of an annotation other than a link meeting a rect",
-   "detail": "/Annots[0] (/Widget) \u2014 its content is not edited",
+   "detail": "/Annots[0] (/Widget) \u2014 its content is not edited; RedactOptions::remove_annotations removes it whole",
    "id": "bug1947248_forms",
    "category": "forms",
    "producer": "Acrobat"
@@ -620,7 +620,7 @@
     91.22,
     728.26
    ],
-   "seconds": 0.014,
+   "seconds": 0.012,
    "elsewhere": 1,
    "outside_words": 9,
    "outside_words_lost": 0,
@@ -654,7 +654,7 @@
    "seconds": 0.003,
    "outcome": "refused",
    "reason": "redaction of an annotation other than a link meeting a rect",
-   "detail": "/Annots[1] (/Widget) \u2014 its content is not edited",
+   "detail": "/Annots[1] (/Widget) \u2014 its content is not edited; RedactOptions::remove_annotations removes it whole",
    "id": "checkbox-bad-appearance",
    "category": "forms",
    "producer": "mPDF"
@@ -667,7 +667,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.016,
+   "seconds": 0.011,
    "elsewhere": 0,
    "outside_words": 10,
    "outside_words_lost": 0,
@@ -698,7 +698,7 @@
     135.63,
     399.74
    ],
-   "seconds": 0.054,
+   "seconds": 0.06,
    "elsewhere": 1,
    "outside_words": 231,
    "outside_words_lost": 0,
@@ -729,7 +729,7 @@
     612.0,
     399.74
    ],
-   "seconds": 0.053,
+   "seconds": 0.062,
    "elsewhere": 1,
    "outside_words": 199,
    "outside_words_lost": 0,
@@ -824,7 +824,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.004,
+   "seconds": 0.003,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x42 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Helvetica is drawn with the bundled LiberationSans-Regular \u2014 its true ink extent is unknown",
@@ -840,7 +840,7 @@
     169.49,
     571.87
    ],
-   "seconds": 0.011,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -902,7 +902,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.01,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 3,
    "outside_words_lost": 0,
@@ -933,7 +933,7 @@
     366.8,
     274.3
    ],
-   "seconds": 0.032,
+   "seconds": 0.033,
    "elsewhere": 1,
    "outside_words": 737,
    "outside_words_lost": 0,
@@ -964,7 +964,7 @@
     960.0,
     274.3
    ],
-   "seconds": 0.034,
+   "seconds": 0.033,
    "elsewhere": 0,
    "outside_words": 692,
    "outside_words_lost": 0,
@@ -995,7 +995,7 @@
     640.0,
     360.0
    ],
-   "seconds": 0.033,
+   "seconds": 0.032,
    "elsewhere": 0,
    "outside_words": 599,
    "outside_words_lost": 0,
@@ -1042,7 +1042,7 @@
     595.28,
     750.92
    ],
-   "seconds": 0.002,
+   "seconds": 0.003,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x52 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Helvetica is drawn with the bundled LiberationSans-Regular \u2014 its true ink extent is unknown",
@@ -1058,7 +1058,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.002,
+   "seconds": 0.003,
    "outcome": "refused",
    "reason": "region removal on a page with blockers: shading",
    "detail": "shading (sh): /Sh1 crosses a rect \u2014 its function and geometry inside cannot be separated from the rest (a clip would only hide them",
@@ -1074,7 +1074,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.014,
+   "seconds": 0.011,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -1121,7 +1121,7 @@
     184.0,
     184.0
    ],
-   "seconds": 0.009,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -1215,7 +1215,7 @@
     396.67,
     561.33
    ],
-   "seconds": 0.012,
+   "seconds": 0.011,
    "elsewhere": 0,
    "outside_words": 10,
    "outside_words_lost": 0,
@@ -1246,7 +1246,7 @@
     516.96,
     134.34
    ],
-   "seconds": 0.045,
+   "seconds": 0.052,
    "elsewhere": 0,
    "outside_words": 98,
    "outside_words_lost": 12,
@@ -1277,7 +1277,7 @@
     612.0,
     134.34
    ],
-   "seconds": 0.047,
+   "seconds": 0.051,
    "elsewhere": 0,
    "outside_words": 98,
    "outside_words_lost": 12,
@@ -1308,7 +1308,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.048,
+   "seconds": 0.054,
    "elsewhere": 0,
    "outside_words": 83,
    "outside_words_lost": 9,
@@ -1339,7 +1339,7 @@
     229.11,
     366.81
    ],
-   "seconds": 0.008,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -1401,7 +1401,7 @@
     504.0,
     374.4
    ],
-   "seconds": 0.008,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 1,
    "outside_words_lost": 0,
@@ -1432,10 +1432,26 @@
     266.67,
     266.67
    ],
-   "seconds": 0.002,
-   "outcome": "refused",
-   "reason": "image stream filter",
-   "detail": "[\"ASCIIHexDecode\", \"DCTDecode\"] \u2014 only none, FlateDecode, or DCTDecode are supported",
+   "seconds": 0.012,
+   "elsewhere": 0,
+   "outside_words": 0,
+   "outside_words_lost": 0,
+   "outside_chars": 0,
+   "outside_chars_lost": 0,
+   "outside_chars_mupdf": 0,
+   "outside_chars_mupdf_lost": 0,
+   "outside_chars_mupdf_moved": 0,
+   "words_regrouped": 0,
+   "outside_pixels_changed": 0,
+   "unchanged_ink_inside": 0,
+   "codes_removed": 0,
+   "images_edited": 1,
+   "forms_edited": 0,
+   "paths_removed": 0,
+   "paths_cut_at_a_rect": 0,
+   "shadings_removed": 0,
+   "images_unchanged": 0,
+   "outcome": "ok",
    "id": "pdfium-jpeg_reduced_size_with_smask",
    "category": "japanese",
    "producer": "unknown"
@@ -1448,7 +1464,7 @@
     177.1,
     397.55
    ],
-   "seconds": 0.019,
+   "seconds": 0.018,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x61 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Times-Roman is drawn with the bundled LiberationSerif-Regular \u2014 its true ink extent is unknown",
@@ -1464,7 +1480,7 @@
     612.0,
     397.55
    ],
-   "seconds": 0.017,
+   "seconds": 0.016,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x61 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Times-Roman is drawn with the bundled LiberationSerif-Regular \u2014 its true ink extent is unknown",
@@ -1480,7 +1496,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.018,
+   "seconds": 0.016,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x61 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Times-Roman is drawn with the bundled LiberationSerif-Regular \u2014 its true ink extent is unknown",
@@ -1496,7 +1512,7 @@
     140.32,
     386.87
    ],
-   "seconds": 0.017,
+   "seconds": 0.015,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x61 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Times-Roman is drawn with the bundled LiberationSerif-Regular \u2014 its true ink extent is unknown",
@@ -1512,7 +1528,7 @@
     612.0,
     386.87
    ],
-   "seconds": 0.018,
+   "seconds": 0.015,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x61 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Times-Roman is drawn with the bundled LiberationSerif-Regular \u2014 its true ink extent is unknown",
@@ -1528,7 +1544,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.017,
+   "seconds": 0.015,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x61 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Times-Roman is drawn with the bundled LiberationSerif-Regular \u2014 its true ink extent is unknown",
@@ -1544,7 +1560,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.01,
+   "seconds": 0.013,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -1575,7 +1591,7 @@
     341.42,
     404.85
    ],
-   "seconds": 0.011,
+   "seconds": 0.012,
    "elsewhere": 0,
    "outside_words": 88,
    "outside_words_lost": 0,
@@ -1637,7 +1653,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.01,
+   "seconds": 0.012,
    "elsewhere": 0,
    "outside_words": 61,
    "outside_words_lost": 0,
@@ -1684,7 +1700,7 @@
     200.0,
     28.7
    ],
-   "seconds": 0.002,
+   "seconds": 0.003,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x50 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Times-Roman is drawn with the bundled LiberationSerif-Regular \u2014 its true ink extent is unknown",
@@ -1716,7 +1732,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.002,
+   "seconds": 0.003,
    "outcome": "refused",
    "reason": "other: parse error",
    "detail": "error [parse error]: parse error: ASCII85Decode: byte 0xb1 at offset 13 is outside `!`..`u`",
@@ -1907,7 +1923,7 @@
     396.67,
     560.67
    ],
-   "seconds": 0.007,
+   "seconds": 0.008,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -1938,7 +1954,7 @@
     209.1,
     402.34
    ],
-   "seconds": 0.014,
+   "seconds": 0.016,
    "elsewhere": 0,
    "outside_words": 59,
    "outside_words_lost": 0,
@@ -2047,7 +2063,7 @@
     612.0,
     399.17
    ],
-   "seconds": 0.016,
+   "seconds": 0.015,
    "outcome": "refused",
    "reason": "other: signature policy",
    "detail": "error [signature policy]: refused by signature policy: a full rewrite would invalidate the signature (/Perms /UR3 present \u2014 rewrite would invalidate the signature)",
@@ -2066,7 +2082,7 @@
    "seconds": 0.004,
    "outcome": "refused",
    "reason": "redaction of an annotation other than a link meeting a rect",
-   "detail": "/Annots[42] (/Widget) \u2014 its content is not edited",
+   "detail": "/Annots[42] (/Widget) \u2014 its content is not edited; RedactOptions::remove_annotations removes it whole",
    "id": "irs-f1040",
    "category": "office",
    "producer": "LiveCycle Designer"
@@ -2095,7 +2111,7 @@
     373.69,
     399.18
    ],
-   "seconds": 0.106,
+   "seconds": 0.087,
    "elsewhere": 0,
    "outside_words": 763,
    "outside_words_lost": 0,
@@ -2126,7 +2142,7 @@
     612.0,
     399.18
    ],
-   "seconds": 0.117,
+   "seconds": 0.092,
    "elsewhere": 0,
    "outside_words": 735,
    "outside_words_lost": 0,
@@ -2157,7 +2173,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.093,
+   "seconds": 0.087,
    "elsewhere": 6,
    "outside_words": 602,
    "outside_words_lost": 0,
@@ -2188,7 +2204,7 @@
     128.11,
     395.01
    ],
-   "seconds": 0.077,
+   "seconds": 0.068,
    "elsewhere": 0,
    "outside_words": 501,
    "outside_words_lost": 0,
@@ -2219,7 +2235,7 @@
     612.0,
     395.01
    ],
-   "seconds": 0.078,
+   "seconds": 0.068,
    "elsewhere": 0,
    "outside_words": 501,
    "outside_words_lost": 0,
@@ -2250,7 +2266,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.08,
+   "seconds": 0.068,
    "elsewhere": 121,
    "outside_words": 396,
    "outside_words_lost": 0,
@@ -2281,7 +2297,7 @@
     105.12,
     402.74
    ],
-   "seconds": 0.073,
+   "seconds": 0.066,
    "elsewhere": 6,
    "outside_words": 178,
    "outside_words_lost": 0,
@@ -2312,7 +2328,7 @@
     612.0,
     402.74
    ],
-   "seconds": 0.074,
+   "seconds": 0.067,
    "elsewhere": 6,
    "outside_words": 172,
    "outside_words_lost": 0,
@@ -2343,7 +2359,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.074,
+   "seconds": 0.068,
    "elsewhere": 12,
    "outside_words": 141,
    "outside_words_lost": 0,
@@ -2374,7 +2390,7 @@
     119.11,
     399.19
    ],
-   "seconds": 0.17,
+   "seconds": 0.169,
    "elsewhere": 11,
    "outside_words": 463,
    "outside_words_lost": 0,
@@ -2405,7 +2421,7 @@
     612.0,
     399.19
    ],
-   "seconds": 0.257,
+   "seconds": 0.175,
    "elsewhere": 0,
    "outside_words": 448,
    "outside_words_lost": 0,
@@ -2436,7 +2452,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.16,
+   "seconds": 0.167,
    "elsewhere": 1,
    "outside_words": 311,
    "outside_words_lost": 0,
@@ -2483,7 +2499,7 @@
     592.67,
     600.0
    ],
-   "seconds": 0.024,
+   "seconds": 0.026,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2577,10 +2593,29 @@
     396.85,
     561.26
    ],
-   "seconds": 0.002,
-   "outcome": "refused",
-   "reason": "image BitsPerComponent",
-   "detail": "1 (only 8 supported",
+   "seconds": 0.009,
+   "elsewhere": 0,
+   "outside_words": 0,
+   "outside_words_lost": 0,
+   "outside_chars": 0,
+   "outside_chars_lost": 0,
+   "outside_chars_mupdf": 0,
+   "outside_chars_mupdf_lost": 0,
+   "outside_chars_mupdf_moved": 0,
+   "words_regrouped": 0,
+   "outside_pixels_changed": 3882,
+   "unchanged_ink_inside": 18419,
+   "codes_removed": 0,
+   "images_edited": 2,
+   "forms_edited": 0,
+   "paths_removed": 0,
+   "paths_cut_at_a_rect": 1,
+   "shadings_removed": 0,
+   "images_unchanged": 8,
+   "check_by_hand": "verified: the unchanged ink inside is all image samples (zero inside the rect)",
+   "unchanged_ink_not_from_images": 0,
+   "outcome": "unexpected",
+   "reason": "18419 unchanged non-white pixel(s) inside the rect",
    "id": "ccitt_endofblock_false",
    "category": "scan",
    "producer": "unknown"
@@ -2593,7 +2628,7 @@
     266.24,
     266.88
    ],
-   "seconds": 0.016,
+   "seconds": 0.017,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2628,7 +2663,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.036,
+   "seconds": 0.032,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2660,7 +2695,7 @@
     133.44,
     133.44
    ],
-   "seconds": 0.009,
+   "seconds": 0.012,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2692,7 +2727,7 @@
     193.33,
     193.33
    ],
-   "seconds": 0.002,
+   "seconds": 0.003,
    "outcome": "refused",
    "reason": "region removal on a page with blockers: shading",
    "detail": "shading (sh): /Sh20 crosses a rect \u2014 its function and geometry inside cannot be separated from the rest (a clip would only hide them",
@@ -2708,7 +2743,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.008,
+   "seconds": 0.007,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2771,7 +2806,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.002,
+   "seconds": 0.003,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x31 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Helvetica is drawn with the bundled LiberationSans-Regular \u2014 its true ink extent is unknown",

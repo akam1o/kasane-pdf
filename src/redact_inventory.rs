@@ -480,6 +480,11 @@ impl StreamUse {
     }
 }
 
+/// Direct values waiting to be walked inside the object being visited:
+/// the value, its role, its path and (for the object itself) its
+/// reference.
+type Local<'b> = Vec<(&'b Object, Ctx, usize, Option<IndirectRef>)>;
+
 struct Walk<'d> {
     doc: &'d Document,
     /// Objects reached at all.
@@ -509,11 +514,7 @@ impl Walk<'_> {
         drawn: &Option<HashMap<IndirectRef, std::collections::BTreeSet<usize>>>,
         queue: &mut VecDeque<(Object, Ctx, usize)>,
     ) -> Result<bool, Error> {
-        if self.budget == 0 {
-            self.complete = false;
-            return Ok(false);
-        }
-        self.budget -= 1;
+        // The budget counts each value walked (in the loop below).
         let (r, body) = match &o {
             Object::Ref(r) => {
                 let first = self.visited.insert((*r, ctx));
@@ -529,8 +530,35 @@ impl Walk<'_> {
             }
             o => (None, o.clone()),
         };
+        // Direct values inside the object are walked here, borrowed
+        // (not copied into the queue); references go to the queue.
+        let mut local: Local<'_> = vec![(&body, ctx, via, r)];
+        while let Some((b, ctx, via, holder)) = local.pop() {
+            if self.budget == 0 {
+                self.complete = false;
+                return Ok(false);
+            }
+            self.budget -= 1;
+            self.body(b, ctx, via, holder, drawn, queue, &mut local);
+        }
+        Ok(true)
+    }
+
+    /// `body` (the object `r`, or a direct value inside one) reached as
+    /// `ctx`.
+    #[allow(clippy::too_many_arguments)]
+    fn body<'b>(
+        &mut self,
+        body: &'b Object,
+        ctx: Ctx,
+        via: usize,
+        r: Option<IndirectRef>,
+        drawn: &Option<HashMap<IndirectRef, std::collections::BTreeSet<usize>>>,
+        queue: &mut VecDeque<(Object, Ctx, usize)>,
+        local: &mut Local<'b>,
+    ) {
         // A page tree node is a page or a node by its type.
-        let ctx = match (ctx, &body) {
+        let ctx = match (ctx, body) {
             (Ctx::Pages, Object::Dict(d))
                 if d.get(b"Type".as_slice()).and_then(|t| t.as_name()) == Some(b"Page") =>
             {
@@ -548,46 +576,46 @@ impl Walk<'_> {
         if ctx == Ctx::Unknown {
             // Listed as itself (a non-stream unless also reached in a
             // known role); a number, boolean or null holds nothing.
-            if is_scalar(&body) {
-                return Ok(true);
+            if is_scalar(body) {
+                return;
             }
             if let Some(r) = r {
                 self.note_stream(r, DataStatus::Uninspected, DataRole::UnknownEntry, via);
             }
             // Its contents are unknown too, but listed through it.
-            self.push_children(&body, Ctx::Generic, via, queue);
-            return Ok(true);
+            self.push_children(body, Ctx::Generic, via, queue, local);
+            return;
         }
-        if let (Some(r), Object::Stream { dict, .. }) = (r, &body) {
+        if let (Some(r), Object::Stream { dict, .. }) = (r, body) {
             let (status, role) = stream_status(ctx, dict, r, drawn);
             self.note_stream(r, status, role, via);
         }
-        let d = match &body {
+        let d = match body {
             Object::Dict(d) => Some(d),
             Object::Stream { dict, .. } => Some(dict),
             _ => None,
         };
-        match (ctx, &body) {
+        match (ctx, body) {
             (Ctx::Pages, Object::Array(a)) | (Ctx::NameKids(_), Object::Array(a)) => {
                 let each = match ctx {
                     Ctx::NameKids(sub) => Ctx::NameTree(sub),
                     c => c,
                 };
                 for (i, x) in a.iter().enumerate() {
-                    self.push(queue, x, each, via, format!("[{i}]"));
+                    self.push(queue, local, x, each, via, format!("[{i}]"));
                 }
             }
             (Ctx::Contents, Object::Array(a)) => {
                 for (i, x) in a.iter().enumerate() {
-                    self.push(queue, x, Ctx::Contents, via, format!("[{i}]"));
+                    self.push(queue, local, x, Ctx::Contents, via, format!("[{i}]"));
                 }
             }
             (Ctx::Annots, Object::Array(a)) => {
                 for (i, x) in a.iter().enumerate() {
-                    self.push(queue, x, Ctx::Annot, via, format!("[{i}]"));
+                    self.push(queue, local, x, Ctx::Annot, via, format!("[{i}]"));
                 }
             }
-            (Ctx::ColorSpace, Object::Array(a)) => self.color_space(a, via, queue),
+            (Ctx::ColorSpace, Object::Array(a)) => self.color_space(a, via, queue, local),
             (Ctx::Function, Object::Array(a))
             | (Ctx::Font, Object::Array(a))
             | (Ctx::FileSpec, Object::Array(a))
@@ -597,24 +625,23 @@ impl Walk<'_> {
             | (Ctx::Opaque(_), Object::Array(a))
             | (Ctx::Generic, Object::Array(a)) => {
                 for (i, x) in a.iter().enumerate() {
-                    self.push(queue, x, ctx, via, format!("[{i}]"));
+                    self.push(queue, local, x, ctx, via, format!("[{i}]"));
                 }
             }
             (Ctx::NameTree(sub), Object::Array(a)) => {
                 // A `/Names` array: keys and values alternate.
                 for (i, x) in a.iter().enumerate() {
                     if i % 2 == 1 {
-                        self.push(queue, x, sub.ctx(), via, format!("[{i}]"));
+                        self.push(queue, local, x, sub.ctx(), via, format!("[{i}]"));
                     }
                 }
             }
             _ => {
                 if let Some(d) = d {
-                    self.dict(ctx, d, r, via, queue);
+                    self.dict(ctx, d, r, via, queue, local);
                 }
             }
         }
-        Ok(true)
     }
 
     /// A path one step below `parent`.
@@ -677,51 +704,57 @@ impl Walk<'_> {
     /// a stream (a reference or a container): strings, names and numbers
     /// are not walked (strings are searched as text; unknown entries
     /// holding direct values are listed by `dict`).
-    fn push(
+    fn push<'b>(
         &mut self,
         queue: &mut VecDeque<(Object, Ctx, usize)>,
-        o: &Object,
+        local: &mut Local<'b>,
+        o: &'b Object,
         ctx: Ctx,
         via: usize,
         step: String,
     ) {
-        if !matches!(
-            o,
-            Object::Ref(_) | Object::Dict(_) | Object::Array(_) | Object::Stream { .. }
-        ) {
-            return;
+        match o {
+            Object::Ref(_) => {
+                let p = self.child(via, step);
+                queue.push_back((o.clone(), ctx, p));
+            }
+            Object::Dict(_) | Object::Array(_) | Object::Stream { .. } => {
+                let p = self.child(via, step);
+                local.push((o, ctx, p, None));
+            }
+            _ => {}
         }
-        let p = self.child(via, step);
-        queue.push_back((o.clone(), ctx, p));
     }
 
-    fn push_children(
+    fn push_children<'b>(
         &mut self,
-        o: &Object,
+        o: &'b Object,
         ctx: Ctx,
         via: usize,
         queue: &mut VecDeque<(Object, Ctx, usize)>,
+        local: &mut Local<'b>,
     ) {
         match o {
             Object::Array(a) => {
                 for (i, x) in a.iter().enumerate() {
-                    self.push(queue, x, ctx, via, format!("[{i}]"));
+                    self.push(queue, local, x, ctx, via, format!("[{i}]"));
                 }
             }
             Object::Dict(d) | Object::Stream { dict: d, .. } => {
                 for (k, v) in d {
-                    self.push(queue, v, ctx, via, format!("/{}", name(k)));
+                    self.push(queue, local, v, ctx, via, format!("/{}", name(k)));
                 }
             }
             _ => {}
         }
     }
 
-    fn color_space(
+    fn color_space<'b>(
         &mut self,
-        a: &[Object],
+        a: &'b [Object],
         via: usize,
         queue: &mut VecDeque<(Object, Ctx, usize)>,
+        local: &mut Local<'b>,
     ) {
         let family = a.first().and_then(|f| f.as_name());
         for (i, x) in a.iter().enumerate().skip(1) {
@@ -737,17 +770,18 @@ impl Walk<'_> {
                 (Some(b"Pattern"), 1) => Ctx::ColorSpace,
                 _ => Ctx::Generic,
             };
-            self.push(queue, x, c, via, format!("[{i}]"));
+            self.push(queue, local, x, c, via, format!("[{i}]"));
         }
     }
 
-    fn dict(
+    fn dict<'b>(
         &mut self,
         ctx: Ctx,
-        d: &Dict,
+        d: &'b Dict,
         holder: Option<IndirectRef>,
         via: usize,
         queue: &mut VecDeque<(Object, Ctx, usize)>,
+        local: &mut Local<'b>,
     ) {
         for (k, v) in d {
             let key = k.as_slice();
@@ -760,10 +794,10 @@ impl Walk<'_> {
                 // holder.
                 let path = self.child(via, format!("/{}", name(k)));
                 self.direct_unknown.push((holder, path));
-                self.push_children(v, Ctx::Generic, path, queue);
+                self.push_children(v, Ctx::Generic, path, queue, local);
                 continue;
             }
-            self.push(queue, v, child, via, format!("/{}", name(k)));
+            self.push(queue, local, v, child, via, format!("/{}", name(k)));
         }
     }
 }
