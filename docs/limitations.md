@@ -224,8 +224,9 @@ are on the [roadmap](architecture.md#roadmap).
   the font's glyph repertoire); dictionaries other than annotations are
   compared only through the structure-tree and string checks.
 - **Actions of removed links** (0.9): an indirect action or destination
-  object a removed link shares with something kept stays (reported as a
-  residual action and as uninspected data).
+  object a removed link shares with a kept link, an outline item, a form
+  field or the catalog stays — it is theirs too; one only entries that do
+  not act on it refer to is refused.
 - **Appearances of kept annotations** (0.9): a shown annotation kept as
   it was keeps its own appearance streams (every state, down and
   rollover), and the same bytes as removed content there are reported;

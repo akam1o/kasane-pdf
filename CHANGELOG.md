@@ -6,6 +6,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-11
+
 ### Added
 - `redact` verifies its output against the input alone, independently of
   what the edit recorded (`docs/redaction-safety-model.md`): every
@@ -28,6 +30,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   rewrite's object map); a field keeping widgets must still show one,
   and a button value other than `/Off` must be the current state of a
   shown kept widget.
+- An action or destination of a removed annotation that the document
+  keeps only through entries that do not act on it is refused; one a
+  kept link, an outline item, a form field or the catalog acts on stays.
 - `docs/redaction-safety-model.md`: what `redact` guarantees, reports,
   does not guarantee or refuses, per surface; the verification layers.
 - Tests: one regression test per published advisory
@@ -43,6 +48,11 @@ versions follow [Semantic Versioning](https://semver.org/).
   time (32,000 annotations: 3.7 s → 1.1 s); the uninspected-data walk no
   longer copies direct values (300,000 structure attributes: preflight
   peak memory 1.24 GB → 0.37 GB).
+- The verification's use walk reads the graphics state as readers do:
+  each parameter's latest value with the resources it was selected in;
+  optional content by the default viewing configuration; a button's
+  states as it presents them. Some files all readers draw are refused
+  because of this (`docs/limitations.md`).
 
 ## [0.8.0] - 2026-11-10
 

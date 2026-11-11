@@ -97,10 +97,11 @@ property cannot be decided).
   its own data, outside the rects — and reported in `elsewhere`
   (`refuse_copies_elsewhere` refuses it). A hidden annotation's
   appearances excuse nothing.
-- **N** — An indirect action or destination object a removed link
-  shares with something kept (an outline, a private entry) stays; it is
-  reported as residual action data and as uninspected
-  (`refuse_uninspected` refuses it).
+- **G** — An indirect action or destination object of a removed
+  annotation stays only when something that acts on it keeps it (a kept
+  annotation, an outline item, a form field, the catalog's
+  `/OpenAction` or `/AA`, the `/Dests` and `/JavaScript` name trees);
+  kept only by other entries (private data), it is refused.
 - **N** — "Drawn" includes drawing outside the page's boxes: a removed
   appearance also drawn off the page by another page's content stays
   (reported in `elsewhere`; `refuse_copies_elsewhere` refuses it).
