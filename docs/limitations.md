@@ -228,20 +228,28 @@ are on the [roadmap](architecture.md#roadmap).
   widget or screen's action (a hidden, zero-area or off-page kept link
   counts), any kept annotation's defined keys, a form field (one without
   widgets too), an outline item, a destination, the catalog's actions
-  and settings, a name tree, the structure tree. Its appearance part
-  (streams, resources, fonts, images, colour data) counts as used
-  wherever the edited document reaches it, a private key inside a font,
-  image or form included; a resource category's entries count whether
-  the content uses them or not; a string counts when used as a field
-  name, a name-tree key or `/Lang`. Some unusual sharing is refused:
-  a removed annotation's own data (an indirect string, a file
-  specification) shared with an entry inside a kept annotation's or
-  action's sub-dictionary (`/MK`, `/BS`, `/3DU`, a launch action's
-  `/Win`), or with a settings dictionary that has keys no reader uses
-  (viewer preferences, mark information, the URI dictionary). A chain
-  of tens of thousands of references to one object exceeds
-  `max_reference_depth` and is refused. Readers that ignore generation numbers (MuPDF) may read a
+  and settings, a name tree, the structure tree. Its own data counts
+  as the value of any entry defined to hold data (a URI string kept as
+  another annotation's `/Contents`). Its appearance part (streams,
+  resources, fonts, images, colour data) counts as used wherever the
+  edited document reaches it, a private key inside a font, image or
+  form included; a resource category's entries count whether the
+  content uses them or not. Some unusual sharing is refused: a removed
+  annotation's own data (an indirect string, a file specification)
+  shared with an entry inside a kept annotation's or action's
+  sub-dictionary (`/3DU`, a dash array, a launch action's `/Win`) or
+  with a scalar setting (`/Lang`, `/LastModified`), or with a settings
+  dictionary that has keys no reader uses (viewer preferences, mark
+  information, the URI dictionary). A chain of tens of thousands of
+  references to one object exceeds `max_reference_depth` and is
+  refused. Readers that ignore generation numbers (MuPDF) may read a
   reference to another generation as the object kasane leaves alone.
+- **Optional content membership on forms and images** (0.9): an edited
+  page drawing a form or image XObject whose `/OC` is a membership
+  dictionary (`/OCMD`) is refused: the output's use check counts a
+  membership dictionary as off, so the form looks carried without use
+  (`docs/redaction-safety-model.md`, section 4.2). 0.8.0 accepted such
+  pages.
 - **Appearances of kept annotations** (0.9): a shown annotation kept as
   it was keeps its own appearance streams (every state, down and
   rollover), and the same bytes as removed content there are reported;

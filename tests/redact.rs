@@ -7240,3 +7240,142 @@ fn removed_data_classified_by_slot() {
             .unwrap_or_else(|e| panic!("{name}: {e}"));
     }
 }
+
+/// A removed annotation's own data stays only as the value of an entry
+/// that holds data of its kind: not in a slot that only names an object
+/// (`/IRT`, `/CO`), a scalar setting (`/LastModified`), a destination
+/// that is no destination, a stream slot of another kind (page
+/// `/Metadata`), nor inside the removed annotation's own appearance; an
+/// action's field names given by reference are its data. Shared border
+/// arrays and button icons stay. A flat structure tree with a removed
+/// link is walked once per object (it was re-read per reference).
+/// (Release review.)
+#[test]
+fn removed_own_data_by_value_slots() {
+    let make = |cat: &str, annots: &str, page_extra: &str, extra: Vec<(u32, Vec<u8>)>| {
+        let mut objs = vec![
+            (1, format!("<< /Type /Catalog /Pages 2 0 R {cat} >>").into_bytes()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [{annots}] {page_extra} >>"
+                )
+                .into_bytes(),
+            ),
+            (4, stream_obj("", b"0 0 5 5 re f")),
+        ];
+        objs.extend(extra);
+        build_pdf(&objs)
+    };
+    let link = |a: &str| {
+        format!("<< /Type /Annot /Subtype /Link /Rect [70 90 130 110] {a} >>").into_bytes()
+    };
+    let kept = |a: &str| {
+        format!("<< /Type /Annot /Subtype /Square /Rect [150 150 190 190] {a} >>").into_bytes()
+    };
+    let fs = || (30, b"<< /Type /Filespec /F (VALUEMARK.pdf) >>".to_vec());
+    let gotor = || (10, link("/A << /S /GoToR /F 30 0 R /D [0 /Fit] >>"));
+    let uri = || (21, b"(https://example.com/VALUEMARK)".to_vec());
+    let refused: Vec<(&str, Vec<u8>)> = vec![
+        ("a file specification as a kept annotation's /IRT", make("", "10 0 R 12 0 R", "", vec![gotor(), fs(), (12, kept("/IRT 30 0 R"))])),
+        ("a file specification in /CO", make("/AcroForm << /Fields [] /CO [30 0 R] >>", "10 0 R", "", vec![gotor(), fs()])),
+        ("a target as a page's /LastModified", make("", "10 0 R", "/LastModified 21 0 R", vec![(10, link("/A << /S /URI /URI 21 0 R >>")), uri()])),
+        (
+            "a target inside its own shared appearance",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    (10, link("/A << /S /URI /URI 21 0 R >> /AP << /N 11 0 R >>")),
+                    uri(),
+                    (11, stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 1 1] /XPriv 21 0 R", b"")),
+                    (12, kept("/AP << /N 11 0 R >>")),
+                ],
+            ),
+        ),
+        (
+            "a field name of a hide action under a private key",
+            make("/XPriv 21 0 R", "10 0 R", "", vec![(10, link("/A << /S /Hide /T 21 0 R >>")), uri()]),
+        ),
+        (
+            "a file specification in a kept link's /Border",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![gotor(), fs(), (12, b"<< /Type /Annot /Subtype /Link /Rect [150 150 190 190] /Border [0 0 1 30 0 R] >>".to_vec())],
+            ),
+        ),
+    ];
+    for (name, pdf) in refused {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let e = unsupported(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()));
+        assert!(e.contains("failed verification"), "{name}: {e}");
+    }
+    let shared: Vec<(&str, Vec<u8>)> = vec![
+        (
+            "a border array",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    (10, link("/Border 16 0 R")),
+                    (
+                        12,
+                        b"<< /Type /Annot /Subtype /Link /Rect [150 150 190 190] /Border 16 0 R >>"
+                            .to_vec(),
+                    ),
+                    (16, b"[0 0 1]".to_vec()),
+                ],
+            ),
+        ),
+        (
+            "its target with a kept annotation's /Contents",
+            make(
+                "",
+                "10 0 R 12 0 R",
+                "",
+                vec![
+                    (10, link("/A << /S /URI /URI 21 0 R >>")),
+                    uri(),
+                    (12, kept("/Contents 21 0 R")),
+                ],
+            ),
+        ),
+    ];
+    for (name, pdf) in shared {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        redact(&doc, &[(0, vec![RECT])], &RedactOptions::new())
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+    }
+    // A flat structure tree of many elements, each with /P to one parent.
+    let n = 20_000u32;
+    let kids: String = (0..n).map(|i| format!("{} 0 R ", 1000 + i)).collect();
+    let mut extra = vec![
+        (10, link("/A 20 0 R")),
+        (20, b"<< /S /URI /URI (https://example.com/) >>".to_vec()),
+        (40, b"<< /Type /StructTreeRoot /K 41 0 R >>".to_vec()),
+        (
+            41,
+            format!("<< /Type /StructElem /S /Document /P 40 0 R /K [{kids}] >>").into_bytes(),
+        ),
+    ];
+    for i in 0..n {
+        extra.push((
+            1000 + i,
+            b"<< /Type /StructElem /S /P /P 41 0 R >>".to_vec(),
+        ));
+    }
+    let pdf = make("/StructTreeRoot 40 0 R", "10 0 R", "", extra);
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let start = std::time::Instant::now();
+    let _ = redact(&doc, &[(0, vec![RECT])], &RedactOptions::new());
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(60),
+        "{:?}",
+        start.elapsed()
+    );
+}

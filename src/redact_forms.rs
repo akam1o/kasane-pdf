@@ -675,6 +675,13 @@ enum Use {
     Beads,
     /// A navigation node (`/PresSteps`).
     NavNode,
+    /// Numbers (and arrays of them): `/Border`.
+    Numbers,
+    /// `/Threads`: thread dictionaries.
+    Threads,
+    /// A metadata stream; a thumbnail image.
+    Metadata,
+    Thumb,
     /// The structure tree root, a structure element, and `/K` (kids:
     /// elements, marked-content and object references, integers).
     StructRoot,
@@ -837,6 +844,7 @@ fn annotation_use(subtype: &[u8], key: &[u8]) -> Option<Use> {
     let acts = matches!(subtype, b"Link" | b"Widget" | b"Screen");
     Some(match key {
         b"P" => return None,
+        b"Border" => Use::Numbers,
         b"Popup" if markup => Use::Popup,
         b"IRT" if markup => Use::Mark,
         b"Parent" if subtype == b"Widget" => Use::Field,
@@ -867,7 +875,10 @@ fn holds(u: Use, o: &Object) -> bool {
         Use::Action => action(o),
         Use::Next => action(o) || matches!(o, Object::Array(_)),
         Use::Dest => {
-            matches!(o, Object::Array(_) | Object::String(_) | Object::Name(_))
+            matches!(o, Object::String(_) | Object::Name(_))
+                || matches!(o, Object::Array(a)
+                    if matches!(a.first(), Some(Object::Ref(_) | Object::Integer(_)))
+                        && matches!(a.get(1), Some(Object::Name(_))))
                 || matches!(o, Object::Dict(d) if !action(o) && d.contains_key(b"D".as_slice()))
         }
         Use::Only(keys) => {
@@ -877,6 +888,15 @@ fn holds(u: Use, o: &Object) -> bool {
         Use::Beads => matches!(o, Object::Array(_)),
         Use::StructKids => matches!(o, Object::Array(_) | Object::Dict(_)),
         Use::StructRoot | Use::StructElem | Use::NavNode => matches!(o, Object::Dict(_)),
+        Use::Numbers => {
+            matches!(o, Object::Integer(_) | Object::Real(_) | Object::Array(_))
+        }
+        Use::Threads => matches!(o, Object::Array(_)),
+        Use::Metadata => matches!(o, Object::Stream { dict, .. }
+            if dict.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"XML")),
+        Use::Thumb => {
+            matches!(o, Object::Stream { dict, .. } if dict.contains_key(b"Width".as_slice()))
+        }
         Use::Aa(_) => matches!(o, Object::Dict(_)) && !action(o),
         Use::AnnotList | Use::FieldList | Use::NameArray(_) | Use::NameKids(_) => {
             matches!(o, Object::Array(_))
@@ -914,17 +934,10 @@ enum Held {
     Next,
     /// An annotation (its popup, or itself): kept only as an annotation.
     Annot,
-}
-
-impl Held {
-    /// Reached through two slots: the stricter.
-    fn with(self, other: Held) -> Held {
-        match (self, other) {
-            (Held::Ap, h) | (h, Held::Ap) => h,
-            (Held::Own, h) => h,
-            (h, _) => h,
-        }
-    }
+    /// What an action names (field names, the annotations it hides):
+    /// the names (strings, arrays of them) are its own data, the
+    /// fields and annotations they name are not.
+    Names,
 }
 
 /// The action types (ISO 32000-2 §12.6.4.1).
@@ -1054,7 +1067,8 @@ pub(crate) fn removed_data_kept(
     // dictionary, a `/Next` array, a popup, the appearance, or its own
     // data. What an action only names (the fields it resets, the
     // annotation it hides, a structure destination) is not followed.
-    let mut theirs: std::collections::HashMap<IndirectRef, Held> = Default::default();
+    // Each object with every class it is held as.
+    let mut theirs: std::collections::HashMap<IndirectRef, Vec<Held>> = Default::default();
     let mut hwork: Vec<(Object, Held)> = Vec::new();
     for r in removed {
         if let Object::Dict(d) = doc.resolve(*r)? {
@@ -1070,13 +1084,22 @@ pub(crate) fn removed_data_kept(
                 if stop_theirs(r) {
                     continue;
                 }
-                theirs.entry(r).and_modify(|e| *e = e.with(h)).or_insert(h);
+                let body = match input(r) {
+                    Ok(b) => b,
+                    Err(Error::MissingReference(_)) => continue,
+                    Err(e) => return Err(e),
+                };
+                // A field or annotation an action names is not its data.
+                if h == Held::Names && matches!(body, Object::Dict(_) | Object::Stream { .. }) {
+                    continue;
+                }
+                let class = if h == Held::Names { Held::Own } else { h };
+                let classes = theirs.entry(r).or_default();
+                if !classes.contains(&class) {
+                    classes.push(class);
+                }
                 if hwalked.insert((r, h)) {
-                    match input(r) {
-                        Ok(b) => hwork.push((b, h)),
-                        Err(Error::MissingReference(_)) => {}
-                        Err(e) => return Err(e),
-                    }
+                    hwork.push((body, h));
                 }
                 continue;
             }
@@ -1084,6 +1107,7 @@ pub(crate) fn removed_data_kept(
                 let each = match h {
                     Held::Next => Held::Action,
                     Held::Action | Held::Aa | Held::Annot => Held::Own,
+                    Held::Names => Held::Names,
                     h => h,
                 };
                 hwork.extend(a.into_iter().map(|v| (v, each)));
@@ -1094,6 +1118,7 @@ pub(crate) fn removed_data_kept(
         };
         match h {
             Held::Own | Held::Ap => hwork.extend(d.into_values().map(|v| (v, h))),
+            Held::Names => {}
             Held::Annot => {
                 for (k, v) in d {
                     let h = match k.as_slice() {
@@ -1101,7 +1126,8 @@ pub(crate) fn removed_data_kept(
                         b"Popup" => Held::Annot,
                         b"A" | b"PA" => Held::Action,
                         b"AA" => Held::Aa,
-                        b"AP" => Held::Ap,
+                        // Its appearance, and what only presents it.
+                        b"AP" | b"OC" | b"Measure" | b"BS" | b"BE" | b"MK" => Held::Ap,
                         _ => Held::Own,
                     };
                     hwork.push((v, h));
@@ -1126,10 +1152,9 @@ pub(crate) fn removed_data_kept(
                             | (b"GoTo3DView" | b"RichMediaExecute", b"TA")
                             | (b"GoTo" | b"GoToR", b"SD")
                     );
-                    if names {
-                        continue;
-                    }
-                    let h = if k.as_slice() == b"Next" {
+                    let h = if names {
+                        Held::Names
+                    } else if k.as_slice() == b"Next" {
                         Held::Next
                     } else {
                         Held::Own
@@ -1194,9 +1219,14 @@ pub(crate) fn removed_data_kept(
                 b"PageLabels" => Use::NameNode(NameUse::Label),
                 b"OCProperties" => Use::Keys(&[b"OCGs", b"D", b"Configs"]),
                 b"StructTreeRoot" => Use::StructRoot,
-                b"AF" | b"Lang" | b"OutputIntents" | b"Metadata" | b"Collection" | b"Threads"
-                | b"Legal" | b"Perms" | b"Requirements" | b"Extensions" | b"DSS" | b"Version"
-                | b"PageMode" | b"PageLayout" | b"NeedsRendering" | b"DPartRoot" => Use::Any,
+                b"Metadata" => Use::Metadata,
+                b"Threads" => Use::Threads,
+                b"Perms" => Use::Keys(&[b"DocMDP", b"UR3"]),
+                // Values that are names, numbers or short strings: the
+                // object only.
+                b"Lang" | b"Version" | b"PageMode" | b"PageLayout" | b"NeedsRendering" => Use::Mark,
+                b"AF" | b"OutputIntents" | b"Collection" | b"Legal" | b"Requirements"
+                | b"Extensions" | b"DSS" | b"DPartRoot" => Use::Any,
                 _ => continue,
             };
             work.push((v.clone(), u, false, root));
@@ -1218,24 +1248,21 @@ pub(crate) fn removed_data_kept(
                 b"Group" => Use::Keys(&[b"Type", b"S", b"CS", b"I", b"K"]),
                 b"B" => Use::Beads,
                 b"PresSteps" => Use::NavNode,
+                b"Thumb" => Use::Thumb,
+                b"Metadata" => Use::Metadata,
+                b"Trans" => Use::Keys(&[b"Type", b"S", b"D", b"Dm", b"M", b"Di", b"SS", b"B"]),
+                b"Rotate" | b"UserUnit" | b"Dur" | b"LastModified" | b"Tabs" | b"StructParents" => {
+                    Use::Mark
+                }
                 b"Contents"
-                | b"Thumb"
-                | b"Metadata"
                 | b"MediaBox"
                 | b"CropBox"
                 | b"BleedBox"
                 | b"TrimBox"
                 | b"ArtBox"
                 | b"BoxColorInfo"
-                | b"Rotate"
-                | b"UserUnit"
                 | b"VP"
-                | b"Dur"
-                | b"Trans"
-                | b"LastModified"
-                | b"Tabs"
                 | b"TemplateInstantiated"
-                | b"StructParents"
                 | b"ID"
                 | b"PZ"
                 | b"SeparationInfo"
@@ -1277,6 +1304,9 @@ pub(crate) fn removed_data_kept(
     type Seen = (Use, bool, Option<IndirectRef>);
     let mut kept: std::collections::HashMap<IndirectRef, Vec<Seen>> = Default::default();
     let mut walked: HashSet<(IndirectRef, Use, bool)> = HashSet::new();
+    // Each reference's chain, when its end fits the use.
+    let mut chains: std::collections::HashMap<(IndirectRef, Use), Option<Vec<IndirectRef>>> =
+        Default::default();
     while let Some((o, u, inside, holder)) = work.pop() {
         tick(1)?;
         // A value of a typed slot: its own use, not inside.
@@ -1287,6 +1317,20 @@ pub(crate) fn removed_data_kept(
             Object::Ref(r) => {
                 if stop_used(r) {
                     continue;
+                }
+                // Read once per use: a large object referred to from many
+                // places is not parsed again for each.
+                if let Some(known) = chains.get(&(r, u)) {
+                    if let Some(links) = known {
+                        for l in links {
+                            kept.entry(*l).or_default().push((u, inside, holder));
+                        }
+                        if walked.contains(&(r, u, inside)) {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
                 }
                 let mut links = vec![r];
                 let mut on_chain: HashSet<IndirectRef> = HashSet::from([r]);
@@ -1304,10 +1348,15 @@ pub(crate) fn removed_data_kept(
                         Err(e) => return Err(e),
                     }
                 };
-                if let Some(b) = body.filter(|b| holds(u, b)) {
+                let fits = body.filter(|b| holds(u, b));
+                let first = !chains.contains_key(&(r, u));
+                chains.insert((r, u), fits.is_some().then(|| links.clone()));
+                if let Some(b) = fits {
                     let at = links.last().copied();
-                    for l in links {
-                        kept.entry(l).or_default().push((u, inside, holder));
+                    if first {
+                        for l in links {
+                            kept.entry(l).or_default().push((u, inside, holder));
+                        }
                     }
                     if walked.insert((r, u, inside)) {
                         work.push((b, u, inside, at));
@@ -1321,6 +1370,8 @@ pub(crate) fn removed_data_kept(
                     Use::MarkList => Use::Mark,
                     Use::Beads => Use::Keys(&[b"Type", b"T", b"N", b"V", b"P", b"R"]),
                     Use::StructKids => Use::StructKids,
+                    Use::Numbers => Use::Numbers,
+                    Use::Threads => Use::Keys(&[b"Type", b"F", b"I", b"Metadata"]),
                     Use::Next => Use::Action,
                     Use::AnnotList => Use::Annot,
                     Use::FieldList => Use::Field,
@@ -1364,7 +1415,7 @@ pub(crate) fn removed_data_kept(
                                 }
                             }
                             for l in links {
-                                kept.entry(l).or_default().push((Use::Mark, false, holder));
+                                kept.entry(l).or_default().push((Use::Dest, false, holder));
                             }
                         }
                         continue;
@@ -1609,45 +1660,57 @@ pub(crate) fn removed_data_kept(
     // whole (a private key of a font, a resource or a settings
     // dictionary).
     let mut excused: HashSet<IndirectRef> = HashSet::new();
-    for (r, h) in &theirs {
+    // Own data whose other classes are met but that is used only inside
+    // something read whole: excused when that is excused.
+    let mut held_in: std::collections::HashMap<IndirectRef, Vec<IndirectRef>> = Default::default();
+    for (r, classes) in &theirs {
         tick(1)?;
         let Some(seen) = kept.get(r) else { continue };
-        // A `/Next` that is one action (not an array) is an action.
-        let one_action = *h == Held::Next
-            && matches!(doc.resolve(*r), Ok(Object::Dict(_) | Object::Stream { .. }));
-        let ok = seen.iter().any(|(u, inside, _)| match h {
-            Held::Action => matches!(u, Use::Action | Use::Next),
-            Held::Next => *u == Use::Next || (one_action && *u == Use::Action),
-            // Every trigger in it one of its user's.
-            Held::Aa => match u {
-                Use::Aa(t) => match doc.resolve(*r) {
-                    Ok(Object::Dict(d)) => d.keys().all(|k| trigger(*t, k)),
+        let met = |h: Held| {
+            // A `/Next` that is one action (not an array) is an action.
+            let one_action = h == Held::Next
+                && matches!(doc.resolve(*r), Ok(Object::Dict(_) | Object::Stream { .. }));
+            seen.iter().any(|(u, inside, _)| match h {
+                Held::Action => matches!(u, Use::Action | Use::Next),
+                Held::Next => *u == Use::Next || (one_action && *u == Use::Action),
+                // Every trigger in it one of its user's.
+                Held::Aa => match u {
+                    Use::Aa(t) => match doc.resolve(*r) {
+                        Ok(Object::Dict(d)) => d.keys().all(|k| trigger(*t, k)),
+                        _ => false,
+                    },
                     _ => false,
                 },
-                _ => false,
-            },
-            Held::Annot => matches!(u, Use::Annot | Use::Popup),
-            Held::Ap => true,
-            Held::Own => !inside,
-        });
-        if ok {
-            excused.insert(*r);
-        }
-    }
-    // Own data held inside something of theirs excused, transitively.
-    let mut held_in: std::collections::HashMap<IndirectRef, Vec<IndirectRef>> = Default::default();
-    for (r, h) in &theirs {
-        if *h != Held::Own || excused.contains(r) {
+                Held::Annot => matches!(u, Use::Annot | Use::Popup),
+                Held::Ap => true,
+                // As a value of an entry defined for one (not a slot that
+                // only names an object, nor a structural one).
+                Held::Own | Held::Names => {
+                    !inside && matches!(u, Use::Any | Use::Dest | Use::Numbers)
+                }
+            })
+        };
+        if !classes.iter().filter(|h| **h != Held::Own).all(|h| met(*h)) {
             continue;
         }
-        for (_, inside, by) in kept.get(r).map(Vec::as_slice).unwrap_or(&[]) {
+        if !classes.contains(&Held::Own) || met(Held::Own) {
+            excused.insert(*r);
+            continue;
+        }
+        for (_, inside, by) in seen {
             if let (true, Some(b)) = (*inside, by) {
                 tick(1)?;
                 held_in.entry(*b).or_default().push(*r);
             }
         }
     }
-    let mut next: Vec<IndirectRef> = excused.iter().copied().collect();
+    // (From a holder excused as own data: data inside the removed
+    // annotation's appearance is not excused by the appearance.)
+    let mut next: Vec<IndirectRef> = excused
+        .iter()
+        .filter(|r| theirs.get(*r).is_some_and(|c| c.contains(&Held::Own)))
+        .copied()
+        .collect();
     while let Some(b) = next.pop() {
         for r in held_in.remove(&b).unwrap_or_default() {
             tick(1)?;

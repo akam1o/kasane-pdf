@@ -37,7 +37,8 @@ versions follow [Semantic Versioning](https://semver.org/).
   does not define, an `/AA` entry that names no trigger) is refused; the
   use is read by type from the catalog and the pages; an action, `/AA`
   dictionary or popup stays only where it is used as one, the
-  annotation's own data only where a slot defined for it holds it.
+  annotation's own data only as the value of an entry defined to hold
+  data.
   Limits: `docs/limitations.md`.
 - `docs/redaction-safety-model.md`: what `redact` guarantees, reports,
   does not guarantee or refuses, per surface; the verification layers.
