@@ -120,11 +120,13 @@ pub struct Target {
 }
 
 /// A clip a cut shading is painted under (user space): first `area`
-/// (`re W n`), then, with holes, `outer` and the holes even-odd
-/// (`re … W* n`) — the area less the holes, painted once.
+/// (`re W n`; `None` when the clip in force is already the area — a
+/// second clip on the same edge would anti-alias it twice), then, with
+/// holes, `outer` and the holes even-odd (`re … W* n`) — the area less
+/// the holes, painted once.
 #[derive(Debug, Clone)]
 pub(crate) struct ShadingClip {
-    pub(crate) area: (f64, f64, f64, f64),
+    pub(crate) area: Option<(f64, f64, f64, f64)>,
     pub(crate) outer: (f64, f64, f64, f64),
     pub(crate) holes: Vec<(f64, f64, f64, f64)>,
 }
@@ -1426,7 +1428,7 @@ impl<'a> DiagWalker<'a> {
                 },
             );
             vec![ShadingClip {
-                area: user(&area),
+                area: (self.gs.clip != Some(area)).then(|| user(&area)),
                 outer: user(&outer),
                 holes: holes.iter().map(user).collect(),
             }]
@@ -1438,7 +1440,7 @@ impl<'a> DiagWalker<'a> {
             strips
                 .iter()
                 .map(|p| ShadingClip {
-                    area: user(p),
+                    area: Some(user(p)),
                     outer: user(p),
                     holes: Vec::new(),
                 })
@@ -2276,9 +2278,11 @@ impl<'a> DiagWalker<'a> {
                                 && self.xobject_stack.is_empty()
                                 && self.path_single_rect
                                 && !(stroked && self.gs.tiling[1].is_some())
-                                && match self.gs.tiling[0].clone() {
-                                    Some(n) => self.tiling_period_shown(&n, &b)?,
-                                    None => false,
+                                && match (self.gs.tiling[0].clone(), self.path_bounds) {
+                                    // The fill's own bounds (a stroke's reach
+                                    // shows no more of the fill).
+                                    (Some(n), Some(fb)) => self.tiling_period_shown(&n, &fb)?,
+                                    _ => false,
                                 };
                             if periodic {
                                 if let Some(n) = &self.gs.tiling[0] {

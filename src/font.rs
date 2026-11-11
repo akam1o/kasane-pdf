@@ -298,7 +298,7 @@ pub(crate) fn truetype_substitute_for_embedding(
     if !matches!(face.kind, K::Standard14 | K::Alias) || face.builtin_encoding.is_some() {
         return Ok(None);
     }
-    let names = (0..=255u8)
+    let names: Vec<Option<String>> = (0..=255u8)
         .map(|c| {
             let n = f.glyph_name(c)?;
             face.glyph_for_name(n).filter(|g| g.0 != 0)?;
@@ -530,10 +530,10 @@ pub(crate) fn load_simple_font_dict(
     // sets Symbolic (and not Nonsymbolic) addresses its glyphs by code
     // through the (3,0)/(1,0) cmaps; everything else goes through
     // glyph names (§9.6.6.4).
-    let flags = fd_dict
-        .get(b"Flags".as_slice())
-        .and_then(|o| o.as_i64())
-        .unwrap_or(0);
+    let flags = match fd_dict.get(b"Flags".as_slice()) {
+        Some(o) => doc.deref(o)?.as_i64().unwrap_or(0),
+        None => 0,
+    };
     let symbolic = flags & 4 != 0 && flags & 32 == 0;
 
     // ---- Encoding ------------------------------------------------

@@ -7533,6 +7533,59 @@ fn hybrid_xfa_forms() {
             "{name}: {e}"
         );
     }
+    // A packet kept through a reference chain the form uses, in an array
+    // too, and a copy of a packet: refused. (Review.)
+    let chained = |xfa: &str, cat: &str, extra: Vec<(u32, Vec<u8>)>| {
+        let mut objs = vec![
+            (
+                1,
+                format!("<< /Type /Catalog /Pages 2 0 R /AcroForm 30 0 R {cat} >>").into_bytes(),
+            ),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>".to_vec(),
+            ),
+            (4, stream_obj("", b"0 0 5 5 re f")),
+            (30, format!("<< /Fields [] /XFA {xfa} >>").into_bytes()),
+            (
+                33,
+                stream_obj("", b"<xfa:datasets><f>VALUEMARK</f></xfa:datasets>"),
+            ),
+        ];
+        objs.extend(extra);
+        build_pdf(&objs)
+    };
+    let js = RedactOptions::new().remove_javascript(true);
+    for (name, pdf) in [
+        (
+            "through a chain",
+            chained("34 0 R", "/XPriv 33 0 R", vec![(34, b"33 0 R".to_vec())]),
+        ),
+        (
+            "in an array, through a chain",
+            chained(
+                "[(datasets) 34 0 R]",
+                "/XPriv 33 0 R",
+                vec![(34, b"33 0 R".to_vec())],
+            ),
+        ),
+        (
+            "a copy",
+            chained(
+                "33 0 R",
+                "/XPriv 35 0 R",
+                vec![(
+                    35,
+                    stream_obj("", b"<xfa:datasets><f>VALUEMARK</f></xfa:datasets>"),
+                )],
+            ),
+        ),
+    ] {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let e = unsupported(redact(&doc, &[(0, vec![RECT])], &js));
+        assert!(e.contains("failed verification"), "{name}: {e}");
+    }
 }
 
 /// With `remove_javascript`, the catalog's `/AA` scripts go and what is
@@ -7646,6 +7699,92 @@ fn non_embedded_truetype_text_is_redacted_after_embedding() {
     }
     let pdf = make("ArialMT", 4);
     assert!(embed_run(&pdf, vec![RECT]).is_err(), "symbolic");
+    // Symbolic through a reference: the same. (Review.)
+    let pdf = doc_with(
+        "/Font << /H 50 0 R >>",
+        &[b"BT /H 12 Tf 20 100 Td (PUBLIC SECRETWORD MORE) Tj ET"],
+        vec![
+            (
+                50,
+                format!(
+                    "<< /Type /Font /Subtype /TrueType /BaseFont /ArialMT /Encoding /WinAnsiEncoding \
+                     /FirstChar 32 /LastChar 126 /Widths [{}] /FontDescriptor 51 0 R >>",
+                    ["600"; 95].join(" ")
+                )
+                .into_bytes(),
+            ),
+            (
+                51,
+                b"<< /Type /FontDescriptor /FontName /ArialMT /Flags 52 0 R /FontBBox [0 -200 1000 900] \
+                  /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 >>"
+                    .to_vec(),
+            ),
+            (52, b"4".to_vec()),
+        ],
+    );
+    let r = embed_run(&pdf, vec![RECT]);
+    assert!(
+        r.as_ref().map_or(true, |r| r.fonts_embedded == 0),
+        "symbolic by reference: embedded"
+    );
+}
+
+/// A code whose glyph the substitute cannot name is written as its blank
+/// space glyph, never `.notdef` (readers draw `.notdef` differently —
+/// some fall back to the code's own glyph, which kasane did not place).
+/// (Review.)
+#[test]
+fn substitutes_never_write_notdef() {
+    for subtype in ["Type1", "TrueType"] {
+        let pdf = doc_with(
+            "/Font << /H 50 0 R >>",
+            &[b"BT /H 100 Tf 10 50 Td <57> Tj ET BT /H 10 Tf 10 150 Td (W) Tj ET"],
+            vec![
+                (
+                    50,
+                    format!(
+                        "<< /Type /Font /Subtype /{subtype} /BaseFont /ArialMT /FirstChar 32 /LastChar 126 \
+                         /Widths [{}] /Encoding << /Differences [87 /u1F600] >> /FontDescriptor 51 0 R >>",
+                        ["1000"; 95].join(" ")
+                    )
+                    .into_bytes(),
+                ),
+                (
+                    51,
+                    b"<< /Type /FontDescriptor /FontName /ArialMT /Flags 32 /FontBBox [0 -200 1000 900] \
+                      /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 >>"
+                        .to_vec(),
+                ),
+            ],
+        );
+        let r = embed_run(&pdf, vec![(95.0, 100.0, 100.0, 115.0)])
+            .unwrap_or_else(|e| panic!("{subtype}: {e}"));
+        assert_eq!(r.fonts_embedded, 1, "{subtype}");
+        let doc = Document::from_bytes(&r.output).unwrap();
+        let size = doc
+            .trailer()
+            .get(b"Size".as_slice())
+            .and_then(|s| s.as_i64())
+            .unwrap();
+        let mut notdef = false;
+        for n in 1..size as u32 {
+            let r = kasane_pdf::IndirectRef {
+                number: n,
+                generation: 0,
+            };
+            if let Ok(kasane_pdf::Object::Dict(d)) = doc.resolve(r) {
+                if let Some(kasane_pdf::Object::Dict(e)) = d.get(b"Encoding".as_slice()) {
+                    if let Some(kasane_pdf::Object::Array(a)) = e.get(b"Differences".as_slice()) {
+                        notdef |= a.iter().any(|x| x.as_name() == Some(b".notdef".as_slice()));
+                    }
+                }
+            }
+        }
+        assert!(
+            !notdef,
+            "{subtype}: a .notdef in the embedded font's encoding"
+        );
+    }
 }
 
 /// Filled shapes other than disjoint rectangles — curves, polygons,
@@ -7906,6 +8045,22 @@ fn cut_criteria_follow_what_is_shown() {
                 "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 100 100] /XStep 100 /YStep 100 \
                  /Resources << >>",
                 b"0 0 1 rg 65 65 10 10 re f",
+            ),
+        )],
+    );
+    let e = unsupported(run(&pdf, vec![(60.0, 60.0, 120.0, 120.0)]));
+    assert!(e.contains("tiling pattern"), "{e}");
+    // Filled and stroked: the stroke's reach shows no more of the fill.
+    let pdf = one_page(
+        "/Pattern cs /P scn 1 w 100 M 50 50 80 80 re B",
+        "/Resources << /Pattern << /P 30 0 R >> >>",
+        "",
+        vec![(
+            30,
+            stream_obj(
+                "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 50 50] /XStep 50 /YStep 50 \
+                 /Resources << >>",
+                b"0 0 1 rg 10 10 10 10 re f",
             ),
         )],
     );

@@ -16,7 +16,8 @@
 //!
 //! - `/Encoding` lists every code's glyph name in `/Differences` — the
 //!   name this crate draws for it (the font's `/Encoding`, else
-//!   StandardEncoding), or `.notdef` when the face lacks it — so a
+//!   StandardEncoding), or the space glyph (`uni0020`, blank) when the
+//!   face lacks it — never `.notdef`, which readers draw differently — so a
 //!   reader finds each glyph by name → Unicode → the face's (3,1)
 //!   cmap, as §9.6.6.4 prescribes for a non-symbolic TrueType font;
 //! - `/Widths` gives every code's advance as this crate lays it out
@@ -154,7 +155,11 @@ pub(crate) fn embed_substitutes(
         diffs.extend(
             names
                 .iter()
-                .map(|n| Object::Name(n.as_deref().unwrap_or(".notdef").as_bytes().to_vec())),
+                // A code the substitute cannot name: its blank space
+                // glyph, never `.notdef` — readers draw `.notdef`
+                // differently (some fall back to the code's own glyph),
+                // a blank glyph alike.
+                .map(|n| Object::Name(n.as_deref().unwrap_or("uni0020").as_bytes().to_vec())),
         );
         let mut enc = Dict::new();
         enc.insert(b"Type".to_vec(), Object::Name(b"Encoding".to_vec()));

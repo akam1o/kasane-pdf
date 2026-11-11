@@ -1915,12 +1915,10 @@ pub(crate) fn regions_edit_session_with<'a>(
                         };
                         let mut new = Vec::new();
                         for c in pieces {
-                            new.extend([
-                                Operation::SaveState,
-                                re(&c.area),
-                                Operation::Clip,
-                                Operation::EndPath,
-                            ]);
+                            new.push(Operation::SaveState);
+                            if let Some(a) = &c.area {
+                                new.extend([re(a), Operation::Clip, Operation::EndPath]);
+                            }
                             if !c.holes.is_empty() {
                                 new.push(re(&c.outer));
                                 new.extend(c.holes.iter().map(re));

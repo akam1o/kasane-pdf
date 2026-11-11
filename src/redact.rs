@@ -538,6 +538,15 @@ fn redact_doc(
     )?;
     verify_original_contents(&out, &idx, &s.original_contents_digests)?;
     let mut gone_whole = s.removed_stream_digests.clone();
+    // The XFA packets removed: no copy of their bytes either.
+    for r in &xfa_packets {
+        if let Ok(Object::Stream { dict, data }) = doc.resolve(*r) {
+            gone_whole.push(crate::remove_region::sha256(&data));
+            if let Ok(d) = doc.decode_stream(&dict, &data) {
+                gone_whole.push(crate::remove_region::sha256(&d));
+            }
+        }
+    }
     gone_whole.extend(glyph_tounicodes);
     verify_removed_streams(&out, &idx, &gone_whole, &glyph_procs)?;
     crate::redact_struct::verify(&out, &structure, limits)?;

@@ -1775,27 +1775,26 @@ pub(crate) fn remove_xfa(
             "a dynamic XFA form (/NeedsRendering): it has no AcroForm to keep",
         ));
     }
-    // The packets: one stream, or an array of names and streams.
-    let items = match &xfa {
-        Object::Ref(_) => vec![xfa.clone()],
-        Object::Array(a) => a.clone(),
-        _ => Vec::new(),
-    };
-    for i in items {
-        if let Object::Ref(r) = i {
-            packets.insert(r);
-        }
-    }
-    if let Object::Ref(r) = xfa {
-        // An array of packets given by reference.
-        if !matches!(current(doc, overlay, r)?, Object::Stream { .. }) {
-            if let Object::Array(a) = current(doc, overlay, r)? {
-                for i in a {
-                    if let Object::Ref(p) = i {
-                        packets.insert(p);
-                    }
-                }
+    // The packets: one stream, or an array of names and streams, each
+    // maybe through a chain of references — every link goes.
+    let chain = |o: &Object, packets: &mut HashSet<IndirectRef>| -> Result<Object, Error> {
+        let mut o = o.clone();
+        let mut n = 0;
+        while let Object::Ref(r) = o {
+            n += 1;
+            if n > 64 || !packets.insert(r) {
+                return Err(refuse("an XFA packet reference chain that does not end"));
             }
+            o = match overlay.get(&(r.number, r.generation)) {
+                Some(b) => b.clone(),
+                None => doc.resolve_one_hop(r)?,
+            };
+        }
+        Ok(o)
+    };
+    if let Object::Array(a) = chain(&xfa, &mut packets)? {
+        for i in a {
+            chain(&i, &mut packets)?;
         }
     }
     match form_ref {
