@@ -97,10 +97,41 @@ property cannot be decided).
   its own data, outside the rects — and reported in `elsewhere`
   (`refuse_copies_elsewhere` refuses it). A hidden annotation's
   appearances excuse nothing.
-- **N** — An indirect action or destination object a removed link
-  shares with something kept (an outline, a private entry) stays; it is
-  reported as residual action data and as uninspected
-  (`refuse_uninspected` refuses it).
+- **G** — Anything a removed annotation or form field held (every
+  object reachable from it but its page, field and reply links: actions
+  and their targets, indirect and rich text, its popup, the objects of
+  its appearance, streams or not) stays only where the edited document
+  uses it, read by type from the catalog and the pages: the entries ISO
+  32000-2 defines for a page (its boxes, resources by category,
+  contents, `/AA` with page triggers), a kept annotation of each subtype
+  (`/A`, `/AA`, `/Dest`, `/PA` only on links, widgets and screens), an
+  action of each type (`/Next`, a GoTo's destination; the fields and
+  annotations it names, as themselves), an `/AA` dictionary (its
+  owner's trigger names only), a form field and the AcroForm's `/DR`
+  and `/DA`, an outline item below the root, a destination (its page;
+  operands by reference that are numbers), the catalog's settings, name
+  trees, the structure tree. What the removed annotation held is
+  classified by the slot it held it in: an action, an `/AA` dictionary
+  (its triggers all its new user's), a `/Next` array, a popup are kept
+  only where they are used as one; its own data (text, a link's
+  target, a file specification, a value, the field names its actions
+  name) only as the value of an entry defined to hold data (a kept
+  annotation's `/Contents`, a field's value, a destination, an
+  attachment), or inside own data kept that way (a file
+  specification's embedded file) — not in a slot that only names an
+  object (`/IRT`, `/CO`, form `/Fields`), a scalar setting, a
+  structural dictionary, a stream slot of another kind, nor inside
+  something read whole or the removed annotation's own appearance; its
+  appearance and what only presents it (`/OC`, `/BS`, `/BE`, `/MK`,
+  `/Measure`) by any use. Kept only through other entries, it is
+  refused.
+- **N** — Own data counts in an entry defined to hold data whatever the
+  entry is about: a link's URI string kept as another annotation's
+  `/Contents` is used there. The appearance part of a removed
+  annotation (its appearance streams, their resources, fonts, images,
+  colour data) counts as used wherever the edited document reaches
+  it, private keys inside fonts, images and forms included. A resource
+  category's entries count whether the content uses them or not.
 - **N** — "Drawn" includes drawing outside the page's boxes: a removed
   appearance also drawn off the page by another page's content stays
   (reported in `elsewhere`; `refuse_copies_elsewhere` refuses it).

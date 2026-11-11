@@ -6,6 +6,8 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-11
+
 ### Added
 - `redact` verifies its output against the input alone, independently of
   what the edit recorded (`docs/redaction-safety-model.md`): every
@@ -28,6 +30,16 @@ versions follow [Semantic Versioning](https://semver.org/).
   rewrite's object map); a field keeping widgets must still show one,
   and a button value other than `/Off` must be the current state of a
   shown kept widget.
+- Anything a removed annotation or form field held — its actions and
+  their targets, indirect text and rich text, its popup, the objects of
+  its appearance, streams or not — that the document keeps only through
+  entries no reader uses (private data, an annotation key its subtype
+  does not define, an `/AA` entry that names no trigger) is refused; the
+  use is read by type from the catalog and the pages; an action, `/AA`
+  dictionary or popup stays only where it is used as one, the
+  annotation's own data only as the value of an entry defined to hold
+  data.
+  Limits: `docs/limitations.md`.
 - `docs/redaction-safety-model.md`: what `redact` guarantees, reports,
   does not guarantee or refuses, per surface; the verification layers.
 - Tests: one regression test per published advisory
@@ -43,6 +55,11 @@ versions follow [Semantic Versioning](https://semver.org/).
   time (32,000 annotations: 3.7 s → 1.1 s); the uninspected-data walk no
   longer copies direct values (300,000 structure attributes: preflight
   peak memory 1.24 GB → 0.37 GB).
+- The verification's use walk reads the graphics state as readers do:
+  each parameter's latest value with the resources it was selected in;
+  optional content by the default viewing configuration; a button's
+  states as it presents them. Some files all readers draw are refused
+  because of this (`docs/limitations.md`).
 
 ## [0.8.0] - 2026-11-10
 

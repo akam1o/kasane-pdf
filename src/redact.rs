@@ -429,6 +429,19 @@ fn redact_doc(
             ),
         });
     }
+    // What they held, kept only through entries no reader uses: their
+    // own data (text, actions and their targets, resources …).
+    let (first, held_left) =
+        crate::redact_forms::removed_data_kept(doc, &s.edit.overlay, &gone, limits)?;
+    if let Some((r, path)) = first {
+        return Err(Error::Unsupported {
+            feature: "redaction output failed verification",
+            detail: format!(
+                "object {r} is data of a removed annotation or form field that only entries \
+                 no reader uses still refer to (by {path})"
+            ),
+        });
+    }
     // Prints of what the edit left of them too (a copy edited the same
     // way matches these).
     for r in &gone {
@@ -448,6 +461,7 @@ fn redact_doc(
     // output's object set): no removed annotation or field among it.
     if let Some(r) = gone
         .iter()
+        .chain(held_left.iter())
         .filter(|r| written.contains_key(&(r.number, r.generation)))
         .min()
     {

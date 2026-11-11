@@ -104,11 +104,17 @@ patch release.
   class of input is refused with `max_pattern_tiles`, and `rewrite`
   carries `/OCProperties`.
 
-## Unreleased (0.9)
+## 0.9.0
 
 - Additive: `Redaction::fields_removed` (the struct is
   `#[non_exhaustive]`). `cargo semver-checks` against 0.8.0: no semver
   update required.
+- Behaviour: `redact` refuses more outputs it cannot verify (removed
+  annotations, fields or their actions kept by other references; colour
+  data and other content-bearing streams a removed drawing used, kept
+  unused) and accepts widgets, low-bit images, filter chains, CCITT and
+  JBIG2 images it refused before. Callers matching refusal messages
+  should match `Error::Unsupported` instead.
 
 ## 0.8.0
 
