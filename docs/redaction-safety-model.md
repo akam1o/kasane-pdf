@@ -92,6 +92,10 @@ property cannot be decided).
   are gone, or still drawn: as the normal appearance of the selected
   state of an annotation neither Hidden nor NoView nor under optional
   content, or by page content outside optional content (reported).
+- **N** — An indirect action or destination object a removed link
+  shares with something kept (an outline, a private entry) stays; it is
+  reported as residual action data and as uninspected
+  (`refuse_uninspected` refuses it).
 - **N** — "Drawn" includes drawing outside the page's boxes: a removed
   appearance also drawn off the page by another page's content stays
   (reported in `elsewhere`; `refuse_copies_elsewhere` refuses it).
@@ -230,14 +234,17 @@ A failed check is an error and no output.
   nothing, a stream that does not decode) counts, over the input, as
   "everything this page reaches is used", and over the output as
   "nothing more is used". Both errors lead to a refusal, never to an
-  excused copy. This is also how an appearance that a reader would
-  resolve in the page's resources (a missing or unusable entry) is
-  caught.
+  excused copy.
   Over the output, to excuse a copy, the walk counts only what a reader
-  draws: an annotation's normal appearance in the state `/AS` selects,
-  on an annotation shown (an integer `/F` without Hidden or NoView, no
-  `/OC`); page and form content outside `BDC /OC` sequences and
-  XObjects with `/OC`. Non-interference uses a third bound on both
+  draws: an annotation shown (an integer `/F` without Hidden or NoView,
+  no `/OC` or one the default configuration turns on) — its normal
+  appearance in the state `/AS` selects, or, for a widget, which shows
+  them as it is used, every state and its down and rollover
+  appearances; page and form content outside `BDC /OC` sequences and
+  XObjects with `/OC` whose group is off by default (a membership
+  dictionary counts as off); an appearance without `/Resources`
+  resolving nothing (pdf.js). The other bounds resolve such an
+  appearance in the page's resources (mutool, Poppler). Non-interference uses a third bound on both
   sides — everything a reader may draw (every appearance and state,
   Hidden annotations, optional content), undecidable points adding
   nothing — so an edit of hidden content of another page is not

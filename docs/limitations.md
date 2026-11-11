@@ -223,6 +223,9 @@ are on the [roadmap](architecture.md#roadmap).
   used may stay in the page's resources with its program; it reveals
   the font's glyph repertoire); dictionaries other than annotations are
   compared only through the structure-tree and string checks.
+- **Actions of removed links** (0.9): an indirect action or destination
+  object a removed link shares with something kept stays (reported as a
+  residual action and as uninspected data).
 - **Drawn off the page** (0.9): a removed appearance or edited original
   that another page's content still draws counts as drawn even when it
   lies outside that page's boxes; it is reported in `elsewhere`, and
