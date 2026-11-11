@@ -1232,6 +1232,7 @@ pub(crate) fn removed_data_kept(
             work.push((v.clone(), u, false, root));
         }
     }
+    let mut tree_nodes: HashSet<IndirectRef> = HashSet::new();
     for page in doc.pages() {
         tick(1)?;
         let Some(pr) = page.object_ref() else {
@@ -1273,12 +1274,13 @@ pub(crate) fn removed_data_kept(
             };
             work.push((v.clone(), u, false, Some(pr)));
         }
-        // Attributes the page inherits from its tree.
+        // Attributes the page inherits from its tree: each node once (a
+        // node shared by many pages, and its ancestors, are read once).
         let mut up = pd.get(b"Parent".as_slice()).cloned();
         let mut depth = 0;
         while let Some(Object::Ref(nr)) = up {
             depth += 1;
-            if depth > limits.max_page_tree_depth || pages.contains(&nr) {
+            if depth > limits.max_page_tree_depth || pages.contains(&nr) || !tree_nodes.insert(nr) {
                 break;
             }
             tick(1)?;

@@ -7379,3 +7379,41 @@ fn removed_own_data_by_value_slots() {
         start.elapsed()
     );
 }
+
+/// A flat page tree (many pages under one `/Pages` node) with a removed
+/// link: the walk of what uses the link's data reads each node of the
+/// tree once (it read the shared node once per page). (Release review.)
+#[test]
+fn removed_data_walk_reads_a_flat_page_tree_once() {
+    let n = 20_000u32;
+    let kids: String = (0..n).map(|i| format!("{} 0 R ", 1000 + i)).collect();
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (
+            2,
+            format!("<< /Type /Pages /Kids [{kids}] /Count {n} /MediaBox [0 0 200 200] >>")
+                .into_bytes(),
+        ),
+        (4, stream_obj("", b"0 0 5 5 re f")),
+        (
+            10,
+            b"<< /Type /Annot /Subtype /Link /Rect [70 90 130 110] /A 20 0 R >>".to_vec(),
+        ),
+        (20, b"<< /S /URI /URI (https://example.com/) >>".to_vec()),
+    ];
+    for i in 0..n {
+        let annots = if i == 0 { "/Annots [10 0 R]" } else { "" };
+        objs.push((
+            1000 + i,
+            format!("<< /Type /Page /Parent 2 0 R /Contents 4 0 R {annots} >>").into_bytes(),
+        ));
+    }
+    let doc = Document::from_bytes(&build_pdf(&objs)).unwrap();
+    let start = std::time::Instant::now();
+    let _ = redact(&doc, &[(0, vec![RECT])], &RedactOptions::new());
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(60),
+        "{:?}",
+        start.elapsed()
+    );
+}
