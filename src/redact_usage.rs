@@ -166,7 +166,7 @@ struct State {
     /// Transfer function, black generation, undercolour removal and
     /// halftone in force and not yet painted under: the slot's name and
     /// value (`/TR2` replaces `/TR`, and so on, §8.4.5 Table 57).
-    params: BTreeMap<&'static [u8], (Object, Canon)>,
+    params: BTreeMap<&'static [u8], (Rc<Object>, Canon)>,
     /// The text rendering mode (`Tr`).
     render: i64,
 }
@@ -175,7 +175,8 @@ struct State {
 /// canonical form of what identifies it in a [`StateKey`].
 #[derive(Clone)]
 struct Scoped {
-    value: Object,
+    /// Shared: a state is cloned for every frame it is inherited by.
+    value: Rc<Object>,
     res: Rc<Object>,
     res_id: ResId,
     canon: Canon,
@@ -319,21 +320,37 @@ impl OcDefault {
                 }
             }
         }
+        // Groups an automatic state (`/AS`, §8.11.4.4) may switch by
+        // their usage: readers differ (MuPDF applies it, Poppler does
+        // not), so they count as off.
+        if let Some(a) = d.get(b"AS".as_slice()) {
+            for e in doc.deref(a)?.as_array().unwrap_or(&[]) {
+                let e = doc.deref(e)?;
+                let Some(g) = e.as_dict().and_then(|e| e.get(b"OCGs".as_slice())) else {
+                    continue;
+                };
+                for x in doc.deref(g)?.as_array().unwrap_or(&[]) {
+                    if let Object::Ref(r) = x {
+                        oc.off.insert(*r);
+                        oc.on.remove(r);
+                    }
+                }
+            }
+        }
         Ok(oc)
     }
 
     /// Whether content under `oc` (an `/OC` value, a `BDC /OC`
     /// properties entry) is shown by default: only a group, by
-    /// reference, that the default configuration turns on. A membership
-    /// dictionary or anything else counts as hidden.
+    /// reference, that the default configuration turns on and no
+    /// automatic state names. A membership dictionary or
+    /// anything else counts as hidden.
     fn shows(&self, doc: &Document, oc: &Object) -> Result<bool, Error> {
         let Object::Ref(r) = oc else { return Ok(false) };
-        let is_group = doc
-            .resolve(*r)?
+        let g = doc.resolve(*r)?;
+        let is_group = g
             .as_dict()
-            .and_then(|d| d.get(b"Type".as_slice()))
-            .and_then(|t| t.as_name())
-            == Some(b"OCG");
+            .is_some_and(|d| d.get(b"Type".as_slice()).and_then(|t| t.as_name()) == Some(b"OCG"));
         Ok(is_group
             && if self.base_on {
                 !self.off.contains(r)
@@ -445,7 +462,7 @@ enum Selected {
     Gs {
         /// `Some(None)`: `/SMask /None`, ending a mask.
         smask: Option<Option<Canon>>,
-        params: Vec<(&'static [u8], Object, Canon)>,
+        params: Vec<(&'static [u8], Rc<Object>, Canon)>,
     },
 }
 
@@ -917,7 +934,7 @@ impl Walk<'_> {
                                     (b"HT", [b"HT", b"HT"]),
                                 ] {
                                     if let Some(v) = keys.iter().find_map(|k| d.get(*k)) {
-                                        params.push((slot, v.clone(), self.intern(v)));
+                                        params.push((slot, Rc::new(v.clone()), self.intern(v)));
                                     }
                                 }
                                 let s = Selected::Gs { smask, params };
@@ -930,7 +947,7 @@ impl Walk<'_> {
                                 Some(None) => st.smask = None,
                                 Some(Some(c)) => {
                                     st.smask = Some(Scoped {
-                                        value: g.clone(),
+                                        value: Rc::new(g.clone()),
                                         res: f.res.clone(),
                                         res_id: f.res_id,
                                         canon: c,
@@ -950,7 +967,7 @@ impl Walk<'_> {
                     } else {
                         self.resource(&f.res, "ColorSpace", n).map(|cs| Scoped {
                             canon: self.selected_value(f.res_id, "ColorSpace", n, &cs),
-                            value: cs,
+                            value: Rc::new(cs),
                             res: f.res.clone(),
                             res_id: f.res_id,
                         })
@@ -971,7 +988,7 @@ impl Walk<'_> {
                         Some(Object::Name(n)) => {
                             self.resource(&f.res, "Pattern", n).map(|p| Scoped {
                                 canon: self.selected_value(f.res_id, "Pattern", n, &p),
-                                value: p,
+                                value: Rc::new(p),
                                 res: f.res.clone(),
                                 res_id: f.res_id,
                             })
@@ -1502,7 +1519,7 @@ impl Walk<'_> {
     fn pattern(&mut self, p: &Scoped, depth: usize, stack: &mut Vec<Frame>) -> Result<(), Error> {
         let doc = self.doc;
         let (res, res_id) = (&p.res, p.res_id);
-        let Object::Ref(r) = &p.value else {
+        let Object::Ref(r) = &*p.value else {
             self.undecided("a pattern entry that is not a reference".into());
             return Ok(());
         };
@@ -2017,5 +2034,43 @@ mod tests {
         let t = std::time::Instant::now();
         usage(&doc, &|_| true, Bound::Under, &Limits::default()).unwrap();
         assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
+    }
+
+    /// Optional content: a group on in the default configuration is
+    /// drawn (over the output, too); one off, or named by an automatic
+    /// state (`/AS`, which readers apply differently), is not. (Review.)
+    #[test]
+    fn optional_content_by_the_default_configuration() {
+        let make = |d: &str| {
+            pdf(&[
+                (1, format!("<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [20 0 R] /D << {d} >> >> >>").into_bytes()),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+                (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R /Resources << /Properties << /L 20 0 R >> /XObject << /Im 9 0 R >> >> >>".to_vec()),
+                (4, stream("", b"/OC /L BDC q 20 0 0 20 10 10 cm /Im Do Q EMC")),
+                (8, stream("", b"\x01\x02\x03\xf1\xf2\xf3")),
+                (9, stream("/Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace [/Indexed /DeviceRGB 1 8 0 R]", b"\x00")),
+                (20, b"<< /Type /OCG /Name (layer) /Usage << /View << /ViewState /OFF >> >> >>".to_vec()),
+            ])
+        };
+        for (d, drawn) in [
+            ("", true),
+            ("/BaseState /ON", true),
+            ("/OFF [20 0 R]", false),
+            ("/BaseState /OFF", false),
+            ("/BaseState /OFF /ON [20 0 R]", true),
+            (
+                "/BaseState /ON /AS [<< /Event /View /OCGs [20 0 R] /Category [/View] >>]",
+                false,
+            ),
+        ] {
+            let doc = Document::from_bytes(&make(d)).unwrap();
+            let u = usage(&doc, &|_| true, Bound::Under, &Limits::default()).unwrap();
+            assert_eq!(u.used.contains_key(&IndirectRef::new(8, 0)), drawn, "{d}");
+            // The other bounds count it whatever the configuration.
+            for b in [Bound::Over, Bound::Complete] {
+                let u = usage(&doc, &|_| true, b, &Limits::default()).unwrap();
+                assert!(u.used.contains_key(&IndirectRef::new(8, 0)), "{d} {b:?}");
+            }
+        }
     }
 }
