@@ -1736,12 +1736,14 @@ pub(crate) fn removed_data_kept(
 /// `remove_javascript` (XFA scripts are not edited) and when form fields
 /// are edited (their values are in the datasets too). A form readers
 /// must render from XFA alone (`/NeedsRendering true`) is refused. The
-/// packets removed (to verify the output does not carry them), `None`
-/// when there is no XFA.
+/// packets removed (to verify the output does not carry them: the
+/// objects, and the stored and decoded digests of every packet stream,
+/// direct ones included), `None` when there is no XFA.
+#[allow(clippy::type_complexity)]
 pub(crate) fn remove_xfa(
     doc: &Document,
     overlay: &mut Overlay,
-) -> Result<Option<HashSet<IndirectRef>>, Error> {
+) -> Result<Option<(HashSet<IndirectRef>, Vec<[u8; 32]>)>, Error> {
     let mut packets = HashSet::new();
     let root = match doc.trailer().get(b"Root".as_slice()) {
         Some(Object::Ref(r)) => *r,
@@ -1792,9 +1794,21 @@ pub(crate) fn remove_xfa(
         }
         Ok(o)
     };
-    if let Object::Array(a) = chain(&xfa, &mut packets)? {
+    let mut digests = Vec::new();
+    let digest = |o: &Object, digests: &mut Vec<[u8; 32]>| {
+        if let Object::Stream { dict, data } = o {
+            digests.push(crate::remove_region::sha256(data));
+            if let Ok(d) = doc.decode_stream(dict, data) {
+                digests.push(crate::remove_region::sha256(&d));
+            }
+        }
+    };
+    let top = chain(&xfa, &mut packets)?;
+    digest(&top, &mut digests);
+    if let Object::Array(a) = top {
         for i in a {
-            chain(&i, &mut packets)?;
+            let p = chain(&i, &mut packets)?;
+            digest(&p, &mut digests);
         }
     }
     match form_ref {
@@ -1806,7 +1820,7 @@ pub(crate) fn remove_xfa(
             overlay.insert((root.number, root.generation), Object::Dict(catalog));
         }
     }
-    Ok(Some(packets))
+    Ok(Some((packets, digests)))
 }
 
 /// Whether the edited document's AcroForm still has an XFA form.

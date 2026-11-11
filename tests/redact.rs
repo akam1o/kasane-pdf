@@ -7553,6 +7553,7 @@ fn hybrid_xfa_forms() {
                 stream_obj("", b"<xfa:datasets><f>VALUEMARK</f></xfa:datasets>"),
             ),
         ];
+        objs.retain(|(n, _)| !extra.iter().any(|(m, _)| m == n));
         objs.extend(extra);
         build_pdf(&objs)
     };
@@ -7579,6 +7580,29 @@ fn hybrid_xfa_forms() {
                     35,
                     stream_obj("", b"<xfa:datasets><f>VALUEMARK</f></xfa:datasets>"),
                 )],
+            ),
+        ),
+        (
+            "a copy of a packet written directly",
+            chained(
+                "<< /Length 45 >>\nstream\n<xfa:datasets><f>VALUEMARK</f></xfa:datasets>\nendstream",
+                "/XPriv 35 0 R",
+                vec![(
+                    35,
+                    stream_obj("", b"<xfa:datasets><f>VALUEMARK</f></xfa:datasets>"),
+                )],
+            ),
+        ),
+        (
+            "a copy as a thumbnail",
+            chained(
+                "33 0 R",
+                "",
+                vec![
+                    (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec()),
+                    (5, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Thumb 35 0 R >>".to_vec()),
+                    (35, stream_obj("/Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", b"<xfa:datasets><f>VALUEMARK</f></xfa:datasets>")),
+                ],
             ),
         ),
     ] {

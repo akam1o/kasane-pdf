@@ -422,7 +422,7 @@ fn redact_doc(
         None
     };
     let xfa_removed = xfa_packets.is_some();
-    let xfa_packets = xfa_packets.unwrap_or_default();
+    let (xfa_packets, xfa_digests) = xfa_packets.unwrap_or_default();
     // The form fields of removed widgets.
     let forms = crate::redact_forms::edit_fields(
         doc,
@@ -538,15 +538,9 @@ fn redact_doc(
     )?;
     verify_original_contents(&out, &idx, &s.original_contents_digests)?;
     let mut gone_whole = s.removed_stream_digests.clone();
-    // The XFA packets removed: no copy of their bytes either.
-    for r in &xfa_packets {
-        if let Ok(Object::Stream { dict, data }) = doc.resolve(*r) {
-            gone_whole.push(crate::remove_region::sha256(&data));
-            if let Ok(d) = doc.decode_stream(&dict, &data) {
-                gone_whole.push(crate::remove_region::sha256(&d));
-            }
-        }
-    }
+    // The XFA packets removed: no copy of their bytes anywhere, in any
+    // role (a thumbnail's included), as a stream object or a direct one.
+    verify_xfa_gone(&out, &idx, &xfa_digests)?;
     gone_whole.extend(glyph_tounicodes);
     verify_removed_streams(&out, &idx, &gone_whole, &glyph_procs)?;
     crate::redact_struct::verify(&out, &structure, limits)?;
@@ -856,6 +850,53 @@ fn verify_original_contents(
 /// replaced `/ToUnicode`), and none is a removed Type 3 glyph's procedure
 /// (`procs`) except as a Type 3 font's CharProc (the same bytes still a
 /// glyph there).
+/// No stream of the output — indirect or written inside another object —
+/// stores or decodes to the bytes of a removed XFA packet.
+fn verify_xfa_gone(
+    out: &Document,
+    idx: &crate::redact_verify::Index,
+    digests: &[[u8; 32]],
+) -> Result<(), Error> {
+    if digests.is_empty() {
+        return Ok(());
+    }
+    let gone: HashSet<[u8; 32]> = digests.iter().copied().collect();
+    let fail = |r: IndirectRef| Error::Unsupported {
+        feature: "redaction output failed verification",
+        detail: format!("object {r} holds the bytes of a removed XFA packet"),
+    };
+    for (r, o) in &idx.objects {
+        if let Some(d) = idx.digests.get(r) {
+            if gone.contains(&d.stored) || d.decoded.is_some_and(|x| gone.contains(&x)) {
+                return Err(fail(*r));
+            }
+        }
+        // Streams written inside the object.
+        let mut stack: Vec<&Object> = match o {
+            Object::Stream { dict, .. } => dict.values().collect(),
+            o => vec![o],
+        };
+        while let Some(v) = stack.pop() {
+            match v {
+                Object::Stream { dict, data } => {
+                    let hit = gone.contains(&crate::remove_region::sha256(data))
+                        || out
+                            .decode_stream(dict, data)
+                            .is_ok_and(|d| gone.contains(&crate::remove_region::sha256(&d)));
+                    if hit {
+                        return Err(fail(*r));
+                    }
+                    stack.extend(dict.values());
+                }
+                Object::Array(a) => stack.extend(a.iter()),
+                Object::Dict(d) => stack.extend(d.values()),
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
 fn verify_removed_streams(
     out: &Document,
     idx: &crate::redact_verify::Index,
