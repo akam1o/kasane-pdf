@@ -77,14 +77,18 @@ property cannot be decided).
 - **G** — A removed widget's form field leaves the interactive form
   with its value when no widget of it is left. A field keeping widgets
   keeps its value only if a kept widget is shown (on a page's
-  `/Annots`, neither Hidden nor NoView) and, for a button, shows the
-  value's state; its string, array and stream values and `/Opt` are
-  reported in `elsewhere` (else **X**).
-- **G** — A removed annotation or form field is not reached by anything
-  the output keeps (checked by identity on the edited document before
-  it is written), and no dictionary of the output — a stream's
-  included — has its content, unless it is that of an annotation a page
-  of the output still holds. Its appearance streams and what they draw
+  `/Annots`, an integer `/F` without Hidden or NoView, no `/OC`) and,
+  for a button value other than `/Off`, a shown kept widget is in that
+  state (`/AS`, with the state in its normal appearance) — what a
+  removed or unshown widget had never justifies it; its string, array
+  and stream values and `/Opt` are reported in `elsewhere` (else
+  **X**).
+- **G** — A removed annotation or form field is not written: checked by
+  identity on the edited document before it is written, and against the
+  rewrite's object map (the output's object set). No dictionary of the
+  output — a stream's included, at any depth — has its content, except
+  the entries of an output page's `/Annots` themselves (by identity: an
+  annotation alike elsewhere is not excused). Its appearance streams and what they draw
   are gone, or still drawn: as the normal appearance of the selected
   state of an annotation neither Hidden nor NoView nor under optional
   content, or by page content outside optional content (reported).
@@ -229,11 +233,26 @@ A failed check is an error and no output.
   excused copy. This is also how an appearance that a reader would
   resolve in the page's resources (a missing or unusable entry) is
   caught.
-  Over the output the walk counts only what a reader draws: an
-  annotation's normal appearance in the state `/AS` selects, on an
-  annotation neither Hidden nor NoView nor under optional content;
-  page and form content outside `BDC /OC` sequences and XObjects with
-  `/OC`. Each page is walked within its own operation bound.
+  Over the output, to excuse a copy, the walk counts only what a reader
+  draws: an annotation's normal appearance in the state `/AS` selects,
+  on an annotation shown (an integer `/F` without Hidden or NoView, no
+  `/OC`); page and form content outside `BDC /OC` sequences and
+  XObjects with `/OC`. Non-interference uses a third bound on both
+  sides — everything a reader may draw (every appearance and state,
+  Hidden annotations, optional content), undecidable points adding
+  nothing — so an edit of hidden content of another page is not
+  overlooked. Each page is walked within its own operation bound.
+- **The graphics state is its current values.** What painting reads is
+  held as slots — fill and stroke colour (space, pattern or `Default*`
+  substitute), soft mask, transfer function, black generation,
+  undercolour removal, halftone — each its latest value, with the
+  resources it was selected in (a form inherits the state, and reads an
+  inherited colour or mask where it was selected, not in its own
+  resources). A form is walked once per resources and exact state: the
+  memo key is the canonical bytes of each value and the identity of its
+  resources, compared exactly (no hash decides that two states are the
+  same), so equal states are not walked twice and different ones are
+  never merged.
 - **Digests for copies, identities for removed objects.** The rewrite
   renumbers objects and a copy can be written under any number: streams
   are compared by the SHA-256 of their stored and of their decoded
@@ -255,12 +274,17 @@ A failed check is an error and no output.
   reveals (its glyph repertoire) is stated in 2.5. A Type 3 font's
   replaced `/ToUnicode` is checked by the edit's record (layer 1).
 - **Non-interference compares drawing.** A page not edited must draw
-  from the same content-bearing streams; a font's code data may change
+  (under the complete bound above) from the same content-bearing
+  streams; a font's code data may change
   (a Type 3 font losing glyphs no page shows gets a new `/ToUnicode` on
   every page that uses it), and a thumbnail shared with an edited page
   is removed. Pages whose drawing is the same graph in both (contents,
   resources, annotations, thumbnail, compared with references replaced
-  by what they refer to) are not walked again.
+  by what they refer to, a page by its index; only the back links of
+  `/Annots` entries left out) are not walked again. This is one
+  invariant among several: what no page draws is held to the use
+  invariant and the removed-annotation checks, and the generated tests
+  compare the whole output bytes.
 - **Fail closed on cycles, depth and size.** Every walk is bounded by
   `Limits` (`max_audit_elements`, `max_diag_exec_ops`,
   `max_xobject_depth`, nesting caps); reaching a bound is an error, not

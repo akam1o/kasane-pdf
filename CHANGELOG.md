@@ -24,9 +24,10 @@ versions follow [Semantic Versioning](https://semver.org/).
   of general filters, and in CCITTFax or JBIG2 (without
   `/JBIG2Globals`); the edited copy is written unfiltered.
 - A removed annotation or form field that anything kept still refers to
-  is refused (checked by identity before writing); a field keeping
-  widgets must still show one, and its button value must be a kept
-  widget's state.
+  is refused (checked by identity before writing, and against the
+  rewrite's object map); a field keeping widgets must still show one,
+  and a button value other than `/Off` must be the current state of a
+  shown kept widget.
 - `docs/redaction-safety-model.md`: what `redact` guarantees, reports,
   does not guarantee or refuses, per surface; the verification layers.
 - Tests: one regression test per published advisory
