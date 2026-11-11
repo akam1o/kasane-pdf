@@ -124,11 +124,11 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
-/// Removed (no `secret` extracted, the public text kept) or refused.
-fn removed_or_refused(name: &str, pdf: &[u8], secret: &str, opts: &RedactOptions) {
+/// Removed (no `marker` extracted, the public text kept) or refused.
+fn removed_or_refused(name: &str, pdf: &[u8], marker: &str, opts: &RedactOptions) {
     if let Ok(r) = run(pdf, opts) {
         let t = text(&r.output);
-        assert!(!t.contains(secret), "{name}: {secret} still extracted");
+        assert!(!t.contains(marker), "{name}: {marker} still extracted");
         assert!(t.contains("PUBLICWORD"), "{name}: the public text was lost");
     }
 }
@@ -151,19 +151,19 @@ fn ghsa_2337_nested_transforms() {
         ("form", format!("q 1 0 0 1 55 50 cm /Fm Do Q {KEPT}")),
     ] {
         let pdf = page(content.as_bytes(), "/XObject << /Fm 30 0 R >>", "", "", vec![(30, form.clone())]);
-        let secret = if name == "cm" { "NESTSECRET" } else { "FORMSECRET" };
+        let marker = if name == "cm" { "NESTSECRET" } else { "FORMSECRET" };
         let doc = Document::from_bytes(&pdf).unwrap();
         let d = diagnose_redaction(&doc, 0, &[RECT], &Limits::default()).unwrap();
         assert!(!d.targets.is_empty(), "{name}: the diagnosis finds nothing in the rect");
         let r = run(&pdf, &RedactOptions::new()).unwrap();
         assert!(r.codes_removed >= 8, "{name}: {} codes removed", r.codes_removed);
-        assert!(!text(&r.output).contains(secret), "{name}");
+        assert!(!text(&r.output).contains(marker), "{name}");
         // Before 0.6 there is no `redact`: the editor the advisory names.
         dump(
             &format!("2337-{name}"),
             "GHSA-2337-4h5g-jqwx",
             &format!("{REDACT_ARGS}|experimental-remove-text 1 --rect 60 60 140 140"),
-            &format!("safe-text:{secret}"),
+            &format!("safe-text:{marker}"),
             &pdf,
         );
     }
@@ -410,7 +410,7 @@ fn cid_page(mappings: &str, codespace: &str, ncs: u32) -> Vec<u8> {
     build_pdf(&objs)
 }
 
-/// The rect where readers draw the six secret glyphs after a 50 pt
+/// The rect where readers draw the six marker glyphs after a 50 pt
 /// padding advance (CID 4).
 const CID_RECT: &str = "redact --page 1 --rect 70 95 140 112";
 
@@ -633,12 +633,12 @@ fn ghsa_cjhc_removed_data_is_not_kept_by_reference() {
             true,
         ),
     ];
-    for (name, pdf, secret, annotations) in cases {
+    for (name, pdf, marker, annotations) in cases {
         let opts = RedactOptions::new().remove_annotations(annotations);
         if let Ok(r) = run(&pdf, &opts) {
             assert!(
-                !contains(&r.output, secret.as_bytes()),
-                "{name}: {secret} kept"
+                !contains(&r.output, marker.as_bytes()),
+                "{name}: {marker} kept"
             );
         }
         let args = if annotations {
@@ -650,7 +650,7 @@ fn ghsa_cjhc_removed_data_is_not_kept_by_reference() {
             &format!("cjhc-{name}"),
             "GHSA-cjhc-76x8-crrq",
             &args,
-            &format!("safe-bytes:{secret}"),
+            &format!("safe-bytes:{marker}"),
             &pdf,
         );
     }
