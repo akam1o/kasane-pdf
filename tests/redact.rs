@@ -110,7 +110,7 @@ fn contains(pdf: &[u8], needle: &[u8]) -> bool {
     fn walk(o: &kasane_pdf::Object, needle: &[u8]) -> bool {
         use kasane_pdf::Object as O;
         match o {
-            O::String(b) => raw_contains(b, needle),
+            O::String(b) | O::Name(b) => raw_contains(b, needle),
             O::Array(a) => a.iter().any(|v| walk(v, needle)),
             O::Dict(d) => d.values().any(|v| walk(v, needle)),
             O::Stream { dict, data } => {
@@ -6275,4 +6275,212 @@ fn kept_appearances_are_not_confused_across_documents() {
         ));
         assert!(e.contains("failed verification"), "{x}: {e}");
     }
+}
+
+/// A removed link's indirect action or destination: gone with it when
+/// only it named the action; kept when a kept link or an outline item
+/// acts on it too; refused when only something that does not act on it
+/// (a private entry, directly or through another action's `/Next`)
+/// still refers to it — it is the removed link's own data. With and
+/// without `remove_javascript`, for each kind of action.
+#[test]
+fn actions_of_removed_links() {
+    let actions = [
+        ("uri", "<< /S /URI /URI (https://example.com/ACTMARK) >>"),
+        ("launch", "<< /S /Launch /F (ACTMARK.txt) >>"),
+        ("goto", "<< /S /GoTo /D (ACTMARK) >>"),
+        ("named", "<< /S /Named /N /ACTMARK >>"),
+    ];
+    let make = |action: &str, other: &str, aa: bool| {
+        let link_action = if aa {
+            "/AA << /E 20 0 R >>"
+        } else {
+            "/A 20 0 R"
+        };
+        let (cat, annots, extra): (&str, &str, Vec<(u32, Vec<u8>)>) = match other {
+            "kept link" => (
+                "",
+                "10 0 R 13 0 R",
+                vec![(
+                    13,
+                    b"<< /Type /Annot /Subtype /Link /Rect [150 150 190 190] /A 20 0 R >>".to_vec(),
+                )],
+            ),
+            "outline" => (
+                "/Outlines 50 0 R",
+                "10 0 R",
+                vec![
+                    (
+                        50,
+                        b"<< /Type /Outlines /First 51 0 R /Last 51 0 R /Count 1 >>".to_vec(),
+                    ),
+                    (51, b"<< /Title (C) /Parent 50 0 R /A 20 0 R >>".to_vec()),
+                ],
+            ),
+            "private" => ("/XPriv 20 0 R", "10 0 R", vec![]),
+            "private next" => (
+                "/XPriv 21 0 R",
+                "10 0 R",
+                vec![(
+                    21,
+                    b"<< /S /URI /URI (https://example.org/) /Next 20 0 R >>".to_vec(),
+                )],
+            ),
+            _ => ("", "10 0 R", vec![]),
+        };
+        let mut objs = vec![
+            (1, format!("<< /Type /Catalog /Pages 2 0 R {cat} >>").into_bytes()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [{annots}] >>")
+                    .into_bytes(),
+            ),
+            (4, stream_obj("", b"0 0 5 5 re f")),
+            (
+                10,
+                format!("<< /Type /Annot /Subtype /Link /Rect [70 90 130 110] {link_action} >>").into_bytes(),
+            ),
+            (20, action.as_bytes().to_vec()),
+        ];
+        objs.extend(extra);
+        build_pdf(&objs)
+    };
+    for (kind, action) in actions {
+        for aa in [false, true] {
+            for js in [false, true] {
+                let opts = RedactOptions::new().remove_javascript(js);
+                for other in ["only", "kept link", "outline", "private", "private next"] {
+                    let doc = Document::from_bytes(&make(action, other, aa)).unwrap();
+                    let r = redact(&doc, &[(0, vec![RECT])], &opts);
+                    let name = format!("{kind} {other} aa={aa} js={js}");
+                    match other {
+                        "private" | "private next" => {
+                            let e = unsupported(r);
+                            assert!(
+                                e.contains("action or destination of a removed"),
+                                "{name}: {e}"
+                            );
+                        }
+                        "only" => {
+                            let out = r.unwrap_or_else(|e| panic!("{name}: {e}")).output;
+                            assert!(!contains(&out, b"ACTMARK"), "{name}: kept");
+                        }
+                        _ => {
+                            let out = r.unwrap_or_else(|e| panic!("{name}: {e}")).output;
+                            assert!(
+                                contains(&out, b"ACTMARK"),
+                                "{name}: the kept use lost its action"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A removed link or markup annotation with a script (`/A`, `/AA`, an
+/// action's `/Next`) that something else still refers to (a private
+/// entry, `/PieceInfo`, a kept annotation's key) is refused with
+/// `remove_javascript` as without it: the script pass edits it, but the
+/// object itself would be written whole. (0.7.0–0.8.0 wrote it.)
+#[test]
+fn removed_annotations_with_scripts_kept_by_reference() {
+    let markup = "<< /Type /Annot /Subtype /FreeText /Rect [70 90 130 110] /DA (/Helv 9 Tf 0 g) \
+                  /Contents (NOTEMARK) /T (AUTHORMARK) ACTION >>";
+    let link = "<< /Type /Annot /Subtype /Link /Rect [70 90 130 110] \
+                /A << /S /URI /URI (https://example.com/LINKMARK) /Next << /S /JavaScript /JS (x) >> >> >>";
+    let make = |annot: &str, cat: &str, kept_ref: bool| {
+        let annots = if kept_ref { "10 0 R 12 0 R" } else { "10 0 R" };
+        let mut objs = vec![
+            (1, format!("<< /Type /Catalog /Pages 2 0 R {cat} >>").into_bytes()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [{annots}] >>")
+                    .into_bytes(),
+            ),
+            (4, stream_obj("", b"0 0 5 5 re f")),
+            (10, annot.as_bytes().to_vec()),
+        ];
+        if kept_ref {
+            objs.push((
+                12,
+                b"<< /Type /Annot /Subtype /Square /Rect [150 150 190 190] /XRef 10 0 R >>"
+                    .to_vec(),
+            ));
+        }
+        build_pdf(&objs)
+    };
+    let scripts = [
+        "/A << /S /JavaScript /JS (x) >>",
+        "/AA << /E << /S /JavaScript /JS (x) >> >>",
+    ];
+    for js in [false, true] {
+        let opts = RedactOptions::new()
+            .remove_annotations(true)
+            .remove_javascript(js);
+        let mut cases: Vec<(String, Vec<u8>)> = Vec::new();
+        for s in scripts {
+            let m = markup.replace("ACTION", s);
+            cases.push((
+                format!("markup private {s}"),
+                make(&m, "/XPriv 10 0 R", false),
+            ));
+            cases.push((
+                format!("markup pieceinfo {s}"),
+                make(&m, "/PieceInfo << /A << /Private 10 0 R >> >>", false),
+            ));
+            cases.push((format!("markup kept ref {s}"), make(&m, "", true)));
+        }
+        cases.push(("link private".into(), make(link, "/XPriv 10 0 R", false)));
+        cases.push(("link kept ref".into(), make(link, "", true)));
+        for (name, pdf) in cases {
+            let doc = Document::from_bytes(&pdf).unwrap();
+            let e = unsupported(redact(&doc, &[(0, vec![RECT])], &opts));
+            assert!(e.contains("failed verification"), "{name} js={js}: {e}");
+        }
+        // Not referred to elsewhere: removed, script and all.
+        let doc =
+            Document::from_bytes(&make(&markup.replace("ACTION", scripts[0]), "", false)).unwrap();
+        let r = redact(&doc, &[(0, vec![RECT])], &opts).unwrap();
+        assert!(!contains(&r.output, b"NOTEMARK"));
+    }
+}
+
+/// The same annotation object listed twice on the edited page goes with
+/// both entries; listed on another page too, it is refused (the removed
+/// object would be written whole), never excused by its look-alike
+/// count.
+#[test]
+fn one_annotation_listed_in_several_places() {
+    let make = |p1: &str, p2: &str| {
+        build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec()),
+            (
+                3,
+                format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [{p1}] >>")
+                    .into_bytes(),
+            ),
+            (4, stream_obj("", b"0 0 5 5 re f")),
+            (
+                5,
+                format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [{p2}] >>")
+                    .into_bytes(),
+            ),
+            (
+                10,
+                b"<< /Type /Annot /Subtype /Link /Rect [70 90 130 110] /A << /S /URI /URI (https://example.com/TWICEMARK) >> >>"
+                    .to_vec(),
+            ),
+        ])
+    };
+    let doc = Document::from_bytes(&make("10 0 R 10 0 R", "")).unwrap();
+    let r = redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()).unwrap();
+    assert!(!contains(&r.output, b"TWICEMARK"));
+    let doc = Document::from_bytes(&make("10 0 R", "10 0 R")).unwrap();
+    let e = unsupported(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()));
+    assert!(e.contains("failed verification"), "{e}");
 }

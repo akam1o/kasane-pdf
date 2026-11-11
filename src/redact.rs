@@ -429,6 +429,22 @@ fn redact_doc(
             ),
         });
     }
+    // Their actions and destinations, kept only through something that
+    // does not act on them (a private entry): their own data.
+    if let Some((r, path)) = crate::redact_forms::removed_actions_kept(
+        doc,
+        &s.edit.overlay,
+        &s.touched.removed_annotations,
+        limits,
+    )? {
+        return Err(Error::Unsupported {
+            feature: "redaction output failed verification",
+            detail: format!(
+                "object {r} is an action or destination of a removed annotation that only \
+                 something not acting on it still refers to (by {path})"
+            ),
+        });
+    }
     // Prints of what the edit left of them too (a copy edited the same
     // way matches these).
     for r in &gone {
