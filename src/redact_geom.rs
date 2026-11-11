@@ -776,8 +776,10 @@ fn cut_fill(
         if last != start {
             lp.push(USeg::Line(last, start));
         }
-        if lp.len() < 2 {
-            continue; // fills nothing
+        // Fills nothing: no segment, or one straight one (a single
+        // closed curve encloses an area).
+        if lp.is_empty() || (lp.len() == 1 && matches!(lp[0], USeg::Line(..))) {
+            continue;
         }
         if !is_near {
             out.push(lp);
@@ -806,7 +808,7 @@ fn cut_fill(
                             break;
                         }
                     }
-                    if q.len() >= 2 {
+                    if q.len() >= 2 || matches!(q.first(), Some(USeg::Cubic(..))) {
                         next.push(q);
                     }
                 }

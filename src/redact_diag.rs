@@ -1279,17 +1279,13 @@ impl<'a> DiagWalker<'a> {
             None => (false, false),
         };
         // The painted area, exact.
-        let Some(area) = (match self.gs.clip {
-            Some(_) => self.shading_extent(name)?,
-            None => {
-                let pb = self.page_box;
-                match self.shading_extent(name)? {
-                    Some(b) => Some((b.0.max(pb.0), b.1.max(pb.1), b.2.min(pb.2), b.3.min(pb.3))),
-                    None => Some(pb),
-                }
-            }
-        }) else {
-            return Ok(None);
+        // Within the page's box always: what lies off the page shows
+        // nothing outside the rects.
+        let pb = self.page_box;
+        let area = match self.shading_extent(name)? {
+            Some(b) => (b.0.max(pb.0), b.1.max(pb.1), b.2.min(pb.2), b.3.min(pb.3)),
+            None if self.gs.clip.is_none() => pb,
+            None => return Ok(None),
         };
         if !(area.0 < area.2 && area.1 < area.3) {
             return Ok(None);
@@ -1320,36 +1316,50 @@ impl<'a> DiagWalker<'a> {
             let core = (lo.max(0.0) <= hi.min(1.0)).then(|| (lo.max(0.0), hi.min(1.0)));
             (core, lo < 0.0 && ext.0, hi > 1.0 && ext.1)
         };
-        // The area less the rects (grown by the cut's slack), as
-        // overlapping strips, rect by rect.
+        // The area less the rects (grown by the cut's slack), rect by
+        // rect: as disjoint pieces (at most three more per rect) for what
+        // the outside shows, or as overlapping strips to paint in.
         let slack = 2.0 * crate::redact_geom::SLACK;
-        let mut pieces = vec![area];
-        let mut inside = Vec::new();
-        for r in self.rects {
-            let (x0, y0, x1, y1) = (r.llx - slack, r.lly - slack, r.urx + slack, r.ury + slack);
-            let mut next = Vec::new();
-            for p in pieces {
-                if p.2 <= x0 || p.0 >= x1 || p.3 <= y0 || p.1 >= y1 {
-                    next.push(p);
-                    continue;
-                }
-                inside.push((p.0.max(x0), p.1.max(y0), p.2.min(x1), p.3.min(y1)));
-                for q in [
-                    (p.0, p.1, x0.min(p.2), p.3),
-                    (x1.max(p.0), p.1, p.2, p.3),
-                    (p.0, p.1, p.2, y0.min(p.3)),
-                    (p.0, y1.max(p.1), p.2, p.3),
-                ] {
-                    if q.0 < q.2 && q.1 < q.3 {
-                        next.push(q);
+        let less =
+            |overlapping: bool| -> Option<(Vec<(f64, f64, f64, f64)>, Vec<(f64, f64, f64, f64)>)> {
+                let mut pieces = vec![area];
+                let mut inside = Vec::new();
+                for r in self.rects {
+                    let (x0, y0, x1, y1) =
+                        (r.llx - slack, r.lly - slack, r.urx + slack, r.ury + slack);
+                    let mut next = Vec::new();
+                    for p in pieces {
+                        if p.2 <= x0 || p.0 >= x1 || p.3 <= y0 || p.1 >= y1 {
+                            next.push(p);
+                            continue;
+                        }
+                        inside.push((p.0.max(x0), p.1.max(y0), p.2.min(x1), p.3.min(y1)));
+                        let (mx0, mx1) = if overlapping {
+                            (p.0, p.2)
+                        } else {
+                            (x0.max(p.0), x1.min(p.2))
+                        };
+                        for q in [
+                            (p.0, p.1, x0.min(p.2), p.3),
+                            (x1.max(p.0), p.1, p.2, p.3),
+                            (mx0, p.1, mx1, y0.min(p.3)),
+                            (mx0, y1.max(p.1), mx1, p.3),
+                        ] {
+                            if q.0 < q.2 && q.1 < q.3 {
+                                next.push(q);
+                            }
+                        }
+                    }
+                    pieces = next;
+                    if pieces.len() > 10_000 {
+                        return None;
                     }
                 }
-            }
-            pieces = next;
-            if pieces.len() > 1000 {
-                return Ok(None);
-            }
-        }
+                Some((pieces, inside))
+            };
+        let Some((pieces, inside)) = less(false) else {
+            return Ok(None);
+        };
         if inside.is_empty() {
             return Ok(None);
         }
@@ -1422,7 +1432,10 @@ impl<'a> DiagWalker<'a> {
             }]
         } else if self.gs.stroke.fill_opaque && self.gs.stroke.opaque.1 {
             // Overlapping strips: opaque paint shows the same twice.
-            pieces
+            let Some((strips, _)) = less(true).filter(|(s, _)| s.len() <= 1000) else {
+                return Ok(None);
+            };
+            strips
                 .iter()
                 .map(|p| ShadingClip {
                     area: user(p),
@@ -2122,8 +2135,18 @@ impl<'a> DiagWalker<'a> {
         if !(w.is_finite() && h.is_finite()) || xs == 0.0 || ys == 0.0 {
             return Ok(false);
         }
-        // `b` less the rects (rect by rect), as rectangles.
-        let mut parts = vec![*b];
+        // What the fill shows: `b` within the clip (known exactly, else
+        // not decided) and the page's box.
+        if !self.gs.clip_exact || !self.gs.clip_holes.is_empty() {
+            return Ok(false);
+        }
+        let pb = self.page_box;
+        let mut v = (b.0.max(pb.0), b.1.max(pb.1), b.2.min(pb.2), b.3.min(pb.3));
+        if let Some(c) = self.gs.clip {
+            v = (v.0.max(c.0), v.1.max(c.1), v.2.min(c.2), v.3.min(c.3));
+        }
+        // Less the rects (rect by rect), as rectangles with an area.
+        let mut parts = vec![v];
         for r in self.rects {
             let mut next = Vec::new();
             for p in parts {
@@ -2131,11 +2154,20 @@ impl<'a> DiagWalker<'a> {
                     next.push(p);
                     continue;
                 }
-                next.push((p.0, p.1, r.llx.min(p.2), p.3));
-                next.push((r.urx.max(p.0), p.1, p.2, p.3));
                 let (x0, x1) = (r.llx.max(p.0), r.urx.min(p.2));
-                next.push((x0, p.1, x1, r.lly.min(p.3)));
-                next.push((x0, r.ury.max(p.1), x1, p.3));
+                next.extend(
+                    [
+                        (p.0, p.1, r.llx.min(p.2), p.3),
+                        (r.urx.max(p.0), p.1, p.2, p.3),
+                        (x0, p.1, x1, r.lly.min(p.3)),
+                        (x0, r.ury.max(p.1), x1, p.3),
+                    ]
+                    .into_iter()
+                    .filter(|q| q.0 < q.2 && q.1 < q.3),
+                );
+            }
+            if next.len() > 1000 {
+                return Ok(false);
             }
             parts = next;
         }

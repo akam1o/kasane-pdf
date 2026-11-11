@@ -7885,3 +7885,74 @@ fn tiling_pattern_fills_crossing_a_rect() {
     let e = unsupported(run(&make(100, "50 50 80 80 re"), vec![rect]));
     assert!(e.contains("tiling pattern"), "{e}");
 }
+
+/// Review of the 0.10 cuts (fixed): a tiling pattern's period must show
+/// in what the fill actually shows outside the rects (its clip, the
+/// page), and many rects do not multiply the pieces looked at; an axial
+/// shading's colours must be shown outside on the page, not under a
+/// clip beyond it; a closed single curve is a shape and is clipped, not
+/// dropped.
+#[test]
+fn cut_criteria_follow_what_is_shown() {
+    // A pattern whose only ink (its cell's square) shows inside the
+    // rect once the clip is applied.
+    let pdf = one_page(
+        "50 50 80 80 re W n /Pattern cs /P scn 0 0 1000 1000 re f",
+        "/Resources << /Pattern << /P 30 0 R >> >>",
+        "",
+        vec![(
+            30,
+            stream_obj(
+                "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 100 100] /XStep 100 /YStep 100 \
+                 /Resources << >>",
+                b"0 0 1 rg 65 65 10 10 re f",
+            ),
+        )],
+    );
+    let e = unsupported(run(&pdf, vec![(60.0, 60.0, 120.0, 120.0)]));
+    assert!(e.contains("tiling pattern"), "{e}");
+    // Many nested rects: decided quickly.
+    let pdf = one_page(
+        "/Pattern cs /P scn 0 0 200 200 re f",
+        "/Resources << /Pattern << /P 30 0 R >> >>",
+        "",
+        vec![(
+            30,
+            stream_obj(
+                "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 4 4] /XStep 4 /YStep 4 /Resources << >>",
+                b"0 0 1 rg 0 0 2 2 re f",
+            ),
+        )],
+    );
+    let mut rects = vec![(10.0, 10.0, 190.0, 190.0)];
+    rects.extend((0..20).map(|i| (-(i as f64), -(i as f64), 10.0 + i as f64, 200.0 + i as f64)));
+    let start = std::time::Instant::now();
+    let _ = run(&pdf, rects);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(20),
+        "{:?}",
+        start.elapsed()
+    );
+    // A shading band only the rect shows on the page, its "outside"
+    // under a clip beyond the page.
+    let pdf = one_page(
+        "q -100 -100 400 400 re W n /Sh sh Q",
+        "/Resources << /Shading << /Sh 30 0 R >> >>",
+        "",
+        vec![(
+            30,
+            b"<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [-100 0 300 0] \
+              /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >>"
+                .to_vec(),
+        )],
+    );
+    let e = unsupported(run(&pdf, vec![(60.0, 0.0, 120.0, 200.0)]));
+    assert!(e.contains("shading"), "{e}");
+    // One closed cubic: clipped, its ink outside kept.
+    let pdf = one_page("0 g 50 50 m 50 180 180 50 50 50 c h f", "", "", vec![]);
+    let rect = (65.0, 65.0, 80.0, 80.0);
+    let r = run(&pdf, vec![rect]).unwrap();
+    assert_eq!(r.paths_cut, 1);
+    let lost = lost_outside(&reds(&pdf), &reds(&r.output), rect);
+    assert!(lost < 100, "{lost} pixels lost outside");
+}
