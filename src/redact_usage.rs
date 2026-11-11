@@ -288,6 +288,8 @@ fn flags_shown(doc: &Document, ad: &Dict) -> Result<bool, Error> {
 /// absent) with its `/ON` and `/OFF` exceptions.
 struct OcDefault {
     base_on: bool,
+    /// The configuration's `/Intent` is viewing (absent: `/View`).
+    view_intent: bool,
     on: HashSet<IndirectRef>,
     off: HashSet<IndirectRef>,
 }
@@ -296,6 +298,7 @@ impl OcDefault {
     fn of(doc: &Document) -> Result<OcDefault, Error> {
         let mut oc = OcDefault {
             base_on: true,
+            view_intent: true,
             on: HashSet::new(),
             off: HashSet::new(),
         };
@@ -310,6 +313,13 @@ impl OcDefault {
         let Some(d) = d.as_dict() else { return Ok(oc) };
         if let Some(b) = d.get(b"BaseState".as_slice()) {
             oc.base_on = doc.deref(b)?.as_name() == Some(b"ON");
+        }
+        if let Some(i) = d.get(b"Intent".as_slice()) {
+            oc.view_intent = match doc.deref(i)? {
+                Object::Name(n) => n.as_slice() == b"View",
+                Object::Array(a) => a.len() == 1 && a[0].as_name() == Some(b"View"),
+                _ => false,
+            };
         }
         for (k, set) in [(b"ON".as_slice(), &mut oc.on), (b"OFF", &mut oc.off)] {
             if let Some(a) = d.get(k) {
@@ -351,13 +361,132 @@ impl OcDefault {
         let is_group = g
             .as_dict()
             .is_some_and(|d| d.get(b"Type".as_slice()).and_then(|t| t.as_name()) == Some(b"OCG"));
+        // `/OFF` applies after `/ON` (as mutool, Poppler and pdf.js
+        // read a group in both); a group whose usage turns it off for
+        // viewing, printing or export, or a configuration for an intent
+        // other than viewing, counts as off (readers differ on them).
+        let usage_off = g
+            .as_dict()
+            .and_then(|d| d.get(b"Usage".as_slice()))
+            .map(|u| usage_turns_off(doc, u))
+            .transpose()?
+            .unwrap_or(false);
         Ok(is_group
-            && if self.base_on {
-                !self.off.contains(r)
-            } else {
-                self.on.contains(r)
-            })
+            && self.view_intent
+            && !usage_off
+            && (self.base_on || self.on.contains(r))
+            && !self.off.contains(r))
     }
+}
+
+/// Whether a group's `/Usage` (§8.11.4.4, Table 102) sets a view, print
+/// or export state OFF, or is not a dictionary.
+fn usage_turns_off(doc: &Document, u: &Object) -> Result<bool, Error> {
+    let u = doc.deref(u)?;
+    let Some(u) = u.as_dict() else {
+        return Ok(true);
+    };
+    for (k, state) in [
+        (b"View".as_slice(), b"ViewState".as_slice()),
+        (b"Print", b"PrintState"),
+        (b"Export", b"ExportState"),
+    ] {
+        if let Some(v) = u.get(k) {
+            let v = doc.deref(v)?;
+            let st = v
+                .as_dict()
+                .and_then(|d| d.get(state))
+                .map(|s| doc.deref(s))
+                .transpose()?;
+            if st.as_ref().and_then(|s| s.as_name()) == Some(b"OFF") {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// The value of field attribute `key` of widget `ad`, its own or
+/// inherited through `/Parent` (§12.7.4.1).
+fn field_attr(doc: &Document, ad: &Dict, key: &[u8]) -> Result<Option<Object>, Error> {
+    let mut cur = ad.clone();
+    for _ in 0..32 {
+        if let Some(v) = cur.get(key) {
+            return Ok(Some(doc.deref(v)?));
+        }
+        match cur
+            .get(b"Parent".as_slice())
+            .map(|p| doc.deref(p))
+            .transpose()?
+        {
+            Some(Object::Dict(p)) => cur = p,
+            _ => return Ok(None),
+        }
+    }
+    Ok(None)
+}
+
+/// Which appearances of widget `ad` a reader presents as it is used
+/// (§12.7.5.2): a button field's that is not read only and has an area —
+/// a checkbox's or radio button's normal states (an off state and one
+/// on state), a push button's down and rollover appearances. `None`: the
+/// annotation shows its selected normal appearance only.
+fn interactive_appearances(doc: &Document, ad: &Dict) -> Result<Option<Interactive>, Error> {
+    if ad.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) != Some(b"Widget") {
+        return Ok(None);
+    }
+    if field_attr(doc, ad, b"FT")?
+        .as_ref()
+        .and_then(|f| f.as_name())
+        != Some(b"Btn")
+    {
+        return Ok(None);
+    }
+    let ff = match field_attr(doc, ad, b"Ff")? {
+        None => 0,
+        Some(Object::Integer(i)) => i,
+        Some(_) => return Ok(None),
+    };
+    let flags = match ad.get(b"F".as_slice()).map(|f| doc.deref(f)).transpose()? {
+        None => 0,
+        Some(Object::Integer(i)) => i,
+        Some(_) => return Ok(None),
+    };
+    // Read only (field bit 1, annotation flag 64), or locked (128).
+    if ff & 1 != 0 || flags & (64 | 128) != 0 {
+        return Ok(None);
+    }
+    let area = match ad
+        .get(b"Rect".as_slice())
+        .map(|r| doc.deref(r))
+        .transpose()?
+    {
+        Some(Object::Array(a)) if a.len() == 4 => {
+            let n: Vec<f64> = a.iter().filter_map(|x| x.as_number()).collect();
+            n.len() == 4 && (n[2] - n[0]).abs() > 0.0 && (n[3] - n[1]).abs() > 0.0
+        }
+        _ => false,
+    };
+    if !area {
+        return Ok(None);
+    }
+    if ff & (1 << 16) != 0 {
+        // A push button presents its down appearance only with the push
+        // highlighting mode (`/H /P`; the default inverts the normal one).
+        let push = ad.get(b"H".as_slice()).map(|h| doc.deref(h)).transpose()?;
+        let push = push.as_ref().and_then(|h| h.as_name()) == Some(b"P");
+        return Ok(Some(Interactive::PushButton { down: push }));
+    }
+    Ok(Some(Interactive::States))
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Interactive {
+    /// A checkbox or radio button: its normal states.
+    States,
+    /// A push button: its normal and rollover appearances, and its down
+    /// one when it highlights by pushing.
+    PushButton { down: bool },
 }
 
 /// `o` written canonically (references as references, dictionary keys
@@ -498,6 +627,8 @@ struct Walk<'a> {
     /// loaded.
     anon_ids: HashMap<Canon, u64>,
     loaded_direct: HashMap<Canon, Option<Type3>>,
+    /// Per page: direct fonts selected, by resources and name.
+    direct_fonts: HashMap<(ResId, Vec<u8>), Option<Type3>>,
     /// Canonical bytes, interned for the whole walk.
     interned: HashSet<Rc<[u8]>>,
     /// Per page: what a resource entry selected contributes to a state
@@ -541,6 +672,7 @@ pub(crate) fn usage_of(
         seen_frames: HashSet::new(),
         anon_ids: HashMap::new(),
         loaded_direct: HashMap::new(),
+        direct_fonts: HashMap::new(),
         interned: HashSet::new(),
         selected: HashMap::new(),
         oc: OcDefault::of(doc)?,
@@ -557,6 +689,7 @@ pub(crate) fn usage_of(
         w.budget = 0;
         w.seen_frames.clear();
         w.selected.clear();
+        w.direct_fonts.clear();
         w.seen_fonts.clear();
         w.undecided_here = false;
         w.walk_page(page)?;
@@ -687,22 +820,40 @@ impl Walk<'_> {
                 // A widget shows every state and its down and rollover
                 // appearances as it is used; other annotations show the
                 // normal appearance in the state `/AS` selects.
-                let interactive =
-                    ad.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Widget");
-                let under = under && !interactive;
+                let interactive = if under {
+                    interactive_appearances(doc, ad)?
+                } else {
+                    None
+                };
                 let selected = match ad.get(b"AS".as_slice()).map(|a| doc.deref(a)).transpose()? {
                     Some(Object::Name(n)) => Some(n),
                     _ => None,
                 };
                 if let Some(ap) = ad.get(b"AP".as_slice()) {
                     let ap = doc.deref(ap)?;
-                    let keys: &[&[u8]] = if under { &[b"N"] } else { &[b"N", b"R", b"D"] };
+                    let keys: &[&[u8]] = match (under, interactive) {
+                        (false, _) | (true, Some(Interactive::PushButton { down: true })) => {
+                            &[b"N", b"R", b"D"]
+                        }
+                        (true, Some(Interactive::PushButton { down: false })) => &[b"N", b"R"],
+                        _ => &[b"N"],
+                    };
                     for k in keys {
                         let Some(v) = ap.as_dict().and_then(|d| d.get(*k)) else {
                             continue;
                         };
+                        // A checkbox's or radio button's normal states:
+                        // all of them when they are an off state and one
+                        // on state (what clicking it shows).
+                        let toggles = |s: &crate::object::Dict| {
+                            interactive == Some(Interactive::States)
+                                && *k == b"N"
+                                && s.len() == 2
+                                && s.contains_key(b"Off".as_slice())
+                        };
                         let pick = |s: crate::object::Dict| -> Vec<Object> {
-                            if under {
+                            let push = matches!(interactive, Some(Interactive::PushButton { .. }));
+                            if under && !toggles(&s) && !push {
                                 selected
                                     .as_ref()
                                     .and_then(|n| s.get(n.as_slice()).cloned())
@@ -886,9 +1037,21 @@ impl Walk<'_> {
                 Operation::SaveState => saved.push(st.clone()),
                 Operation::RestoreState => st = saved.pop().unwrap_or_default(),
                 Operation::SetTextFont { font: name, .. } => {
-                    st.font = match self.resource(&f.res, "Font", name) {
-                        Some(o) => self.select_font(&o)?,
-                        None => None,
+                    // A direct font: selected once per page and name (its
+                    // dictionary is not read and canonicalised per `Tf`).
+                    let k = (f.res_id, name.to_vec());
+                    st.font = match self.direct_fonts.get(&k) {
+                        Some(t3) => t3.clone(),
+                        None => match self.resource(&f.res, "Font", name) {
+                            Some(o) => {
+                                let t3 = self.select_font(&o)?;
+                                if !matches!(o, Object::Ref(_)) {
+                                    self.direct_fonts.insert(k, t3.clone());
+                                }
+                                t3
+                            }
+                            None => None,
+                        },
                     };
                 }
                 Operation::SetTextRenderingMode(m) => st.render = *m,
@@ -2036,6 +2199,24 @@ mod tests {
         assert!(t.elapsed().as_secs() < 5, "{:?}", t.elapsed());
     }
 
+    /// A group whose usage turns it off for viewing (mutool and pdf.js
+    /// hide it, Poppler does not) counts as off over the output.
+    #[test]
+    fn optional_content_usage_off() {
+        let bytes = pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [20 0 R] /D << >> >> >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R /Resources << /Properties << /L 20 0 R >> /XObject << /Im 9 0 R >> >> >>".to_vec()),
+            (4, stream("", b"/OC /L BDC q 20 0 0 20 10 10 cm /Im Do Q EMC")),
+            (8, stream("", b"\x01\x02\x03\xf1\xf2\xf3")),
+            (9, stream("/Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace [/Indexed /DeviceRGB 1 8 0 R]", b"\x00")),
+            (20, b"<< /Type /OCG /Name (layer) /Usage << /View << /ViewState /OFF >> >> >>".to_vec()),
+        ]);
+        let doc = Document::from_bytes(&bytes).unwrap();
+        let u = usage(&doc, &|_| true, Bound::Under, &Limits::default()).unwrap();
+        assert!(!u.used.contains_key(&IndirectRef::new(8, 0)));
+    }
+
     /// Optional content: a group on in the default configuration is
     /// drawn (over the output, too); one off, or named by an automatic
     /// state (`/AS`, which readers apply differently), is not. (Review.)
@@ -2049,7 +2230,7 @@ mod tests {
                 (4, stream("", b"/OC /L BDC q 20 0 0 20 10 10 cm /Im Do Q EMC")),
                 (8, stream("", b"\x01\x02\x03\xf1\xf2\xf3")),
                 (9, stream("/Type /XObject /Subtype /Image /Width 1 /Height 1 /BitsPerComponent 8 /ColorSpace [/Indexed /DeviceRGB 1 8 0 R]", b"\x00")),
-                (20, b"<< /Type /OCG /Name (layer) /Usage << /View << /ViewState /OFF >> >> >>".to_vec()),
+                (20, b"<< /Type /OCG /Name (layer) >>".to_vec()),
             ])
         };
         for (d, drawn) in [
@@ -2062,6 +2243,10 @@ mod tests {
                 "/BaseState /ON /AS [<< /Event /View /OCGs [20 0 R] /Category [/View] >>]",
                 false,
             ),
+            // `/OFF` after `/ON`; an intent other than viewing.
+            ("/BaseState /OFF /ON [20 0 R] /OFF [20 0 R]", false),
+            ("/Intent /Design", false),
+            ("/Intent [/View]", true),
         ] {
             let doc = Document::from_bytes(&make(d)).unwrap();
             let u = usage(&doc, &|_| true, Bound::Under, &Limits::default()).unwrap();

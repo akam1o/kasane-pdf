@@ -89,9 +89,10 @@ property cannot be decided).
   output — a stream's included, at any depth — has its content, except
   the entries of an output page's `/Annots` themselves (by identity: an
   annotation alike elsewhere is not excused). Its appearance streams and what they draw
-  are gone, or still drawn: as the normal appearance of the selected
-  state of an annotation neither Hidden nor NoView nor under optional
-  content, or by page content outside optional content (reported).
+  are gone, or still drawn as the lower bound of section 4.2 counts it
+  (an annotation shown, its selected normal appearance — or a button's
+  states and appearances as it presents them when used —, page content
+  outside optional content that is off) and reported in `elsewhere`.
 - **N** — An indirect action or destination object a removed link
   shares with something kept (an outline, a private entry) stays; it is
   reported as residual action data and as uninspected
@@ -237,12 +238,16 @@ A failed check is an error and no output.
   excused copy.
   Over the output, to excuse a copy, the walk counts only what a reader
   draws: an annotation shown (an integer `/F` without Hidden or NoView,
-  no `/OC` or one the default configuration turns on) — its normal
-  appearance in the state `/AS` selects, or, for a widget, which shows
-  them as it is used, every state and its down and rollover
-  appearances; page and form content outside `BDC /OC` sequences and
-  XObjects with `/OC` whose group is off by default (a membership
-  dictionary counts as off); an appearance without `/Resources`
+  no `/OC` or one on by default) — its normal appearance in the state
+  `/AS` selects; for a button field that is neither read only nor
+  locked and has an area, what it presents as it is used (a checkbox's
+  or radio button's off and on states, a push button's rollover
+  appearance and, with `/H /P`, its down one); page and form content
+  outside `BDC /OC` sequences and XObjects with `/OC` whose group is
+  off by default. A group is on only if the default configuration
+  (intent `/View`) turns it on (`/OFF` after `/ON`), no automatic state
+  names it and its `/Usage` turns nothing off; a membership dictionary
+  counts as off; an appearance without `/Resources`
   resolving nothing (pdf.js). The other bounds resolve such an
   appearance in the page's resources (mutool, Poppler). Non-interference uses a third bound on both
   sides — everything a reader may draw (every appearance and state,

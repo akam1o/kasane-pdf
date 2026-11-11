@@ -5882,12 +5882,42 @@ fn removed_appearance_is_not_excused_by_what_is_not_drawn() {
         (
             "widget state",
             page_with(
-                &other("/Subtype /Widget /AS /Off /AP << /N << /Off 33 0 R /On 31 0 R >> >>").replace("/Subtype /Link ", ""),
+                &other("/Subtype /Widget /FT /Btn /AS /Off /AP << /N << /Off 33 0 R /On 31 0 R >> >>").replace("/Subtype /Link ", ""),
                 "0 0 5 5 re f",
                 "",
             ),
         ),
     ];
+    // A widget that does not present other states as it is used — a
+    // text field, a read-only checkbox, a field-less widget — does not
+    // keep it.
+    for (name, extra) in [
+        (
+            "text field",
+            "/Subtype /Widget /FT /Tx /AS /Off /AP << /N << /Off 33 0 R /On 31 0 R >> >>",
+        ),
+        (
+            "read only",
+            "/Subtype /Widget /FT /Btn /Ff 1 /AS /Off /AP << /N << /Off 33 0 R /On 31 0 R >> >>",
+        ),
+        (
+            "no field",
+            "/Subtype /Widget /AS /Off /AP << /N << /Off 33 0 R /On 31 0 R >> >>",
+        ),
+        (
+            "push button down",
+            "/Subtype /Widget /FT /Btn /Ff 65536 /AP << /N 33 0 R /D 31 0 R >>",
+        ),
+    ] {
+        let pdf = page_with(
+            &other(extra).replace("/Subtype /Link ", ""),
+            "0 0 5 5 re f",
+            "",
+        );
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let e = unsupported(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()));
+        assert!(e.contains("failed verification"), "{name}: {e}");
+    }
     for (name, pdf) in shown {
         let doc = Document::from_bytes(&pdf).unwrap();
         let r = redact(&doc, &[(0, vec![RECT])], &RedactOptions::new())
