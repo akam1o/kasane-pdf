@@ -8459,3 +8459,56 @@ fn embedded_codes_readers_resolve_differently() {
     ));
     assert!(e.contains("cannot be read"), "{e}");
 }
+
+/// A TrueType glyph whose `hmtx` bearing disagrees with its outline's
+/// `xMin` is drawn shifted by some readers (MuPDF, Poppler) and in place
+/// by others (pdf.js): both positions are its extent.
+#[test]
+fn truetype_bearings_readers_apply_differently() {
+    let mut ff = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fonts/liberation/LiberationSans-Regular.ttf"
+    ))
+    .unwrap();
+    let (gid, x_min) = {
+        let face = ttf_parser::Face::parse(&ff, 0).unwrap();
+        let g = face.glyph_index('_').unwrap();
+        (g.0 as usize, face.glyph_bounding_box(g).unwrap().x_min)
+    };
+    // The `hmtx` table: the glyph's bearing one em past its `xMin`.
+    let n = u16::from_be_bytes([ff[4], ff[5]]) as usize;
+    let hmtx = (0..n)
+        .map(|i| 12 + 16 * i)
+        .find(|&r| &ff[r..r + 4] == b"hmtx")
+        .map(|r| u32::from_be_bytes(ff[r + 8..r + 12].try_into().unwrap()) as usize)
+        .unwrap();
+    let at = hmtx + 4 * gid + 2;
+    ff[at..at + 2].copy_from_slice(&(x_min + 2048).to_be_bytes());
+    let pdf = doc_with(
+        "/Font << /F 50 0 R >>",
+        &[b"BT /F 60 Tf 60 80 Td <5F> Tj ET"],
+        vec![
+            (
+                50,
+                format!(
+                    "<< /Type /Font /Subtype /TrueType /BaseFont /LiberationSans /FirstChar 32 /LastChar 126 \
+                     /Widths [{}] /Encoding /WinAnsiEncoding /FontDescriptor 51 0 R >>",
+                    ["556"; 95].join(" ")
+                )
+                .into_bytes(),
+            ),
+            (
+                51,
+                b"<< /Type /FontDescriptor /FontName /LiberationSans /Flags 32 /FontBBox [-200 -300 1200 1000] \
+                  /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 /FontFile2 52 0 R >>"
+                    .to_vec(),
+            ),
+            (52, stream_obj(&format!("/Length1 {}", ff.len()), &ff)),
+        ],
+    );
+    // Where pdf.js draws it (in place), and where the shift puts it.
+    for rect in [(60.0, 60.0, 90.0, 79.0), (122.0, 60.0, 150.0, 79.0)] {
+        let r = run(&pdf, vec![rect]).unwrap();
+        assert_eq!(r.codes_removed, 1, "{rect:?}");
+    }
+}

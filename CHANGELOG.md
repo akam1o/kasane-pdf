@@ -101,6 +101,9 @@ release.
   Unicode (0.6.0–0.8.0). Its extent is now every glyph the program can
   draw, so such a code near a rect may go where 0.8.0 kept it; a
   program one of whose glyphs cannot be read is refused for it.
+- A TrueType glyph whose `hmtx` bearing disagrees with its outline is
+  drawn shifted by MuPDF and Poppler and in place by pdf.js; `redact`
+  took only the shifted position (0.6.0–0.8.0). Both are now its extent.
 - A refusal naming a long chain of references elides the middle of
   the route past 200 characters (it was as long as the chain).
 

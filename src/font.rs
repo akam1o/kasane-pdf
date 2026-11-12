@@ -1158,6 +1158,13 @@ impl SimpleFont {
         Ok(outline_glyph_lsb_adjusted(&face, glyph, builder))
     }
 
+    /// The horizontal shift (font units) the outline is drawn with to
+    /// honour the `hmtx` bearing (see `tt_lsb_shift`); readers that do
+    /// not apply it (pdf.js) draw the outline that much to the left.
+    pub(crate) fn bearing_shift(&self, glyph: GlyphId) -> Result<f64, Error> {
+        Ok(tt_lsb_shift(&*self.face()?, glyph) as f64)
+    }
+
     /// Resolve `code` to a Unicode string, in the priority order of
     /// §9.10.2:
     /// 1. `/ToUnicode` CMap — if present (a code it does not map has
@@ -1210,8 +1217,10 @@ impl SimpleFont {
         }
         let face = self.face()?;
         self.reach.get(|p| {
+            // Each glyph as drawn with its bearing and without.
             for g in 0..face.number_of_glyphs() {
                 face.outline_glyph(GlyphId(g), &mut Points(p));
+                outline_glyph_lsb_adjusted(&face, GlyphId(g), &mut Points(p));
             }
             true
         })
@@ -2643,6 +2652,22 @@ impl Font {
             Font::Type1(f) => f.unnamed_glyph_reach(code as u8),
             Font::Simple(f) => f.unnamed_glyph_reach(code as u8),
             _ => Ok(None),
+        }
+    }
+
+    /// The bearing shift a TrueType outline is drawn with (font units;
+    /// 0 for other programs): readers that ignore it draw the glyph
+    /// that much to the left.
+    pub(crate) fn bearing_shift(&self, glyph: GlyphId) -> Result<f64, Error> {
+        match self {
+            Font::Simple(f) => f.bearing_shift(glyph),
+            Font::Composite(f) => match f.kind {
+                CidProgram::OpenType | CidProgram::TrueType => {
+                    Ok(tt_lsb_shift(&*f.face()?, glyph) as f64)
+                }
+                CidProgram::Cff => Ok(0.0),
+            },
+            _ => Ok(0.0),
         }
     }
 

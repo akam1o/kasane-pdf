@@ -2722,11 +2722,20 @@ impl<'a> DiagWalker<'a> {
                     Ok(true) => match gp.finish() {
                         Some(path) => {
                             let b = path.bounds();
+                            // Readers that ignore a TrueType bearing
+                            // draw the outline shifted back by it: both.
+                            let shift = match font.bearing_shift(gid) {
+                                Ok(s) => m.transform(s, 0.0).0 - m.transform(0.0, 0.0).0,
+                                Err(e) => return self.glyph_error(code, e),
+                            };
+                            let (l, r) = (b.left() as f64, b.right() as f64);
+                            let (l, r) = (l.min(l - shift), r.max(r - shift));
+                            let (t, bo) = (b.top() as f64, b.bottom() as f64);
                             let corners = [
-                                trm.transform(b.left() as f64, b.top() as f64),
-                                trm.transform(b.right() as f64, b.bottom() as f64),
-                                trm.transform(b.left() as f64, b.bottom() as f64),
-                                trm.transform(b.right() as f64, b.top() as f64),
+                                trm.transform(l, t),
+                                trm.transform(r, bo),
+                                trm.transform(l, bo),
+                                trm.transform(r, t),
                             ];
                             (
                                 (

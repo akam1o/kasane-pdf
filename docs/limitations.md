@@ -67,7 +67,8 @@ are on the [roadmap](architecture.md#roadmap).
   (0.10) takes its extent as every glyph the program can draw, so such a
   code goes when any of them could meet a rect, and is refused when one
   of the program's glyphs cannot be read. The bounds are computed once
-  per font object.
+  per font object. A TrueType glyph whose `hmtx` bearing disagrees with
+  its outline is taken at both positions readers draw it at.
 - **Non-embedded fonts**: Symbol and ZapfDingbats draw with a bundled
   DejaVu Sans subset through their built-in encodings and the Adobe
   AFM widths (`SubstKind::SymbolFallback`) — glyph shapes differ from
