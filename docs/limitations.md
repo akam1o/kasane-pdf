@@ -57,8 +57,15 @@ are on the [roadmap](architecture.md#roadmap).
 - **Non-embedded fonts in `redact`**: refused, since readers choose the
   glyphs; with `embed_substitute_fonts` a Latin Standard 14 font or its
   metric-compatible alias is embedded first — Type 1, and from 0.10 a
-  non-symbolic simple TrueType font (ArialMT …). Symbolic TrueType,
-  other names and CID fonts stay refused.
+  non-symbolic simple TrueType font (ArialMT …). A code whose glyph the
+  substitute cannot name is written as its blank space glyph (readers
+  draw `.notdef` differently). Symbolic TrueType, other names and CID
+  fonts stay refused. In an *embedded* Type 1 program, a code whose
+  encoding names a glyph the program lacks (or `.notdef`) is drawn
+  differently by readers (MuPDF falls back to the program's own
+  encoding): `redact` (0.10) takes its extent as every glyph the
+  program can draw, so such a code goes when any of them could meet a
+  rect.
 - **Non-embedded fonts**: Symbol and ZapfDingbats draw with a bundled
   DejaVu Sans subset through their built-in encodings and the Adobe
   AFM widths (`SubstKind::SymbolFallback`) — glyph shapes differ from
@@ -221,14 +228,14 @@ are on the [roadmap](architecture.md#roadmap).
   marked-content sequence relates to no element. Trees that cannot be
   edited exactly (cycles, kids of unknown kinds, a touched element
   written inside another object) are refused.
-- **Redaction verification** (0.9): the use invariant compares streams
+- **Redaction verification** (0.10): the use invariant compares streams
   by digest — a copy re-encoded with other filters, or the same picture
   stored differently, is not recognised; font programs, a font's code
   data and ICC profiles are not held to it (a font only the removed text
   used may stay in the page's resources with its program; it reveals
   the font's glyph repertoire); dictionaries other than annotations are
   compared only through the structure-tree and string checks.
-- **Data of removed annotations** (0.9): what a removed annotation or
+- **Data of removed annotations** (0.10): what a removed annotation or
   field held stays when something that uses it keeps it — a kept link,
   widget or screen's action (a hidden, zero-area or off-page kept link
   counts), any kept annotation's defined keys, a form field (one without
@@ -249,29 +256,29 @@ are on the [roadmap](architecture.md#roadmap).
   references to one object exceeds `max_reference_depth` and is
   refused. Readers that ignore generation numbers (MuPDF) may read a
   reference to another generation as the object kasane leaves alone.
-- **Optional content membership on forms and images** (0.9): an edited
+- **Optional content membership on forms and images** (0.10): an edited
   page drawing a form or image XObject whose `/OC` is a membership
   dictionary (`/OCMD`) is refused: the output's use check counts a
   membership dictionary as off, so the form looks carried without use
   (`docs/redaction-safety-model.md`, section 4.2). 0.8.0 accepted such
   pages.
-- **Appearances of kept annotations** (0.9): a shown annotation kept as
+- **Appearances of kept annotations** (0.10): a shown annotation kept as
   it was keeps its own appearance streams (every state, down and
   rollover), and the same bytes as removed content there are reported;
   what an appearance it does not draw now draws in turn (a nested form,
   an image) is not excused, so such a page may be refused although the
   redaction touches no annotation (the safe direction).
-- **Optional content over the output** (0.9): content under a group is
+- **Optional content over the output** (0.10): content under a group is
   counted as drawn only when the default viewing configuration turns
   it on, no automatic state (`/AS`) names it and its `/Usage` turns
   nothing off; a configuration with another or an empty `/Intent`, or
   `/BaseState /Unchanged`, counts as off. Some documents all readers
   draw are refused for this (the safe direction).
-- **Drawn off the page** (0.9): a removed appearance or edited original
+- **Drawn off the page** (0.10): a removed appearance or edited original
   that another page's content still draws counts as drawn even when it
   lies outside that page's boxes; it is reported in `elsewhere`, and
   `refuse_copies_elsewhere` refuses it.
-- **Form fields** (0.9): a widget's field leaves the form only when no
+- **Form fields** (0.10): a widget's field leaves the form only when no
   widget of it is left; a field keeping a widget keeps its value
   (reported in `elsewhere`) if a kept widget is shown and, for a
   button, shows the value's state; otherwise refused. Signature fields,
@@ -289,14 +296,24 @@ are on the [roadmap](architecture.md#roadmap).
   as the fill of one axis-aligned rectangle in page content whose part
   outside the rects holds a whole period; text, strokes and other
   shapes painted with one stay refused. Cut shadings and patterns keep
-  their data whole (nothing in it only the rect showed).
+  their data whole: the shading dictionary, its function (every sample
+  or coefficient), the pattern's cell stream and resources stay in the
+  output and are readable with any PDF parser. The cut is accepted only
+  when nothing in that data was shown by the rects alone — every
+  position of the axis the rects showed, every phase of the period, is
+  shown outside them on the page — so what stays is what the page still
+  shows, plus what no part of the page ever showed (function values
+  beyond the painted positions, a cell's content outside its `/BBox`):
+  data the original carried hidden, which `redact` does not search.
 - **XFA forms** (0.10): with `remove_javascript`, or when
   `remove_annotations` edits form fields, an XFA form beside its
   AcroForm is removed (`Redaction::xfa_removed`): its packets hold the
   scripts and a copy of the field values. Readers that render XFA
   (Acrobat) then show the AcroForm. A form readers must render from
   XFA alone (`/NeedsRendering true`) is refused, and so is a packet
-  something else still refers to.
+  something else still refers to (directly or through a chain of
+  references), a copy of a packet's bytes (stored or decoded) anywhere
+  in the output, in any role, and a signed document.
 - **Annotations drawn away from `/Rect`** (0.10): an annotation with
   NoZoom or NoRotate kept on an edited page is refused (its appearance
   may be drawn elsewhere at another zoom), except a popup without an
@@ -306,6 +323,43 @@ are on the [roadmap](architecture.md#roadmap).
   `refuse_uninspected`; that mode is not a proof that no copy of the
   removed content remains (images and fonts are interpreted, not
   searched; no byte search is made).
+- **Nesting and size limits in `redact`** (refused, never cut short):
+  forms nested more than 16 deep; a form field tree deeper than 64; a
+  chain of references longer than `max_reference_depth`; the `Limits`
+  of the document
+  (operations, codes, images) as for rendering.
+- **Complexity limits in `redact`** (0.10, refused): a filled shape
+  whose cut against the rects exceeds the cut budget (many word rects
+  over one large curved fill, for instance); a shading or tiling fill
+  whose area outside the rects splits into too many pieces. The
+  pieces grow at most linearly with the rects (measured: 223 rects over
+  one shading, 0.01 s).
+- **Shared objects in `redact`**: an edited form or image is copied
+  for the invocation that draws it inside a rect; other invocations and
+  pages keep the original, reported in `elsewhere`. A content stream an
+  edited page shares with another page stays as that page's contents
+  (reported). A shading or tiling pattern that is removed, cut or
+  painted across a rect and reached from anywhere else (another page,
+  a form, a pattern, shared resources) is refused; one only kept is
+  carried as it is.
+- **Data in what `redact` keeps**: kept annotations, form fields,
+  outlines, resources (fonts, colour spaces, functions, unused resource
+  entries), attachments and other kept objects are carried as they
+  are: their own text, values and data stay, and `redact` searches only
+  the removed text in them (`elsewhere`). A font the removed text
+  used stays with its whole program (its glyph repertoire, not where
+  the glyphs were drawn).
+- **`refuse_copies_elsewhere` and `refuse_uninspected`**:
+  `refuse_copies_elsewhere` refuses when removed text (runs of four or
+  more characters) is found again in the output — other pages'
+  extracted text, objects' strings — when an edited original image or
+  form is still drawn, or when a page could not be searched; it does
+  not find the information in another form (shorter runs, other
+  encodings, text inside images or fonts).
+  `refuse_uninspected` refuses when the output carries data `redact`
+  does not read (listed in `Redaction::uninspected`); it does not
+  search interpreted data (images, fonts). Neither is a proof that no
+  copy of the removed content remains.
 - **Incremental save** cannot delete bytes (a removed annotation's
   object stays in the file), refuses recovered documents, encrypted
   documents and non-zero-generation references, and only appends the

@@ -135,19 +135,32 @@ but external tools are used to *confirm* behaviour on real files:
 - [`../tests/redact_inventory.rs`](../tests/redact_inventory.rs) — the
   inventory of uninspected data and `refuse_uninspected`.
 
-### Redaction: generated documents and advisories (0.9)
+### Redaction: generated documents and advisories (0.10)
 
 - `tests/redact_model.rs` (generator: `tests/model/mod.rs`) builds
   documents in two variants that differ only in what lies inside the
-  rect on page 1 — text, image samples, glyph procedures, appearance
-  drawings, alternate text, annotation text, form field values — with
+  rect on page 1 — text (visible, invisible, under an optional content
+  group that is off), image samples, glyph procedures, appearance
+  drawings, alternate text, annotation text (of hidden annotations
+  too), form field values, a thumbnail, the path of a filled shape
+  inside the rect — and filled shapes, an axial shading band and a
+  tiling fill crossing it, with
   shared and nested forms, inherited resources, annotations, form
   fields, a structure tree, Type 3 fonts, references to secret objects
   from places that draw nothing, identical copies, dangling,
   wrong-generation and cyclic references, object streams and incremental
   updates. Both variants must redact to the same bytes (or be refused
   alike), and a success must keep every public text. 160 seeds by
-  default; `KASANE_MODEL_SEEDS=N` for more.
+  default; `KASANE_MODEL_SEEDS=N` for more. Equal bytes cover at once
+  what is drawn, the extractable text, every object and the reference
+  graph. What the model does not establish: secrets of a kind or in a
+  place the generator does not produce (it is not a proof over all
+  PDFs); data that differs outside the rect (kept by design, and data
+  kept objects carry whole, such as a cut shading's function, is
+  identical in both variants by construction); how other readers draw
+  the output (the external checks and the advisory tests do that).
+  Passing it is evidence for the verification, not a proof that every
+  copy of the removed content is gone.
 - `fuzz/fuzz_targets/redact_model.rs` drives the same generator from the
   fuzzer's bytes: a false success fails like a crash (PR smoke, nightly).
 - `tests/redact_advisories.rs`: one test per published advisory;

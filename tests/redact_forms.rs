@@ -1,4 +1,4 @@
-//! `redact` with `remove_annotations` on form fields (0.9): a widget
+//! `redact` with `remove_annotations` on form fields (0.10): a widget
 //! meeting a rect goes, and its field with it when no widget of the
 //! field is left — the value, its description and its place in `/CO`
 //! too. A field keeping a widget elsewhere keeps its value (shown there,

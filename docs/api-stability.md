@@ -104,17 +104,22 @@ patch release.
   class of input is refused with `max_pattern_tiles`, and `rewrite`
   carries `/OCProperties`.
 
-## 0.9.0
+## 0.10.0
 
-- Additive: `Redaction::fields_removed` (the struct is
-  `#[non_exhaustive]`). `cargo semver-checks` against 0.8.0: no semver
-  update required.
+(0.9.0 was not released; its changes are part of 0.10.0.)
+
+- Additive: `Redaction::{fields_removed, shadings_cut, xfa_removed}`
+  (the struct is `#[non_exhaustive]`). `cargo semver-checks` against
+  0.8.0: no semver update required.
 - Behaviour: `redact` refuses more outputs it cannot verify (removed
   annotations, fields or their actions kept by other references; colour
   data and other content-bearing streams a removed drawing used, kept
-  unused) and accepts widgets, low-bit images, filter chains, CCITT and
-  JBIG2 images it refused before. Callers matching refusal messages
-  should match `Error::Unsupported` instead.
+  unused; copies of removed XFA packets) and accepts what it refused
+  before: widgets, low-bit images, filter chains, CCITT and JBIG2
+  images, filled shapes, axial shadings and tiling fills crossing a
+  rect, hybrid XFA forms, the catalog `/AA` after script removal, bare
+  popups, substitutes of non-embedded TrueType fonts. Callers matching
+  refusal messages should match `Error::Unsupported` instead.
 
 ## 0.8.0
 
