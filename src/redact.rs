@@ -869,7 +869,8 @@ fn short_path(path: &str) -> String {
 }
 
 /// No stream of the output — indirect or written inside another object —
-/// stores or decodes to the bytes of a removed XFA packet.
+/// stores or decodes to the bytes of a removed XFA packet, and no string
+/// holds them.
 fn verify_xfa_gone(
     out: &Document,
     idx: &crate::redact_verify::Index,
@@ -905,6 +906,10 @@ fn verify_xfa_gone(
                         return Err(fail(*r));
                     }
                     stack.extend(dict.values());
+                }
+                // A packet's bytes written as a string.
+                Object::String(b) if gone.contains(&crate::remove_region::sha256(b)) => {
+                    return Err(fail(*r));
                 }
                 Object::Array(a) => stack.extend(a.iter()),
                 Object::Dict(d) => stack.extend(d.values()),

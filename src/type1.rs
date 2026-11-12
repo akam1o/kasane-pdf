@@ -822,6 +822,9 @@ impl Interp {
                 21 => {
                     // rmoveto: dx dy
                     let a = self.popall();
+                    if a.len() < 2 {
+                        return Err(Error::Structure("type1 rmoveto underflow".into()));
+                    }
                     self.x += a[0];
                     self.y += a[1];
                     if !matches!(self.flex, Flex::Active) {

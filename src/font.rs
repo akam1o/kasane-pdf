@@ -75,6 +75,59 @@ pub(crate) struct SimpleFont {
     /// The program's Unicode `cmap` read backwards, for extraction;
     /// built on first use (`Some(None)`: not available).
     reverse_cmap: RefCell<Option<Option<crate::unicode_fallback::ReverseCmap>>>,
+    /// The bounds of all the program's glyphs, on first use (see
+    /// [`GlyphReach`]).
+    reach: GlyphReach,
+}
+
+/// The bounds (glyph space, control points included) of every glyph a
+/// program can draw, computed once: where a reader that resolves a code
+/// differently may draw it. `Some(None)`: the program draws nothing;
+/// `None` inside: a glyph could not be read.
+#[derive(Default)]
+pub(crate) struct GlyphReach(std::cell::OnceCell<Option<Option<[f64; 4]>>>);
+
+impl GlyphReach {
+    fn get(
+        &self,
+        each: impl FnOnce(&mut dyn FnMut(f32, f32)) -> bool,
+    ) -> Result<Option<[f64; 4]>, Error> {
+        let r = self.0.get_or_init(|| {
+            let mut b: Option<[f64; 4]> = None;
+            let ok = each(&mut |x, y| {
+                let (x, y) = (x as f64, y as f64);
+                let r = b.get_or_insert([x, y, x, y]);
+                *r = [r[0].min(x), r[1].min(y), r[2].max(x), r[3].max(y)];
+            });
+            ok.then_some(b)
+        });
+        r.ok_or_else(|| Error::Unsupported {
+            feature: "embedded font",
+            detail: "a glyph's outline cannot be read".into(),
+        })
+    }
+}
+
+/// Feeds every point of an outline (control points too) to a closure.
+struct Points<'a>(&'a mut dyn FnMut(f32, f32));
+
+impl OutlineBuilder for Points<'_> {
+    fn move_to(&mut self, x: f32, y: f32) {
+        (self.0)(x, y);
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        (self.0)(x, y);
+    }
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        (self.0)(x1, y1);
+        (self.0)(x, y);
+    }
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        (self.0)(x1, y1);
+        (self.0)(x2, y2);
+        (self.0)(x, y);
+    }
+    fn close(&mut self) {}
 }
 
 /// A resolved `/Type1` (or `/MMType1`) font backed by an embedded
@@ -122,6 +175,8 @@ pub(crate) struct Type1Font {
     /// Standard 14 font takes the Adobe AFM widths (`core14_metrics`),
     /// a name they lack its substitute's advance.
     has_widths: bool,
+    /// The bounds of all the program's glyphs, on first use.
+    reach: GlyphReach,
 }
 
 /// The resolved font behind a `Tf` selection — a simple TrueType
@@ -599,6 +654,7 @@ pub(crate) fn load_simple_font_dict(
         tounicode,
         face: RefCell::new(None),
         reverse_cmap: RefCell::new(None),
+        reach: GlyphReach::default(),
     }))
 }
 
@@ -738,6 +794,7 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         cff_matrices: RefCell::new(None),
         subst,
         has_widths,
+        reach: GlyphReach::default(),
     }))
 }
 
@@ -1142,6 +1199,22 @@ impl SimpleFont {
     /// in 1/1000 em regardless.
     pub(crate) fn glyph_matrix(&self, _glyph: GlyphId) -> Result<Matrix, Error> {
         Ok(upem_matrix(self.face()?.units_per_em()))
+    }
+
+    /// A code this embedded program resolves to `.notdef`: readers may
+    /// resolve it to another of its glyphs (see
+    /// `Type1Font::unnamed_glyph_reach`) — their bounds. `None` otherwise.
+    pub(crate) fn unnamed_glyph_reach(&self, code: u8) -> Result<Option<[f64; 4]>, Error> {
+        if self.subst.is_some() || !matches!(self.glyph_id(code)?, None | Some(GlyphId(0))) {
+            return Ok(None);
+        }
+        let face = self.face()?;
+        self.reach.get(|p| {
+            for g in 0..face.number_of_glyphs() {
+                face.outline_glyph(GlyphId(g), &mut Points(p));
+            }
+            true
+        })
     }
 }
 
@@ -1682,19 +1755,35 @@ impl Type1Font {
     /// substitute face: its `unitsPerEm`. The full matrix is used —
     /// oblique and non-uniform matrices are honoured, not reduced to a
     /// scale.
-    /// An embedded Type 1 program whose encoding names, for `code`, a
-    /// glyph the program lacks (or `.notdef`): readers resolve such a code differently
-    /// (MuPDF falls back to the program's own encoding, others draw
+    /// A code this embedded program resolves to `.notdef` (a name it
+    /// lacks, `.notdef` itself, no name): readers resolve such a code
+    /// differently (MuPDF falls back to the program's own encoding,
+    /// pdf.js to a glyph named for the same Unicode, others draw
     /// `.notdef` or nothing), so it may show any of the program's
     /// glyphs — their bounds (glyph space). `None` otherwise.
     pub(crate) fn unnamed_glyph_reach(&self, code: u8) -> Result<Option<[f64; 4]>, Error> {
-        let Some(t1) = &self.t1_program else {
+        if self.subst.is_some() {
             return Ok(None);
-        };
-        match self.encoding[code as usize].as_deref() {
-            Some(n) if n == b".notdef" || !t1.has_glyph(n) => t1.reach(),
-            _ => Ok(None),
         }
+        if let Some(t1) = &self.t1_program {
+            return match self.glyph_name_bytes(code) {
+                Some(n) if n != b".notdef" && t1.has_glyph(n) => Ok(None),
+                _ => t1.reach(),
+            };
+        }
+        if self.program.is_none() || !matches!(self.glyph_id(code)?, None | Some(GlyphId(0))) {
+            return Ok(None);
+        }
+        let cff = self.cff()?;
+        self.reach.get(|p| {
+            (0..cff.number_of_glyphs()).all(|g| {
+                // An empty glyph (a space) is no error.
+                match cff.outline(GlyphId(g), &mut Points(p)) {
+                    Ok(_) => true,
+                    Err(e) => format!("{e:?}") == "ZeroBBox",
+                }
+            })
+        })
     }
 
     pub(crate) fn glyph_matrix(&self, glyph: GlyphId) -> Result<Matrix, Error> {
@@ -2552,6 +2641,7 @@ impl Font {
     pub(crate) fn unnamed_glyph_reach(&self, code: u32) -> Result<Option<[f64; 4]>, Error> {
         match self {
             Font::Type1(f) => f.unnamed_glyph_reach(code as u8),
+            Font::Simple(f) => f.unnamed_glyph_reach(code as u8),
             _ => Ok(None),
         }
     }

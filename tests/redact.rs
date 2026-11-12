@@ -7594,6 +7594,14 @@ fn hybrid_xfa_forms() {
             ),
         ),
         (
+            "a copy written as a string",
+            chained(
+                "33 0 R",
+                "/XPriv 35 0 R",
+                vec![(35, b"(<xfa:datasets><f>VALUEMARK</f></xfa:datasets>)".to_vec())],
+            ),
+        ),
+        (
             "a copy as a thumbnail",
             chained(
                 "33 0 R",
@@ -8140,6 +8148,12 @@ fn cut_criteria_follow_what_is_shown() {
 /// (a bar below the baseline) and `W` (a 1000 × 700 box), with
 /// StandardEncoding as its own encoding.
 fn type1_program() -> Vec<u8> {
+    type1_program_with(None)
+}
+
+/// [`type1_program`], `W`'s charstring replaced by `w` (decrypted
+/// bytecode) when given.
+fn type1_program_with(w: Option<&[u8]>) -> Vec<u8> {
     fn num(v: i32, out: &mut Vec<u8>) {
         match v {
             -107..=107 => out.push((v + 139) as u8),
@@ -8193,7 +8207,10 @@ fn type1_program() -> Vec<u8> {
     for (name, c) in [
         (".notdef", glyph(500, None)),
         ("underscore", glyph(600, Some((0, -200, 600, 100)))),
-        ("W", glyph(1000, Some((0, 0, 1000, 700)))),
+        (
+            "W",
+            w.map_or_else(|| glyph(1000, Some((0, 0, 1000, 700))), <[u8]>::to_vec),
+        ),
     ] {
         let e = encrypt(&c, 4330);
         private.extend(format!("/{name} {} RD ", e.len()).into_bytes());
@@ -8278,4 +8295,167 @@ fn refusal_routes_are_bounded() {
     objs.extend((0..n).map(|i| (10 + i, format!("[{} 0 R]", 11 + i).into_bytes())));
     let e = unsupported(run(&build_pdf(&objs), vec![(60.0, 60.0, 140.0, 140.0)]));
     assert!(e.len() < 1000, "{} bytes", e.len());
+}
+
+/// A synthetic bare CFF program (`/FontFile3 /Type1C`): `.notdef`
+/// (empty), `underscore` (a bar below the baseline) and `W` (a 1000 ×
+/// 700 box), its own encoding giving them codes 0x5F and 0x57.
+fn cff_program() -> Vec<u8> {
+    fn num(v: i32) -> Vec<u8> {
+        match v {
+            -107..=107 => vec![(v + 139) as u8],
+            108..=1131 => vec![(((v - 108) >> 8) + 247) as u8, ((v - 108) & 255) as u8],
+            -1131..=-108 => vec![(((-v - 108) >> 8) + 251) as u8, ((-v - 108) & 255) as u8],
+            _ => [vec![255u8], v.to_be_bytes().to_vec()].concat(),
+        }
+    }
+    fn index(items: &[Vec<u8>]) -> Vec<u8> {
+        if items.is_empty() {
+            return vec![0, 0];
+        }
+        let mut offsets = vec![1u16];
+        for i in items {
+            offsets.push(offsets.last().unwrap() + i.len() as u16);
+        }
+        let mut out = (items.len() as u16).to_be_bytes().to_vec();
+        out.push(2);
+        for o in offsets {
+            out.extend(o.to_be_bytes());
+        }
+        for i in items {
+            out.extend(i);
+        }
+        out
+    }
+    let glyph = |b: Option<(i32, i32, i32, i32)>| {
+        let mut c = Vec::new();
+        if let Some((x, y, w, h)) = b {
+            for (v, op) in [
+                (vec![x, y], 21u8),
+                (vec![w, 0], 5),
+                (vec![0, h], 5),
+                (vec![-w, 0], 5),
+                (vec![0, -h], 5),
+            ] {
+                for n in v {
+                    c.extend(num(n));
+                }
+                c.push(op);
+            }
+        }
+        c.push(14);
+        c
+    };
+    let glyphs = vec![
+        glyph(None),
+        glyph(Some((0, -400, 600, 100))),
+        glyph(Some((0, 0, 1000, 700))),
+    ];
+    let dn = |n: i32| [vec![0x1d], n.to_be_bytes().to_vec()].concat();
+    let top = |charset: i32, encoding: i32, chars: i32, private: i32| {
+        [
+            dn(charset),
+            vec![0x0f],
+            dn(encoding),
+            vec![0x10],
+            dn(chars),
+            vec![0x11],
+            dn(0),
+            dn(private),
+            vec![0x12],
+        ]
+        .concat()
+    };
+    let header = vec![1u8, 0, 4, 4];
+    let (name, strings, gsubrs) = (index(&[b"KTest".to_vec()]), index(&[]), index(&[]));
+    let start = (header.len()
+        + name.len()
+        + index(&[top(0, 0, 0, 0)]).len()
+        + strings.len()
+        + gsubrs.len()) as i32;
+    // Charset format 0: SIDs 64 (underscore), 56 (W); encoding format 0.
+    let charset = vec![0u8, 0, 64, 0, 56];
+    let encoding = vec![0u8, 2, 0x5f, 0x57];
+    let chars = index(&glyphs);
+    let (c, e) = (charset.len() as i32, encoding.len() as i32);
+    let topdict = index(&[top(
+        start,
+        start + c,
+        start + c + e,
+        start + c + e + chars.len() as i32,
+    )]);
+    [
+        header, name, topdict, strings, gsubrs, charset, encoding, chars,
+    ]
+    .concat()
+}
+
+/// Codes of embedded CFF and Type 1 programs readers resolve
+/// differently — a name the program lacks, `.notdef`, a `uniXXXX` name
+/// pdf.js resolves through Unicode, a built-in name the program lacks
+/// (its `.notdef` inked) — extend over every glyph the program can draw;
+/// a program one of whose glyphs cannot be read is refused, not a panic.
+#[test]
+fn embedded_codes_readers_resolve_differently() {
+    let doc = |program: (&str, Vec<u8>), encoding: &str, code: u8| {
+        doc_with(
+            "/Font << /F 50 0 R >>",
+            &[format!("BT /F 60 Tf 60 80 Td <{code:02X}> Tj ET").as_bytes()],
+            vec![
+                (
+                    50,
+                    format!(
+                        "<< /Type /Font /Subtype /Type1 /BaseFont /KTest /FirstChar 0 /LastChar 255 \
+                         /Widths [{}] {encoding} /FontDescriptor 51 0 R >>",
+                        ["1000"; 256].join(" ")
+                    )
+                    .into_bytes(),
+                ),
+                (
+                    51,
+                    format!(
+                        "<< /Type /FontDescriptor /FontName /KTest /Flags 32 /FontBBox [0 -800 1000 1000] \
+                         /ItalicAngle 0 /Ascent 900 /Descent -800 /CapHeight 700 /StemV 80 /{} 52 0 R >>",
+                        program.0
+                    )
+                    .into_bytes(),
+                ),
+                (
+                    52,
+                    stream_obj(if program.0 == "FontFile3" { "/Subtype /Type1C" } else { "" }, &program.1),
+                ),
+            ],
+        )
+    };
+    // The bar a reader may draw: x 60–96, y 56–62.
+    let rect = (60.0, 55.0, 96.0, 65.0);
+    let cff = || ("FontFile3", cff_program());
+    for (name, pdf) in [
+        (
+            "cff, absent name",
+            doc(cff(), "/Encoding << /Differences [95 /zz95zz] >>", 0x5f),
+        ),
+        (
+            "cff, .notdef",
+            doc(cff(), "/Encoding << /Differences [95 /.notdef] >>", 0x5f),
+        ),
+        (
+            "cff, uni005F",
+            doc(cff(), "/Encoding << /Differences [65 /uni005F] >>", 0x41),
+        ),
+    ] {
+        let r = run(&pdf, vec![rect]).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(r.codes_removed, 1, "{name}");
+    }
+    // Type 1, no /Encoding: `A` (StandardEncoding) is not in the
+    // program; a reader may draw any glyph (`_` at y 68–74).
+    let t1 = |w: Option<&[u8]>| ("FontFile", type1_program_with(w));
+    let r = run(&doc(t1(None), "", 0x41), vec![(60.0, 67.0, 96.0, 75.0)]).unwrap();
+    assert_eq!(r.codes_removed, 1, "type 1, built-in name absent");
+    // An unused glyph that cannot be read (`rmoveto` without operands).
+    let e = unsupported(run(
+        &doc(t1(Some(&[21, 14])), "", 0x41),
+        vec![(60.0, 67.0, 96.0, 75.0)],
+    ));
+    assert!(e.contains("cannot be read"), "{e}");
 }
