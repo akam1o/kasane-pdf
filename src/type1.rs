@@ -86,6 +86,9 @@ pub(crate) struct Type1Program {
     /// `StandardEncoding`, `Some` = a custom `dup <code> /<name> put`
     /// table (unlisted codes are `.notdef`).
     builtin_encoding: Option<Box<[Option<Vec<u8>>; 256]>>,
+    /// The bounds (glyph space) of every glyph the program draws, on
+    /// first use: `None` when one cannot be read.
+    reach: std::sync::OnceLock<Option<Option<[f64; 4]>>>,
 }
 
 /// Parse a `/FontFile` Type 1 program (`Length1`/`Length2`/`Length3`
@@ -155,6 +158,7 @@ pub(crate) fn parse_type1_program(program: &[u8]) -> Result<Type1Program, Error>
         subrs,
         font_matrix,
         builtin_encoding,
+        reach: std::sync::OnceLock::new(),
     })
 }
 
@@ -498,6 +502,49 @@ impl Type1Program {
 
     pub(crate) fn has_glyph(&self, name: &[u8]) -> bool {
         self.charstrings.contains_key(name)
+    }
+
+    /// The bounds (glyph space, control points included) of all the
+    /// glyphs the program can draw — where any reader's choice of one
+    /// of them falls. `Ok(None)`: the program draws nothing.
+    pub(crate) fn reach(&self) -> Result<Option<[f64; 4]>, Error> {
+        struct Reach(Option<[f64; 4]>);
+        impl Reach {
+            fn add(&mut self, x: f32, y: f32) {
+                let (x, y) = (x as f64, y as f64);
+                let b = self.0.get_or_insert([x, y, x, y]);
+                *b = [b[0].min(x), b[1].min(y), b[2].max(x), b[3].max(y)];
+            }
+        }
+        impl ttf_parser::OutlineBuilder for Reach {
+            fn move_to(&mut self, x: f32, y: f32) {
+                self.add(x, y);
+            }
+            fn line_to(&mut self, x: f32, y: f32) {
+                self.add(x, y);
+            }
+            fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+                self.add(x1, y1);
+                self.add(x, y);
+            }
+            fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+                self.add(x1, y1);
+                self.add(x2, y2);
+                self.add(x, y);
+            }
+            fn close(&mut self) {}
+        }
+        let r = self.reach.get_or_init(|| {
+            let mut r = Reach(None);
+            for name in self.charstrings.keys() {
+                self.charstring(name, &mut r).ok()?;
+            }
+            Some(r.0)
+        });
+        r.ok_or_else(|| Error::Unsupported {
+            feature: "embedded Type 1 font",
+            detail: "a glyph's outline cannot be read".into(),
+        })
     }
 
     /// Interpret the charstring for `name`, producing outline moves in

@@ -1682,6 +1682,21 @@ impl Type1Font {
     /// substitute face: its `unitsPerEm`. The full matrix is used —
     /// oblique and non-uniform matrices are honoured, not reduced to a
     /// scale.
+    /// An embedded Type 1 program whose encoding names, for `code`, a
+    /// glyph the program lacks (or `.notdef`): readers resolve such a code differently
+    /// (MuPDF falls back to the program's own encoding, others draw
+    /// `.notdef` or nothing), so it may show any of the program's
+    /// glyphs — their bounds (glyph space). `None` otherwise.
+    pub(crate) fn unnamed_glyph_reach(&self, code: u8) -> Result<Option<[f64; 4]>, Error> {
+        let Some(t1) = &self.t1_program else {
+            return Ok(None);
+        };
+        match self.encoding[code as usize].as_deref() {
+            Some(n) if n == b".notdef" || !t1.has_glyph(n) => t1.reach(),
+            _ => Ok(None),
+        }
+    }
+
     pub(crate) fn glyph_matrix(&self, glyph: GlyphId) -> Result<Matrix, Error> {
         if let Some(s) = &self.subst {
             return Ok(upem_matrix(s.face().units_per_em()));
@@ -2531,6 +2546,16 @@ impl Font {
     /// Readers disagree on this font's codes (an embedded CMap writing
     /// codes as literal strings): where its glyphs fall depends on the
     /// reader.
+    /// Where readers may draw `code` when they resolve it differently
+    /// (see `Type1Font::unnamed_glyph_reach`), in glyph space; `None`
+    /// when they all resolve it alike.
+    pub(crate) fn unnamed_glyph_reach(&self, code: u32) -> Result<Option<[f64; 4]>, Error> {
+        match self {
+            Font::Type1(f) => f.unnamed_glyph_reach(code as u8),
+            _ => Ok(None),
+        }
+    }
+
     pub(crate) fn reader_dependent_codes(&self) -> bool {
         match self {
             Font::Composite(f) => f.cmap.as_ref().is_some_and(|c| c.literal_codes),

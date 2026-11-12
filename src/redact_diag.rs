@@ -2769,6 +2769,24 @@ impl<'a> DiagWalker<'a> {
             // its ink extent is unknown.
             Err(e) => return self.glyph_error(code, e),
         };
+        // A code readers resolve to different glyphs: wherever any of
+        // them may draw.
+        let (bounds, bounds_kind) = match font.unnamed_glyph_reach(code) {
+            Ok(None) => (bounds, bounds_kind),
+            Ok(Some(r)) => match font.glyph_matrix(ttf_parser::GlyphId(0)) {
+                Ok(m) => {
+                    let mut b = bounds;
+                    for (x, y) in [(r[0], r[1]), (r[2], r[3]), (r[0], r[3]), (r[2], r[1])] {
+                        let (gx, gy) = m.transform(x, y);
+                        let (px, py) = trm.transform(gx, gy);
+                        b = (b.0.min(px), b.1.min(py), b.2.max(px), b.3.max(py));
+                    }
+                    (b, TextBounds::Outline)
+                }
+                Err(e) => return self.glyph_error(code, e),
+            },
+            Err(e) => return self.glyph_error(code, e),
+        };
         // Stroke-mode text (Tr 1, 2, 5, 6) paints a `w`-wide outline
         // outside the glyph's ink bbox — inflate for the stroke reach
         // the way a path stroke does. Clip modes 4–7 are unsupported

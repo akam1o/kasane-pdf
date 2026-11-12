@@ -8135,3 +8135,130 @@ fn cut_criteria_follow_what_is_shown() {
     let lost = lost_outside(&reds(&pdf), &reds(&r.output), rect);
     assert!(lost < 100, "{lost} pixels lost outside");
 }
+
+/// A synthetic eexec Type 1 program: `.notdef` (empty), `underscore`
+/// (a bar below the baseline) and `W` (a 1000 × 700 box), with
+/// StandardEncoding as its own encoding.
+fn type1_program() -> Vec<u8> {
+    fn num(v: i32, out: &mut Vec<u8>) {
+        match v {
+            -107..=107 => out.push((v + 139) as u8),
+            108..=1131 => out.extend([(((v - 108) >> 8) + 247) as u8, ((v - 108) & 255) as u8]),
+            -1131..=-108 => out.extend([(((-v - 108) >> 8) + 251) as u8, ((-v - 108) & 255) as u8]),
+            _ => {
+                out.push(255);
+                out.extend(v.to_be_bytes());
+            }
+        }
+    }
+    fn encrypt(data: &[u8], mut r: u16) -> Vec<u8> {
+        let mut out = Vec::new();
+        for &b in [0u8; 4].iter().chain(data) {
+            let c = b ^ (r >> 8) as u8;
+            r = (c as u16)
+                .wrapping_add(r)
+                .wrapping_mul(52845)
+                .wrapping_add(22719);
+            out.push(c);
+        }
+        out
+    }
+    // hsbw, then a closed box (x, y, w, h) or none, then endchar.
+    let glyph = |wx: i32, b: Option<(i32, i32, i32, i32)>| {
+        let mut c = Vec::new();
+        num(0, &mut c);
+        num(wx, &mut c);
+        c.push(13);
+        if let Some((x, y, w, h)) = b {
+            for (v, op) in [
+                (vec![x, y], 21),
+                (vec![w, 0], 5),
+                (vec![0, h], 5),
+                (vec![-w, 0], 5),
+            ] {
+                for n in v {
+                    num(n, &mut c);
+                }
+                c.push(op);
+            }
+            c.push(9);
+        }
+        c.push(14);
+        c
+    };
+    let mut private = b"dup /Private 8 dict dup begin\n/RD{string currentfile exch readstring pop}executeonly def\n\
+        /ND{noaccess def}executeonly def\n/NP{noaccess put}executeonly def\n/lenIV 4 def\n\
+        /MinFeature{16 16} def\n/password 5839 def\n/Subrs 0 array\nND\n2 index /CharStrings 3 dict dup begin\n"
+        .to_vec();
+    for (name, c) in [
+        (".notdef", glyph(500, None)),
+        ("underscore", glyph(600, Some((0, -200, 600, 100)))),
+        ("W", glyph(1000, Some((0, 0, 1000, 700)))),
+    ] {
+        let e = encrypt(&c, 4330);
+        private.extend(format!("/{name} {} RD ", e.len()).into_bytes());
+        private.extend(e);
+        private.extend(b" ND\n");
+    }
+    private.extend(
+        b"end\nend\nreadonly put\nnoaccess put\ndup /FontName get exch definefont pop\nmark currentfile closefile\n",
+    );
+    let mut p =
+        b"%!FontType1-1.0: KTest 001\n12 dict begin\n/FontName /KTest def\n/FontType 1 def\n\
+        /FontMatrix [0.001 0 0 0.001 0 0] readonly def\n/FontBBox {0 -300 1000 1000} readonly def\n\
+        /PaintType 0 def\n/Encoding StandardEncoding def\ncurrentdict end\ncurrentfile eexec\n"
+            .to_vec();
+    p.extend(encrypt(&private, 55665));
+    for _ in 0..8 {
+        p.extend([b'0'; 64]);
+        p.push(b'\n');
+    }
+    p.extend(b"cleartomark\n");
+    p
+}
+
+/// An embedded Type 1 font whose encoding names a glyph the program
+/// lacks (or `.notdef`): MuPDF falls back to the program's own encoding
+/// and draws the code's glyph (here `_`, below the baseline, outside
+/// the `.notdef` cell), others draw nothing. The code goes when any of
+/// the program's glyphs could meet the rect, and stays otherwise.
+#[test]
+fn type1_codes_readers_resolve_differently() {
+    let program = type1_program();
+    for name in ["zz95zz", ".notdef"] {
+        let pdf = doc_with(
+            "/Font << /F 50 0 R >>",
+            &[b"BT /F 60 Tf 60 80 Td <5F> Tj ET"],
+            vec![
+                (
+                    50,
+                    format!(
+                        "<< /Type /Font /Subtype /Type1 /BaseFont /KTest /FirstChar 32 /LastChar 126 \
+                         /Widths [{}] /Encoding << /Differences [95 /{name}] >> /FontDescriptor 51 0 R >>",
+                        ["1000"; 95].join(" ")
+                    )
+                    .into_bytes(),
+                ),
+                (
+                    51,
+                    b"<< /Type /FontDescriptor /FontName /KTest /Flags 32 /FontBBox [0 -300 1000 1000] \
+                      /ItalicAngle 0 /Ascent 900 /Descent -300 /CapHeight 700 /StemV 80 /FontFile 52 0 R >>"
+                        .to_vec(),
+                ),
+                (52, stream_obj("", &program)),
+            ],
+        );
+        // The bar MuPDF draws: x 60–96, y 68–74.
+        let r = run(&pdf, vec![(60.0, 67.0, 96.0, 75.0)]).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(
+            r.codes_removed, 1,
+            "{name}: the code a reader draws inside the rect stayed"
+        );
+        let r =
+            run(&pdf, vec![(150.0, 150.0, 190.0, 190.0)]).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(
+            r.codes_removed, 0,
+            "{name}: a code no glyph of which meets the rect went"
+        );
+    }
+}
