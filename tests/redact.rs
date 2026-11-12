@@ -2099,7 +2099,7 @@ fn popups_and_replies_go_with_a_removed_annotation() {
 #[test]
 fn widgets_go_with_remove_annotations_and_tagged_annotations_leave_the_tree() {
     // A widget of no interactive form: removed whole, its value with it
-    // (0.9; refused before). Form fields: tests/redact_forms.rs.
+    // (0.10; refused before). Form fields: tests/redact_forms.rs.
     let widget = annot_page(
         "30 0 R",
         vec![(
@@ -8261,4 +8261,21 @@ fn type1_codes_readers_resolve_differently() {
             "{name}: a code no glyph of which meets the rect went"
         );
     }
+}
+
+/// A refusal naming a long chain of references stays short.
+#[test]
+fn refusal_routes_are_bounded() {
+    let n = 5000u32;
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R /XPriv 10 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [9 0 R] >>".to_vec()),
+        (4, stream_obj("", b"0 0 5 5 re f")),
+        (9, format!("<< /Type /Annot /Subtype /Link /Rect [70 70 90 90] /A {} 0 R >>", 10 + n).into_bytes()),
+        (10 + n, b"<< /S /URI /URI (https://example.com/x) >>".to_vec()),
+    ];
+    objs.extend((0..n).map(|i| (10 + i, format!("[{} 0 R]", 11 + i).into_bytes())));
+    let e = unsupported(run(&build_pdf(&objs), vec![(60.0, 60.0, 140.0, 140.0)]));
+    assert!(e.len() < 1000, "{} bytes", e.len());
 }
