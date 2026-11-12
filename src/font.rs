@@ -3081,13 +3081,13 @@ fn tt_lsb_shift_checked(face: &Face<'_>, glyph: GlyphId) -> Option<f32> {
 }
 
 /// Whether a glyph draws nothing because it has no outline data: `true`
-/// for a `glyf` glyph without data and for faces without `glyf` (their
+/// for a `glyf` glyph without data or contours and for faces without `glyf` (their
 /// outlines are not read here); `false` for a `glyf` glyph with data —
 /// one that does not outline is malformed or nested too deeply, and
 /// readers may still draw it.
 fn tt_glyph_blank(face: &Face<'_>, glyph: GlyphId) -> bool {
     let raw = face.raw_face();
-    let (Some(loca_raw), Some(_)) = (
+    let (Some(loca_raw), Some(glyf)) = (
         raw.table(ttf_parser::Tag::from_bytes(b"loca")),
         raw.table(ttf_parser::Tag::from_bytes(b"glyf")),
     ) else {
@@ -3096,10 +3096,54 @@ fn tt_glyph_blank(face: &Face<'_>, glyph: GlyphId) -> bool {
     let Some(n) = std::num::NonZeroU16::new(face.number_of_glyphs()) else {
         return true;
     };
-    match ttf_parser::loca::Table::parse(n, face.tables().head.index_to_location_format, loca_raw) {
-        Some(loca) => loca.glyph_range(glyph).is_none_or(|r| r.is_empty()),
-        None => false,
+    let Some(loca) =
+        ttf_parser::loca::Table::parse(n, face.tables().head.index_to_location_format, loca_raw)
+    else {
+        return false;
+    };
+    fn blank(loca: &ttf_parser::loca::Table<'_>, glyf: &[u8], gid: GlyphId, depth: usize) -> bool {
+        let Some(r) = loca.glyph_range(gid).filter(|r| !r.is_empty()) else {
+            return true;
+        };
+        let Some(d) = glyf.get(r) else {
+            return false;
+        };
+        if d.len() < 10 {
+            return false;
+        }
+        match i16::from_be_bytes([d[0], d[1]]) {
+            // A header with no contours (instructions only).
+            0 => true,
+            // A composite of blank glyphs (a no-break space made of the
+            // space), within the nesting readers follow.
+            n if n < 0 && depth < 32 => {
+                let mut p = 10usize;
+                while p + 4 <= d.len() {
+                    let flags = u16::from_be_bytes([d[p], d[p + 1]]);
+                    let gi = u16::from_be_bytes([d[p + 2], d[p + 3]]);
+                    if !blank(loca, glyf, GlyphId(gi), depth + 1) {
+                        return false;
+                    }
+                    p += 4 + if flags & 0x0001 != 0 { 4 } else { 2 };
+                    p += if flags & 0x0008 != 0 {
+                        2
+                    } else if flags & 0x0040 != 0 {
+                        4
+                    } else if flags & 0x0080 != 0 {
+                        8
+                    } else {
+                        0
+                    };
+                    if flags & 0x0020 == 0 {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
     }
+    blank(&loca, glyf, glyph, 0)
 }
 
 /// A glyph's bearing shift for `redact`: an error when it cannot be
