@@ -54,6 +54,11 @@ are on the [roadmap](architecture.md#roadmap).
   nested non-knockout group counts as one object. Bounded by
   `max_knockout_objects`.
 - **Shading pattern `/ExtGState`** override — refused.
+- **Non-embedded fonts in `redact`**: refused, since readers choose the
+  glyphs; with `embed_substitute_fonts` a Latin Standard 14 font or its
+  metric-compatible alias is embedded first — Type 1, and from 0.10 a
+  non-symbolic simple TrueType font (ArialMT …). Symbolic TrueType,
+  other names and CID fonts stay refused.
 - **Non-embedded fonts**: Symbol and ZapfDingbats draw with a bundled
   DejaVu Sans subset through their built-in encodings and the Adobe
   AFM widths (`SubstKind::SymbolFallback`) — glyph shapes differ from
@@ -270,8 +275,32 @@ are on the [roadmap](architecture.md#roadmap).
   widget of it is left; a field keeping a widget keeps its value
   (reported in `elsewhere`) if a kept widget is shown and, for a
   button, shows the value's state; otherwise refused. Signature fields,
-  XFA forms, JBIG2 images with shared `/JBIG2Globals` or a file header
-  are refused.
+  JBIG2 images with shared `/JBIG2Globals` or a file header are
+  refused.
+- **Paths, shadings and patterns crossing a rect** (0.10): filled
+  shapes are clipped (pieces of curves that straddle a cut at the
+  subdivision limit become their chord); strokes are cut as before
+  (dashed curves refused). An `sh` crossing a rect is cut only when it
+  is an axial shading in page content, with an axis-aligned CTM and
+  `/BBox`, under a rectangular clip (or none), and every value of its
+  axis inside the rects is painted outside them; overlapping rects need
+  opaque paint. Radial, function-based and mesh shadings, and shadings
+  in forms, stay refused. A tiling pattern crossing a rect is cut only
+  as the fill of one axis-aligned rectangle in page content whose part
+  outside the rects holds a whole period; text, strokes and other
+  shapes painted with one stay refused. Cut shadings and patterns keep
+  their data whole (nothing in it only the rect showed).
+- **XFA forms** (0.10): with `remove_javascript`, or when
+  `remove_annotations` edits form fields, an XFA form beside its
+  AcroForm is removed (`Redaction::xfa_removed`): its packets hold the
+  scripts and a copy of the field values. Readers that render XFA
+  (Acrobat) then show the AcroForm. A form readers must render from
+  XFA alone (`/NeedsRendering true`) is refused, and so is a packet
+  something else still refers to.
+- **Annotations drawn away from `/Rect`** (0.10): an annotation with
+  NoZoom or NoRotate kept on an edited page is refused (its appearance
+  may be drawn elsewhere at another zoom), except a popup without an
+  appearance stream, which draws nothing on the page.
 - **Uninspected data** (0.8): `redact` reports the data it carries
   without reading it (`Redaction::uninspected`) and refuses it with
   `refuse_uninspected`; that mode is not a proof that no copy of the

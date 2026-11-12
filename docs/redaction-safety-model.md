@@ -44,9 +44,21 @@ property cannot be decided).
   `endcmap`, Identity pass-through, `/WMode` conflicts, odd-length hex
   codes, stray tokens, overlapping codespace lengths), text matrices
   stretched more than 16:1, non-embedded fonts without an embedded
-  substitute, shadings and tiling patterns crossing a rect, curved fills
-  crossing a rect, names an appearance stream does not resolve in its
-  own resources, annotations whose appearance is not placed by `/Rect`.
+  substitute, shadings crossing a rect (other than the axial ones below),
+  tiling patterns crossing a rect (other than the rectangles below),
+  names an appearance stream does not resolve in its own resources,
+  annotations whose appearance is not placed by `/Rect`.
+- **G** — Crossing a rect (0.10): a filled shape is clipped to the plane
+  outside the rects (curves exact where no cut crosses them, the fill
+  rule kept; nothing of its geometry inside stays); an axial shading
+  (`sh`) whose colours inside the rects are all painted outside them
+  too is painted outside only (under an even-odd clip with the rects as
+  holes, or overlapping strips of opaque paint); a rectangle filled
+  with a tiling pattern is cut when what stays outside shows a whole
+  period of the pattern.
+- **N** — Such a shading or pattern keeps its data whole: the function,
+  the cell. What the rect showed of them is shown outside too, so the
+  data holds nothing only the rect showed; the data itself stays.
 - **N** — Rendering differences between readers that move no data
   (anti-aliasing at the rect edge, MuPDF's rounding of simple fonts'
   widths).

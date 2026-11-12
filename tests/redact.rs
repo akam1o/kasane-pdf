@@ -307,10 +307,14 @@ fn paths() {
         .collect();
     assert_eq!(rects.len(), 1, "the rect outside stays");
 
-    // A curve crossing a rect's edge is refused.
+    // A curve crossing a rect's edge is cut (0.10).
     let crossing = one_page("0 0 1 rg 30 60 m 90 60 90 90 30 90 c f", "", "", vec![]);
-    let e = unsupported(run(&crossing, vec![(40.0, 40.0, 160.0, 160.0)]));
-    assert!(e.contains("crossing a rect's edge"), "{e}");
+    assert_eq!(
+        run(&crossing, vec![(40.0, 40.0, 160.0, 160.0)])
+            .unwrap()
+            .paths_cut,
+        1
+    );
     let clipping = one_page("q 60 60 30 30 re W f Q", "", "", vec![]);
     let e = unsupported(run(&clipping, vec![(40.0, 40.0, 160.0, 160.0)]));
     assert!(e.contains("also clips"), "{e}");
@@ -550,12 +554,15 @@ fn links() {
 // Independent review (P0s, all fixed): content the walker placed
 // wrongly was kept while verification, using the same walker, agreed.
 
-/// A rectangle under a rotated CTM is bounded by all four corners.
+/// A rectangle under a rotated CTM is bounded by all four corners (cut
+/// where it crosses a rect, 0.10).
 #[test]
 fn rotated_rectangle_path_is_located() {
     let pdf = one_page("q 1 1 -1 1 100 20 cm 0 0 40 40 re f Q", "", "", vec![]);
-    let e = unsupported(run(&pdf, vec![(70.0, 50.0, 80.0, 60.0)]));
-    assert!(e.contains("crossing a rect's edge"), "{e}");
+    let rect = (70.0, 50.0, 80.0, 60.0);
+    let r = run(&pdf, vec![rect]).unwrap();
+    assert_eq!(r.paths_cut, 1);
+    let _ = lost_outside(&reds(&pdf), &reds(&r.output), rect);
     let r = run(&pdf, vec![(40.0, 0.0, 160.0, 120.0)]).unwrap();
     assert_eq!(r.paths_removed, 1);
 }
@@ -2375,7 +2382,8 @@ fn optional_content_is_taken_as_drawn() {
 }
 
 /// A shading fills the clip: accepted under a rectangular clip clear of
-/// the rects, refused otherwise.
+/// the rects; crossing one, cut when its colours inside are shown
+/// outside too (0.10).
 #[test]
 fn a_shading_clipped_away_from_the_rects_is_kept() {
     let sh = "/Shading << /Sh << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 200 0] \
@@ -2390,12 +2398,12 @@ fn a_shading_clipped_away_from_the_rects_is_kept() {
     let r = run(&ok, vec![RECT]).unwrap();
     assert_eq!(r.codes_removed, 10);
     assert_ne!(at(&r.output, 100, 20), 255, "the shading is kept");
-    let refused = doc_with(
+    let crossing = doc_with(
         &format!("/Font << /F1 20 0 R >> {sh}"),
         &[format!("{SECRET} q 0 0 200 100 re W n /Sh sh Q").as_bytes()],
         objs,
     );
-    assert!(unsupported(run(&refused, vec![RECT])).contains("shading"));
+    assert_eq!(run(&crossing, vec![RECT]).unwrap().shadings_cut, 1);
 }
 
 // Pre-release review (P0s, fixed).
@@ -2754,7 +2762,8 @@ fn embedded_substitutes_use_canonical_glyph_names() {
 }
 
 // Curves crossing a rect: stroked curves are cut by subdivision into
-// exact sub-curves; fills and dashed curves stay refused.
+// exact sub-curves, filled shapes clipped (0.10); dashed curves stay
+// refused.
 
 #[test]
 fn stroked_curves_crossing_a_rect_are_cut() {
@@ -2797,10 +2806,7 @@ fn stroked_curves_crossing_a_rect_are_cut() {
 }
 
 #[test]
-fn curved_fills_and_dashed_curves_are_refused() {
-    let fill = one_page("0 0 1 rg 30 60 m 90 60 90 90 30 90 c f", "", "", vec![]);
-    assert!(unsupported(run(&fill, vec![(40.0, 40.0, 160.0, 160.0)]))
-        .contains("crossing a rect's edge"));
+fn dashed_curves_are_refused() {
     let dashed = one_page(
         "[4 2] 0 d 2 w 20 100 m 60 180 140 20 180 100 c S",
         "",
@@ -4436,8 +4442,11 @@ fn shadings_inside_a_rect_are_removed() {
     assert!(!raw_contains(&r.output, b"0.456"));
 }
 
-/// A shading crossing a rect, unbounded, shared with another page,
-/// drawn in a form or also painted elsewhere on the page is refused.
+/// A shading crossing a rect (0.10: cut when its colours inside are
+/// shown outside too, here one colour everywhere) — clipped, unbounded,
+/// shared with another page — is cut; one drawn in a form, a
+/// function-based one, and one wholly inside a rect also painted
+/// elsewhere on the page are refused.
 #[test]
 fn shadings_that_cannot_be_removed_alone() {
     let page_res = "/Font << /F1 20 0 R >> /Shading << /S1 30 0 R >>";
@@ -4448,23 +4457,18 @@ fn shadings_that_cannot_be_removed_alone() {
         format!("{SECRET} /S1 sh"),
     ] {
         let pdf = doc_with(page_res, &[c.as_bytes()], objs.clone());
-        let e = unsupported(run(&pdf, vec![RECT]));
-        assert!(e.contains("shading"), "{c}: {e}");
+        assert_eq!(run(&pdf, vec![RECT]).unwrap().shadings_cut, 1, "{c}");
     }
     // Page 2 uses the same shading object.
     let pdf = doc_with(
         page_res,
         &[
-            format!("{SECRET} q 60 95 20 10 re W n /S1 sh Q").as_bytes(),
+            format!("{SECRET} q 30 95 50 10 re W n /S1 sh Q").as_bytes(),
             b"q 0 0 5 5 re W n /S1 sh Q",
         ],
         objs.clone(),
     );
-    let e = unsupported(run(&pdf, vec![RECT]));
-    assert!(
-        e.contains("shading used elsewhere") || e.contains("shared"),
-        "{e}"
-    );
+    assert_eq!(run(&pdf, vec![RECT]).unwrap().shadings_cut, 1);
     // In a form.
     let mut o2 = objs.clone();
     o2.push((
@@ -4480,8 +4484,23 @@ fn shadings_that_cannot_be_removed_alone() {
         o2,
     );
     assert!(unsupported(run(&pdf, vec![RECT])).contains("shading"));
-    // Still painted elsewhere on the page: refused — the kept use would
-    // keep the function over the part painted inside.
+    // Function-based: its colour depends on the position itself.
+    let mut o3 = font_objs();
+    o3.push((
+        30,
+        b"<< /ShadingType 1 /ColorSpace /DeviceGray /Domain [0 200 0 200] \
+          /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >>"
+            .to_vec(),
+    ));
+    let pdf = doc_with(
+        page_res,
+        &[format!("{SECRET} q 30 95 50 10 re W n /S1 sh Q").as_bytes()],
+        o3,
+    );
+    assert!(unsupported(run(&pdf, vec![RECT])).contains("shading"));
+    // Wholly inside a rect (removed) and still painted elsewhere on the
+    // page: refused — the kept use would keep the function over the part
+    // painted inside.
     let pdf = doc_with(
         page_res,
         &[format!("{SECRET} q 60 95 20 10 re W n /S1 sh Q q 0 0 5 5 re W n /S1 sh Q").as_bytes()],
@@ -4540,12 +4559,30 @@ fn tiling_patterns_follow_their_uses() {
     let ops = doc.page_operations(&doc.pages()[0]).unwrap();
     let shown: Vec<String> = ops.iter().map(|o| o.to_string()).collect();
     assert!(!shown.iter().any(|o| o.contains("/P1")), "{shown:?}");
-    // Crossing, and text painted with it meeting the rect: refused.
+    // Crossing, what stays outside showing a whole period (4 × 4 in a
+    // 15 × 10 strip): cut (0.10).
+    let pdf = doc_with(
+        res,
+        &[format!("{SECRET} /Pattern cs /P1 scn 30 95 50 10 re f").as_bytes()],
+        objs.clone(),
+    );
+    assert_eq!(run(&pdf, vec![RECT]).unwrap().paths_cut, 1);
+    // Crossing with a period larger than what stays outside, and text
+    // painted with one meeting the rect: refused.
+    let mut big = objs.clone();
+    big.push((
+        31,
+        stream_obj(
+            "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 20 20] /XStep 20 /YStep 20 /Resources << >>",
+            b"0.321 0.654 0.987 rg 0 0 2 2 re f",
+        ),
+    ));
+    let res_big = "/Font << /F1 20 0 R >> /Pattern << /P1 30 0 R /P2 31 0 R >>";
     for c in [
-        format!("{SECRET} /Pattern cs /P1 scn 30 95 50 10 re f"),
+        format!("{SECRET} /Pattern cs /P2 scn 30 95 50 10 re f"),
         "/Pattern cs /P1 scn BT /F1 12 Tf 50 100 Td (SECRETTEXT) Tj ET".to_string(),
     ] {
-        let pdf = doc_with(res, &[c.as_bytes()], objs.clone());
+        let pdf = doc_with(res_big, &[c.as_bytes()], big.clone());
         let e = unsupported(run(&pdf, vec![RECT]));
         assert!(e.contains("tiling pattern"), "{c}: {e}");
     }
@@ -4984,8 +5021,15 @@ fn javascript_removal_keeps_what_is_not_a_script() {
     let source = || (51, stream_obj("", b"var s = 'SCRIPTSOURCE';"));
     let e = go("/OpenAction 50 0 R /Cache 51 0 R", vec![script(), source()]).unwrap_err();
     assert!(e.to_string().contains("also referred to"), "{e}");
-    let e = go(
+    // A hybrid XFA form goes with its scripts; a dynamic one is refused.
+    let r = go(
         "/AcroForm << /Fields [] /XFA 52 0 R >>",
+        vec![(52, stream_obj("", b"<xdp:xdp/>"))],
+    )
+    .unwrap();
+    assert!(r.xfa_removed);
+    let e = go(
+        "/AcroForm << /Fields [] /XFA 52 0 R >> /NeedsRendering true",
         vec![(52, stream_obj("", b"<xdp:xdp/>"))],
     )
     .unwrap_err();
@@ -7416,4 +7460,678 @@ fn removed_data_walk_reads_a_flat_page_tree_once() {
         "{:?}",
         start.elapsed()
     );
+}
+
+/// An XFA form beside its AcroForm (a hybrid form): with
+/// `remove_javascript`, or when `remove_annotations` removes a widget,
+/// the XFA packets go (scripts and the datasets' copy of the values) and
+/// the AcroForm stays; refused when readers must render the form from
+/// XFA alone (`/NeedsRendering`), or when something else still refers to
+/// a packet. Not touched otherwise.
+#[test]
+fn hybrid_xfa_forms() {
+    let make = |cat: &str, annots: &str, extra: Vec<(u32, Vec<u8>)>| {
+        let mut objs = vec![
+            (1, format!("<< /Type /Catalog /Pages 2 0 R /AcroForm 30 0 R {cat} >>").into_bytes()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                format!("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [{annots}] >>")
+                    .into_bytes(),
+            ),
+            (4, stream_obj("", b"0 0 5 5 re f")),
+            (30, b"<< /Fields [31 0 R] /XFA [(template) 32 0 R (datasets) 33 0 R] >>".to_vec()),
+            (31, b"<< /Type /Annot /Subtype /Widget /FT /Tx /T (f) /V (VALUEMARK) /Rect [70 95 130 110] >>".to_vec()),
+            (32, stream_obj("", b"<template><script>XFAMARK</script></template>")),
+            (33, stream_obj("", b"<xfa:datasets><f>VALUEMARK</f></xfa:datasets>")),
+        ];
+        objs.extend(extra);
+        build_pdf(&objs)
+    };
+    // remove_annotations removes the widget: the field and XFA go.
+    let doc = Document::from_bytes(&make("", "31 0 R", vec![])).unwrap();
+    let r = redact(
+        &doc,
+        &[(0, vec![RECT])],
+        &RedactOptions::new().remove_annotations(true),
+    )
+    .unwrap();
+    assert!(r.xfa_removed);
+    assert!(!contains(&r.output, b"VALUEMARK") && !contains(&r.output, b"XFAMARK"));
+    // remove_javascript, the widget outside: XFA goes, the field stays.
+    let doc = Document::from_bytes(&make("", "31 0 R", vec![])).unwrap();
+    let far = (150.0, 150.0, 190.0, 190.0);
+    let r = redact(
+        &doc,
+        &[(0, vec![far])],
+        &RedactOptions::new().remove_javascript(true),
+    )
+    .unwrap();
+    assert!(r.xfa_removed);
+    assert!(!contains(&r.output, b"XFAMARK"));
+    assert!(
+        contains(&r.output, b"VALUEMARK"),
+        "the kept field keeps its value"
+    );
+    // Neither option: the XFA form is carried as it was.
+    let doc = Document::from_bytes(&make("", "", vec![])).unwrap();
+    let r = redact(&doc, &[(0, vec![far])], &RedactOptions::new()).unwrap();
+    assert!(!r.xfa_removed);
+    // A dynamic XFA form, and a packet something else refers to: refused.
+    for (name, cat) in [
+        ("dynamic", "/NeedsRendering true"),
+        ("packet kept", "/XPriv 33 0 R"),
+    ] {
+        let doc = Document::from_bytes(&make(cat, "31 0 R", vec![])).unwrap();
+        let e = unsupported(redact(
+            &doc,
+            &[(0, vec![RECT])],
+            &RedactOptions::new().remove_annotations(true),
+        ));
+        assert!(
+            e.contains("XFA") || e.contains("failed verification"),
+            "{name}: {e}"
+        );
+    }
+    // A packet kept through a reference chain the form uses, in an array
+    // too, and a copy of a packet: refused. (Review.)
+    let chained = |xfa: &str, cat: &str, extra: Vec<(u32, Vec<u8>)>| {
+        let mut objs = vec![
+            (
+                1,
+                format!("<< /Type /Catalog /Pages 2 0 R /AcroForm 30 0 R {cat} >>").into_bytes(),
+            ),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>".to_vec(),
+            ),
+            (4, stream_obj("", b"0 0 5 5 re f")),
+            (30, format!("<< /Fields [] /XFA {xfa} >>").into_bytes()),
+            (
+                33,
+                stream_obj("", b"<xfa:datasets><f>VALUEMARK</f></xfa:datasets>"),
+            ),
+        ];
+        objs.retain(|(n, _)| !extra.iter().any(|(m, _)| m == n));
+        objs.extend(extra);
+        build_pdf(&objs)
+    };
+    let js = RedactOptions::new().remove_javascript(true);
+    for (name, pdf) in [
+        (
+            "through a chain",
+            chained("34 0 R", "/XPriv 33 0 R", vec![(34, b"33 0 R".to_vec())]),
+        ),
+        (
+            "in an array, through a chain",
+            chained(
+                "[(datasets) 34 0 R]",
+                "/XPriv 33 0 R",
+                vec![(34, b"33 0 R".to_vec())],
+            ),
+        ),
+        (
+            "a copy",
+            chained(
+                "33 0 R",
+                "/XPriv 35 0 R",
+                vec![(
+                    35,
+                    stream_obj("", b"<xfa:datasets><f>VALUEMARK</f></xfa:datasets>"),
+                )],
+            ),
+        ),
+        (
+            "a copy of a packet written directly",
+            chained(
+                "<< /Length 45 >>\nstream\n<xfa:datasets><f>VALUEMARK</f></xfa:datasets>\nendstream",
+                "/XPriv 35 0 R",
+                vec![(
+                    35,
+                    stream_obj("", b"<xfa:datasets><f>VALUEMARK</f></xfa:datasets>"),
+                )],
+            ),
+        ),
+        (
+            "a copy as a thumbnail",
+            chained(
+                "33 0 R",
+                "",
+                vec![
+                    (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec()),
+                    (5, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Thumb 35 0 R >>".to_vec()),
+                    (35, stream_obj("/Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", b"<xfa:datasets><f>VALUEMARK</f></xfa:datasets>")),
+                ],
+            ),
+        ),
+    ] {
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let e = unsupported(redact(&doc, &[(0, vec![RECT])], &js));
+        assert!(e.contains("failed verification"), "{name}: {e}");
+    }
+}
+
+/// With `remove_javascript`, the catalog's `/AA` scripts go and what is
+/// left of it is carried (it was refused whole).
+#[test]
+fn catalog_additional_actions_without_scripts() {
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R /AA << /WP 5 0 R /DC << /S /Named /N /FirstPage >> >> >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R >>".to_vec()),
+        (4, stream_obj("", b"0 0 5 5 re f")),
+        (5, b"<< /S /JavaScript /JS (print\\(\\)) >>".to_vec()),
+    ]);
+    let doc = Document::from_bytes(&pdf).unwrap();
+    assert!(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()).is_err());
+    let r = redact(
+        &doc,
+        &[(0, vec![RECT])],
+        &RedactOptions::new().remove_javascript(true),
+    )
+    .unwrap();
+    assert_eq!(r.javascript_removed, 1);
+    assert!(!contains(&r.output, b"JavaScript"));
+    assert!(contains(&r.output, b"FirstPage"));
+}
+
+/// A NoZoom popup without an appearance stream draws nothing on the
+/// page: kept on an edited page. One with an appearance, and a Text
+/// annotation (its icon), are still refused when kept.
+#[test]
+fn nozoom_popups_without_appearance() {
+    let make = |annot: &str| {
+        build_pdf(&[
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R /Annots [10 0 R] >>".to_vec()),
+            (4, stream_obj("", b"0 0 5 5 re f")),
+            (10, annot.as_bytes().to_vec()),
+            (11, stream_obj("/Type /XObject /Subtype /Form /BBox [0 0 10 10]", b"0 0 10 10 re f")),
+        ])
+    };
+    let far = "/Rect [170 170 190 190]";
+    let doc = Document::from_bytes(&make(&format!(
+        "<< /Type /Annot /Subtype /Popup {far} /F 28 /Open false >>"
+    )))
+    .unwrap();
+    redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()).unwrap();
+    for a in [
+        format!("<< /Type /Annot /Subtype /Popup {far} /F 28 /AP << /N 11 0 R >> >>"),
+        format!("<< /Type /Annot /Subtype /Text {far} /Contents (x) >>"),
+    ] {
+        let doc = Document::from_bytes(&make(&a)).unwrap();
+        let e = unsupported(redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()));
+        assert!(e.contains("NoZoom"), "{a}: {e}");
+    }
+}
+
+/// A non-embedded simple TrueType font named after a Standard 14 font's
+/// metric-compatible alias (ArialMT, TimesNewRomanPSMT): with
+/// `embed_substitute_fonts` its substitute is embedded and the text is
+/// redacted by ink, as for the Type 1 fonts. A symbolic one stays refused.
+#[test]
+fn non_embedded_truetype_text_is_redacted_after_embedding() {
+    let make = |base: &str, flags: u32| {
+        doc_with(
+            "/Font << /H 50 0 R >>",
+            &[b"BT /H 12 Tf 20 100 Td (PUBLIC SECRETWORD MORE) Tj ET"],
+            vec![
+                (
+                    50,
+                    format!(
+                        "<< /Type /Font /Subtype /TrueType /BaseFont /{base} /Encoding /WinAnsiEncoding \
+                         /FirstChar 32 /LastChar 126 /Widths [{}] /FontDescriptor 51 0 R >>",
+                        ["600"; 95].join(" ")
+                    )
+                    .into_bytes(),
+                ),
+                (
+                    51,
+                    format!(
+                        "<< /Type /FontDescriptor /FontName /{base} /Flags {flags} /FontBBox [0 -200 1000 900] \
+                         /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 >>"
+                    )
+                    .into_bytes(),
+                ),
+            ],
+        )
+    };
+    for base in ["ArialMT", "TimesNewRomanPSMT"] {
+        let pdf = make(base, 32);
+        assert!(
+            unsupported(run(&pdf, vec![RECT])).contains("non-embedded"),
+            "{base}"
+        );
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
+        let rect = (
+            t.chars[7].origin.0 + 0.5,
+            95.0,
+            t.chars[17].origin.0 - 0.5,
+            112.0,
+        );
+        let r = embed_run(&pdf, vec![rect]).unwrap();
+        assert_eq!(r.fonts_embedded, 1, "{base}");
+        let text = page_text(&r.output, 0);
+        assert!(
+            !text.contains("SECRET") && text.contains("PUBLIC") && text.contains("MORE"),
+            "{base}: {text}"
+        );
+        assert!(!contains(&r.output, b"SECRETWORD"));
+    }
+    let pdf = make("ArialMT", 4);
+    assert!(embed_run(&pdf, vec![RECT]).is_err(), "symbolic");
+    // Symbolic through a reference: the same. (Review.)
+    let pdf = doc_with(
+        "/Font << /H 50 0 R >>",
+        &[b"BT /H 12 Tf 20 100 Td (PUBLIC SECRETWORD MORE) Tj ET"],
+        vec![
+            (
+                50,
+                format!(
+                    "<< /Type /Font /Subtype /TrueType /BaseFont /ArialMT /Encoding /WinAnsiEncoding \
+                     /FirstChar 32 /LastChar 126 /Widths [{}] /FontDescriptor 51 0 R >>",
+                    ["600"; 95].join(" ")
+                )
+                .into_bytes(),
+            ),
+            (
+                51,
+                b"<< /Type /FontDescriptor /FontName /ArialMT /Flags 52 0 R /FontBBox [0 -200 1000 900] \
+                  /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 >>"
+                    .to_vec(),
+            ),
+            (52, b"4".to_vec()),
+        ],
+    );
+    let r = embed_run(&pdf, vec![RECT]);
+    assert!(
+        r.as_ref().map_or(true, |r| r.fonts_embedded == 0),
+        "symbolic by reference: embedded"
+    );
+}
+
+/// A code whose glyph the substitute cannot name is written as its blank
+/// space glyph, never `.notdef` (readers draw `.notdef` differently —
+/// some fall back to the code's own glyph, which kasane did not place).
+/// (Review.)
+#[test]
+fn substitutes_never_write_notdef() {
+    for subtype in ["Type1", "TrueType"] {
+        let pdf = doc_with(
+            "/Font << /H 50 0 R >>",
+            &[b"BT /H 100 Tf 10 50 Td <57> Tj ET BT /H 10 Tf 10 150 Td (W) Tj ET"],
+            vec![
+                (
+                    50,
+                    format!(
+                        "<< /Type /Font /Subtype /{subtype} /BaseFont /ArialMT /FirstChar 32 /LastChar 126 \
+                         /Widths [{}] /Encoding << /Differences [87 /u1F600] >> /FontDescriptor 51 0 R >>",
+                        ["1000"; 95].join(" ")
+                    )
+                    .into_bytes(),
+                ),
+                (
+                    51,
+                    b"<< /Type /FontDescriptor /FontName /ArialMT /Flags 32 /FontBBox [0 -200 1000 900] \
+                      /ItalicAngle 0 /Ascent 900 /Descent -200 /CapHeight 700 /StemV 80 >>"
+                        .to_vec(),
+                ),
+            ],
+        );
+        let r = embed_run(&pdf, vec![(95.0, 100.0, 100.0, 115.0)])
+            .unwrap_or_else(|e| panic!("{subtype}: {e}"));
+        assert_eq!(r.fonts_embedded, 1, "{subtype}");
+        let doc = Document::from_bytes(&r.output).unwrap();
+        let size = doc
+            .trailer()
+            .get(b"Size".as_slice())
+            .and_then(|s| s.as_i64())
+            .unwrap();
+        let mut notdef = false;
+        for n in 1..size as u32 {
+            let r = kasane_pdf::IndirectRef {
+                number: n,
+                generation: 0,
+            };
+            if let Ok(kasane_pdf::Object::Dict(d)) = doc.resolve(r) {
+                if let Some(kasane_pdf::Object::Dict(e)) = d.get(b"Encoding".as_slice()) {
+                    if let Some(kasane_pdf::Object::Array(a)) = e.get(b"Differences".as_slice()) {
+                        notdef |= a.iter().any(|x| x.as_name() == Some(b".notdef".as_slice()));
+                    }
+                }
+            }
+        }
+        assert!(
+            !notdef,
+            "{subtype}: a .notdef in the embedded font's encoding"
+        );
+    }
+}
+
+/// Filled shapes other than disjoint rectangles — curves, polygons,
+/// self-intersecting stars under either fill rule, a ring with a hole,
+/// overlapping or rotated rectangles, under a skewed CTM, filled and
+/// stroked — crossing a rect are clipped to the plane outside it: no ink
+/// inside, none lost away from the rect, no point of the output's paths
+/// inside the rect, and the output redacted again is unchanged. (0.10)
+#[test]
+fn filled_shapes_crossing_a_rect_are_cut() {
+    let circle = "100 160 m 133.1 160 160 133.1 160 100 c 160 66.9 133.1 40 100 40 c \
+                  66.9 40 40 66.9 40 100 c 40 133.1 66.9 160 100 160 c h";
+    let star = "100 180 m 150 20 l 20 120 l 180 120 l 50 20 l h";
+    let ring = "20 20 m 180 20 l 180 180 l 20 180 l h 60 60 m 60 140 l 140 140 l 140 60 l h";
+    let shapes = [
+        format!("{circle} f"),
+        format!("{star} f"),
+        format!("{star} f*"),
+        format!("{ring} f"),
+        format!("{ring} f*"),
+        "20 20 100 100 re 60 60 100 100 re f".to_string(),
+        "q 0.8 0.6 -0.6 0.8 100 0 cm 0 0 120 60 re f Q".to_string(),
+        format!("q 1 0.3 0.2 1 -10 -20 cm {circle} f Q"),
+        format!("0 0 1 RG 1 w {circle} B"),
+    ];
+    let inside = |x: f64, y: f64, r: (f64, f64, f64, f64)| x > r.0 && x < r.2 && y > r.1 && y < r.3;
+    for rects in [
+        vec![(85.0, 80.0, 115.0, 175.0)],
+        vec![(85.0, 80.0, 115.0, 175.0), (30.0, 30.0, 70.0, 60.0)],
+    ] {
+        for c in &shapes {
+            let pdf = one_page(&format!("0 g {c}"), "", "", vec![]);
+            let r = run(&pdf, rects.clone()).unwrap_or_else(|e| panic!("{c}: {e}"));
+            assert_eq!(r.paths_cut, 1, "{c}");
+            let (a, b) = (reds(&pdf), reds(&r.output));
+            for rect in &rects {
+                // No ink inside (`lost_outside` asserts it); nothing lost
+                // more than the cut's anti-aliased edge away from it.
+                let _ = lost_outside(&a, &b, *rect);
+            }
+            // Away from the rects no ink is lost; the kept sub-curves are
+            // the original geometry, which a rasteriser flattens a little
+            // differently, so anti-aliased edge pixels may shift.
+            let mut shifted = 0;
+            for y in 0..200u32 {
+                for x in 0..200u32 {
+                    let (xf, yf) = (x as f64 + 0.5, 199.5 - y as f64);
+                    let near = rects.iter().any(|q| {
+                        xf > q.0 - 2.0 && xf < q.2 + 2.0 && yf > q.1 - 2.0 && yf < q.3 + 2.0
+                    });
+                    let i = (y * 200 + x) as usize;
+                    if !near {
+                        assert!(
+                            !(a[i] < 64 && b[i] > 192),
+                            "{c}: ink lost at ({x}, {y}) {} → {}",
+                            a[i],
+                            b[i]
+                        );
+                        shifted += usize::from(a[i] != b[i]);
+                    }
+                }
+            }
+            assert!(
+                shifted < 60,
+                "{c}: {shifted} pixels changed away from the rects"
+            );
+            // No point of a path, in page space, inside a rect.
+            let doc = Document::from_bytes(&r.output).unwrap();
+            let mut ctm = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0f64];
+            let mut stack = Vec::new();
+            for o in doc.page_operations(&doc.pages()[0]).unwrap() {
+                use kasane_pdf::Operation as O;
+                let pts: Vec<(f64, f64)> = match o {
+                    O::SaveState => {
+                        stack.push(ctm);
+                        vec![]
+                    }
+                    O::RestoreState => {
+                        ctm = stack.pop().unwrap();
+                        vec![]
+                    }
+                    O::ConcatMatrix(m) => {
+                        let n = [m.a, m.b, m.c, m.d, m.e, m.f];
+                        ctm = [
+                            n[0] * ctm[0] + n[1] * ctm[2],
+                            n[0] * ctm[1] + n[1] * ctm[3],
+                            n[2] * ctm[0] + n[3] * ctm[2],
+                            n[2] * ctm[1] + n[3] * ctm[3],
+                            n[4] * ctm[0] + n[5] * ctm[2] + ctm[4],
+                            n[4] * ctm[1] + n[5] * ctm[3] + ctm[5],
+                        ];
+                        vec![]
+                    }
+                    O::MoveTo(x, y) | O::LineTo(x, y) => vec![(x, y)],
+                    O::CurveTo(a, b, c, d, e, f) => vec![(a, b), (c, d), (e, f)],
+                    O::Rectangle(x, y, w, h) => vec![(x, y), (x + w, y + h)],
+                    _ => vec![],
+                };
+                for (x, y) in pts {
+                    let (px, py) = (
+                        ctm[0] * x + ctm[2] * y + ctm[4],
+                        ctm[1] * x + ctm[3] * y + ctm[5],
+                    );
+                    assert!(
+                        !rects.iter().any(|q| inside(px, py, *q)),
+                        "{c}: a point inside ({px}, {py})"
+                    );
+                }
+            }
+            // Idempotent: nothing left to cut.
+            let again = run(&r.output, rects.clone()).unwrap();
+            assert_eq!(again.paths_cut + again.paths_removed, 0, "{c}");
+        }
+    }
+}
+
+/// An axial shading (`sh`) crossing a rect is painted outside it only
+/// when every colour it showed inside is shown outside too: under an
+/// even-odd clip with the rect as a hole (translucent paint shows as
+/// before), or in overlapping strips for opaque paint when rects
+/// overlap. Refused: values of the axis only the rect showed, a
+/// function-based or radial shading, overlapping rects with translucent
+/// paint. Nothing is painted inside; the output redacted again is
+/// unchanged. (0.10)
+#[test]
+fn axial_shadings_crossing_a_rect() {
+    let make = |content: &str, shading: &str| {
+        one_page(
+            content,
+            "/Resources << /Shading << /Sh 30 0 R >> /ExtGState << /G << /ca 0.5 >> >> >>",
+            "",
+            vec![(30, shading.as_bytes().to_vec())],
+        )
+    };
+    let axial = |extend: &str| {
+        format!(
+            "<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [20 0 180 0] /Extend [{extend}] \
+             /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >> >>"
+        )
+    };
+    let rect = (60.0, 60.0, 120.0, 120.0);
+    let both = vec![rect, (100.0, 100.0, 150.0, 150.0)];
+    for (name, content, rects) in [
+        ("clipped", "q 0 0 200 200 re W n /Sh sh Q", vec![rect]),
+        ("unclipped", "/Sh sh", vec![rect]),
+        (
+            "translucent",
+            "q /G gs 10 10 180 180 re W n /Sh sh Q",
+            vec![rect],
+        ),
+        (
+            "overlapping rects, opaque",
+            "q 0 0 200 200 re W n /Sh sh Q",
+            both.clone(),
+        ),
+    ] {
+        let pdf = make(content, &axial("true true"));
+        let r = run(&pdf, rects.clone()).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(r.shadings_cut, 1, "{name}");
+        let (a, b) = (reds(&pdf), reds(&r.output));
+        for q in &rects {
+            let lost = lost_outside(&a, &b, *q);
+            // Only the cut's edge may differ (anti-aliasing): the other
+            // rect's cut when there are two.
+            assert!(
+                rects.len() > 1 || lost < 400,
+                "{name}: {lost} pixels changed outside"
+            );
+        }
+        let again = run(&r.output, rects).unwrap();
+        assert_eq!(again.shadings_cut + again.shadings_removed, 0, "{name}");
+    }
+    for (name, content, shading, rects) in [
+        (
+            "values only the rect shows",
+            "q 0 0 200 200 re W n /Sh sh Q",
+            axial("false false"),
+            vec![(150.0, 0.0, 200.0, 200.0)],
+        ),
+        (
+            "translucent, overlapping rects",
+            "q /G gs 0 0 200 200 re W n /Sh sh Q",
+            axial("true true"),
+            both.clone(),
+        ),
+        (
+            "radial",
+            "q 0 0 200 200 re W n /Sh sh Q",
+            "<< /ShadingType 3 /ColorSpace /DeviceRGB /Coords [100 100 0 100 100 90] \
+             /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >> >>"
+                .to_string(),
+            vec![rect],
+        ),
+        (
+            "function-based",
+            "q 0 0 200 200 re W n /Sh sh Q",
+            "<< /ShadingType 1 /ColorSpace /DeviceGray /Domain [0 200 0 200] \
+             /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >>"
+                .to_string(),
+            vec![rect],
+        ),
+    ] {
+        let e = unsupported(run(&make(content, &shading), rects));
+        assert!(e.contains("shading"), "{name}: {e}");
+    }
+}
+
+/// A rectangle filled with a tiling pattern crossing a rect is cut
+/// when what stays outside shows a whole period of the pattern (every
+/// part of the cell the rect showed is shown there too); refused when
+/// it does not. (0.10)
+#[test]
+fn tiling_pattern_fills_crossing_a_rect() {
+    let make = |step: u32, fill: &str| {
+        one_page(
+            &format!("/Pattern cs /P scn {fill} f"),
+            "/Resources << /Pattern << /P 30 0 R >> >>",
+            "",
+            vec![(
+                30,
+                stream_obj(
+                    &format!(
+                        "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 {step} {step}] \
+                         /XStep {step} /YStep {step} /Resources << >>"
+                    ),
+                    format!("0 0 1 rg 0 0 {} {} re f", step / 2, step / 2).as_bytes(),
+                ),
+            )],
+        )
+    };
+    let rect = (60.0, 60.0, 120.0, 120.0);
+    let pdf = make(10, "0 0 200 200 re");
+    let r = run(&pdf, vec![rect]).unwrap();
+    assert_eq!(r.paths_cut, 1);
+    let _ = lost_outside(&reds(&pdf), &reds(&r.output), rect);
+    // A period larger than anything left outside.
+    let e = unsupported(run(&make(100, "50 50 80 80 re"), vec![rect]));
+    assert!(e.contains("tiling pattern"), "{e}");
+}
+
+/// Review of the 0.10 cuts (fixed): a tiling pattern's period must show
+/// in what the fill actually shows outside the rects (its clip, the
+/// page), and many rects do not multiply the pieces looked at; an axial
+/// shading's colours must be shown outside on the page, not under a
+/// clip beyond it; a closed single curve is a shape and is clipped, not
+/// dropped.
+#[test]
+fn cut_criteria_follow_what_is_shown() {
+    // A pattern whose only ink (its cell's square) shows inside the
+    // rect once the clip is applied.
+    let pdf = one_page(
+        "50 50 80 80 re W n /Pattern cs /P scn 0 0 1000 1000 re f",
+        "/Resources << /Pattern << /P 30 0 R >> >>",
+        "",
+        vec![(
+            30,
+            stream_obj(
+                "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 100 100] /XStep 100 /YStep 100 \
+                 /Resources << >>",
+                b"0 0 1 rg 65 65 10 10 re f",
+            ),
+        )],
+    );
+    let e = unsupported(run(&pdf, vec![(60.0, 60.0, 120.0, 120.0)]));
+    assert!(e.contains("tiling pattern"), "{e}");
+    // Filled and stroked: the stroke's reach shows no more of the fill.
+    let pdf = one_page(
+        "/Pattern cs /P scn 1 w 100 M 50 50 80 80 re B",
+        "/Resources << /Pattern << /P 30 0 R >> >>",
+        "",
+        vec![(
+            30,
+            stream_obj(
+                "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 50 50] /XStep 50 /YStep 50 \
+                 /Resources << >>",
+                b"0 0 1 rg 10 10 10 10 re f",
+            ),
+        )],
+    );
+    let e = unsupported(run(&pdf, vec![(60.0, 60.0, 120.0, 120.0)]));
+    assert!(e.contains("tiling pattern"), "{e}");
+    // Many nested rects: decided quickly.
+    let pdf = one_page(
+        "/Pattern cs /P scn 0 0 200 200 re f",
+        "/Resources << /Pattern << /P 30 0 R >> >>",
+        "",
+        vec![(
+            30,
+            stream_obj(
+                "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 4 4] /XStep 4 /YStep 4 /Resources << >>",
+                b"0 0 1 rg 0 0 2 2 re f",
+            ),
+        )],
+    );
+    let mut rects = vec![(10.0, 10.0, 190.0, 190.0)];
+    rects.extend((0..20).map(|i| (-(i as f64), -(i as f64), 10.0 + i as f64, 200.0 + i as f64)));
+    let start = std::time::Instant::now();
+    let _ = run(&pdf, rects);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(20),
+        "{:?}",
+        start.elapsed()
+    );
+    // A shading band only the rect shows on the page, its "outside"
+    // under a clip beyond the page.
+    let pdf = one_page(
+        "q -100 -100 400 400 re W n /Sh sh Q",
+        "/Resources << /Shading << /Sh 30 0 R >> >>",
+        "",
+        vec![(
+            30,
+            b"<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [-100 0 300 0] \
+              /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >>"
+                .to_vec(),
+        )],
+    );
+    let e = unsupported(run(&pdf, vec![(60.0, 0.0, 120.0, 200.0)]));
+    assert!(e.contains("shading"), "{e}");
+    // One closed cubic: clipped, its ink outside kept.
+    let pdf = one_page("0 g 50 50 m 50 180 180 50 50 50 c h f", "", "", vec![]);
+    let rect = (65.0, 65.0, 80.0, 80.0);
+    let r = run(&pdf, vec![rect]).unwrap();
+    assert_eq!(r.paths_cut, 1);
+    let lost = lost_outside(&reds(&pdf), &reds(&r.output), rect);
+    assert!(lost < 100, "{lost} pixels lost outside");
 }

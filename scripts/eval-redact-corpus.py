@@ -50,10 +50,11 @@ Checks on a success (tools that share no code with kasane):
 MuPDF rounds simple fonts' widths to integers: a kept glyph after
 removed ones "moves" by hundredths of a point in its reading only.
 
-A run whose only problem is unchanged ink inside that is all black
-where images were zeroed is still `unexpected`, marked `check_by_hand`
-(zeroed samples that were already black look unchanged; black content
-left over a zeroed image would look the same). It is then checked
+A run whose only problem is unchanged ink inside where images were
+zeroed is still `unexpected`, marked `check_by_hand` (zeroed samples
+that were already black look unchanged, grey under a soft mask or
+translucent paint; content left over a zeroed image would look the
+same). It is then checked
 mechanically: with no image of the output drawn (each image XObject an
 empty form), no unchanged ink may stay inside — then it is all image samples, which `redact` verifies
 are zero inside the rect (`unchanged_ink_not_from_images`, 0; the run
@@ -372,8 +373,13 @@ def run_one(kasane, pdf, kind, rect, size, in_words, tmp, extra_args=()):
     # all black where images were zeroed (samples already black look
     # unchanged). Still unexpected — black content left over a zeroed
     # image would look the same — but marked for the hand check.
-    if left_ink and left_ink == left_black and res.get("images_edited") and len(problems) == 1:
-        res["check_by_hand"] = "unchanged ink inside is all black where images were zeroed"
+    # (Zeroed samples under a soft mask or translucent paint look grey,
+    # not black: the mechanical check below decides them alike.)
+    if left_ink and res.get("images_edited") and len(problems) == 1:
+        res["check_by_hand"] = (
+            "unchanged ink inside is all black where images were zeroed"
+            if left_ink == left_black
+            else "unchanged ink inside where images were zeroed")
         # Checked mechanically: with no image drawn, does any of that
         # ink stay? None staying means it is all image samples —
         # which `redact` verifies are zero inside the rect. The run stays

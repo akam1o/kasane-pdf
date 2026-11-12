@@ -90,7 +90,10 @@ impl RedactOptions {
     /// catalog runs scripts. A script may hold any of the document's
     /// text and is not redacted, so it is removed whole: the output's
     /// forms no longer calculate, validate or format, and nothing runs
-    /// when it opens. Verification checks that no JavaScript is left.
+    /// when it opens. An XFA form, whose scripts are not edited, is
+    /// removed with its scripts ([`Redaction::xfa_removed`]); one readers
+    /// must render from XFA alone is refused. Verification checks that no
+    /// JavaScript is left.
     pub fn remove_javascript(mut self, remove: bool) -> Self {
         self.remove_javascript = remove;
         self
@@ -134,8 +137,9 @@ impl RedactOptions {
     /// popup belongs to, and replies to it (`/IRT`), transitively.
     /// A widget meeting a rect is removed too, and its form field with
     /// it when no widget of the field is left (`Redaction::fields_removed`;
-    /// a signature field, an XFA form or a field tree that cannot be
-    /// edited exactly is refused). Other subtypes meeting a rect
+    /// a signature field or a field tree that cannot be edited exactly is
+    /// refused; an XFA form goes, see [`Redaction::xfa_removed`], unless
+    /// readers must render it from XFA alone, which is refused). Other subtypes meeting a rect
     /// (signatures, media, file attachments …) stay refused. Its appearance streams may not
     /// stay in the output unless something still draws them (checked
     /// like an edited image's original), and its text is searched for
@@ -148,7 +152,8 @@ impl RedactOptions {
 
     /// Before redacting, replace each non-embedded Latin Standard 14
     /// font (Times, Helvetica, Courier and their metric-compatible
-    /// aliases such as Arial) — document-wide — by a TrueType font
+    /// aliases such as Arial), Type 1 or non-symbolic simple TrueType
+    /// (ArialMT, TimesNewRomanPSMT …) — document-wide — by a TrueType font
     /// embedding the bundled substitute (Liberation), with every code's
     /// glyph name and advance written out, so that every reader draws
     /// exactly the embedded glyphs at the same positions. The glyphs'
@@ -159,8 +164,9 @@ impl RedactOptions {
     /// The output then shows Liberation's glyph shapes wherever those
     /// fonts are used (metric-compatible: the same advances, slightly
     /// different shapes) and is larger by the embedded programs (about
-    /// 0.3–0.4 MB per face). Symbol, ZapfDingbats, other non-embedded
-    /// fonts and CID fonts are not embedded and stay refused.
+    /// 0.3–0.4 MB per face). Symbol, ZapfDingbats, symbolic TrueType
+    /// fonts, other non-embedded fonts and CID fonts are not embedded
+    /// and stay refused.
     /// [`Redaction::fonts_embedded`] counts the fonts replaced.
     pub fn embed_substitute_fonts(mut self, embed: bool) -> Self {
         self.embed_substitute_fonts = embed;
@@ -193,6 +199,10 @@ pub struct Redaction {
     /// Shadings (`sh`) removed, each painting only inside a rect; the
     /// shading resources only they used are not carried.
     pub shadings_removed: u64,
+    /// Axial shadings (`sh`) crossing a rect, painted outside it only:
+    /// every colour they showed inside is shown outside too, so the
+    /// shading keeps nothing only the rect showed.
+    pub shadings_cut: u64,
     /// `/Link` annotations removed because their `/Rect` met a rect
     /// (with their action or destination); links outside are kept.
     pub links_removed: u64,
@@ -248,6 +258,11 @@ pub struct Redaction {
     /// Form fields removed with the widgets `remove_annotations` removed
     /// (a field all of whose widgets are gone goes, its value with it).
     pub fields_removed: u64,
+    /// The AcroForm's XFA form (its template, scripts and a copy of the
+    /// field values) was removed: with `remove_javascript`, or when
+    /// `remove_annotations` edited form fields. Readers use the AcroForm
+    /// that stays.
+    pub xfa_removed: bool,
     /// The residual-information audit of the *output*: annotations,
     /// attachments, form values, actions, outlines' targets … that
     /// the positional redaction does not touch. Review before
@@ -310,6 +325,7 @@ impl std::fmt::Debug for Redaction {
             .field("paths_removed", &self.paths_removed)
             .field("paths_cut", &self.paths_cut)
             .field("shadings_removed", &self.shadings_removed)
+            .field("shadings_cut", &self.shadings_cut)
             .field("links_removed", &self.links_removed)
             .field("annotations_removed", &self.annotations_removed)
             .field("original_names_removed", &self.original_names_removed)
@@ -398,6 +414,15 @@ fn redact_doc(
             .overlay
             .insert((root.number, root.generation), Object::Dict(catalog));
     }
+    // The XFA form, when scripts are removed or fields edited: its
+    // packets hold both (the AcroForm stays).
+    let xfa_packets = if options.remove_javascript || !s.touched.removed_widgets.is_empty() {
+        crate::redact_forms::remove_xfa(doc, &mut s.edit.overlay)?
+    } else {
+        None
+    };
+    let xfa_removed = xfa_packets.is_some();
+    let (xfa_packets, xfa_digests) = xfa_packets.unwrap_or_default();
     // The form fields of removed widgets.
     let forms = crate::redact_forms::edit_fields(
         doc,
@@ -418,6 +443,8 @@ fn redact_doc(
     // no longer match).
     let mut gone: HashSet<IndirectRef> = s.touched.removed_annotations.clone();
     gone.extend(forms.gone.iter().copied());
+    // The XFA packets removed go whole too.
+    gone.extend(xfa_packets.iter().copied());
     if let Some((r, path)) =
         crate::redact_forms::removed_still_reached(doc, &s.edit.overlay, &gone, limits)?
     {
@@ -511,6 +538,9 @@ fn redact_doc(
     )?;
     verify_original_contents(&out, &idx, &s.original_contents_digests)?;
     let mut gone_whole = s.removed_stream_digests.clone();
+    // The XFA packets removed: no copy of their bytes anywhere, in any
+    // role (a thumbnail's included), as a stream object or a direct one.
+    verify_xfa_gone(&out, &idx, &xfa_digests)?;
     gone_whole.extend(glyph_tounicodes);
     verify_removed_streams(&out, &idx, &gone_whole, &glyph_procs)?;
     crate::redact_struct::verify(&out, &structure, limits)?;
@@ -596,6 +626,7 @@ fn redact_doc(
         paths_removed: s.paths_removed_total,
         paths_cut: s.paths_cut_total,
         shadings_removed: s.shadings_removed_total,
+        shadings_cut: s.shadings_cut_total,
         links_removed: s.links_removed_total,
         annotations_removed: s.annots_removed_total,
         original_names_removed: s.names_pruned_total,
@@ -611,6 +642,7 @@ fn redact_doc(
         uninspected,
         thumbnails_removed: s.thumbnails_removed_total,
         fields_removed: forms.fields_removed,
+        xfa_removed,
         residual,
     })
 }
@@ -661,17 +693,20 @@ fn verify(
         + again.pixels_changed_total
         + again.paths_removed_total
         + again.paths_cut_total
+        + again.shadings_removed_total
+        + again.shadings_cut_total
         + again.links_removed_total
         + again.annots_removed_total
         != 0
     {
         return Err(fail(format!(
-            "the rects still hit {} codes, {} nonzero pixels, {} paths, {} paths to cut, {} links, \
-             {} annotations",
+            "the rects still hit {} codes, {} nonzero pixels, {} paths, {} paths to cut, {} \
+             shadings, {} links, {} annotations",
             again.codes_removed_total,
             again.pixels_changed_total,
             again.paths_removed_total,
             again.paths_cut_total,
+            again.shadings_removed_total + again.shadings_cut_total,
             again.links_removed_total,
             again.annots_removed_total
         )));
@@ -815,6 +850,53 @@ fn verify_original_contents(
 /// replaced `/ToUnicode`), and none is a removed Type 3 glyph's procedure
 /// (`procs`) except as a Type 3 font's CharProc (the same bytes still a
 /// glyph there).
+/// No stream of the output — indirect or written inside another object —
+/// stores or decodes to the bytes of a removed XFA packet.
+fn verify_xfa_gone(
+    out: &Document,
+    idx: &crate::redact_verify::Index,
+    digests: &[[u8; 32]],
+) -> Result<(), Error> {
+    if digests.is_empty() {
+        return Ok(());
+    }
+    let gone: HashSet<[u8; 32]> = digests.iter().copied().collect();
+    let fail = |r: IndirectRef| Error::Unsupported {
+        feature: "redaction output failed verification",
+        detail: format!("object {r} holds the bytes of a removed XFA packet"),
+    };
+    for (r, o) in &idx.objects {
+        if let Some(d) = idx.digests.get(r) {
+            if gone.contains(&d.stored) || d.decoded.is_some_and(|x| gone.contains(&x)) {
+                return Err(fail(*r));
+            }
+        }
+        // Streams written inside the object.
+        let mut stack: Vec<&Object> = match o {
+            Object::Stream { dict, .. } => dict.values().collect(),
+            o => vec![o],
+        };
+        while let Some(v) = stack.pop() {
+            match v {
+                Object::Stream { dict, data } => {
+                    let hit = gone.contains(&crate::remove_region::sha256(data))
+                        || out
+                            .decode_stream(dict, data)
+                            .is_ok_and(|d| gone.contains(&crate::remove_region::sha256(&d)));
+                    if hit {
+                        return Err(fail(*r));
+                    }
+                    stack.extend(dict.values());
+                }
+                Object::Array(a) => stack.extend(a.iter()),
+                Object::Dict(d) => stack.extend(d.values()),
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
 fn verify_removed_streams(
     out: &Document,
     idx: &crate::redact_verify::Index,

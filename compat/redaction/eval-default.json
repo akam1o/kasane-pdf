@@ -8,7 +8,7 @@
     115.58,
     634.56
    ],
-   "seconds": 0.012,
+   "seconds": 0.445,
    "elsewhere": 0,
    "outside_words": 4,
    "outside_words_lost": 0,
@@ -70,7 +70,7 @@
     396.88,
     561.28
    ],
-   "seconds": 0.011,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 5,
    "outside_words_lost": 0,
@@ -117,7 +117,7 @@
     612.0,
     611.02
    ],
-   "seconds": 0.002,
+   "seconds": 0.003,
    "outcome": "refused",
    "reason": "redaction of an annotation other than a link meeting a rect",
    "detail": "/Annots[7] (/Widget) \u2014 its content is not edited; RedactOptions::remove_annotations removes it whole",
@@ -133,7 +133,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.003,
+   "seconds": 0.004,
    "outcome": "refused",
    "reason": "JavaScript name tree",
    "detail": "/Names /JavaScript is outside the rewrite profile",
@@ -149,7 +149,7 @@
     88.16,
     703.8
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
    "reason": "redaction of an annotation other than a link meeting a rect",
    "detail": "/Annots[0] (/Highlight) \u2014 its content is not edited; RedactOptions::remove_annotations removes it whole",
@@ -181,7 +181,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.009,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 9,
    "outside_words_lost": 0,
@@ -228,7 +228,7 @@
     612.0,
     714.16
    ],
-   "seconds": 0.002,
+   "seconds": 0.003,
    "outcome": "refused",
    "reason": "redaction of an annotation other than a link meeting a rect",
    "detail": "/Annots[0] (/Ink) \u2014 its content is not edited; RedactOptions::remove_annotations removes it whole",
@@ -260,7 +260,7 @@
     74.99,
     794.61
    ],
-   "seconds": 0.009,
+   "seconds": 0.008,
    "elsewhere": 0,
    "outside_words": 5,
    "outside_words_lost": 0,
@@ -307,10 +307,25 @@
     396.64,
     561.28
    ],
-   "seconds": 0.002,
-   "outcome": "refused",
-   "reason": "redaction on a page with a NoZoom or NoRotate annotation",
-   "detail": "/Annots[1] \u2014 its appearance is not placed by /Rect (a Text annotation's icon always behaves so",
+   "seconds": 0.008,
+   "elsewhere": 0,
+   "outside_words": 9,
+   "outside_words_lost": 0,
+   "outside_chars": 100,
+   "outside_chars_lost": 0,
+   "outside_chars_mupdf": 100,
+   "outside_chars_mupdf_lost": 0,
+   "outside_chars_mupdf_moved": 0,
+   "words_regrouped": 0,
+   "outside_pixels_changed": 0,
+   "unchanged_ink_inside": 0,
+   "codes_removed": 0,
+   "images_edited": 0,
+   "forms_edited": 0,
+   "paths_removed": 0,
+   "paths_cut_at_a_rect": 0,
+   "shadings_removed": 0,
+   "outcome": "ok",
    "id": "bug1974436",
    "category": "browser",
    "producer": "Skia (Chrome)"
@@ -354,7 +369,7 @@
     612.0,
     401.5
    ],
-   "seconds": 0.019,
+   "seconds": 0.02,
    "elsewhere": 2,
    "outside_words": 232,
    "outside_words_lost": 0,
@@ -385,10 +400,25 @@
     408.0,
     528.0
    ],
-   "seconds": 0.005,
-   "outcome": "refused",
-   "reason": "redaction of a path crossing a rect's edge",
-   "detail": "op #367: a filled shape that is not an axis-aligned rectangle",
+   "seconds": 0.022,
+   "elsewhere": 13,
+   "outside_words": 191,
+   "outside_words_lost": 0,
+   "outside_chars": 997,
+   "outside_chars_lost": 0,
+   "outside_chars_mupdf": 1046,
+   "outside_chars_mupdf_lost": 0,
+   "outside_chars_mupdf_moved": 82,
+   "words_regrouped": 0,
+   "outside_pixels_changed": 293,
+   "unchanged_ink_inside": 0,
+   "codes_removed": 379,
+   "images_edited": 0,
+   "forms_edited": 0,
+   "paths_removed": 0,
+   "paths_cut_at_a_rect": 1,
+   "shadings_removed": 0,
+   "outcome": "ok",
    "id": "chrome-article-columns-0",
    "category": "browser",
    "producer": "Skia (Chrome)"
@@ -432,7 +462,7 @@
     612.0,
     401.59
    ],
-   "seconds": 0.026,
+   "seconds": 0.028,
    "elsewhere": 1,
    "outside_words": 856,
    "outside_words_lost": 0,
@@ -463,7 +493,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.026,
+   "seconds": 0.028,
    "elsewhere": 15,
    "outside_words": 687,
    "outside_words_lost": 0,
@@ -494,7 +524,7 @@
     37.84,
     109.12
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x48 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Helvetica is drawn with the bundled LiberationSans-Regular \u2014 its true ink extent is unknown",
@@ -542,7 +572,7 @@
     169.49,
     571.87
    ],
-   "seconds": 0.011,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -573,7 +603,7 @@
     612.0,
     571.87
    ],
-   "seconds": 0.01,
+   "seconds": 0.011,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -620,7 +650,7 @@
     91.22,
     728.26
    ],
-   "seconds": 0.012,
+   "seconds": 0.017,
    "elsewhere": 1,
    "outside_words": 9,
    "outside_words_lost": 0,
@@ -667,7 +697,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.011,
+   "seconds": 0.012,
    "elsewhere": 0,
    "outside_words": 10,
    "outside_words_lost": 0,
@@ -698,7 +728,7 @@
     135.63,
     399.74
    ],
-   "seconds": 0.06,
+   "seconds": 0.067,
    "elsewhere": 1,
    "outside_words": 231,
    "outside_words_lost": 0,
@@ -729,7 +759,7 @@
     612.0,
     399.74
    ],
-   "seconds": 0.062,
+   "seconds": 0.064,
    "elsewhere": 1,
    "outside_words": 199,
    "outside_words_lost": 0,
@@ -760,10 +790,25 @@
     408.0,
     528.0
    ],
-   "seconds": 0.012,
-   "outcome": "refused",
-   "reason": "redaction of a path crossing a rect's edge",
-   "detail": "op #737: a filled shape that is not an axis-aligned rectangle",
+   "seconds": 0.065,
+   "elsewhere": 3,
+   "outside_words": 150,
+   "outside_words_lost": 0,
+   "outside_chars": 823,
+   "outside_chars_lost": 0,
+   "outside_chars_mupdf": 859,
+   "outside_chars_mupdf_lost": 0,
+   "outside_chars_mupdf_moved": 156,
+   "words_regrouped": 0,
+   "outside_pixels_changed": 183,
+   "unchanged_ink_inside": 0,
+   "codes_removed": 480,
+   "images_edited": 0,
+   "forms_edited": 1,
+   "paths_removed": 7,
+   "paths_cut_at_a_rect": 4,
+   "shadings_removed": 0,
+   "outcome": "ok",
    "id": "chrome-form-controls-0",
    "category": "forms",
    "producer": "Skia (Chrome)"
@@ -776,10 +821,25 @@
     408.0,
     528.0
    ],
-   "seconds": 0.003,
-   "outcome": "refused",
-   "reason": "region removal on a page with blockers: shading",
-   "detail": "shading (sh): /S0 \u2014 shading fills an area we cannot bound",
+   "seconds": 0.008,
+   "elsewhere": 0,
+   "outside_words": 0,
+   "outside_words_lost": 0,
+   "outside_chars": 0,
+   "outside_chars_lost": 0,
+   "outside_chars_mupdf": 0,
+   "outside_chars_mupdf_lost": 0,
+   "outside_chars_mupdf_moved": 0,
+   "words_regrouped": 0,
+   "outside_pixels_changed": 0,
+   "unchanged_ink_inside": 0,
+   "codes_removed": 0,
+   "images_edited": 0,
+   "forms_edited": 0,
+   "paths_removed": 0,
+   "paths_cut_at_a_rect": 0,
+   "shadings_removed": 0,
+   "outcome": "ok",
    "id": "axial_shading_many_inputs",
    "category": "graphics",
    "producer": "unknown"
@@ -871,7 +931,7 @@
     612.0,
     571.87
    ],
-   "seconds": 0.009,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -902,7 +962,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.009,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 3,
    "outside_words_lost": 0,
@@ -933,7 +993,7 @@
     366.8,
     274.3
    ],
-   "seconds": 0.033,
+   "seconds": 0.036,
    "elsewhere": 1,
    "outside_words": 737,
    "outside_words_lost": 0,
@@ -964,7 +1024,7 @@
     960.0,
     274.3
    ],
-   "seconds": 0.033,
+   "seconds": 0.035,
    "elsewhere": 0,
    "outside_words": 692,
    "outside_words_lost": 0,
@@ -995,7 +1055,7 @@
     640.0,
     360.0
    ],
-   "seconds": 0.032,
+   "seconds": 0.034,
    "elsewhere": 0,
    "outside_words": 599,
    "outside_words_lost": 0,
@@ -1042,7 +1102,7 @@
     595.28,
     750.92
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x52 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Helvetica is drawn with the bundled LiberationSans-Regular \u2014 its true ink extent is unknown",
@@ -1058,10 +1118,10 @@
     396.85,
     561.26
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
-   "reason": "region removal on a page with blockers: shading",
-   "detail": "shading (sh): /Sh1 crosses a rect \u2014 its function and geometry inside cannot be separated from the rest (a clip would only hide them",
+   "reason": "region removal on a page with uncertain content",
+   "detail": "glyph 0x52 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Helvetica is drawn with the bundled LiberationSans-Regular \u2014 its true ink extent is unknown",
    "id": "alphatrans",
    "category": "images",
    "producer": "TCPDF"
@@ -1074,7 +1134,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.011,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -1105,7 +1165,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "a path painted with a tiling pattern crossing a rect (or in a form) \u2014 its cell is content a cut would only hide",
@@ -1121,7 +1181,7 @@
     184.0,
     184.0
    ],
-   "seconds": 0.01,
+   "seconds": 0.009,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -1215,7 +1275,7 @@
     396.67,
     561.33
    ],
-   "seconds": 0.011,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 10,
    "outside_words_lost": 0,
@@ -1246,7 +1306,7 @@
     516.96,
     134.34
    ],
-   "seconds": 0.052,
+   "seconds": 0.058,
    "elsewhere": 0,
    "outside_words": 98,
    "outside_words_lost": 12,
@@ -1277,7 +1337,7 @@
     612.0,
     134.34
    ],
-   "seconds": 0.051,
+   "seconds": 0.057,
    "elsewhere": 0,
    "outside_words": 98,
    "outside_words_lost": 12,
@@ -1308,7 +1368,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.054,
+   "seconds": 0.058,
    "elsewhere": 0,
    "outside_words": 83,
    "outside_words_lost": 9,
@@ -1339,7 +1399,7 @@
     229.11,
     366.81
    ],
-   "seconds": 0.009,
+   "seconds": 0.007,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -1401,7 +1461,7 @@
     504.0,
     374.4
    ],
-   "seconds": 0.009,
+   "seconds": 0.008,
    "elsewhere": 0,
    "outside_words": 1,
    "outside_words_lost": 0,
@@ -1480,7 +1540,7 @@
     612.0,
     397.55
    ],
-   "seconds": 0.016,
+   "seconds": 0.017,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x61 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Times-Roman is drawn with the bundled LiberationSerif-Regular \u2014 its true ink extent is unknown",
@@ -1496,7 +1556,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.016,
+   "seconds": 0.017,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x61 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Times-Roman is drawn with the bundled LiberationSerif-Regular \u2014 its true ink extent is unknown",
@@ -1512,7 +1572,7 @@
     140.32,
     386.87
    ],
-   "seconds": 0.015,
+   "seconds": 0.017,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x61 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Times-Roman is drawn with the bundled LiberationSerif-Regular \u2014 its true ink extent is unknown",
@@ -1528,7 +1588,7 @@
     612.0,
     386.87
    ],
-   "seconds": 0.015,
+   "seconds": 0.017,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x61 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Times-Roman is drawn with the bundled LiberationSerif-Regular \u2014 its true ink extent is unknown",
@@ -1544,7 +1604,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.015,
+   "seconds": 0.017,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x61 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Times-Roman is drawn with the bundled LiberationSerif-Regular \u2014 its true ink extent is unknown",
@@ -1560,7 +1620,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.013,
+   "seconds": 0.016,
    "elsewhere": 0,
    "outside_words": 2,
    "outside_words_lost": 0,
@@ -1591,7 +1651,7 @@
     341.42,
     404.85
    ],
-   "seconds": 0.012,
+   "seconds": 0.017,
    "elsewhere": 0,
    "outside_words": 88,
    "outside_words_lost": 0,
@@ -1622,7 +1682,7 @@
     612.0,
     404.85
    ],
-   "seconds": 0.012,
+   "seconds": 0.022,
    "elsewhere": 0,
    "outside_words": 88,
    "outside_words_lost": 0,
@@ -1653,7 +1713,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.012,
+   "seconds": 0.03,
    "elsewhere": 0,
    "outside_words": 61,
    "outside_words_lost": 0,
@@ -1700,7 +1760,7 @@
     200.0,
     28.7
    ],
-   "seconds": 0.003,
+   "seconds": 0.002,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x50 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Times-Roman is drawn with the bundled LiberationSerif-Regular \u2014 its true ink extent is unknown",
@@ -1812,7 +1872,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.002,
+   "seconds": 0.003,
    "outcome": "refused",
    "reason": "JavaScript name tree",
    "detail": "/Names /JavaScript is outside the rewrite profile",
@@ -1844,7 +1904,7 @@
     117.97,
     710.38
    ],
-   "seconds": 0.006,
+   "seconds": 0.007,
    "outcome": "refused",
    "reason": "region removal on a page with uncertain content",
    "detail": "glyph 0x20 \u2014 outline lookup failed: unsupported PDF feature: non-embedded font (substitute outlines) (/Helvetica is drawn with the bundled LiberationSans-Regular \u2014 its true ink extent is unknown",
@@ -1892,7 +1952,7 @@
     476.81,
     348.0
    ],
-   "seconds": 0.01,
+   "seconds": 0.016,
    "elsewhere": 0,
    "outside_words": 24,
    "outside_words_lost": 2,
@@ -1923,7 +1983,7 @@
     396.67,
     560.67
    ],
-   "seconds": 0.008,
+   "seconds": 0.029,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -1954,7 +2014,7 @@
     209.1,
     402.34
    ],
-   "seconds": 0.016,
+   "seconds": 0.017,
    "elsewhere": 0,
    "outside_words": 59,
    "outside_words_lost": 0,
@@ -1985,7 +2045,7 @@
     612.0,
     402.34
    ],
-   "seconds": 0.016,
+   "seconds": 0.021,
    "elsewhere": 0,
    "outside_words": 59,
    "outside_words_lost": 0,
@@ -2016,7 +2076,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.015,
+   "seconds": 0.018,
    "elsewhere": 0,
    "outside_words": 39,
    "outside_words_lost": 0,
@@ -2047,7 +2107,7 @@
     237.08,
     399.17
    ],
-   "seconds": 0.015,
+   "seconds": 0.016,
    "outcome": "refused",
    "reason": "other: signature policy",
    "detail": "error [signature policy]: refused by signature policy: a full rewrite would invalidate the signature (/Perms /UR3 present \u2014 rewrite would invalidate the signature)",
@@ -2063,7 +2123,7 @@
     612.0,
     399.17
    ],
-   "seconds": 0.015,
+   "seconds": 0.017,
    "outcome": "refused",
    "reason": "other: signature policy",
    "detail": "error [signature policy]: refused by signature policy: a full rewrite would invalidate the signature (/Perms /UR3 present \u2014 rewrite would invalidate the signature)",
@@ -2111,7 +2171,7 @@
     373.69,
     399.18
    ],
-   "seconds": 0.087,
+   "seconds": 0.092,
    "elsewhere": 0,
    "outside_words": 763,
    "outside_words_lost": 0,
@@ -2142,7 +2202,7 @@
     612.0,
     399.18
    ],
-   "seconds": 0.092,
+   "seconds": 0.108,
    "elsewhere": 0,
    "outside_words": 735,
    "outside_words_lost": 0,
@@ -2173,7 +2233,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.087,
+   "seconds": 0.099,
    "elsewhere": 6,
    "outside_words": 602,
    "outside_words_lost": 0,
@@ -2204,7 +2264,7 @@
     128.11,
     395.01
    ],
-   "seconds": 0.068,
+   "seconds": 0.079,
    "elsewhere": 0,
    "outside_words": 501,
    "outside_words_lost": 0,
@@ -2235,7 +2295,7 @@
     612.0,
     395.01
    ],
-   "seconds": 0.068,
+   "seconds": 0.076,
    "elsewhere": 0,
    "outside_words": 501,
    "outside_words_lost": 0,
@@ -2266,7 +2326,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.068,
+   "seconds": 0.085,
    "elsewhere": 121,
    "outside_words": 396,
    "outside_words_lost": 0,
@@ -2297,7 +2357,7 @@
     105.12,
     402.74
    ],
-   "seconds": 0.066,
+   "seconds": 0.08,
    "elsewhere": 6,
    "outside_words": 178,
    "outside_words_lost": 0,
@@ -2328,7 +2388,7 @@
     612.0,
     402.74
    ],
-   "seconds": 0.067,
+   "seconds": 0.091,
    "elsewhere": 6,
    "outside_words": 172,
    "outside_words_lost": 0,
@@ -2359,7 +2419,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.068,
+   "seconds": 0.08,
    "elsewhere": 12,
    "outside_words": 141,
    "outside_words_lost": 0,
@@ -2390,7 +2450,7 @@
     119.11,
     399.19
    ],
-   "seconds": 0.169,
+   "seconds": 0.216,
    "elsewhere": 11,
    "outside_words": 463,
    "outside_words_lost": 0,
@@ -2421,7 +2481,7 @@
     612.0,
     399.19
    ],
-   "seconds": 0.175,
+   "seconds": 0.193,
    "elsewhere": 0,
    "outside_words": 448,
    "outside_words_lost": 0,
@@ -2452,7 +2512,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.167,
+   "seconds": 0.179,
    "elsewhere": 1,
    "outside_words": 311,
    "outside_words_lost": 0,
@@ -2499,7 +2559,7 @@
     592.67,
     600.0
    ],
-   "seconds": 0.026,
+   "seconds": 0.032,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2531,7 +2591,7 @@
     333.33,
     333.33
    ],
-   "seconds": 0.008,
+   "seconds": 0.012,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2562,7 +2622,7 @@
     333.33,
     333.33
    ],
-   "seconds": 0.008,
+   "seconds": 0.01,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2628,7 +2688,7 @@
     266.24,
     266.88
    ],
-   "seconds": 0.017,
+   "seconds": 0.021,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2663,7 +2723,7 @@
     408.0,
     528.0
    ],
-   "seconds": 0.032,
+   "seconds": 0.04,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2695,7 +2755,7 @@
     133.44,
     133.44
    ],
-   "seconds": 0.012,
+   "seconds": 0.017,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,
@@ -2743,7 +2803,7 @@
     396.85,
     561.26
    ],
-   "seconds": 0.007,
+   "seconds": 0.012,
    "elsewhere": 0,
    "outside_words": 0,
    "outside_words_lost": 0,

@@ -134,6 +134,8 @@ struct Content {
     ops: String,
     xobjects: Vec<(String, u32)>,
     fonts: Vec<(String, u32)>,
+    shadings: Vec<(String, u32)>,
+    patterns: Vec<(String, u32)>,
     mcid: i64,
     /// (MCID, alternate text) of the marked sequences.
     tagged: Vec<(i64, String)>,
@@ -152,6 +154,15 @@ impl Content {
                 s.push_str(&format!(" /{n} {r} 0 R"));
             }
             s.push_str(" >>");
+        }
+        for (key, list) in [("Shading", &self.shadings), ("Pattern", &self.patterns)] {
+            if !list.is_empty() {
+                s.push_str(&format!(" /{key} <<"));
+                for (n, r) in list {
+                    s.push_str(&format!(" /{n} {r} 0 R"));
+                }
+                s.push_str(" >>");
+            }
         }
         s
     }
@@ -192,7 +203,7 @@ impl Gen<'_, '_> {
     fn element(&mut self, c: &mut Content, page: usize, depth: u32, public: &mut Vec<String>) {
         let k = self.key();
         let edited = page == 0;
-        let choice = self.rng.below(if edited { 9 } else { 4 });
+        let choice = self.rng.below(if edited { 12 } else { 4 });
         match choice {
             // Public text outside the rect.
             0 | 1 => {
@@ -311,6 +322,55 @@ impl Gen<'_, '_> {
                     format!("q 40 0 0 40 40 80 cm /{name} Do Q"),
                 );
             }
+            // A filled shape crossing the rect: what it draws outside is
+            // public, its path inside the rect (a vertex or a curve's
+            // control points) secret — it enters and leaves the rect at
+            // the same points in both variants. Cut (0.10).
+            8 => {
+                let (sx, sy) = (
+                    70 + (self.v * 37 + k as u32) % 60,
+                    70 + (self.v * 53 + k as u32) % 60,
+                );
+                let rule = if self.rng.chance(1, 2) { "f" } else { "f*" };
+                let shape = if self.rng.chance(1, 2) {
+                    format!("30 90 m 60 90 l {sx} {sy} l 140 90 l 170 90 l 170 50 l 30 50 l h")
+                } else {
+                    format!("30 90 m 60 90 l 60 90 {sx} {sy} 140 90 c 170 90 l 170 50 l 30 50 l h")
+                };
+                self.mark(c, format!("shape {k}"), format!("0.3 g {shape} {rule} 0 g"));
+            }
+            // An axial shading in a band across the rect, varying only
+            // along y: every colour it shows inside is shown outside.
+            9 => {
+                let sh = self.d.add(
+                    b"<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 0 200] /Extend [true true] \
+                      /Function << /FunctionType 2 /Domain [0 1] /C0 [0.9 0.8 0.2] /C1 [0.2 0.8 0.9] /N 1 >> >>"
+                        .to_vec(),
+                );
+                let name = format!("Sh{sh}");
+                c.shadings.push((name.clone(), sh));
+                self.mark(
+                    c,
+                    format!("shading {k}"),
+                    format!("q 20 70 160 20 re W n /{name} sh Q"),
+                );
+            }
+            // A rectangle filled with a tiling pattern across the rect,
+            // a whole period showing outside.
+            10 => {
+                let pt = self.d.add(stream_obj(
+                    "/PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 8 8] /XStep 8 /YStep 8 \
+                     /Resources << >>",
+                    b"0.4 0.6 0.2 rg 0 0 4 4 re f",
+                ));
+                let name = format!("Pt{pt}");
+                c.patterns.push((name.clone(), pt));
+                self.mark(
+                    c,
+                    format!("pattern {k}"),
+                    format!("/Pattern cs /{name} scn 20 100 160 30 re f 0 g"),
+                );
+            }
             // A secret form inside the rect, maybe nesting another.
             _ => {
                 let mut inner = Content::default();
@@ -418,6 +478,8 @@ pub fn make(mut rng: Rng<'_>, v: u32, font: &[u8]) -> (Vec<u8>, Vec<Vec<String>>
     let shared_res = g.rng.chance(1, 3);
     let mut all_x: Vec<(String, u32)> = Vec::new();
     let mut all_f: Vec<(String, u32)> = Vec::new();
+    let mut all_s: Vec<(String, u32)> = Vec::new();
+    let mut all_p: Vec<(String, u32)> = Vec::new();
     let mut contents: Vec<Content> = Vec::new();
     for p in 0..pages {
         let mut c = Content::default();
@@ -443,6 +505,8 @@ pub fn make(mut rng: Rng<'_>, v: u32, font: &[u8]) -> (Vec<u8>, Vec<Vec<String>>
         }
         all_x.extend(c.xobjects.iter().cloned());
         all_f.extend(c.fonts.iter().cloned());
+        all_s.extend(c.shadings.iter().cloned());
+        all_p.extend(c.patterns.iter().cloned());
         g.d.public.push(public);
         contents.push(c);
     }
@@ -519,6 +583,8 @@ pub fn make(mut rng: Rng<'_>, v: u32, font: &[u8]) -> (Vec<u8>, Vec<Vec<String>>
                 let all = Content {
                     xobjects: all_x.clone(),
                     fonts: all_f.clone(),
+                    shadings: all_s.clone(),
+                    patterns: all_p.clone(),
                     ..Content::default()
                 };
                 let r = g.d.add(format!("<< {} >>", all.resources()).into_bytes());

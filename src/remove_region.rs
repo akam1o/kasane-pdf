@@ -795,6 +795,8 @@ pub(crate) struct RegionsEdit<'a> {
     pub(crate) forms_edited_total: u64,
     /// Redaction mode only: `sh` removed (each wholly inside a rect).
     pub(crate) shadings_removed_total: u64,
+    /// Redaction mode only: `sh` crossing a rect, painted outside it only.
+    pub(crate) shadings_cut_total: u64,
     /// Redaction mode only: content digests of the shadings those drew,
     /// each named by no page any more — what must not be found in the
     /// output.
@@ -1389,6 +1391,7 @@ pub(crate) fn regions_edit_session_with<'a>(
     let mut shading_removals: Vec<ShadingRemoval> = Vec::new();
     let mut pattern_removals: Vec<ShadingRemoval> = Vec::new();
     let mut shadings_removed_total: u64 = 0;
+    let mut shadings_cut_total: u64 = 0;
     let mut removed_text: Vec<String> = Vec::new();
     let mut per_page: Vec<(usize, Vec<Site>)> = Vec::new();
     let mut page_dicts: Vec<(IndirectRef, Dict)> = Vec::new();
@@ -1457,7 +1460,13 @@ pub(crate) fn regions_edit_session_with<'a>(
                 // whatever its flags (§12.5.6.4).
                 let text_icon =
                     d.get(b"Subtype".as_slice()).and_then(|s| s.as_name()) == Some(b"Text");
-                let off_rect = flags & (8 | 16) != 0 || text_icon;
+                // A popup without an appearance stream draws nothing on
+                // the page (readers open a window with its parent's text,
+                // which is the parent's, kept or removed with it).
+                let bare_popup = d.get(b"Subtype".as_slice()).and_then(|s| s.as_name())
+                    == Some(b"Popup")
+                    && !has_normal_appearance(doc, &d)?;
+                let off_rect = (flags & (8 | 16) != 0 || text_icon) && !bare_popup;
                 // A watermark's /FixedPrint matrix moves it when printed.
                 if d.contains_key(b"FixedPrint".as_slice()) {
                     return Err(Error::Unsupported {
@@ -1898,6 +1907,29 @@ pub(crate) fn regions_edit_session_with<'a>(
                 }
                 if let Some(Operation::Shading(n)) = ops.get(t.site.op_index) {
                     removed_op_set.insert((Vec::new(), t.site.op_index));
+                    // Crossing a rect: painted again in each piece outside
+                    // it, under a rectangular clip (the shading stays).
+                    if let Some(pieces) = walker.shading_cuts.get(&t.site.op_index) {
+                        let re = |p: &(f64, f64, f64, f64)| {
+                            Operation::Rectangle(p.0, p.1, p.2 - p.0, p.3 - p.1)
+                        };
+                        let mut new = Vec::new();
+                        for c in pieces {
+                            new.push(Operation::SaveState);
+                            if let Some(a) = &c.area {
+                                new.extend([re(a), Operation::Clip, Operation::EndPath]);
+                            }
+                            if !c.holes.is_empty() {
+                                new.push(re(&c.outer));
+                                new.extend(c.holes.iter().map(re));
+                                new.extend([Operation::ClipEvenOdd, Operation::EndPath]);
+                            }
+                            new.extend([Operation::Shading(n.clone()), Operation::RestoreState]);
+                        }
+                        replacements.insert((Vec::new(), t.site.op_index), new);
+                        shadings_cut_total += 1;
+                        continue;
+                    }
                     shadings_here.push(n.clone());
                     shadings_removed_total += 1;
                 }
@@ -2764,6 +2796,7 @@ pub(crate) fn regions_edit_session_with<'a>(
         page_count: by_page.len(),
         paths_removed_total,
         shadings_removed_total,
+        shadings_cut_total,
         removed_shading_digests,
         original_digests,
         names_pruned_total,

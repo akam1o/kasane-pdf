@@ -9,13 +9,15 @@
 //! and redaction can decide by ink as for any embedded font.
 //!
 //! Each non-embedded Latin Standard 14 Type 1 font (or a
-//! metric-compatible alias such as Arial) is replaced, document-wide,
+//! metric-compatible alias such as Arial), and each non-symbolic simple
+//! TrueType font naming one (ArialMT …), is replaced, document-wide,
 //! by a non-symbolic TrueType font with the bundled Liberation face as
 //! `/FontFile2`:
 //!
 //! - `/Encoding` lists every code's glyph name in `/Differences` — the
 //!   name this crate draws for it (the font's `/Encoding`, else
-//!   StandardEncoding), or `.notdef` when the face lacks it — so a
+//!   StandardEncoding), or the space glyph (`uni0020`, blank) when the
+//!   face lacks it — never `.notdef`, which readers draw differently — so a
 //!   reader finds each glyph by name → Unicode → the face's (3,1)
 //!   cmap, as §9.6.6.4 prescribes for a non-symbolic TrueType font;
 //! - `/Widths` gives every code's advance as this crate lays it out
@@ -24,9 +26,9 @@
 //! - `/ToUnicode` is kept.
 //!
 //! The glyph shapes become Liberation's everywhere the font is used —
-//! the visible change this mode makes. Symbol, ZapfDingbats, other
-//! non-embedded fonts and CID fonts are not embedded (and stay
-//! refused by `redact`).
+//! the visible change this mode makes. Symbol, ZapfDingbats, symbolic
+//! TrueType fonts, other non-embedded fonts and CID fonts are not
+//! embedded (and stay refused by `redact`).
 
 use crate::document::Document;
 use crate::edit::Edit;
@@ -58,15 +60,27 @@ pub(crate) fn embed_substitutes(
         let Some(d) = obj.as_dict() else { continue };
         let name = |k: &[u8]| d.get(k).and_then(|v| v.as_name());
         if name(b"Type") != Some(b"Font")
-            || !matches!(name(b"Subtype"), Some(b"Type1" | b"MMType1"))
+            || !matches!(name(b"Subtype"), Some(b"Type1" | b"MMType1" | b"TrueType"))
         {
             continue;
         }
-        let Some(font) = crate::font::load_type1_dict(doc, d, limits)? else {
-            continue;
-        };
-        let Some((face, names, widths)) = font.substitute_for_embedding() else {
-            continue;
+        let owned;
+        let type1;
+        let (face, names, widths) = if name(b"Subtype") == Some(b"TrueType") {
+            let Some(s) = crate::font::truetype_substitute_for_embedding(doc, d, limits)? else {
+                continue;
+            };
+            owned = s;
+            (&owned.0, owned.1.clone(), owned.2.clone())
+        } else {
+            let Some(font) = crate::font::load_type1_dict(doc, d, limits)? else {
+                continue;
+            };
+            type1 = font;
+            let Some(s) = type1.substitute_for_embedding() else {
+                continue;
+            };
+            s
         };
         let e = match &mut edit {
             Some(e) => e,
@@ -141,7 +155,11 @@ pub(crate) fn embed_substitutes(
         diffs.extend(
             names
                 .iter()
-                .map(|n| Object::Name(n.as_deref().unwrap_or(".notdef").as_bytes().to_vec())),
+                // A code the substitute cannot name: its blank space
+                // glyph, never `.notdef` — readers draw `.notdef`
+                // differently (some fall back to the code's own glyph),
+                // a blank glyph alike.
+                .map(|n| Object::Name(n.as_deref().unwrap_or("uni0020").as_bytes().to_vec())),
         );
         let mut enc = Dict::new();
         enc.insert(b"Type".to_vec(), Object::Name(b"Encoding".to_vec()));

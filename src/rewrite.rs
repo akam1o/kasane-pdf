@@ -1190,7 +1190,9 @@ fn check_refusals(
 
     // Active/executable structures outside the rewrite profile.
     for key in [&b"RichMedia"[..], &b"AA"[..]] {
-        if carry && key == b"AA" {
+        // With JavaScript removed, what is left of the catalog's /AA
+        // (other actions) is carried like /OpenAction.
+        if (carry || javascript_removed) && key == b"AA" {
             continue;
         }
         if catalog.contains_key(key) {
