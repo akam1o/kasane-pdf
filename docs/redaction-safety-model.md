@@ -173,7 +173,8 @@ property cannot be decided).
   `/ToUnicode`, a removed shading or pattern, a removed thumbnail —
   except where the output still draws the same bytes (then it is
   reported in `elsewhere`). A removed XFA packet (0.10) is in no stream
-  of the output, by stored or decoded digest, with no exception.
+  of the output, by stored or decoded digest, and no string holds
+  exactly its bytes, with no exception.
 - **G** — The output is one revision, has no object or cross-reference
   stream from the input, and every object is reachable from its
   trailer.
@@ -201,9 +202,9 @@ property cannot be decided).
   were measured to read it, where they agree.
 - **X** — Every construction found to be read differently by them
   (section 2.1) is refused, not guessed — or, where every reading is
-  known, bounded by all of them: a code of an embedded Type 1 program
-  whose name the program lacks (0.10) extends over every glyph the
-  program can draw.
+  known, bounded by all of them: a code an embedded font program
+  resolves to `.notdef` (0.10) extends over every glyph the program can
+  draw.
 - **N** — Readers not measured (Acrobat, browsers other than Firefox's
   pdf.js, printers) are not covered.
 

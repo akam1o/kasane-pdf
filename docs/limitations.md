@@ -60,12 +60,14 @@ are on the [roadmap](architecture.md#roadmap).
   non-symbolic simple TrueType font (ArialMT …). A code whose glyph the
   substitute cannot name is written as its blank space glyph (readers
   draw `.notdef` differently). Symbolic TrueType, other names and CID
-  fonts stay refused. In an *embedded* Type 1 program, a code whose
-  encoding names a glyph the program lacks (or `.notdef`) is drawn
+  fonts stay refused. In an *embedded* program (Type 1, CFF, OpenType,
+  TrueType), a code the program resolves to `.notdef` is drawn
   differently by readers (MuPDF falls back to the program's own
-  encoding): `redact` (0.10) takes its extent as every glyph the
-  program can draw, so such a code goes when any of them could meet a
-  rect.
+  encoding, pdf.js to a glyph named for the same Unicode): `redact`
+  (0.10) takes its extent as every glyph the program can draw, so such a
+  code goes when any of them could meet a rect, and is refused when one
+  of the program's glyphs cannot be read. The bounds are computed once
+  per font object.
 - **Non-embedded fonts**: Symbol and ZapfDingbats draw with a bundled
   DejaVu Sans subset through their built-in encodings and the Adobe
   AFM widths (`SubstKind::SymbolFallback`) — glyph shapes differ from
@@ -312,8 +314,10 @@ are on the [roadmap](architecture.md#roadmap).
   (Acrobat) then show the AcroForm. A form readers must render from
   XFA alone (`/NeedsRendering true`) is refused, and so is a packet
   something else still refers to (directly or through a chain of
-  references), a copy of a packet's bytes (stored or decoded) anywhere
-  in the output, in any role, and a signed document.
+  references), a stream (stored or decoded) or string of the output
+  holding exactly a packet's bytes, in any role, and a signed document.
+  A packet's content inside larger data (part of another stream, under
+  another filter than its own) is not recognised.
 - **Annotations drawn away from `/Rect`** (0.10): an annotation with
   NoZoom or NoRotate kept on an edited page is refused (its appearance
   may be drawn elsewhere at another zoom), except a popup without an
@@ -338,10 +342,11 @@ are on the [roadmap](architecture.md#roadmap).
   for the invocation that draws it inside a rect; other invocations and
   pages keep the original, reported in `elsewhere`. A content stream an
   edited page shares with another page stays as that page's contents
-  (reported). A shading or tiling pattern that is removed, cut or
-  painted across a rect and reached from anywhere else (another page,
-  a form, a pattern, shared resources) is refused; one only kept is
-  carried as it is.
+  (reported). A shading or tiling pattern removed with a rect, or
+  painted across one without being cut, is refused when reached from
+  anywhere else (another page, a form, a pattern, shared resources). A
+  cut one is never modified — only the page's content changes — so it
+  may be shared; its data stays whole either way.
 - **Data in what `redact` keeps**: kept annotations, form fields,
   outlines, resources (fonts, colour spaces, functions, unused resource
   entries), attachments and other kept objects are carried as they

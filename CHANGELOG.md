@@ -13,7 +13,8 @@ release.
 
 ### Added
 - `redact` cuts more of what crosses a rect instead of refusing the
-  page:
+  page (0.8.0 cut only disjoint axis-aligned rectangles and straight
+  strokes):
   - any filled shape — curves, polygons, self-intersecting paths,
     several subpaths, overlapping or rotated rectangles — keeps its part
     outside the rects with its fill rule (`Redaction::paths_cut`);
@@ -37,7 +38,8 @@ release.
   its alias (ArialMT, TimesNewRomanPSMT …).
 - `redact` edits images at 1, 2 and 4 bits per component, through chains
   of general filters, and in CCITTFax or JBIG2 (without
-  `/JBIG2Globals`); the edited copy is written unfiltered.
+  `/JBIG2Globals` or a file header); the edited copy is written
+  unfiltered.
 - `redact` verifies its output against the input alone, independently of
   what the edit recorded (`docs/redaction-safety-model.md`): every
   content-bearing stream an edited page used is drawn again by the output
@@ -83,7 +85,7 @@ release.
   drawing a form or image whose `/OC` is a membership dictionary.
 - The verification checks read one index of the output (each stream
   decoded once); annotations tied to removed ones are found in linear
-  time (32,000 annotations: 3.7 s → 1.1 s); the uninspected-data walk no
+  time (32,000 annotations: about 4 s → 1.1 s); the uninspected-data walk no
   longer copies direct values (300,000 structure attributes: preflight
   peak memory 1.24 GB → 0.37 GB).
 
@@ -92,10 +94,15 @@ release.
   cannot name as `.notdef`, which some readers draw as the code's own
   glyph — where `redact` had not placed it (0.7.0–0.8.0). Such codes
   are now written as the substitute's blank space glyph.
-- `redact` placed a code of an embedded Type 1 font whose encoding names
-  a glyph the program lacks (or `.notdef`) as `.notdef`, while MuPDF
-  draws the program's own glyph for it (0.6.0–0.8.0). Its extent is now
-  every glyph the program can draw.
+- `redact` placed a code that an embedded font program (Type 1, CFF,
+  OpenType, TrueType) resolves to `.notdef` — a name the program lacks,
+  `.notdef` itself, no name — as `.notdef`, while MuPDF falls back to
+  the program's own encoding and pdf.js to a glyph named for the same
+  Unicode (0.6.0–0.8.0). Its extent is now every glyph the program can
+  draw, so such a code near a rect may go where 0.8.0 kept it; a
+  program one of whose glyphs cannot be read is refused for it.
+- A refusal naming a long chain of references elides the middle of
+  the route past 200 characters (it was as long as the chain).
 
 ## [0.8.0] - 2026-11-10
 
@@ -1342,7 +1349,14 @@ are possible between minor versions and are recorded here.
   1.1 and Adobe CMap resources under BSD-3-Clause (`NOTICE`,
   `docs/third-party.md`).
 
-[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.10.0
+[0.8.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.8.0
+[0.7.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.7.0
+[0.6.2]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.6.2
+[0.6.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.6.1
+[0.6.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.6.0
+[0.5.2]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.5.2
 [0.5.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.5.1
 [0.5.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.5.0
 [0.4.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.4.1
