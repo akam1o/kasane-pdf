@@ -8511,4 +8511,42 @@ fn truetype_bearings_readers_apply_differently() {
         let r = run(&pdf, vec![rect]).unwrap();
         assert_eq!(r.codes_removed, 1, "{rect:?}");
     }
+    // The bearing given through nested `USE_MY_METRICS` components:
+    // resolved through 6 levels; past the limit, uncertain (refused).
+    for (depth, resolved) in [(6, true), (40, false)] {
+        let ff = std::fs::read(format!(
+            "{}/tests/fixtures/ttf_metrics/depth{depth}.ttf",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .unwrap();
+        let pdf = doc_with(
+            "/Font << /F 50 0 R >>",
+            &[b"BT /F 60 Tf 60 80 Td <5F> Tj ET"],
+            vec![
+                (
+                    50,
+                    format!(
+                        "<< /Type /Font /Subtype /TrueType /BaseFont /KTest /FirstChar 32 /LastChar 126 \
+                         /Widths [{}] /FontDescriptor 51 0 R >>",
+                        ["1000"; 95].join(" ")
+                    )
+                    .into_bytes(),
+                ),
+                (
+                    51,
+                    b"<< /Type /FontDescriptor /FontName /KTest /Flags 32 /FontBBox [0 -400 2000 1000] \
+                      /ItalicAngle 0 /Ascent 900 /Descent -400 /CapHeight 700 /StemV 80 /FontFile2 52 0 R >>"
+                        .to_vec(),
+                ),
+                (52, stream_obj(&format!("/Length1 {}", ff.len()), &ff)),
+            ],
+        );
+        let r = run(&pdf, vec![(140.0, 55.0, 150.0, 65.0)]);
+        if resolved {
+            assert_eq!(r.unwrap().codes_removed, 1, "depth {depth}");
+        } else {
+            let e = unsupported(r);
+            assert!(e.contains("bearing"), "depth {depth}: {e}");
+        }
+    }
 }

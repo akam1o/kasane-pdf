@@ -1162,7 +1162,7 @@ impl SimpleFont {
     /// honour the `hmtx` bearing (see `tt_lsb_shift`); readers that do
     /// not apply it (pdf.js) draw the outline that much to the left.
     pub(crate) fn bearing_shift(&self, glyph: GlyphId) -> Result<f64, Error> {
-        Ok(tt_lsb_shift(&*self.face()?, glyph) as f64)
+        bearing(&*self.face()?, glyph)
     }
 
     /// Resolve `code` to a Unicode string, in the priority order of
@@ -1218,11 +1218,11 @@ impl SimpleFont {
         let face = self.face()?;
         self.reach.get(|p| {
             // Each glyph as drawn with its bearing and without.
-            for g in 0..face.number_of_glyphs() {
+            (0..face.number_of_glyphs()).all(|g| {
                 face.outline_glyph(GlyphId(g), &mut Points(p));
                 outline_glyph_lsb_adjusted(&face, GlyphId(g), &mut Points(p));
-            }
-            true
+                tt_lsb_shift_checked(&face, GlyphId(g)).is_some()
+            })
         })
     }
 }
@@ -2662,9 +2662,7 @@ impl Font {
         match self {
             Font::Simple(f) => f.bearing_shift(glyph),
             Font::Composite(f) => match f.kind {
-                CidProgram::OpenType | CidProgram::TrueType => {
-                    Ok(tt_lsb_shift(&*f.face()?, glyph) as f64)
-                }
+                CidProgram::OpenType | CidProgram::TrueType => bearing(&*f.face()?, glyph),
                 CidProgram::Cff => Ok(0.0),
             },
             _ => Ok(0.0),
@@ -2986,6 +2984,13 @@ fn outline_glyph_lsb_adjusted(
 /// header box disagrees with its bearing. Returns 0 for CFF faces,
 /// empty glyphs, or anything unparseable.
 fn tt_lsb_shift(face: &Face<'_>, glyph: GlyphId) -> f32 {
+    tt_lsb_shift_checked(face, glyph).unwrap_or(0.0)
+}
+
+/// [`tt_lsb_shift`], `None` when a `glyf` glyph's shift cannot be
+/// resolved (a malformed glyph or bearing, components nested past 32):
+/// readers that resolve it draw the glyph somewhere `redact` cannot tell.
+fn tt_lsb_shift_checked(face: &Face<'_>, glyph: GlyphId) -> Option<f32> {
     // `FaceTables` does not expose `loca`; rebuild it from the raw
     // table with the `head`/`maxp` parameters the face already parsed.
     let raw = face.raw_face();
@@ -2993,17 +2998,17 @@ fn tt_lsb_shift(face: &Face<'_>, glyph: GlyphId) -> f32 {
         raw.table(ttf_parser::Tag::from_bytes(b"loca")),
         raw.table(ttf_parser::Tag::from_bytes(b"glyf")),
     ) else {
-        return 0.0;
+        return Some(0.0);
     };
     let Some(n_glyphs) = std::num::NonZeroU16::new(face.number_of_glyphs()) else {
-        return 0.0;
+        return Some(0.0);
     };
     let Some(loca) = ttf_parser::loca::Table::parse(
         n_glyphs,
         face.tables().head.index_to_location_format,
         loca_raw,
     ) else {
-        return 0.0;
+        return Some(0.0);
     };
     fn shift(
         face: &Face<'_>,
@@ -3012,10 +3017,15 @@ fn tt_lsb_shift(face: &Face<'_>, glyph: GlyphId) -> f32 {
         gid: GlyphId,
         depth: usize,
     ) -> Option<f32> {
-        if depth > 4 {
+        if depth > 32 {
             return None;
         }
-        let data = glyf.get(loca.glyph_range(gid)?)?;
+        // An empty glyph draws nothing (`glyph_range` gives no range
+        // for one).
+        let Some(range) = loca.glyph_range(gid).filter(|r| !r.is_empty()) else {
+            return (gid.0 < face.number_of_glyphs()).then_some(0.0);
+        };
+        let data = glyf.get(range)?;
         if data.len() < 10 {
             return None;
         }
@@ -3050,7 +3060,18 @@ fn tt_lsb_shift(face: &Face<'_>, glyph: GlyphId) -> f32 {
         let lsb = face.glyph_hor_side_bearing(gid)?;
         Some(f32::from(lsb) - f32::from(x_min))
     }
-    shift(face, &loca, glyf, glyph, 0).unwrap_or(0.0)
+    shift(face, &loca, glyf, glyph, 0)
+}
+
+/// A glyph's bearing shift for `redact`: an error when it cannot be
+/// resolved (readers may still draw the glyph shifted).
+fn bearing(face: &Face<'_>, glyph: GlyphId) -> Result<f64, Error> {
+    tt_lsb_shift_checked(face, glyph)
+        .map(f64::from)
+        .ok_or_else(|| Error::Unsupported {
+            feature: "embedded TrueType font",
+            detail: "a glyph's bearing cannot be resolved".into(),
+        })
 }
 
 /// `OutlineBuilder` adaptor that offsets every x coordinate by `dx`

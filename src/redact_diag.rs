@@ -2764,10 +2764,18 @@ impl<'a> DiagWalker<'a> {
                             )
                         }
                         // Empty outline path — same as no outline.
-                        None => (cell_estimate(&trm), TextBounds::Cell),
+                        None => match font.bearing_shift(gid) {
+                            Ok(_) => (cell_estimate(&trm), TextBounds::Cell),
+                            Err(e) => return self.glyph_error(code, e),
+                        },
                     },
-                    // No outline → a cell *estimate*, never ink extent.
-                    Ok(false) => (cell_estimate(&trm), TextBounds::Cell),
+                    // No outline → a cell *estimate*, never ink extent
+                    // (a TrueType glyph too deep to outline is not
+                    // empty: its bearing does not resolve).
+                    Ok(false) => match font.bearing_shift(gid) {
+                        Ok(_) => (cell_estimate(&trm), TextBounds::Cell),
+                        Err(e) => return self.glyph_error(code, e),
+                    },
                     // Outline lookup failed — do NOT fall back to a
                     // silent estimate: the glyph may paint outside any
                     // cell we invent.
