@@ -103,7 +103,10 @@ release.
   program one of whose glyphs cannot be read is refused for it.
 - A TrueType glyph whose `hmtx` bearing disagrees with its outline is
   drawn shifted by MuPDF and Poppler and in place by pdf.js; `redact`
-  took only the shifted position (0.6.0–0.8.0). Both are now its extent.
+  took only the shifted position (0.6.0–0.8.0). Both are now its extent;
+  a glyph whose bearing does not resolve (`USE_MY_METRICS` nested past
+  32 levels, malformed data), or that has data but does not outline, is
+  refused instead of placed as empty.
 - A refusal naming a long chain of references elides the middle of
   the route past 200 characters (it was as long as the chain).
 

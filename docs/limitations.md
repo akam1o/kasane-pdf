@@ -68,7 +68,9 @@ are on the [roadmap](architecture.md#roadmap).
   code goes when any of them could meet a rect, and is refused when one
   of the program's glyphs cannot be read. The bounds are computed once
   per font object. A TrueType glyph whose `hmtx` bearing disagrees with
-  its outline is taken at both positions readers draw it at.
+  its outline is taken at both positions readers draw it at; one whose
+  bearing does not resolve (`USE_MY_METRICS` components nested past 32
+  levels) or that has data but does not outline is refused.
 - **Non-embedded fonts**: Symbol and ZapfDingbats draw with a bundled
   DejaVu Sans subset through their built-in encodings and the Adobe
   AFM widths (`SubstKind::SymbolFallback`) — glyph shapes differ from

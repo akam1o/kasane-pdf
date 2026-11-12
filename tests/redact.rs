@@ -8513,7 +8513,7 @@ fn truetype_bearings_readers_apply_differently() {
     }
     // The bearing given through nested `USE_MY_METRICS` components:
     // resolved through 6 levels; past the limit, uncertain (refused).
-    for (depth, resolved) in [(6, true), (40, false)] {
+    for (depth, resolved) in [(6, true), (32, false), (40, false)] {
         let ff = std::fs::read(format!(
             "{}/tests/fixtures/ttf_metrics/depth{depth}.ttf",
             env!("CARGO_MANIFEST_DIR")
@@ -8546,7 +8546,10 @@ fn truetype_bearings_readers_apply_differently() {
             assert_eq!(r.unwrap().codes_removed, 1, "depth {depth}");
         } else {
             let e = unsupported(r);
-            assert!(e.contains("bearing"), "depth {depth}: {e}");
+            assert!(
+                e.contains("bearing") || e.contains("cannot be read"),
+                "depth {depth}: {e}"
+            );
         }
     }
 }

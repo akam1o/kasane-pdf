@@ -1219,9 +1219,10 @@ impl SimpleFont {
         self.reach.get(|p| {
             // Each glyph as drawn with its bearing and without.
             (0..face.number_of_glyphs()).all(|g| {
-                face.outline_glyph(GlyphId(g), &mut Points(p));
+                let drawn = face.outline_glyph(GlyphId(g), &mut Points(p)).is_some();
                 outline_glyph_lsb_adjusted(&face, GlyphId(g), &mut Points(p));
-                tt_lsb_shift_checked(&face, GlyphId(g)).is_some()
+                (drawn || tt_glyph_blank(&face, GlyphId(g)))
+                    && tt_lsb_shift_checked(&face, GlyphId(g)).is_some()
             })
         })
     }
@@ -2669,6 +2670,22 @@ impl Font {
         }
     }
 
+    /// Whether a glyph that gave no outline draws nothing: always, but
+    /// for a TrueType glyph with data that did not outline (see
+    /// `tt_glyph_blank`).
+    pub(crate) fn blank_glyph(&self, glyph: GlyphId) -> Result<bool, Error> {
+        match self {
+            Font::Simple(f) if f.subst.is_none() => Ok(tt_glyph_blank(&*f.face()?, glyph)),
+            Font::Composite(f) => match f.kind {
+                CidProgram::OpenType | CidProgram::TrueType => {
+                    Ok(tt_glyph_blank(&*f.face()?, glyph))
+                }
+                CidProgram::Cff => Ok(true),
+            },
+            _ => Ok(true),
+        }
+    }
+
     pub(crate) fn reader_dependent_codes(&self) -> bool {
         match self {
             Font::Composite(f) => f.cmap.as_ref().is_some_and(|c| c.literal_codes),
@@ -3061,6 +3078,28 @@ fn tt_lsb_shift_checked(face: &Face<'_>, glyph: GlyphId) -> Option<f32> {
         Some(f32::from(lsb) - f32::from(x_min))
     }
     shift(face, &loca, glyf, glyph, 0)
+}
+
+/// Whether a glyph draws nothing because it has no outline data: `true`
+/// for a `glyf` glyph without data and for faces without `glyf` (their
+/// outlines are not read here); `false` for a `glyf` glyph with data —
+/// one that does not outline is malformed or nested too deeply, and
+/// readers may still draw it.
+fn tt_glyph_blank(face: &Face<'_>, glyph: GlyphId) -> bool {
+    let raw = face.raw_face();
+    let (Some(loca_raw), Some(_)) = (
+        raw.table(ttf_parser::Tag::from_bytes(b"loca")),
+        raw.table(ttf_parser::Tag::from_bytes(b"glyf")),
+    ) else {
+        return true;
+    };
+    let Some(n) = std::num::NonZeroU16::new(face.number_of_glyphs()) else {
+        return true;
+    };
+    match ttf_parser::loca::Table::parse(n, face.tables().head.index_to_location_format, loca_raw) {
+        Some(loca) => loca.glyph_range(glyph).is_none_or(|r| r.is_empty()),
+        None => false,
+    }
 }
 
 /// A glyph's bearing shift for `redact`: an error when it cannot be
