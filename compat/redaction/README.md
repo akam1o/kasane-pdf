@@ -5,6 +5,16 @@ three rects: a word, its line, a central block), kept so the next round
 starts from them. See [`../../docs/testing.md`](../../docs/testing.md)
 (Redaction) for the procedure.
 
+Each file is the **projection** of a result
+(`scripts/redact-results-projection.py IN OUT`): the manifest id, the
+run's kind and category, its outcome, the refusal reason category and
+numeric counts. The raw results — the rectangles (derived from the
+page's words), refusal details and walk errors (they quote PDF names) —
+are never committed; run the projection before committing a new round.
+`scripts/check-redact-corpus.py` compares a run with these
+(`nightly.yml`); `ci/`, when present, holds the projections measured on
+the CI runner, whose Poppler and MuPDF shift word and pixel counts.
+
 | file | what |
 |---|---|
 | `eval-default.json` | `scripts/eval-redact-corpus.py`, default options |
@@ -20,7 +30,7 @@ block and `ccitt_endofblock_false` block, and with the opt-ins
 `blendmode` block and `alphatrans` block — are the known false signal:
 zeroed image samples that were already black (or grey under a soft
 mask) look like unchanged ink. Each is checked mechanically
-(`check_by_hand`, `unchanged_ink_not_from_images` 0): with no image of
+(`check_by_hand` true, `unchanged_ink_not_from_images` 0): with no image of
 the output drawn, no unchanged ink stays inside the rect. A
 "lost" word can be pdftotext regrouping kept glyphs once a neighbour is
 removed (per-glyph words in vertical CJK text). MuPDF characters
