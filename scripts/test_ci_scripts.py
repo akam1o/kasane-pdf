@@ -179,6 +179,12 @@ class Workflows(unittest.TestCase):
                 "run", "echo cargo clippy --all-targets -- -D warnings"),
             "the advisory check made to pass": lambda wf: run_of(wf, "compat-smoke", "--expect-safe").__setitem__(
                 "run", run_of(wf, "compat-smoke", "--expect-safe")["run"].replace("--expect-safe", "--expect-safe || true")),
+            "the engine job run in another directory": lambda wf: wf["jobs"]["engine"].__setitem__(
+                "defaults", {"run": {"working-directory": "compat/runner"}}),
+            "the whole workflow run in another directory": lambda wf: wf.__setitem__(
+                "defaults", {"run": {"working-directory": "compat/runner"}}),
+            "the gate run in another directory": lambda wf: wf["jobs"]["gate"].__setitem__(
+                "defaults", {"run": {"working-directory": "compat/runner"}}),
             "a job named by an expression that can be `gate`": lambda wf: wf["jobs"]["wasm"].__setitem__(
                 "name", "${{ 'gate' }}"),
         }
@@ -191,6 +197,8 @@ class Workflows(unittest.TestCase):
             "the fork check removed": lambda g: g["jobs"]["guard"]["steps"].remove(guard_step(g, "--fork-changes")),
             "the fork check made to pass": lambda g: guard_step(g, "--fork-changes").__setitem__(
                 "run", guard_step(g, "--fork-changes")["run"] + " || true"),
+            "the fork decision told it is never a fork": lambda g: guard_step(g, "--fork-changes").__setitem__(
+                "env", {"FORK": "false"}),
             "the guard's checkout shallow": lambda g: g["jobs"]["guard"]["steps"][0]["with"].pop("fetch-depth"),
             "the guard's checkout elsewhere": lambda g: g["jobs"]["guard"]["steps"][0]["with"].__setitem__("path", "."),
             "the guard checks out by a lookalike action": lambda g: g["jobs"]["guard"]["steps"][0].__setitem__(
@@ -310,7 +318,7 @@ class ReleaseCheck(unittest.TestCase):
         return [{"name": "gate", "conclusion": conclusion}]
 
     def base(self):
-        return [self.run_(1), self.run_(9, path="dynamic/github-code-scanning/codeql", event="dynamic")], {1: self.gate()}
+        return [self.run_(1), self.run_(9, path="codeql-release.yml")], {1: self.gate()}
 
     def problems(self, runs, jobs, ancestor=True, nightly=False):
         return self.rc.verdict(self.SHA, runs, jobs, ancestor, nightly)
@@ -318,12 +326,16 @@ class ReleaseCheck(unittest.TestCase):
     def test_full_gate_and_codeql_on_the_commit_pass(self):
         runs, jobs = self.base()
         self.assertEqual(self.problems(runs, jobs), [])
-        dispatch = [self.run_(1, event="workflow_dispatch"), self.run_(9, path="codeql-release.yml")]
+        dispatch = [self.run_(1, event="workflow_dispatch"), self.run_(9, path="codeql-release.yml", event="workflow_dispatch")]
         self.assertEqual(self.problems(dispatch, jobs), [])
 
     def test_what_does_not_count(self):
-        codeql = self.run_(9, path="dynamic/github-code-scanning/codeql", event="dynamic")
+        codeql = self.run_(9, path="codeql-release.yml")
+        default_setup = self.run_(8, path="dynamic/github-code-scanning/codeql", event="dynamic")
         cases = {
+            "only the default setup's analysis": ([self.run_(1), default_setup], {1: self.gate()}),
+            "codeql-release failed, the default setup's analysis green": (
+                [self.run_(1), default_setup, self.run_(9, path="codeql-release.yml", conclusion="failure")], {1: self.gate()}),
             "a pull request's run (fast gate)": ([self.run_(1, event="pull_request"), codeql], {1: self.gate()}),
             "a failed run": ([self.run_(1, conclusion="failure"), codeql], {1: self.gate("failure")}),
             "a cancelled run": ([self.run_(1, conclusion="cancelled"), codeql], {1: self.gate("cancelled")}),

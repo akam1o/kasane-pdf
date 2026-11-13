@@ -165,6 +165,7 @@ REQUIRED_JOBS = {
 }
 GATE_RUN = "python3 scripts/ci-gate.py"
 GATE_ENV = {"NEEDS": "${{ toJSON(needs) }}", "EVENT": "${{ github.event_name }}"}
+GUARD_FORK = "${{ github.event.pull_request.head.repo.full_name != github.repository }}"
 GUARD_CHECKOUT = {"path": "base", "persist-credentials": False, "fetch-depth": 0}
 GUARD_RUNS = (
     "git -C base fetch --no-tags",
@@ -249,6 +250,13 @@ def check_fuzz_matrix(path, job):
 
 def check_gate(path, wf):
     jobs = wf.get("jobs") or {}
+    # The checked commands must run in the repository root: no default
+    # working directory for the workflow or for a checked job.
+    if "defaults" in wf:
+        problem(f"{path.name}: workflow-level defaults are not allowed")
+    for jid in list(PR_MUST_RUN) + ["gate"]:
+        if "defaults" in (jobs.get(jid) or {}):
+            problem(f"{path.name}:{jid}: job-level defaults are not allowed (the checked commands run in the repository root)")
     names = {j.get("name") for j in jobs.values()}
     for n in REQUIRED_CHECKS:
         if n not in names:
@@ -369,6 +377,11 @@ def check_guard(path, wf):
     for cmd in GUARD_RUNS:
         if not any(runs_command(st.get("run"), cmd) for st in steps):
             problem(f"{path.name}: does not run `{cmd}`")
+    for st in steps:
+        if "--fork-changes" in (st.get("run") or "") and (st.get("env") or {}).get("FORK") != GUARD_FORK:
+            problem(f"{path.name}: the fork decision's FORK must be exactly `{GUARD_FORK}`")
+    if "defaults" in wf or any("defaults" in j for j in jobs.values()):
+        problem(f"{path.name}: no defaults (the commands run where they are written)")
 
 
 def check_cjk_lock():

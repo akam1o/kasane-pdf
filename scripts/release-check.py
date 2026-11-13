@@ -11,8 +11,11 @@ passes only when:
   * a pr.yml run on a push or a dispatch (the full gate — a pull
     request's run is the fast gate) concluded `success`, and its `gate`
     job did;
-  * a CodeQL analysis of the commit concluded `success`: codeql-release.yml
-    (pushes to release/**) or the default setup's run;
+  * codeql-release.yml (pushes to release/**, or dispatched on the
+    commit) concluded `success` on it — the run that fails on any result
+    that is not a reviewed alert. The default setup's analysis does not
+    count: its success means the analysis ran, not that it found
+    nothing new;
   * origin/main is an ancestor of <sha> (main is fast-forwarded to it,
     no new commit) — not with --no-main (a patch release from an older
     tag, which main does not move to);
@@ -34,7 +37,7 @@ REPO = "akam1o/kasane-pdf"
 FULL_EVENTS = {"push", "workflow_dispatch"}
 PR = ".github/workflows/pr.yml"
 NIGHTLY = ".github/workflows/nightly.yml"
-CODEQL = {".github/workflows/codeql-release.yml", "dynamic/github-code-scanning/codeql"}
+CODEQL = ".github/workflows/codeql-release.yml"
 CORPUS_JOB = "full compatibility + round-trip (511)"
 CORPUS_STEPS = ("redaction corpus —", "full run", "regression check")
 
@@ -64,8 +67,9 @@ def verdict(sha, runs, jobs, main_is_ancestor, require_nightly):
     full = [r for r in mine if r.get("path") == PR and r.get("event") in FULL_EVENTS]
     if not any(r.get("conclusion") == "success" and (job(r, "gate") or {}).get("conclusion") == "success" for r in full):
         problems.append("no successful full gate (pr.yml on a push or dispatch, `gate` success) on this commit")
-    if not any(r.get("path") in CODEQL and r.get("conclusion") == "success" for r in mine):
-        problems.append("no successful CodeQL analysis on this commit")
+    if not any(r.get("path") == CODEQL and r.get("event") in FULL_EVENTS and r.get("conclusion") == "success"
+               for r in mine):
+        problems.append("no successful codeql-release.yml (no unreviewed CodeQL result) on this commit")
     if require_nightly:
         nightly = [r for r in mine if r.get("path") == NIGHTLY and r.get("conclusion") == "success"]
         if not any(corpus_ran(job(r, CORPUS_JOB)) for r in nightly):
