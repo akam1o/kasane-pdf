@@ -51,6 +51,15 @@ design (a fork's change to the CI). Everything else is merged through
 the pull request (`gh pr merge <n> --merge`), never by a local merge
 pushed to `main`.
 
+`pr-guard.yml` runs on `pull_request_target`, which GitHub blocks by
+default in public repositories (from 2026-12-02). A repository Actions
+policy allows it for that workflow only (Settings → Actions → Policies;
+`gh api repos/akam1o/kasane-pdf/actions/policies`): workflow path
+`.github/workflows/pr-guard.yml`, allowed events `pull_request_target`,
+enforcement active. Without it the guard does not run and, being
+required, blocks every merge — restore the policy, or drop `workflow
+guard` from the required checks below until it is back.
+
 If the protection itself is wrong (a check that never reports blocks
 every merge, a check name changed):
 
