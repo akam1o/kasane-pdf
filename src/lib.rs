@@ -79,7 +79,6 @@ mod agl;
 mod annot_appearance;
 mod annot_text;
 /// TEMPORARY: a broken intra-doc link, [`NoSuchItemAnywhere`].
-#[doc(hidden)]
 pub fn temporary_doc_link_probe() {}
 
 pub mod audit;
