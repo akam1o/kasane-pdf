@@ -910,3 +910,4 @@ mod tests {
         assert!(mark_path(b'l', 10.0, 10.0, 1.0).ends_with(" f"));
     }
 }
+fn   badly_formatted ( ) { }
