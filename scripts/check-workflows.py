@@ -22,10 +22,23 @@ Checks:
     pull request; every job has a timeout and none continues on error;
     `gate` waits for every job, always runs scripts/ci-gate.py, whose
     full-gate set is exactly the jobs that skip pull requests; the
-    workflow runs on pull requests, pushes to main and release/**, and
-    dispatch; in every workflow, caches are written from main only.
-Exit 1 on the first problem.
+    workflow runs on pull requests (unfiltered), pushes to main and
+    release/**, and dispatch; in every workflow, caches are written from
+    main only;
+  * the gate's job list (scripts/ci-gate.py EXPECTED, read as data) is
+    exactly pr.yml's jobs; `gate` and the required checks are names no
+    other job of any workflow has; the workflow guard (pr-guard.yml)
+    runs on pull_request_target with read-only permissions and runs
+    nothing of the pull request's.
+
+    scripts/check-workflows.py                 # the checkout itself
+    scripts/check-workflows.py --data-only DIR # another tree, read as data
+
+--data-only reads DIR's workflows and scripts without running any of
+them (pr-guard.yml checks a pull request's tree this way); it skips the
+checks that run a tool.
 """
+import ast
 import re
 import subprocess
 import sys
@@ -34,6 +47,8 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
+# The tree whose workflows and scripts are checked (read, never run).
+DATA = ROOT
 problems = []
 
 
@@ -59,7 +74,7 @@ def check_pins(path, wf):
 
 
 def argparse_surface():
-    src = (ROOT / "compat/fetch-corpus.py").read_text()
+    src = (DATA / "compat/fetch-corpus.py").read_text()
     subs = set(re.findall(r'add_parser\("([a-z-]+)"', src))
     opts = set(re.findall(r'add_argument\("(--[a-z-]+)"', src))
     envs = set(re.findall(r'os\.environ\.get\("([A-Z0-9_]+)"', src))
@@ -136,12 +151,28 @@ MAIN_ONLY_SAVE = "success() && github.ref == 'refs/heads/main'"
 FUZZ_TARGETS = {"render_content", "render_graph", "redact_model"}
 
 
+GATE = "gate"
+GUARD = "workflow guard"
+
+
+def ci_gate_sets():
+    """EXPECTED and FULL of scripts/ci-gate.py, read as data (the file is
+    parsed, never run: it may be a pull request's)."""
+    out = {}
+    tree = ast.parse((DATA / "scripts/ci-gate.py").read_text())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+            name = node.targets[0].id
+            if name in ("EXPECTED", "FULL") and isinstance(node.value, ast.Call) and node.value.args:
+                try:
+                    out[name] = set(ast.literal_eval(node.value.args[0]))
+                except ValueError:
+                    pass
+    return out.get("EXPECTED"), out.get("FULL")
+
+
 def ci_gate_full():
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("ci_gate", ROOT / "scripts/ci-gate.py")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return set(mod.FULL)
+    return ci_gate_sets()[1]
 
 
 def check_caches(path, wf):
@@ -185,6 +216,10 @@ def check_gate(path, wf):
     on = wf.get("on") or wf.get(True) or {}
     if "pull_request" not in on:
         problem(f"{path.name}: does not run on pull_request")
+    elif on.get("pull_request"):
+        # A filter (paths, branches, types) leaves some pull requests
+        # without the gate.
+        problem(f"{path.name}: pull_request is filtered ({sorted(on['pull_request'])}): some pull requests get no gate")
     if "workflow_dispatch" not in on:
         problem(f"{path.name}: cannot be dispatched (the release gate)")
     branches = set(((on.get("push") or {}) if isinstance(on, dict) else {}).get("branches") or [])
@@ -231,13 +266,59 @@ def check_gate(path, wf):
     runs = [st for st in gate.get("steps") or [] if "scripts/ci-gate.py" in (st.get("run") or "")]
     if not runs or any("if" in st for st in runs):
         problem(f"{path.name}:gate: does not run scripts/ci-gate.py unconditionally")
+    expected, _ = ci_gate_sets()
+    if expected != set(jobs) - {"gate"}:
+        problem(f"{path.name}:gate: scripts/ci-gate.py EXPECTED {sorted(expected or [])} differs from pr.yml's jobs {sorted(set(jobs) - {'gate'})}")
+    if gate.get("name") != GATE:
+        problem(f"{path.name}:gate: its name must be `{GATE}` (the required check)")
     if ci_gate_full() != full:
         problem(f"{path.name}:gate: scripts/ci-gate.py FULL {sorted(ci_gate_full())} differs from the jobs skipped on pull requests {sorted(full)}")
 
 
+def check_names(wfs):
+    """`gate`, the guard and the required checks are each the name of one
+    job of one workflow: a skipped job elsewhere with the same name would
+    satisfy the required check."""
+    owners = {}
+    for path, wf in wfs:
+        for jid, job in (wf.get("jobs") or {}).items():
+            name = job.get("name") or jid
+            owners.setdefault(name, []).append(f"{path.name}:{jid}")
+    for name in REQUIRED_CHECKS | {GATE, GUARD}:
+        found = owners.get(name, [])
+        if len(found) != 1:
+            problem(f"the required check `{name}` is the name of {len(found)} job(s): {found}")
+
+
+def check_guard(path, wf):
+    """pr-guard.yml: the base branch's definition checks a pull request's
+    workflows; it checks out and runs nothing of the pull request's."""
+    on = wf.get("on") or wf.get(True) or {}
+    if set(on) != {"pull_request_target"} or on.get("pull_request_target"):
+        problem(f"{path.name}: must run on pull_request_target only, unfiltered")
+    if wf.get("permissions") != {"contents": "read"}:
+        problem(f"{path.name}: permissions must be exactly contents: read")
+    jobs = wf.get("jobs") or {}
+    if [j.get("name") for j in jobs.values()] != [GUARD]:
+        problem(f"{path.name}: must have exactly one job, `{GUARD}`")
+    for jid, job in jobs.items():
+        if "permissions" in job or "secrets" in str(job):
+            problem(f"{path.name}:{jid}: no job-level permissions or secrets")
+    for jid, st in steps_of(wf):
+        w = st.get("with") or {}
+        if "actions/checkout" in (st.get("uses") or ""):
+            if "ref" in w or "repository" in w or w.get("persist-credentials") is not False:
+                problem(f"{path.name}:{jid}: only the base branch is checked out, without credentials")
+        elif st.get("uses"):
+            problem(f"{path.name}:{jid}: no action other than checkout ({st['uses']})")
+    runs = " ".join(st.get("run") or "" for _, st in steps_of(wf))
+    if "base/scripts/check-workflows.py --data-only data" not in runs:
+        problem(f"{path.name}: does not check the pull request's workflows with the base branch's script")
+
+
 def check_cjk_lock():
-    lock = ROOT / "scripts/cjk-assets.sha256"
-    script = (ROOT / "scripts/fetch-cjk-assets.sh").read_text()
+    lock = DATA / "scripts/cjk-assets.sha256"
+    script = (DATA / "scripts/fetch-cjk-assets.sh").read_text()
     if not lock.exists():
         problem("scripts/cjk-assets.sha256 is missing")
         return
@@ -252,7 +333,13 @@ def check_cjk_lock():
 
 
 def main():
-    for path in sorted((ROOT / ".github/workflows").glob("*.yml")):
+    global DATA
+    data_only = False
+    if sys.argv[1:2] == ["--data-only"]:
+        DATA = Path(sys.argv[2]).resolve()
+        data_only = True
+    wfs = []
+    for path in sorted((DATA / ".github/workflows").glob("*.yml")):
         text = path.read_text()
         try:
             wf = yaml.safe_load(text)
@@ -267,13 +354,20 @@ def main():
         if path.name == "nightly.yml":
             check_nightly(path, wf)
         check_caches(path, wf)
+        wfs.append((path, wf))
         if path.name == "pr.yml":
             check_gate(path, wf)
+        if path.name == "pr-guard.yml":
+            check_guard(path, wf)
+    check_names(wfs)
+    if not any(p.name == "pr-guard.yml" for p, _ in wfs):
+        problem("pr-guard.yml (the workflow guard) is missing")
     check_cjk_lock()
-    # fetch-corpus.py must at least parse and answer --help offline.
-    r = subprocess.run([sys.executable, str(ROOT / "compat/fetch-corpus.py"), "--help"], capture_output=True, text=True)
-    if r.returncode != 0:
-        problem("fetch-corpus.py --help failed: " + r.stderr[-200:])
+    if not data_only:
+        # fetch-corpus.py must at least parse and answer --help offline.
+        r = subprocess.run([sys.executable, str(ROOT / "compat/fetch-corpus.py"), "--help"], capture_output=True, text=True)
+        if r.returncode != 0:
+            problem("fetch-corpus.py --help failed: " + r.stderr[-200:])
     if problems:
         print(f"{len(problems)} problem(s)")
         return 1

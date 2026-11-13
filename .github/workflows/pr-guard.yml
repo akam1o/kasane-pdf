@@ -1,0 +1,70 @@
+# The workflow guard. pr.yml runs a pull request's own copy of itself, so
+# a pull request could weaken `gate` (or the checks behind it) and still
+# report it green. This workflow runs the base branch's definition
+# instead (pull_request_target) and:
+#
+# - checks the pull request's workflows and gate script with the base
+#   branch's scripts/check-workflows.py, as data (`--data-only`): the
+#   pull request's files are read from git objects, never checked out or
+#   run;
+# - fails when a pull request from a fork changes the CI's own definition
+#   (workflows, scripts/ — the gate, the workflow checks and the
+#   redaction security checks the CI runs —, the fuzz runners, the
+#   nextest profile): its CI results come from the definition it
+#   changed. A maintainer reviews such a change and lands it from a
+#   branch of their own (docs/testing.md, "CI gates").
+#
+# Read-only token, no secrets, nothing of the pull request executed.
+name: pr-guard
+
+on:
+  pull_request_target:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: workflow guard
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: base
+          persist-credentials: false
+      - name: the pull request's files, as data
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git -C base fetch --no-tags --quiet "https://github.com/${GITHUB_REPOSITORY}.git" \
+            "+refs/pull/${PR}/head:refs/guard/head" "+${BASE}:refs/guard/base"
+          test "$(git -C base rev-parse refs/guard/head)" = "$HEAD"
+          mkdir -p data
+          git -C base ls-tree -r --name-only refs/guard/head -- .github/workflows scripts/ci-gate.py \
+            compat/fetch-corpus.py scripts/cjk-assets.sha256 scripts/fetch-cjk-assets.sh > files.txt
+          while IFS= read -r f; do
+            mkdir -p "data/$(dirname "$f")"
+            git -C base show "refs/guard/head:$f" > "data/$f"
+          done < files.txt
+          git -C base diff --name-only refs/guard/base...refs/guard/head > changed.txt
+          echo "files read: $(wc -l < files.txt); files changed: $(wc -l < changed.txt)"
+      - name: the pull request's workflows keep the gate (base branch's check)
+        run: |
+          pip3 install --quiet pyyaml==6.0.3
+          python3 base/scripts/check-workflows.py --data-only data
+      - name: a fork does not change the CI's own definition
+        env:
+          FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          set -euo pipefail
+          ci=$(grep -E '^(\.github/|scripts/|fuzz/ci-run(-sharded)?\.sh$|\.config/)' changed.txt || true)
+          if [ "$FORK" = true ] && [ -n "$ci" ]; then
+            echo "::error::a pull request from a fork changes the CI definition; a maintainer reviews it and lands it:"
+            echo "$ci" | sed 's/^/  /'
+            exit 1
+          fi
+          echo "ok (fork: $FORK; CI files changed: $(echo -n "$ci" | grep -c . || true))"
