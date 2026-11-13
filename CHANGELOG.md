@@ -11,6 +11,42 @@ versions follow [Semantic Versioning](https://semver.org/).
 0.9.0 was prepared but never released; its changes are part of this
 release.
 
+### Security
+- Removed annotations kept when JavaScript is removed (GHSA-92wc-597g-rqx9,
+  Medium): with `remove_javascript`, a removed link or markup annotation that
+  had a JavaScript action and that something else referred to (a private
+  entry, application data, another annotation's key, a kept link's Hide
+  action) was written to the output without its scripts — its text, author
+  and rich text, or a link's target (0.7.0–0.8.0). Removed annotations and
+  fields are now refused by identity whenever the output would still write
+  them.
+- Removed links' actions kept by other references (GHSA-6pgh-gg28-m4w4,
+  Medium): a removed link's action or destination object that only an entry
+  not acting on it referred to (a private entry, a private action's `/Next`)
+  was written to the output unchanged — a URI, a launched file, a
+  destination name (0.6.0–0.8.0). It is now refused; an action a kept link,
+  outline item, form field or the catalog uses stays.
+- Glyphs viewers draw inside the rectangle (GHSA-fqgr-r67f-vx25, Low):
+  where viewers resolve or place a glyph differently from `redact`, a
+  code it located outside the rectangle could be drawn inside it and was
+  kept (0.6.0–0.8.0): a code an embedded Type 1, CFF, OpenType or
+  TrueType program resolves to `.notdef` (MuPDF falls back to the
+  program's own encoding, pdf.js to a glyph named for the same Unicode),
+  a TrueType glyph whose `hmtx` bearing disagrees with its outline (MuPDF
+  and Poppler draw it shifted, pdf.js in place; a bearing given through
+  `USE_MY_METRICS` components was followed four levels), and with
+  `embed_substitute_fonts` (0.7.0–0.8.0) a code the substitute cannot
+  name, written as `.notdef`. Such a code's extent is now every glyph
+  the program can draw, a TrueType glyph's both positions, and a
+  substitute writes the blank space glyph; a glyph or bearing that
+  cannot be read is refused. A code near a rect may go where 0.8.0 kept
+  it.
+- Colour data of removed appearances kept by other references
+  (GHSA-2r8v-x8mp-wp79, Low): the colour table, tint or transfer function a
+  removed appearance painted with stayed in the output when something that
+  does not draw it referred to it (0.6.0–0.8.0); the removed drawing itself
+  was removed. The output's use check now fails on it.
+
 ### Added
 - `redact` cuts more of what crosses a rect instead of refusing the
   page (0.8.0 cut only disjoint axis-aligned rectangles and straight
@@ -90,23 +126,6 @@ release.
   peak memory 1.24 GB → 0.37 GB).
 
 ### Fixed
-- `embed_substitute_fonts` wrote a code whose glyph the substitute
-  cannot name as `.notdef`, which some readers draw as the code's own
-  glyph — where `redact` had not placed it (0.7.0–0.8.0). Such codes
-  are now written as the substitute's blank space glyph.
-- `redact` placed a code that an embedded font program (Type 1, CFF,
-  OpenType, TrueType) resolves to `.notdef` — a name the program lacks,
-  `.notdef` itself, no name — as `.notdef`, while MuPDF falls back to
-  the program's own encoding and pdf.js to a glyph named for the same
-  Unicode (0.6.0–0.8.0). Its extent is now every glyph the program can
-  draw, so such a code near a rect may go where 0.8.0 kept it; a
-  program one of whose glyphs cannot be read is refused for it.
-- A TrueType glyph whose `hmtx` bearing disagrees with its outline is
-  drawn shifted by MuPDF and Poppler and in place by pdf.js; `redact`
-  took only the shifted position (0.6.0–0.8.0). Both are now its extent;
-  a glyph whose bearing does not resolve (`USE_MY_METRICS` nested past
-  32 levels, malformed data), or that has data but does not outline, is
-  refused instead of placed as empty.
 - A refusal naming a long chain of references elides the middle of
   the route past 200 characters (it was as long as the chain).
 

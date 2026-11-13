@@ -20,7 +20,7 @@ version has no such command (`redact` exists from 0.6.0; for GHSA-2337
 0.5.x runs `experimental-remove-text`). The PR workflow runs the check
 on the current build with `--expect-safe`.
 
-Measured on 2026-11-12 (release builds of each tag; `v0.10.0` is the
+Measured on 2026-11-13 (release builds of each tag; `v0.10.0` is the
 release candidate). Every affected range matches the advisory;
 `SAFE` before the fix in a few rows means that variant was refused or
 handled by that version (it is kept as a guard for later ones).
@@ -29,10 +29,30 @@ handled by that version (it is kept as a guard for later ones).
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | GHSA-2337-4h5g-jqwx | `2337-cm` | LEAK | LEAK | SAFE | SAFE | SAFE | SAFE | SAFE | SAFE | SAFE |
 | GHSA-2337-4h5g-jqwx | `2337-form` | LEAK | LEAK | SAFE | SAFE | SAFE | SAFE | SAFE | SAFE | SAFE |
+| GHSA-2r8v-x8mp-wp79 | `2r8v-palette-catalog` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-2r8v-x8mp-wp79 | `2r8v-palette-pieceinfo` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-2r8v-x8mp-wp79 | `2r8v-tint-catalog` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-2r8v-x8mp-wp79 | `2r8v-transfer-catalog` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
 | GHSA-3f9j-35f2-6659 | `3f9j-after-endcmap` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | SAFE | SAFE |
 | GHSA-3f9j-35f2-6659 | `3f9j-bfchar` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | SAFE | SAFE |
 | GHSA-3f9j-35f2-6659 | `3f9j-length` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | SAFE | SAFE |
 | GHSA-3f9j-35f2-6659 | `3f9j-order` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | SAFE | SAFE |
+| GHSA-6pgh-gg28-m4w4 | `6pgh-goto-A-catalog` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-6pgh-gg28-m4w4 | `6pgh-goto-A-next` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-6pgh-gg28-m4w4 | `6pgh-goto-AA-catalog` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-6pgh-gg28-m4w4 | `6pgh-goto-AA-next` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-6pgh-gg28-m4w4 | `6pgh-launch-A-catalog` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-6pgh-gg28-m4w4 | `6pgh-launch-A-next` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-6pgh-gg28-m4w4 | `6pgh-launch-AA-catalog` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-6pgh-gg28-m4w4 | `6pgh-launch-AA-next` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-6pgh-gg28-m4w4 | `6pgh-uri-A-catalog` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-6pgh-gg28-m4w4 | `6pgh-uri-A-next` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-6pgh-gg28-m4w4 | `6pgh-uri-AA-catalog` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-6pgh-gg28-m4w4 | `6pgh-uri-AA-next` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-92wc-597g-rqx9 | `92wc-link-catalog` | N/A | N/A | N/A | SAFE | SAFE | SAFE | LEAK | LEAK | SAFE |
+| GHSA-92wc-597g-rqx9 | `92wc-markup-catalog` | N/A | N/A | N/A | SAFE | SAFE | SAFE | LEAK | LEAK | SAFE |
+| GHSA-92wc-597g-rqx9 | `92wc-markup-hide` | N/A | N/A | N/A | SAFE | SAFE | SAFE | LEAK | LEAK | SAFE |
+| GHSA-92wc-597g-rqx9 | `92wc-markup-pieceinfo` | N/A | N/A | N/A | SAFE | SAFE | SAFE | LEAK | LEAK | SAFE |
 | GHSA-cjhc-76x8-crrq | `cjhc-contents-attachment` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | SAFE | SAFE |
 | GHSA-cjhc-76x8-crrq | `cjhc-contents-catalog` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | SAFE | SAFE |
 | GHSA-cjhc-76x8-crrq | `cjhc-contents-pieceinfo` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | SAFE | SAFE |
@@ -41,12 +61,15 @@ handled by that version (it is kept as a guard for later ones).
 | GHSA-f228-qvw7-4x37 | `f228-crlf` | N/A | N/A | N/A | LEAK | LEAK | LEAK | SAFE | SAFE | SAFE |
 | GHSA-f228-qvw7-4x37 | `f228-shown` | N/A | N/A | N/A | LEAK | LEAK | LEAK | SAFE | SAFE | SAFE |
 | GHSA-fm2j-3w72-p7x3 | `fm2j-dash` | SLOW | SAFE | SAFE | SAFE | SAFE | SAFE | SAFE | SAFE | SAFE |
-| GHSA-frr2-h56x-mr4h | `frr2-tm` | N/A | N/A | N/A | LEAK | SAFE | SAFE | SAFE | SAFE | SAFE |
+| GHSA-fqgr-r67f-vx25 | `fqgr-cff-notdef` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-fqgr-r67f-vx25 | `fqgr-truetype-bearing` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
+| GHSA-fqgr-r67f-vx25 | `fqgr-type1-absent-name` | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | SAFE |
 | GHSA-frr2-h56x-mr4h | `frr2-tm-cancelled-by-cm` | N/A | N/A | N/A | LEAK | SAFE | SAFE | SAFE | SAFE | SAFE |
+| GHSA-frr2-h56x-mr4h | `frr2-tm` | N/A | N/A | N/A | LEAK | SAFE | SAFE | SAFE | SAFE | SAFE |
 | GHSA-vph3-9p4m-58fh | `vph3-objstm` | N/A | N/A | N/A | LEAK | LEAK | LEAK | SAFE | SAFE | SAFE |
 | GHSA-x455-j82p-6jmv | `x455-image` | N/A | N/A | N/A | LEAK | SAFE | SAFE | SAFE | SAFE | SAFE |
-| GHSA-x455-j82p-6jmv | `x455-text` | N/A | N/A | N/A | LEAK | SAFE | SAFE | SAFE | SAFE | SAFE |
 | GHSA-x455-j82p-6jmv | `x455-text-invisible-clip` | N/A | N/A | N/A | SAFE | SAFE | SAFE | SAFE | SAFE | SAFE |
+| GHSA-x455-j82p-6jmv | `x455-text` | N/A | N/A | N/A | LEAK | SAFE | SAFE | SAFE | SAFE | SAFE |
 | GHSA-xpph-r5fc-83rj | `xpph-literal` | N/A | N/A | N/A | LEAK | LEAK | LEAK | SAFE | SAFE | SAFE |
 
 | advisory | severity | affected | fixed |
@@ -61,6 +84,10 @@ handled by that version (it is kept as a guard for later ones).
 | GHSA-vph3-9p4m-58fh | Medium | 0.1.0 – 0.6.2 | 0.7.0 |
 | GHSA-3f9j-35f2-6659 | Low | 0.6.0 – 0.7.0 | 0.8.0 |
 | GHSA-cjhc-76x8-crrq | Medium | 0.6.0 – 0.7.0 | 0.8.0 |
+| GHSA-2r8v-x8mp-wp79 | Low | 0.6.0 – 0.8.0 | 0.10.0 |
+| GHSA-92wc-597g-rqx9 | Medium | 0.7.0 – 0.8.0 | 0.10.0 |
+| GHSA-6pgh-gg28-m4w4 | Medium | 0.6.0 – 0.8.0 | 0.10.0 |
+| GHSA-fqgr-r67f-vx25 | Low | 0.6.0 – 0.8.0 | 0.10.0 |
 
 GHSA-9mw8 (positions of removed glyphs) is checked by non-interference
 in the test itself (two inputs differing only in those positions give

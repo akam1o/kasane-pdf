@@ -655,3 +655,599 @@ fn ghsa_cjhc_removed_data_is_not_kept_by_reference() {
         );
     }
 }
+
+/// Whether any object of `pdf` holds `needle` — in a string (exactly as
+/// stored, hexadecimal ones included) or a stream's bytes.
+fn holds(pdf: &[u8], needle: &[u8]) -> bool {
+    fn walk(o: &kasane_pdf::Object, needle: &[u8]) -> bool {
+        use kasane_pdf::Object as O;
+        match o {
+            O::String(b) => contains(b, needle),
+            O::Array(a) => a.iter().any(|x| walk(x, needle)),
+            O::Dict(d) => d.values().any(|x| walk(x, needle)),
+            O::Stream { dict, data } => {
+                contains(data, needle) || dict.values().any(|x| walk(x, needle))
+            }
+            _ => false,
+        }
+    }
+    let doc = Document::from_bytes(pdf).unwrap();
+    let size = doc
+        .trailer()
+        .get(b"Size".as_slice())
+        .and_then(|s| s.as_i64())
+        .unwrap_or(0);
+    (1..size as u32).any(|n| {
+        doc.resolve(kasane_pdf::IndirectRef {
+            number: n,
+            generation: 0,
+        })
+        .is_ok_and(|o| walk(&o, needle))
+    })
+}
+
+// ---- GHSA-2r8v-x8mp-wp79 (0.6.0 – 0.8.0): colour data of removed appearances
+
+/// The colour data a removed link's appearance painted with (an
+/// `/Indexed` table, a tint or transfer function) does not stay through
+/// a reference from something that does not draw it.
+#[test]
+fn ghsa_2r8v_colour_data_of_removed_appearances() {
+    const PAL: &[u8] = b"\x12\x34\x56\xab\xcd\xef";
+    let marker = "123456abcdef";
+    let link = |ap_body: &[u8], ap_res: &str| {
+        vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Link /Rect [70 90 110 100] /AP << /N 31 0 R >> \
+                  /A << /S /URI /URI (https://example.com/) >> >>"
+                    .to_vec(),
+            ),
+            (
+                31,
+                stream_obj(
+                    &format!(
+                        "/Type /XObject /Subtype /Form /BBox [0 0 40 10] /Resources << {ap_res} >>"
+                    ),
+                    ap_body,
+                ),
+            ),
+            (40, stream_obj("", PAL)),
+            (
+                41,
+                stream_obj(
+                    "/FunctionType 0 /Domain [0 1] /Range [0 1 0 1 0 1] /Size [2] /BitsPerSample 8",
+                    PAL,
+                ),
+            ),
+        ]
+    };
+    let indexed = "/ColorSpace << /C [/Indexed /DeviceRGB 1 40 0 R] >>";
+    let cases = [
+        (
+            "palette-catalog",
+            "/XPriv 40 0 R",
+            link(b"/C cs 1 sc 0 0 10 10 re f", indexed),
+        ),
+        (
+            "palette-pieceinfo",
+            "/PieceInfo << /App << /Private 40 0 R >> >>",
+            link(b"/C cs 1 sc 0 0 10 10 re f", indexed),
+        ),
+        (
+            "tint-catalog",
+            "/XPriv 41 0 R",
+            link(
+                b"/S cs 1 scn 0 0 10 10 re f",
+                "/ColorSpace << /S [/Separation /Ink /DeviceRGB 41 0 R] >>",
+            ),
+        ),
+        (
+            "transfer-catalog",
+            "/XPriv 41 0 R",
+            link(
+                b"/G gs 0 0 10 10 re f",
+                "/ExtGState << /G << /TR 41 0 R >> >>",
+            ),
+        ),
+    ];
+    for (name, cat, extra) in cases {
+        let pdf = page(KEPT.as_bytes(), "", cat, "/Annots [30 0 R]", extra);
+        if let Ok(r) = run(&pdf, &RedactOptions::new()) {
+            assert!(!holds(&r.output, PAL), "{name}: the colour data stayed");
+        }
+        dump(
+            &format!("2r8v-{name}"),
+            "GHSA-2r8v-x8mp-wp79",
+            REDACT_ARGS,
+            &format!("safe-bytes:hex:{marker}"),
+            &pdf,
+        );
+    }
+}
+
+// ---- GHSA-92wc-597g-rqx9 (0.7.0 – 0.8.0): removed annotations kept with remove_javascript
+
+/// With `remove_javascript`, a removed annotation that has a script and
+/// that something else refers to is not written out.
+#[test]
+fn ghsa_92wc_removed_annotations_with_scripts() {
+    let rect = "/Rect [70 90 130 110]";
+    let js = "/A << /S /JavaScript /JS (app.alert\\(1\\)) >>";
+    let markup = format!(
+        "<< /Type /Annot /Subtype /FreeText {rect} /DA (/Helv 9 Tf 0 g) /Contents (CONTENTSSECRET) \
+         /T (AUTHORSECRET) {js} >>"
+    );
+    let link = format!(
+        "<< /Type /Annot /Subtype /Link {rect} /A << /S /URI /URI (https://secret.example/LINKSECRET) \
+         /Next << /S /JavaScript /JS (x) >> >> >>"
+    );
+    let hide = b"<< /Type /Annot /Subtype /Link /Rect [150 150 190 190] \
+                 /A << /S /Hide /T 30 0 R >> >>"
+        .to_vec();
+    // (name, annotation, catalog entries, extra objects, marker, remove_annotations)
+    type Case<'a> = (&'a str, String, &'a str, Vec<(u32, Vec<u8>)>, &'a str, bool);
+    let cases: Vec<Case> = vec![
+        (
+            "markup-catalog",
+            markup.clone(),
+            "/XPriv 30 0 R",
+            vec![],
+            "CONTENTSSECRET",
+            true,
+        ),
+        (
+            "markup-pieceinfo",
+            markup.clone(),
+            "/PieceInfo << /App << /Private 30 0 R >> >>",
+            vec![],
+            "CONTENTSSECRET",
+            true,
+        ),
+        (
+            "markup-hide",
+            markup,
+            "",
+            vec![(31, hide)],
+            "CONTENTSSECRET",
+            true,
+        ),
+        (
+            "link-catalog",
+            link,
+            "/XPriv 30 0 R",
+            vec![],
+            "LINKSECRET",
+            false,
+        ),
+    ];
+    for (name, annot, cat, extra, marker, annotations) in cases {
+        let annots = if extra.is_empty() {
+            "/Annots [30 0 R]"
+        } else {
+            "/Annots [30 0 R 31 0 R]"
+        };
+        let mut objs = vec![(30, annot.into_bytes())];
+        objs.extend(extra);
+        let pdf = page(KEPT.as_bytes(), "", cat, annots, objs);
+        let opts = RedactOptions::new()
+            .remove_javascript(true)
+            .remove_annotations(annotations);
+        if let Ok(r) = run(&pdf, &opts) {
+            assert!(
+                !contains(&r.output, marker.as_bytes()),
+                "{name}: {marker} kept"
+            );
+        }
+        let args = format!(
+            "{REDACT_ARGS} --remove-javascript{}",
+            if annotations {
+                " --remove-annotations"
+            } else {
+                ""
+            }
+        );
+        dump(
+            &format!("92wc-{name}"),
+            "GHSA-92wc-597g-rqx9",
+            &args,
+            &format!("safe-bytes:{marker}"),
+            &pdf,
+        );
+    }
+}
+
+// ---- GHSA-6pgh-gg28-m4w4 (0.6.0 – 0.8.0): removed links' actions kept by other references
+
+/// A removed link's separate action object does not stay through an
+/// entry that does not act on it; one a kept link uses does.
+#[test]
+fn ghsa_6pgh_removed_link_actions() {
+    let actions = [
+        (
+            "uri",
+            "<< /S /URI /URI (https://secret.example/ACTSECRET) >>",
+        ),
+        ("launch", "<< /S /Launch /F (ACTSECRET.exe) >>"),
+        ("goto", "<< /S /GoTo /D (ACTSECRET) >>"),
+    ];
+    for (a, action) in actions {
+        for (via, entry) in [("A", "/A 40 0 R"), ("AA", "/AA << /E 40 0 R >>")] {
+            for (w, cat, extra) in [
+                ("catalog", "/XPriv 40 0 R", vec![]),
+                (
+                    "next",
+                    "/XPriv 41 0 R",
+                    vec![(41, b"<< /S /Named /N /NextPage /XNext 40 0 R >>".to_vec())],
+                ),
+            ] {
+                let mut objs = vec![
+                    (
+                        30,
+                        format!("<< /Type /Annot /Subtype /Link /Rect [70 90 130 110] {entry} >>")
+                            .into_bytes(),
+                    ),
+                    (40, action.as_bytes().to_vec()),
+                ];
+                objs.extend(extra);
+                let pdf = page(KEPT.as_bytes(), "", cat, "/Annots [30 0 R]", objs);
+                let name = format!("{a}-{via}-{w}");
+                if let Ok(r) = run(&pdf, &RedactOptions::new()) {
+                    assert!(
+                        !contains(&r.output, b"ACTSECRET"),
+                        "{name}: the action stayed"
+                    );
+                }
+                dump(
+                    &format!("6pgh-{name}"),
+                    "GHSA-6pgh-gg28-m4w4",
+                    REDACT_ARGS,
+                    "safe-bytes:ACTSECRET",
+                    &pdf,
+                );
+            }
+        }
+    }
+    // An action a kept link also uses is that link's: kept.
+    let pdf = page(
+        KEPT.as_bytes(),
+        "",
+        "",
+        "/Annots [30 0 R 31 0 R]",
+        vec![
+            (
+                30,
+                b"<< /Type /Annot /Subtype /Link /Rect [70 90 130 110] /A 40 0 R >>".to_vec(),
+            ),
+            (
+                31,
+                b"<< /Type /Annot /Subtype /Link /Rect [150 150 190 190] /A 40 0 R >>".to_vec(),
+            ),
+            (
+                40,
+                b"<< /S /URI /URI (https://example.com/shared) >>".to_vec(),
+            ),
+        ],
+    );
+    let r = run(&pdf, &RedactOptions::new()).unwrap();
+    assert!(holds(&r.output, b"example.com/shared"));
+}
+
+// ---- GHSA-fqgr-r67f-vx25 (0.6.0 – 0.8.0): glyphs viewers resolve or place differently
+
+/// A synthetic eexec Type 1 program: `.notdef` (empty), `underscore`
+/// (a bar below the baseline) and `W` (a box), with StandardEncoding as
+/// its own encoding.
+fn type1_program() -> Vec<u8> {
+    let w: Option<&[u8]> = None;
+    fn num(v: i32, out: &mut Vec<u8>) {
+        match v {
+            -107..=107 => out.push((v + 139) as u8),
+            108..=1131 => out.extend([(((v - 108) >> 8) + 247) as u8, ((v - 108) & 255) as u8]),
+            -1131..=-108 => out.extend([(((-v - 108) >> 8) + 251) as u8, ((-v - 108) & 255) as u8]),
+            _ => {
+                out.push(255);
+                out.extend(v.to_be_bytes());
+            }
+        }
+    }
+    fn encrypt(data: &[u8], mut r: u16) -> Vec<u8> {
+        let mut out = Vec::new();
+        for &b in [0u8; 4].iter().chain(data) {
+            let c = b ^ (r >> 8) as u8;
+            r = (c as u16)
+                .wrapping_add(r)
+                .wrapping_mul(52845)
+                .wrapping_add(22719);
+            out.push(c);
+        }
+        out
+    }
+    // hsbw, then a closed box (x, y, w, h) or none, then endchar.
+    let glyph = |wx: i32, b: Option<(i32, i32, i32, i32)>| {
+        let mut c = Vec::new();
+        num(0, &mut c);
+        num(wx, &mut c);
+        c.push(13);
+        if let Some((x, y, w, h)) = b {
+            for (v, op) in [
+                (vec![x, y], 21),
+                (vec![w, 0], 5),
+                (vec![0, h], 5),
+                (vec![-w, 0], 5),
+            ] {
+                for n in v {
+                    num(n, &mut c);
+                }
+                c.push(op);
+            }
+            c.push(9);
+        }
+        c.push(14);
+        c
+    };
+    let mut private = b"dup /Private 8 dict dup begin\n/RD{string currentfile exch readstring pop}executeonly def\n\
+        /ND{noaccess def}executeonly def\n/NP{noaccess put}executeonly def\n/lenIV 4 def\n\
+        /MinFeature{16 16} def\n/password 5839 def\n/Subrs 0 array\nND\n2 index /CharStrings 3 dict dup begin\n"
+        .to_vec();
+    for (name, c) in [
+        (".notdef", glyph(500, None)),
+        ("underscore", glyph(600, Some((0, -200, 600, 100)))),
+        (
+            "W",
+            w.map_or_else(|| glyph(1000, Some((0, 0, 1000, 700))), <[u8]>::to_vec),
+        ),
+    ] {
+        let e = encrypt(&c, 4330);
+        private.extend(format!("/{name} {} RD ", e.len()).into_bytes());
+        private.extend(e);
+        private.extend(b" ND\n");
+    }
+    private.extend(
+        b"end\nend\nreadonly put\nnoaccess put\ndup /FontName get exch definefont pop\nmark currentfile closefile\n",
+    );
+    let mut p =
+        b"%!FontType1-1.0: KTest 001\n12 dict begin\n/FontName /KTest def\n/FontType 1 def\n\
+        /FontMatrix [0.001 0 0 0.001 0 0] readonly def\n/FontBBox {0 -300 1000 1000} readonly def\n\
+        /PaintType 0 def\n/Encoding StandardEncoding def\ncurrentdict end\ncurrentfile eexec\n"
+            .to_vec();
+    p.extend(encrypt(&private, 55665));
+    for _ in 0..8 {
+        p.extend([b'0'; 64]);
+        p.push(b'\n');
+    }
+    p.extend(b"cleartomark\n");
+    p
+}
+
+/// A synthetic bare CFF program (`/FontFile3 /Type1C`): `.notdef`
+/// (empty), `underscore` (a bar below the baseline) and `W` (a 1000 ×
+/// 700 box), its own encoding giving them codes 0x5F and 0x57.
+fn cff_program() -> Vec<u8> {
+    fn num(v: i32) -> Vec<u8> {
+        match v {
+            -107..=107 => vec![(v + 139) as u8],
+            108..=1131 => vec![(((v - 108) >> 8) + 247) as u8, ((v - 108) & 255) as u8],
+            -1131..=-108 => vec![(((-v - 108) >> 8) + 251) as u8, ((-v - 108) & 255) as u8],
+            _ => [vec![255u8], v.to_be_bytes().to_vec()].concat(),
+        }
+    }
+    fn index(items: &[Vec<u8>]) -> Vec<u8> {
+        if items.is_empty() {
+            return vec![0, 0];
+        }
+        let mut offsets = vec![1u16];
+        for i in items {
+            offsets.push(offsets.last().unwrap() + i.len() as u16);
+        }
+        let mut out = (items.len() as u16).to_be_bytes().to_vec();
+        out.push(2);
+        for o in offsets {
+            out.extend(o.to_be_bytes());
+        }
+        for i in items {
+            out.extend(i);
+        }
+        out
+    }
+    let glyph = |b: Option<(i32, i32, i32, i32)>| {
+        let mut c = Vec::new();
+        if let Some((x, y, w, h)) = b {
+            for (v, op) in [
+                (vec![x, y], 21u8),
+                (vec![w, 0], 5),
+                (vec![0, h], 5),
+                (vec![-w, 0], 5),
+                (vec![0, -h], 5),
+            ] {
+                for n in v {
+                    c.extend(num(n));
+                }
+                c.push(op);
+            }
+        }
+        c.push(14);
+        c
+    };
+    let glyphs = vec![
+        glyph(None),
+        glyph(Some((0, -400, 600, 100))),
+        glyph(Some((0, 0, 1000, 700))),
+    ];
+    let dn = |n: i32| [vec![0x1d], n.to_be_bytes().to_vec()].concat();
+    let top = |charset: i32, encoding: i32, chars: i32, private: i32| {
+        [
+            dn(charset),
+            vec![0x0f],
+            dn(encoding),
+            vec![0x10],
+            dn(chars),
+            vec![0x11],
+            dn(0),
+            dn(private),
+            vec![0x12],
+        ]
+        .concat()
+    };
+    let header = vec![1u8, 0, 4, 4];
+    let (name, strings, gsubrs) = (index(&[b"KTest".to_vec()]), index(&[]), index(&[]));
+    let start = (header.len()
+        + name.len()
+        + index(&[top(0, 0, 0, 0)]).len()
+        + strings.len()
+        + gsubrs.len()) as i32;
+    // Charset format 0: SIDs 64 (underscore), 56 (W); encoding format 0.
+    let charset = vec![0u8, 0, 64, 0, 56];
+    let encoding = vec![0u8, 2, 0x5f, 0x57];
+    let chars = index(&glyphs);
+    let (c, e) = (charset.len() as i32, encoding.len() as i32);
+    let topdict = index(&[top(
+        start,
+        start + c,
+        start + c + e,
+        start + c + e + chars.len() as i32,
+    )]);
+    [
+        header, name, topdict, strings, gsubrs, charset, encoding, chars,
+    ]
+    .concat()
+}
+
+/// A code whose glyph viewers resolve or place differently from kasane
+/// goes when any of the places they draw it meets the rect: a Type 1 or
+/// CFF code resolving to `.notdef` (MuPDF falls back to the program's
+/// own encoding), a TrueType glyph whose bearing disagrees with its
+/// outline (pdf.js draws it in place, MuPDF and Poppler shifted). Its
+/// `/ToUnicode` text marks whether the code stayed.
+#[test]
+fn ghsa_fqgr_glyphs_viewers_draw_elsewhere() {
+    let marker = "IADVSECRET";
+    let tounicode = stream_obj(
+        "",
+        format!(
+            "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /X def \
+             1 begincodespacerange <00> <FF> endcodespacerange 1 beginbfchar <5F> <{}> endbfchar \
+             endcmap CMapName currentdict /CMap defineresource pop end end",
+            marker
+                .bytes()
+                .map(|c| format!("00{c:02X}"))
+                .collect::<String>()
+        )
+        .as_bytes(),
+    );
+    let mut ttf = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fonts/liberation/LiberationSans-Regular.ttf"
+    ))
+    .unwrap();
+    {
+        // `_`'s bearing one em past its `xMin`.
+        let (gid, x_min) = {
+            let face = ttf_parser::Face::parse(&ttf, 0).unwrap();
+            let g = face.glyph_index('_').unwrap();
+            (g.0 as usize, face.glyph_bounding_box(g).unwrap().x_min)
+        };
+        let n = u16::from_be_bytes([ttf[4], ttf[5]]) as usize;
+        let hmtx = (0..n)
+            .map(|i| 12 + 16 * i)
+            .find(|&r| &ttf[r..r + 4] == b"hmtx")
+            .map(|r| u32::from_be_bytes(ttf[r + 8..r + 12].try_into().unwrap()) as usize)
+            .unwrap();
+        let at = hmtx + 4 * gid + 2;
+        ttf[at..at + 2].copy_from_slice(&(x_min + 2048).to_be_bytes());
+    }
+    let widths = vec!["1000"; 256].join(" ");
+    let simple = |subtype: &str, encoding: &str, file: &str, program: Vec<u8>, extra: &str| {
+        vec![
+            (
+                50,
+                format!(
+                    "<< /Type /Font /Subtype /{subtype} /BaseFont /KTest /FirstChar 0 /LastChar 255 \
+                     /Widths [{widths}] {encoding} /ToUnicode 53 0 R /FontDescriptor 51 0 R >>"
+                )
+                .into_bytes(),
+            ),
+            (
+                51,
+                format!(
+                    "<< /Type /FontDescriptor /FontName /KTest /Flags 32 /FontBBox [-200 -800 2000 1000] \
+                     /ItalicAngle 0 /Ascent 900 /Descent -800 /CapHeight 700 /StemV 80 /{file} 52 0 R >>"
+                )
+                .into_bytes(),
+            ),
+            (52, stream_obj(extra, &program)),
+            (53, tounicode.clone()),
+        ]
+    };
+    let cases = [
+        (
+            "type1-absent-name",
+            simple(
+                "Type1",
+                "/Encoding << /Differences [95 /zz95zz] >>",
+                "FontFile",
+                type1_program(),
+                "",
+            ),
+            (60.0, 67.0, 96.0, 75.0),
+        ),
+        (
+            "cff-notdef",
+            simple(
+                "Type1",
+                "/Encoding << /Differences [95 /.notdef] >>",
+                "FontFile3",
+                cff_program(),
+                "/Subtype /Type1C",
+            ),
+            (60.0, 55.0, 96.0, 65.0),
+        ),
+        (
+            "truetype-bearing",
+            simple(
+                "TrueType",
+                "/Encoding /WinAnsiEncoding",
+                "FontFile2",
+                ttf.clone(),
+                &format!("/Length1 {}", ttf.len()),
+            ),
+            (60.0, 60.0, 90.0, 79.0),
+        ),
+    ];
+    for (name, objs, rect) in cases {
+        let content = format!("BT /F2 60 Tf 60 80 Td <5F> Tj ET {KEPT}");
+        let mut all = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /Font << /F1 20 0 R /F2 50 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", content.as_bytes())),
+        ];
+        all.extend(font_objs());
+        all.extend(objs);
+        let pdf = build_pdf(&all);
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let r = redact(&doc, &[(0, vec![rect])], &RedactOptions::new())
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+        let t = text(&r.output);
+        assert!(
+            !t.contains(marker),
+            "{name}: the code a viewer draws inside the rect stayed"
+        );
+        assert!(t.contains("PUBLICWORD"), "{name}: the public text was lost");
+        dump(
+            &format!("fqgr-{name}"),
+            "GHSA-fqgr-r67f-vx25",
+            &format!(
+                "redact --page 1 --rect {} {} {} {}",
+                rect.0, rect.1, rect.2, rect.3
+            ),
+            &format!("safe-text:{marker}"),
+            &pdf,
+        );
+    }
+}
