@@ -396,3 +396,4 @@ are on the [roadmap](architecture.md#roadmap).
 
 - Pure Rust library and CLI. No C API, no mobile or desktop
   application packaging — *planned, not implemented*.
+
