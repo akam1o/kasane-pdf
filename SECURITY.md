@@ -27,6 +27,24 @@ You will receive an acknowledgement, and a fix or a mitigation will
 be discussed with you before anything is published. There is no bug
 bounty.
 
+## How fixes are published
+
+A fix for an undisclosed vulnerability is prepared privately (a draft
+GitHub Security Advisory and, when needed, its temporary private fork)
+and released so that the details become public only once the fixed
+version can be installed:
+
+1. the fixed version is published to crates.io from a tagged commit
+   whose CHANGELOG says, in general terms, that it fixes security
+   issues and that advisories follow;
+2. as soon as it can be downloaded, the advisories are published
+   (affected and patched versions, conditions, severity, workarounds);
+3. the GitHub Release links them, and a following commit adds the full
+   *Security* section to the CHANGELOG and the regression tests.
+
+Reproduction files and exploit details are not published.
+`docs/releasing.md` (*B. Security release*) is the full procedure.
+
 ## Scope and guarantees
 
 - Every unbounded size, count and depth is capped by `Limits`

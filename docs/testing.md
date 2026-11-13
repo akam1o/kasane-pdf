@@ -183,23 +183,81 @@ the first.
 | **corpus and long fuzz** (`nightly.yml`, `fuzz-nightly.yml`) | nightly on `main`; dispatched on a release commit | the 511-file compatibility run and its baselines; the redaction corpus (117 runs × four option sets, `scripts/eval-redact-corpus.py`) compared with `compat/redaction/` by `scripts/check-redact-corpus.py`; 15 minutes of fuzzing per target from the accumulated corpus |
 
 `gate` (the last job of `pr.yml`) passes only when every job of its
-level ran and succeeded (`scripts/ci-gate.py`): a failed, cancelled or
-timed-out job fails it, and a full-gate job may be skipped only on a
-pull request. `scripts/check-workflows.py` (run by the fast gate) keeps
-the workflows so: the required checks exist; the commands of the
-security checks, the engine tests, the doctests and the fuzz smoke run
-on every pull request, in steps no condition switches off; every job has
-a timeout and none continues on error; `gate` waits for all jobs and
-runs `ci-gate.py`, whose full-gate set is exactly the jobs pull requests
-skip; the workflow runs on pull requests, pushes to `main` and
-`release/**`, and dispatch; and every cache is written from `main`
-only (pull requests restore `main`'s and cannot write one it reads).
-`scripts/test_ci_scripts.py` (fast gate) tests these decisions: the gate
-over every job, result and event; each weakening of the workflow the
-check must catch; and `fuzz/ci-run-sharded.sh`'s failures (a failing or
-killed shard, no seeds, an empty shard, bad arguments) and its dealing
-of every seed. The redaction corpus results leave the runner only as
-projections (ids, categories, counts).
+level ran and succeeded (`scripts/ci-gate.py`): every job of its
+`EXPECTED` list must report a result, and a failed, cancelled or
+timed-out job, a missing or unknown result, or a job it does not expect
+fails it; a full-gate job may be skipped only on a pull request. `gate`
+runs `if: always()`, so it is never skipped while its run exists;
+cancelling a job it needs fails it (an `always()` job still runs when
+the run is cancelled, and passes only if everything it needs had
+already succeeded).
+
+Required checks on `main` (docs/releasing.md, *Branch protection*):
+`test / fmt / clippy`, `compat + round-trip smoke (fixtures)`, `gate`
+and `workflow guard`. `pr.yml` runs on `pull_request`, so it is the
+pull request's own copy of the workflow: a pull request could edit
+`gate` or `ci-gate.py` to pass. `workflow guard` (`pr-guard.yml`, on
+`pull_request_target`) closes that for forks: it runs the **base
+branch's** definition with a read-only token, reads the pull request's
+workflows and `ci-gate.py` from git objects as data (never checked out,
+never run), and checks them with the base branch's
+`scripts/check-workflows.py --data-only`; and it fails a pull request
+**from a fork** that changes a CI path (`CI_PATHS`: `.github/`,
+`scripts/`, the fuzz runners, `.config/`, `.cargo/`, the baselines in
+`compat/`, `tests/redact_advisories.rs`) — its CI results would come
+from what it changed. Paths are compared as git writes them with `-z`
+and `--no-renames` (unusual names, and a file renamed out of a CI path,
+count). The maintainer lands such a change from a branch of their own
+after review (or merges it as administrator, docs/releasing.md).
+
+The trust model: a branch of this repository (write access) is trusted
+to change the CI; the static checks catch an accidental weakening, not
+a determined one — they check the workflows' structure and commands,
+not what a changed script does. A fork is not trusted: it cannot change
+the CI paths, and its workflows are checked by the base branch's
+definition. `pull_request_target` must be allowed for `pr-guard.yml` by
+the repository's Actions policy (GitHub blocks it by default in public
+repositories from 2026-12-02); if it is not, the guard does not run
+and, being required, blocks every merge (docs/releasing.md, *Branch
+protection*).
+
+`scripts/check-workflows.py` (run by the fast gate and by the guard)
+keeps the workflows so: each required check is the name of exactly its
+job (`REQUIRED_JOBS`: `pr.yml`'s `engine`, `compat-smoke` and `gate`,
+`pr-guard.yml`'s `guard`) and of no other job of any workflow (`.yml`
+or `.yaml`), and no name built from an expression can produce one — a
+second job of the same name could answer for it; `gate` runs
+`always()`, needs every job of `pr.yml` and runs exactly
+`python3 scripts/ci-gate.py` with the job results, unconditionally;
+`ci-gate.py`'s `EXPECTED` (read as data) is exactly `pr.yml`'s jobs and
+its `FULL` exactly the jobs pull requests skip — so a new job left out
+of `gate` or of `EXPECTED` fails; `pull_request` is unfiltered (no
+paths or branches leave a pull request without `gate`); the commands of
+the security checks, the engine tests, the doctests and the fuzz smoke
+run on every pull request, in the repository root, in steps no
+condition switches off, on lines that are not printed, commented out or
+made to pass (`|| true`); every job has a timeout and none continues on
+error; the workflow runs on pull requests, pushes to `main` and
+`release/**`, and dispatch; every cache is written from `main` only
+(pull requests restore `main`'s and cannot write one it reads); the
+guard runs on `pull_request_target` only, with `contents: read` only,
+has no condition on its job or steps, checks out only the base branch
+(full history, no credentials) with `actions/checkout` pinned, uses no
+other action, and runs both of its checks.
+
+`scripts/test_ci_scripts.py` (fast gate) tests these decisions: the
+gate over every job, result and event, and missing, unknown and
+unexpected results; each weakening of the workflows the check must
+catch (a printed or `|| true` command, a duplicate `gate` in another
+workflow or a `.yaml` one, `pr.yml` replaced, each weakening of the
+guard); the guard's fork decision on the paths git reports for renames
+and unusual names; `scripts/release-check.py`'s decision (only a
+successful full gate, CodeQL and — when required — a nightly whose
+corpus job really ran, on the exact commit); and
+`fuzz/ci-run-sharded.sh`'s failures (a failing or killed shard, no
+seeds, an empty shard, bad arguments) and its dealing of every seed.
+The redaction corpus results leave the runner only as projections (ids,
+categories, counts).
 
 What a pull request's green fast gate guarantees: the change compiles
 and passes every engine test in both feature sets, every redaction
