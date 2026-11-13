@@ -56,10 +56,15 @@ Before the release commit:
 
 The **security commit** — the CHANGELOG `### Security` section, the
 release notes' *Security* section, the advisory tests and table rows —
-is made last, on its own branch from the release candidate on `main`,
-and pushed only when the release gate has passed locally: the advisory
-ids become public with it, so the time between that push and the
-advisories' publication is kept to the CI run.
+is made last, on its own branch from the release candidate on `main`.
+Pushing it **discloses the vulnerabilities**: their ids, descriptions,
+affected versions and the regression inputs that reproduce them become
+public before the fixed version is on crates.io. So it is pushed only
+once everything else is ready — the release gate passed locally on the
+same tree, approval given — and the release then proceeds without a
+pause: CI on the pushed commit (minutes), `main`, tag, `cargo publish`,
+advisories. Material beyond what the advisories themselves publish
+(reproduction files, impact analysis) never enters the repository.
 
 ## 3. Release gate (on the exact release commit)
 
@@ -75,7 +80,9 @@ it (code or docs) means running it again on the new commit.
 - **Corpus** — `gh workflow run nightly.yml --ref <ref>`: the 511-file
   compatibility run and the redaction corpus in four option sets
   compared with `compat/redaction/` (`scripts/check-redact-corpus.py`).
-  Commit new results there when the counts improve.
+  When the counts improve, commit the new results as projections only
+  (`scripts/redact-results-projection.py`; the uploaded artifact is
+  one).
 - **Fuzz** — the latest `fuzz-nightly.yml` must be green on the same
   code (dispatch it on the branch if older).
 - **Local package checks** (from a clean checkout of the commit):
@@ -196,9 +203,10 @@ separate commit (the fix commits are already there).
 - **A gate fails before anything is public**: fix on the branch, commit,
   run the release gate again on the new commit.
 - **The security commit was pushed but the gate then fails**: the
-  advisory ids are public, their content is not. Fix and re-run the gate
-  promptly; keep the advisories as drafts until the fixed version is on
-  crates.io.
+  vulnerabilities are public (the Security sections and the regression
+  inputs), the fix is not yet on crates.io. Fix and publish the fixed
+  version as fast as safely possible; keep the advisories as drafts
+  until it is downloadable, then publish them.
 - **The tag was pushed but `cargo publish` fails before uploading**
   (network, token, a check): fix the cause outside the source (token,
   network) and publish from the same tag. If the source must change, the
@@ -214,5 +222,6 @@ separate commit (the fix commits are already there).
   out, so finish these promptly (they are not ordered against each
   other); an advisory published by mistake before the crate cannot be
   returned to a draft — publish the crate at once.
-- **docs.rs fails to build**: fix in the next patch release (docs.rs
-  builds every version once); the crate itself is unaffected.
+- **docs.rs fails to build**: a transient failure can be retried
+  (docs.rs rebuild request); a failure in the source is fixed in the
+  next patch release. The crate itself is unaffected.

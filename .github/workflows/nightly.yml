@@ -38,6 +38,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # A run dispatched on another branch reads main's cache only.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: external verifiers (qpdf, poppler)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qpdf poppler-utils poppler-data python3-pip
       - name: CJK fallback assets (committed; verified against the lock)
@@ -64,7 +67,9 @@ jobs:
         # A run the committed results have `ok` that is not `ok` now, an
         # unexpected run other than the known zeroed-image signal, or more
         # text lost outside the rects fails (scripts/check-redact-corpus.py).
-        # The results stay on the runner: only counts reach the summary.
+        # The raw results (rects, refusal details) never leave the runner:
+        # only their projection (scripts/redact-results-projection.py —
+        # ids, categories, counts) is compared and uploaded.
         run: |
           sudo apt-get install -y --no-install-recommends mupdf-tools
           cargo build --release --bin kasane-pdf
@@ -78,15 +83,30 @@ jobs:
           # The runner's Poppler and MuPDF shift word and pixel counts:
           # compare with results measured on the runner when committed.
           base=compat/redaction/ci; [ -d "$base" ] || base=compat/redaction
+          mkdir -p /tmp/redact-projection
           failed=0
           for c in "$@"; do
             name=${c%%|*}; args=${c#*|}
-            # Its exit status is 1 whenever a run is `unexpected`, the known
-            # zeroed-image signal included; the comparison decides.
-            python3 scripts/eval-redact-corpus.py "$k" --json "/tmp/redact-$name.json" $args > "/tmp/redact-$name.txt" 2>&1
-            [ -s "/tmp/redact-$name.json" ] || { echo "::error::eval-redact-corpus wrote no results ($name)"; failed=1; continue; }
-            python3 scripts/check-redact-corpus.py "$name" "/tmp/redact-$name.json" --baseline "$base" --summary-md "$GITHUB_STEP_SUMMARY" \
-              || failed=1
+            # Exit status 1 means a run is `unexpected` (the known
+            # zeroed-image signal included): the comparison decides. Any
+            # other status, or no results, is a failure.
+            if python3 scripts/eval-redact-corpus.py "$k" --json "/tmp/redact-$name.json" $args > "/tmp/redact-$name.txt" 2>&1; then
+              rc=0
+            else
+              rc=$?
+            fi
+            if [ "$rc" -gt 1 ] || [ ! -s "/tmp/redact-$name.json" ]; then
+              echo "::error::eval-redact-corpus failed ($name, status $rc)"
+              failed=1
+              continue
+            fi
+            if ! python3 scripts/redact-results-projection.py "/tmp/redact-$name.json" "/tmp/redact-projection/eval-$name.json"; then
+              echo "::error::projection failed ($name)"
+              failed=1
+              continue
+            fi
+            python3 scripts/check-redact-corpus.py "$name" "/tmp/redact-projection/eval-$name.json" \
+              --baseline "$base" --summary-md "$GITHUB_STEP_SUMMARY" || failed=1
           done
           exit $failed
       - name: full run (all pages, Poppler witness, external checks)
@@ -108,12 +128,12 @@ jobs:
         run: |
           python3 scripts/ci-regression.py check /tmp/full/latest.json compat/baselines/corpus-full.json \
             --summary-md "$GITHUB_STEP_SUMMARY"
-      - name: redaction corpus results (ids, counts and rects; no text)
+      - name: redaction corpus results (projection — ids, categories, counts)
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: redaction-corpus-results
-          path: /tmp/redact-*.json
+          name: redaction-corpus-projection
+          path: /tmp/redact-projection/*.json
           retention-days: 14
           if-no-files-found: ignore
       - name: per-category quality tables (aggregates only)

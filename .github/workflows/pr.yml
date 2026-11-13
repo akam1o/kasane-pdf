@@ -340,6 +340,8 @@ jobs:
           pip3 install --quiet pyyaml
           python3 scripts/check-workflows.py
           python3 compat/fetch-corpus.py list > /dev/null
+      - name: CI scripts' own tests (gate decision, workflow checks, fuzz shards)
+        run: python3 scripts/test_ci_scripts.py
       - name: smoke run over tests/fixtures
         run: |
           mkdir -p /tmp/smoke
@@ -485,23 +487,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: every job of this level succeeded
         env:
           NEEDS: ${{ toJSON(needs) }}
           EVENT: ${{ github.event_name }}
-        run: |
-          python3 - <<'EOF'
-          import json, os
-          needs = json.loads(os.environ["NEEDS"])
-          event = os.environ["EVENT"]
-          # Jobs that run outside pull requests only.
-          full = {"msrv", "semver", "redaction-model", "crate-package-full"}
-          bad = []
-          for job, v in sorted(needs.items()):
-              r = v["result"]
-              ok = r == "success" or (r == "skipped" and event == "pull_request" and job in full)
-              print(f"{job:22} {r}{'' if ok else '  <-- not a pass'}")
-              if not ok:
-                  bad.append(job)
-          raise SystemExit(f"gate failed: {', '.join(bad)}" if bad else 0)
-          EOF
+        # scripts/ci-gate.py: success everywhere; a full-gate job may be
+        # skipped on a pull request only.
+        run: python3 scripts/ci-gate.py

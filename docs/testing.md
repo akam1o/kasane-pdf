@@ -96,7 +96,9 @@ but external tools are used to *confirm* behaviour on real files:
   undocumented `redact --explain`), grouped into categories, with the
   number of runs each category alone blocks (an upper bound for what
   supporting it gains: a later stage may still refuse). Results of a
-  round are kept in [`../compat/redaction/`](../compat/redaction/).
+  round are kept in [`../compat/redaction/`](../compat/redaction/) as
+  projections (`scripts/redact-results-projection.py`: ids, categories,
+  counts — never the rectangles or refusal details).
 - [`../scripts/bench-redact.py`](../scripts/bench-redact.py)
   `<kasane-pdf> [<kasane-pdf> …] [--runs N]` — fixed redaction timing
   benchmark: generated inputs (400/800/1,600 fonts, 200 pages in one
@@ -181,13 +183,23 @@ the first.
 | **corpus and long fuzz** (`nightly.yml`, `fuzz-nightly.yml`) | nightly on `main`; dispatched on a release commit | the 511-file compatibility run and its baselines; the redaction corpus (117 runs × four option sets, `scripts/eval-redact-corpus.py`) compared with `compat/redaction/` by `scripts/check-redact-corpus.py`; 15 minutes of fuzzing per target from the accumulated corpus |
 
 `gate` (the last job of `pr.yml`) passes only when every job of its
-level ran and succeeded: a failed, cancelled or timed-out job fails it,
-and a full-gate job may be skipped only on a pull request.
-`scripts/check-workflows.py` (run by the fast gate) keeps this so: the
-required checks exist, the security checks and the engine tests run on
-every pull request, every job has a timeout and none continues on
-error, `gate` waits for all jobs, and caches are written from `main`
-only.
+level ran and succeeded (`scripts/ci-gate.py`): a failed, cancelled or
+timed-out job fails it, and a full-gate job may be skipped only on a
+pull request. `scripts/check-workflows.py` (run by the fast gate) keeps
+the workflows so: the required checks exist; the commands of the
+security checks, the engine tests, the doctests and the fuzz smoke run
+on every pull request, in steps no condition switches off; every job has
+a timeout and none continues on error; `gate` waits for all jobs and
+runs `ci-gate.py`, whose full-gate set is exactly the jobs pull requests
+skip; the workflow runs on pull requests, pushes to `main` and
+`release/**`, and dispatch; and every cache is written from `main`
+only (pull requests restore `main`'s and cannot write one it reads).
+`scripts/test_ci_scripts.py` (fast gate) tests these decisions: the gate
+over every job, result and event; each weakening of the workflow the
+check must catch; and `fuzz/ci-run-sharded.sh`'s failures (a failing or
+killed shard, no seeds, an empty shard, bad arguments) and its dealing
+of every seed. The redaction corpus results leave the runner only as
+projections (ids, categories, counts).
 
 What a pull request's green fast gate guarantees: the change compiles
 and passes every engine test in both feature sets, every redaction

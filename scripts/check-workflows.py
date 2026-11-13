@@ -20,9 +20,10 @@ Checks:
     exist; the redaction security checks (verify-redact, the advisory
     regressions with --expect-safe) and the engine tests run on every
     pull request; every job has a timeout and none continues on error;
-    `gate` waits for every job, always runs, and lets exactly the
-    full-gate jobs be skipped, and only on pull requests; caches are
-    written from main only.
+    `gate` waits for every job, always runs scripts/ci-gate.py, whose
+    full-gate set is exactly the jobs that skip pull requests; the
+    workflow runs on pull requests, pushes to main and release/**, and
+    dispatch; in every workflow, caches are written from main only.
 Exit 1 on the first problem.
 """
 import re
@@ -114,15 +115,45 @@ def check_no_secret_echo(path, text):
 
 
 REQUIRED_CHECKS = {"test / fmt / clippy", "compat + round-trip smoke (fixtures)"}
-# Jobs that must run on every pull request (no `if:`), and a command each
-# must run.
+# Commands that must run on every pull request: job -> commands. The step
+# running each must have no `if:` (a fuzz step may select its matrix
+# target, and the matrix must then include that target).
 PR_MUST_RUN = {
-    "engine": "cargo nextest run",
-    "features-test": "cargo nextest run",
-    "compat-smoke": "check-advisory-regressions.py",
-    "render-fuzz-smoke": "ci-run-sharded.sh redact_model",
+    "engine": ["cargo fmt --check", "cargo clippy --all-targets", "cargo nextest run --profile ci",
+               "cargo test --doc"],
+    "features-test": ["cargo nextest run --profile ci --features cjk-fallback", "cargo test --doc --features cjk-fallback",
+                      "cargo test --no-default-features --lib", "cargo test --no-default-features --doc"],
+    "compat-smoke": ["scripts/check-workflows.py", "scripts/verify-redact.py",
+                     "KASANE_ADVISORY_DUMP=/tmp/advisories cargo test --release --test redact_advisories",
+                     "check-advisory-regressions.py target/release/kasane-pdf /tmp/advisories --expect-safe",
+                     "scripts/test_ci_scripts.py"],
+    "render-fuzz-smoke": ["ci-run-sharded.sh redact_model", "fuzz/ci-run.sh \"$T\" \"fuzz/seeds/$T\"",
+                          "-seed=1 -runs=3000"],
 }
 FULL_ONLY_IF = "github.event_name != 'pull_request'"
+MAIN_ONLY = "${{ github.ref == 'refs/heads/main' }}"
+
+
+def ci_gate_full():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ci_gate", ROOT / "scripts/ci-gate.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return set(mod.FULL)
+
+
+def check_caches(path, wf):
+    """Rust caches and actions/cache are written from main only."""
+    for jid, st in steps_of(wf):
+        uses = st.get("uses") or ""
+        if "Swatinem/rust-cache" in uses:
+            if str((st.get("with") or {}).get("save-if", "")).strip() != MAIN_ONLY:
+                problem(f"{path.name}:{jid}: rust-cache save-if must be `{MAIN_ONLY}`")
+        elif uses.startswith("actions/cache@"):
+            problem(f"{path.name}:{jid}: actions/cache saves from any ref; use actions/cache/restore + a main-only save")
+        elif uses.startswith("actions/cache/save@"):
+            if "github.ref == 'refs/heads/main'" not in str(st.get("if", "")):
+                problem(f"{path.name}:{jid}: actions/cache/save outside main")
 
 
 def check_gate(path, wf):
@@ -134,49 +165,53 @@ def check_gate(path, wf):
     on = wf.get("on") or wf.get(True) or {}
     if "pull_request" not in on:
         problem(f"{path.name}: does not run on pull_request")
-    for jid, cmd in PR_MUST_RUN.items():
+    if "workflow_dispatch" not in on:
+        problem(f"{path.name}: cannot be dispatched (the release gate)")
+    branches = set(((on.get("push") or {}) if isinstance(on, dict) else {}).get("branches") or [])
+    if not {"main", "release/**"} <= branches:
+        problem(f"{path.name}: pushes to main and release/** must run it (has {sorted(branches)})")
+    for jid, cmds in PR_MUST_RUN.items():
         job = jobs.get(jid)
         if not job:
             problem(f"{path.name}: job `{jid}` is missing")
             continue
         if "if" in job:
             problem(f"{path.name}:{jid}: must run on every pull request (has `if: {job['if']}`)")
-        if not any(cmd in (st.get("run") or "") for st in job.get("steps") or []):
-            problem(f"{path.name}:{jid}: does not run `{cmd}`")
-    smoke = " ".join(st.get("run") or "" for st in (jobs.get("compat-smoke") or {}).get("steps") or [])
-    for cmd in ("verify-redact.py", "--expect-safe"):
-        if cmd not in smoke:
-            problem(f"{path.name}:compat-smoke: does not run `{cmd}`")
+        targets = {e.get("target") for e in ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []}
+        for cmd in cmds:
+            steps = [st for st in job.get("steps") or [] if cmd in (st.get("run") or "")]
+            if not steps:
+                problem(f"{path.name}:{jid}: does not run `{cmd}`")
+            for st in steps:
+                cond = str(st.get("if", "")).strip()
+                m = re.fullmatch(r"matrix\.target (==|!=) '([a-z_]+)'", cond)
+                if cond and not (m and (m.group(1) == "!=" or m.group(2) in targets)):
+                    problem(f"{path.name}:{jid}: the step running `{cmd}` has `if: {cond}`")
     full = set()
     for jid, job in jobs.items():
         if jid != "gate" and "timeout-minutes" not in job:
             problem(f"{path.name}:{jid}: no timeout-minutes")
         if job.get("continue-on-error") or any(st.get("continue-on-error") for st in job.get("steps") or []):
             problem(f"{path.name}:{jid}: continue-on-error")
-        cond = str(job.get("if", ""))
-        if cond:
-            if cond.strip() != FULL_ONLY_IF and jid != "gate":
+        cond = str(job.get("if", "")).strip()
+        if cond and jid != "gate":
+            if cond != FULL_ONLY_IF:
                 problem(f"{path.name}:{jid}: unexpected condition `{cond}`")
-            elif jid != "gate":
+            else:
                 full.add(jid)
-        for st in job.get("steps") or []:
-            if "Swatinem/rust-cache" in (st.get("uses") or ""):
-                if "refs/heads/main" not in str((st.get("with") or {}).get("save-if", "")):
-                    problem(f"{path.name}:{jid}: rust-cache saves outside main")
     gate = jobs.get("gate")
     if not gate:
         problem(f"{path.name}: no `gate` job")
         return
     if str(gate.get("if", "")).strip() != "always()":
         problem(f"{path.name}:gate: must run always()")
-    needs = set(gate.get("needs") or [])
-    if needs != set(jobs) - {"gate"}:
-        problem(f"{path.name}:gate: needs {sorted(needs)} instead of every job")
-    script = " ".join(st.get("run") or "" for st in gate.get("steps") or [])
-    m = re.search(r"full = \{([^}]*)\}", script)
-    listed = set(re.findall(r'"([a-z0-9-]+)"', m.group(1))) if m else set()
-    if listed != full:
-        problem(f"{path.name}:gate: full-gate jobs {sorted(listed)} differ from the jobs skipped on pull requests {sorted(full)}")
+    if set(gate.get("needs") or []) != set(jobs) - {"gate"}:
+        problem(f"{path.name}:gate: needs {sorted(gate.get('needs') or [])} instead of every job")
+    runs = [st for st in gate.get("steps") or [] if "scripts/ci-gate.py" in (st.get("run") or "")]
+    if not runs or any(st.get("if") for st in runs):
+        problem(f"{path.name}:gate: does not run scripts/ci-gate.py unconditionally")
+    if ci_gate_full() != full:
+        problem(f"{path.name}:gate: scripts/ci-gate.py FULL {sorted(ci_gate_full())} differs from the jobs skipped on pull requests {sorted(full)}")
 
 
 def check_cjk_lock():
@@ -210,6 +245,7 @@ def main():
         check_no_secret_echo(path, text)
         if path.name == "nightly.yml":
             check_nightly(path, wf)
+        check_caches(path, wf)
         if path.name == "pr.yml":
             check_gate(path, wf)
     check_cjk_lock()
