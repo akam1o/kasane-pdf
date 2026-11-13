@@ -29,6 +29,7 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+        prefix-key: v0-baseline-miss
           # compat/runner is its own package with its own target/.
           workspaces: |
             .
@@ -58,6 +59,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        prefix-key: v0-baseline-miss
       - run: cargo clippy --all-targets --features cjk-fallback -- -D warnings
       - run: cargo clippy --lib --bins --examples --no-default-features -- -D warnings
       - run: cargo clippy --lib --bins --examples --no-default-features --features cjk-fallback -- -D warnings
@@ -76,6 +79,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        prefix-key: v0-baseline-miss
       - run: cargo test --features cjk-fallback
       - run: cargo test --no-default-features --lib
       - run: cargo test --no-default-features --doc
@@ -103,6 +108,7 @@ jobs:
           toolchain: nightly-2026-10-29
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+        prefix-key: v0-baseline-miss
           workspaces: fuzz
       - run: cargo install cargo-fuzz --locked --version 0.13.2
       - name: build
@@ -149,6 +155,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        prefix-key: v0-baseline-miss
       - run: cargo test --test render_xobject_depth
       - run: cargo test --release --test render_xobject_depth
       - name: stack per nesting path (debug, release)
@@ -165,6 +173,8 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        prefix-key: v0-baseline-miss
       - run: cargo build --lib --target wasm32-unknown-unknown
       - run: cargo build --lib --target wasm32-unknown-unknown --features cjk-fallback
       - run: cargo build --lib --target wasm32-unknown-unknown --no-default-features
@@ -194,6 +204,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        prefix-key: v0-baseline-miss
       - name: committed cjk assets match the lock
         run: ./scripts/fetch-cjk-assets.sh --check
       - name: package from the clean tree (verifies the default build)
@@ -225,6 +237,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
+        prefix-key: v0-baseline-miss
           workspaces: compat/runner
       - name: external verifiers (qpdf, poppler)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qpdf poppler-utils poppler-data
