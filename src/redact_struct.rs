@@ -948,8 +948,8 @@ pub(crate) fn edit_tree(
     let mut climbed: HashSet<usize> = HashSet::new();
     loop {
         let n = tree.elements.len();
-        for i in evaluated..n {
-            for (k, item) in &tree.elements[i].items {
+        for (i, element) in tree.elements.iter().enumerate().take(n).skip(evaluated) {
+            for (k, item) in &element.items {
                 budget.charge()?;
                 let (touches, drop) = match item {
                     Item::Mcid {
