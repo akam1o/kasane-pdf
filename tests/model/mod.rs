@@ -136,6 +136,8 @@ struct Content {
     fonts: Vec<(String, u32)>,
     shadings: Vec<(String, u32)>,
     patterns: Vec<(String, u32)>,
+    /// Optional content groups named by `BDC /OC`.
+    properties: Vec<(String, u32)>,
     mcid: i64,
     /// (MCID, alternate text) of the marked sequences.
     tagged: Vec<(i64, String)>,
@@ -155,7 +157,11 @@ impl Content {
             }
             s.push_str(" >>");
         }
-        for (key, list) in [("Shading", &self.shadings), ("Pattern", &self.patterns)] {
+        for (key, list) in [
+            ("Shading", &self.shadings),
+            ("Pattern", &self.patterns),
+            ("Properties", &self.properties),
+        ] {
             if !list.is_empty() {
                 s.push_str(&format!(" /{key} <<"));
                 for (n, r) in list {
@@ -176,6 +182,8 @@ struct Gen<'a, 'r> {
     tagged: bool,
     /// Kept forms (public content only), to share between pages.
     kept_forms: Vec<u32>,
+    /// Optional content groups (all off in the default configuration).
+    ocgs: Vec<u32>,
 }
 
 impl Gen<'_, '_> {
@@ -203,7 +211,7 @@ impl Gen<'_, '_> {
     fn element(&mut self, c: &mut Content, page: usize, depth: u32, public: &mut Vec<String>) {
         let k = self.key();
         let edited = page == 0;
-        let choice = self.rng.below(if edited { 12 } else { 4 });
+        let choice = self.rng.below(if edited { 13 } else { 4 });
         match choice {
             // Public text outside the rect.
             0 | 1 => {
@@ -371,6 +379,18 @@ impl Gen<'_, '_> {
                     format!("/Pattern cs /{name} scn 20 100 160 30 re f 0 g"),
                 );
             }
+            // Secret text inside the rect under an optional content
+            // group no viewer shows by default (hidden content).
+            11 => {
+                let ocg = self.d.add(b"<< /Type /OCG /Name (hidden) >>".to_vec());
+                self.ocgs.push(ocg);
+                let name = format!("Oc{ocg}");
+                c.properties.push((name.clone(), ocg));
+                let t = secret(self.v, k, 6);
+                c.ops.push_str(&format!(
+                    "/OC /{name} BDC BT /F1 8 Tf 75 95 Td ({t}) Tj ET EMC "
+                ));
+            }
             // A secret form inside the rect, maybe nesting another.
             _ => {
                 let mut inner = Content::default();
@@ -470,6 +490,7 @@ pub fn make(mut rng: Rng<'_>, v: u32, font: &[u8]) -> (Vec<u8>, Vec<Vec<String>>
         k: 0,
         tagged,
         kept_forms: Vec::new(),
+        ocgs: Vec::new(),
     };
     let mut page_objs = Vec::new();
     let mut struct_kids: Vec<(usize, i64, String)> = Vec::new();
@@ -480,6 +501,7 @@ pub fn make(mut rng: Rng<'_>, v: u32, font: &[u8]) -> (Vec<u8>, Vec<Vec<String>>
     let mut all_f: Vec<(String, u32)> = Vec::new();
     let mut all_s: Vec<(String, u32)> = Vec::new();
     let mut all_p: Vec<(String, u32)> = Vec::new();
+    let mut all_o: Vec<(String, u32)> = Vec::new();
     let mut contents: Vec<Content> = Vec::new();
     for p in 0..pages {
         let mut c = Content::default();
@@ -507,6 +529,7 @@ pub fn make(mut rng: Rng<'_>, v: u32, font: &[u8]) -> (Vec<u8>, Vec<Vec<String>>
         all_f.extend(c.fonts.iter().cloned());
         all_s.extend(c.shadings.iter().cloned());
         all_p.extend(c.patterns.iter().cloned());
+        all_o.extend(c.properties.iter().cloned());
         g.d.public.push(public);
         contents.push(c);
     }
@@ -519,6 +542,8 @@ pub fn make(mut rng: Rng<'_>, v: u32, font: &[u8]) -> (Vec<u8>, Vec<Vec<String>>
             format!("BT /F1 6 Tf 0 0 Td ({}) Tj ET", secret(v, 900, 5)).as_bytes(),
         ));
         g.d.secret_objs.push(ap);
+        // Sometimes hidden (`/F 2`: drawn by no viewer, still removed).
+        let hidden = if g.rng.chance(1, 3) { "/F 2" } else { "" };
         // Sometimes with a script (`remove_javascript` edits it).
         let js = if g.rng.chance(1, 2) {
             "/A << /S /JavaScript /JS (app.alert(1)) >>"
@@ -528,7 +553,7 @@ pub fn make(mut rng: Rng<'_>, v: u32, font: &[u8]) -> (Vec<u8>, Vec<Vec<String>>
         let a = g.d.add(
             format!(
                 "<< /Type /Annot /Subtype /Stamp /Rect [80 80 110 90] /AP << /N {ap} 0 R >> \
-                 /Contents ({}) {js} >>",
+                 /Contents ({}) {js} {hidden} >>",
                 secret(v, 901, 6)
             )
             .into_bytes(),
@@ -544,7 +569,7 @@ pub fn make(mut rng: Rng<'_>, v: u32, font: &[u8]) -> (Vec<u8>, Vec<Vec<String>>
         annots.push(a);
     }
     // Form fields: a widget inside the rect showing a secret value, a
-    // widget outside showing a public one (0.9).
+    // widget outside showing a public one (0.10).
     let mut form_fields: Vec<u32> = Vec::new();
     if g.rng.chance(1, 3) {
         let ap = g.d.add(stream_obj(
@@ -585,6 +610,7 @@ pub fn make(mut rng: Rng<'_>, v: u32, font: &[u8]) -> (Vec<u8>, Vec<Vec<String>>
                     fonts: all_f.clone(),
                     shadings: all_s.clone(),
                     patterns: all_p.clone(),
+                    properties: all_o.clone(),
                     ..Content::default()
                 };
                 let r = g.d.add(format!("<< {} >>", all.resources()).into_bytes());
@@ -627,7 +653,28 @@ pub fn make(mut rng: Rng<'_>, v: u32, font: &[u8]) -> (Vec<u8>, Vec<Vec<String>>
                 .join(" ")
         ));
     }
+    if !g.ocgs.is_empty() {
+        let list = g
+            .ocgs
+            .iter()
+            .map(|o| format!("{o} 0 R"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        cat_extra.push_str(&format!(
+            " /OCProperties << /OCGs [{list}] /D << /OFF [{list}] >> >>"
+        ));
+    }
     let mut page_extra: Vec<String> = vec![String::new(); pages];
+    // A thumbnail of page 1, picturing the secret.
+    if g.rng.chance(1, 4) {
+        let samples: Vec<u8> = (0..16).map(|i| (i * 11 + v * 59) as u8).collect();
+        let th = g.d.add(stream_obj(
+            "/Width 4 /Height 4 /ColorSpace /DeviceGray /BitsPerComponent 8",
+            &samples,
+        ));
+        g.d.secret_objs.push(th);
+        page_extra[0].push_str(&format!(" /Thumb {th} 0 R"));
+    }
     let targets = g.d.secret_objs.clone();
     for i in 0..g.rng.below(4) {
         let pick =

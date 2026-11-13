@@ -84,7 +84,7 @@ jobs:
 
   render-fuzz-smoke:
     # The structured render fuzz targets (v0.5.1 R4) and the redaction
-    # model (v0.9, a false success is a failure): the committed seeds
+    # model (v0.10, a false success is a failure): the committed seeds
     # replayed (the same inputs every run), then 3000 new inputs from
     # libFuzzer seed 1 (bounded in count and time; which inputs it reaches
     # can vary, since coverage feedback depends on the library's hash

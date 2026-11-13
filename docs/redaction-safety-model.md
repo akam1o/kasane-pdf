@@ -157,8 +157,10 @@ property cannot be decided).
 - **X** — Trees that cannot be edited exactly (cycles, kids of unknown
   kinds, a touched element written inside another object); annotations
   other than links, markup and widgets meeting a rect, and widgets of
-  signature fields, XFA forms or field trees that cannot be edited
-  exactly; XFA forms with `remove_javascript`; signed and encrypted
+  signature fields or field trees that cannot be edited exactly; an XFA
+  form readers must render from XFA alone, or whose packets something
+  kept refers to or copies (0.10: otherwise the XFA form is removed with
+  `remove_javascript` or when fields are edited); signed and encrypted
   documents.
 
 ### 2.4 Original data left in objects and streams
@@ -170,7 +172,9 @@ property cannot be decided).
   a removed Type 3 glyph's procedure and the font's former
   `/ToUnicode`, a removed shading or pattern, a removed thumbnail —
   except where the output still draws the same bytes (then it is
-  reported in `elsewhere`).
+  reported in `elsewhere`). A removed XFA packet (0.10) is in no stream
+  of the output, by stored or decoded digest, and no string holds
+  exactly its bytes, with no exception.
 - **G** — The output is one revision, has no object or cross-reference
   stream from the input, and every object is reachable from its
   trailer.
@@ -197,7 +201,10 @@ property cannot be decided).
 - **G** — What kasane reads is read the way Poppler, MuPDF and pdf.js
   were measured to read it, where they agree.
 - **X** — Every construction found to be read differently by them
-  (section 2.1) is refused, not guessed.
+  (section 2.1) is refused, not guessed — or, where every reading is
+  known, bounded by all of them: a code an embedded font program
+  resolves to `.notdef` (0.10) extends over every glyph the program can
+  draw.
 - **N** — Readers not measured (Acrobat, browsers other than Firefox's
   pdf.js, printers) are not covered.
 

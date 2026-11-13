@@ -164,3 +164,12 @@ table) with glyphs `.notdef` (small square), `space` (empty) and
 `exclam` (rectangle). Generated; no licence. Used by
 `tests/render_cff_charset.rs`.
 
+
+## TrueType bearing fixtures (`ttf_metrics/`)
+
+`depth6.ttf`, `depth32.ttf`, `depth40.ttf` (fontTools, 1000 units): `bar` is a 600 ×
+100 box below the baseline whose `hmtx` bearing is 1000 (its `xMin` 0),
+and `underscore` (cmap U+005F) a chain of 6, 32 or 40 composite glyphs down
+to it, each component flagged `USE_MY_METRICS`, so readers that honour
+the bearing draw the bar one em to the right. Generated; no licence.
+Used by `tests/redact.rs` (`truetype_bearings_readers_apply_differently`).

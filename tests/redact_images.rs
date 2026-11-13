@@ -1,5 +1,5 @@
 //! `redact` on images stored at 1, 2 or 4 bits per component, through
-//! filter chains, and in CCITT or JBIG2 (0.9). The samples inside the
+//! filter chains, and in CCITT or JBIG2 (0.10). The samples inside the
 //! rects become 0 and the image is written back raw at its own depth;
 //! the samples outside are kept bit for bit. Two images differing only
 //! inside the rect redact to the same bytes. A JBIG2 image with shared

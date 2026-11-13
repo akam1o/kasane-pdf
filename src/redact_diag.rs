@@ -2722,11 +2722,20 @@ impl<'a> DiagWalker<'a> {
                     Ok(true) => match gp.finish() {
                         Some(path) => {
                             let b = path.bounds();
+                            // Readers that ignore a TrueType bearing
+                            // draw the outline shifted back by it: both.
+                            let shift = match font.bearing_shift(gid) {
+                                Ok(s) => m.transform(s, 0.0).0 - m.transform(0.0, 0.0).0,
+                                Err(e) => return self.glyph_error(code, e),
+                            };
+                            let (l, r) = (b.left() as f64, b.right() as f64);
+                            let (l, r) = (l.min(l - shift), r.max(r - shift));
+                            let (t, bo) = (b.top() as f64, b.bottom() as f64);
                             let corners = [
-                                trm.transform(b.left() as f64, b.top() as f64),
-                                trm.transform(b.right() as f64, b.bottom() as f64),
-                                trm.transform(b.left() as f64, b.bottom() as f64),
-                                trm.transform(b.right() as f64, b.top() as f64),
+                                trm.transform(l, t),
+                                trm.transform(r, bo),
+                                trm.transform(l, bo),
+                                trm.transform(r, t),
                             ];
                             (
                                 (
@@ -2755,10 +2764,42 @@ impl<'a> DiagWalker<'a> {
                             )
                         }
                         // Empty outline path — same as no outline.
-                        None => (cell_estimate(&trm), TextBounds::Cell),
+                        None => match font
+                            .blank_glyph(gid)
+                            .and_then(|b| font.bearing_shift(gid).map(|_| b))
+                        {
+                            Ok(true) => (cell_estimate(&trm), TextBounds::Cell),
+                            Ok(false) => {
+                                return self.glyph_error(
+                                    code,
+                                    Error::Unsupported {
+                                        feature: "embedded TrueType font",
+                                        detail: "a glyph's outline cannot be read".into(),
+                                    },
+                                )
+                            }
+                            Err(e) => return self.glyph_error(code, e),
+                        },
                     },
-                    // No outline → a cell *estimate*, never ink extent.
-                    Ok(false) => (cell_estimate(&trm), TextBounds::Cell),
+                    // No outline → a cell *estimate*, never ink extent
+                    // (a TrueType glyph with data that does not outline
+                    // is not empty: uncertain).
+                    Ok(false) => match font
+                        .blank_glyph(gid)
+                        .and_then(|b| font.bearing_shift(gid).map(|_| b))
+                    {
+                        Ok(true) => (cell_estimate(&trm), TextBounds::Cell),
+                        Ok(false) => {
+                            return self.glyph_error(
+                                code,
+                                Error::Unsupported {
+                                    feature: "embedded TrueType font",
+                                    detail: "a glyph's outline cannot be read".into(),
+                                },
+                            )
+                        }
+                        Err(e) => return self.glyph_error(code, e),
+                    },
                     // Outline lookup failed — do NOT fall back to a
                     // silent estimate: the glyph may paint outside any
                     // cell we invent.
@@ -2767,6 +2808,24 @@ impl<'a> DiagWalker<'a> {
             }
             // `glyph_id` itself failed — the code is still shown but
             // its ink extent is unknown.
+            Err(e) => return self.glyph_error(code, e),
+        };
+        // A code readers resolve to different glyphs: wherever any of
+        // them may draw.
+        let (bounds, bounds_kind) = match font.unnamed_glyph_reach(code) {
+            Ok(None) => (bounds, bounds_kind),
+            Ok(Some(r)) => match font.glyph_matrix(ttf_parser::GlyphId(0)) {
+                Ok(m) => {
+                    let mut b = bounds;
+                    for (x, y) in [(r[0], r[1]), (r[2], r[3]), (r[0], r[3]), (r[2], r[1])] {
+                        let (gx, gy) = m.transform(x, y);
+                        let (px, py) = trm.transform(gx, gy);
+                        b = (b.0.min(px), b.1.min(py), b.2.max(px), b.3.max(py));
+                    }
+                    (b, TextBounds::Outline)
+                }
+                Err(e) => return self.glyph_error(code, e),
+            },
             Err(e) => return self.glyph_error(code, e),
         };
         // Stroke-mode text (Tr 1, 2, 5, 6) paints a `w`-wide outline

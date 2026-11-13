@@ -20,12 +20,12 @@ version has no such command (`redact` exists from 0.6.0; for GHSA-2337
 0.5.x runs `experimental-remove-text`). The PR workflow runs the check
 on the current build with `--expect-safe`.
 
-Measured on 2026-11-11 (release builds of each tag; `main` is the
-v0.9 development branch). Every affected range matches the advisory;
+Measured on 2026-11-12 (release builds of each tag; `v0.10.0` is the
+release candidate). Every affected range matches the advisory;
 `SAFE` before the fix in a few rows means that variant was refused or
 handled by that version (it is kept as a guard for later ones).
 
-| advisory | input | v0.5.0 | v0.5.1 | v0.5.2 | v0.6.0 | v0.6.1 | v0.6.2 | v0.7.0 | v0.8.0 | main |
+| advisory | input | v0.5.0 | v0.5.1 | v0.5.2 | v0.6.0 | v0.6.1 | v0.6.2 | v0.7.0 | v0.8.0 | v0.10.0 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | GHSA-2337-4h5g-jqwx | `2337-cm` | LEAK | LEAK | SAFE | SAFE | SAFE | SAFE | SAFE | SAFE | SAFE |
 | GHSA-2337-4h5g-jqwx | `2337-form` | LEAK | LEAK | SAFE | SAFE | SAFE | SAFE | SAFE | SAFE | SAFE |

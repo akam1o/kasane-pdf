@@ -6,32 +6,40 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-12
+
+0.9.0 was prepared but never released; its changes are part of this
+release.
+
 ### Added
-- `Redaction::xfa_removed`: with `remove_javascript`, or when
-  `remove_annotations` edits form fields, an XFA form beside its
-  AcroForm is removed (its packets hold the scripts and a copy of the
-  field values) instead of refusing the document; a dynamic XFA form
-  (`/NeedsRendering`) stays refused.
+- `redact` cuts more of what crosses a rect instead of refusing the
+  page (0.8.0 cut only disjoint axis-aligned rectangles and straight
+  strokes):
+  - any filled shape — curves, polygons, self-intersecting paths,
+    several subpaths, overlapping or rotated rectangles — keeps its part
+    outside the rects with its fill rule (`Redaction::paths_cut`);
+  - an axial (type 2) shading in page content whose colours inside the
+    rects are all shown outside them on the page
+    (`Redaction::shadings_cut`);
+  - a rectangle filled with a tiling pattern whose part outside the
+    rects shows a whole period of the pattern.
+  Other shadings and patterns crossing a rect stay refused; a cut
+  shading or pattern keeps its data whole (`docs/limitations.md`).
+- Forms: `remove_annotations` also removes widgets meeting a rect, and
+  their form field when no widget of it is left — value and description
+  with it (`Redaction::fields_removed`, CLI `fields removed`). With
+  `remove_javascript`, or when fields are edited, an XFA form beside its
+  AcroForm is removed (`Redaction::xfa_removed`): its packets hold the
+  scripts and a copy of the field values. Signature fields, forms that
+  render from XFA alone and field trees that cannot be edited exactly
+  are refused.
 - `embed_substitute_fonts` also embeds the substitute of a non-embedded,
   non-symbolic simple TrueType font named after a Standard 14 font or
   its alias (ArialMT, TimesNewRomanPSMT …).
-
-- `redact` cuts more of what crosses a rect: any filled shape (curves,
-  polygons, overlapping or rotated rectangles; it was refused unless
-  disjoint axis-aligned rectangles), an axial shading whose colours
-  inside are all shown outside (`Redaction::shadings_cut`), and a
-  rectangle filled with a tiling pattern whose part outside shows a
-  whole period.
-
-### Changed
-- With `remove_javascript`, what is left of the catalog's `/AA` after
-  its scripts are removed is carried (it was refused whole).
-- A NoZoom or NoRotate popup without an appearance stream, kept on an
-  edited page, is no longer refused: it draws nothing on the page.
-
-## [0.9.0] - 2026-11-11
-
-### Added
+- `redact` edits images at 1, 2 and 4 bits per component, through chains
+  of general filters, and in CCITTFax or JBIG2 (without
+  `/JBIG2Globals` or a file header); the edited copy is written
+  unfiltered.
 - `redact` verifies its output against the input alone, independently of
   what the edit recorded (`docs/redaction-safety-model.md`): every
   content-bearing stream an edited page used is drawn again by the output
@@ -40,14 +48,17 @@ versions follow [Semantic Versioning](https://semver.org/).
   page lost is in no dictionary of the output; every object is reachable
   from the trailer. A name that resolves to nothing counts, over the
   input, as using everything the page reaches.
-- `remove_annotations` also removes widgets meeting a rect, and their
-  form field when no widget of it is left — value and description with
-  it (`Redaction::fields_removed`, CLI `fields removed`). Signature
-  fields, XFA forms and field trees that cannot be edited exactly are
-  refused.
-- `redact` edits images at 1, 2 and 4 bits per component, through chains
-  of general filters, and in CCITTFax or JBIG2 (without
-  `/JBIG2Globals`); the edited copy is written unfiltered.
+- `docs/redaction-safety-model.md`: what `redact` guarantees, reports,
+  does not guarantee or refuses, per surface; the verification layers.
+- Tests: one regression test per published advisory
+  (`tests/redact_advisories.rs`, checked against every version by
+  `scripts/check-advisory-regressions.py`; results in
+  `docs/security/advisory-regressions.md`); generated non-interference
+  tests (`tests/redact_model.rs`) and the `redact_model` fuzz target,
+  where a false success fails like a crash. They cover hidden and
+  optional content, thumbnails, filled shapes, shadings and tiling fills.
+
+### Changed
 - A removed annotation or form field that anything kept still refers to
   is refused (checked by identity before writing, and against the
   rewrite's object map); a field keeping widgets must still show one,
@@ -61,28 +72,43 @@ versions follow [Semantic Versioning](https://semver.org/).
   use is read by type from the catalog and the pages; an action, `/AA`
   dictionary or popup stays only where it is used as one, the
   annotation's own data only as the value of an entry defined to hold
-  data.
-  Limits: `docs/limitations.md`.
-- `docs/redaction-safety-model.md`: what `redact` guarantees, reports,
-  does not guarantee or refuses, per surface; the verification layers.
-- Tests: one regression test per published advisory
-  (`tests/redact_advisories.rs`, checked against every version by
-  `scripts/check-advisory-regressions.py`; results in
-  `docs/security/advisory-regressions.md`); generated non-interference
-  tests (`tests/redact_model.rs`) and the `redact_model` fuzz target,
-  where a false success fails like a crash.
-
-### Changed
-- The verification checks read one index of the output (each stream
-  decoded once); annotations tied to removed ones are found in linear
-  time (32,000 annotations: 3.7 s → 1.1 s); the uninspected-data walk no
-  longer copies direct values (300,000 structure attributes: preflight
-  peak memory 1.24 GB → 0.37 GB).
+  data. Limits: `docs/limitations.md`.
+- With `remove_javascript`, what is left of the catalog's `/AA` after
+  its scripts are removed is carried (it was refused whole).
+- A NoZoom or NoRotate popup without an appearance stream, kept on an
+  edited page, is no longer refused: it draws nothing on the page.
 - The verification's use walk reads the graphics state as readers do:
   each parameter's latest value with the resources it was selected in;
   optional content by the default viewing configuration; a button's
   states as it presents them. Some files all readers draw are refused
-  because of this (`docs/limitations.md`).
+  because of this (`docs/limitations.md`); for example an edited page
+  drawing a form or image whose `/OC` is a membership dictionary.
+- The verification checks read one index of the output (each stream
+  decoded once); annotations tied to removed ones are found in linear
+  time (32,000 annotations: about 4 s → 1.1 s); the uninspected-data walk no
+  longer copies direct values (300,000 structure attributes: preflight
+  peak memory 1.24 GB → 0.37 GB).
+
+### Fixed
+- `embed_substitute_fonts` wrote a code whose glyph the substitute
+  cannot name as `.notdef`, which some readers draw as the code's own
+  glyph — where `redact` had not placed it (0.7.0–0.8.0). Such codes
+  are now written as the substitute's blank space glyph.
+- `redact` placed a code that an embedded font program (Type 1, CFF,
+  OpenType, TrueType) resolves to `.notdef` — a name the program lacks,
+  `.notdef` itself, no name — as `.notdef`, while MuPDF falls back to
+  the program's own encoding and pdf.js to a glyph named for the same
+  Unicode (0.6.0–0.8.0). Its extent is now every glyph the program can
+  draw, so such a code near a rect may go where 0.8.0 kept it; a
+  program one of whose glyphs cannot be read is refused for it.
+- A TrueType glyph whose `hmtx` bearing disagrees with its outline is
+  drawn shifted by MuPDF and Poppler and in place by pdf.js; `redact`
+  took only the shifted position (0.6.0–0.8.0). Both are now its extent;
+  a glyph whose bearing does not resolve (`USE_MY_METRICS` nested past
+  32 levels, malformed data), or that has data but does not outline, is
+  refused instead of placed as empty.
+- A refusal naming a long chain of references elides the middle of
+  the route past 200 characters (it was as long as the chain).
 
 ## [0.8.0] - 2026-11-10
 
@@ -1329,7 +1355,14 @@ are possible between minor versions and are recorded here.
   1.1 and Adobe CMap resources under BSD-3-Clause (`NOTICE`,
   `docs/third-party.md`).
 
-[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.10.0
+[0.8.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.8.0
+[0.7.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.7.0
+[0.6.2]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.6.2
+[0.6.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.6.1
+[0.6.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.6.0
+[0.5.2]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.5.2
 [0.5.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.5.1
 [0.5.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.5.0
 [0.4.1]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.4.1

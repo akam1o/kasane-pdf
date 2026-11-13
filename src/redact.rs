@@ -452,7 +452,8 @@ fn redact_doc(
             feature: "redaction output failed verification",
             detail: format!(
                 "object {r} is a removed annotation or form field that the document still \
-                 refers to (by {path})"
+                 refers to (by {})",
+                short_path(&path)
             ),
         });
     }
@@ -465,7 +466,8 @@ fn redact_doc(
             feature: "redaction output failed verification",
             detail: format!(
                 "object {r} is data of a removed annotation or form field that only entries \
-                 no reader uses still refer to (by {path})"
+                 no reader uses still refer to (by {})",
+                short_path(&path)
             ),
         });
     }
@@ -850,8 +852,25 @@ fn verify_original_contents(
 /// replaced `/ToUnicode`), and none is a removed Type 3 glyph's procedure
 /// (`procs`) except as a Type 3 font's CharProc (the same bytes still a
 /// glyph there).
+/// A route in a refusal message, its middle elided past 200 characters
+/// (a chain of references can be tens of thousands of steps).
+fn short_path(path: &str) -> String {
+    if path.len() <= 200 {
+        return path.to_string();
+    }
+    let cut = |mut i: usize| {
+        while !path.is_char_boundary(i) {
+            i -= 1;
+        }
+        i
+    };
+    let (a, b) = (cut(100), cut(path.len() - 80));
+    format!("{} … {}", &path[..a], &path[b..])
+}
+
 /// No stream of the output — indirect or written inside another object —
-/// stores or decodes to the bytes of a removed XFA packet.
+/// stores or decodes to the bytes of a removed XFA packet, and no string
+/// holds them.
 fn verify_xfa_gone(
     out: &Document,
     idx: &crate::redact_verify::Index,
@@ -887,6 +906,10 @@ fn verify_xfa_gone(
                         return Err(fail(*r));
                     }
                     stack.extend(dict.values());
+                }
+                // A packet's bytes written as a string.
+                Object::String(b) if gone.contains(&crate::remove_region::sha256(b)) => {
+                    return Err(fail(*r));
                 }
                 Object::Array(a) => stack.extend(a.iter()),
                 Object::Dict(d) => stack.extend(d.values()),

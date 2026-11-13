@@ -75,6 +75,59 @@ pub(crate) struct SimpleFont {
     /// The program's Unicode `cmap` read backwards, for extraction;
     /// built on first use (`Some(None)`: not available).
     reverse_cmap: RefCell<Option<Option<crate::unicode_fallback::ReverseCmap>>>,
+    /// The bounds of all the program's glyphs, on first use (see
+    /// [`GlyphReach`]).
+    reach: GlyphReach,
+}
+
+/// The bounds (glyph space, control points included) of every glyph a
+/// program can draw, computed once: where a reader that resolves a code
+/// differently may draw it. `Some(None)`: the program draws nothing;
+/// `None` inside: a glyph could not be read.
+#[derive(Default)]
+pub(crate) struct GlyphReach(std::cell::OnceCell<Option<Option<[f64; 4]>>>);
+
+impl GlyphReach {
+    fn get(
+        &self,
+        each: impl FnOnce(&mut dyn FnMut(f32, f32)) -> bool,
+    ) -> Result<Option<[f64; 4]>, Error> {
+        let r = self.0.get_or_init(|| {
+            let mut b: Option<[f64; 4]> = None;
+            let ok = each(&mut |x, y| {
+                let (x, y) = (x as f64, y as f64);
+                let r = b.get_or_insert([x, y, x, y]);
+                *r = [r[0].min(x), r[1].min(y), r[2].max(x), r[3].max(y)];
+            });
+            ok.then_some(b)
+        });
+        r.ok_or_else(|| Error::Unsupported {
+            feature: "embedded font",
+            detail: "a glyph's outline cannot be read".into(),
+        })
+    }
+}
+
+/// Feeds every point of an outline (control points too) to a closure.
+struct Points<'a>(&'a mut dyn FnMut(f32, f32));
+
+impl OutlineBuilder for Points<'_> {
+    fn move_to(&mut self, x: f32, y: f32) {
+        (self.0)(x, y);
+    }
+    fn line_to(&mut self, x: f32, y: f32) {
+        (self.0)(x, y);
+    }
+    fn quad_to(&mut self, x1: f32, y1: f32, x: f32, y: f32) {
+        (self.0)(x1, y1);
+        (self.0)(x, y);
+    }
+    fn curve_to(&mut self, x1: f32, y1: f32, x2: f32, y2: f32, x: f32, y: f32) {
+        (self.0)(x1, y1);
+        (self.0)(x2, y2);
+        (self.0)(x, y);
+    }
+    fn close(&mut self) {}
 }
 
 /// A resolved `/Type1` (or `/MMType1`) font backed by an embedded
@@ -122,6 +175,8 @@ pub(crate) struct Type1Font {
     /// Standard 14 font takes the Adobe AFM widths (`core14_metrics`),
     /// a name they lack its substitute's advance.
     has_widths: bool,
+    /// The bounds of all the program's glyphs, on first use.
+    reach: GlyphReach,
 }
 
 /// The resolved font behind a `Tf` selection — a simple TrueType
@@ -599,6 +654,7 @@ pub(crate) fn load_simple_font_dict(
         tounicode,
         face: RefCell::new(None),
         reverse_cmap: RefCell::new(None),
+        reach: GlyphReach::default(),
     }))
 }
 
@@ -738,6 +794,7 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         cff_matrices: RefCell::new(None),
         subst,
         has_widths,
+        reach: GlyphReach::default(),
     }))
 }
 
@@ -1101,6 +1158,13 @@ impl SimpleFont {
         Ok(outline_glyph_lsb_adjusted(&face, glyph, builder))
     }
 
+    /// The horizontal shift (font units) the outline is drawn with to
+    /// honour the `hmtx` bearing (see `tt_lsb_shift`); readers that do
+    /// not apply it (pdf.js) draw the outline that much to the left.
+    pub(crate) fn bearing_shift(&self, glyph: GlyphId) -> Result<f64, Error> {
+        bearing(&*self.face()?, glyph)
+    }
+
     /// Resolve `code` to a Unicode string, in the priority order of
     /// §9.10.2:
     /// 1. `/ToUnicode` CMap — if present (a code it does not map has
@@ -1142,6 +1206,25 @@ impl SimpleFont {
     /// in 1/1000 em regardless.
     pub(crate) fn glyph_matrix(&self, _glyph: GlyphId) -> Result<Matrix, Error> {
         Ok(upem_matrix(self.face()?.units_per_em()))
+    }
+
+    /// A code this embedded program resolves to `.notdef`: readers may
+    /// resolve it to another of its glyphs (see
+    /// `Type1Font::unnamed_glyph_reach`) — their bounds. `None` otherwise.
+    pub(crate) fn unnamed_glyph_reach(&self, code: u8) -> Result<Option<[f64; 4]>, Error> {
+        if self.subst.is_some() || !matches!(self.glyph_id(code)?, None | Some(GlyphId(0))) {
+            return Ok(None);
+        }
+        let face = self.face()?;
+        self.reach.get(|p| {
+            // Each glyph as drawn with its bearing and without.
+            (0..face.number_of_glyphs()).all(|g| {
+                let drawn = face.outline_glyph(GlyphId(g), &mut Points(p)).is_some();
+                outline_glyph_lsb_adjusted(&face, GlyphId(g), &mut Points(p));
+                (drawn || tt_glyph_blank(&face, GlyphId(g)))
+                    && tt_lsb_shift_checked(&face, GlyphId(g)).is_some()
+            })
+        })
     }
 }
 
@@ -1682,6 +1765,37 @@ impl Type1Font {
     /// substitute face: its `unitsPerEm`. The full matrix is used —
     /// oblique and non-uniform matrices are honoured, not reduced to a
     /// scale.
+    /// A code this embedded program resolves to `.notdef` (a name it
+    /// lacks, `.notdef` itself, no name): readers resolve such a code
+    /// differently (MuPDF falls back to the program's own encoding,
+    /// pdf.js to a glyph named for the same Unicode, others draw
+    /// `.notdef` or nothing), so it may show any of the program's
+    /// glyphs — their bounds (glyph space). `None` otherwise.
+    pub(crate) fn unnamed_glyph_reach(&self, code: u8) -> Result<Option<[f64; 4]>, Error> {
+        if self.subst.is_some() {
+            return Ok(None);
+        }
+        if let Some(t1) = &self.t1_program {
+            return match self.glyph_name_bytes(code) {
+                Some(n) if n != b".notdef" && t1.has_glyph(n) => Ok(None),
+                _ => t1.reach(),
+            };
+        }
+        if self.program.is_none() || !matches!(self.glyph_id(code)?, None | Some(GlyphId(0))) {
+            return Ok(None);
+        }
+        let cff = self.cff()?;
+        self.reach.get(|p| {
+            (0..cff.number_of_glyphs()).all(|g| {
+                // An empty glyph (a space) is no error.
+                match cff.outline(GlyphId(g), &mut Points(p)) {
+                    Ok(_) => true,
+                    Err(e) => format!("{e:?}") == "ZeroBBox",
+                }
+            })
+        })
+    }
+
     pub(crate) fn glyph_matrix(&self, glyph: GlyphId) -> Result<Matrix, Error> {
         if let Some(s) = &self.subst {
             return Ok(upem_matrix(s.face().units_per_em()));
@@ -2531,6 +2645,47 @@ impl Font {
     /// Readers disagree on this font's codes (an embedded CMap writing
     /// codes as literal strings): where its glyphs fall depends on the
     /// reader.
+    /// Where readers may draw `code` when they resolve it differently
+    /// (see `Type1Font::unnamed_glyph_reach`), in glyph space; `None`
+    /// when they all resolve it alike.
+    pub(crate) fn unnamed_glyph_reach(&self, code: u32) -> Result<Option<[f64; 4]>, Error> {
+        match self {
+            Font::Type1(f) => f.unnamed_glyph_reach(code as u8),
+            Font::Simple(f) => f.unnamed_glyph_reach(code as u8),
+            _ => Ok(None),
+        }
+    }
+
+    /// The bearing shift a TrueType outline is drawn with (font units;
+    /// 0 for other programs): readers that ignore it draw the glyph
+    /// that much to the left.
+    pub(crate) fn bearing_shift(&self, glyph: GlyphId) -> Result<f64, Error> {
+        match self {
+            Font::Simple(f) => f.bearing_shift(glyph),
+            Font::Composite(f) => match f.kind {
+                CidProgram::OpenType | CidProgram::TrueType => bearing(&*f.face()?, glyph),
+                CidProgram::Cff => Ok(0.0),
+            },
+            _ => Ok(0.0),
+        }
+    }
+
+    /// Whether a glyph that gave no outline draws nothing: always, but
+    /// for a TrueType glyph with data that did not outline (see
+    /// `tt_glyph_blank`).
+    pub(crate) fn blank_glyph(&self, glyph: GlyphId) -> Result<bool, Error> {
+        match self {
+            Font::Simple(f) if f.subst.is_none() => Ok(tt_glyph_blank(&*f.face()?, glyph)),
+            Font::Composite(f) => match f.kind {
+                CidProgram::OpenType | CidProgram::TrueType => {
+                    Ok(tt_glyph_blank(&*f.face()?, glyph))
+                }
+                CidProgram::Cff => Ok(true),
+            },
+            _ => Ok(true),
+        }
+    }
+
     pub(crate) fn reader_dependent_codes(&self) -> bool {
         match self {
             Font::Composite(f) => f.cmap.as_ref().is_some_and(|c| c.literal_codes),
@@ -2846,6 +3001,13 @@ fn outline_glyph_lsb_adjusted(
 /// header box disagrees with its bearing. Returns 0 for CFF faces,
 /// empty glyphs, or anything unparseable.
 fn tt_lsb_shift(face: &Face<'_>, glyph: GlyphId) -> f32 {
+    tt_lsb_shift_checked(face, glyph).unwrap_or(0.0)
+}
+
+/// [`tt_lsb_shift`], `None` when a `glyf` glyph's shift cannot be
+/// resolved (a malformed glyph or bearing, components nested past 32):
+/// readers that resolve it draw the glyph somewhere `redact` cannot tell.
+fn tt_lsb_shift_checked(face: &Face<'_>, glyph: GlyphId) -> Option<f32> {
     // `FaceTables` does not expose `loca`; rebuild it from the raw
     // table with the `head`/`maxp` parameters the face already parsed.
     let raw = face.raw_face();
@@ -2853,17 +3015,17 @@ fn tt_lsb_shift(face: &Face<'_>, glyph: GlyphId) -> f32 {
         raw.table(ttf_parser::Tag::from_bytes(b"loca")),
         raw.table(ttf_parser::Tag::from_bytes(b"glyf")),
     ) else {
-        return 0.0;
+        return Some(0.0);
     };
     let Some(n_glyphs) = std::num::NonZeroU16::new(face.number_of_glyphs()) else {
-        return 0.0;
+        return Some(0.0);
     };
     let Some(loca) = ttf_parser::loca::Table::parse(
         n_glyphs,
         face.tables().head.index_to_location_format,
         loca_raw,
     ) else {
-        return 0.0;
+        return Some(0.0);
     };
     fn shift(
         face: &Face<'_>,
@@ -2872,10 +3034,15 @@ fn tt_lsb_shift(face: &Face<'_>, glyph: GlyphId) -> f32 {
         gid: GlyphId,
         depth: usize,
     ) -> Option<f32> {
-        if depth > 4 {
+        if depth > 32 {
             return None;
         }
-        let data = glyf.get(loca.glyph_range(gid)?)?;
+        // An empty glyph draws nothing (`glyph_range` gives no range
+        // for one).
+        let Some(range) = loca.glyph_range(gid).filter(|r| !r.is_empty()) else {
+            return (gid.0 < face.number_of_glyphs()).then_some(0.0);
+        };
+        let data = glyf.get(range)?;
         if data.len() < 10 {
             return None;
         }
@@ -2910,7 +3077,84 @@ fn tt_lsb_shift(face: &Face<'_>, glyph: GlyphId) -> f32 {
         let lsb = face.glyph_hor_side_bearing(gid)?;
         Some(f32::from(lsb) - f32::from(x_min))
     }
-    shift(face, &loca, glyf, glyph, 0).unwrap_or(0.0)
+    shift(face, &loca, glyf, glyph, 0)
+}
+
+/// Whether a glyph draws nothing because it has no outline data: `true`
+/// for a `glyf` glyph without data or contours and for faces without `glyf` (their
+/// outlines are not read here); `false` for a `glyf` glyph with data —
+/// one that does not outline is malformed or nested too deeply, and
+/// readers may still draw it.
+fn tt_glyph_blank(face: &Face<'_>, glyph: GlyphId) -> bool {
+    let raw = face.raw_face();
+    let (Some(loca_raw), Some(glyf)) = (
+        raw.table(ttf_parser::Tag::from_bytes(b"loca")),
+        raw.table(ttf_parser::Tag::from_bytes(b"glyf")),
+    ) else {
+        return true;
+    };
+    let Some(n) = std::num::NonZeroU16::new(face.number_of_glyphs()) else {
+        return true;
+    };
+    let Some(loca) =
+        ttf_parser::loca::Table::parse(n, face.tables().head.index_to_location_format, loca_raw)
+    else {
+        return false;
+    };
+    fn blank(loca: &ttf_parser::loca::Table<'_>, glyf: &[u8], gid: GlyphId, depth: usize) -> bool {
+        let Some(r) = loca.glyph_range(gid).filter(|r| !r.is_empty()) else {
+            return true;
+        };
+        let Some(d) = glyf.get(r) else {
+            return false;
+        };
+        if d.len() < 10 {
+            return false;
+        }
+        match i16::from_be_bytes([d[0], d[1]]) {
+            // A header with no contours (instructions only).
+            0 => true,
+            // A composite of blank glyphs (a no-break space made of the
+            // space), within the nesting readers follow.
+            n if n < 0 && depth < 32 => {
+                let mut p = 10usize;
+                while p + 4 <= d.len() {
+                    let flags = u16::from_be_bytes([d[p], d[p + 1]]);
+                    let gi = u16::from_be_bytes([d[p + 2], d[p + 3]]);
+                    if !blank(loca, glyf, GlyphId(gi), depth + 1) {
+                        return false;
+                    }
+                    p += 4 + if flags & 0x0001 != 0 { 4 } else { 2 };
+                    p += if flags & 0x0008 != 0 {
+                        2
+                    } else if flags & 0x0040 != 0 {
+                        4
+                    } else if flags & 0x0080 != 0 {
+                        8
+                    } else {
+                        0
+                    };
+                    if flags & 0x0020 == 0 {
+                        return true;
+                    }
+                }
+                false
+            }
+            _ => false,
+        }
+    }
+    blank(&loca, glyf, glyph, 0)
+}
+
+/// A glyph's bearing shift for `redact`: an error when it cannot be
+/// resolved (readers may still draw the glyph shifted).
+fn bearing(face: &Face<'_>, glyph: GlyphId) -> Result<f64, Error> {
+    tt_lsb_shift_checked(face, glyph)
+        .map(f64::from)
+        .ok_or_else(|| Error::Unsupported {
+            feature: "embedded TrueType font",
+            detail: "a glyph's bearing cannot be resolved".into(),
+        })
 }
 
 /// `OutlineBuilder` adaptor that offsets every x coordinate by `dx`
