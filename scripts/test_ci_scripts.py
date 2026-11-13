@@ -114,7 +114,7 @@ class Workflows(unittest.TestCase):
 class Projection(unittest.TestCase):
     """scripts/redact-results-projection.py keeps no free text."""
 
-    SECRET = "Quarterly figures for ACME"
+    FREE_TEXT = "Quarterly figures for ACME"
 
     def project(self, data):
         d = Path(tempfile.mkdtemp())
@@ -126,12 +126,12 @@ class Projection(unittest.TestCase):
 
     def test_eval_results(self):
         out = self.project({"results": [
-            {"id": "f1", "kind": "word", "category": "c", "outcome": "unexpected", "reason": self.SECRET,
-             "detail": self.SECRET, "producer": self.SECRET, "rect": [1, 2, 3, 4], "unknown_count": 7,
-             "check_by_hand": self.SECRET, "outside_words_lost": 2},
-            {"id": "f2", "kind": "line", "category": "c", "outcome": self.SECRET}],
-            "skipped": [["f3", self.SECRET]]})
-        self.assertNotIn(self.SECRET, out)
+            {"id": "f1", "kind": "word", "category": "c", "outcome": "unexpected", "reason": self.FREE_TEXT,
+             "detail": self.FREE_TEXT, "producer": self.FREE_TEXT, "rect": [1, 2, 3, 4], "unknown_count": 7,
+             "check_by_hand": self.FREE_TEXT, "outside_words_lost": 2},
+            {"id": "f2", "kind": "line", "category": "c", "outcome": self.FREE_TEXT}],
+            "skipped": [["f3", self.FREE_TEXT]]})
+        self.assertNotIn(self.FREE_TEXT, out)
         self.assertNotIn("unknown_count", out)
         self.assertNotIn("rect", out)
         p = json.loads(out)["results"]
@@ -139,11 +139,11 @@ class Projection(unittest.TestCase):
         self.assertEqual(p[1]["outcome"], "unexpected")
 
     def test_refusal_results(self):
-        out = self.project({"summary": {"refused_runs": 2, "first_reasons": {self.SECRET: 1, "JavaScript name tree": 1}},
-                            "runs": [{"id": "f1", "kind": "word", "first_reason": self.SECRET, "first_detail": self.SECRET,
-                                      "walk_error": self.SECRET, "walk_categories": [self.SECRET, "tiling pattern"],
-                                      "examples": {"x": self.SECRET}, "rect": [1, 2, 3, 4]}]})
-        self.assertNotIn(self.SECRET, out)
+        out = self.project({"summary": {"refused_runs": 2, "first_reasons": {self.FREE_TEXT: 1, "JavaScript name tree": 1}},
+                            "runs": [{"id": "f1", "kind": "word", "first_reason": self.FREE_TEXT, "first_detail": self.FREE_TEXT,
+                                      "walk_error": self.FREE_TEXT, "walk_categories": [self.FREE_TEXT, "tiling pattern"],
+                                      "examples": {"x": self.FREE_TEXT}, "rect": [1, 2, 3, 4]}]})
+        self.assertNotIn(self.FREE_TEXT, out)
         p = json.loads(out)
         self.assertEqual(p["runs"][0]["first_reason"], "other")
         self.assertEqual(p["runs"][0]["walk_categories"], ["other", "tiling pattern"])
