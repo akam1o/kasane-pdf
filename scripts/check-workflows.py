@@ -15,7 +15,15 @@ Checks:
     `${{ secrets.NAME }}` in `env:`;
   * the nightly job is gated on the KASANE_CORPUS_ENABLED variable;
   * the cjk asset lock exists and lists every file the fetch script
-    installs.
+    installs;
+  * the gate (pr.yml, docs/testing.md "CI gates"): the required checks
+    exist; the redaction security checks (verify-redact, the advisory
+    regressions with --expect-safe) and the engine tests run on every
+    pull request; every job has a timeout and none continues on error;
+    `gate` waits for every job, always runs scripts/ci-gate.py, whose
+    full-gate set is exactly the jobs that skip pull requests; the
+    workflow runs on pull requests, pushes to main and release/**, and
+    dispatch; in every workflow, caches are written from main only.
 Exit 1 on the first problem.
 """
 import re
@@ -106,6 +114,127 @@ def check_no_secret_echo(path, text):
         problem(f"{path.name}: secret referenced outside an env: mapping: `{line.strip()}`")
 
 
+REQUIRED_CHECKS = {"test / fmt / clippy", "compat + round-trip smoke (fixtures)"}
+# Commands that must run on every pull request: job -> commands. The step
+# running each must have no `if:` (a fuzz step may select its matrix
+# target, and the matrix must then include that target).
+PR_MUST_RUN = {
+    "engine": ["cargo fmt --check", "cargo clippy --all-targets", "cargo nextest run --profile ci",
+               "cargo test --doc"],
+    "features-test": ["cargo nextest run --profile ci --features cjk-fallback", "cargo test --doc --features cjk-fallback",
+                      "cargo test --no-default-features --lib", "cargo test --no-default-features --doc"],
+    "compat-smoke": ["scripts/check-workflows.py", "scripts/verify-redact.py",
+                     "KASANE_ADVISORY_DUMP=/tmp/advisories cargo test --release --test redact_advisories",
+                     "check-advisory-regressions.py target/release/kasane-pdf /tmp/advisories --expect-safe",
+                     "scripts/test_ci_scripts.py"],
+    "render-fuzz-smoke": ["ci-run-sharded.sh redact_model", "fuzz/ci-run.sh \"$T\" \"fuzz/seeds/$T\"",
+                          "-seed=1 -runs=3000"],
+}
+FULL_ONLY_IF = "github.event_name != 'pull_request'"
+MAIN_ONLY = "${{ github.ref == 'refs/heads/main' }}"
+MAIN_ONLY_SAVE = "success() && github.ref == 'refs/heads/main'"
+FUZZ_TARGETS = {"render_content", "render_graph", "redact_model"}
+
+
+def ci_gate_full():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("ci_gate", ROOT / "scripts/ci-gate.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return set(mod.FULL)
+
+
+def check_caches(path, wf):
+    """Rust caches and actions/cache are written from main only."""
+    for jid, st in steps_of(wf):
+        uses = st.get("uses") or ""
+        if "Swatinem/rust-cache" in uses:
+            if str((st.get("with") or {}).get("save-if", "")).strip() != MAIN_ONLY:
+                problem(f"{path.name}:{jid}: rust-cache save-if must be `{MAIN_ONLY}`")
+        elif uses.startswith("actions/cache@"):
+            problem(f"{path.name}:{jid}: actions/cache saves from any ref; use actions/cache/restore + a main-only save")
+        elif uses.startswith("actions/cache/save@"):
+            if str(st.get("if", "")).strip() != MAIN_ONLY_SAVE:
+                problem(f"{path.name}:{jid}: actions/cache/save must be guarded by `{MAIN_ONLY_SAVE}`")
+
+
+def check_fuzz_matrix(path, job):
+    """Every fuzz target is in the matrix, and redact_model's jobs cover
+    every shard its command deals the seeds into."""
+    include = ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []
+    targets = {e.get("target") for e in include}
+    if targets != FUZZ_TARGETS:
+        problem(f"{path.name}:render-fuzz-smoke: matrix targets {sorted(t for t in targets if t)} instead of {sorted(FUZZ_TARGETS)}")
+    cmd = " ".join(st.get("run") or "" for st in job.get("steps") or [])
+    m = re.search(r"ci-run-sharded\.sh redact_model \S+ (\d+) \d+ \d+", cmd)
+    covered = []
+    for e in include:
+        if e.get("target") == "redact_model":
+            a, b = map(int, str(e.get("shards", "0 0")).split())
+            covered += list(range(a, b + 1))
+    if not m or sorted(covered) != list(range(1, int(m.group(1)) + 1)):
+        problem(f"{path.name}:render-fuzz-smoke: redact_model's jobs cover shards {sorted(covered)}, not each of 1..N once")
+
+
+def check_gate(path, wf):
+    jobs = wf.get("jobs") or {}
+    names = {j.get("name") for j in jobs.values()}
+    for n in REQUIRED_CHECKS:
+        if n not in names:
+            problem(f"{path.name}: required check `{n}` is not a job name")
+    on = wf.get("on") or wf.get(True) or {}
+    if "pull_request" not in on:
+        problem(f"{path.name}: does not run on pull_request")
+    if "workflow_dispatch" not in on:
+        problem(f"{path.name}: cannot be dispatched (the release gate)")
+    branches = set(((on.get("push") or {}) if isinstance(on, dict) else {}).get("branches") or [])
+    if not {"main", "release/**"} <= branches:
+        problem(f"{path.name}: pushes to main and release/** must run it (has {sorted(branches)})")
+    for jid, cmds in PR_MUST_RUN.items():
+        job = jobs.get(jid)
+        if not job:
+            problem(f"{path.name}: job `{jid}` is missing")
+            continue
+        if "if" in job:
+            problem(f"{path.name}:{jid}: must run on every pull request (has `if: {job['if']}`)")
+        targets = {e.get("target") for e in ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []}
+        for cmd in cmds:
+            steps = [st for st in job.get("steps") or [] if cmd in (st.get("run") or "")]
+            if not steps:
+                problem(f"{path.name}:{jid}: does not run `{cmd}`")
+            for st in steps:
+                cond = str(st.get("if", "")).strip()
+                m = re.fullmatch(r"matrix\.target (==|!=) '([a-z_]+)'", cond)
+                if cond and not (m and (m.group(1) == "!=" or m.group(2) in targets)):
+                    problem(f"{path.name}:{jid}: the step running `{cmd}` has `if: {cond}`")
+    check_fuzz_matrix(path, jobs.get("render-fuzz-smoke") or {})
+    full = set()
+    for jid, job in jobs.items():
+        if jid != "gate" and "timeout-minutes" not in job:
+            problem(f"{path.name}:{jid}: no timeout-minutes")
+        if job.get("continue-on-error") or any(st.get("continue-on-error") for st in job.get("steps") or []):
+            problem(f"{path.name}:{jid}: continue-on-error")
+        cond = str(job.get("if", "")).strip()
+        if cond and jid != "gate":
+            if cond != FULL_ONLY_IF:
+                problem(f"{path.name}:{jid}: unexpected condition `{cond}`")
+            else:
+                full.add(jid)
+    gate = jobs.get("gate")
+    if not gate:
+        problem(f"{path.name}: no `gate` job")
+        return
+    if str(gate.get("if", "")).strip() != "always()":
+        problem(f"{path.name}:gate: must run always()")
+    if set(gate.get("needs") or []) != set(jobs) - {"gate"}:
+        problem(f"{path.name}:gate: needs {sorted(gate.get('needs') or [])} instead of every job")
+    runs = [st for st in gate.get("steps") or [] if "scripts/ci-gate.py" in (st.get("run") or "")]
+    if not runs or any("if" in st for st in runs):
+        problem(f"{path.name}:gate: does not run scripts/ci-gate.py unconditionally")
+    if ci_gate_full() != full:
+        problem(f"{path.name}:gate: scripts/ci-gate.py FULL {sorted(ci_gate_full())} differs from the jobs skipped on pull requests {sorted(full)}")
+
+
 def check_cjk_lock():
     lock = ROOT / "scripts/cjk-assets.sha256"
     script = (ROOT / "scripts/fetch-cjk-assets.sh").read_text()
@@ -137,6 +266,9 @@ def main():
         check_no_secret_echo(path, text)
         if path.name == "nightly.yml":
             check_nightly(path, wf)
+        check_caches(path, wf)
+        if path.name == "pr.yml":
+            check_gate(path, wf)
     check_cjk_lock()
     # fetch-corpus.py must at least parse and answer --help offline.
     r = subprocess.run([sys.executable, str(ROOT / "compat/fetch-corpus.py"), "--help"], capture_output=True, text=True)

@@ -1,7 +1,22 @@
-# Pull-request gate: engine tests, formatting, lints, and a smoke-sized
-# compatibility + round-trip run over the committed fixtures with a
-# regression check against the committed baseline. Nothing here needs
-# credentials or the real-world corpus; nothing generated is committed.
+# The gate. Two levels (docs/testing.md, "CI gates"):
+#
+# - Fast gate — every pull request, and every push below: engine tests
+#   (nextest + doctests) in the default and cjk-fallback feature sets,
+#   formatting, lints and docs per feature set, the redaction security
+#   checks (verify-redact, the advisory regressions judged by qpdf and
+#   pdftotext, the redaction model at its default seed count), the
+#   render and redaction fuzz smoke, the R2 depth tests, wasm32, the
+#   dependency audit, the crate package and the fixture compatibility
+#   smoke. Nothing here needs credentials or the real-world corpus.
+# - Full gate — pushes to main and release/**, and manual dispatch
+#   (`gh workflow run pr.yml --ref <ref>`, the release gate): the fast
+#   gate plus MSRV, semver-checks, the redaction model at 10,000 seeds,
+#   and the packaged crate's own tests with `cargo publish --dry-run`.
+#   The corpus checks run in nightly.yml (credentials).
+#
+# `gate` passes only when every job of the level ran and succeeded: a
+# failed, cancelled or timed-out job fails it, and so does a full-gate
+# job skipped outside a pull request.
 name: pr
 
 on:
@@ -11,37 +26,68 @@ on:
     # its own exact commit (the pull-request path would test a merge
     # with main).
     branches: [main, "release/**"]
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# A newer push to the same pull request cancels the older run (its
+# result is moot). Every other run has a group of its own: a pending run
+# of a shared group would be cancelled by the next push, leaving a main
+# commit without its full gate.
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
+  # Line tables only: backtraces keep file:line, the debug build and its
+  # cache are a fraction of the size.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
   engine:
     name: test / fmt / clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
         with:
           components: rustfmt, clippy
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          tool: cargo-nextest
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # compat/runner is its own package with its own target/.
           workspaces: |
             .
             compat/runner
+          # Caches are written from main only; pull requests restore
+          # main's (they cannot write one another's, nor main's).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - name: tests (nextest, default features)
+        run: cargo nextest run --profile ci
+      - name: doctests (default features)
+        run: cargo test --doc
       - name: clippy + test (compat runner)
         working-directory: compat/runner
         run: |
           cargo fmt --check
           cargo clippy --all-targets -- -D warnings
           cargo test
+      - name: test report (JUnit)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-engine
+          path: target/nextest/ci/junit.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
   # The public API must be consistent whichever features are on: the
   # backend-neutral RenderedPage accessors always exist, the tiny-skia
@@ -52,12 +98,15 @@ jobs:
   features-lint:
     name: feature matrix (clippy + docs)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
         with:
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy --all-targets --features cjk-fallback -- -D warnings
       - run: cargo clippy --lib --bins --examples --no-default-features -- -D warnings
       - run: cargo clippy --lib --bins --examples --no-default-features --features cjk-fallback -- -D warnings
@@ -69,33 +118,64 @@ jobs:
           cargo doc --no-deps --all-features
           cargo doc --no-deps --no-default-features
 
+  # The default features (engine) and default + cjk-fallback (here) are
+  # both tested in full: the CJK fallback changes how Type 0 text without
+  # an embedded program and predefined CMaps are read.
   features-test:
     name: feature matrix (tests)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          tool: cargo-nextest
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo test --features cjk-fallback
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: tests (nextest, default + cjk-fallback)
+        run: cargo nextest run --profile ci --features cjk-fallback
+      - run: cargo test --doc --features cjk-fallback
       - run: cargo test --no-default-features --lib
       - run: cargo test --no-default-features --doc
       - run: cargo test --no-default-features --features cjk-fallback --lib
       - run: cargo test --no-default-features --features cjk-fallback --doc
+      - name: test report (JUnit)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: junit-features
+          path: target/nextest/ci/junit.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
   render-fuzz-smoke:
     # The structured render fuzz targets (v0.5.1 R4) and the redaction
     # model (v0.10, a false success is a failure): the committed seeds
-    # replayed (the same inputs every run), then 3000 new inputs from
-    # libFuzzer seed 1 (bounded in count and time; which inputs it reaches
-    # can vary, since coverage feedback depends on the library's hash
-    # order). A failure uploads the input, whose result is deterministic.
-    # fuzz/ci-run.sh fails on the exit status, saved inputs, error markers
-    # or a missing final line; the seed replay also reports, per page,
-    # whether rendering painted, and painted pages are required.
-    # Minutes, no corpus; long runs are fuzz-nightly.yml.
-    name: render fuzz smoke (seeds, fixed seed)
+    # replayed (the same inputs every run), then 3000 new inputs per
+    # target from fixed libFuzzer seeds (bounded in count and time; which
+    # inputs they reach can vary, since coverage feedback depends on the
+    # library's hash order). A failure uploads the input, whose result is
+    # deterministic. fuzz/ci-run.sh fails on the exit status, saved
+    # inputs, error markers or a missing final line; the render seed
+    # replay also reports, per page, whether rendering painted, and
+    # painted pages are required. redact_model's 2,800 seeds take minutes
+    # to replay: fuzz/ci-run-sharded.sh deals them into eight shards, run
+    # four at a time in each of two jobs, each shard then fuzzing 375 new
+    # inputs from its seeds (8 × 375 = 3000). No corpus; long runs are
+    # fuzz-nightly.yml.
+    name: render fuzz smoke (${{ matrix.part }})
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { part: render_content, target: render_content }
+          - { part: render_graph, target: render_graph }
+          - { part: "redact_model 1-4", target: redact_model, shards: "1 4" }
+          - { part: "redact_model 5-8", target: redact_model, shards: "5 8" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
@@ -104,33 +184,38 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: fuzz
+          # A cache per target (the two redact_model jobs build the same).
+          key: ${{ matrix.target }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo install cargo-fuzz --locked --version 0.13.2
-      - name: build
+      - name: build ${{ matrix.target }}
         working-directory: fuzz
-        run: |
-          cargo +nightly-2026-10-29 fuzz build -O render_content
-          cargo +nightly-2026-10-29 fuzz build -O render_graph
-          cargo +nightly-2026-10-29 fuzz build -O redact_model
+        run: cargo +nightly-2026-10-29 fuzz build -O "${{ matrix.target }}"
       - name: replay the seeds; the pages they render must paint
+        if: matrix.target != 'redact_model'
+        env:
+          T: ${{ matrix.target }}
         run: |
-          for t in render_content render_graph; do
-            KASANE_FUZZ_REACH="/tmp/reach-$t" fuzz/ci-run.sh "$t" "fuzz/seeds/$t" -- -runs=0
-            echo "$t pages:"; sort "/tmp/reach-$t" | uniq -c | sort -rn
-            grep -q "^ok painted" "/tmp/reach-$t" || { echo "::error::$t seeds painted nothing"; exit 1; }
-          done
-          # The redaction model: a false success fails as a crash.
-          fuzz/ci-run.sh redact_model fuzz/seeds/redact_model -- -runs=0
-      - name: 3000 new inputs per target (libFuzzer seed 1, at most 180 s each)
+          KASANE_FUZZ_REACH="/tmp/reach-$T" fuzz/ci-run.sh "$T" "fuzz/seeds/$T" -- -runs=0
+          echo "$T pages:"; sort "/tmp/reach-$T" | uniq -c | sort -rn
+          grep -q "^ok painted" "/tmp/reach-$T" || { echo "::error::$T seeds painted nothing"; exit 1; }
+      - name: 3000 new inputs (libFuzzer seed 1, at most 180 s)
+        if: matrix.target != 'redact_model'
+        env:
+          T: ${{ matrix.target }}
         run: |
-          for t in render_content render_graph redact_model; do
-            mkdir -p "/tmp/corpus-$t" && cp "fuzz/seeds/$t"/* "/tmp/corpus-$t/"
-            fuzz/ci-run.sh "$t" "/tmp/corpus-$t" -- -seed=1 -runs=3000 -max_total_time=180 || exit 1
-          done
+          mkdir -p "/tmp/corpus-$T" && cp "fuzz/seeds/$T"/* "/tmp/corpus-$T/"
+          fuzz/ci-run.sh "$T" "/tmp/corpus-$T" -- -seed=1 -runs=3000 -max_total_time=180
+      - name: redact_model — shards ${{ matrix.shards }} of 8, each seed replayed, then 375 new inputs per shard (at most 300 s)
+        if: matrix.target == 'redact_model'
+        # A false success (the two variants redacting differently) fails
+        # as a crash.
+        run: fuzz/ci-run-sharded.sh redact_model fuzz/seeds/redact_model 8 375 300 ${{ matrix.shards }}
       - name: crash inputs (synthetic documents, no corpus content)
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: render-fuzz-smoke-artifacts
+          name: render-fuzz-smoke-artifacts-${{ matrix.target }}-${{ strategy.job-index }}
           path: fuzz/artifacts
           retention-days: 7
           if-no-files-found: ignore
@@ -142,13 +227,20 @@ jobs:
     # the default depth fits a 2 MiB (debug) / 512 KiB (release) thread
     # and a 64 KiB one overflows, each in a child process — then the
     # smallest stack each path needs, measured (reported, not a check).
+    # Full debug info here: the stack measurements are of the build users
+    # get by default.
     name: R2 depth and stack (linux, debug + release)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      CARGO_PROFILE_DEV_DEBUG: true
+      CARGO_PROFILE_TEST_DEBUG: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo test --test render_xobject_depth
       - run: cargo test --release --test render_xobject_depth
       - name: stack per nesting path (debug, release)
@@ -159,12 +251,15 @@ jobs:
   wasm:
     name: wasm32 build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo build --lib --target wasm32-unknown-unknown
       - run: cargo build --lib --target wasm32-unknown-unknown --features cjk-fallback
       - run: cargo build --lib --target wasm32-unknown-unknown --no-default-features
@@ -172,6 +267,7 @@ jobs:
   audit:
     name: dependency audit (RustSec)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # A prebuilt cargo-audit: building it from source took ~3 min and
@@ -187,20 +283,25 @@ jobs:
         working-directory: compat/runner
         run: cargo audit
 
+  # Fast gate: the package is built and every target of the extracted
+  # crate compiles (a file the tests or examples include at build time
+  # and the package lacks fails here). The full gate also runs the
+  # extracted crate's tests (crate-package-full).
   crate-package:
     name: crate package check
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: committed cjk assets match the lock
         run: ./scripts/fetch-cjk-assets.sh --check
       - name: package from the clean tree (verifies the default build)
         run: cargo package
-      - name: the packaged crate builds and tests on its own, default and cjk-fallback
-        # Reuse the cached target/ for the dependencies; the crate itself
-        # is still compiled from the extracted package sources.
+      - name: the packaged crate compiles on its own, every target, default and cjk-fallback
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: |
@@ -211,21 +312,24 @@ jobs:
           dir=$(ls -d /tmp/crate/kasane-pdf-*)
           test -f "$dir/assets/cjk/NotoSansJP-Regular.otf"
           test -f "$dir/LICENSE" && test -f "$dir/NOTICE"
+          grep -q '"sha1"' "$dir/.cargo_vcs_info.json"
           cd "$dir"
-          cargo build --release --features cjk-fallback --examples
-          cargo test --features cjk-fallback
-          cargo doc --no-deps --all-features
-          grep -q '"sha1"' .cargo_vcs_info.json
+          cargo check --all-targets
+          cargo check --all-targets --features cjk-fallback
 
   compat-smoke:
     name: compat + round-trip smoke (fixtures)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: compat/runner
+          workspaces: |
+            .
+            compat/runner
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: external verifiers (qpdf, poppler)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qpdf poppler-utils poppler-data
       - name: build runner
@@ -236,6 +340,8 @@ jobs:
           pip3 install --quiet pyyaml
           python3 scripts/check-workflows.py
           python3 compat/fetch-corpus.py list > /dev/null
+      - name: CI scripts' own tests (gate decision, workflow checks, fuzz shards)
+        run: python3 scripts/test_ci_scripts.py
       - name: smoke run over tests/fixtures
         run: |
           mkdir -p /tmp/smoke
@@ -269,3 +375,123 @@ jobs:
             /tmp/smoke/latest.md
             /tmp/smoke/latest.json
           retention-days: 14
+
+  # ---- Full gate (not on pull requests) --------------------------------
+
+  msrv:
+    name: MSRV 1.92 (check)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+        with:
+          toolchain: "1.92"
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo +1.92 check --all-targets --all-features
+      - run: cargo +1.92 check --lib --no-default-features
+
+  semver:
+    name: semver-checks (against the latest release)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          tool: cargo-semver-checks
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The baseline is the newest version on crates.io; a breaking change
+      # needs the minor bump (0.x), which the check then accepts.
+      - run: cargo semver-checks check-release
+
+  redaction-model:
+    name: redaction model (10,000 seeds, release)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: two variants of 10,000 generated documents redact alike
+        env:
+          KASANE_MODEL_SEEDS: "10000"
+        run: cargo test --release --test redact_model -- --nocapture
+
+  crate-package-full:
+    name: packaged crate tests + publish dry-run
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          tool: cargo-nextest
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: ./scripts/fetch-cjk-assets.sh --check
+      - name: cargo publish --dry-run (packages, then builds the package)
+        run: cargo publish --dry-run
+      - name: the packaged crate builds and tests on its own, default and cjk-fallback
+        # Reuse the cached target/ for the dependencies; the crate itself
+        # is still compiled from the extracted package sources.
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          set -e
+          # `cargo publish --dry-run` leaves the crate under
+          # target/package/ (tmp-crate/ in recent cargo).
+          crate=$(find target/package -name 'kasane-pdf-*.crate' | head -1)
+          test -n "$crate"
+          echo "crate: $crate ($(stat -c %s "$crate") bytes)"
+          mkdir -p /tmp/crate && tar -xzf "$crate" -C /tmp/crate
+          dir=$(ls -d /tmp/crate/kasane-pdf-*)
+          cd "$dir"
+          cargo build --release --features cjk-fallback --examples
+          cargo nextest run --profile default --features cjk-fallback --no-fail-fast
+          cargo test --doc --features cjk-fallback
+          cargo doc --no-deps --all-features
+
+  # ---- The result ------------------------------------------------------
+
+  gate:
+    name: gate
+    if: always()
+    needs:
+      - engine
+      - features-lint
+      - features-test
+      - render-fuzz-smoke
+      - r2-depth-linux
+      - wasm
+      - audit
+      - crate-package
+      - compat-smoke
+      - msrv
+      - semver
+      - redaction-model
+      - crate-package-full
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: every job of this level succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          EVENT: ${{ github.event_name }}
+        # scripts/ci-gate.py: success everywhere; a full-gate job may be
+        # skipped on a pull request only.
+        run: python3 scripts/ci-gate.py
