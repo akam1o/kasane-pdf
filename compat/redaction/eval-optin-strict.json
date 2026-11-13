@@ -886,7 +886,6 @@
    "outside_words_lost": 0,
    "paths_cut_at_a_rect": 0,
    "paths_removed": 0,
-   "reason": "12 unchanged non-white pixel(s) inside the rect",
    "seconds": 0.034,
    "shadings_removed": 0,
    "unchanged_ink_inside": 12,
@@ -1106,7 +1105,6 @@
    "outside_words_lost": 0,
    "paths_cut_at_a_rect": 3,
    "paths_removed": 0,
-   "reason": "178 unchanged non-white pixel(s) inside the rect",
    "seconds": 0.027,
    "shadings_removed": 0,
    "unchanged_ink_inside": 178,
@@ -1118,7 +1116,6 @@
    "id": "cmykjpeg",
    "kind": "block",
    "outcome": "refused",
-   "reason": "redaction: the output carries uninspected data",
    "seconds": 0.007
   },
   {
@@ -1126,7 +1123,6 @@
    "id": "colorkeymask",
    "kind": "block",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.003
   },
   {
@@ -1712,7 +1708,6 @@
    "id": "pdfbox-3148-2-fuzzed",
    "kind": "block",
    "outcome": "refused",
-   "reason": "other: parse error",
    "seconds": 0.002
   },
   {
@@ -1792,7 +1787,6 @@
    "id": "pdfium-bad_page_type",
    "kind": "block",
    "outcome": "refused",
-   "reason": "other: invalid document structure",
    "seconds": 0.003
   },
   {
@@ -2040,7 +2034,6 @@
    "id": "irs-f1040",
    "kind": "word",
    "outcome": "refused",
-   "reason": "other: signature policy",
    "seconds": 0.022
   },
   {
@@ -2048,7 +2041,6 @@
    "id": "irs-f1040",
    "kind": "line",
    "outcome": "refused",
-   "reason": "other: signature policy",
    "seconds": 0.022
   },
   {
@@ -2056,7 +2048,6 @@
    "id": "irs-f1040",
    "kind": "block",
    "outcome": "refused",
-   "reason": "other: signature policy",
    "seconds": 0.021
   },
   {
@@ -2232,7 +2223,6 @@
    "id": "arxiv-2610.29022",
    "kind": "word",
    "outcome": "refused",
-   "reason": "redaction: the output carries uninspected data",
    "seconds": 0.06
   },
   {
@@ -2240,7 +2230,6 @@
    "id": "arxiv-2610.29022",
    "kind": "line",
    "outcome": "refused",
-   "reason": "redaction: the output carries uninspected data",
    "seconds": 0.064
   },
   {
@@ -2248,7 +2237,6 @@
    "id": "arxiv-2610.29022",
    "kind": "block",
    "outcome": "refused",
-   "reason": "redaction: the output carries uninspected data",
    "seconds": 0.065
   },
   {
@@ -2328,7 +2316,6 @@
    "id": "verapdf_verapdf-test-suite-6-1-12-t02-pass-l",
    "kind": "block",
    "outcome": "refused",
-   "reason": "other: invalid document structure",
    "seconds": 0.003
   },
   {
@@ -2425,7 +2412,6 @@
    "outside_words_lost": 0,
    "paths_cut_at_a_rect": 1,
    "paths_removed": 0,
-   "reason": "18419 unchanged non-white pixel(s) inside the rect",
    "seconds": 0.008,
    "shadings_removed": 0,
    "unchanged_ink_inside": 18419,
@@ -2453,7 +2439,6 @@
    "outside_words_lost": 0,
    "paths_cut_at_a_rect": 0,
    "paths_removed": 0,
-   "reason": "3699 unchanged non-white pixel(s) inside the rect",
    "seconds": 0.02,
    "shadings_removed": 0,
    "unchanged_ink_inside": 3699,
@@ -2515,7 +2500,6 @@
    "id": "function_based_shading_cmyk",
    "kind": "block",
    "outcome": "refused",
-   "reason": "region removal on a page with blockers: shading",
    "seconds": 0.003
   },
   {
@@ -2619,14 +2603,10 @@
    "id": "pdfium-pattern_fill_uncolored",
    "kind": "block",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.003
   }
  ],
  "skipped": [
-  [
-   "copy_paste_ligatures",
-   "page geometry not plain MediaBox space"
-  ]
+  "copy_paste_ligatures"
  ]
 }

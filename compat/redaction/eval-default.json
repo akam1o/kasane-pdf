@@ -77,7 +77,6 @@
    "id": "annotation-button-widget",
    "kind": "word",
    "outcome": "refused",
-   "reason": "JavaScript name tree",
    "seconds": 0.004
   },
   {
@@ -85,7 +84,6 @@
    "id": "annotation-button-widget",
    "kind": "line",
    "outcome": "refused",
-   "reason": "redaction of an annotation other than a link meeting a rect",
    "seconds": 0.003
   },
   {
@@ -93,7 +91,6 @@
    "id": "annotation-button-widget",
    "kind": "block",
    "outcome": "refused",
-   "reason": "JavaScript name tree",
    "seconds": 0.004
   },
   {
@@ -101,7 +98,6 @@
    "id": "annotation-highlight-without-appearance",
    "kind": "word",
    "outcome": "refused",
-   "reason": "redaction of an annotation other than a link meeting a rect",
    "seconds": 0.002
   },
   {
@@ -109,7 +105,6 @@
    "id": "annotation-highlight-without-appearance",
    "kind": "line",
    "outcome": "refused",
-   "reason": "redaction of an annotation other than a link meeting a rect",
    "seconds": 0.002
   },
   {
@@ -141,7 +136,6 @@
    "id": "annotation-ink-without-appearance",
    "kind": "word",
    "outcome": "refused",
-   "reason": "redaction of an annotation other than a link meeting a rect",
    "seconds": 0.003
   },
   {
@@ -149,7 +143,6 @@
    "id": "annotation-ink-without-appearance",
    "kind": "line",
    "outcome": "refused",
-   "reason": "redaction of an annotation other than a link meeting a rect",
    "seconds": 0.003
   },
   {
@@ -157,7 +150,6 @@
    "id": "annotation-ink-without-appearance",
    "kind": "block",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.002
   },
   {
@@ -189,7 +181,6 @@
    "id": "bug1974436",
    "kind": "line",
    "outcome": "refused",
-   "reason": "redaction of an annotation other than a link meeting a rect",
    "seconds": 0.003
   },
   {
@@ -365,7 +356,6 @@
    "id": "acroform_calculation_order",
    "kind": "word",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.002
   },
   {
@@ -373,7 +363,6 @@
    "id": "acroform_calculation_order",
    "kind": "line",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.002
   },
   {
@@ -381,7 +370,6 @@
    "id": "acroform_calculation_order",
    "kind": "block",
    "outcome": "refused",
-   "reason": "redaction of an annotation other than a link meeting a rect",
    "seconds": 0.002
   },
   {
@@ -437,7 +425,6 @@
    "id": "bug1947248_forms",
    "kind": "block",
    "outcome": "refused",
-   "reason": "redaction of an annotation other than a link meeting a rect",
    "seconds": 0.003
   },
   {
@@ -469,7 +456,6 @@
    "id": "checkbox-bad-appearance",
    "kind": "line",
    "outcome": "refused",
-   "reason": "redaction of an annotation other than a link meeting a rect",
    "seconds": 0.003
   },
   {
@@ -597,7 +583,6 @@
    "id": "blendmode",
    "kind": "word",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.003
   },
   {
@@ -605,7 +590,6 @@
    "id": "blendmode",
    "kind": "line",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.003
   },
   {
@@ -613,7 +597,6 @@
    "id": "blendmode",
    "kind": "block",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.003
   },
   {
@@ -765,7 +748,6 @@
    "id": "alphatrans",
    "kind": "word",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.003
   },
   {
@@ -773,7 +755,6 @@
    "id": "alphatrans",
    "kind": "line",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.002
   },
   {
@@ -781,7 +762,6 @@
    "id": "alphatrans",
    "kind": "block",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.002
   },
   {
@@ -813,7 +793,6 @@
    "id": "colorkeymask",
    "kind": "block",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.002
   },
   {
@@ -1087,7 +1066,6 @@
    "id": "arxiv-2204.06125",
    "kind": "word",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.018
   },
   {
@@ -1095,7 +1073,6 @@
    "id": "arxiv-2204.06125",
    "kind": "line",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.017
   },
   {
@@ -1103,7 +1080,6 @@
    "id": "arxiv-2204.06125",
    "kind": "block",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.017
   },
   {
@@ -1111,7 +1087,6 @@
    "id": "arxiv-2303.18223",
    "kind": "word",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.017
   },
   {
@@ -1119,7 +1094,6 @@
    "id": "arxiv-2303.18223",
    "kind": "line",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.017
   },
   {
@@ -1127,7 +1101,6 @@
    "id": "arxiv-2303.18223",
    "kind": "block",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.017
   },
   {
@@ -1231,7 +1204,6 @@
    "id": "bad-pagelabels",
    "kind": "word",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.003
   },
   {
@@ -1239,7 +1211,6 @@
    "id": "bad-pagelabels",
    "kind": "line",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.002
   },
   {
@@ -1247,7 +1218,6 @@
    "id": "bad-pagelabels",
    "kind": "block",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.002
   },
   {
@@ -1255,7 +1225,6 @@
    "id": "pdfbox-3148-2-fuzzed",
    "kind": "block",
    "outcome": "refused",
-   "reason": "other: parse error",
    "seconds": 0.003
   },
   {
@@ -1263,7 +1232,6 @@
    "id": "boundingbox_invalid",
    "kind": "word",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.002
   },
   {
@@ -1271,7 +1239,6 @@
    "id": "boundingbox_invalid",
    "kind": "line",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.002
   },
   {
@@ -1279,7 +1246,6 @@
    "id": "boundingbox_invalid",
    "kind": "block",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.002
   },
   {
@@ -1287,7 +1253,6 @@
    "id": "pdfium-bad_page_type",
    "kind": "block",
    "outcome": "refused",
-   "reason": "other: invalid document structure",
    "seconds": 0.002
   },
   {
@@ -1295,7 +1260,6 @@
    "id": "autoprint",
    "kind": "block",
    "outcome": "refused",
-   "reason": "JavaScript name tree",
    "seconds": 0.003
   },
   {
@@ -1303,7 +1267,6 @@
    "id": "autoprint_will_print",
    "kind": "block",
    "outcome": "refused",
-   "reason": "catalog entry outside profile",
    "seconds": 0.002
   },
   {
@@ -1311,7 +1274,6 @@
    "id": "basicapi",
    "kind": "word",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.007
   },
   {
@@ -1319,7 +1281,6 @@
    "id": "basicapi",
    "kind": "line",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.006
   },
   {
@@ -1327,7 +1288,6 @@
    "id": "basicapi",
    "kind": "block",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.006
   },
   {
@@ -1455,7 +1415,6 @@
    "id": "irs-f1040",
    "kind": "word",
    "outcome": "refused",
-   "reason": "other: signature policy",
    "seconds": 0.016
   },
   {
@@ -1463,7 +1422,6 @@
    "id": "irs-f1040",
    "kind": "line",
    "outcome": "refused",
-   "reason": "other: signature policy",
    "seconds": 0.017
   },
   {
@@ -1471,7 +1429,6 @@
    "id": "irs-f1040",
    "kind": "block",
    "outcome": "refused",
-   "reason": "redaction of an annotation other than a link meeting a rect",
    "seconds": 0.004
   },
   {
@@ -1479,7 +1436,6 @@
    "id": "issue10301",
    "kind": "block",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.003
   },
   {
@@ -1775,7 +1731,6 @@
    "id": "verapdf_verapdf-test-suite-6-1-12-t02-pass-l",
    "kind": "block",
    "outcome": "refused",
-   "reason": "other: invalid document structure",
    "seconds": 0.003
   },
   {
@@ -1872,7 +1827,6 @@
    "outside_words_lost": 0,
    "paths_cut_at_a_rect": 1,
    "paths_removed": 0,
-   "reason": "18419 unchanged non-white pixel(s) inside the rect",
    "seconds": 0.009,
    "shadings_removed": 0,
    "unchanged_ink_inside": 18419,
@@ -1900,7 +1854,6 @@
    "outside_words_lost": 0,
    "paths_cut_at_a_rect": 0,
    "paths_removed": 0,
-   "reason": "3699 unchanged non-white pixel(s) inside the rect",
    "seconds": 0.021,
    "shadings_removed": 0,
    "unchanged_ink_inside": 3699,
@@ -1962,7 +1915,6 @@
    "id": "function_based_shading_cmyk",
    "kind": "block",
    "outcome": "refused",
-   "reason": "region removal on a page with blockers: shading",
    "seconds": 0.003
   },
   {
@@ -1994,7 +1946,6 @@
    "id": "showtext-shadingpattern",
    "kind": "word",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.003
   },
   {
@@ -2002,7 +1953,6 @@
    "id": "showtext-shadingpattern",
    "kind": "line",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.003
   },
   {
@@ -2010,7 +1960,6 @@
    "id": "showtext-shadingpattern",
    "kind": "block",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.003
   },
   {
@@ -2018,14 +1967,10 @@
    "id": "pdfium-pattern_fill_uncolored",
    "kind": "block",
    "outcome": "refused",
-   "reason": "region removal on a page with uncertain content",
    "seconds": 0.002
   }
  ],
  "skipped": [
-  [
-   "copy_paste_ligatures",
-   "page geometry not plain MediaBox space"
-  ]
+  "copy_paste_ligatures"
  ]
 }

@@ -7,8 +7,10 @@ starts from them. See [`../../docs/testing.md`](../../docs/testing.md)
 
 Each file is the **projection** of a result
 (`scripts/redact-results-projection.py IN OUT`): the manifest id, the
-run's kind and category, its outcome, the refusal reason category and
-numeric counts. The raw results — the rectangles (derived from the
+run's kind and category, its outcome, named counts, and for refusals
+the reason and walk categories from a closed vocabulary (kasane's
+refusal features and error kinds, the analysis script's categories;
+anything else is `other`). The raw results — the rectangles (derived from the
 page's words), refusal details and walk errors (they quote PDF names) —
 are never committed; run the projection before committing a new round.
 `scripts/check-redact-corpus.py` compares a run with these

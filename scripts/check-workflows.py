@@ -132,6 +132,8 @@ PR_MUST_RUN = {
 }
 FULL_ONLY_IF = "github.event_name != 'pull_request'"
 MAIN_ONLY = "${{ github.ref == 'refs/heads/main' }}"
+MAIN_ONLY_SAVE = "success() && github.ref == 'refs/heads/main'"
+FUZZ_TARGETS = {"render_content", "render_graph", "redact_model"}
 
 
 def ci_gate_full():
@@ -152,8 +154,26 @@ def check_caches(path, wf):
         elif uses.startswith("actions/cache@"):
             problem(f"{path.name}:{jid}: actions/cache saves from any ref; use actions/cache/restore + a main-only save")
         elif uses.startswith("actions/cache/save@"):
-            if "github.ref == 'refs/heads/main'" not in str(st.get("if", "")):
-                problem(f"{path.name}:{jid}: actions/cache/save outside main")
+            if str(st.get("if", "")).strip() != MAIN_ONLY_SAVE:
+                problem(f"{path.name}:{jid}: actions/cache/save must be guarded by `{MAIN_ONLY_SAVE}`")
+
+
+def check_fuzz_matrix(path, job):
+    """Every fuzz target is in the matrix, and redact_model's jobs cover
+    every shard its command deals the seeds into."""
+    include = ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []
+    targets = {e.get("target") for e in include}
+    if targets != FUZZ_TARGETS:
+        problem(f"{path.name}:render-fuzz-smoke: matrix targets {sorted(t for t in targets if t)} instead of {sorted(FUZZ_TARGETS)}")
+    cmd = " ".join(st.get("run") or "" for st in job.get("steps") or [])
+    m = re.search(r"ci-run-sharded\.sh redact_model \S+ (\d+) \d+ \d+", cmd)
+    covered = []
+    for e in include:
+        if e.get("target") == "redact_model":
+            a, b = map(int, str(e.get("shards", "0 0")).split())
+            covered += list(range(a, b + 1))
+    if not m or sorted(covered) != list(range(1, int(m.group(1)) + 1)):
+        problem(f"{path.name}:render-fuzz-smoke: redact_model's jobs cover shards {sorted(covered)}, not each of 1..N once")
 
 
 def check_gate(path, wf):
@@ -187,6 +207,7 @@ def check_gate(path, wf):
                 m = re.fullmatch(r"matrix\.target (==|!=) '([a-z_]+)'", cond)
                 if cond and not (m and (m.group(1) == "!=" or m.group(2) in targets)):
                     problem(f"{path.name}:{jid}: the step running `{cmd}` has `if: {cond}`")
+    check_fuzz_matrix(path, jobs.get("render-fuzz-smoke") or {})
     full = set()
     for jid, job in jobs.items():
         if jid != "gate" and "timeout-minutes" not in job:
@@ -208,7 +229,7 @@ def check_gate(path, wf):
     if set(gate.get("needs") or []) != set(jobs) - {"gate"}:
         problem(f"{path.name}:gate: needs {sorted(gate.get('needs') or [])} instead of every job")
     runs = [st for st in gate.get("steps") or [] if "scripts/ci-gate.py" in (st.get("run") or "")]
-    if not runs or any(st.get("if") for st in runs):
+    if not runs or any("if" in st for st in runs):
         problem(f"{path.name}:gate: does not run scripts/ci-gate.py unconditionally")
     if ci_gate_full() != full:
         problem(f"{path.name}:gate: scripts/ci-gate.py FULL {sorted(ci_gate_full())} differs from the jobs skipped on pull requests {sorted(full)}")

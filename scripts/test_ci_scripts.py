@@ -14,6 +14,8 @@
 import contextlib
 import importlib.util
 import io
+import json
+import sys
 import os
 import subprocess
 import tempfile
@@ -97,10 +99,55 @@ class Workflows(unittest.TestCase):
             "dispatch removed": lambda wf: on(wf).pop("workflow_dispatch"),
             "pushes to main not run": lambda wf: on(wf)["push"].__setitem__("branches", ["other"]),
             "a required check renamed": lambda wf: wf["jobs"]["engine"].__setitem__("name", "tests"),
+            "the gate's decision switched off by `if: false`": lambda wf: self.step(wf, "gate", "ci-gate.py").__setitem__("if", False),
+            "a fuzz target dropped from the matrix": lambda wf: wf["jobs"]["render-fuzz-smoke"]["strategy"]["matrix"]["include"].pop(1),
+            "redact_model shards left uncovered": lambda wf: wf["jobs"]["render-fuzz-smoke"]["strategy"]["matrix"]["include"].pop(3),
+            "a cache saved from any ref (`|| true`)": lambda wf: next(
+                st for st in wf["jobs"]["engine"]["steps"] if "rust-cache" in (st.get("uses") or ""))["with"].__setitem__(
+                "save-if", "${{ github.ref == 'refs/heads/main' || true }}"),
         }
         for name, mutate in cases.items():
             with self.subTest(name):
                 self.assertTrue(self.problems(mutate), f"not caught: {name}")
+
+
+class Projection(unittest.TestCase):
+    """scripts/redact-results-projection.py keeps no free text."""
+
+    SECRET = "Quarterly figures for ACME"
+
+    def project(self, data):
+        d = Path(tempfile.mkdtemp())
+        (d / "in.json").write_text(json.dumps(data))
+        r = subprocess.run([sys.executable, str(ROOT / "scripts/redact-results-projection.py"), str(d / "in.json"), str(d / "out.json")],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return (d / "out.json").read_text()
+
+    def test_eval_results(self):
+        out = self.project({"results": [
+            {"id": "f1", "kind": "word", "category": "c", "outcome": "unexpected", "reason": self.SECRET,
+             "detail": self.SECRET, "producer": self.SECRET, "rect": [1, 2, 3, 4], "unknown_count": 7,
+             "check_by_hand": self.SECRET, "outside_words_lost": 2},
+            {"id": "f2", "kind": "line", "category": "c", "outcome": self.SECRET}],
+            "skipped": [["f3", self.SECRET]]})
+        self.assertNotIn(self.SECRET, out)
+        self.assertNotIn("unknown_count", out)
+        self.assertNotIn("rect", out)
+        p = json.loads(out)["results"]
+        self.assertEqual((p[0]["outcome"], p[0]["check_by_hand"], p[0]["outside_words_lost"]), ("unexpected", True, 2))
+        self.assertEqual(p[1]["outcome"], "unexpected")
+
+    def test_refusal_results(self):
+        out = self.project({"summary": {"refused_runs": 2, "first_reasons": {self.SECRET: 1, "JavaScript name tree": 1}},
+                            "runs": [{"id": "f1", "kind": "word", "first_reason": self.SECRET, "first_detail": self.SECRET,
+                                      "walk_error": self.SECRET, "walk_categories": [self.SECRET, "tiling pattern"],
+                                      "examples": {"x": self.SECRET}, "rect": [1, 2, 3, 4]}]})
+        self.assertNotIn(self.SECRET, out)
+        p = json.loads(out)
+        self.assertEqual(p["runs"][0]["first_reason"], "other")
+        self.assertEqual(p["runs"][0]["walk_categories"], ["other", "tiling pattern"])
+        self.assertEqual(p["summary"]["first_reasons"], {"other": 1, "JavaScript name tree": 1})
 
 
 class Shards(unittest.TestCase):
