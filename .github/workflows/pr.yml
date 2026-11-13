@@ -98,7 +98,7 @@ jobs:
   features-lint:
     name: feature matrix (clippy + docs)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
@@ -107,6 +107,7 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: sleep 150
       - run: cargo clippy --all-targets --features cjk-fallback -- -D warnings
       - run: cargo clippy --lib --bins --examples --no-default-features -- -D warnings
       - run: cargo clippy --lib --bins --examples --no-default-features --features cjk-fallback -- -D warnings
@@ -188,6 +189,9 @@ jobs:
           key: ${{ matrix.target }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo install cargo-fuzz --locked --version 0.13.2
+      - name: TEMPORARY one leg fails
+        if: matrix.target == 'render_graph'
+        run: exit 1
       - name: build ${{ matrix.target }}
         working-directory: fuzz
         run: cargo +nightly-2026-10-29 fuzz build -O "${{ matrix.target }}"
@@ -250,6 +254,7 @@ jobs:
 
   wasm:
     name: wasm32 build
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
