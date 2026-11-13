@@ -6,47 +6,177 @@ yanked, never replaced), so everything is verified before the
 irreversible step, and the tag is created only after the package has
 been verified from the exact commit it will point at.
 
-Keep it short: run the release gate once on the candidate, and reuse
-the latest green nightly (corpus and fuzz) and review results when the
-code they covered has not changed since. Changes after the gate that
-touch only the CHANGELOG date, release notes, README, comments or links
-need CI and the package check, not a new gate; a code change re-runs
-the checks it affects. A patch release needs no extra review or corpus
-run beyond what its changes call for (`CONTRIBUTING.md`, *Change risk
-and verification*). Minimal path: version + CHANGELOG + release notes →
-CI and `cargo publish --dry-run` → approval → tag, publish, GitHub
-Release → check crates.io and docs.rs.
+The procedure below is the one used for v0.10.0. In short: candidate
+branch → release gate (CI full gate + corpus nightly + local package
+checks) on the exact commit → main → tag → `cargo publish` → GitHub
+Release → security advisories → checks after publishing.
 
-## 1. Release preparation commit
+## 1. Release candidate
 
-- `Cargo.toml`: `version`, `rust-version` (verified with that
-  toolchain: `cargo +<msrv> check --all-targets --features cjk-fallback`),
-  metadata, the `include` list; no `publish = false`.
-- `CHANGELOG.md`: move *Unreleased* into a dated version section.
+Work on a branch `release/v<version>-prep` from `main`:
+
+- `Cargo.toml`: `version`, `rust-version`, metadata, the `include` list;
+  no `publish = false`. `cargo update -p kasane-pdf` (and in `fuzz/`,
+  whose lock is not committed).
+- `CHANGELOG.md`: move *Unreleased* into `## [<version>] - <date>`; keep
+  an empty *Unreleased*; update the compare links at the bottom. A
+  version prepared but never published is folded into the next one and
+  said so ("0.9.0 was prepared but never released"); it is never listed
+  as released.
 - `README.md`: install line `kasane-pdf = "<major.minor>"`, tag in the
   git alternative.
-- `docs/releases/v<version>.md`: the release notes.
-- `scripts/fetch-cjk-assets.sh --check` (committed assets match the
-  lock).
+- `docs/releases/v<version>.md`: the release notes (overview, newly
+  supported, fixes, verification, tests, performance, corpus —
+  stating that the corpus is one evaluation set, not a success rate —,
+  compatibility).
+- `docs/api-stability.md`, `docs/limitations.md`, the feature files and
+  `docs/redaction-safety-model.md` brought up to date.
+- `scripts/fetch-cjk-assets.sh --check`.
 
-## 2. CI green
+Open a pull request; its CI is the fast gate. Merge with `--no-ff` once
+it is green.
 
-Push the preparation commit; `pr.yml` (test / fmt / clippy, feature
-matrix + docs, wasm32 build, dependency audit, compat + round-trip
-smoke, crate package check, render fuzz smoke, R2 depth and stack on
-Linux) and CodeQL must pass; the latest corpus nightly (`nightly.yml`)
-and render fuzz nightly (`fuzz-nightly.yml`) must be green on the same
-code (dispatch either on the branch if the scheduled run is older).
+## 2. Security advisories (when the release fixes vulnerabilities)
 
-### Patch releases from a release branch
+Before the release commit:
+
+- one GitHub Security Advisory **draft** per issue
+  (`gh api -X POST repos/akam1o/kasane-pdf/security-advisories`):
+  affected range as published on crates.io (`>= <first>, < <version>`;
+  versions never published are not listed), patched version
+  `<version>`, CVSS 3.1 vector, CWE, the affected API and options,
+  conditions, workarounds, references to the release notes, CHANGELOG
+  and crate version (they resolve once the tag exists);
+- one regression test per advisory in `tests/redact_advisories.rs`
+  (synthetic inputs, written for `scripts/check-advisory-regressions.py`)
+  and its rows in `docs/security/advisory-regressions.md`, measured
+  against every published version (the affected range must show `LEAK`,
+  the candidate `SAFE`);
+- the reproduction material stays outside the repository.
+
+The **security commit** — the CHANGELOG `### Security` section, the
+release notes' *Security* section, the advisory tests and table rows —
+is made last, on its own branch from the release candidate on `main`,
+and pushed only when the release gate has passed locally: the advisory
+ids become public with it, so the time between that push and the
+advisories' publication is kept to the CI run.
+
+## 3. Release gate (on the exact release commit)
+
+Everything below runs on the commit that will be tagged; a change after
+it (code or docs) means running it again on the new commit.
+
+- **CI full gate** — pushing the commit to `release/**` or `main`, or
+  `gh workflow run pr.yml --ref <ref>`, runs `pr.yml`'s full gate
+  (docs/testing.md, *CI gates*): fast gate, MSRV, semver-checks, the
+  redaction model at 10,000 seeds, the packaged crate's own tests and
+  `cargo publish --dry-run`. `gate` must be green; CodeQL with no new
+  alert (`codeql-release.yml` on `release/**`).
+- **Corpus** — `gh workflow run nightly.yml --ref <ref>`: the 511-file
+  compatibility run and the redaction corpus in four option sets
+  compared with `compat/redaction/` (`scripts/check-redact-corpus.py`).
+  Commit new results there when the counts improve.
+- **Fuzz** — the latest `fuzz-nightly.yml` must be green on the same
+  code (dispatch it on the branch if older).
+- **Local package checks** (from a clean checkout of the commit):
+
+  ```console
+  cargo publish --dry-run
+  tar -tzf target/package/tmp-crate/kasane-pdf-<v>.crate | sort   # file list: no corpus, no reproduction material
+  tar -xzOf target/package/tmp-crate/kasane-pdf-<v>.crate kasane-pdf-<v>/.cargo_vcs_info.json   # the commit
+  ```
+
+- For a release with redaction changes, the external renderer checks
+  (MuPDF, Poppler, pdf.js on the synthetic cases of the change) and the
+  security regressions against every published version
+  (`scripts/check-advisory-regressions.py <old CLI> <dump dir>`).
+
+## 4. Approval
+
+Publishing, tagging and publishing advisories are explicit decisions:
+confirm the commit SHA, the version, the crate file list and size, the
+advisories' ranges and severities, and that the crates.io token is
+available.
+
+## 5. main
+
+Bring the verified commit to `main` without creating a new commit, so
+that the tag, `main` and the gated commit are the same:
+
+```console
+git merge-base --is-ancestor origin/main <sha>   # must hold
+git push origin <sha>:main
+```
+
+Wait for `pr.yml` (full gate) on `main` to be green.
+
+## 6. Tag
+
+```console
+git tag -a v<version> -m "kasane-pdf <version>" <sha>
+git push origin v<version>
+git rev-parse v<version>^{}    # = <sha>
+```
+
+## 7. crates.io
+
+From a clean checkout of the tag (a worktree, not the working tree):
+
+```console
+git worktree add --detach /tmp/rel v<version>
+cd /tmp/rel && ./scripts/fetch-cjk-assets.sh --check && cargo publish
+```
+
+Then check that `https://crates.io/api/v1/crates/kasane-pdf` lists
+`<version>` as the newest and that the downloaded `.crate`'s
+`.cargo_vcs_info.json` records `<sha>`.
+
+## 8. GitHub Release
+
+After the crate is on crates.io (a Release never precedes the crate it
+describes). Title `v<version>`; the body is the release notes
+(`docs/releases/v<version>.md` with links made absolute to the tag),
+then GitHub's generated list:
+
+```console
+gh release create v<version> --verify-tag --title "v<version>" \
+  --notes-file <notes with absolute links> --generate-notes
+```
+
+No binary assets; the source archive is generated by GitHub.
+
+## 9. Publish the advisories
+
+Only once `<version>` can be downloaded from crates.io — users must be
+able to upgrade when an advisory appears:
+
+```console
+gh api -X PATCH repos/akam1o/kasane-pdf/security-advisories/<GHSA-id> -f state=published
+```
+
+Check each: state published, severity and vector, affected range,
+patched `<version>`, and that every reference opens. The global GitHub
+Advisory Database lists them after GitHub's review (hours to days).
+
+## 10. After publishing
+
+- docs.rs (`https://docs.rs/crate/kasane-pdf/<version>/status.json`):
+  the build succeeded; the `cjk-fallback` items appear.
+- A clean consumer: `cargo new probe && cargo add kasane-pdf@<version>`,
+  build and run with default features and with
+  `--features kasane-pdf/cjk-fallback`.
+- The tag, `main` and the crate's recorded commit are the same SHA.
+- Delete the merged release branches.
+
+## Patch releases from a release branch
 
 A patch for an earlier version (0.4.1 from `v0.4.0` while `main` had
 moved on) is cut as `release/v<version>` from that tag, with only the
 fix commits and the preparation commit — never `main` — and verified on
 its own commit:
 
-- `pr.yml` runs on pushes to `release/**` too (a pull request would
-  test a merge with `main`, not the release commit);
+- `pr.yml` runs its full gate on pushes to `release/**` (a pull request
+  would test a merge with `main`, not the release commit);
 - `codeql-release.yml` runs the CodeQL analysis of the repository's
   default setup (actions, python, rust; default suite) on pushes to
   `release/**`, without uploading, and fails on any result that is not
@@ -54,83 +184,35 @@ its own commit:
   requests only and rejects advanced uploads while enabled, so no ref is
   analysed twice;
 - the nightly: `gh workflow run nightly.yml --ref release/v<version>`
-  — it checks against the baseline committed on that branch (the one of
+  — it checks against the baselines committed on that branch (those of
   the version being patched), not `main`'s.
 
 The tag goes on the release branch's verified commit; the branch's
 CHANGELOG section and release notes are then brought to `main` as a
 separate commit (the fix commits are already there).
 
-## 3. Package verification (local, from the clean tree)
-
-```console
-cargo package                       # refuses a dirty tree; verifies the build
-cargo publish --dry-run
-tar -tzf target/package/kasane-pdf-<v>.crate | sort   # review the file list
-```
-
-Then, from the extracted `.crate` only (not the working tree): build a
-throwaway consumer with `path = <extracted>` for default features and
-`--features kasane-pdf/cjk-fallback`, run `cargo test` and
-`cargo doc --all-features` inside the extracted crate.
-`.cargo_vcs_info.json` inside the crate records the commit; it must
-be the commit that gets tagged.
-
-## 4. Approvals
-
-Publishing and tagging are explicit decisions: confirm the commit SHA,
-the version, the crate file list and size, and that the crates.io
-token is available to the person publishing.
-
-## 5. Tag
-
-```console
-git tag -a v<version> -m "kasane-pdf <version>" <sha>
-git push origin v<version>
-```
-
-Verify `git rev-parse v<version>^{}` equals the SHA recorded in the
-crate's `.cargo_vcs_info.json`.
-
-## 6. crates.io publish
-
-```console
-cargo publish            # from the tagged commit; token via `cargo login` or CARGO_REGISTRY_TOKEN
-```
-
-Confirm on crates.io that the version, the README render and the
-dependency list are right.
-
-## 7. GitHub Release
-
-After the crate is on crates.io (a Release never precedes the crate
-it describes). The release title is the tag name only (`v<version>`), and the body
-is GitHub's generated notes (the commit/PR list and the *Full
-Changelog* compare link) with a pointer to `CHANGELOG.md` and the
-detailed notes in `docs/releases/v<version>.md`:
-
-```console
-gh release create v<version> --title "v<version>" --generate-notes \
-  --notes "Release notes: https://github.com/akam1o/kasane-pdf/blob/v<version>/docs/releases/v<version>.md (changelog: https://github.com/akam1o/kasane-pdf/blob/v<version>/CHANGELOG.md)"
-```
-
-No binary assets; the source archive is generated by GitHub.
-
-## 8. docs.rs and external verification
-
-- docs.rs builds with `all-features = true` (`[package.metadata.docs.rs]`);
-  check that the build succeeded and the `cjk-fallback` items appear.
-- From a clean machine or container: `cargo new probe && cargo add
-  kasane-pdf@<version>`, build with default features and with
-  `--features kasane-pdf/cjk-fallback`, run an example.
-
 ## If something goes wrong
 
-- Before `cargo publish`: fix, commit, re-run steps 2–3; move the
-  tag only if it has not been pushed (a pushed tag stays; release the
-  fix as the next patch version).
-- After `cargo publish`: the version cannot be changed. `cargo yank
-  --version <v>` hides it from new resolutions (existing lockfiles
-  keep working); publish a fixed `<v+patch>`, tag it, and note the
-  yank in `CHANGELOG.md`. Never delete a GitHub Release that a crate
-  version points at — mark it as superseded instead.
+- **A gate fails before anything is public**: fix on the branch, commit,
+  run the release gate again on the new commit.
+- **The security commit was pushed but the gate then fails**: the
+  advisory ids are public, their content is not. Fix and re-run the gate
+  promptly; keep the advisories as drafts until the fixed version is on
+  crates.io.
+- **The tag was pushed but `cargo publish` fails before uploading**
+  (network, token, a check): fix the cause outside the source (token,
+  network) and publish from the same tag. If the source must change, the
+  pushed tag stays — release the fix as the next patch version, tag that,
+  and leave the unpublished version out of the CHANGELOG's released
+  list.
+- **After `cargo publish`**: the version cannot be changed. `cargo yank
+  --version <v>` hides it from new resolutions (existing lockfiles keep
+  working); publish a fixed `<v+patch>`, tag it, and note the yank in
+  `CHANGELOG.md`. Never delete a GitHub Release that a crate version
+  points at — mark it as superseded instead.
+- **The GitHub Release or an advisory fails to publish**: the crate is
+  out, so finish these promptly (they are not ordered against each
+  other); an advisory published by mistake before the crate cannot be
+  returned to a draft — publish the crate at once.
+- **docs.rs fails to build**: fix in the next patch release (docs.rs
+  builds every version once); the crate itself is unaffected.

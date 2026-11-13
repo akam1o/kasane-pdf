@@ -169,6 +169,40 @@ but external tools are used to *confirm* behaviour on real files:
   qpdf and pdftotext (PR workflow, `--expect-safe`). Results per version:
   `docs/security/advisory-regressions.md`.
 
+## CI gates
+
+Three levels, by when they run; the security checks of redaction are in
+the first.
+
+| gate | when | what |
+| --- | --- | --- |
+| **fast** (`pr.yml`) | every pull request, and every push of the full gate | `cargo fmt`; clippy in each feature set; docs without warnings; the engine tests with nextest and the doctests in the default features and with `cjk-fallback` (the library's unit tests and doctests also without default features); `compat/runner` tests; wasm32 build; `cargo audit`; the crate package and every target of the extracted crate compiling; the fixture compatibility + round-trip smoke against its baseline; **`scripts/verify-redact.py` (qpdf, pdftotext) and the advisory regressions (`tests/redact_advisories.rs` judged by `scripts/check-advisory-regressions.py --expect-safe`)**; the redaction model (`tests/redact_model.rs`, 160 seeds); the fuzz smoke (render seeds replayed with the paint report and 3000 new inputs each; `redact_model`'s 2,800 seeds replayed and 3000 new inputs, in four parallel shards); the R2 depth and stack tests |
+| **full** (`pr.yml`) | pushes to `main` and `release/**`, `workflow_dispatch` (the release gate) | the fast gate, plus MSRV (`cargo +1.92 check`), `cargo semver-checks` against the newest release, the redaction model at 10,000 seeds (release build), `cargo publish --dry-run` and the packaged crate's own tests (nextest, doctests, docs) |
+| **corpus and long fuzz** (`nightly.yml`, `fuzz-nightly.yml`) | nightly on `main`; dispatched on a release commit | the 511-file compatibility run and its baselines; the redaction corpus (117 runs × four option sets, `scripts/eval-redact-corpus.py`) compared with `compat/redaction/` by `scripts/check-redact-corpus.py`; 15 minutes of fuzzing per target from the accumulated corpus |
+
+`gate` (the last job of `pr.yml`) passes only when every job of its
+level ran and succeeded: a failed, cancelled or timed-out job fails it,
+and a full-gate job may be skipped only on a pull request.
+`scripts/check-workflows.py` (run by the fast gate) keeps this so: the
+required checks exist, the security checks and the engine tests run on
+every pull request, every job has a timeout and none continues on
+error, `gate` waits for all jobs, and caches are written from `main`
+only.
+
+What a pull request's green fast gate guarantees: the change compiles
+and passes every engine test in both feature sets, every redaction
+security check (the 35 verify-redact cases, every advisory's regression
+inputs judged by tools that share no code with kasane, the generated
+non-interference model, the fuzz smoke of the redaction model), and the
+fixture compatibility smoke. What it leaves to later gates, and why:
+
+| check | runs | if it fails after merging |
+| --- | --- | --- |
+| MSRV, semver-checks | full gate, on the merge commit | `main` is red before any release; fix forward (a release requires a green full gate on its commit) |
+| redaction model at 10,000 seeds (160 on pull requests) | full gate | as above; the failing seed is printed and reproduces locally |
+| the packaged crate's tests (pull requests compile every target of it) | full gate | only fixtures read at run time and missing from the package are not caught earlier; fix the `include` list |
+| redaction corpus, 511-file compatibility | nightly (credentials; not on pull requests) | the nightly fails the next morning; the release gate requires it green on the release commit |
+
 ## Compatibility suite
 
 `compat/runner` (`kasane-compat`) runs the real-world corpus through

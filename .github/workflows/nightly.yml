@@ -1,7 +1,11 @@
 # Nightly / on-demand: the full real-world corpus (511 files) — strict
 # and recovery parse, render, text, rewrite, every-page round-trip with
 # Poppler and qpdf verification, visual fidelity, performance and the
-# robustness set — plus the CJK-fallback build.
+# robustness set — and the redaction corpus (117 runs in four option
+# sets, scripts/eval-redact-corpus.py) compared with the committed
+# results in compat/redaction/. Dispatched on a release commit, this is
+# the corpus part of the release gate (docs/releasing.md). The engine
+# tests with cjk-fallback run on every push in pr.yml.
 #
 # The corpus lives in a private object store. Its credentials are
 # repository secrets that are only exposed to this workflow, never to
@@ -56,6 +60,35 @@ jobs:
         run: |
           pip3 install --quiet boto3 pyyaml
           python3 compat/fetch-corpus.py download --dir compat/corpus
+      - name: redaction corpus — four option sets vs compat/redaction (ids and counts only)
+        # A run the committed results have `ok` that is not `ok` now, an
+        # unexpected run other than the known zeroed-image signal, or more
+        # text lost outside the rects fails (scripts/check-redact-corpus.py).
+        # The results stay on the runner: only counts reach the summary.
+        run: |
+          sudo apt-get install -y --no-install-recommends mupdf-tools
+          cargo build --release --bin kasane-pdf
+          k=target/release/kasane-pdf
+          a="--redact-arg --embed-substitute-fonts --redact-arg --remove-annotations"
+          set -- \
+            "default|" \
+            "optin|$a" \
+            "optin-javascript|$a --redact-arg --remove-javascript" \
+            "optin-strict|$a --redact-arg --remove-javascript --redact-arg --refuse-uninspected"
+          # The runner's Poppler and MuPDF shift word and pixel counts:
+          # compare with results measured on the runner when committed.
+          base=compat/redaction/ci; [ -d "$base" ] || base=compat/redaction
+          failed=0
+          for c in "$@"; do
+            name=${c%%|*}; args=${c#*|}
+            # Its exit status is 1 whenever a run is `unexpected`, the known
+            # zeroed-image signal included; the comparison decides.
+            python3 scripts/eval-redact-corpus.py "$k" --json "/tmp/redact-$name.json" $args > "/tmp/redact-$name.txt" 2>&1
+            [ -s "/tmp/redact-$name.json" ] || { echo "::error::eval-redact-corpus wrote no results ($name)"; failed=1; continue; }
+            python3 scripts/check-redact-corpus.py "$name" "/tmp/redact-$name.json" --baseline "$base" --summary-md "$GITHUB_STEP_SUMMARY" \
+              || failed=1
+          done
+          exit $failed
       - name: full run (all pages, Poppler witness, external checks)
         # The default rewrite is the enforced run. `--rewrite-options
         # carry` also measures `rewrite_with` under
@@ -75,6 +108,14 @@ jobs:
         run: |
           python3 scripts/ci-regression.py check /tmp/full/latest.json compat/baselines/corpus-full.json \
             --summary-md "$GITHUB_STEP_SUMMARY"
+      - name: redaction corpus results (ids, counts and rects; no text)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: redaction-corpus-results
+          path: /tmp/redact-*.json
+          retention-days: 14
+          if-no-files-found: ignore
       - name: per-category quality tables (aggregates only)
         if: always()
         run: python3 scripts/quality-by-category.py /tmp/full/latest.json >> "$GITHUB_STEP_SUMMARY"
@@ -87,16 +128,3 @@ jobs:
             /tmp/full/latest.md
             /tmp/full/latest.json
           retention-days: 30
-
-  cjk-feature:
-    name: engine tests with cjk-fallback
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: ./scripts/fetch-cjk-assets.sh --check
-      - run: cargo clippy --all-targets --features cjk-fallback -- -D warnings
-      - run: cargo test --features cjk-fallback
