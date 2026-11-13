@@ -8,9 +8,9 @@
 #   pull request's files are read from git objects, never checked out or
 #   run;
 # - fails when a pull request from a fork changes the CI's own definition
-#   (workflows, scripts/ — the gate, the workflow checks and the
-#   redaction security checks the CI runs —, the fuzz runners, the
-#   nextest profile): its CI results come from the definition it
+#   or what it judges against (check-workflows.py CI_PATHS: workflows,
+#   scripts/, the fuzz runners, .config/, .cargo/, the baselines, the
+#   advisory regressions): its CI results would come from what it
 #   changed. A maintainer reviews such a change and lands it from a
 #   branch of their own (docs/testing.md, "CI gates").
 #
@@ -33,6 +33,9 @@ jobs:
         with:
           path: base
           persist-credentials: false
+          # Full history: the pull request's changes are a three-dot diff
+          # from the merge base, which a shallow clone may not have.
+          fetch-depth: 0
       - name: the pull request's files, as data
         env:
           PR: ${{ github.event.pull_request.number }}
@@ -43,15 +46,18 @@ jobs:
           git -C base fetch --no-tags --quiet "https://github.com/${GITHUB_REPOSITORY}.git" \
             "+refs/pull/${PR}/head:refs/guard/head" "+${BASE}:refs/guard/base"
           test "$(git -C base rev-parse refs/guard/head)" = "$HEAD"
+          git -C base merge-base refs/guard/base refs/guard/head > /dev/null
           mkdir -p data
-          git -C base ls-tree -r --name-only refs/guard/head -- .github/workflows scripts/ci-gate.py \
-            compat/fetch-corpus.py scripts/cjk-assets.sha256 scripts/fetch-cjk-assets.sh > files.txt
-          while IFS= read -r f; do
+          # NUL-separated paths throughout: no quoting of unusual names.
+          git -C base ls-tree -r -z --name-only refs/guard/head -- .github/workflows scripts/ci-gate.py \
+            compat/fetch-corpus.py scripts/cjk-assets.sha256 scripts/fetch-cjk-assets.sh > files.z
+          while IFS= read -r -d '' f; do
             mkdir -p "data/$(dirname "$f")"
-            git -C base show "refs/guard/head:$f" > "data/$f"
-          done < files.txt
-          git -C base diff --name-only refs/guard/base...refs/guard/head > changed.txt
-          echo "files read: $(wc -l < files.txt); files changed: $(wc -l < changed.txt)"
+            git -C base cat-file blob "refs/guard/head:$f" > "data/$f"
+          done < files.z
+          # --no-renames: a renamed file is listed under both its paths.
+          git -C base diff --no-renames --name-only -z refs/guard/base...refs/guard/head > changed.z
+          echo "files read: $(tr -cd '\0' < files.z | wc -c); files changed: $(tr -cd '\0' < changed.z | wc -c)"
       - name: the pull request's workflows keep the gate (base branch's check)
         run: |
           pip3 install --quiet pyyaml==6.0.3
@@ -59,12 +65,4 @@ jobs:
       - name: a fork does not change the CI's own definition
         env:
           FORK: ${{ github.event.pull_request.head.repo.full_name != github.repository }}
-        run: |
-          set -euo pipefail
-          ci=$(grep -E '^(\.github/|scripts/|fuzz/ci-run(-sharded)?\.sh$|\.config/)' changed.txt || true)
-          if [ "$FORK" = true ] && [ -n "$ci" ]; then
-            echo "::error::a pull request from a fork changes the CI definition; a maintainer reviews it and lands it:"
-            echo "$ci" | sed 's/^/  /'
-            exit 1
-          fi
-          echo "ok (fork: $FORK; CI files changed: $(echo -n "$ci" | grep -c . || true))"
+        run: python3 base/scripts/check-workflows.py --fork-changes changed.z "$FORK"

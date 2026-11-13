@@ -78,7 +78,7 @@ class Gate(unittest.TestCase):
 
 
 class Workflows(unittest.TestCase):
-    def problems(self, mutate, mutate_guard=None, extra=None):
+    def problems(self, mutate, mutate_guard=None, extra=None, drop_pr=False):
         wf = yaml.safe_load(PR.read_text())
         guard = yaml.safe_load(GUARD.read_text())
         mutate(wf)
@@ -89,7 +89,7 @@ class Workflows(unittest.TestCase):
             cw.check_gate(PR, wf)
             cw.check_caches(PR, wf)
             cw.check_guard(GUARD, guard)
-            wfs = [(PR, wf), (GUARD, guard)] + [(p, yaml.safe_load(p.read_text())) for p in OTHERS]
+            wfs = ([] if drop_pr else [(PR, wf)]) + [(GUARD, guard)] + [(p, yaml.safe_load(p.read_text())) for p in OTHERS]
             if extra:
                 wfs.append(extra)
             cw.check_names(wfs)
@@ -162,55 +162,206 @@ class Workflows(unittest.TestCase):
         for name, mutate in guard_cases.items():
             with self.subTest(name):
                 self.assertTrue(self.problems(nothing, mutate_guard=mutate), f"not caught: {name}")
+        def run_of(wf, job, text):
+            return self.step(wf, job, text)
+
+        def guard_step(g, text):
+            return next(st for st in g["jobs"]["guard"]["steps"] if text in (st.get("run") or ""))
+
+        later = {
+            "the gate's command printed, not run": lambda wf: run_of(wf, "gate", "ci-gate.py").__setitem__(
+                "run", "echo scripts/ci-gate.py"),
+            "the gate's command made to pass": lambda wf: run_of(wf, "gate", "ci-gate.py").__setitem__(
+                "run", "python3 scripts/ci-gate.py || true"),
+            "the gate's results not passed in": lambda wf: run_of(wf, "gate", "ci-gate.py").__setitem__(
+                "env", {"NEEDS": "{}", "EVENT": "pull_request"}),
+            "clippy printed, not run": lambda wf: run_of(wf, "engine", "cargo clippy --all-targets").__setitem__(
+                "run", "echo cargo clippy --all-targets -- -D warnings"),
+            "the advisory check made to pass": lambda wf: run_of(wf, "compat-smoke", "--expect-safe").__setitem__(
+                "run", run_of(wf, "compat-smoke", "--expect-safe")["run"].replace("--expect-safe", "--expect-safe || true")),
+            "a job named by an expression that can be `gate`": lambda wf: wf["jobs"]["wasm"].__setitem__(
+                "name", "${{ 'gate' }}"),
+        }
+        for name, mutate in later.items():
+            with self.subTest(name):
+                self.assertTrue(self.problems(mutate), f"not caught: {name}")
+        later_guard = {
+            "the guard job switched off": lambda g: g["jobs"]["guard"].__setitem__("if", "false"),
+            "the guard's data check switched off": lambda g: guard_step(g, "--data-only data").__setitem__("if", "false"),
+            "the fork check removed": lambda g: g["jobs"]["guard"]["steps"].remove(guard_step(g, "--fork-changes")),
+            "the fork check made to pass": lambda g: guard_step(g, "--fork-changes").__setitem__(
+                "run", guard_step(g, "--fork-changes")["run"] + " || true"),
+            "the guard's checkout shallow": lambda g: g["jobs"]["guard"]["steps"][0]["with"].pop("fetch-depth"),
+            "the guard's checkout elsewhere": lambda g: g["jobs"]["guard"]["steps"][0]["with"].__setitem__("path", "."),
+            "the guard checks out by a lookalike action": lambda g: g["jobs"]["guard"]["steps"][0].__setitem__(
+                "uses", "evil/actions/checkout@" + "0" * 40),
+        }
+        for name, mutate in later_guard.items():
+            with self.subTest(name):
+                self.assertTrue(self.problems(nothing, mutate_guard=mutate), f"not caught: {name}")
+        with self.subTest("pr.yml replaced by another workflow with the required names"):
+            fake = {"on": {"pull_request": None}, "jobs": {
+                "a": {"name": "test / fmt / clippy", "steps": [{"run": "true"}]},
+                "b": {"name": "compat + round-trip smoke (fixtures)", "steps": [{"run": "true"}]},
+                "c": {"name": "gate", "steps": [{"run": "true"}]}}}
+            self.assertTrue(self.problems(nothing, extra=(Path("replacement.yml"), fake), drop_pr=True))
         with self.subTest("a job named `gate` in another workflow"):
             other = {"on": {"pull_request": None}, "jobs": {"x": {"name": "gate", "if": "false", "steps": [{"run": "true"}]}}}
             self.assertTrue(self.problems(nothing, extra=(Path("other.yml"), other)))
 
 
+class DataOnly(unittest.TestCase):
+    """check-workflows.py --data-only on a copy of the tree, and the guard's
+    fork decision on the paths git really reports."""
+
+    def tree(self):
+        d = Path(tempfile.mkdtemp())
+        for rel in [".github/workflows/" + p.name for p in (ROOT / ".github/workflows").iterdir()] + [
+                "scripts/ci-gate.py", "compat/fetch-corpus.py", "scripts/cjk-assets.sha256", "scripts/fetch-cjk-assets.sh"]:
+            (d / rel).parent.mkdir(parents=True, exist_ok=True)
+            (d / rel).write_bytes((ROOT / rel).read_bytes())
+        return d
+
+    def check(self, d):
+        return subprocess.run([sys.executable, str(ROOT / "scripts/check-workflows.py"), "--data-only", str(d)],
+                              capture_output=True, text=True)
+
+    def test_the_tree_passes(self):
+        r = self.check(self.tree())
+        self.assertEqual(r.returncode, 0, r.stdout)
+
+    def test_a_yaml_workflow_with_a_gate(self):
+        d = self.tree()
+        (d / ".github/workflows/duplicate.yaml").write_text(
+            "on: pull_request\njobs:\n  x:\n    name: gate\n    runs-on: ubuntu-latest\n    steps:\n      - run: 'true'\n")
+        self.assertNotEqual(self.check(d).returncode, 0)
+
+    def test_pr_yml_removed(self):
+        d = self.tree()
+        (d / ".github/workflows/pr.yml").unlink()
+        self.assertNotEqual(self.check(d).returncode, 0)
+
+    def git(self, d, *args):
+        subprocess.run(["git", "-C", str(d), *args], check=True, capture_output=True)
+
+    def changed(self, setup):
+        d = Path(tempfile.mkdtemp())
+        self.git(d, "init", "-q", "-b", "main")
+        self.git(d, "config", "user.email", "t@example.invalid")
+        self.git(d, "config", "user.name", "t")
+        (d / "scripts").mkdir()
+        (d / "scripts/check.py").write_text("x\n")
+        (d / "README").write_text("r\n")
+        self.git(d, "add", "-A")
+        self.git(d, "commit", "-qm", "base")
+        self.git(d, "checkout", "-qb", "pr")
+        setup(d)
+        self.git(d, "add", "-A")
+        self.git(d, "commit", "-qm", "pr")
+        out = subprocess.run(["git", "-C", str(d), "diff", "--no-renames", "--name-only", "-z", "main...pr"],
+                             capture_output=True, check=True).stdout
+        return cw.ci_changes(out)
+
+    def test_a_rename_out_of_a_ci_path(self):
+        def rename(d):
+            (d / "compat").mkdir()
+            (d / "scripts/check.py").rename(d / "compat/check.py")
+        self.assertEqual(self.changed(rename), [b"scripts/check.py"])
+
+    def test_unusual_names(self):
+        for name in ["scripts/check-\u00e9.py", "scripts/a\tb.py", "scripts/a\nb.py", ".github/workflows/x y.yml"]:
+            with self.subTest(name=name):
+                def add(d, name=name):
+                    (d / name).parent.mkdir(parents=True, exist_ok=True)
+                    (d / name).write_text("x\n")
+                self.assertEqual(self.changed(add), [name.encode()])
+
+    def test_other_paths_are_not_ci(self):
+        self.assertEqual(self.changed(lambda d: (d / "README").write_text("changed\n")), [])
+
+    def test_fork_decision(self):
+        f = Path(tempfile.mkdtemp()) / "changed.z"
+        cli = lambda fork: subprocess.run([sys.executable, str(ROOT / "scripts/check-workflows.py"), "--fork-changes",
+                                           str(f), fork], capture_output=True, text=True).returncode
+        f.write_bytes(b"src/lib.rs\0scripts/verify-redact.py\0")
+        self.assertNotEqual(cli("true"), 0)
+        self.assertEqual(cli("false"), 0)
+        f.write_bytes(b"src/lib.rs\0docs/x.md\0")
+        self.assertEqual(cli("true"), 0)
+
+
 class ReleaseCheck(unittest.TestCase):
-    """scripts/release-check.py: only a full gate on the exact commit counts."""
+    """scripts/release-check.py: only a full gate, CodeQL and (when
+    required) a nightly whose corpus job really ran, on the exact commit."""
 
     rc = load("release_check", "scripts/release-check.py")
     SHA = "a" * 40
+    CORPUS_OK = {"name": "full compatibility + round-trip (511)", "conclusion": "success", "steps": [
+        {"name": "redaction corpus — four option sets", "conclusion": "success"},
+        {"name": "full run (all pages)", "conclusion": "success"},
+        {"name": "regression check and quality gate", "conclusion": "success"}]}
 
     def run_(self, rid, path="pr.yml", event="push", conclusion="success", sha=SHA):
-        return {"id": rid, "path": f".github/workflows/{path}", "event": event, "conclusion": conclusion, "head_sha": sha}
+        if "/" not in path:
+            path = f".github/workflows/{path}"
+        return {"id": rid, "path": path, "event": event, "conclusion": conclusion, "head_sha": sha}
 
-    def problems(self, runs, gates, ancestor=True, nightly=False):
-        return self.rc.verdict(self.SHA, runs, gates, ancestor, nightly)
+    def gate(self, conclusion="success"):
+        return [{"name": "gate", "conclusion": conclusion}]
 
-    def test_full_gate_on_the_commit_passes(self):
-        self.assertEqual(self.problems([self.run_(1)], {1: "success"}), [])
-        self.assertEqual(self.problems([self.run_(1, event="workflow_dispatch")], {1: "success"}), [])
+    def base(self):
+        return [self.run_(1), self.run_(9, path="dynamic/github-code-scanning/codeql", event="dynamic")], {1: self.gate()}
+
+    def problems(self, runs, jobs, ancestor=True, nightly=False):
+        return self.rc.verdict(self.SHA, runs, jobs, ancestor, nightly)
+
+    def test_full_gate_and_codeql_on_the_commit_pass(self):
+        runs, jobs = self.base()
+        self.assertEqual(self.problems(runs, jobs), [])
+        dispatch = [self.run_(1, event="workflow_dispatch"), self.run_(9, path="codeql-release.yml")]
+        self.assertEqual(self.problems(dispatch, jobs), [])
 
     def test_what_does_not_count(self):
+        codeql = self.run_(9, path="dynamic/github-code-scanning/codeql", event="dynamic")
         cases = {
-            "a pull request's run (fast gate)": ([self.run_(1, event="pull_request")], {1: "success"}),
-            "a failed run": ([self.run_(1, conclusion="failure")], {1: "failure"}),
-            "a cancelled run": ([self.run_(1, conclusion="cancelled")], {1: "cancelled"}),
-            "a run still going": ([self.run_(1, conclusion=None)], {1: None}),
-            "gate skipped": ([self.run_(1)], {1: "skipped"}),
-            "no gate job": ([self.run_(1)], {}),
-            "another commit's run": ([self.run_(1, sha="b" * 40)], {1: "success"}),
-            "another workflow": ([self.run_(1, path="nightly.yml")], {1: "success"}),
+            "a pull request's run (fast gate)": ([self.run_(1, event="pull_request"), codeql], {1: self.gate()}),
+            "a failed run": ([self.run_(1, conclusion="failure"), codeql], {1: self.gate("failure")}),
+            "a cancelled run": ([self.run_(1, conclusion="cancelled"), codeql], {1: self.gate("cancelled")}),
+            "a run still going": ([self.run_(1, conclusion=None), codeql], {1: self.gate(None)}),
+            "gate skipped": ([self.run_(1), codeql], {1: self.gate("skipped")}),
+            "no gate job": ([self.run_(1), codeql], {1: []}),
+            "another commit's run": ([self.run_(1, sha="b" * 40), codeql], {1: self.gate()}),
+            "another workflow": ([self.run_(1, path="nightly.yml"), codeql], {1: self.gate()}),
+            "no CodeQL": ([self.run_(1)], {1: self.gate()}),
+            "CodeQL failed": ([self.run_(1), self.run_(9, path="codeql-release.yml", conclusion="failure")], {1: self.gate()}),
+            "CodeQL of another commit": ([self.run_(1), self.run_(9, path="codeql-release.yml", sha="b" * 40)], {1: self.gate()}),
             "no run at all": ([], {}),
         }
-        for name, (runs, gates) in cases.items():
+        for name, (runs, jobs) in cases.items():
             with self.subTest(name):
-                self.assertTrue(self.problems(runs, gates), name)
+                self.assertTrue(self.problems(runs, jobs), name)
 
     def test_main_must_fast_forward(self):
-        self.assertTrue(self.problems([self.run_(1)], {1: "success"}, ancestor=False))
+        runs, jobs = self.base()
+        self.assertTrue(self.problems(runs, jobs, ancestor=False))
 
-    def test_nightly_on_the_commit_when_required(self):
-        ok = [self.run_(1)]
-        self.assertTrue(self.problems(ok, {1: "success"}, nightly=True))
-        other = ok + [self.run_(2, path="nightly.yml", event="schedule", sha="b" * 40)]
-        self.assertTrue(self.problems(other, {1: "success"}, nightly=True))
-        failed = ok + [self.run_(2, path="nightly.yml", event="workflow_dispatch", conclusion="failure")]
-        self.assertTrue(self.problems(failed, {1: "success"}, nightly=True))
-        good = ok + [self.run_(2, path="nightly.yml", event="workflow_dispatch")]
-        self.assertEqual(self.problems(good, {1: "success"}, nightly=True), [])
+    def test_nightly_corpus_on_the_commit_when_required(self):
+        runs, jobs = self.base()
+        self.assertTrue(self.problems(runs, jobs, nightly=True))
+        skipped = dict(self.CORPUS_OK, conclusion="skipped", steps=[])
+        partial = dict(self.CORPUS_OK, steps=self.CORPUS_OK["steps"][1:])
+        cases = {
+            "another commit's nightly": (self.run_(2, path="nightly.yml", sha="b" * 40), [self.CORPUS_OK]),
+            "a failed nightly": (self.run_(2, path="nightly.yml", conclusion="failure"), [self.CORPUS_OK]),
+            "a green nightly whose corpus job was skipped": (self.run_(2, path="nightly.yml"), [skipped]),
+            "a green nightly without the corpus job": (self.run_(2, path="nightly.yml"), []),
+            "the redaction corpus step missing": (self.run_(2, path="nightly.yml"), [partial]),
+        }
+        for name, (run, njobs) in cases.items():
+            with self.subTest(name):
+                self.assertTrue(self.problems(runs + [run], {**jobs, 2: njobs}, nightly=True), name)
+        good = runs + [self.run_(2, path="nightly.yml", event="workflow_dispatch")]
+        self.assertEqual(self.problems(good, {**jobs, 2: [self.CORPUS_OK]}, nightly=True), [])
 
 
 class Projection(unittest.TestCase):
