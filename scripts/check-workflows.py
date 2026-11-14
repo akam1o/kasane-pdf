@@ -144,11 +144,22 @@ PR_MUST_RUN = {
     "compat-smoke": ["scripts/check-workflows.py", "scripts/verify-redact.py",
                      "KASANE_ADVISORY_DUMP=/tmp/advisories cargo test --release --test redact_advisories",
                      "check-advisory-regressions.py target/release/kasane-pdf /tmp/advisories --expect-safe",
-                     "scripts/test_ci_scripts.py", "scripts/test_release_verify.py"],
+                     "--expected compat/advisories/history.json",
+                     "scripts/test_ci_scripts.py", "scripts/test_release_verify.py",
+                     "scripts/test_advisory_history.py"],
     "render-fuzz-smoke": ["ci-run-sharded.sh redact_model", "fuzz/ci-run.sh \"$T\" \"fuzz/seeds/$T\"",
                           "-seed=1 -runs=3000"],
 }
 FULL_ONLY_IF = "github.event_name != 'pull_request'"
+# Full-gate jobs whose decisive command must run (unconditionally within
+# the job).
+FULL_MUST_RUN = {
+    "renderers-linux": ["python3 scripts/verify-renderers.py target/release/kasane-pdf /tmp/advisories --json /tmp/renderers.json"],
+}
+# nightly.yml: the advisory history of every published version.
+NIGHTLY_MUST_RUN = {
+    "advisory-history": ["python3 scripts/advisory-history.py run --dump /tmp/advisories --candidate"],
+}
 MAIN_ONLY = "${{ github.ref == 'refs/heads/main' }}"
 MAIN_ONLY_SAVE = "success() && github.ref == 'refs/heads/main'"
 FUZZ_TARGETS = {"render_content", "render_graph", "redact_model"}
@@ -175,7 +186,7 @@ GUARD_RUNS = (
 # Paths a pull request from a fork may not change: the CI's definition,
 # and the baselines and security regressions it judges against.
 CI_PATHS = re.compile(
-    rb"^(\.github/|scripts/|tools/|\.config/|\.cargo/|fuzz/ci-run(-sharded)?\.sh$|compat/baselines/|compat/redaction/|compat/renderers/"
+    rb"^(\.github/|scripts/|tools/|\.config/|\.cargo/|fuzz/ci-run(-sharded)?\.sh$|compat/baselines/|compat/redaction/|compat/renderers/|compat/advisories/"
     rb"|compat/quality-gate\.json$|tests/redact_advisories\.rs$)")
 NOT_RUN = re.compile(r"^\s*(echo|printf|#|:|true\b)")
 
@@ -273,12 +284,15 @@ def check_gate(path, wf):
     branches = set(((on.get("push") or {}) if isinstance(on, dict) else {}).get("branches") or [])
     if not {"main", "release/**"} <= branches:
         problem(f"{path.name}: pushes to main and release/** must run it (has {sorted(branches)})")
-    for jid, cmds in PR_MUST_RUN.items():
+    for jid, cmds in list(PR_MUST_RUN.items()) + list(FULL_MUST_RUN.items()):
         job = jobs.get(jid)
         if not job:
             problem(f"{path.name}: job `{jid}` is missing")
             continue
-        if "if" in job:
+        if jid in FULL_MUST_RUN:
+            if str(job.get("if", "")).strip() != FULL_ONLY_IF:
+                problem(f"{path.name}:{jid}: must be a full-gate job (`if: {FULL_ONLY_IF}`)")
+        elif "if" in job:
             problem(f"{path.name}:{jid}: must run on every pull request (has `if: {job['if']}`)")
         targets = {e.get("target") for e in ((job.get("strategy") or {}).get("matrix") or {}).get("include") or []}
         for cmd in cmds:
@@ -324,6 +338,28 @@ def check_gate(path, wf):
         problem(f"{path.name}:gate: its name must be `{GATE}` (the required check)")
     if ci_gate_full() != full:
         problem(f"{path.name}:gate: scripts/ci-gate.py FULL {sorted(ci_gate_full())} differs from the jobs skipped on pull requests {sorted(full)}")
+
+
+def check_must_run(path, wf, required):
+    """Jobs of `required` exist, run unconditionally, and run each of
+    their commands in a step nothing switches off."""
+    jobs = wf.get("jobs") or {}
+    for jid, cmds in required.items():
+        job = jobs.get(jid)
+        if not job:
+            problem(f"{path.name}: job `{jid}` is missing")
+            continue
+        if "if" in job or job.get("continue-on-error"):
+            problem(f"{path.name}:{jid}: must run unconditionally")
+        for cmd in cmds:
+            steps = [st for st in job.get("steps") or [] if runs_command(st.get("run"), cmd)]
+            if not steps:
+                problem(f"{path.name}:{jid}: does not run `{cmd}`")
+            for st in steps:
+                if "if" in st or st.get("continue-on-error"):
+                    problem(f"{path.name}:{jid}: the step running `{cmd}` can be switched off")
+                if "--private-inputs" in (st.get("run") or ""):
+                    problem(f"{path.name}:{jid}: private inputs in a workflow")
 
 
 def check_names(wfs):
@@ -433,6 +469,7 @@ def main():
         check_no_secret_echo(path, text)
         if path.name == "nightly.yml":
             check_nightly(path, wf)
+            check_must_run(path, wf, NIGHTLY_MUST_RUN)
         check_caches(path, wf)
         wfs.append((path, wf))
         if path.name == "pr.yml":

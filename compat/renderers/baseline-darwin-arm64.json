@@ -58,6 +58,14 @@
     }
    }
   },
+  "adv:2r8v-default-rgb-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:2r8v-devicen-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
   "adv:2r8v-palette-catalog": {
    "outcome": "refused",
    "renderers": {}
@@ -66,7 +74,15 @@
    "outcome": "refused",
    "renderers": {}
   },
+  "adv:2r8v-palette-string-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
   "adv:2r8v-tint-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:2r8v-tint-pieceinfo": {
    "outcome": "refused",
    "renderers": {}
   },
@@ -123,11 +139,43 @@
    "outcome": "refused",
    "renderers": {}
   },
+  "adv:6pgh-goto-A-pieceinfo": {
+   "outcome": "refused",
+   "renderers": {}
+  },
   "adv:6pgh-goto-AA-catalog": {
    "outcome": "refused",
    "renderers": {}
   },
   "adv:6pgh-goto-AA-next": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-goto-AA-pieceinfo": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-javascript-A-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-javascript-A-next": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-javascript-A-pieceinfo": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-javascript-AA-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-javascript-AA-next": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-javascript-AA-pieceinfo": {
    "outcome": "refused",
    "renderers": {}
   },
@@ -139,6 +187,10 @@
    "outcome": "refused",
    "renderers": {}
   },
+  "adv:6pgh-launch-A-pieceinfo": {
+   "outcome": "refused",
+   "renderers": {}
+  },
   "adv:6pgh-launch-AA-catalog": {
    "outcome": "refused",
    "renderers": {}
@@ -146,6 +198,60 @@
   "adv:6pgh-launch-AA-next": {
    "outcome": "refused",
    "renderers": {}
+  },
+  "adv:6pgh-launch-AA-pieceinfo": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-named-A-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-named-A-next": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-named-A-pieceinfo": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-named-AA-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-named-AA-next": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-named-AA-pieceinfo": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-shared-kept": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "snap": 0
+    }
+   }
   },
   "adv:6pgh-uri-A-catalog": {
    "outcome": "refused",
@@ -155,11 +261,19 @@
    "outcome": "refused",
    "renderers": {}
   },
+  "adv:6pgh-uri-A-pieceinfo": {
+   "outcome": "refused",
+   "renderers": {}
+  },
   "adv:6pgh-uri-AA-catalog": {
    "outcome": "refused",
    "renderers": {}
   },
   "adv:6pgh-uri-AA-next": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-uri-AA-pieceinfo": {
    "outcome": "refused",
    "renderers": {}
   },
@@ -175,7 +289,23 @@
    "outcome": "refused",
    "renderers": {}
   },
+  "adv:92wc-markup-nm-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
   "adv:92wc-markup-pieceinfo": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:92wc-markup-rc-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:92wc-markup-subj-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:92wc-markup-t-catalog": {
    "outcome": "refused",
    "renderers": {}
   },
@@ -229,6 +359,35 @@
     "poppler": {
      "antialias": 0,
      "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "adv:fqgr-cidfonttype2-bearing": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 4,
+     "changed": 140,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 4,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 4
+    },
+    "poppler": {
+     "antialias": 4,
+     "changed": 140,
      "font_substitution": 0,
      "ink_left": 0,
      "secret_extracted": false,
@@ -1470,6 +1629,8 @@
   }
  },
  "dpi": 72,
+ "platform": "darwin-arm64",
+ "reason": "28 advisory variants added (F: DeviceN, string palette, DefaultRGB, tint via PieceInfo; G: /T /Subj /NM /RC; H: JavaScript, Named, PieceInfo; I: CIDFontType2; the kept shared action is not a redaction case). Each new case is refused, or redacted with no ink left and no secret extracted in any renderer; the only new changed pixels are fqgr-cidfonttype2-bearing's, the same as fqgr-truetype-bearing's (the glyph crossing the rect goes whole, GHSA-I). Before: the initial macOS baseline, whose changed pixels were checked case by case (fqgr-truetype-bearing; text-annotation-removed, the annotation removed by option).",
  "schema_version": 1,
  "tools": {
   "mupdf": "1.28.6",

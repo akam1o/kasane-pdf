@@ -531,13 +531,23 @@ class ReleaseCheckLocal(unittest.TestCase):
     def problems(self, *args, **kw):
         os.environ["KASANE_RELEASE_VERIFY_LEDGER"] = str(self.repo.ledger)
         try:
-            return self.rc.local_problems(self.repo.path, *args, profiles=("test", "test"), **kw)
+            return self.rc.local_problems(self.repo.path, *args, profiles=("test", "test", "test"), **kw)
         finally:
             os.environ.pop("KASANE_RELEASE_VERIFY_LEDGER")
 
     def test_r_and_s(self):
         self.assertEqual(self.problems(self.r, self.r_out), [])
-        self.assertEqual(self.problems(self.r, self.r_out, self.s, self.s_out), [])
+        code, hist, log = self.repo.run(ref=self.s)
+        self.assertEqual(code, 0, log)
+        # (one profile in this throwaway repository: the newer run of S
+        # supersedes the older, so both arguments use it)
+        self.assertEqual(self.problems(self.r, self.r_out, self.s, hist, history_results=hist), [])
+
+    def test_security_release_needs_the_history_of_s(self):
+        self.assertTrue(any("needs --history-results" in p for p in self.problems(self.r, self.r_out, self.s, self.s_out)))
+        self.assertTrue(any("history: results of commit" in p for p in
+                            self.problems(self.r, self.r_out, self.s, self.s_out, history_results=self.r_out)))
+        self.assertTrue(any("goes with --disclosure" in p for p in self.problems(self.r, self.r_out, history_results=self.s_out)))
 
     def test_missing_local_results(self):
         self.assertTrue(any("no local verification results" in p for p in self.problems(self.r, None)))
@@ -545,7 +555,7 @@ class ReleaseCheckLocal(unittest.TestCase):
     def test_r_and_s_evidence_swapped(self):
         self.assertTrue(any("local: results of commit" in p for p in self.problems(self.r, self.s_out)))
         self.assertTrue(any("disclosure: results of commit" in p for p in
-                            self.problems(self.r, self.r_out, self.s, self.r_out)))
+                            self.problems(self.r, self.r_out, self.s, self.r_out, history_results=self.s_out)))
 
     def test_s_changing_code(self):
         (self.repo.path / "scripts" / "extra.py").write_text("x = 1\n")
@@ -554,6 +564,22 @@ class ReleaseCheckLocal(unittest.TestCase):
         s2 = self.repo.git("rev-parse", "HEAD")
         code, out, log = self.repo.run(ref=s2)
         self.assertTrue(any("outside tests/" in p for p in self.problems(self.r, self.r_out, s2, out)))
+
+    def test_s_may_change_the_advisory_history_data(self):
+        (self.repo.path / "compat" / "advisories").mkdir(parents=True)
+        (self.repo.path / "compat" / "advisories" / "history.json").write_text("{}\n")
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-qm", "S3")
+        s3 = self.repo.git("rev-parse", "HEAD")
+        code, out, log = self.repo.run(ref=s3)
+        self.assertEqual(code, 0, log)
+        self.assertEqual(self.problems(self.r, self.r_out, s3, out, history_results=out), [])
+        (self.repo.path / "compat" / "advisories" / "other.json").write_text("{}\n")
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-qm", "S4")
+        s4 = self.repo.git("rev-parse", "HEAD")
+        code, out, log = self.repo.run(ref=s4)
+        self.assertTrue(any("outside tests/" in p for p in self.problems(self.r, self.r_out, s4, out, history_results=out)))
 
     def test_s_not_after_r(self):
         self.assertTrue(any("does not descend" in p for p in self.problems(self.s, self.s_out, self.r, self.r_out)))

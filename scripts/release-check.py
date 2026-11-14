@@ -4,7 +4,7 @@ this exact commit passed the CI parts of the release gate?
 (docs/releasing.md, "The release gate")
 
     scripts/release-check.py <sha> --local-results DIR [--require-nightly] [--no-main]
-        [--disclosure <S> --disclosure-results DIR2] [--legacy-local]
+        [--disclosure <S> --disclosure-results DIR2 --history-results DIR3] [--legacy-local]
 
 Reads every workflow run GitHub has for <sha> (`gh api`, all pages) and
 passes only when:
@@ -34,10 +34,15 @@ and, for the local part of the gate (scripts/release-verify.py):
     10,000-seed model and the security regressions, run locally;
   * in a security release, --disclosure <S> --disclosure-results DIR2:
     S (the disclosure commit) descends from <sha> (R), changes only
-    tests/, docs/ and CHANGELOG.md after it, and DIR2 proves S passed the
+    tests/, docs/, CHANGELOG.md and compat/advisories/history.json after it,
+    and DIR2 proves S passed the
     `disclosure` profile (the new advisory regressions). R's evidence and
     S's are checked each against its own commit and profile: one cannot
-    stand in for the other.
+    stand in for the other. With it, --history-results DIR3: a
+    `security-history` run on S (scripts/advisory-history.py — every
+    published version built from crates.io, each advisory's affected range
+    reproduced, the candidate safe as expected) — the evidence for the
+    affected versions the advisory states.
 
 A commit older than scripts/release-verify.py cannot carry this
 evidence: --legacy-local accepts it, saying so, and nothing else does.
@@ -105,10 +110,13 @@ def release_verify():
 
 
 S_MAY_CHANGE = ("tests/", "docs/")
+# The new advisory's range and expected states are disclosure material,
+# data read by scripts/advisory-history.py only.
+S_MAY_CHANGE_FILES = ("CHANGELOG.md", "compat/advisories/history.json")
 
 
 def local_problems(repo, sha, results, disclosure=None, disclosure_results=None, legacy=False,
-                   profiles=("release", "disclosure")):
+                   profiles=("release", "disclosure", "security-history"), history_results=None):
     """Problems with the local evidence for <sha> (and S) — [] when it
     proves what the release needs."""
     rv = release_verify()
@@ -133,11 +141,22 @@ def local_problems(repo, sha, results, disclosure=None, disclosure_results=None,
             out = subprocess.run(["git", "-C", str(repo), "diff", "--no-renames", "--name-only", "-z", sha, s],
                                  capture_output=True, check=True).stdout
             changed = [p.decode("utf-8", "backslashreplace") for p in out.split(b"\0") if p]
-            other = [p for p in changed if not (p.startswith(S_MAY_CHANGE) or p == "CHANGELOG.md")]
+            other = [p for p in changed if not (p.startswith(S_MAY_CHANGE) or p in S_MAY_CHANGE_FILES)]
             if other:
-                problems.append(f"the disclosure commit changes {len(other)} file(s) outside tests/, docs/ and "
-                                f"CHANGELOG.md: the code verified with its tests would not be the release's")
+                problems.append(f"the disclosure commit changes {len(other)} file(s) outside tests/, docs/, "
+                                f"CHANGELOG.md and compat/advisories/history.json: the code verified with its tests "
+                                f"would not be the release's")
         problems += [f"disclosure: {p}" for p in rv.verify(repo, s, disclosure_results, profiles[1])]
+        # A security release states which published versions are affected:
+        # the history run on S (its new advisory, its range, every
+        # published version) is the evidence for that.
+        if history_results is None:
+            problems.append("a security release needs --history-results (scripts/release-verify.py run --ref S "
+                            "--profile security-history)")
+        else:
+            problems += [f"history: {p}" for p in rv.verify(repo, s, history_results, profiles[2])]
+    elif history_results is not None:
+        problems.append("--history-results goes with --disclosure")
     return problems
 
 
@@ -154,7 +173,7 @@ def main():
     legacy = "--legacy-local" in args
     args = [a for a in args if a not in ("--require-nightly", "--no-main", "--legacy-local")]
     opts = {}
-    for flag in ("--local-results", "--disclosure", "--disclosure-results"):
+    for flag in ("--local-results", "--disclosure", "--disclosure-results", "--history-results"):
         if flag in args:
             i = args.index(flag)
             opts[flag] = args[i + 1]
@@ -175,7 +194,7 @@ def main():
     ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", "origin/main", sha]).returncode == 0
     problems = verdict(sha, runs, jobs, ancestor or no_main, require_nightly)
     problems += local_problems(repo, sha, opts.get("--local-results"), opts.get("--disclosure"),
-                               opts.get("--disclosure-results"), legacy)
+                               opts.get("--disclosure-results"), legacy, history_results=opts.get("--history-results"))
     if legacy and not problems:
         print("NOTE: --legacy-local: this commit's local gate is not machine-checked")
     for p in problems:
