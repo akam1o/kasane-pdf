@@ -22,10 +22,10 @@ import sys
 # Every job of pr.yml but `gate`.
 EXPECTED = frozenset({
     "engine", "features-lint", "features-test", "render-fuzz-smoke", "r2-depth-linux", "wasm", "audit",
-    "crate-package", "compat-smoke", "msrv", "semver", "redaction-model", "crate-package-full",
+    "crate-package", "compat-smoke", "msrv", "semver", "redaction-model", "crate-package-full", "renderers-linux",
 })
 # The jobs of pr.yml that run outside pull requests only.
-FULL = frozenset({"msrv", "semver", "redaction-model", "crate-package-full"})
+FULL = frozenset({"msrv", "semver", "redaction-model", "crate-package-full", "renderers-linux"})
 
 
 def failures(needs, event):

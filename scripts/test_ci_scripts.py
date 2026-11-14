@@ -185,6 +185,13 @@ class Workflows(unittest.TestCase):
                 "defaults", {"run": {"working-directory": "compat/runner"}}),
             "the gate run in another directory": lambda wf: wf["jobs"]["gate"].__setitem__(
                 "defaults", {"run": {"working-directory": "compat/runner"}}),
+            "the Linux renderer check switched off": lambda wf: run_of(wf, "renderers-linux", "verify-renderers.py").__setitem__(
+                "if", "false"),
+            "the Linux renderer check made to pass": lambda wf: run_of(wf, "renderers-linux", "verify-renderers.py").__setitem__(
+                "run", run_of(wf, "renderers-linux", "verify-renderers.py")["run"] + " || true"),
+            "the Linux renderer job run on pull requests only": lambda wf: wf["jobs"]["renderers-linux"].pop("if"),
+            "the advisory check without the expected states": lambda wf: run_of(wf, "compat-smoke", "--expect-safe").__setitem__(
+                "run", run_of(wf, "compat-smoke", "--expect-safe")["run"].replace("--expected compat/advisories/history.json", "")),
             "a job named by an expression that can be `gate`": lambda wf: wf["jobs"]["wasm"].__setitem__(
                 "name", "${{ 'gate' }}"),
         }
@@ -213,6 +220,23 @@ class Workflows(unittest.TestCase):
                 "b": {"name": "compat + round-trip smoke (fixtures)", "steps": [{"run": "true"}]},
                 "c": {"name": "gate", "steps": [{"run": "true"}]}}}
             self.assertTrue(self.problems(nothing, extra=(Path("replacement.yml"), fake), drop_pr=True))
+        nightly_path = ROOT / ".github/workflows/nightly.yml"
+        for name, mutate in {
+            "the advisory history switched off": lambda n: next(st for st in n["jobs"]["advisory-history"]["steps"]
+                                                               if "advisory-history.py run" in (st.get("run") or "")).__setitem__("if", "false"),
+            "the advisory history job removed": lambda n: n["jobs"].pop("advisory-history"),
+            "private inputs in the nightly": lambda n: next(st for st in n["jobs"]["advisory-history"]["steps"]
+                                                           if "advisory-history.py run" in (st.get("run") or "")).__setitem__(
+                "run", "python3 scripts/advisory-history.py run --dump /tmp/advisories --candidate x --private-inputs /p"),
+        }.items():
+            with self.subTest(name):
+                n = yaml.safe_load(nightly_path.read_text())
+                mutate(n)
+                cw.problems.clear()
+                with contextlib.redirect_stdout(io.StringIO()):
+                    cw.check_must_run(nightly_path, n, cw.NIGHTLY_MUST_RUN)
+                self.assertTrue(list(cw.problems), f"not caught: {name}")
+                cw.problems.clear()
         with self.subTest("a job named `gate` in another workflow"):
             other = {"on": {"pull_request": None}, "jobs": {"x": {"name": "gate", "if": "false", "steps": [{"run": "true"}]}}}
             self.assertTrue(self.problems(nothing, extra=(Path("other.yml"), other)))
