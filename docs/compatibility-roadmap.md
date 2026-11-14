@@ -178,7 +178,7 @@ Each criterion is rated ++, +, 0 or −:
 | | Plan A — quick wins | **Plan B — balanced (recommended)** | Plan C — maximum compatibility |
 |---|---|---|---|
 | items | R0, T1, R1, R2, R3, A1 | M1, R0, T1, R1, R2, R3, R4, T2 (investigation), Q1, M2 (first tranche) | Plan B + T2 fixes, Q2, Q3, A1, A2, R5, R6, R7, F1, F2, Q4, exact-coverage glyph rasterisation |
-| effort | ≈ 7 d | ≈ 18–22 d | ≈ 55–60 d, plus open-ended research (R6, A2, Q3, rasterisation) |
+| effort | ≈ 7 d | ≈ 18–22 d | ≈ 47–65 d summed over the components (central ≈ 55–60), plus open-ended research (R6, A2, Q3, rasterisation) |
 | expected gain (upper bound) | annotation text in the CLI (15 files on the annotation-inclusive score); recovery render +8 of 43 (18 → 26) | as Plan A without A1, plus R4: recovery +8 (18 → 26); open files −2 at most (Q1); the 44 / 23 split in every nightly; the corpus +40–60 files in the thin categories; T2 fixes (default text ≤ +5) in v0.12 | strict +≤ 4 (with fonts for 3); recovery +≤ 17 (18 → ≤ 35); default text +≤ 5; open files −13 at most (Q1, Q2, Q3), A2 unknown |
 | main risk | gains are invisible in the compatibility rate (recovery mode and CLI text only); regressions stay hidden in the 44 files within tolerance | M2 adds review work and may raise the failure count (by design: new gaps); Q1 may sit upstream | API surface (F2), asset size (F1), parser work with unknown yield (R6), a long research item (rasterisation); safety work grows with every recovery rule |
 | uncertainty | low | medium (Q1 location, M2 sourcing) | high (R6, T2, F2 untestable without fonts, rasterisation) |
@@ -242,7 +242,7 @@ v0.11.0 completion criteria:
   - corpus baseline (no new open page, no numeric regression);
   - release verification.
 
-### v0.12.0 (≈ 15–20 d; proposed)
+### v0.12.0 (≈ 15–26 d for the bounded tasks, plus M2's second tranche and the fixes the investigations justify; proposed)
 
 T2-b (the unresolved-code fixes T2-a justifies, 2–4 d), R7 (1–1.5 d),
 A2 investigation (1–2 d), Q3 tone / colour investigation (1–2 d, then fixes it justifies), Q2
