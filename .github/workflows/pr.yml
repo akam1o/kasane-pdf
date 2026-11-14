@@ -346,6 +346,8 @@ jobs:
         run: python3 scripts/test_release_verify.py
       - name: advisory history's own tests (published-version judgement, baselines; no network)
         run: python3 scripts/test_advisory_history.py
+      - name: compatibility-analysis tools' own tests (strict counting, published files hold no corpus ids)
+        run: python3 scripts/test_compat_analysis.py
       - name: smoke run over tests/fixtures
         run: |
           mkdir -p /tmp/smoke

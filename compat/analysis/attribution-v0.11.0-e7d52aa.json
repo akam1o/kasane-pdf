@@ -1,0 +1,271 @@
+{
+ "agreement_300": {
+  "annotation_layer": {
+   "mupdf_only": 1,
+   "neither": 3
+  },
+  "extra_ink": {
+   "mupdf_only": 1,
+   "neither": 1
+  },
+  "kasane": {
+   "mupdf_only": 1,
+   "neither": 4,
+   "poppler": 2
+  },
+  "reference_kasane_mupdf": {
+   "mupdf_only": 4,
+   "neither": 7,
+   "poppler": 17
+  },
+  "reference_three_way": {
+   "mupdf_only": 1,
+   "neither": 8,
+   "poppler": 17
+  }
+ },
+ "by_class": {
+  "annotation_layer": {
+   "Type1-nonembedded": 2,
+   "acroform": 2,
+   "annots": 4,
+   "dests": 1,
+   "incremental": 1,
+   "metadata": 2,
+   "nonembedded-fonts": 2,
+   "outlines": 2
+  },
+  "extra_ink": {
+   "annots": 1,
+   "metadata": 2,
+   "transparency": 1
+  },
+  "kasane": {
+   "CCITTFaxDecode": 1,
+   "DCTDecode": 1,
+   "FlateDecode": 1,
+   "JPXDecode": 2,
+   "TrueType": 1,
+   "TrueType-nonembedded": 1,
+   "Type1-nonembedded": 3,
+   "annots": 1,
+   "dests": 1,
+   "embedded-fonts": 1,
+   "images": 4,
+   "metadata": 5,
+   "multipage": 2,
+   "nonembedded-fonts": 4,
+   "optional-content": 1,
+   "transparency": 3
+  },
+  "reference_kasane_mupdf": {
+   "CCITTFaxDecode": 1,
+   "CIDFontType0": 4,
+   "CIDFontType2": 1,
+   "DCTDecode": 3,
+   "FlateDecode": 4,
+   "JBIG2Decode": 4,
+   "TrueType": 1,
+   "Type1-CFF": 15,
+   "acroform": 15,
+   "annots": 15,
+   "dests": 15,
+   "embedded-fonts": 15,
+   "images": 11,
+   "incremental": 15,
+   "metadata": 19,
+   "multipage": 14,
+   "none": 1,
+   "optional-content": 3,
+   "outlines": 1,
+   "signed": 15,
+   "transparency": 2
+  },
+  "reference_three_way": {
+   "CIDFontType0": 1,
+   "CIDFontType2": 11,
+   "DCTDecode": 9,
+   "FlateDecode": 13,
+   "JBIG2Decode": 2,
+   "TrueType": 2,
+   "TrueType-nonembedded": 1,
+   "Type1-CFF": 11,
+   "Type1-eexec": 3,
+   "Type1-nonembedded": 5,
+   "Type3": 10,
+   "acroform": 10,
+   "annots": 22,
+   "dests": 21,
+   "embedded-fonts": 23,
+   "images": 16,
+   "incremental": 12,
+   "metadata": 24,
+   "multipage": 21,
+   "nonembedded-fonts": 5,
+   "outlines": 2,
+   "signed": 10,
+   "transparency": 13
+  }
+ },
+ "classes": {
+  "annotation_layer": 4,
+  "extra_ink": 2,
+  "kasane": 7,
+  "reference_kasane_mupdf": 28,
+  "reference_three_way": 27
+ },
+ "files": 68,
+ "mad_kasane_poppler_72": {
+  "annotation_layer": {
+   "max": 177.04,
+   "median": 12.93
+  },
+  "extra_ink": {
+   "max": 36.57,
+   "median": 36.57
+  },
+  "kasane": {
+   "max": 10.16,
+   "median": 3.85
+  },
+  "reference_kasane_mupdf": {
+   "max": 61.12,
+   "median": 10.65
+  },
+  "reference_three_way": {
+   "max": 17.5,
+   "median": 7.71
+  }
+ },
+ "resolution_medians": {
+  "annotation_layer": {
+   "150": {
+    "kasane_mupdf": 0.0406,
+    "kasane_poppler": 0.0958,
+    "n": 4,
+    "poppler_mupdf": 0.1118
+   },
+   "300": {
+    "kasane_mupdf": 0.0372,
+    "kasane_poppler": 0.104,
+    "n": 4,
+    "poppler_mupdf": 0.1087
+   },
+   "72": {
+    "kasane_mupdf": 0.0487,
+    "kasane_poppler": 0.1023,
+    "n": 4,
+    "poppler_mupdf": 0.118
+   }
+  },
+  "extra_ink": {
+   "150": {
+    "kasane_mupdf": 0.0358,
+    "kasane_poppler": 0.1918,
+    "n": 2,
+    "poppler_mupdf": 0.2251
+   },
+   "300": {
+    "kasane_mupdf": 0.0,
+    "kasane_poppler": 0.1774,
+    "n": 2,
+    "poppler_mupdf": 0.1879
+   },
+   "72": {
+    "kasane_mupdf": 0.1054,
+    "kasane_poppler": 0.2209,
+    "n": 2,
+    "poppler_mupdf": 0.3347
+   }
+  },
+  "kasane": {
+   "150": {
+    "kasane_mupdf": 0.0144,
+    "kasane_poppler": 0.0139,
+    "n": 7,
+    "poppler_mupdf": 0.0119
+   },
+   "300": {
+    "kasane_mupdf": 0.0093,
+    "kasane_poppler": 0.0073,
+    "n": 7,
+    "poppler_mupdf": 0.0156
+   },
+   "72": {
+    "kasane_mupdf": 0.0186,
+    "kasane_poppler": 0.0172,
+    "n": 7,
+    "poppler_mupdf": 0.0183
+   }
+  },
+  "reference_kasane_mupdf": {
+   "150": {
+    "kasane_mupdf": 0.0096,
+    "kasane_poppler": 0.0439,
+    "n": 28,
+    "poppler_mupdf": 0.0635
+   },
+   "300": {
+    "kasane_mupdf": 0.0033,
+    "kasane_poppler": 0.0003,
+    "n": 28,
+    "poppler_mupdf": 0.0049
+   },
+   "72": {
+    "kasane_mupdf": 0.0321,
+    "kasane_poppler": 0.0686,
+    "n": 28,
+    "poppler_mupdf": 0.0986
+   }
+  },
+  "reference_three_way": {
+   "150": {
+    "kasane_mupdf": 0.0381,
+    "kasane_poppler": 0.0189,
+    "n": 27,
+    "poppler_mupdf": 0.0591
+   },
+   "300": {
+    "kasane_mupdf": 0.0159,
+    "kasane_poppler": 0.0015,
+    "n": 26,
+    "poppler_mupdf": 0.0199
+   },
+   "72": {
+    "kasane_mupdf": 0.0702,
+    "kasane_poppler": 0.0456,
+    "n": 27,
+    "poppler_mupdf": 0.1068
+   }
+  }
+ },
+ "resolution_outcome": {
+  "annotation_layer": {
+   "persists": 4
+  },
+  "extra_ink": {
+   "persists": 2
+  },
+  "kasane": {
+   "persists": 5,
+   "vanishes": 2
+  },
+  "reference_kasane_mupdf": {
+   "persists": 11,
+   "vanishes": 17
+  },
+  "reference_three_way": {
+   "failed": 1,
+   "persists": 9,
+   "vanishes": 17
+  }
+ },
+ "resolution_worst_kasane_poppler_300": {
+  "annotation_layer": 0.8162,
+  "extra_ink": 0.1774,
+  "kasane": 0.0505,
+  "reference_kasane_mupdf": 0.32,
+  "reference_three_way": 0.0697
+ },
+ "threshold": 0.95
+}
