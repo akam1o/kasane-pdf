@@ -1,0 +1,909 @@
+{
+ "about": "Published versions the advisory regressions run on (scripts/advisory-history.py), how they are built, each advisory's affected range as published, and the expected state of every input on every version. Updated only with `advisory-history.py update-expected`.",
+ "advisories": {
+  "GHSA-2337-4h5g-jqwx": {
+   "affected": [
+    "<= 0.5.1"
+   ],
+   "patched": "0.5.2"
+  },
+  "GHSA-2r8v-x8mp-wp79": {
+   "affected": [
+    ">= 0.6.0",
+    "< 0.10.0"
+   ],
+   "patched": "0.10.0"
+  },
+  "GHSA-3f9j-35f2-6659": {
+   "affected": [
+    ">= 0.6.0",
+    "< 0.8.0"
+   ],
+   "patched": "0.8.0"
+  },
+  "GHSA-6pgh-gg28-m4w4": {
+   "affected": [
+    ">= 0.6.0",
+    "< 0.10.0"
+   ],
+   "patched": "0.10.0"
+  },
+  "GHSA-92wc-597g-rqx9": {
+   "affected": [
+    ">= 0.7.0",
+    "< 0.10.0"
+   ],
+   "patched": "0.10.0"
+  },
+  "GHSA-9mw8-m2cr-vxqm": {
+   "affected": [
+    ">= 0.6.0",
+    "< 0.6.2"
+   ],
+   "patched": "0.6.2",
+   "untestable": "no CLI input: the removed positions are an API-level property, judged by tests/redact_advisories.rs (ghsa_9mw8_removed_positions_do_not_remain) only"
+  },
+  "GHSA-cjhc-76x8-crrq": {
+   "affected": [
+    ">= 0.6.0",
+    "< 0.8.0"
+   ],
+   "patched": "0.8.0"
+  },
+  "GHSA-f228-qvw7-4x37": {
+   "affected": [
+    ">= 0.6.0",
+    "< 0.7.0"
+   ],
+   "patched": "0.7.0"
+  },
+  "GHSA-fm2j-3w72-p7x3": {
+   "affected": [
+    "< 0.5.1"
+   ],
+   "patched": "0.5.1"
+  },
+  "GHSA-fqgr-r67f-vx25": {
+   "affected": [
+    ">= 0.6.0",
+    "< 0.10.0"
+   ],
+   "patched": "0.10.0"
+  },
+  "GHSA-frr2-h56x-mr4h": {
+   "affected": [
+    ">= 0.6.0",
+    "< 0.6.1"
+   ],
+   "patched": "0.6.1"
+  },
+  "GHSA-vph3-9p4m-58fh": {
+   "affected": [
+    ">= 0.1.0",
+    "< 0.7.0"
+   ],
+   "patched": "0.7.0"
+  },
+  "GHSA-x455-j82p-6jmv": {
+   "affected": [
+    ">= 0.6.0",
+    "< 0.6.1"
+   ],
+   "patched": "0.6.1"
+  },
+  "GHSA-xpph-r5fc-83rj": {
+   "affected": [
+    ">= 0.6.0",
+    "< 0.7.0"
+   ],
+   "patched": "0.7.0"
+  }
+ },
+ "expected": {
+  "2337-cm.pdf": {
+   "0.5.0": "LEAK",
+   "0.5.1": "LEAK",
+   "0.5.2": "REMOVED",
+   "0.6.0": "REMOVED",
+   "0.6.1": "REMOVED",
+   "0.6.2": "REMOVED",
+   "0.7.0": "REMOVED",
+   "0.8.0": "REMOVED",
+   "candidate": "REMOVED"
+  },
+  "2337-form.pdf": {
+   "0.5.0": "LEAK",
+   "0.5.1": "LEAK",
+   "0.5.2": "REMOVED",
+   "0.6.0": "REMOVED",
+   "0.6.1": "REMOVED",
+   "0.6.2": "REMOVED",
+   "0.7.0": "REMOVED",
+   "0.8.0": "REMOVED",
+   "candidate": "REMOVED"
+  },
+  "2r8v-default-rgb-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "2r8v-devicen-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "2r8v-palette-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "2r8v-palette-pieceinfo.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "2r8v-palette-string-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "REMOVED",
+   "0.6.1": "REMOVED",
+   "0.6.2": "REMOVED",
+   "0.7.0": "REMOVED",
+   "0.8.0": "REMOVED",
+   "candidate": "REFUSED"
+  },
+  "2r8v-tint-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "2r8v-tint-pieceinfo.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "2r8v-transfer-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "3f9j-after-endcmap.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "REFUSED",
+   "candidate": "REFUSED"
+  },
+  "3f9j-bfchar.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "REFUSED",
+   "candidate": "REFUSED"
+  },
+  "3f9j-length.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "REFUSED",
+   "candidate": "REFUSED"
+  },
+  "3f9j-order.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "REMOVED",
+   "candidate": "REMOVED"
+  },
+  "6pgh-goto-A-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-goto-A-next.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-goto-A-pieceinfo.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-goto-AA-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-goto-AA-next.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-goto-AA-pieceinfo.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-javascript-A-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-javascript-A-next.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-javascript-A-pieceinfo.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-javascript-AA-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-javascript-AA-next.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-javascript-AA-pieceinfo.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-launch-A-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-launch-A-next.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-launch-A-pieceinfo.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-launch-AA-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-launch-AA-next.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-launch-AA-pieceinfo.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-named-A-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-named-A-next.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-named-A-pieceinfo.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-named-AA-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-named-AA-next.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-named-AA-pieceinfo.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-shared-kept.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "KEPT",
+   "0.6.1": "KEPT",
+   "0.6.2": "KEPT",
+   "0.7.0": "KEPT",
+   "0.8.0": "KEPT",
+   "candidate": "KEPT"
+  },
+  "6pgh-uri-A-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-uri-A-next.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-uri-A-pieceinfo.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-uri-AA-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-uri-AA-next.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "6pgh-uri-AA-pieceinfo.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "92wc-link-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "REFUSED",
+   "0.6.1": "REFUSED",
+   "0.6.2": "REFUSED",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "92wc-markup-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "REFUSED",
+   "0.6.1": "REFUSED",
+   "0.6.2": "REFUSED",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "92wc-markup-hide.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "REFUSED",
+   "0.6.1": "REFUSED",
+   "0.6.2": "REFUSED",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "92wc-markup-nm-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "REFUSED",
+   "0.6.1": "REFUSED",
+   "0.6.2": "REFUSED",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "92wc-markup-pieceinfo.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "REFUSED",
+   "0.6.1": "REFUSED",
+   "0.6.2": "REFUSED",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "92wc-markup-rc-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "REFUSED",
+   "0.6.1": "REFUSED",
+   "0.6.2": "REFUSED",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "92wc-markup-subj-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "REFUSED",
+   "0.6.1": "REFUSED",
+   "0.6.2": "REFUSED",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "92wc-markup-t-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "REFUSED",
+   "0.6.1": "REFUSED",
+   "0.6.2": "REFUSED",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "cjhc-contents-attachment.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "REFUSED",
+   "candidate": "REFUSED"
+  },
+  "cjhc-contents-catalog.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "REFUSED",
+   "candidate": "REFUSED"
+  },
+  "cjhc-contents-pieceinfo.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "REFUSED",
+   "candidate": "REFUSED"
+  },
+  "cjhc-link-appearance.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "REFUSED",
+   "candidate": "REFUSED"
+  },
+  "cjhc-stamp-appearance.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "REFUSED",
+   "0.6.1": "REFUSED",
+   "0.6.2": "REFUSED",
+   "0.7.0": "REFUSED",
+   "0.8.0": "REFUSED",
+   "candidate": "REFUSED"
+  },
+  "f228-crlf.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "REFUSED",
+   "0.8.0": "REFUSED",
+   "candidate": "REFUSED"
+  },
+  "f228-shown.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "REFUSED",
+   "0.8.0": "REFUSED",
+   "candidate": "REFUSED"
+  },
+  "fm2j-dash.pdf": {
+   "0.5.0": "SLOW",
+   "0.5.1": "FAST",
+   "0.5.2": "FAST",
+   "0.6.0": "FAST",
+   "0.6.1": "FAST",
+   "0.6.2": "FAST",
+   "0.7.0": "FAST",
+   "0.8.0": "FAST",
+   "candidate": "FAST"
+  },
+  "fqgr-cff-notdef.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REMOVED"
+  },
+  "fqgr-cidfonttype2-bearing.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REMOVED"
+  },
+  "fqgr-truetype-bearing.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REMOVED"
+  },
+  "fqgr-type1-absent-name.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REMOVED"
+  },
+  "frr2-tm-cancelled-by-cm.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "REFUSED",
+   "0.6.2": "REFUSED",
+   "0.7.0": "REFUSED",
+   "0.8.0": "REFUSED",
+   "candidate": "REFUSED"
+  },
+  "frr2-tm.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "REFUSED",
+   "0.6.2": "REFUSED",
+   "0.7.0": "REFUSED",
+   "0.8.0": "REFUSED",
+   "candidate": "REFUSED"
+  },
+  "vph3-objstm.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "REFUSED",
+   "0.8.0": "REFUSED",
+   "candidate": "REFUSED"
+  },
+  "x455-image.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "REMOVED",
+   "0.6.2": "REMOVED",
+   "0.7.0": "REMOVED",
+   "0.8.0": "REMOVED",
+   "candidate": "REMOVED"
+  },
+  "x455-text-invisible-clip.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "REFUSED",
+   "0.6.1": "REFUSED",
+   "0.6.2": "REFUSED",
+   "0.7.0": "REMOVED",
+   "0.8.0": "REMOVED",
+   "candidate": "REMOVED"
+  },
+  "x455-text.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "REMOVED",
+   "0.6.2": "REMOVED",
+   "0.7.0": "REMOVED",
+   "0.8.0": "REMOVED",
+   "candidate": "REMOVED"
+  },
+  "xpph-literal.pdf": {
+   "0.5.0": "NA",
+   "0.5.1": "NA",
+   "0.5.2": "NA",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "REFUSED",
+   "0.8.0": "REFUSED",
+   "candidate": "REFUSED"
+  }
+ },
+ "features": [],
+ "schema_version": 1,
+ "toolchain": "1.92",
+ "versions": [
+  "0.5.0",
+  "0.5.1",
+  "0.5.2",
+  "0.6.0",
+  "0.6.1",
+  "0.6.2",
+  "0.7.0",
+  "0.8.0"
+ ]
+}

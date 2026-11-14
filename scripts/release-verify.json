@@ -3,7 +3,8 @@
   "max_age_days": 30,
   "profiles": {
     "release": ["security_regressions", "noninterference", "redact_corpus", "compat_corpus", "external_renderers", "fuzz"],
-    "disclosure": ["security_regressions"]
+    "disclosure": ["security_regressions"],
+    "security-history": ["advisory_history"]
   },
   "checks": {
     "security_regressions": {
@@ -45,7 +46,13 @@
       "kind": "external_renderers",
       "timeout": 1800,
       "tools": ["pdftoppm", "pdftotext", "mutool", "node", "npm"],
-      "baseline": "compat/renderers/baseline.json"
+      "baselines": "compat/renderers/baseline-<os>-<arch>.json"
+    },
+    "advisory_history": {
+      "kind": "advisory_history",
+      "timeout": 3600,
+      "tools": ["rustup", "qpdf", "pdftotext", "pdftoppm", "mutool", "node", "npm"],
+      "expected": "compat/advisories/history.json"
     },
     "fuzz": {
       "kind": "fuzz",

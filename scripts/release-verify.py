@@ -70,6 +70,9 @@ RELEASE_CHECKS = {
     "external_renderers": "external_renderers",
     "fuzz": "fuzz",
 }
+# The security-history profile (scripts/advisory-history.py) and its kind.
+HISTORY_CHECKS = {"advisory_history": "advisory_history"}
+PUBLIC_CHECKS = {**RELEASE_CHECKS, **HISTORY_CHECKS}
 NAME = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
 FILE = re.compile(r"^[a-z][a-z0-9_.-]{0,80}$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -537,8 +540,10 @@ def check_external_renderers(r, cfg, work):
     need(r.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=Path(r.src) / "tools" / "pdfjs"), "npm_ci")
     dump_dir = advisory_dump(r, work)
     out = work / "renderers.json"
-    code = r.run([sys.executable, "scripts/verify-renderers.py", str(k), str(dump_dir), "--json", str(out),
-                  "--baseline", str(Path(r.src) / cfg["baseline"])], log=r.logfile("renderers"))
+    # The baseline of this platform (compat/renderers/baseline-<os>-<arch>.json):
+    # another platform's is never used.
+    code = r.run([sys.executable, "scripts/verify-renderers.py", str(k), str(dump_dir), "--json", str(out)],
+                 log=r.logfile("renderers"))
     if code is None:
         raise CheckFailed("timeout", "timeout")
     if not out.is_file():
@@ -552,6 +557,46 @@ def check_external_renderers(r, cfg, work):
         raise CheckFailed("incomparable", "renderer_version", summary=summary)
     if doc["status"] != "passed" or code != 0:
         raise CheckFailed("failed", "leak" if s["leaks"] else "regression", summary=summary)
+    return summary
+
+
+def check_advisory_history(r, cfg, work):
+    """Every published version of compat/advisories/history.json built from
+    crates.io and judged with the commit's advisory inputs: affected
+    versions LEAK, the candidate (this commit) as expected, each
+    advisory's range as published."""
+    k = build_kasane(r)
+    need(r.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=Path(r.src) / "tools" / "pdfjs"), "npm_ci")
+    dump_dir = advisory_dump(r, work)
+    out = work / "history.json"
+    argv = [sys.executable, "scripts/advisory-history.py", "run", "--dump", str(dump_dir), "--candidate", str(k),
+            "--json", str(out), "--log", str(r.logfile("builds"))]
+    private = os.environ.get("KASANE_PRIVATE_ADVISORY_INPUTS")
+    if private:
+        argv += ["--private-inputs", private, "--private-json", str(work / "private.json")]
+    code = r.run(argv, log=r.logfile("history"))
+    if code is None:
+        raise CheckFailed("timeout", "timeout")
+    if not out.is_file():
+        raise CheckFailed("error", f"exit:advisory_history:{code}")
+    doc = json.loads(out.read_text())
+    states = {}
+    for row in doc["inputs"].values():
+        for label, cell in row["cells"].items():
+            states.setdefault(label, {}).setdefault(cell["state"], 0)
+            states[label][cell["state"]] += 1
+    summary = {
+        "inputs": len(doc["inputs"]), "versions": len(doc["versions"]),
+        "built": sum(v.get("status") == "built" for v in doc["versions"].values()),
+        "advisories": len(doc["ranges"]), "untestable": len(doc["untestable"]), "problems": len(doc["problems"]),
+        "states": states, "private_inputs": (doc.get("private") or {}).get("inputs", 0),
+        "renderers": doc["renderers"],
+        "binaries": {v: rec.get("binary_sha256") for v, rec in doc["versions"].items()},
+    }
+    if doc["status"] == "incomplete":
+        raise CheckFailed("incomplete", "expectations", summary=summary)
+    if doc["status"] != "passed" or code != 0:
+        raise CheckFailed("failed", "history", summary=summary)
     return summary
 
 
@@ -629,6 +674,7 @@ KINDS = {
     "compat_corpus": check_compat_corpus,
     "external_renderers": check_external_renderers,
     "fuzz": check_fuzz,
+    "advisory_history": check_advisory_history,
     "command": check_command,
 }
 CORPUS_KINDS = ("redact_corpus", "compat_corpus")
@@ -681,7 +727,10 @@ def cmd_run(a):
         # the timeouts' wall-clock time and the per-file corpus limits).
         if sys.platform == "darwin" and shutil.which("caffeinate"):
             inner = ["caffeinate", "-i", *inner]
-        code = subprocess.run(inner).returncode
+        env = dict(os.environ)
+        if a.private_inputs:
+            env["KASANE_PRIVATE_ADVISORY_INPUTS"] = str(Path(a.private_inputs).absolute())
+        code = subprocess.run(inner, env=env).returncode
     finally:
         if not a.keep:
             git(repo, "worktree", "remove", "--force", str(src), check=False)
@@ -967,10 +1016,11 @@ def verify(repo, ref, results, profile, allow_superseded=False, now=None):
         return p + [f"the commit's config has no profile {profile}"]
     if result["profile"] != profile:
         p.append(f"profile {result['profile']!r}, not {profile!r}")
-    if profile == "release":
-        for name, kind in RELEASE_CHECKS.items():
-            if name not in expected or config["checks"].get(name, {}).get("kind") != kind:
-                p.append(f"the commit's release profile lacks {name} ({kind})")
+    for prof, required in (("release", RELEASE_CHECKS), ("security-history", HISTORY_CHECKS)):
+        if profile == prof:
+            for name, kind in required.items():
+                if name not in expected or config["checks"].get(name, {}).get("kind") != kind:
+                    p.append(f"the commit's {prof} profile lacks {name} ({kind})")
     if list(result["requested"]) != list(expected):
         p.append("not every check of the profile was requested")
     for name in expected:
@@ -1042,6 +1092,11 @@ SCHEMAS = {
     "external_renderers": {"cases": INT, "renderer_runs": INT, "leaks": INT, "losses": INT, "problems": INT,
                            "outcomes": {k: INT for k in ("ok", "refused", "crash", "timeout")},
                            "pixels": {k: INT for k in ("antialias", "snap", "font_substitution", "changed")}},
+    "advisory_history": {"inputs": INT, "versions": INT, "built": INT, "advisories": INT, "untestable": INT,
+                         "problems": INT, "private_inputs": INT, "states": (
+                             ("0.5.0", "0.5.1", "0.5.2", "0.6.0", "0.6.1", "0.6.2", "0.7.0", "0.8.0", "candidate"),
+                             {k: INT for k in ("LEAK", "REMOVED", "REFUSED", "KEPT", "LOST", "FAST", "SLOW",
+                                               "TIMEOUT", "CRASH", "ERROR", "NA")})},
     "fuzz": {"seconds": INT, "targets": (
         ("render_content", "render_graph", "redact_model"),
         {k: INT for k in ("seeds_replayed", "runs", "elapsed_seconds", "executed_beyond_seeds", "new_inputs",
@@ -1050,7 +1105,8 @@ SCHEMAS = {
 REASONS = {"timeout", "tool_missing", "corpus_incomplete", "corpus_manifest_empty", "regression", "leak",
            "renderer_version", "file_count", "crash_or_timeout", "no_baseline", "no_report", "verify_redact_cases",
            "advisory_cases", "worktree", "crashed", "exit", "no_summary", "too_short", "no_new_inputs",
-           "fuzz_failed", "interrupted", "internal", "environment_changed", "seeds_mismatch"}
+           "fuzz_failed", "interrupted", "internal", "environment_changed", "seeds_mismatch", "history",
+           "expectations"}
 
 
 def project(schema, v):
@@ -1091,7 +1147,8 @@ def public(result, checks):
         "schema_version": SCHEMA,
         "commit": result["commit"] if SHA.match(str(result["commit"])) else None,
         "tree": result["tree"] if SHA.match(str(result["tree"])) else None,
-        "profile": result["profile"] if result["profile"] in ("release", "disclosure", "partial") else None,
+        "profile": result["profile"] if result["profile"] in ("release", "disclosure", "security-history",
+                                                              "partial") else None,
         "status": result["status"] if result["status"] in STATUSES else None,
         "duration_seconds": number(result["duration_seconds"]),
         "environment": {"os": env.get("os") if env.get("os") in ("Darwin", "Linux") else None,
@@ -1100,7 +1157,7 @@ def public(result, checks):
         "checks": {},
     }
     for name, doc in sorted(checks.items()):
-        if name not in RELEASE_CHECKS or doc.get("kind") not in SCHEMAS:
+        if name not in PUBLIC_CHECKS or doc.get("kind") not in SCHEMAS:
             continue
         reason = str(doc.get("reason")).split(":", 1)[0] if doc.get("reason") is not None else None
         out["checks"][name] = {
@@ -1146,6 +1203,7 @@ def main(argv=None):
     r.add_argument("--corpus")
     r.add_argument("--only", action="append", help="run only this check (the results are then `partial`)")
     r.add_argument("--keep", action="store_true", help="keep the worktree and the build")
+    r.add_argument("--private-inputs", help="security-history: a private directory of advisory inputs (local only)")
     i = sub.add_parser("_inner")
     for k in ("--out", "--commit", "--tree", "--profile", "--corpus"):
         i.add_argument(k, required=True)

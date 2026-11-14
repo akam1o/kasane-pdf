@@ -531,13 +531,23 @@ class ReleaseCheckLocal(unittest.TestCase):
     def problems(self, *args, **kw):
         os.environ["KASANE_RELEASE_VERIFY_LEDGER"] = str(self.repo.ledger)
         try:
-            return self.rc.local_problems(self.repo.path, *args, profiles=("test", "test"), **kw)
+            return self.rc.local_problems(self.repo.path, *args, profiles=("test", "test", "test"), **kw)
         finally:
             os.environ.pop("KASANE_RELEASE_VERIFY_LEDGER")
 
     def test_r_and_s(self):
         self.assertEqual(self.problems(self.r, self.r_out), [])
-        self.assertEqual(self.problems(self.r, self.r_out, self.s, self.s_out), [])
+        code, hist, log = self.repo.run(ref=self.s)
+        self.assertEqual(code, 0, log)
+        # (one profile in this throwaway repository: the newer run of S
+        # supersedes the older, so both arguments use it)
+        self.assertEqual(self.problems(self.r, self.r_out, self.s, hist, history_results=hist), [])
+
+    def test_security_release_needs_the_history_of_s(self):
+        self.assertTrue(any("needs --history-results" in p for p in self.problems(self.r, self.r_out, self.s, self.s_out)))
+        self.assertTrue(any("history: results of commit" in p for p in
+                            self.problems(self.r, self.r_out, self.s, self.s_out, history_results=self.r_out)))
+        self.assertTrue(any("goes with --disclosure" in p for p in self.problems(self.r, self.r_out, history_results=self.s_out)))
 
     def test_missing_local_results(self):
         self.assertTrue(any("no local verification results" in p for p in self.problems(self.r, None)))
@@ -545,7 +555,7 @@ class ReleaseCheckLocal(unittest.TestCase):
     def test_r_and_s_evidence_swapped(self):
         self.assertTrue(any("local: results of commit" in p for p in self.problems(self.r, self.s_out)))
         self.assertTrue(any("disclosure: results of commit" in p for p in
-                            self.problems(self.r, self.r_out, self.s, self.r_out)))
+                            self.problems(self.r, self.r_out, self.s, self.r_out, history_results=self.s_out)))
 
     def test_s_changing_code(self):
         (self.repo.path / "scripts" / "extra.py").write_text("x = 1\n")

@@ -720,6 +720,11 @@ fn ghsa_2r8v_colour_data_of_removed_appearances() {
                     PAL,
                 ),
             ),
+            // The palette as a string object rather than a stream.
+            (42, b"<123456abcdef>".to_vec()),
+            // An ICC profile's bytes (not a valid profile: readers fall
+            // back to the alternate) carrying the colour data.
+            (43, stream_obj("/N 3 /Alternate /DeviceRGB", PAL)),
         ]
     };
     let indexed = "/ColorSpace << /C [/Indexed /DeviceRGB 1 40 0 R] >>";
@@ -750,11 +755,46 @@ fn ghsa_2r8v_colour_data_of_removed_appearances() {
                 "/ExtGState << /G << /TR 41 0 R >> >>",
             ),
         ),
+        (
+            "tint-pieceinfo",
+            "/PieceInfo << /App << /Private 41 0 R >> >>",
+            link(
+                b"/S cs 1 scn 0 0 10 10 re f",
+                "/ColorSpace << /S [/Separation /Ink /DeviceRGB 41 0 R] >>",
+            ),
+        ),
+        (
+            "devicen-catalog",
+            "/XPriv 41 0 R",
+            link(
+                b"/D cs 1 scn 0 0 10 10 re f",
+                "/ColorSpace << /D [/DeviceN [/Ink] /DeviceRGB 41 0 R] >>",
+            ),
+        ),
+        (
+            "palette-string-catalog",
+            "/XPriv 42 0 R",
+            link(
+                b"/C cs 1 sc 0 0 10 10 re f",
+                "/ColorSpace << /C [/Indexed /DeviceRGB 1 42 0 R] >>",
+            ),
+        ),
+        (
+            "default-rgb-catalog",
+            "/XPriv 43 0 R",
+            link(
+                b"1 0 0 rg 0 0 10 10 re f",
+                "/ColorSpace << /DefaultRGB [/ICCBased 43 0 R] >>",
+            ),
+        ),
     ];
     for (name, cat, extra) in cases {
         let pdf = page(KEPT.as_bytes(), "", cat, "/Annots [30 0 R]", extra);
         if let Ok(r) = run(&pdf, &RedactOptions::new()) {
-            assert!(!holds(&r.output, PAL), "{name}: the colour data stayed");
+            assert!(
+                !holds(&r.output, PAL) && !contains(&r.output, b"123456abcdef"),
+                "{name}: the colour data stayed"
+            );
         }
         dump(
             &format!("2r8v-{name}"),
@@ -776,7 +816,7 @@ fn ghsa_92wc_removed_annotations_with_scripts() {
     let js = "/A << /S /JavaScript /JS (app.alert\\(1\\)) >>";
     let markup = format!(
         "<< /Type /Annot /Subtype /FreeText {rect} /DA (/Helv 9 Tf 0 g) /Contents (CONTENTSSECRET) \
-         /T (AUTHORSECRET) {js} >>"
+         /T (AUTHORSECRET) /Subj (SUBJSECRET) /NM (NMSECRET) /RC (<p>RCSECRET</p>) {js} >>"
     );
     let link = format!(
         "<< /Type /Annot /Subtype /Link {rect} /A << /S /URI /URI (https://secret.example/LINKSECRET) \
@@ -821,6 +861,24 @@ fn ghsa_92wc_removed_annotations_with_scripts() {
             false,
         ),
     ];
+    // The other text fields of the same annotation, each its own case.
+    let mut cases = cases;
+    for field in ["AUTHORSECRET", "SUBJSECRET", "NMSECRET", "RCSECRET"] {
+        let base = cases[0].clone();
+        cases.push((
+            match field {
+                "AUTHORSECRET" => "markup-t-catalog",
+                "SUBJSECRET" => "markup-subj-catalog",
+                "NMSECRET" => "markup-nm-catalog",
+                _ => "markup-rc-catalog",
+            },
+            base.1,
+            base.2,
+            base.3,
+            field,
+            base.5,
+        ));
+    }
     for (name, annot, cat, extra, marker, annotations) in cases {
         let annots = if extra.is_empty() {
             "/Annots [30 0 R]"
@@ -870,11 +928,14 @@ fn ghsa_6pgh_removed_link_actions() {
         ),
         ("launch", "<< /S /Launch /F (ACTSECRET.exe) >>"),
         ("goto", "<< /S /GoTo /D (ACTSECRET) >>"),
+        ("javascript", "<< /S /JavaScript /JS (ACTSECRET) >>"),
+        ("named", "<< /S /Named /N /NextPage /XNote (ACTSECRET) >>"),
     ];
     for (a, action) in actions {
         for (via, entry) in [("A", "/A 40 0 R"), ("AA", "/AA << /E 40 0 R >>")] {
             for (w, cat, extra) in [
                 ("catalog", "/XPriv 40 0 R", vec![]),
+                ("pieceinfo", "/PieceInfo << /App << /Private 40 0 R >> >>", vec![]),
                 (
                     "next",
                     "/XPriv 41 0 R",
@@ -931,6 +992,13 @@ fn ghsa_6pgh_removed_link_actions() {
     );
     let r = run(&pdf, &RedactOptions::new()).unwrap();
     assert!(holds(&r.output, b"example.com/shared"));
+    dump(
+        "6pgh-shared-kept",
+        "GHSA-6pgh-gg28-m4w4",
+        REDACT_ARGS,
+        "kept-bytes:example.com/shared",
+        &pdf,
+    );
 }
 
 // ---- GHSA-fqgr-r67f-vx25 (0.6.0 – 0.8.0): glyphs viewers resolve or place differently
@@ -1140,6 +1208,7 @@ fn ghsa_fqgr_glyphs_viewers_draw_elsewhere() {
         "/fonts/liberation/LiberationSans-Regular.ttf"
     ))
     .unwrap();
+    let underscore_gid;
     {
         // `_`'s bearing one em past its `xMin`.
         let (gid, x_min) = {
@@ -1155,6 +1224,7 @@ fn ghsa_fqgr_glyphs_viewers_draw_elsewhere() {
             .unwrap();
         let at = hmtx + 4 * gid + 2;
         ttf[at..at + 2].copy_from_slice(&(x_min + 2048).to_be_bytes());
+        underscore_gid = gid;
     }
     let widths = vec!["1000"; 256].join(" ");
     let simple = |subtype: &str, encoding: &str, file: &str, program: Vec<u8>, extra: &str| {
@@ -1214,8 +1284,53 @@ fn ghsa_fqgr_glyphs_viewers_draw_elsewhere() {
             (60.0, 60.0, 90.0, 79.0),
         ),
     ];
-    for (name, objs, rect) in cases {
-        let content = format!("BT /F2 60 Tf 60 80 Td <5F> Tj ET {KEPT}");
+    // The same TrueType program as a CIDFontType2 descendant of a Type 0
+    // font (Identity-H, CID = GID): two-byte codes, the glyph's bearing
+    // disagreeing with its outline as above.
+    let code = format!("{underscore_gid:04X}");
+    let cid_tounicode = stream_obj(
+        "",
+        format!(
+            "/CIDInit /ProcSet findresource begin 12 dict begin begincmap /CMapName /X def \
+             1 begincodespacerange <0000> <FFFF> endcodespacerange 1 beginbfchar <{code}> <{}> endbfchar \
+             endcmap CMapName currentdict /CMap defineresource pop end end",
+            marker
+                .bytes()
+                .map(|c| format!("00{c:02X}"))
+                .collect::<String>()
+        )
+        .as_bytes(),
+    );
+    let cid = vec![
+        (
+            50,
+            b"<< /Type /Font /Subtype /Type0 /BaseFont /KTest /Encoding /Identity-H \
+              /DescendantFonts [54 0 R] /ToUnicode 53 0 R >>"
+                .to_vec(),
+        ),
+        (
+            54,
+            b"<< /Type /Font /Subtype /CIDFontType2 /BaseFont /KTest \
+              /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+              /FontDescriptor 51 0 R /DW 1000 /CIDToGIDMap /Identity >>"
+                .to_vec(),
+        ),
+        (
+            51,
+            b"<< /Type /FontDescriptor /FontName /KTest /Flags 32 /FontBBox [-200 -800 2000 1000] \
+              /ItalicAngle 0 /Ascent 900 /Descent -800 /CapHeight 700 /StemV 80 /FontFile2 52 0 R >>"
+                .to_vec(),
+        ),
+        (52, stream_obj(&format!("/Length1 {}", ttf.len()), &ttf)),
+        (53, cid_tounicode),
+    ];
+    let cases: Vec<(&str, Vec<(u32, Vec<u8>)>, (f64, f64, f64, f64), String)> = cases
+        .into_iter()
+        .map(|(n, o, r)| (n, o, r, "5F".to_string()))
+        .chain([("cidfonttype2-bearing", cid, (60.0, 60.0, 90.0, 79.0), code.clone())])
+        .collect();
+    for (name, objs, rect, code) in cases {
+        let content = format!("BT /F2 60 Tf 60 80 Td <{code}> Tj ET {KEPT}");
         let mut all = vec![
             (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
             (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
@@ -1231,14 +1346,19 @@ fn ghsa_fqgr_glyphs_viewers_draw_elsewhere() {
         all.extend(objs);
         let pdf = build_pdf(&all);
         let doc = Document::from_bytes(&pdf).unwrap();
-        let r = redact(&doc, &[(0, vec![rect])], &RedactOptions::new())
-            .unwrap_or_else(|e| panic!("{name}: {e}"));
-        let t = text(&r.output);
-        assert!(
-            !t.contains(marker),
-            "{name}: the code a viewer draws inside the rect stayed"
-        );
-        assert!(t.contains("PUBLICWORD"), "{name}: the public text was lost");
+        // The Type 1, CFF and simple TrueType cases are redacted (0.10.0);
+        // the composite one may also be refused — never kept.
+        match redact(&doc, &[(0, vec![rect])], &RedactOptions::new()) {
+            Ok(r) => {
+                let t = text(&r.output);
+                assert!(
+                    !t.contains(marker),
+                    "{name}: the code a viewer draws inside the rect stayed"
+                );
+                assert!(t.contains("PUBLICWORD"), "{name}: the public text was lost");
+            }
+            Err(e) => assert!(name.starts_with("cid"), "{name}: {e}"),
+        }
         dump(
             &format!("fqgr-{name}"),
             "GHSA-fqgr-r67f-vx25",

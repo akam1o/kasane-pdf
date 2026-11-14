@@ -148,3 +148,66 @@ jobs:
             /tmp/full/latest.md
             /tmp/full/latest.json
           retention-days: 30
+
+  # Every published version of compat/advisories/history.json built from
+  # its crates.io package (checksum against the index, contents against
+  # the git tag, --locked, toolchain 1.92, default features) and run on
+  # the advisory regression inputs of tests/redact_advisories.rs (synthetic,
+  # committed): each affected version must still LEAK, the candidate (this
+  # commit) must be removed / refused / kept as history.json expects, each
+  # advisory's range as published (scripts/advisory-history.py). Text
+  # cases are judged by Poppler, MuPDF and pdf.js. No credentials, no
+  # corpus, no private input (the script refuses them in Actions); the
+  # uploaded JSON names synthetic inputs, versions and digests.
+  advisory-history:
+    name: advisory history (published versions, linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The tags: each package is checked against its tag's commit.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+        with:
+          toolchain: "1.92"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: renderers (Poppler, MuPDF, qpdf from apt; pdf.js pinned in tools/pdfjs)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils mupdf-tools qpdf
+          npm ci --no-audit --no-fund --prefix tools/pdfjs
+      - name: published versions built before (each binary checked against its record)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/kasane-pdf/advisory-history
+          key: advisory-history-${{ runner.os }}-${{ hashFiles('compat/advisories/history.json') }}-${{ github.run_id }}
+          restore-keys: advisory-history-${{ runner.os }}-${{ hashFiles('compat/advisories/history.json') }}-
+      - name: the candidate and the advisory inputs
+        run: |
+          cargo build --locked --release --bin kasane-pdf
+          KASANE_ADVISORY_DUMP=/tmp/advisories cargo test --locked --release --test redact_advisories
+      - name: every published version and the candidate, judged
+        run: |
+          python3 scripts/advisory-history.py run --dump /tmp/advisories --candidate target/release/kasane-pdf \
+            --json /tmp/advisory-history.json
+      - name: keep the builds for the next run (main only)
+        if: success() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/kasane-pdf/advisory-history
+          key: advisory-history-${{ runner.os }}-${{ hashFiles('compat/advisories/history.json') }}-${{ github.run_id }}
+      - name: results (synthetic inputs, versions, digests)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: advisory-history
+          path: /tmp/advisory-history.json
+          retention-days: 30
+          if-no-files-found: ignore

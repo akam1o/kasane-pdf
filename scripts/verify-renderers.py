@@ -2,7 +2,7 @@
 """External renderers on redaction outputs: Poppler, MuPDF and pdf.js.
 
     scripts/verify-renderers.py <kasane-pdf> <advisory dump dir> --json OUT
-        [--baseline compat/renderers/baseline.json] [--write-baseline FILE] [--jobs N]
+        [--baseline FILE] [--write-baseline FILE --reason TEXT [--accept-changes]] [--jobs N]
 
 The cases are synthetic and committed (no corpus): every case of
 scripts/verify-redact.py, every redaction input of the advisory
@@ -32,7 +32,15 @@ and compared with the input by the same renderer:
 
 A leak or a loss fails regardless of the baseline; so does a crash (no
 typed error), a refusal where the case expects success, or an outcome
-different from the baseline. The JSON names cases, renderers, versions
+different from the baseline.
+
+Baselines are per platform (`compat/renderers/baseline-<os>-<arch>.json`,
+recording the platform and the renderer versions): another platform's
+baseline, or none, is `incomparable` — macOS numbers never stand for
+Linux. A baseline is written only with --write-baseline and --reason
+(recorded in it); never over a safety failure; the differences from the
+committed one are printed case by case, and an outcome change, a case
+added or removed, or more changed pixels need --accept-changes. The JSON names cases, renderers, versions
 and counts only (the cases are synthetic; no rectangles are written).
 Exit 0 passed, 1 failed, 3 incomparable, 2 could not run.
 """
@@ -312,15 +320,81 @@ def judge(results, versions, baseline):
     return problems, incomparable
 
 
+def platform_key():
+    """The baseline's platform: renderer output differs across operating
+    systems and builds of the same version (fonts, rasteriser options)."""
+    import platform as _p
+    return f"{_p.system().lower()}-{_p.machine().lower().replace('aarch64', 'arm64') if _p.system() == 'Darwin' else _p.machine().lower()}"
+
+
+def default_baseline():
+    return os.path.join(ROOT, "compat", "renderers", f"baseline-{platform_key()}.json")
+
+
+SAFETY = ("leak_ink", "leak_text", "loss_text", "crash", "timeout", "outcome_not_expected", "render_failed",
+          "text_failed", "size_changed", "renderer_missing")
+
+
+def baseline_mismatch(baseline, plat):
+    """Why `baseline` cannot be compared on `plat` (None when it can):
+    never another platform's numbers — macOS and Linux renderers of one
+    version still draw differently."""
+    if baseline is None:
+        return "no baseline for this platform"
+    if baseline.get("platform") != plat:
+        return f"baseline of {baseline.get('platform')}, this is {plat}"
+    return None
+
+
+def safety_problems(problems):
+    """The problems no baseline may record."""
+    return [p for p in problems if p.split(":")[0] in SAFETY]
+
+
+def baseline_diff(old, new):
+    """(lines, needs_acceptance): every change from the committed baseline
+    — versions, outcomes, each case×renderer's `changed` count."""
+    lines, accept = [], []
+    if old is None:
+        return [f"new baseline for {new['platform']}: {len(new['cases'])} cases"], []
+    for rd in RENDERERS:
+        if old["tools"].get(rd) != new["tools"].get(rd):
+            lines.append(f"version {rd}: {old['tools'].get(rd)} -> {new['tools'].get(rd)}")
+    for name in sorted(set(old["cases"]) | set(new["cases"])):
+        o, n = old["cases"].get(name), new["cases"].get(name)
+        if o is None or n is None:
+            lines.append(f"case {name}: {'added' if o is None else 'removed'}")
+            accept.append(name)
+            continue
+        if o.get("outcome") != n.get("outcome"):
+            lines.append(f"case {name}: outcome {o.get('outcome')} -> {n.get('outcome')}")
+            accept.append(name)
+        for rd in RENDERERS:
+            a = ((o.get("renderers") or {}).get(rd) or {}).get("changed")
+            b = ((n.get("renderers") or {}).get(rd) or {}).get("changed")
+            if a != b:
+                lines.append(f"case {name} {rd}: changed pixels {a} -> {b}")
+                if b is not None and (a is None or b > a):
+                    accept.append(f"{name}:{rd}")
+    return lines, accept
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("kasane")
     ap.add_argument("dump")
     ap.add_argument("--json", required=True)
-    ap.add_argument("--baseline", default=os.path.join(ROOT, "compat", "renderers", "baseline.json"))
-    ap.add_argument("--write-baseline")
+    ap.add_argument("--baseline", help="default: compat/renderers/baseline-<os>-<arch>.json")
+    ap.add_argument("--write-baseline", help="write the observed results as a baseline (explicit; see below)")
+    ap.add_argument("--reason", help="why the baseline changes and how the differences were checked (recorded)")
+    ap.add_argument("--accept-changes", action="store_true",
+                    help="write although outcomes change or more pixels change than the committed baseline")
     ap.add_argument("--jobs", type=int, default=os.cpu_count() or 2)
     a = ap.parse_args()
+    a.baseline = a.baseline or default_baseline()
+    if a.write_baseline and not a.reason:
+        print("verify-renderers: --write-baseline needs --reason")
+        return 2
     for tool in ("pdftoppm", "pdftotext", "mutool", "node"):
         if shutil.which(tool) is None:
             print(f"verify-renderers: {tool} not found")
@@ -337,15 +411,13 @@ def main():
     if versions != tool_versions():
         print("verify-renderers: a renderer's version changed during the run")
         return 2
-    baseline = None
-    if not a.write_baseline:
-        if not os.path.exists(a.baseline):
-            print("verify-renderers: no baseline")
-            return 2
-        baseline = json.load(open(a.baseline))
-    problems, incomparable = judge(results, versions, baseline)
-    hard = [p for p in problems]
-    status = "failed" if hard else ("incomparable" if incomparable else "passed")
+    plat = platform_key()
+    baseline = json.load(open(a.baseline)) if os.path.exists(a.baseline) else None
+    incomparable_why = baseline_mismatch(baseline, plat)
+    problems, incomparable = judge(results, versions, None if incomparable_why else baseline)
+    if incomparable_why:
+        incomparable = list(RENDERERS)
+    status = "failed" if problems else ("incomparable" if incomparable else "passed")
     outcomes = {}
     for r in results.values():
         outcomes[r["outcome"]] = outcomes.get(r["outcome"], 0) + 1
@@ -358,27 +430,42 @@ def main():
         "pixels": {k: sum(g.get(k, 0) for r in results.values() for g in r.get("renderers", {}).values())
                    for k in ("antialias", "snap", "font_substitution", "changed")},
     }
-    doc = {"schema_version": 1, "tools": versions, "dpi": DPI, "status": status, "problems": problems,
-           "incomparable": incomparable, "summary": summary, "cases": results}
-    if a.write_baseline:
-        doc["status"] = "baseline"
-        for r in doc["cases"].values():
-            r.pop("expected", None)
-        with open(a.write_baseline, "w") as fh:
-            json.dump({k: doc[k] for k in ("schema_version", "tools", "dpi", "cases")}, fh, indent=1, sort_keys=True)
-            fh.write("\n")
+    doc = {"schema_version": 1, "platform": plat, "tools": versions, "dpi": DPI, "status": status,
+           "problems": problems, "incomparable": incomparable, "incomparable_why": incomparable_why,
+           "summary": summary, "cases": results}
     with open(a.json, "w") as fh:
         json.dump(doc, fh, indent=1, sort_keys=True)
         fh.write("\n")
-    print(f"verify-renderers: {status}; {summary['cases']} cases, outcomes {outcomes}, "
+    print(f"verify-renderers: {status}; {plat}; {summary['cases']} cases, outcomes {outcomes}, "
           f"{summary['renderer_runs']} renderer comparisons, tools {versions}")
     for p in problems:
         print("  problem:", p)
-    for rd in incomparable:
+    if incomparable_why:
+        print(f"  incomparable: {incomparable_why}")
+    for rd in incomparable if not incomparable_why else []:
         print(f"  incomparable: {rd} {versions.get(rd)} (baseline {(baseline or {}).get('tools', {}).get(rd)})")
     if a.write_baseline:
-        return 0 if not [p for p in problems if p.split(':')[0] in ('leak_ink', 'leak_text', 'loss_text', 'crash', 'timeout',
-                                                                    'outcome_not_expected')] else 1
+        # A baseline records drawing differences; it never records a
+        # safety failure, so none can be written away.
+        safety = safety_problems(problems)
+        if safety:
+            print(f"verify-renderers: not writing a baseline over {len(safety)} safety failure(s)")
+            return 1
+        new = {"schema_version": 1, "platform": plat, "tools": versions, "dpi": DPI, "reason": a.reason,
+               "cases": {n: {k: v for k, v in r.items() if k != "expected"} for n, r in results.items()}}
+        committed = baseline if baseline and baseline.get("platform") == plat else None
+        lines, accept = baseline_diff(committed, new)
+        for line in lines:
+            print("  baseline:", line)
+        if accept and not a.accept_changes:
+            print(f"verify-renderers: {len(accept)} change(s) need --accept-changes (outcomes, cases, more pixels "
+                  f"changed); check each, then accept")
+            return 1
+        with open(a.write_baseline, "w") as fh:
+            json.dump(new, fh, indent=1, sort_keys=True)
+            fh.write("\n")
+        print(f"verify-renderers: baseline written to {a.write_baseline}")
+        return 0
     return {"passed": 0, "failed": 1, "incomparable": 3}[status]
 
 

@@ -344,6 +344,8 @@ jobs:
         run: python3 scripts/test_ci_scripts.py
       - name: release verification's own tests (evidence checks, renderer judgement; no corpus)
         run: python3 scripts/test_release_verify.py
+      - name: advisory history's own tests (published-version judgement, baselines; no network)
+        run: python3 scripts/test_advisory_history.py
       - name: smoke run over tests/fixtures
         run: |
           mkdir -p /tmp/smoke
@@ -467,6 +469,57 @@ jobs:
           cargo test --doc --features cjk-fallback
           cargo doc --no-deps --all-features
 
+  # The external renderers on Linux (full gate): every verify-redact
+  # case, every advisory input and the synthetic XFA / shading / pattern /
+  # widget cases redacted, then rendered and text-extracted by Poppler,
+  # MuPDF and pdf.js (scripts/verify-renderers.py). Ink left inside a
+  # rect, a secret extracted or public text lost fail whatever the
+  # baseline; drawing changes outside the rect are compared with this
+  # platform's baseline (compat/renderers/baseline-linux-x86_64.json) for
+  # the same renderer versions only — never macOS's. Synthetic inputs
+  # only: the uploaded result names synthetic cases and counts.
+  renderers-linux:
+    name: external renderers (synthetic, linux)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: renderers (Poppler, MuPDF, qpdf from apt; pdf.js pinned in tools/pdfjs)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils mupdf-tools qpdf
+          npm ci --no-audit --no-fund --prefix tools/pdfjs
+      - name: the CLI and the advisory inputs
+        run: |
+          cargo build --locked --release --bin kasane-pdf
+          KASANE_ADVISORY_DUMP=/tmp/advisories cargo test --locked --release --test redact_advisories
+      - name: redacted outputs judged by three renderers against this platform's baseline
+        run: python3 scripts/verify-renderers.py target/release/kasane-pdf /tmp/advisories --json /tmp/renderers.json
+      - name: a proposed baseline, for review (never committed by CI; not written over a safety failure)
+        if: failure()
+        run: |
+          python3 scripts/verify-renderers.py target/release/kasane-pdf /tmp/advisories --json /tmp/renderers-proposed.json \
+            --write-baseline /tmp/baseline-proposed.json --accept-changes \
+            --reason "proposed by CI run ${{ github.run_id }}: to be checked case by case before it is committed"
+      - name: results (synthetic cases, counts and versions only)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: renderers-linux
+          path: |
+            /tmp/renderers*.json
+            /tmp/baseline-proposed.json
+          retention-days: 14
+          if-no-files-found: ignore
+
   # ---- The result ------------------------------------------------------
 
   gate:
@@ -486,6 +539,7 @@ jobs:
       - semver
       - redaction-model
       - crate-package-full
+      - renderers-linux
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
