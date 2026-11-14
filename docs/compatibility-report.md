@@ -40,13 +40,14 @@ The machine-readable results are in [`../compat/analysis/`](../compat/analysis/)
   knockout, luminosity masks, CFF CID, ActualText and Optional Content
   are no longer the cause of any strict failure, and the attribution
   puts no low-SSIM page on JBIG2, CIDFontType0 or Type 1 CFF.
-- **Of the 68 rendered files below SSIM 0.95, 52 are rasterisation
-  differences.** At 300 dpi kasane agrees with Poppler (43) or with
-  MuPDF (9) to under 0.5 % of pixels; the check failed for 1. **15
-  still differ from both references**:
-  - 5 Skia pages are borderline (0.5–0.7 %);
+- **Of the 68 rendered files below SSIM 0.95, 44 are within tolerance
+  of a reference at 300 dpi** (Poppler 36, MuPDF only 8), most likely
+  rasterisation differences; the check failed for 1. **23 are outside
+  tolerance of both references**:
+  - broad tone or colour differences: 7 (undetermined);
+  - borderline Skia pages: 5;
+  - non-embedded font substitution: 4;
   - annotation layer: 3 (undetermined);
-  - non-embedded font substitution: 3;
   - CCITT: 2;
   - 1 JBIG2 page both references draw wrongly;
   - undetermined: 1.
@@ -298,31 +299,40 @@ dpi renders, box-downsampled to the 72 dpi grid. A difference that
 vanishes at a higher resolution comes from rasterisation (sampling,
 anti-aliasing, stroke snapping), not from content.
 
-The verdict per file is which reference kasane agrees with at 300 dpi,
-taking agreement as under 0.5 % of pixels:
+The verdict per file is which reference kasane is **within tolerance**
+of at 300 dpi. Within tolerance means both:
+- `dpx` under 0.5 %;
+- mean grey difference (`mad`) under 2 levels.
 
-| class | agrees with Poppler | with MuPDF only | with neither | check failed |
+The `mad` condition keeps a broad tone difference, invisible to `dpx`,
+from counting as agreement. Agreement with a witness at 300 dpi is an
+observation. It is consistent with rasterisation, but it does not prove
+that the 72 dpi difference had no other cause.
+
+| class | within tolerance of Poppler | of MuPDF only | of neither | check failed |
 |---|---:|---:|---:|---:|
-| reference, kasane ≈ MuPDF (28) | 20 | 6 | 2 | 0 |
-| reference, three-way (27) | 18 | 1 | 7 | 1 |
-| kasane (7) | 3 | 1 | 3 | 0 |
-| annotation layer (4) | 1 | 0 | 3 | 0 |
-| extra ink (2) | 1 | 1 | 0 | 0 |
-| **total (68)** | **43** | **9** | **15** | **1** |
+| reference, kasane ≈ MuPDF (28) | 17 | 4 | 7 | 0 |
+| reference, three-way (27) | 17 | 1 | 8 | 1 |
+| kasane (7) | 2 | 1 | 4 | 0 |
+| annotation layer (4) | 0 | 1 | 3 | 0 |
+| extra ink (2) | 0 | 1 | 1 | 0 |
+| **total (68)** | **36** | **8** | **23** | **1** |
 
-So **52 of the 68 files are rasterisation differences relative to at
-least one reference**. The check failed for one file, whose 300 dpi
-kasane render exceeds the default image limits. The **15 files that
-differ from both references at 300 dpi** are what remains open:
+So **44 of the 68 files are within tolerance of at least one reference
+at 300 dpi**, and are most likely rasterisation differences. The check
+failed for one file, whose 300 dpi kasane render exceeds the default
+image limits. The **23 files outside tolerance of both references**
+are what remains open:
 
 | cause (by inspection of the measures and the file's profile) | files | status |
 |---|---:|---|
-| browser-generated (Skia) pages within 0.5–0.7 % of Poppler | 5 | borderline; kasane is closer to Poppler than MuPDF is (2–4 %) |
+| broad tone or colour difference: `dpx` ≈ 0 against a witness but a mean difference of 2–15 grey levels | 7 | undetermined; ICC, DeviceN, smooth shadings and DCT images co-occur, so colour conversion is the first suspect |
+| browser-generated (Skia) pages within 0.5–0.7 % of Poppler (mean 2–3 levels) | 5 | borderline; kasane is closer to Poppler than MuPDF is |
+| non-embedded font substitution (Liberation for a standard name) | 4 | kasane: metrics / shape of the substitute |
 | annotation layer: kasane within 4–8 % of MuPDF while Poppler differs by 6–82 % | 3 | undetermined; which widget / appearance rendering is right is not settled |
-| non-embedded font substitution (Liberation for a standard name) | 3 | kasane: metrics / shape of the substitute |
 | CCITT image | 2 | kasane or decoder: undetermined |
 | JBIG2 page that both references draw wrongly (Poppler blank, MuPDF black) | 1 | reference defects; kasane draws the image |
-| no font or image signal | 1 | undetermined (kasane within 1 % of MuPDF) |
+| no font, image or colour signal (a type 1 shading co-occurs) | 1 | undetermined |
 
 Class medians, for comparison with earlier analyses (kasane–Poppler
 `dpx` at 72 / 150 / 300 dpi):
@@ -352,10 +362,10 @@ most 1.2 points, so the gap is not an anti-aliasing switch.
 |---|---:|---|
 | near-blank render | 0 | attribution `blank` / `missing_ink` |
 | missing page | 0 | every compared page rendered (pages-ok = pages-total on all 382 strict renders) |
-| missing font (glyphs not drawn) | 0 | no missing-ink class; non-embedded fonts are substituted and reported (69 strict renders carry a substitution); 3 substitutions differ visibly (§ 6.2) |
+| missing font (glyphs not drawn) | 0 | no missing-ink class; non-embedded fonts are substituted and reported (69 strict renders carry a substitution); 4 substitutions differ visibly (§ 6.2) |
 | missing image | 0 | no missing-ink class; 1 image is drawn below full resolution and reported as approximate |
-| colour mismatch | 0 enforced | report-only colour findings are among the gate's 7 report files; 1 render approximates an ICC profile with a Lab PCS (`/Alternate` used) |
-| transparency mismatch | 0 attributable | of the 124 transparency users, 19 are below 0.95; none is among the 15 open files for a transparency reason |
+| colour mismatch | 0 enforced; 7 open tone / colour differences (§ 6.2) | report-only colour findings are among the gate's 7 report files; 1 render approximates an ICC profile with a Lab PCS (`/Alternate` used) |
+| transparency mismatch | 0 attributable | of the 124 transparency users, 19 are below 0.95 and 9 are open; none of the 9 points to transparency (5 are the borderline Skia pages, the others tone, font or annotation cases) |
 | layout shift | 0 page-box differences once the reference uses the CropBox; glyph placement matches Splash (`compat-backlog.md`) | attribution |
 
 ## 7. The past feature table, measured again
@@ -374,22 +384,22 @@ time). The current columns are over the 425 `expect: pass` files:
 | feature | past | use now | blockers now (cause) | open (cause) | status |
 |---|---:|---:|---:|---:|---|
 | JBIG2 | 45 | 45 | 0 (2 invalid-input JBIG2 files under § 5) | 1 (both references wrong; kasane draws it) | implemented (`hayro-jbig2` 0.3) |
-| annotation appearance | 42 | 167 with `/Annots` | 4 invalid (`/AS` ×2, state not a stream, non-dictionary `/Annots` entry) + 1 not implemented (Unicode field font) | 9: annotation layer 3, Skia borderline 5, font 1 | implemented; `/AS` policy and a Unicode field font open; annotation layer undetermined |
+| annotation appearance | 42 | 167 with `/Annots` | 4 invalid (`/AS` ×2, state not a stream, non-dictionary `/Annots` entry) + 1 not implemented (Unicode field font) | 10: annotation layer 3, Skia borderline 5, font 1, tone 1 | implemented; `/AS` policy and a Unicode field font open; annotation layer undetermined |
 | CIDFontType0 | 34 | 40 (38 CFF CID) | 1 (a Type 1 `/FontFile` on a CIDFontType0: invalid input) | 0 | implemented |
 | ActualText | 17 | 22 with `/ActualText`; 16 yield ActualText characters on page 1 | 0 | 5 (the Skia borderline pages) | implemented (§14.9.4) |
 | Optional Content | 14 | 17 | 1 invalid (undefined `/Properties` name; recovery passes) | 0 | implemented |
-| tiling pattern | 9 | 17 | 1 invalid (cell cycle) | 0 | implemented |
-| ASCIIHex / ASCII85 / LZW | 7 | 7 / 10 / 2 | 0 caused | 0 | implemented |
+| tiling pattern | 9 | 17 | 1 invalid (cell cycle) | 2 (co-occur; both tone cases) | implemented |
+| ASCIIHex / ASCII85 / LZW | 7 | 7 / 10 / 2 | 0 caused | 1 (co-occurs; a tone case) | implemented |
 | CCITT | 4 | 3 | 0 | 2 (undetermined: kasane or decoder) | implemented (`hayro-ccitt` 0.4); quality item |
 | JPX | 2 | 2 | 0 | 0 (both agree with a reference at 300 dpi) | implemented (`hayro-jpeg2000` 0.4) |
-| RunLength | — | 7 | 0 caused (1 file's oversized image) | 1 (co-occurs; the file's open cause is a CCITT image) | implemented |
+| RunLength | — | 7 | 0 caused (1 file's oversized image) | 1 (co-occurs; a borderline Skia page) | implemented |
 | luminosity soft mask | — | 3 | 0 | 0 | implemented |
 | knockout group | — | 3 | 0 | 0 | implemented (per element, `limitations.md`) |
 | blend modes (non-Normal) | — | 19 | 0 | 0 | implemented |
-| shading types 1–7 | — | 1: 3, 2–3: 27, 4–7: 1 | 1 invalid (output count) | 1 (co-occurs with a substituted font) | implemented |
-| Type 1 CFF | — | 42 | 0 | 0 (26 below 0.95, all rasterisation) | implemented |
+| shading types 1–7 | — | 1: 3, 2–3: 27, 4–7: 1 | 1 invalid (output count) | 3 (co-occur: 1 borderline Skia page, 1 tone case, 1 undetermined) | implemented; shading is a suspect for the tone and undetermined cases |
+| Type 1 CFF | — | 42 | 0 | 1 (co-occurs with substituted fonts; 25 of the 26 below 0.95 are within tolerance) | implemented |
 | Type 3 | — | 37 | 0 caused (2 invalid-input files co-occur) | 5 (the Skia borderline pages) | implemented |
-| XFA (static appearances) | — | 30 | 0 | 1 (annotation layer) | AcroForm appearances drawn; XFA itself out of scope |
+| XFA (static appearances) | — | 30 | 0 | 1 (a borderline Skia page) | AcroForm appearances drawn; XFA itself out of scope |
 
 The past counts do not describe the current engine: every listed
 feature is implemented, and none causes a strict failure that the
@@ -472,10 +482,10 @@ refused as designed) and 132 renderer comparisons, passed.
    `expect: pass` files. These are the areas most likely to hide
    gaps.
 2. **The measurement cannot see regressions in most low-SSIM files.**
-   52 of the 68 are rasterisation differences that a single 96 dpi
+   44 of the 68 are within tolerance of a reference at 300 dpi, differences that a single 96 dpi
    witness reports as low similarity. Without a second witness and a
    resolution check, a real regression in those files cannot be told
-   from noise. The 15 open files are the real fidelity list.
+   from noise. The 23 open files are the real fidelity list.
 3. **Text.** 15 files need annotation text that the API already
    produces but the CLI does not expose, and 11 have unresolvable
    codes whose cause is undetermined.
@@ -492,8 +502,8 @@ refused as designed) and 132 renderer comparisons, passed.
 5. **Unresolved**:
    - the per-font cause of the 11 + 12 unresolved-text files;
    - the 8 small or undetermined text cases;
-   - the 15 files that differ from both references at 300 dpi
-     (§ 6.2), of which 3 annotation-layer files and 1 file without a
-     signal are undetermined;
+   - the 23 files outside tolerance of both references at 300 dpi
+     (§ 6.2), of which 7 tone / colour, 3 annotation-layer and 1
+     without a signal are undetermined;
    - the 5 files that recovery parse cannot read (xref / page-tree
      rebuild limits).

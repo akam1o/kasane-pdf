@@ -31,10 +31,11 @@ priorities instead:
      already produces (the runner's annotation-inclusive score already
      counts them), and 11 have unresolved codes.
    - Recovery mode: 25 of the 43 blockers are not drawn.
-   - Measurement: 52 of the 68 low-SSIM files are rasterisation
-     differences (kasane matches Poppler or MuPDF at 300 dpi), which a
-     single 96 dpi witness cannot separate from a real regression. The
-     15 that differ from both references are the real fidelity list.
+   - Measurement: 44 of the 68 low-SSIM files are within tolerance of
+     Poppler or MuPDF at 300 dpi, most likely rasterisation differences,
+     which a single 96 dpi witness cannot separate from a real
+     regression. The 23 outside tolerance of both are the real fidelity
+     list.
 3. **The corpus under-samples the areas most likely to hide real
    gaps**: 9 Japanese, 13 scanned and 16 Office `expect: pass` files.
 
@@ -72,20 +73,21 @@ matching group in report § 8. Columns:
 | F2 | opt-in font source (caller-supplied font programs) for non-embedded Identity CID and symbolic TrueType | **strict** render when supplied | 3 | 3 | ≤ 3, only with the exact font | 0 | 0 | the corpus cannot test it without the fonts |
 | R7 | recovery rule: a Type 1 `/FontFile` on a CIDFontType0 (§9.9 requires `/FontFile3`) | recovery render | 1 | 1 | ≤ 1 | as R1 | 0 | medium |
 | Q1 | CCITT decode fidelity | SSIM, files open at 300 dpi | 3 | 2 | ≤ 2 | 0 | — | medium: kasane or the decoder crate. JPX is not a candidate: both JPX files match a reference at 300 dpi |
-| Q2 | substitute-font metrics and shape | SSIM, files open at 300 dpi | 69 substituting | 3 | ≤ 3 | — | — | medium |
+| Q2 | substitute-font metrics and shape | SSIM, files open at 300 dpi | 69 substituting | 4 | ≤ 4 | — | — | medium |
+| Q3 | broad tone / colour differences (investigation, then fixes) | SSIM, files open at 300 dpi | 55 ICC, 9 DeviceN, 27 axial / radial (co-occurring) | 7 | unknown | — | — | high: colour conversion is the first suspect, not established |
 | A2 | annotation-layer differences (investigation) | SSIM, files open at 300 dpi | 167 with `/Annots` | 3 | unknown | — | — | high: kasane is within 4–8 % of MuPDF while Poppler differs more; which is right is not settled |
 | Q4 | opt-in Poppler-compatible stroke adjustment | SSIM against Poppler only | ~25 hairline-form files (backlog) | 0 (spec-conforming today) | 0 by the spec; moves reference-class SSIM | — | — | it changes agreement with one witness, not correctness |
-| M1 | second witness and resolution re-check in the runner | measurement | 68 below 0.95 | — | separates 52 rasterisation differences from the 15 open files (1 check failed) | — | — | low: measured in this analysis |
+| M1 | second witness and resolution re-check in the runner | measurement | 68 below 0.95 | — | separates 44 files within tolerance of a reference from the 23 open files (1 check failed) | — | — | low: measured in this analysis |
 | M2 | corpus growth (Japanese, scanned, Office, forms) | finds gaps | — | — | — | — | — | by design: it measures what is not yet known |
 
 Totals across candidates (no file in two rows):
 
-| metric | today | all of T1–R7, A1, F1, F2, Q1, Q2 (upper bound) |
+| metric | today | all of T1–R7, A1, F1, F2, Q1–Q3 (upper bound) |
 |---|---:|---:|
 | strict render (`expect: pass`) | 382 | ≤ 386 (+1 F1, +3 F2 only with the exact fonts) |
 | recovery render of the 43 blockers | 18 | ≤ 30 (R1 3 + R2 1 + R3 2 + R4 2 + R5 1 + R7 1 + A1 2), plus up to 5 from R6 |
-| text F1 ≥ 0.9 (strict, 394) | 357 default / 372 annotation-inclusive | default: ≤ 362 (T2 ≤ 5); annotation-inclusive: ≤ 377 |
-| files open at 300 dpi (differ from both references) | 15 | ≥ 10 (Q1 2, Q2 3); the other 10 are borderline, reference defects or undetermined |
+| text F1 ≥ 0.9 (strict, 394) | default 357 / 394; annotation-inclusive 369 / 390 scored (4 not scored; 0 fall below 0.9 when annotations are added) | default: ≤ 362 (T2 ≤ 5); annotation-inclusive: ≤ 374 (T2 ≤ 5) |
+| files open at 300 dpi (outside tolerance of both references) | 23 | ≥ 10 (Q1 2, Q2 4, Q3 ≤ 7); the other 10 are borderline Skia pages, annotation layer (A2), a reference defect or undetermined |
 
 **Combinations asked for** (file counts, each once):
 
@@ -93,7 +95,7 @@ Totals across candidates (no file in two rows):
 |---|---:|---|
 | CIDFontType0 alone | ≤ 1 recovery (R7); ≤ 3 text | 40 use it, none open at 300 dpi; the 1 blocker carries its program under the wrong key (R7); 3 files with mostly unresolved text use it (T2) |
 | JBIG2 alone | 0 | 45 use it, all strict renders pass, low SSIM all reference class; the 2 JBIG2 blockers are invalid input (R4 covers 1 in recovery) |
-| annotation appearances alone | 2 recovery (A1) + 1 strict (F1) + 15 annotation-inclusive text (T1) + ≤ 3 SSIM (A2, unknown) | 3 annotation-layer files are open at 300 dpi, kasane nearer MuPDF than Poppler is |
+| annotation appearances alone | 2 recovery (A1) + 1 strict (F1) + CLI access for the 15 annotation-text files (T1; the runner already counts them annotation-inclusive) + ≤ 3 SSIM (A2, unknown) | 3 annotation-layer files are open at 300 dpi, kasane nearer MuPDF than Poppler is |
 | CIDFontType0 + ActualText | 0 | no file has both as a cause |
 | JBIG2 + CCITT | 0 | no file needs both; the 2 open CCITT files (Q1) use no JBIG2 |
 
@@ -118,6 +120,7 @@ including tests and documentation. They are based on the modules named.
 | F2 | `RenderOptions` (new font provider), `src/font.rs` (non-embedded paths ~105, 2049), `src/cjk.rs` | caller-supplied font bytes by PostScript name; never an implicit OS lookup | 5–8 | — | per-render font parse (cached) | **`redact` must keep refusing non-embedded fonts** (readers choose differently; `limitations.md`); the provider is render / text only | medium–high (API surface) |
 | Q1 | `src/bilevel.rs` (`ccitt_decode`, `hayro-ccitt`) | find whether the difference is `/Decode`, `/BlackIs1`, `/EncodedByteAlign`, upsampling or the decoder; fix here or upstream | 1 + 1–2 | upstream `hayro` releases if the defect is there | none | **shared with image redaction**: `remove_image.rs:1116–1128` decodes CCITT and JBIG2 through the same `bilevel` functions to rewrite samples. A decode change changes redacted output, so `redact_images.rs`, `verify-redact` and the external renderer cases are part of the task | small |
 | Q2 | `src/fontsubst.rs` (672 lines) | horizontal scaling of substitutes to `/Widths` where it is missing; weight / italic selection | 2–3 | — | none | redaction refuses non-embedded fonts; no effect | small |
+| Q3 | `src/colorspace.rs`, `src/icc.rs`, `src/shading.rs`, `src/render.rs` (image colour conversion) | investigation on synthetic equivalents: ICC conversion, DeviceN tint transforms, shading sampling, DCT colour transform; then the fixes it justifies | 1–2 + unknown | — | — | colour is not redaction-relevant; any image-decode change goes through Q1's shared-decoder rule | — |
 | A2 | `src/annot_appearance.rs`, `src/acroform.rs`, `src/render.rs` (annotation pass) | investigation: what differs in the 3 open annotation-layer files (flags, `/MK`, border defaults, widget visibility), checked against the standard | 1–2 + unknown | — | — | annotation redaction refuses non-link annotations; a drawing change does not reach it | — |
 | R7 | `src/font.rs` (~2049, `/FontFile3` subtype check) | recovery mode: read a Type 1 program found under `/FontFile` on a CIDFontType0 | 1–1.5 | R0 | none | redaction of text in a recovered document goes through R0 | small |
 | Q4 | `src/render.rs` stroke path | `RenderOptions::stroke_adjust_always` (default off, spec behaviour unchanged) | 1–2 | — | none | none | small |
@@ -149,7 +152,7 @@ Each criterion is rated ++, +, 0 or −:
 
 | rank | id | feature | files (upper bound) | effort (d) | dependencies | corpus | quality | enabling | general | JP | safety | maint. | reason |
 |---:|---|---|---:|---:|---|---|---|---|---|---|---|---|---|
-| 1 | M1 | second witness + resolution re-check | separates 52 / 15 | 2–3 | — | 0 | + | ++ | + | + | 0 | + | without it a regression in the 52 rasterisation files is invisible and every later quality item is unmeasurable |
+| 1 | M1 | second witness + resolution re-check | separates 44 / 23 | 2–3 | — | 0 | + | ++ | + | + | 0 | + | without it a regression in the 44 files within tolerance is invisible and every later quality item is unmeasurable |
 | 2 | R0 | redaction × recovery harness | 0 | 1.5 | — | 0 | 0 | ++ | 0 | 0 | ++ | + | gates every recovery rule; closes an untested path today |
 | 3 | T1 | annotation text | 15 text | 1 | — | ++ | + | 0 | + | 0 | 0 | + | the largest single text gain, already implemented in the API |
 | 4 | R1 | operand-count recovery | ≤ 3 recovery | 1.5 | R0 | + | 0 | 0 | + | 0 | − | + | most common recovery failure; MuPDF draws these files |
@@ -159,34 +162,35 @@ Each criterion is rated ++, +, 0 or −:
 | 8 | R4 | codestream size mismatch | ≤ 2 recovery | 2 | R0 | + | 0 | 0 | + | 0 | − | + | scanned / producer bugs; must not reach image redaction |
 | 9 | T2 | unresolved-code investigation | ≤ 11 text (expected ≤ 5) | 2 (+2–4) | — | + | + | + | + | ++ | 0 | 0 | CID fonts without ToUnicode are the Japanese text risk |
 | 10 | Q1 | CCITT fidelity | ≤ 2 SSIM | 2–3 | M1 | + | + | 0 | + | 0 | − | 0 | the only image-decoder gap left; scans; shared with image redaction |
-| 11 | Q2 | substitute-font metrics | ≤ 3 SSIM | 2–3 | M1 | + | + | 0 | ++ | 0 | 0 | 0 | non-embedded fonts are common in Office output |
+| 11 | Q2 | substitute-font metrics | ≤ 4 SSIM | 2–3 | M1 | + | + | 0 | ++ | 0 | 0 | 0 | non-embedded fonts are common in Office output |
 | 12 | A1 | `/AS` policy | ≤ 2 recovery | 0.5–1 | R0, decision | + | 0 | 0 | 0 | 0 | 0 | + | cheap, but invalid input with no basis to choose |
 | 13 | R5 | decimated non-DCT decode | ≤ 1 | 3–4 | — | + | 0 | 0 | 0 | 0 | − | − | rare; a caller can raise the limit today |
 | 14 | F1 | Unicode field font | ≤ 1 strict | 2–4 | decision | + | + | 0 | + | + | 0 | − | the only strict gain without an external font; asset size |
 | 15 | F2 | opt-in font source | ≤ 3 strict (with fonts) | 5–8 | decision | + | + | + | + | ++ | − | − | needs API design; untestable on the corpus without the fonts |
 | 16 | Q4 | opt-in stroke adjustment | 0 by spec | 1–2 | M1 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | agreement with one witness, not correctness |
-| 17 | A2 | annotation-layer investigation | ≤ 3 (unknown) | 1–2 + ? | M1 | 0 | + | 0 | + | 0 | 0 | 0 | undetermined which renderer is right |
-| 18 | R7 | Type 1 `/FontFile` on a CIDFontType0 | ≤ 1 recovery | 1–1.5 | R0 | + | 0 | 0 | 0 | + | − | + | a producer error; small |
-| 19 | R6 | xref / page-tree rebuild | ≤ 5 (unknown) | 1–2 + ? | R0 | ? | 0 | 0 | + | 0 | − | − | investigation first |
+| 17 | Q3 | tone / colour investigation | ≤ 7 (unknown) | 1–2 + ? | M1 | + | + | 0 | + | 0 | 0 | 0 | the largest open group; colour conversion suspected |
+| 18 | A2 | annotation-layer investigation | ≤ 3 (unknown) | 1–2 + ? | M1 | 0 | + | 0 | + | 0 | 0 | 0 | undetermined which renderer is right |
+| 19 | R7 | Type 1 `/FontFile` on a CIDFontType0 | ≤ 1 recovery | 1–1.5 | R0 | + | 0 | 0 | 0 | + | − | + | a producer error; small |
+| 20 | R6 | xref / page-tree rebuild | ≤ 5 (unknown) | 1–2 + ? | R0 | ? | 0 | 0 | + | 0 | − | − | investigation first |
 
 ## 5. Plans
 
 | | Plan A — quick wins | **Plan B — balanced (recommended)** | Plan C — maximum compatibility |
 |---|---|---|---|
-| items | R0, T1, R1, R2, R3, A1 | M1, R0, T1, R1, R2, R3, R4, T2 (investigation), Q1, M2 (first tranche) | Plan B + T2 fixes, Q2, A1, A2, R5, R6, R7, F1, F2, Q4, exact-coverage glyph rasterisation |
-| effort | ≈ 7 d | ≈ 18–20 d | ≈ 52–57 d, plus open-ended research (R6, A2, rasterisation) |
-| expected gain (upper bound) | annotation text in the CLI (15 files on the annotation-inclusive score); recovery render +8 of 43 (18 → 26) | as Plan A without A1, plus R4: recovery +8 (18 → 26); open files −2 at most (Q1); the 52 / 15 split in every nightly; the corpus +40–60 files in the thin categories; T2 fixes (default text ≤ +5) in v0.12 | strict +≤ 4 (with fonts for 3); recovery +≤ 17 (18 → ≤ 35); default text +≤ 5; open files −5 at most (Q1, Q2), A2 unknown |
-| main risk | gains are invisible in the compatibility rate (recovery mode and CLI text only); regressions stay hidden in the 52 rasterisation files | M2 adds review work and may raise the failure count (by design: new gaps); Q1 may sit upstream | API surface (F2), asset size (F1), parser work with unknown yield (R6), a long research item (rasterisation); safety work grows with every recovery rule |
+| items | R0, T1, R1, R2, R3, A1 | M1, R0, T1, R1, R2, R3, R4, T2 (investigation), Q1, M2 (first tranche) | Plan B + T2 fixes, Q2, Q3, A1, A2, R5, R6, R7, F1, F2, Q4, exact-coverage glyph rasterisation |
+| effort | ≈ 7 d | ≈ 18–22 d | ≈ 55–60 d, plus open-ended research (R6, A2, Q3, rasterisation) |
+| expected gain (upper bound) | annotation text in the CLI (15 files on the annotation-inclusive score); recovery render +8 of 43 (18 → 26) | as Plan A without A1, plus R4: recovery +8 (18 → 26); open files −2 at most (Q1); the 44 / 23 split in every nightly; the corpus +40–60 files in the thin categories; T2 fixes (default text ≤ +5) in v0.12 | strict +≤ 4 (with fonts for 3); recovery +≤ 17 (18 → ≤ 35); default text +≤ 5; open files −13 at most (Q1, Q2, Q3), A2 unknown |
+| main risk | gains are invisible in the compatibility rate (recovery mode and CLI text only); regressions stay hidden in the 44 files within tolerance | M2 adds review work and may raise the failure count (by design: new gaps); Q1 may sit upstream | API surface (F2), asset size (F1), parser work with unknown yield (R6), a long research item (rasterisation); safety work grows with every recovery rule |
 | uncertainty | low | medium (Q1 location, M2 sourcing) | high (R6, T2, F2 untestable without fonts, rasterisation) |
 
 **Recommendation: Plan B.** Plan A spends a week on gains that the
 headline rate cannot show, and it leaves the measurement unable to
-see regressions in 52 files. Plan C buys at most 4 strict files with
+see regressions in 44 files. Plan C buys at most 4 strict files with
 a new API and a font asset, plus parser work of unknown yield, before
 the corpus can show whether those are the gaps that matter. Plan B
 does the following:
 - makes the measurement trustworthy first (M1), so that every later
-  change shows up against the 15 open files, not against noise;
+  change shows up against the 23 open files, not against noise;
 - closes the untested redaction × recovery path before adding any
   recovery rule (R0);
 - takes every bounded, cheap gain: text (T1) and four recovery rules;
@@ -199,7 +203,7 @@ evidence.
 
 ## 6. Version plan
 
-### v0.11.0 (≈ 18–20 d, Plan B)
+### v0.11.0 (≈ 18–22 d, Plan B)
 
 Order matters: M1 and R0 come first; R1–R4 depend on R0; M2 depends
 on M1.
@@ -207,8 +211,8 @@ on M1.
 | task | purpose | modules | change | tests | done when | risk | prerequisite |
 |---|---|---|---|---|---|---|---|
 | **M1-a** | second witness in the runner | `compat/runner/src/main.rs` | for every page below 0.95: MuPDF render, kasane–MuPDF and Poppler–MuPDF `dpx`, the attribution class; JSON fields `render_attribution`, `render_dpx_*` | runner unit tests on synthetic pages (agreeing, kasane-only, reference-only) | the nightly report carries the class for every page below 0.95; this analysis's classes reproduced (28 / 27 / 7 / 4 / 2) | runtime; MuPDF version drift → record the version in the report | — |
-| **M1-b** | resolution re-check | runner, `scripts/compat-attribute.py` (logic shared or ported) | 300 dpi re-render of those pages; the agreement (Poppler / MuPDF only / neither / failed) per page | as above | report counts match § 6.2 of the report (43 / 9 / 15 / 1) | runtime | M1-a |
-| **M1-c** | an added regression rule | `scripts/ci-regression.py`, baseline schema | **every existing rule stays** (stage classes, the enforced ink-ratio rule, SSIM / MAE / content-SSIM deltas, in every class). Added: a page that becomes *open* (differs from both references at 300 dpi) is a regression, and so is an open page whose difference grows. Attribution only adds evidence; it never exempts a page | `scripts/test_ci_scripts.py` cases: a synthetic worsening inside a reference class still fails on the numeric rules | nightly fails on both a new open page and a numeric worsening in any class | baseline schema change → migration note | M1-a |
+| **M1-b** | resolution re-check | runner, `scripts/compat-attribute.py` (logic shared or ported) | 300 dpi re-render of those pages; the agreement (Poppler / MuPDF only / neither / failed) per page | as above | report counts match § 6.2 of the report (36 / 8 / 23 / 1), with both `dpx` and `mad` in the tolerance | runtime | M1-a |
+| **M1-c** | an added regression rule | `scripts/ci-regression.py`, baseline schema | **every existing rule stays** (stage classes, the enforced ink-ratio rule, SSIM / MAE / content-SSIM deltas, in every class). Added: a page that becomes *open* (differs from both references at 300 dpi) is a regression, and so is an open page whose difference grows. Attribution only adds evidence; it never exempts a page | `scripts/test_ci_scripts.py` cases: a synthetic worsening inside a reference class still fails on the numeric rules | nightly fails on both a new open page and a numeric worsening in any class | baseline schema change → migration note | M1-a, M1-b |
 | **R0** | redaction × recovery harness | `tests/recovery_rules.rs`, `tests/redact_model.rs`, `fuzz` `redact_model` seeds | for each `RecoveryRule` (10 today): a synthetic file opened with `from_bytes_recovering`, then preflight, region / text / image removal and `verify-redact`; expected: refusal, or a result `verify-redact` accepts | the harness itself; a fuzz seed per rule | every rule has a redaction test; the matrix is documented in `redaction-safety-model.md` | finds an existing gap → fix it first (security process, `security/`) | — |
 | **T1** | annotation text | `src/main.rs`, runner, `scripts/ci-regression.py` | `kasane-pdf text --annotations`; the runner keeps the default F1 and reports `with_annots` beside it | CLI test on the FreeText probe; runner report test | the probe's annotation word is extracted with the flag; the default output is unchanged | none | — |
 | **R1** | operand-count recovery | `src/content.rs`, `src/warning.rs` | recovery mode: an operator with the wrong operand count becomes `Operation::Unknown` plus `RecoveryRule::IgnoredWrongOperandCount`; strict mode unchanged | `tests/recovery_rules.rs` (each operator family); R0 matrix row (redaction refuses through `uncertain_state`); a `render_content` fuzz seed | the `operand-count` probe renders in recovery mode and is refused by strict mode and by redaction; the corpus recovery count moves only on R1's files | over-acceptance: limit it to operand-count mismatches, never type errors | R0 |
@@ -216,7 +220,7 @@ on M1.
 | **R3** | function / shading counts | `src/function.rs`, `src/shading.rs` | recovery mode: first input; outputs padded with 0 or truncated, with a warning | unit tests in `function.rs` / `shading.rs`; R0 row | synthetic cases render in recovery mode | a wrong colour shown as right → recorded as approximate | R0 |
 | **R4** | codestream size mismatch | `src/bilevel.rs`, `src/render.rs`, `src/remove_image.rs` | recovery mode render: decode at the codestream size, scale to the image space, approximate; `remove_image` keeps refusing | JBIG2 and JPEG synthetic mismatches; `redact_images.rs` asserts the refusal | render recovers, image redaction refuses, `verify-redact` unchanged | memory: the codestream size goes through the same limits | R0 |
 | **T2-a** | unresolved-code investigation | `src/font.rs`, a script under `scripts/` | per font: the reason a code is unresolved (counts only) | — | a categorised count for the 23 files in the report; a decision on T2-b | none | — |
-| **Q1** | CCITT fidelity | `src/bilevel.rs` | find the cause on synthetic equivalents; fix here or report upstream | synthetic CCITT fixtures against Poppler and MuPDF; `redact_images.rs` CCITT cases; `verify-redact`; external renderer cases | the 2 files agree with a reference at 300 dpi, or the cause is documented as upstream; image-redaction outputs unchanged or reviewed | a decode change alters redacted samples (shared decoder); an upstream release | M1-a, R0 |
+| **Q1** | CCITT fidelity | `src/bilevel.rs` | find the cause on synthetic equivalents; fix here or report upstream | synthetic CCITT fixtures against Poppler and MuPDF; `redact_images.rs` CCITT cases; `verify-redact`; external renderer cases | the 2 files agree with a reference at 300 dpi, or the cause is documented as upstream; image-redaction outputs unchanged or reviewed | a decode change alters redacted samples (shared decoder); an upstream release | M1-b, R0 |
 | **M2-a** | corpus growth, first tranche | `compat/manifest.yaml`, store, `docs/compat-corpus.md` | +40–60 files: Japanese (CID, vertical writing, ToUnicode-less), scanned (JBIG2, CCITT, JPX, DCT), Office, forms; licence and `expect` evidence each | — | baseline refreshed by hand with a reviewed diff; the report's § 3 recomputed with the new denominators shown separately | licensing; private store only (AGENTS rules) | M1 |
 
 v0.11.0 completion criteria:
@@ -241,7 +245,7 @@ v0.11.0 completion criteria:
 ### v0.12.0 (≈ 15–20 d; proposed)
 
 T2-b (the unresolved-code fixes T2-a justifies, 2–4 d), R7 (1–1.5 d),
-A2 investigation (1–2 d), Q2
+A2 investigation (1–2 d), Q3 tone / colour investigation (1–2 d, then fixes it justifies), Q2
 substitute-font metrics (2–3 d), A1 `/AS` policy (0.5–1 d, after the
 decision), F1 Unicode field font (2–4 d, after the decision on scripts
 and size), R5 decimated decode (3–4 d, with a fuzz target), R6
@@ -334,7 +338,7 @@ v0.10.0 guarantees:
 4. **Unicode field font (F1)**: which scripts, bundled or
    feature-gated, and the size budget against the crates.io limit.
 5. **Font source (F2)**: whether a caller-supplied font API is wanted
-   at all. It is the only path to the 4 font-blocked files.
+   at all. It is the only path to the 3 font-blocked files.
 6. **Stroke adjustment (Q4)**: whether an opt-in Poppler-compatible
    mode is worth shipping (it improves agreement with one witness, not
    correctness).

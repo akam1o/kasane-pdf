@@ -73,6 +73,14 @@ def main():
     out["text_f1_with_annotations_recovers"] = sum(
         1 for f in strict_text if f["metrics"].get("text_char_f1") is not None and f["metrics"]["text_char_f1"] < 0.9
         and f["metrics"].get("text_char_f1_with_annots") is not None and f["metrics"]["text_char_f1_with_annots"] >= 0.9)
+    wa = [f["metrics"].get("text_char_f1_with_annots") for f in strict_text if f["metrics"].get("text_char_f1") is not None]
+    out["text_f1_with_annotations"] = {
+        "scored": sum(x is not None for x in wa), "missing": sum(x is None for x in wa),
+        "at_least_0_9": sum(x is not None and x >= 0.9 for x in wa),
+        "falls_below_0_9": sum(1 for f in strict_text if f["metrics"].get("text_char_f1") is not None
+                               and f["metrics"]["text_char_f1"] >= 0.9
+                               and f["metrics"].get("text_char_f1_with_annots") is not None
+                               and f["metrics"]["text_char_f1_with_annots"] < 0.9)}
     out["text_empty_with_reference_text"] = sum(
         1 for f in strict_text if f["metrics"].get("text_char_f1") is not None and (f["metrics"].get("text_chars_ours") or 0) == 0
         and (f["metrics"].get("text_chars_ref") or 0) > 0)

@@ -301,6 +301,12 @@
   "p75": 1.0,
   "p95": 1.0
  },
+ "text_f1_with_annotations": {
+  "at_least_0_9": 369,
+  "falls_below_0_9": 0,
+  "missing": 4,
+  "scored": 390
+ },
  "text_f1_with_annotations_recovers": 15,
  "unicode_files_majority_unresolved": 12,
  "unicode_files_some_unresolved": 11,

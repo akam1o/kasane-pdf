@@ -1,27 +1,27 @@
 {
  "agreement_300": {
   "annotation_layer": {
-   "neither": 3,
-   "poppler": 1
+   "mupdf_only": 1,
+   "neither": 3
   },
   "extra_ink": {
    "mupdf_only": 1,
-   "poppler": 1
+   "neither": 1
   },
   "kasane": {
    "mupdf_only": 1,
-   "neither": 3,
-   "poppler": 3
+   "neither": 4,
+   "poppler": 2
   },
   "reference_kasane_mupdf": {
-   "mupdf_only": 6,
-   "neither": 2,
-   "poppler": 20
+   "mupdf_only": 4,
+   "neither": 7,
+   "poppler": 17
   },
   "reference_three_way": {
    "mupdf_only": 1,
-   "neither": 7,
-   "poppler": 18
+   "neither": 8,
+   "poppler": 17
   }
  },
  "by_class": {
@@ -241,25 +241,23 @@
  },
  "resolution_outcome": {
   "annotation_layer": {
-   "persists": 3,
-   "vanishes": 1
+   "persists": 4
   },
   "extra_ink": {
-   "persists": 1,
-   "vanishes": 1
+   "persists": 2
   },
   "kasane": {
-   "persists": 4,
-   "vanishes": 3
+   "persists": 5,
+   "vanishes": 2
   },
   "reference_kasane_mupdf": {
-   "persists": 8,
-   "vanishes": 20
+   "persists": 11,
+   "vanishes": 17
   },
   "reference_three_way": {
    "failed": 1,
-   "persists": 8,
-   "vanishes": 18
+   "persists": 9,
+   "vanishes": 17
   }
  },
  "resolution_worst_kasane_poppler_300": {

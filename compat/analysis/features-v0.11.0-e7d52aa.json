@@ -4,7 +4,7 @@
   "ASCII85": {
    "below_0_95": 2,
    "blockers": 1,
-   "differs_from_both_300": 0,
+   "differs_from_both_300": 1,
    "strict_render": 9,
    "use": 10
   },
@@ -67,14 +67,14 @@
   "decode_array": {
    "below_0_95": 9,
    "blockers": 2,
-   "differs_from_both_300": 1,
+   "differs_from_both_300": 3,
    "strict_render": 20,
    "use": 22
   },
   "devicen": {
    "below_0_95": 2,
    "blockers": 1,
-   "differs_from_both_300": 1,
+   "differs_from_both_300": 2,
    "strict_render": 8,
    "use": 9
   },
@@ -88,7 +88,7 @@
   "filter_chain": {
    "below_0_95": 2,
    "blockers": 4,
-   "differs_from_both_300": 0,
+   "differs_from_both_300": 1,
    "strict_render": 13,
    "use": 17
   },
@@ -102,7 +102,7 @@
   "icc": {
    "below_0_95": 13,
    "blockers": 1,
-   "differs_from_both_300": 5,
+   "differs_from_both_300": 7,
    "strict_render": 54,
    "use": 55
   },
@@ -116,14 +116,14 @@
   "incremental": {
    "below_0_95": 27,
    "blockers": 2,
-   "differs_from_both_300": 0,
+   "differs_from_both_300": 1,
    "strict_render": 90,
    "use": 92
   },
   "indexed": {
    "below_0_95": 2,
    "blockers": 0,
-   "differs_from_both_300": 0,
+   "differs_from_both_300": 1,
    "strict_render": 11,
    "use": 11
   },
@@ -137,7 +137,7 @@
   "isolated": {
    "below_0_95": 5,
    "blockers": 2,
-   "differs_from_both_300": 1,
+   "differs_from_both_300": 2,
    "strict_render": 33,
    "use": 35
   },
@@ -179,7 +179,7 @@
   "objstm": {
    "below_0_95": 30,
    "blockers": 3,
-   "differs_from_both_300": 1,
+   "differs_from_both_300": 3,
    "strict_render": 120,
    "use": 123
   },
@@ -200,7 +200,7 @@
   "separation": {
    "below_0_95": 2,
    "blockers": 0,
-   "differs_from_both_300": 0,
+   "differs_from_both_300": 1,
    "strict_render": 4,
    "use": 4
   },
@@ -214,7 +214,7 @@
   "shading2_3": {
    "below_0_95": 6,
    "blockers": 3,
-   "differs_from_both_300": 1,
+   "differs_from_both_300": 2,
    "strict_render": 24,
    "use": 27
   },
@@ -228,7 +228,7 @@
   "shading_pattern": {
    "below_0_95": 4,
    "blockers": 2,
-   "differs_from_both_300": 1,
+   "differs_from_both_300": 2,
    "strict_render": 13,
    "use": 15
   },
@@ -242,21 +242,21 @@
   "tiling": {
    "below_0_95": 3,
    "blockers": 3,
-   "differs_from_both_300": 0,
+   "differs_from_both_300": 2,
    "strict_render": 14,
    "use": 17
   },
   "tounicode": {
    "below_0_95": 18,
    "blockers": 8,
-   "differs_from_both_300": 5,
+   "differs_from_both_300": 6,
    "strict_render": 117,
    "use": 125
   },
   "type1c": {
    "below_0_95": 26,
    "blockers": 0,
-   "differs_from_both_300": 0,
+   "differs_from_both_300": 1,
    "strict_render": 41,
    "use": 41
   },
@@ -291,7 +291,7 @@
   "xrefstm": {
    "below_0_95": 30,
    "blockers": 4,
-   "differs_from_both_300": 1,
+   "differs_from_both_300": 3,
    "strict_render": 121,
    "use": 125
   }

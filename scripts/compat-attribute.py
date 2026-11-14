@@ -40,10 +40,12 @@ match wins:
 300 dpi renders, box-downsampled to the 72 dpi grid: a difference that
 vanishes at higher resolution is rasterisation (sampling, anti-aliasing,
 snapping), not content; one that stays is. Per file: `vanishes` when
-kasane–Poppler at 300 dpi is below 0.5 %, `persists` otherwise,
+kasane is within tolerance of Poppler at 300 dpi, `persists` otherwise,
 `failed` when a render at a higher resolution failed; and which
-reference kasane agrees with at 300 dpi (under 0.5 %): Poppler, MuPDF
-only, or neither. `mad` (mean
+reference kasane is within tolerance of at 300 dpi (`dpx` under 0.5 %
+and `mad` under 2 grey levels): Poppler, MuPDF only, or neither. Being
+within tolerance of a witness at 300 dpi is an observation, not proof
+that the 72 dpi difference was rasterisation alone. `mad` (mean
 absolute grey difference) is recorded beside `dpx`, which ignores
 differences under 48 grey levels.
 
@@ -194,8 +196,9 @@ def classify(r):
 
 
 def resolution_check(kasane, pdf, page):
-    """{dpi: (kasane-poppler, kasane-mupdf, poppler-mupdf)} at 72, 150,
-    300 dpi, compared on the 72 dpi grid."""
+    """{dpi: (dpx kasane-poppler, kasane-mupdf, poppler-mupdf, mad
+    kasane-poppler, kasane-mupdf)} at 72, 150, 300 dpi, compared on the
+    72 dpi grid."""
     out = {}
     with tempfile.TemporaryDirectory() as t:
         for dpi in (72, 150, 300):
@@ -213,8 +216,18 @@ def resolution_check(kasane, pdf, page):
             if dpi != 72:
                 w, h = max(1, round(pp.width * 72 / dpi)), max(1, round(pp.height * 72 / dpi))
                 kk, pp, mm = (x.resize((w, h), Image.BOX) for x in (kk, pp, mm))
-            out[dpi] = (dpx(kk, pp), dpx(kk, mm), dpx(pp, mm))
+            out[dpi] = (dpx(kk, pp), dpx(kk, mm), dpx(pp, mm), mad(kk, pp), mad(kk, mm))
     return out
+
+
+# Agreement at 300 dpi: under 0.5 % of pixels more than DELTA apart and
+# a mean grey difference under MAD_TOL, so that neither a local defect
+# nor a broad tone difference counts as agreement.
+DPX_TOL, MAD_TOL = 0.005, 2.0
+
+
+def within(d, m):
+    return d is not None and m is not None and d < DPX_TOL and m < MAD_TOL
 
 
 def main():
@@ -284,8 +297,9 @@ def main():
             if not v or None in v:
                 outcome[r["class"]]["failed"] += 1
                 continue
-            outcome[r["class"]]["vanishes" if v[0] < 0.005 else "persists"] += 1
-            agree[r["class"]]["poppler" if v[0] < 0.005 else "mupdf_only" if v[1] < 0.005 else "neither"] += 1
+            near_p, near_m = within(v[0], v[3]), within(v[1], v[4])
+            outcome[r["class"]]["vanishes" if near_p else "persists"] += 1
+            agree[r["class"]]["poppler" if near_p else "mupdf_only" if near_m else "neither"] += 1
             worst300[r["class"]] = round(max(worst300.get(r["class"], 0), v[0]), 4)
         mads = {}
         for c in by:

@@ -91,7 +91,8 @@ def main():
     for r in json.load(open(a.attribution))["files"]:
         v = (r.get("resolution") or {}).get("300")
         # Open: at 300 dpi kasane still differs from both references.
-        att[r["id"]] = bool(v and None not in v and v[0] >= 0.005 and v[1] >= 0.005)
+        att[r["id"]] = bool(v and None not in v and not (v[0] < 0.005 and v[3] < 2.0)
+                            and not (v[1] < 0.005 and v[4] < 2.0))
     ids = [i for i, f in run.items() if f["expect"] == "pass"]
     with concurrent.futures.ThreadPoolExecutor(8) as ex:
         res = {fid: t for fid, t in ex.map(scan, ids) if t is not None}
