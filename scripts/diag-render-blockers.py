@@ -22,7 +22,10 @@ RULES = [
     (r"no MediaBox", "page without /MediaBox", "Table 30: required, inheritable", "no (no default in the standard)", "yes (US Letter, RecoveryRule::MediaBoxDefault)", "no", "done"),
     (r"no startxref|xref offset .* beyond|expected 'xref'|unbalanced '\)'|expected word token|ASCII85Decode: byte|bad xref stream entry type|expected '<<' dictionary, found|expected name key in dictionary", "damaged file structure", "§7.5: cross-reference table / syntax required", "no", "xref rebuild (recovery parse), then per-content outcome", "no", "varies"),
     (r"/Type /Template in page tree|cycle detected in page tree", "invalid page tree", "§7.7.3", "no", "no", "no", "—"),
-    (r"non-embedded CIDFont", "Identity-ordering CID font without program", "§9.7.4: CIDs are glyph indices of an unknown font", "no", "no (unsound without /ToUnicode)", "would be (fallback face)", "2–3 d, only with a complete /ToUnicode"),
+    # The error does not say which: no program (Identity ordering, or an
+    # ordering without a bundled fallback), or a program under the wrong
+    # key (a Type 1 /FontFile on a CIDFontType0). Inspect the font.
+    (r"non-embedded CIDFont", "CID font without a usable program", "§9.7.4 / §9.9: ordering and program key decide", "no", "no (unsound without /ToUnicode)", "would be (fallback face)", "2–3 d, only with a complete /ToUnicode"),
     (r"states without /AS", "/AP /N state dictionary without /AS and more than one state", "§12.5.5: /AS required", "no (no basis to choose)", "no (no basis to choose)", "no", "—"),
     (r"max_image_dimension", "image larger than the dimension limit", "Limits policy; DCT scaled decode would keep the limit", "yes after DCT downscale", "n/a", "no (exact at output size)", "2 d"),
     (r"knockout", "knockout transparency group", "§11.4.8", "yes (implemented)", "n/a", "no", "done"),

@@ -9,10 +9,12 @@ Each file is expanded with `qpdf --qdf --object-streams=disable
 --decode-level=generalized` and searched with the patterns below — a
 presence test, approximate (a key in an unused object counts; an
 unusual spelling does not). Per feature, the summary counts the files
-that use it, how many rendered strictly, how many are strict blockers
+that use it (stream filters from the stored dictionaries, the rest from
+the decoded expansion; files qpdf cannot expand are counted apart, not
+as absent), how many rendered strictly, how many are strict blockers
 (scripts/diag-render-blockers.py), how many are below the attribution
-threshold (scripts/compat-attribute.py) and how many of those the
-attribution puts on kasane's side. These are co-occurrences, not
+threshold (scripts/compat-attribute.py) and how many of those still
+differ from both references at 300 dpi (its resolution check). These are co-occurrences, not
 causes. --out (per-file booleans) belongs in the gitignored
 compat/reports/; --summary holds counts only.
 """
@@ -44,6 +46,11 @@ PATTERNS = {
 }
 
 
+# Stream filters are read from the stored dictionaries: qpdf removes a
+# filter from the dictionary when it decodes the stream.
+STORED = {"ASCIIHex", "ASCII85", "LZW", "RunLength", "filter_chain"}
+
+
 def corpus_path(fid):
     base = os.environ.get("KASANE_CORPUS_DIR") or os.path.join(ROOT, "compat", "corpus")
     for name in (fid + ".pdf", fid):
@@ -56,10 +63,16 @@ def scan(fid):
     p = corpus_path(fid)
     if p is None:
         return fid, None
-    q = subprocess.run(["qpdf", "--qdf", "--object-streams=disable", "--decode-level=generalized", p, "-"],
-                       capture_output=True, timeout=300).stdout
+    def expand(level):
+        r = subprocess.run(["qpdf", "--qdf", "--object-streams=disable", f"--decode-level={level}", p, "-"],
+                           capture_output=True, timeout=300)
+        # 0 ok, 3 warnings; anything else is a failed expansion, not absence.
+        return r.stdout if r.returncode in (0, 3) and r.stdout else None
+    decoded, stored = expand("generalized"), expand("none")
+    if decoded is None or stored is None:
+        return fid, {"qpdf_failed": True}
     raw = open(p, "rb").read()
-    t = {k: bool(re.search(v, q)) for k, v in PATTERNS.items()}
+    t = {k: bool(re.search(v, stored if k in STORED else decoded)) for k, v in PATTERNS.items()}
     # Structure is a property of the file as stored, not of the expansion.
     t["objstm"] = bool(re.search(rb"/Type\s*/ObjStm", raw))
     t["xrefstm"] = bool(re.search(rb"/Type\s*/XRef", raw))
@@ -74,25 +87,32 @@ def main():
     a = ap.parse_args()
     run = {f["id"]: f for f in json.load(open(a.run))["files"]}
     blockers = {r["id"] for r in json.load(open(a.diag))["files"]}
-    att = {r["id"]: r["class"] for r in json.load(open(a.attribution))["files"]}
+    att = {}
+    for r in json.load(open(a.attribution))["files"]:
+        v = (r.get("resolution") or {}).get("300")
+        # Open: at 300 dpi kasane still differs from both references.
+        att[r["id"]] = bool(v and None not in v and v[0] >= 0.005 and v[1] >= 0.005)
     ids = [i for i, f in run.items() if f["expect"] == "pass"]
     with concurrent.futures.ThreadPoolExecutor(8) as ex:
         res = {fid: t for fid, t in ex.map(scan, ids) if t is not None}
     json.dump(res, open(a.out, "w"))
     summary = {}
+    failed = sum(1 for t in res.values() if t.get("qpdf_failed"))
+    res = {fid: t for fid, t in res.items() if not t.get("qpdf_failed")}
     for k in sorted({k for t in res.values() for k in t}):
         fs = [i for i in res if res[i].get(k)]
         strict = [i for i in fs if not run[i].get("recovered") and run[i]["render"]["class"] == "pass"]
         summary[k] = {"use": len(fs), "strict_render": len(strict), "blockers": sum(i in blockers for i in fs),
                       "below_0_95": sum(i in att for i in strict),
-                      "kasane_class": sum(att.get(i) in ("kasane", "annotation_layer") for i in strict)}
+                      "differs_from_both_300": sum(att.get(i) is True for i in strict)}
     with open(a.summary, "w") as fh:
         json.dump({"description": "Feature presence among the expect:pass files (regex over a qpdf --qdf expansion; "
                                   "approximate), with strict-render, blocker and low-SSIM co-occurrence counts. "
                                   "Co-occurrence is not causation: see docs/compatibility-report.md.",
-                   "population": "expect:pass", "scanned": len(res), "features": summary}, fh, indent=1, sort_keys=True)
+                   "population": "expect:pass", "scanned": len(res), "qpdf_failed": failed, "features": summary},
+                  fh, indent=1, sort_keys=True)
         fh.write("\n")
-    print(f"compat-featscan: {len(res)} files scanned -> {a.summary}")
+    print(f"compat-featscan: {len(res)} files scanned, {failed} qpdf failures -> {a.summary}")
 
 
 if __name__ == "__main__":

@@ -1,9 +1,44 @@
 {
+ "agreement_300": {
+  "annotation_layer": {
+   "neither": 3,
+   "poppler": 1
+  },
+  "extra_ink": {
+   "mupdf_only": 1,
+   "poppler": 1
+  },
+  "kasane": {
+   "mupdf_only": 1,
+   "neither": 3,
+   "poppler": 3
+  },
+  "reference_kasane_mupdf": {
+   "mupdf_only": 6,
+   "neither": 2,
+   "poppler": 20
+  },
+  "reference_three_way": {
+   "mupdf_only": 1,
+   "neither": 7,
+   "poppler": 18
+  }
+ },
  "by_class": {
   "annotation_layer": {
    "Type1-nonembedded": 2,
-   "annots": 2,
-   "nonembedded-fonts": 2
+   "acroform": 2,
+   "annots": 4,
+   "dests": 1,
+   "incremental": 1,
+   "metadata": 2,
+   "nonembedded-fonts": 2,
+   "outlines": 2
+  },
+  "extra_ink": {
+   "annots": 1,
+   "metadata": 2,
+   "transparency": 1
   },
   "kasane": {
    "CCITTFaxDecode": 1,
@@ -33,12 +68,12 @@
    "TrueType": 1,
    "Type1-CFF": 15,
    "acroform": 15,
-   "annots": 16,
+   "annots": 15,
    "dests": 15,
    "embedded-fonts": 15,
    "images": 11,
    "incremental": 15,
-   "metadata": 20,
+   "metadata": 19,
    "multipage": 14,
    "none": 1,
    "optional-content": 3,
@@ -70,44 +105,77 @@
    "outlines": 2,
    "signed": 10,
    "transparency": 13
-  },
-  "size": {
-   "acroform": 2,
-   "annots": 2,
-   "dests": 1,
-   "incremental": 1,
-   "metadata": 3,
-   "outlines": 2,
-   "transparency": 1
   }
  },
  "classes": {
-  "annotation_layer": 2,
+  "annotation_layer": 4,
+  "extra_ink": 2,
   "kasane": 7,
-  "reference_kasane_mupdf": 29,
-  "reference_three_way": 27,
-  "size": 3
+  "reference_kasane_mupdf": 28,
+  "reference_three_way": 27
  },
  "files": 68,
+ "mad_kasane_poppler_72": {
+  "annotation_layer": {
+   "max": 177.04,
+   "median": 12.93
+  },
+  "extra_ink": {
+   "max": 36.57,
+   "median": 36.57
+  },
+  "kasane": {
+   "max": 10.16,
+   "median": 3.85
+  },
+  "reference_kasane_mupdf": {
+   "max": 61.12,
+   "median": 10.65
+  },
+  "reference_three_way": {
+   "max": 17.5,
+   "median": 7.71
+  }
+ },
  "resolution_medians": {
   "annotation_layer": {
    "150": {
-    "kasane_mupdf": 0.0868,
-    "kasane_poppler": 0.817,
-    "n": 2,
-    "poppler_mupdf": 0.8145
+    "kasane_mupdf": 0.0406,
+    "kasane_poppler": 0.0958,
+    "n": 4,
+    "poppler_mupdf": 0.1118
    },
    "300": {
-    "kasane_mupdf": 0.0803,
-    "kasane_poppler": 0.8162,
-    "n": 2,
-    "poppler_mupdf": 0.8138
+    "kasane_mupdf": 0.0372,
+    "kasane_poppler": 0.104,
+    "n": 4,
+    "poppler_mupdf": 0.1087
    },
    "72": {
-    "kasane_mupdf": 0.0821,
-    "kasane_poppler": 0.8122,
+    "kasane_mupdf": 0.0487,
+    "kasane_poppler": 0.1023,
+    "n": 4,
+    "poppler_mupdf": 0.118
+   }
+  },
+  "extra_ink": {
+   "150": {
+    "kasane_mupdf": 0.0358,
+    "kasane_poppler": 0.1918,
     "n": 2,
-    "poppler_mupdf": 0.8098
+    "poppler_mupdf": 0.2251
+   },
+   "300": {
+    "kasane_mupdf": 0.0,
+    "kasane_poppler": 0.1774,
+    "n": 2,
+    "poppler_mupdf": 0.1879
+   },
+   "72": {
+    "kasane_mupdf": 0.1054,
+    "kasane_poppler": 0.2209,
+    "n": 2,
+    "poppler_mupdf": 0.3347
    }
   },
   "kasane": {
@@ -134,19 +202,19 @@
    "150": {
     "kasane_mupdf": 0.0096,
     "kasane_poppler": 0.0439,
-    "n": 29,
+    "n": 28,
     "poppler_mupdf": 0.0635
    },
    "300": {
-    "kasane_mupdf": 0.003,
+    "kasane_mupdf": 0.0033,
     "kasane_poppler": 0.0003,
-    "n": 29,
-    "poppler_mupdf": 0.0046
+    "n": 28,
+    "poppler_mupdf": 0.0049
    },
    "72": {
-    "kasane_mupdf": 0.0315,
+    "kasane_mupdf": 0.0321,
     "kasane_poppler": 0.0686,
-    "n": 29,
+    "n": 28,
     "poppler_mupdf": 0.0986
    }
   },
@@ -170,6 +238,36 @@
     "poppler_mupdf": 0.1068
    }
   }
+ },
+ "resolution_outcome": {
+  "annotation_layer": {
+   "persists": 3,
+   "vanishes": 1
+  },
+  "extra_ink": {
+   "persists": 1,
+   "vanishes": 1
+  },
+  "kasane": {
+   "persists": 4,
+   "vanishes": 3
+  },
+  "reference_kasane_mupdf": {
+   "persists": 8,
+   "vanishes": 20
+  },
+  "reference_three_way": {
+   "failed": 1,
+   "persists": 8,
+   "vanishes": 18
+  }
+ },
+ "resolution_worst_kasane_poppler_300": {
+  "annotation_layer": 0.8162,
+  "extra_ink": 0.1774,
+  "kasane": 0.0505,
+  "reference_kasane_mupdf": 0.32,
+  "reference_three_way": 0.0697
  },
  "threshold": 0.95
 }

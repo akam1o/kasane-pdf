@@ -16,6 +16,8 @@ match wins:
 
   size          the renders' sizes differ (page box handling)
   blank         kasane drew (almost) nothing where Poppler drew ink
+  missing_ink   kasane has much less ink than both references
+  extra_ink     kasane has much more ink than both references
   annotation_layer
                 with /Annots removed from the file (every renderer then
                 draws no annotation), kasane and Poppler agree (dpx falls
@@ -25,19 +27,25 @@ match wins:
                 (dpx halves): an annotation appearance differs
   reference_kasane_mupdf
                 Poppler and MuPDF differ from each other, and kasane is
-                much closer to MuPDF (under half their difference)
+                much closer to MuPDF (under half their difference).
+                Neither reference class clears kasane; the resolution
+                check does, per file
   reference_three_way
                 Poppler and MuPDF differ from each other by more than
                 kasane differs from MuPDF, but kasane is not close to
                 either: the cause is not attributable
-  missing_ink   kasane has much less ink than both references
-  extra_ink     kasane has much more ink than both references
   kasane        kasane differs from both references, which agree
 
 --resolution-check repeats the three pairwise comparisons from 150 and
 300 dpi renders, box-downsampled to the 72 dpi grid: a difference that
 vanishes at higher resolution is rasterisation (sampling, anti-aliasing,
-snapping), not content; one that stays is.
+snapping), not content; one that stays is. Per file: `vanishes` when
+kasane–Poppler at 300 dpi is below 0.5 %, `persists` otherwise,
+`failed` when a render at a higher resolution failed; and which
+reference kasane agrees with at 300 dpi (under 0.5 %): Poppler, MuPDF
+only, or neither. `mad` (mean
+absolute grey difference) is recorded beside `dpx`, which ignores
+differences under 48 grey levels.
 
 The per-file results (ids, classes, measures) go to --out, which belongs
 in the gitignored compat/reports/; --summary writes counts only (per
@@ -95,7 +103,7 @@ def render_all(kasane, pdf, page, tmp):
     out["kasane"] = grey(k) if r.returncode == 0 and os.path.exists(k) else None
     for name, extra in (("poppler", []), ("poppler_noannot", ["-hide-annotations"])):
         base = os.path.join(tmp, name)
-        subprocess.run(["pdftoppm", "-r", "72", "-gray", "-png", "-f", str(page), "-l", str(page), "-singlefile",
+        subprocess.run(["pdftoppm", "-r", "72", "-gray", "-png", "-f", str(page), "-l", str(page), "-singlefile", "-cropbox",
                         *extra, pdf, base], capture_output=True, timeout=120)
         out[name] = grey(base + ".png") if os.path.exists(base + ".png") else None
     m = os.path.join(tmp, "m.png")
@@ -107,7 +115,7 @@ def render_all(kasane, pdf, page, tmp):
         for name, argv in (("kasane_na", [kasane, "render", na, str(page), "--dpi", "72", "--output",
                                            os.path.join(tmp, "kna.png")]),
                            ("poppler_na", ["pdftoppm", "-r", "72", "-gray", "-png", "-f", str(page), "-l", str(page),
-                                           "-singlefile", na, os.path.join(tmp, "pna")]),
+                                           "-singlefile", "-cropbox", na, os.path.join(tmp, "pna")]),
                            ("mupdf_na", ["mutool", "draw", "-q", "-r", "72", "-c", "gray", "-o",
                                          os.path.join(tmp, "mna.png"), na, str(page)])):
             subprocess.run(argv, capture_output=True, timeout=120)
@@ -129,6 +137,16 @@ def dpx(a, b):
     return sum(d[DELTA + 1:]) / max(1, a.width * a.height)
 
 
+def mad(a, b):
+    """Mean absolute grey difference (0–255): sees broad tone differences
+    that stay under DELTA everywhere."""
+    if a.size != b.size:
+        return None
+    from PIL import ImageChops
+    h = ImageChops.difference(a, b).histogram()
+    return sum(i * n for i, n in enumerate(h)) / max(1, a.width * a.height)
+
+
 def classify(r):
     k, p, pn, m = r["kasane"], r["poppler"], r["poppler_noannot"], r["mupdf"]
     if k is None or p is None:
@@ -137,12 +155,15 @@ def classify(r):
     if k.size != p.size:
         return "size", meas
     meas["dpx_kp"] = dpx(k, p)
+    meas["mad_kp"] = mad(k, p)
     if pn is not None:
         meas["dpx_kpn"] = dpx(k, pn)
     if m is not None and m.size == k.size:
         meas["dpx_km"] = dpx(k, m)
         meas["dpx_pm"] = dpx(p, m)
         meas["ink_mupdf"] = ink(m)
+        meas["mad_km"] = mad(k, m)
+        meas["mad_pm"] = mad(p, m)
     kn, pn2, mn = r.get("kasane_na"), r.get("poppler_na"), r.get("mupdf_na")
     if kn is not None and pn2 is not None and kn.size == pn2.size:
         meas["dpx_kp_na"] = dpx(kn, pn2)
@@ -157,15 +178,18 @@ def classify(r):
         return "annotation_layer", meas
     if meas.get("dpx_kpn") is not None and meas["dpx_kp"] > 0.002 and meas["dpx_kpn"] < 0.5 * meas["dpx_kp"]:
         return "annotation", meas
-    if meas.get("dpx_pm") is not None and meas["dpx_pm"] > meas["dpx_km"] and meas["dpx_pm"] > 0.002:
-        # The references disagree. kasane with MuPDF (much closer to it
-        # than Poppler is), or all three apart.
-        return ("reference_kasane_mupdf" if meas["dpx_km"] < 0.5 * meas["dpx_pm"] else "reference_three_way"), meas
+    # Defect signals of kasane's own come before any reference
+    # disagreement, so that disagreement cannot hide them.
     refs = [x for x in (meas.get("ink_poppler"), meas.get("ink_mupdf")) if x is not None]
     if refs and meas["ink_kasane"] < 0.7 * min(refs):
         return "missing_ink", meas
     if refs and meas["ink_kasane"] > 1.3 * max(refs) and meas["ink_kasane"] - max(refs) > 0.005:
         return "extra_ink", meas
+    if meas.get("dpx_pm") is not None and meas["dpx_pm"] > meas["dpx_km"] and meas["dpx_pm"] > 0.002:
+        # The references disagree. kasane with MuPDF (much closer to it
+        # than Poppler is), or all three apart. Neither clears kasane:
+        # the resolution check says whether the difference is content.
+        return ("reference_kasane_mupdf" if meas["dpx_km"] < 0.5 * meas["dpx_pm"] else "reference_three_way"), meas
     return "kasane", meas
 
 
@@ -179,7 +203,7 @@ def resolution_check(kasane, pdf, page):
             subprocess.run([kasane, "render", pdf, str(page), "--dpi", str(dpi), "--output", k], capture_output=True,
                            timeout=300)
             subprocess.run(["pdftoppm", "-r", str(dpi), "-gray", "-png", "-f", str(page), "-l", str(page),
-                            "-singlefile", pdf, b], capture_output=True, timeout=300)
+                            "-singlefile", "-cropbox", pdf, b], capture_output=True, timeout=300)
             subprocess.run(["mutool", "draw", "-q", "-r", str(dpi), "-c", "gray", "-o", m, pdf, str(page)],
                            capture_output=True, timeout=300)
             if not all(os.path.exists(x) for x in (k, b + ".png", m)):
@@ -250,7 +274,28 @@ def main():
                     res.setdefault(c, {})[dpi] = {"n": len(v), **{name: round(sorted(x[i] for x in v)[len(v) // 2], 4)
                                                                    for i, name in enumerate(("kasane_poppler", "kasane_mupdf",
                                                                                              "poppler_mupdf"))}}
+        outcome = collections.defaultdict(collections.Counter)
+        agree = collections.defaultdict(collections.Counter)
+        worst300 = {}
+        for r in rows:
+            if "resolution" not in r:
+                continue
+            v = r["resolution"].get("300")
+            if not v or None in v:
+                outcome[r["class"]]["failed"] += 1
+                continue
+            outcome[r["class"]]["vanishes" if v[0] < 0.005 else "persists"] += 1
+            agree[r["class"]]["poppler" if v[0] < 0.005 else "mupdf_only" if v[1] < 0.005 else "neither"] += 1
+            worst300[r["class"]] = round(max(worst300.get(r["class"], 0), v[0]), 4)
+        mads = {}
+        for c in by:
+            v = sorted(r["mad_kp"] for r in rows if r["class"] == c and r.get("mad_kp") is not None)
+            if v:
+                mads[c] = {"median": round(v[len(v) // 2], 2), "max": round(v[-1], 2)}
         json.dump({"threshold": a.threshold, "files": len(rows), "classes": dict(by), "resolution_medians": res,
+                   "resolution_outcome": {c: dict(v) for c, v in outcome.items()},
+                   "agreement_300": {c: dict(v) for c, v in agree.items()},
+                   "resolution_worst_kasane_poppler_300": worst300, "mad_kasane_poppler_72": mads,
                    "by_class": {c: dict(v) for c, v in cross.items()}}, open(a.summary, "w"), indent=1, sort_keys=True)
 
 

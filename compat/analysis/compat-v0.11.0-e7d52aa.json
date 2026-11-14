@@ -1,10 +1,10 @@
 {
  "attribution_below_0_95": {
-  "annotation_layer": 2,
+  "annotation_layer": 4,
+  "extra_ink": 2,
   "kasane": 7,
-  "reference_kasane_mupdf": 29,
-  "reference_three_way": 27,
-  "size": 3
+  "reference_kasane_mupdf": 28,
+  "reference_three_way": 27
  },
  "blockers_expect_pass": {
   "/AP /N state dictionary without /AS and more than one state": {
@@ -13,7 +13,7 @@
   "BDC property name not in resources": {
    "pass": 1
   },
-  "Identity-ordering CID font without program": {
+  "CID font without a usable program": {
    "skip": 3
   },
   "JBIG2 page size \u2260 /Width /Height": {
