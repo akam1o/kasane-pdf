@@ -3,7 +3,8 @@
 this exact commit passed the CI parts of the release gate?
 (docs/releasing.md, "The release gate")
 
-    scripts/release-check.py <sha> [--require-nightly] [--no-main]
+    scripts/release-check.py <sha> --local-results DIR [--require-nightly] [--no-main]
+        [--disclosure <S> --disclosure-results DIR2] [--legacy-local]
 
 Reads every workflow run GitHub has for <sha> (`gh api`, all pages) and
 passes only when:
@@ -24,11 +25,27 @@ passes only when:
     `success` — a successful run whose corpus job was skipped (no
     credentials) does not count, nor does a nightly of another commit.
 
-It prints what it found and never reports a check it did not see. The
-rest of the gate — long fuzzing, the local package checks, external
-renderers, and in a security release the local corpus run — is not
-visible here and is recorded by hand.
+and, for the local part of the gate (scripts/release-verify.py):
+
+  * DIR holds a `release` run of scripts/release-verify.py that proves
+    <sha> passed (`release-verify.py check`: the commit and tree, the
+    commit's verifier and config, every check passed, digests, age, no
+    newer run) — the corpora, external renderers, long fuzzing, the
+    10,000-seed model and the security regressions, run locally;
+  * in a security release, --disclosure <S> --disclosure-results DIR2:
+    S (the disclosure commit) descends from <sha> (R), changes only
+    tests/, docs/ and CHANGELOG.md after it, and DIR2 proves S passed the
+    `disclosure` profile (the new advisory regressions). R's evidence and
+    S's are checked each against its own commit and profile: one cannot
+    stand in for the other.
+
+A commit older than scripts/release-verify.py cannot carry this
+evidence: --legacy-local accepts it, saying so, and nothing else does.
+The package checks of docs/releasing.md stay manual. It prints what it
+found and never reports a check it did not see.
 """
+import importlib.util
+import os
 import json
 import subprocess
 import sys
@@ -79,6 +96,51 @@ def verdict(sha, runs, jobs, main_is_ancestor, require_nightly):
     return problems
 
 
+def release_verify():
+    spec = importlib.util.spec_from_file_location(
+        "release_verify", os.path.join(os.path.dirname(os.path.abspath(__file__)), "release-verify.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+S_MAY_CHANGE = ("tests/", "docs/")
+
+
+def local_problems(repo, sha, results, disclosure=None, disclosure_results=None, legacy=False,
+                   profiles=("release", "disclosure")):
+    """Problems with the local evidence for <sha> (and S) — [] when it
+    proves what the release needs."""
+    rv = release_verify()
+    problems = []
+    has = rv.blob(repo, sha, "scripts/release-verify.py") is not None
+    if not has:
+        if not legacy:
+            problems.append("this commit predates scripts/release-verify.py: its local gate was recorded by hand "
+                            "(--legacy-local accepts that)")
+    elif results is None:
+        problems.append("no local verification results: run scripts/release-verify.py run --ref <sha> and pass "
+                        "--local-results DIR")
+    else:
+        problems += [f"local: {p}" for p in rv.verify(repo, sha, results, profiles[0])]
+    if (disclosure is None) != (disclosure_results is None):
+        problems.append("--disclosure and --disclosure-results go together")
+    elif disclosure is not None:
+        s, _ = rv.resolve(repo, disclosure)
+        if s == sha or subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, s]).returncode != 0:
+            problems.append("the disclosure commit does not descend from the release commit")
+        else:
+            out = subprocess.run(["git", "-C", str(repo), "diff", "--no-renames", "--name-only", "-z", sha, s],
+                                 capture_output=True, check=True).stdout
+            changed = [p.decode("utf-8", "backslashreplace") for p in out.split(b"\0") if p]
+            other = [p for p in changed if not (p.startswith(S_MAY_CHANGE) or p == "CHANGELOG.md")]
+            if other:
+                problems.append(f"the disclosure commit changes {len(other)} file(s) outside tests/, docs/ and "
+                                f"CHANGELOG.md: the code verified with its tests would not be the release's")
+        problems += [f"disclosure: {p}" for p in rv.verify(repo, s, disclosure_results, profiles[1])]
+    return problems
+
+
 def gh_all(path, key):
     out = subprocess.run(["gh", "api", "--paginate", "--slurp", path], capture_output=True, text=True,
                          check=True).stdout
@@ -89,9 +151,18 @@ def main():
     args = sys.argv[1:]
     require_nightly = "--require-nightly" in args
     no_main = "--no-main" in args
-    args = [a for a in args if a not in ("--require-nightly", "--no-main")]
+    legacy = "--legacy-local" in args
+    args = [a for a in args if a not in ("--require-nightly", "--no-main", "--legacy-local")]
+    opts = {}
+    for flag in ("--local-results", "--disclosure", "--disclosure-results"):
+        if flag in args:
+            i = args.index(flag)
+            opts[flag] = args[i + 1]
+            del args[i:i + 2]
     if len(args) != 1:
         sys.exit(__doc__)
+    repo = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                          check=True).stdout.strip()
     sha = subprocess.run(["git", "rev-parse", args[0] + "^{commit}"], capture_output=True, text=True,
                          check=True).stdout.strip()
     runs = gh_all(f"repos/{REPO}/actions/runs?head_sha={sha}&per_page=100", "workflow_runs")
@@ -103,12 +174,18 @@ def main():
     subprocess.run(["git", "fetch", "--quiet", "origin", "main"], check=True)
     ancestor = subprocess.run(["git", "merge-base", "--is-ancestor", "origin/main", sha]).returncode == 0
     problems = verdict(sha, runs, jobs, ancestor or no_main, require_nightly)
+    problems += local_problems(repo, sha, opts.get("--local-results"), opts.get("--disclosure"),
+                               opts.get("--disclosure-results"), legacy)
+    if legacy and not problems:
+        print("NOTE: --legacy-local: this commit's local gate is not machine-checked")
     for p in problems:
         print("PROBLEM:", p)
     if problems:
         sys.exit(1)
     print(f"{sha}: full gate and CodeQL green{', nightly corpus green' if require_nightly else ''}"
-          f"{'' if no_main else '; main fast-forwards to it'}")
+          f"{'' if no_main else '; main fast-forwards to it'}"
+          f"{'' if legacy else '; local release verification proves it'}"
+          f"{'; the disclosure commit is verified' if '--disclosure' in opts else ''}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,1479 @@
+{
+ "cases": {
+  "adv:2337-cm": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "adv:2337-form": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "adv:2r8v-palette-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:2r8v-palette-pieceinfo": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:2r8v-tint-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:2r8v-transfer-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:3f9j-after-endcmap": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:3f9j-bfchar": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:3f9j-length": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:3f9j-order": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "adv:6pgh-goto-A-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-goto-A-next": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-goto-AA-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-goto-AA-next": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-launch-A-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-launch-A-next": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-launch-AA-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-launch-AA-next": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-uri-A-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-uri-A-next": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-uri-AA-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:6pgh-uri-AA-next": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:92wc-link-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:92wc-markup-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:92wc-markup-hide": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:92wc-markup-pieceinfo": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:cjhc-contents-attachment": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:cjhc-contents-catalog": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:cjhc-contents-pieceinfo": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:cjhc-link-appearance": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:cjhc-stamp-appearance": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:f228-crlf": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:f228-shown": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:fqgr-cff-notdef": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "adv:fqgr-truetype-bearing": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 4,
+     "changed": 140,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 4,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 4
+    },
+    "poppler": {
+     "antialias": 4,
+     "changed": 140,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "adv:fqgr-type1-absent-name": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "adv:frr2-tm": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:frr2-tm-cancelled-by-cm": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:vph3-objstm": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:x455-image": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "snap": 0
+    }
+   }
+  },
+  "adv:x455-text": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "adv:x455-text-invisible-clip": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "adv:xpph-literal": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "syn-shading": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "syn-tiling-pattern": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "syn-widget-appearance": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "syn-xfa": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:annotation-outside": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:background-box-crossing": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 205,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:curve-crossing": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 36,
+     "changed": 4,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:dashed-rule-crossing": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:form-in-form": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:form-xobject": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:image-in-form": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:image-indexed-indirect": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 14,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 14,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 12,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:image-inherited-unused": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:image-shown-on-two-pages": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:image-shown-on-two-pages-refuse-copies": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "vr:image-soft-mask": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:inline-image": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "vr:inline-image-outside": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left_not_judged": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:invisible-ocr-text": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:link": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:non-embedded-font": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "vr:non-embedded-font-embedded": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 369,
+     "changed": 0,
+     "font_substitution": 56,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 279,
+     "changed": 0,
+     "font_substitution": 194,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 365,
+     "changed": 0,
+     "font_substitution": 47,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:rotated-ctm-rule": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:stroke-adjust-fills": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:stroke-adjust-stroke": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 44,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 291,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:structure-alt-text": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:structure-alt-text-removed": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:structure-cycle": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "vr:structure-form-mcr": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:structure-nested-shared": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:structure-partial": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:structure-tagged-link": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:table-rules-crossing": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:text": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:text-annotation": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "vr:text-annotation-removed": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 20,
+     "changed": 33,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 23
+    }
+   }
+  },
+  "vr:text-in-object-stream-metadata": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:type3-font": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  },
+  "vr:vector-path": {
+   "outcome": "ok",
+   "renderers": {
+    "mupdf": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "pdfjs": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    },
+    "poppler": {
+     "antialias": 0,
+     "changed": 0,
+     "font_substitution": 0,
+     "ink_left": 0,
+     "public_lost": false,
+     "secret_extracted": false,
+     "snap": 0
+    }
+   }
+  }
+ },
+ "dpi": 72,
+ "schema_version": 1,
+ "tools": {
+  "mupdf": "1.28.6",
+  "pdfjs": "6.5.438",
+  "poppler": "26.10.0"
+ }
+}

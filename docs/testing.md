@@ -203,8 +203,9 @@ workflows and `ci-gate.py` from git objects as data (never checked out,
 never run), and checks them with the base branch's
 `scripts/check-workflows.py --data-only`; and it fails a pull request
 **from a fork** that changes a CI path (`CI_PATHS`: `.github/`,
-`scripts/`, the fuzz runners, `.config/`, `.cargo/`, the baselines in
-`compat/`, `tests/redact_advisories.rs`) — its CI results would come
+`scripts/`, `tools/`, the fuzz runners, `.config/`, `.cargo/`, the
+baselines in `compat/` (corpus, redaction, renderers),
+`tests/redact_advisories.rs`) — its CI results would come
 from what it changed. Paths are compared as git writes them with `-z`
 and `--no-renames` (unusual names, and a file renamed out of a CI path,
 count). The maintainer lands such a change from a branch of their own
@@ -258,6 +259,39 @@ corpus job really ran, on the exact commit); and
 seeds, an empty shard, bad arguments) and its dealing of every seed.
 The redaction corpus results leave the runner only as projections (ids,
 categories, counts).
+
+### Release verification
+
+The part of the release gate that CI cannot run on every push — the
+private corpora (redaction 117 × 4, compatibility 511), the external
+renderers, 900 s of fuzzing per target, the 10,000-seed model with the
+security regressions — runs locally with `scripts/release-verify.py run
+--ref <sha>`, which records each check against the commit (full SHA and
+tree, the verifier's and config's git blobs, tool versions, commands,
+exit status, duration, peak memory, log digests), and
+`scripts/release-check.py --local-results DIR` refuses a release whose
+evidence is missing, of another commit, partial, failed, edited or
+superseded (docs/releasing.md, *Local release verification*).
+
+`scripts/verify-renderers.py` is its renderer check: every
+verify-redact case, every advisory input (F, G, H, I and earlier) and
+synthetic XFA, shading, tiling-pattern and widget-appearance cases,
+redacted and then rendered and text-extracted by Poppler, MuPDF and
+pdf.js (`tools/pdfjs`, pinned). Ink left inside the rect, the secret in
+the extracted text or the public text lost fail always; changed pixels
+outside the rect are classified (anti-aliasing, edge snap, font
+substitution, changed) and only `changed` is compared, with
+`compat/renderers/baseline.json` and only for the renderer versions it
+was made with.
+
+`scripts/test_release_verify.py` (fast gate) runs the verifier on
+throwaway repositories and checks each way its evidence can be wrong:
+another commit or tree, an older run superseded by a newer one, edited
+or truncated JSON, a missing check, a forged status, a missing or
+changed log, a run killed half-way, a timeout, a crash, a missing tool,
+another renderer version, an incomplete corpus, private text in the
+public projection, paths and symbolic links out of the results, the
+worktree changed during a check, R's and S's evidence swapped.
 
 What a pull request's green fast gate guarantees: the change compiles
 and passes every engine test in both feature sets, every redaction

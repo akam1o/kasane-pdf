@@ -144,7 +144,7 @@ PR_MUST_RUN = {
     "compat-smoke": ["scripts/check-workflows.py", "scripts/verify-redact.py",
                      "KASANE_ADVISORY_DUMP=/tmp/advisories cargo test --release --test redact_advisories",
                      "check-advisory-regressions.py target/release/kasane-pdf /tmp/advisories --expect-safe",
-                     "scripts/test_ci_scripts.py"],
+                     "scripts/test_ci_scripts.py", "scripts/test_release_verify.py"],
     "render-fuzz-smoke": ["ci-run-sharded.sh redact_model", "fuzz/ci-run.sh \"$T\" \"fuzz/seeds/$T\"",
                           "-seed=1 -runs=3000"],
 }
@@ -175,7 +175,7 @@ GUARD_RUNS = (
 # Paths a pull request from a fork may not change: the CI's definition,
 # and the baselines and security regressions it judges against.
 CI_PATHS = re.compile(
-    rb"^(\.github/|scripts/|\.config/|\.cargo/|fuzz/ci-run(-sharded)?\.sh$|compat/baselines/|compat/redaction/"
+    rb"^(\.github/|scripts/|tools/|\.config/|\.cargo/|fuzz/ci-run(-sharded)?\.sh$|compat/baselines/|compat/redaction/|compat/renderers/"
     rb"|compat/quality-gate\.json$|tests/redact_advisories\.rs$)")
 NOT_RUN = re.compile(r"^\s*(echo|printf|#|:|true\b)")
 
