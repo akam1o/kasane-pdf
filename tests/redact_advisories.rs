@@ -935,7 +935,11 @@ fn ghsa_6pgh_removed_link_actions() {
         for (via, entry) in [("A", "/A 40 0 R"), ("AA", "/AA << /E 40 0 R >>")] {
             for (w, cat, extra) in [
                 ("catalog", "/XPriv 40 0 R", vec![]),
-                ("pieceinfo", "/PieceInfo << /App << /Private 40 0 R >> >>", vec![]),
+                (
+                    "pieceinfo",
+                    "/PieceInfo << /App << /Private 40 0 R >> >>",
+                    vec![],
+                ),
                 (
                     "next",
                     "/XPriv 41 0 R",
@@ -1324,10 +1328,16 @@ fn ghsa_fqgr_glyphs_viewers_draw_elsewhere() {
         (52, stream_obj(&format!("/Length1 {}", ttf.len()), &ttf)),
         (53, cid_tounicode),
     ];
-    let cases: Vec<(&str, Vec<(u32, Vec<u8>)>, (f64, f64, f64, f64), String)> = cases
+    type FontCase<'a> = (&'a str, Vec<(u32, Vec<u8>)>, (f64, f64, f64, f64), String);
+    let cases: Vec<FontCase> = cases
         .into_iter()
         .map(|(n, o, r)| (n, o, r, "5F".to_string()))
-        .chain([("cidfonttype2-bearing", cid, (60.0, 60.0, 90.0, 79.0), code.clone())])
+        .chain([(
+            "cidfonttype2-bearing",
+            cid,
+            (60.0, 60.0, 90.0, 79.0),
+            code.clone(),
+        )])
         .collect();
     for (name, objs, rect, code) in cases {
         let content = format!("BT /F2 60 Tf 60 80 Td <{code}> Tj ET {KEPT}");

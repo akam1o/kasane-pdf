@@ -537,6 +537,24 @@ def cmd_update(a):
     return 0
 
 
+SHOWN = {"LEAK": "LEAK", "SLOW": "SLOW", "REMOVED": "removed", "REFUSED": "refused", "KEPT": "kept", "FAST": "fast",
+         "NA": "N/A"}
+
+
+def cmd_table(a):
+    """docs/security/advisory-regressions.md's table, from history.json."""
+    e = json.loads(Path(a.expected).read_text())
+    vs = e["versions"]
+    rows = []
+    for name, row in sorted(e["expected"].items(), key=lambda kv: kv[0]):
+        rows.append((name[:-4] if name.endswith(".pdf") else name, row))
+    print("| input | " + " | ".join(f"v{v}" for v in vs) + " | candidate |")
+    print("| --- |" + " --- |" * (len(vs) + 1))
+    for name, row in rows:
+        print(f"| `{name}` | " + " | ".join(SHOWN.get(row.get(v), row.get(v) or "?") for v in vs + ["candidate"]) + " |")
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -558,8 +576,10 @@ def main(argv=None):
     u.add_argument("--results", required=True)
     u.add_argument("--expected", default=exp_default)
     u.add_argument("--accept", action="store_true")
+    t = sub.add_parser("table")
+    t.add_argument("--expected", default=exp_default)
     a = ap.parse_args(argv)
-    return {"build": cmd_build, "run": cmd_run, "update-expected": cmd_update}[a.cmd](a)
+    return {"build": cmd_build, "run": cmd_run, "update-expected": cmd_update, "table": cmd_table}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -31,7 +31,8 @@ that did not run on this commit.
 | CodeQL, no new alert | `codeql-release.yml` on pushes to `release/**` (or `gh workflow run codeql-release.yml --ref <ref>`): it fails on any result that is not a reviewed alert. The default setup's analysis on `main` and pull requests does not count — its success means the analysis ran | green on the commit — `scripts/release-check.py` checks it |
 | redaction corpus (117 runs × four option sets), 511-file compatibility run, external renderers (Poppler, MuPDF, pdf.js on every verify-redact case, every advisory input and the XFA / shading / pattern / widget cases), long fuzzing (three targets, 900 s each), redaction model at 10,000 seeds, verify-redact and advisory regressions | locally: `scripts/release-verify.py run --ref <sha>` (*Local release verification* below) | its `release` run proves `<sha>` passed — `scripts/release-check.py <sha> --local-results DIR` checks it |
 | the same corpora in CI | `gh workflow run nightly.yml --ref <ref>` (A, before; B, after publication) | green on the commit: `--require-nightly` (A) |
-| the advisory regressions against every published version (`scripts/check-advisory-regressions.py <old CLI> <dump dir>`, affected range `LEAK`, the candidate `SAFE`) | locally, by hand (old CLIs are built from their tags) | a security release; the commands and results recorded with the SHA |
+| the advisory regressions against every published version: each built from its crates.io package (checked against its tag), each affected version `LEAK`, the candidate removed / refused / kept as `compat/advisories/history.json` expects, each advisory's range as published | `scripts/release-verify.py run --ref S --profile security-history` (B.2); nightly on Linux (`nightly.yml`, *advisory history*) | a security release: `--history-results`; otherwise the nightly |
+| the external renderers on Linux (synthetic inputs, Linux baseline) | `pr.yml` full gate (*external renderers (synthetic, linux)*) | `gate` green on the commit |
 | package contents | locally, from a clean checkout of the commit: `cargo publish --dry-run`, then `tar -tzf target/package/tmp-crate/kasane-pdf-<v>.crate` (no corpus, no reproduction material) and its `.cargo_vcs_info.json` (the commit) | on the commit |
 
 ## Branch protection on `main`
@@ -256,9 +257,22 @@ regression inputs:
 scripts/release-verify.py run --ref S --profile disclosure   # verify-redact, every advisory input SAFE
 ```
 
-and, by hand, every affected published version judged `LEAK` on S's
-inputs. This is evidence about R's code only because the code is
-identical: `release-check.py --disclosure S` refuses an S that changes
+and the history of every published version on S's inputs, with the new
+advisory and its draft range added to `compat/advisories/history.json`
+in S (and its expected states written with `advisory-history.py
+update-expected`):
+
+```console
+scripts/release-verify.py run --ref S --profile security-history [--private-inputs ~/kasane-private/<finding>]
+```
+
+— each affected version must LEAK on the new inputs, versions outside
+the draft range must not, the candidate must be removed or refused as
+expected: the evidence for the affected versions the advisory will
+state. If an affected version does not reproduce, investigate the
+inputs, the options, the binary and the judgement before narrowing the
+range; never widen the expected states to make it pass. The S evidence
+is about R's code only because the code is identical: `release-check.py --disclosure S` refuses an S that changes
 anything but `tests/`, `docs/` and `CHANGELOG.md` after R. It is the one
 exception to "on the commit that will be tagged", and it is kept apart:
 S's run is of S, under the `disclosure` profile; it does not count for
@@ -287,7 +301,8 @@ Then:
 git push origin R:refs/heads/release/v<version>    # code public from here; full gate + CodeQL on R
 gh run watch <the pr.yml run of R>                  # ~6 minutes
 gh run watch <the codeql-release.yml run of R>      # ~5 minutes, in parallel
-scripts/release-check.py R --local-results <DIR of R> --disclosure S --disclosure-results <DIR of S>
+scripts/release-check.py R --local-results <DIR of R> --disclosure S --disclosure-results <DIR of S> \
+    --history-results <DIR of S's security-history run>
                                                     # full gate and CodeQL green on R; R and S verified; main fast-forwards
 git push origin R:main
 git tag -a v<version> -m "kasane-pdf <version>" R && git push origin v<version>
@@ -352,6 +367,17 @@ worktree must still be the commit, unmodified. The checks:
 | `compat_corpus` | `kasane-compat run` built with `cjk-fallback` as `nightly.yml` builds it, over the 511 files (Poppler witness, 96 dpi, 20 s per file, full mode, `--rewrite-options carry`) → `scripts/ci-regression.py check` against `compat/baselines/corpus-full.json` | 511 files on both sides (else `incomparable`), no crash or timeout, no regression |
 | `external_renderers` | `scripts/verify-renderers.py` (Poppler, MuPDF, pdf.js from `tools/pdfjs`) | no leak or text loss; drawing outside the rect no worse than `compat/renderers/baseline.json` for the same renderer versions (other versions: `incomparable`) |
 | `fuzz` | `fuzz/ci-run.sh` for render_content, render_graph and redact_model, 900 s each in parallel, from the committed seeds | no crash, timeout or false success; at least 95 % of the time ran (else `incomplete`); inputs beyond the seeds executed |
+| `advisory_history` (profile `security-history`) | `scripts/advisory-history.py`: every published version of `compat/advisories/history.json` built from crates.io, every advisory input on each and on the candidate (docs/security/advisory-regressions.md) | every cell as expected, every advisory's range reproduced; versions that cannot be judged (no command) listed as untestable |
+
+The profiles: `release` (the release candidate R is safe), `disclosure`
+(S's new regression tests pass on R's code), `security-history` (the
+published versions are affected as the advisories say, the candidate is
+not). A normal release needs `release`; a security release all three.
+Private reproduction material can join a `security-history` run
+(`--private-inputs DIR`: `manifest-*.tsv` in the advisory dump's format
+and a `history-expected.json`); its detail stays in the run's `work/`,
+the results say only how many there were and how they came out, and it
+is refused in GitHub Actions.
 
 Statuses: `passed`, `failed`, `timeout`, `error` (could not run),
 `incomplete`, `incomparable`, `interrupted`. Only `passed` counts.
@@ -363,14 +389,47 @@ sleeps anyway stretches the wall-clock time (a timeout or a corpus file's
 instead of being rewritten in the worktree (which would fail the next
 check as a modified worktree).
 
-**Requirements.** git, Python 3, rustup with the stable toolchain and
-the fuzz toolchain of the config (`nightly-2026-10-29`) with
-`cargo-fuzz`, qpdf (with `fix-qdf`), Poppler (`pdftoppm`, `pdftotext`,
-`pdfinfo`), MuPDF (`mutool`), Node.js with npm (`tools/pdfjs` is
-installed with `npm ci`), and the corpus (`compat/corpus`, or
-`--corpus`; docs/compat-corpus.md). macOS and Linux run the same
-commands; the renderer baseline records the renderer versions it was
-made with.
+**Requirements.** git, Python 3, rustup with the stable toolchain, the
+toolchain of `compat/advisories/history.json` (1.92, for the published
+versions) and the fuzz toolchain of the config (`nightly-2026-10-29`)
+with `cargo-fuzz`, qpdf (with `fix-qdf`), Poppler (`pdftoppm`,
+`pdftotext`, `pdfinfo`), MuPDF (`mutool`), Node.js 22.13 or later with
+npm (`tools/pdfjs` is installed with `npm ci`), network access to
+crates.io (`security-history`), and the corpus (`compat/corpus`, or
+`--corpus`; docs/compat-corpus.md).
+
+**Linux.** The same commands. On Ubuntu 24.04:
+
+```console
+sudo apt-get install -y git python3 qpdf poppler-utils mupdf-tools build-essential
+# Node.js 22 (Ubuntu's own is 18; pdf.js needs 22.13+): nodesource, nvm or a release tarball
+curl https://sh.rustup.rs -sSf | sh -s -- -y
+rustup toolchain install 1.92 nightly-2026-10-29
+cargo +nightly-2026-10-29 install cargo-fuzz --locked --version 0.13.2
+```
+
+macOS's `caffeinate` is used only on macOS; peak memory is read from
+`wait4` on both (kilobytes on Linux, bytes on macOS). The renderer
+baselines are per platform (`compat/renderers/baseline-<os>-<arch>.json`:
+`darwin-arm64`, `linux-x86_64`, …): a platform without one is
+`incomparable` for the drawing comparison — never compared with another
+platform's — while ink left, secrets extracted and public text lost
+fail on every platform. The Linux baseline of the CI runner is
+`baseline-linux-x86_64.json` (Ubuntu 24.04's Poppler and MuPDF); a local
+Linux of another distribution or architecture needs its own.
+
+**Renderer baselines.** `scripts/verify-renderers.py <kasane> <dump>
+--json OUT --write-baseline compat/renderers/baseline-<platform>.json
+--reason "<why, and how the differences were checked>"` is the only way
+a baseline changes: a normal run never writes one; it refuses to write
+over any safety failure (ink left, a secret extracted, public text lost,
+a crash, an unexpected refusal, a renderer that failed); it prints every
+difference from the committed baseline — renderer versions, each case's
+outcome, each case × renderer's changed pixels — and an outcome change,
+a case added or removed, or more changed pixels need `--accept-changes`
+as well. The reason is recorded in the file and the change is committed
+on its own, reviewed like code. A renderer upgrade makes the comparison
+`incomparable` until a new baseline for those versions is committed.
 
 **Where results go.** `DIR` (default
 `~/.cache/kasane-pdf/release-verify/<sha12>-<time>/`, never inside the

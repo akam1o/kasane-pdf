@@ -293,6 +293,43 @@ another renderer version, an incomplete corpus, private text in the
 public projection, paths and symbolic links out of the results, the
 worktree changed during a check, R's and S's evidence swapped.
 
+### Advisory history and Linux
+
+`scripts/advisory-history.py` runs every advisory input on every
+published version (docs/security/advisory-regressions.md): each version
+built from its crates.io package, checked against its git tag, with
+toolchain 1.92 and the default features; affected versions must LEAK,
+the candidate must be removed, refused or kept as
+`compat/advisories/history.json` expects (a refusal where removal is
+expected fails, and the reverse), and each advisory's affected range is
+checked against what is observed. Text cases are judged by Poppler,
+MuPDF and pdf.js — text extracted and ink left inside the rect — never
+by kasane's own reading. A build that fails, a package that is not its
+tag, a cached binary whose digest changed, a crash, a timeout or a
+witness that fails is never LEAK, removed or refused.
+
+Where each runs:
+
+| check | inputs | when | platform |
+| --- | --- | --- | --- |
+| advisory regressions on the candidate (`--expect-safe`), the history and baseline scripts' own tests | synthetic | every pull request (fast gate) | Linux (CI) |
+| external renderers on synthetic cases, against `baseline-linux-x86_64.json` | synthetic | full gate (pushes to `main`, `release/**`, dispatch) | Linux (CI) |
+| advisory history: every published version and the candidate | synthetic | nightly and dispatch (`nightly.yml`) | Linux (CI) |
+| the release profile (corpora, renderers, fuzz, model, regressions) | private corpus + synthetic | before a release (`release-verify.py`) | the maintainer's machine |
+| `security-history` with private reproduction material | private + synthetic | before a security advisory (`release-verify.py --profile security-history --private-inputs`) | the maintainer's machine |
+
+Private inputs never reach GitHub Actions: the corpus jobs fetch the
+corpus only in `nightly.yml`'s gated job and upload projections, and
+`advisory-history.py` refuses `--private-inputs` when `GITHUB_ACTIONS`
+is set. `scripts/test_advisory_history.py` (fast gate) checks the
+judgement on fake CLIs and hand-made packages: a failed build, a
+package unlike its tag, an unexpected feature or toolchain, missing or
+unknown inputs, an old version not leaking, the candidate leaking, a
+crash, a timeout, a missing output, an unexpected refusal, a changed
+binary, another platform's baseline, a baseline written over a safety
+failure or with unaccepted increases, private names in the public
+summary.
+
 What a pull request's green fast gate guarantees: the change compiles
 and passes every engine test in both feature sets, every redaction
 security check (the 35 verify-redact cases, every advisory's regression
