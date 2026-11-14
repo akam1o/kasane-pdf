@@ -77,6 +77,7 @@
    "id": "annotation-button-widget",
    "kind": "word",
    "outcome": "refused",
+   "reason": "JavaScript name tree",
    "seconds": 0.012
   },
   {
@@ -84,6 +85,7 @@
    "id": "annotation-button-widget",
    "kind": "line",
    "outcome": "refused",
+   "reason": "JavaScript name tree",
    "seconds": 0.011
   },
   {
@@ -91,6 +93,7 @@
    "id": "annotation-button-widget",
    "kind": "block",
    "outcome": "refused",
+   "reason": "JavaScript name tree",
    "seconds": 0.012
   },
   {
@@ -1089,6 +1092,7 @@
    "id": "colorkeymask",
    "kind": "block",
    "outcome": "refused",
+   "reason": "region removal on a page with uncertain content",
    "seconds": 0.005
   },
   {
@@ -1674,6 +1678,7 @@
    "id": "pdfbox-3148-2-fuzzed",
    "kind": "block",
    "outcome": "refused",
+   "reason": "other: parse error",
    "seconds": 0.002
   },
   {
@@ -1753,6 +1758,7 @@
    "id": "pdfium-bad_page_type",
    "kind": "block",
    "outcome": "refused",
+   "reason": "other: invalid document structure",
    "seconds": 0.002
   },
   {
@@ -1760,6 +1766,7 @@
    "id": "autoprint",
    "kind": "block",
    "outcome": "refused",
+   "reason": "JavaScript name tree",
    "seconds": 0.003
   },
   {
@@ -1767,6 +1774,7 @@
    "id": "autoprint_will_print",
    "kind": "block",
    "outcome": "refused",
+   "reason": "catalog entry outside profile",
    "seconds": 0.012
   },
   {
@@ -1966,6 +1974,7 @@
    "id": "irs-f1040",
    "kind": "word",
    "outcome": "refused",
+   "reason": "other: signature policy",
    "seconds": 0.018
   },
   {
@@ -1973,6 +1982,7 @@
    "id": "irs-f1040",
    "kind": "line",
    "outcome": "refused",
+   "reason": "other: signature policy",
    "seconds": 0.017
   },
   {
@@ -1980,6 +1990,7 @@
    "id": "irs-f1040",
    "kind": "block",
    "outcome": "refused",
+   "reason": "other: signature policy",
    "seconds": 0.018
   },
   {
@@ -2299,6 +2310,7 @@
    "id": "verapdf_verapdf-test-suite-6-1-12-t02-pass-l",
    "kind": "block",
    "outcome": "refused",
+   "reason": "other: invalid document structure",
    "seconds": 0.003
   },
   {
@@ -2483,6 +2495,7 @@
    "id": "function_based_shading_cmyk",
    "kind": "block",
    "outcome": "refused",
+   "reason": "region removal on a page with blockers: shading",
    "seconds": 0.003
   },
   {
@@ -2586,6 +2599,7 @@
    "id": "pdfium-pattern_fill_uncolored",
    "kind": "block",
    "outcome": "refused",
+   "reason": "region removal on a page with uncertain content",
    "seconds": 0.003
   }
  ],

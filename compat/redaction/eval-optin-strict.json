@@ -1116,6 +1116,7 @@
    "id": "cmykjpeg",
    "kind": "block",
    "outcome": "refused",
+   "reason": "redaction: the output carries uninspected data",
    "seconds": 0.007
   },
   {
@@ -1123,6 +1124,7 @@
    "id": "colorkeymask",
    "kind": "block",
    "outcome": "refused",
+   "reason": "region removal on a page with uncertain content",
    "seconds": 0.003
   },
   {
@@ -1708,6 +1710,7 @@
    "id": "pdfbox-3148-2-fuzzed",
    "kind": "block",
    "outcome": "refused",
+   "reason": "other: parse error",
    "seconds": 0.002
   },
   {
@@ -1787,6 +1790,7 @@
    "id": "pdfium-bad_page_type",
    "kind": "block",
    "outcome": "refused",
+   "reason": "other: invalid document structure",
    "seconds": 0.003
   },
   {
@@ -2034,6 +2038,7 @@
    "id": "irs-f1040",
    "kind": "word",
    "outcome": "refused",
+   "reason": "other: signature policy",
    "seconds": 0.022
   },
   {
@@ -2041,6 +2046,7 @@
    "id": "irs-f1040",
    "kind": "line",
    "outcome": "refused",
+   "reason": "other: signature policy",
    "seconds": 0.022
   },
   {
@@ -2048,6 +2054,7 @@
    "id": "irs-f1040",
    "kind": "block",
    "outcome": "refused",
+   "reason": "other: signature policy",
    "seconds": 0.021
   },
   {
@@ -2223,6 +2230,7 @@
    "id": "arxiv-2610.29022",
    "kind": "word",
    "outcome": "refused",
+   "reason": "redaction: the output carries uninspected data",
    "seconds": 0.06
   },
   {
@@ -2230,6 +2238,7 @@
    "id": "arxiv-2610.29022",
    "kind": "line",
    "outcome": "refused",
+   "reason": "redaction: the output carries uninspected data",
    "seconds": 0.064
   },
   {
@@ -2237,6 +2246,7 @@
    "id": "arxiv-2610.29022",
    "kind": "block",
    "outcome": "refused",
+   "reason": "redaction: the output carries uninspected data",
    "seconds": 0.065
   },
   {
@@ -2316,6 +2326,7 @@
    "id": "verapdf_verapdf-test-suite-6-1-12-t02-pass-l",
    "kind": "block",
    "outcome": "refused",
+   "reason": "other: invalid document structure",
    "seconds": 0.003
   },
   {
@@ -2500,6 +2511,7 @@
    "id": "function_based_shading_cmyk",
    "kind": "block",
    "outcome": "refused",
+   "reason": "region removal on a page with blockers: shading",
    "seconds": 0.003
   },
   {
@@ -2603,6 +2615,7 @@
    "id": "pdfium-pattern_fill_uncolored",
    "kind": "block",
    "outcome": "refused",
+   "reason": "region removal on a page with uncertain content",
    "seconds": 0.003
   }
  ],

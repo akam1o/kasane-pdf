@@ -342,6 +342,8 @@ jobs:
           python3 compat/fetch-corpus.py list > /dev/null
       - name: CI scripts' own tests (gate decision, workflow checks, fuzz shards)
         run: python3 scripts/test_ci_scripts.py
+      - name: release verification's own tests (evidence checks, renderer judgement; no corpus)
+        run: python3 scripts/test_release_verify.py
       - name: smoke run over tests/fixtures
         run: |
           mkdir -p /tmp/smoke

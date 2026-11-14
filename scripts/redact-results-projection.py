@@ -8,8 +8,9 @@ IN is a result of scripts/eval-redact-corpus.py or
 scripts/analyze-redact-refusals.py. OUT keeps:
 
   * per run: the manifest id, the run's kind and category, its outcome,
-    whether it was checked mechanically (`check_by_hand`), and the
-    counts named in METRICS;
+    whether it was checked mechanically (`check_by_hand`), the counts
+    named in METRICS, and for a refused run its reason in the closed
+    vocabulary below;
   * for refusals: the first reason and the walk categories, each
     replaced by "other" unless it is in the closed vocabulary —
     kasane's refusal features (`feature: "…"` in src/), "other: <error
@@ -69,6 +70,8 @@ def eval_run(r):
     out["outcome"] = r["outcome"] if r.get("outcome") in OUTCOMES else "unexpected"
     if "check_by_hand" in r:
         out["check_by_hand"] = bool(r["check_by_hand"])
+    if out["outcome"] == "refused":
+        out["reason"] = term(r.get("reason"))
     for k in METRICS:
         n = number(r.get(k))
         if n is not None:

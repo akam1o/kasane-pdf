@@ -13,8 +13,10 @@ tools that share no code with kasane-pdf:
 - pdftoppm: nothing is drawn inside the rect (cases without images,
   whose zeroed samples are black by design).
 
-A case may instead be refused (non-zero exit, no output file) — the
-expected outcome for the structures `redact` does not process. Exit 0
+A case may instead be refused (a typed error: exit status 1, an
+"error [kind]" message, no output file) — the expected outcome for the
+structures `redact` does not process. A signal or any other failure is a
+crash and never matches an expected refusal. Exit 0
 iff every case behaves as declared.
 
 Requires: qpdf, pdftotext, python3, the kasane-pdf CLI (cargo build).
@@ -318,7 +320,15 @@ def run():
             rects = [] if "--rect" in args else ["--rect", *RECT]
             r = subprocess.run([BIN, "redact", src, "--page", "1", *rects, *args, "--output", out],
                                capture_output=True)
-            got = "ok" if r.returncode == 0 else "refused"
+            # A refusal is the CLI's typed error: exit status 1 and an
+            # "error [kind]" message. A signal, another status or an
+            # untyped failure is a crash, never an expected refusal.
+            if r.returncode == 0:
+                got = "ok"
+            elif r.returncode == 1 and b"error [" in r.stderr:
+                got = "refused"
+            else:
+                got = "crash"
             problems = []
             if got != expect:
                 problems.append(f"expected {expect}, got {got}: {r.stderr.decode(errors='replace').strip()[:200]}")

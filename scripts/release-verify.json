@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "max_age_days": 30,
+  "profiles": {
+    "release": ["security_regressions", "noninterference", "redact_corpus", "compat_corpus", "external_renderers", "fuzz"],
+    "disclosure": ["security_regressions"]
+  },
+  "checks": {
+    "security_regressions": {
+      "kind": "security_regressions",
+      "timeout": 1800,
+      "tools": ["qpdf", "pdftotext", "pdftoppm"],
+      "min_verify_redact_cases": 35,
+      "min_advisory_cases": 44
+    },
+    "noninterference": {
+      "kind": "noninterference",
+      "timeout": 2400,
+      "tools": [],
+      "seeds": 10000
+    },
+    "redact_corpus": {
+      "kind": "redact_corpus",
+      "timeout": 5400,
+      "tools": ["qpdf", "pdftotext", "pdftoppm", "pdfinfo", "mutool", "fix-qdf"],
+      "strict_pixels": true,
+      "configs": {
+        "default": [],
+        "optin": ["--embed-substitute-fonts", "--remove-annotations"],
+        "optin-javascript": ["--embed-substitute-fonts", "--remove-annotations", "--remove-javascript"],
+        "optin-strict": ["--embed-substitute-fonts", "--remove-annotations", "--remove-javascript", "--refuse-uninspected"]
+      },
+      "runs_per_config": 117
+    },
+    "compat_corpus": {
+      "kind": "compat_corpus",
+      "timeout": 5400,
+      "tools": ["qpdf", "pdfinfo", "pdftoppm", "pdftotext"],
+      "runner_args": ["--with-poppler", "--dpi", "96", "--timeout-secs", "20", "--mode", "full", "--rewrite-options", "carry"],
+      "runner_features": ["cjk-fallback"],
+      "baseline": "compat/baselines/corpus-full.json",
+      "files": 511
+    },
+    "external_renderers": {
+      "kind": "external_renderers",
+      "timeout": 1800,
+      "tools": ["pdftoppm", "pdftotext", "mutool", "node", "npm"],
+      "baseline": "compat/renderers/baseline.json"
+    },
+    "fuzz": {
+      "kind": "fuzz",
+      "timeout": 2700,
+      "tools": ["rustup"],
+      "toolchain": "nightly-2026-10-29",
+      "seconds": 900,
+      "min_fraction": 0.95,
+      "targets": {"render_content": 1, "render_graph": 1, "redact_model": 1}
+    }
+  }
+}

@@ -29,9 +29,9 @@ that did not run on this commit.
 | verify-redact (35 cases), advisory regressions (`--expect-safe`, every advisory's inputs `SAFE`), redaction model (160 seeds), fuzz smoke, engine tests, docs, wasm, audit | `pr.yml` fast gate (part of the full gate) | `gate` green on a push or dispatch of the commit |
 | MSRV, semver-checks, redaction model at 10,000 seeds, packaged crate's tests, `cargo publish --dry-run` | `pr.yml` full gate | as above — `scripts/release-check.py <sha>` checks it |
 | CodeQL, no new alert | `codeql-release.yml` on pushes to `release/**` (or `gh workflow run codeql-release.yml --ref <ref>`): it fails on any result that is not a reviewed alert. The default setup's analysis on `main` and pull requests does not count — its success means the analysis ran | green on the commit — `scripts/release-check.py` checks it |
-| redaction corpus (117 runs × four option sets) and the 511-file compatibility run | `gh workflow run nightly.yml --ref <ref>` (A); locally on the exact tree (B, see B.2) | green on the commit; `scripts/release-check.py <sha> --require-nightly` (A) |
-| long fuzzing | `fuzz-nightly.yml` (or, in B, locally) | green on the same code (dispatch it on the branch if the last run is older); recorded by hand — `release-check.py` does not see it |
-| external renderers (MuPDF, Poppler, pdf.js) on the synthetic cases of a redaction change; the advisory regressions against every published version (`scripts/check-advisory-regressions.py <old CLI> <dump dir>`, affected range `LEAK`, the candidate `SAFE`) | locally — no CI job yet | a release with redaction changes; the commands and results recorded in the release notes |
+| redaction corpus (117 runs × four option sets), 511-file compatibility run, external renderers (Poppler, MuPDF, pdf.js on every verify-redact case, every advisory input and the XFA / shading / pattern / widget cases), long fuzzing (three targets, 900 s each), redaction model at 10,000 seeds, verify-redact and advisory regressions | locally: `scripts/release-verify.py run --ref <sha>` (*Local release verification* below) | its `release` run proves `<sha>` passed — `scripts/release-check.py <sha> --local-results DIR` checks it |
+| the same corpora in CI | `gh workflow run nightly.yml --ref <ref>` (A, before; B, after publication) | green on the commit: `--require-nightly` (A) |
+| the advisory regressions against every published version (`scripts/check-advisory-regressions.py <old CLI> <dump dir>`, affected range `LEAK`, the candidate `SAFE`) | locally, by hand (old CLIs are built from their tags) | a security release; the commands and results recorded with the SHA |
 | package contents | locally, from a clean checkout of the commit: `cargo publish --dry-run`, then `tar -tzf target/package/tmp-crate/kasane-pdf-<v>.crate` (no corpus, no reproduction material) and its `.cargo_vcs_info.json` (the commit) | on the commit |
 
 ## Branch protection on `main`
@@ -108,14 +108,16 @@ Work on a branch `release/v<version>-prep` from `main`:
 
 Push the branch: a push to `release/**` runs the full gate and CodeQL
 on that commit. Dispatch the corpus on it:
-`gh workflow run nightly.yml --ref release/v<version>-prep`.
+`gh workflow run nightly.yml --ref release/v<version>-prep`. Run the
+local verification on the same commit:
+`scripts/release-verify.py run --ref <sha>` (about 30 minutes).
 
 ### A.2 Release gate and approval
 
 Run the rows of *The release gate* on the branch's head `<sha>`, then
 
 ```console
-scripts/release-check.py <sha> --require-nightly
+scripts/release-check.py <sha> --require-nightly --local-results <DIR of the run>
 ```
 
 Approval is an explicit decision: the SHA, the version, the crate's file
@@ -124,7 +126,7 @@ list and size, and that the crates.io token is available.
 ### A.3 main, tag, crates.io
 
 ```console
-scripts/release-check.py <sha> --require-nightly     # once more, right before
+scripts/release-check.py <sha> --require-nightly --local-results <DIR>   # once more, right before
 git push origin <sha>:main                           # a fast-forward: main = <sha>
 git tag -a v<version> -m "kasane-pdf <version>" <sha>
 git push origin v<version>
@@ -232,34 +234,35 @@ of R:
 Three sets of checks, each recorded with the SHA it ran on. None is
 reported as run on a commit it did not run on.
 
-**(a) On R itself**, locally, from a clean checkout of R (before
-anything is pushed):
+**(a) On R itself**, locally, before anything is pushed:
 
-- the CI's own commands of the fast and full gate (the `run:` lines of
-  `pr.yml`): fmt, clippy per feature set, nextest and doctests per
-  feature set, verify-redact, the advisory regressions with
-  `--expect-safe` (the already public ones), the redaction model at
-  10,000 seeds, MSRV, semver-checks, `cargo publish --dry-run` and the
-  packaged crate's tests;
-- the package contents of R's crate: its file list (no corpus, no
-  reproduction material, no new advisory input) and its
-  `.cargo_vcs_info.json` (R);
-- the redaction corpus in four option sets and the 511-file
-  compatibility run (`compat/corpus.env`, the commands of
-  `nightly.yml`), compared with `scripts/check-redact-corpus.py`;
-- external renderers on the synthetic cases of the fix;
-- `fuzz-nightly.yml`'s targets for their nightly duration, from the
-  committed seeds.
+```console
+scripts/release-verify.py run --ref R            # the release profile: corpora, renderers, fuzz, model, regressions
+scripts/release-verify.py check --ref R --results <DIR>
+```
+
+and, by hand from a clean checkout of R, the CI's own commands of the
+fast and full gate (the `run:` lines of `pr.yml`: fmt, clippy and the
+tests per feature set, MSRV, semver-checks, `cargo publish --dry-run`
+and the packaged crate's tests — CI runs them again on R in B.3) and the
+package contents of R's crate: its file list (no corpus, no
+reproduction material, no new advisory input) and its
+`.cargo_vcs_info.json` (R).
 
 **(b) On S**, for what only S contains — the new advisories'
-regression inputs: with S's tests, `scripts/check-advisory-regressions.py`
-judges S `SAFE` and every affected published version `LEAK`. This is
-evidence about R's code only because the code is identical:
-`git diff --stat R S` lists only `tests/`, `docs/` and `CHANGELOG.md`,
-and `git diff R S -- src Cargo.toml Cargo.lock build.rs examples fonts
-assets` is empty. It is the one exception to "on the commit that will
-be tagged", and it is recorded as such ("advisory regressions: S
-`<sha>`, code identical to R `<sha>`").
+regression inputs:
+
+```console
+scripts/release-verify.py run --ref S --profile disclosure   # verify-redact, every advisory input SAFE
+```
+
+and, by hand, every affected published version judged `LEAK` on S's
+inputs. This is evidence about R's code only because the code is
+identical: `release-check.py --disclosure S` refuses an S that changes
+anything but `tests/`, `docs/` and `CHANGELOG.md` after R. It is the one
+exception to "on the commit that will be tagged", and it is kept apart:
+S's run is of S, under the `disclosure` profile; it does not count for
+R, nor R's for S.
 
 **(c) In public, on R**: the full gate and CodeQL when R is pushed
 (B.3), and the nightly on the tag after publication (B.5). The corpus
@@ -284,7 +287,8 @@ Then:
 git push origin R:refs/heads/release/v<version>    # code public from here; full gate + CodeQL on R
 gh run watch <the pr.yml run of R>                  # ~6 minutes
 gh run watch <the codeql-release.yml run of R>      # ~5 minutes, in parallel
-scripts/release-check.py R                          # full gate and CodeQL green on R; main fast-forwards
+scripts/release-check.py R --local-results <DIR of R> --disclosure S --disclosure-results <DIR of S>
+                                                    # full gate and CodeQL green on R; R and S verified; main fast-forwards
 git push origin R:main
 git tag -a v<version> -m "kasane-pdf <version>" R && git push origin v<version>
 git worktree add --detach /tmp/rel v<version>
@@ -316,6 +320,100 @@ cd /tmp/rel && ./scripts/fetch-cjk-assets.sh --check && cargo publish
 - The global GitHub Advisory Database lists the advisories after
   GitHub's review (hours to days); check that its entries match.
 
+## Local release verification
+
+`scripts/release-verify.py` runs the part of the gate CI cannot — the
+private corpora need the local store, the long fuzzing and the external
+renderers are too long or too tool-heavy for every push — on one commit,
+records it, and checks the record.
+
+```console
+scripts/release-verify.py run --ref <sha> [--out DIR] [--profile release|disclosure] [--corpus DIR]
+scripts/release-verify.py check --ref <sha> --results DIR [--profile release]
+scripts/release-verify.py report --results DIR [--public OUT.json]
+```
+
+**What `run` does.** It refuses to start from a checkout with
+uncommitted changes, checks the commit out into a fresh worktree
+(`DIR/src`), and runs that commit's own `scripts/release-verify.py`
+with that commit's `scripts/release-verify.json` (the profiles, each
+check's timeout and parameters). Each check of the profile runs with its
+own timeout; a failure does not stop the others; a check whose tools are
+missing, or whose corpus is incomplete (every file of
+`compat/manifest.yaml` must be in the corpus directory with its
+SHA-256), is not run and says why. Before and after each check the
+worktree must still be the commit, unmodified. The checks:
+
+| check | what | passes when |
+| --- | --- | --- |
+| `security_regressions` | `scripts/verify-redact.py`; every advisory input with `--expect-safe` | all cases as expected, at least 35 and 44 |
+| `noninterference` | `tests/redact_model.rs` at 10,000 seeds, release build | the test passes |
+| `redact_corpus` | `scripts/eval-redact-corpus.py` in four option sets → projection → `scripts/check-redact-corpus.py --strict-pixels` against `compat/redaction/` | 117 runs each; no regression (an `ok` run no longer `ok`, an unexpected run, more words, characters or pixels lost outside the rect, a run missing or new); improvements and changed refusal reasons are listed separately and never make it pass |
+| `compat_corpus` | `kasane-compat run` built with `cjk-fallback` as `nightly.yml` builds it, over the 511 files (Poppler witness, 96 dpi, 20 s per file, full mode, `--rewrite-options carry`) → `scripts/ci-regression.py check` against `compat/baselines/corpus-full.json` | 511 files on both sides (else `incomparable`), no crash or timeout, no regression |
+| `external_renderers` | `scripts/verify-renderers.py` (Poppler, MuPDF, pdf.js from `tools/pdfjs`) | no leak or text loss; drawing outside the rect no worse than `compat/renderers/baseline.json` for the same renderer versions (other versions: `incomparable`) |
+| `fuzz` | `fuzz/ci-run.sh` for render_content, render_graph and redact_model, 900 s each in parallel, from the committed seeds | no crash, timeout or false success; at least 95 % of the time ran (else `incomplete`); inputs beyond the seeds executed |
+
+Statuses: `passed`, `failed`, `timeout`, `error` (could not run),
+`incomplete`, `incomparable`, `interrupted`. Only `passed` counts.
+
+On macOS the run holds off idle sleep (`caffeinate -i`); a machine that
+sleeps anyway stretches the wall-clock time (a timeout or a corpus file's
+20 s limit can then fail, which is a failure, never a pass). Every
+`cargo` command runs `--locked`: a stale lock fails the check
+instead of being rewritten in the worktree (which would fail the next
+check as a modified worktree).
+
+**Requirements.** git, Python 3, rustup with the stable toolchain and
+the fuzz toolchain of the config (`nightly-2026-10-29`) with
+`cargo-fuzz`, qpdf (with `fix-qdf`), Poppler (`pdftoppm`, `pdftotext`,
+`pdfinfo`), MuPDF (`mutool`), Node.js with npm (`tools/pdfjs` is
+installed with `npm ci`), and the corpus (`compat/corpus`, or
+`--corpus`; docs/compat-corpus.md). macOS and Linux run the same
+commands; the renderer baseline records the renderer versions it was
+made with.
+
+**Where results go.** `DIR` (default
+`~/.cache/kasane-pdf/release-verify/<sha12>-<time>/`, never inside the
+checkout; a new directory each run): `result.json` (written last),
+`checks/<name>.json`, `logs/<name>*.log` (every log a check writes,
+each recorded with its digest), `work/`. They are **private**: logs and
+`work/` name corpus files and quote tool output. Only `report --public`
+is publishable — statuses, counts, durations and version numbers, from a
+closed vocabulary; no ids, paths, commands, rectangles or text. Nothing
+of `DIR` is uploaded anywhere.
+
+**What `check` verifies.** `result.json` and every
+`checks/<name>.json` parse completely with exactly the expected fields
+and known statuses; `commit` and `tree` are `<sha>`'s; the verifier and
+config blobs are those in `<sha>`; the profile is the one asked for and
+every one of its checks is there, `passed`, with the commit's
+configuration; every file's SHA-256 matches the one recorded and every
+file is one run's (one `run_id`); the run finished (no `RUNNING`) less
+than `max_age_days` (30) ago; and the local ledger
+(`~/.cache/kasane-pdf/release-verify/ledger.jsonl`, appended under a
+lock; its order, not the clock, says which run is newer) has no newer
+run of the same commit and profile — an older success does not count
+once a later attempt failed or was interrupted (a `--only` run is
+`partial` and supersedes nothing). Files are opened by fixed names only,
+without following symbolic links.
+
+**What it does not prove.** The digests catch accidents — another
+commit's results, a partial or interrupted run, an edited or truncated
+file, a stale run. They are not signatures: whoever can write `DIR`
+and the ledger can make a consistent forgery. The evidence is as
+trustworthy as the machine and the person who ran it.
+
+**When it fails.** Read `report` and the check's log in `DIR/logs/`;
+fix the cause (a tool, the corpus, the code); run it again into a new
+directory — the new run supersedes the old one. A tool upgraded since
+the renderer baseline makes `external_renderers` `incomparable`: check
+the differences, then re-baseline in a commit of its own
+(`scripts/verify-renderers.py <kasane> <dump> --json /tmp/x.json
+--write-baseline compat/renderers/baseline.json`). A changed corpus
+baseline is committed as projections only. `--only <check>` runs a
+subset for trying things out; its results are `partial` and never
+accepted.
+
 ## Patch releases from a release branch
 
 A patch for an earlier version (0.4.1 from `v0.4.0` while `main` had
@@ -336,8 +434,10 @@ its own commit:
   the version being patched), not `main`'s.
 
 `main` is not moved to it: `scripts/release-check.py <sha>
---require-nightly --no-main` checks the gate without the fast-forward
-condition. The tag goes on the release branch's verified commit; the
+--require-nightly --no-main --local-results DIR` checks the gate without
+the fast-forward condition. A tag older than `scripts/release-verify.py`
+has no verifier of its own to run: its local gate is recorded by hand,
+and `--legacy-local` (instead of `--local-results`) says so. The tag goes on the release branch's verified commit; the
 branch's CHANGELOG section and release notes are then brought to `main`
 by a pull request (the fix commits are already there).
 

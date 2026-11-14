@@ -79,7 +79,9 @@ import tempfile
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CORPUS = os.path.join(ROOT, "compat", "corpus")
+# $KASANE_CORPUS_DIR: the corpus outside this checkout (scripts/release-verify.py
+# runs from a clean worktree of the commit, which has no corpus).
+CORPUS = os.environ.get("KASANE_CORPUS_DIR") or os.path.join(ROOT, "compat", "corpus")
 MANIFEST = os.path.join(ROOT, "compat", "manifest.yaml")
 DPI = 100
 
@@ -175,7 +177,11 @@ def mupdf_chars(pdf, size):
     if r.returncode != 0:
         return None
     m = re.search(r'<page id="[^"]*" width="([^"]+)" height="([^"]+)"', r.stdout)
-    k = size[0] / float(m.group(1)) if m and float(m.group(1)) > 0 else 1.0
+    if not m:
+        # Output MuPDF did not structure as a page: not measured, never
+        # an empty page.
+        return None
+    k = size[0] / float(m.group(1)) if float(m.group(1)) > 0 else 1.0
     height = size[1]
     out = []
     for m in re.finditer(r'<char c="([^"]*)" quad="([^"]+)" x="([^"]+)" y="([^"]+)"', r.stdout):
@@ -326,6 +332,8 @@ def run_one(kasane, pdf, kind, rect, size, in_words, tmp, extra_args=()):
     # moved is; no character may be extracted inside the rect.
     cin = mupdf_chars(pdf, size)
     cout = mupdf_chars(out, size) if cin is not None else None
+    if cin is not None and cout is None:
+        problems.append("MuPDF could not read the output")
     if cin is not None and cout is not None:
         boxed = lambda c: (c[0], c[3], c[4], c[5], c[6])
         kept = [c for c in cin if c[0].strip() and clear_of(boxed(c), rect, 1.0)]

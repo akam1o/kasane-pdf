@@ -49,11 +49,16 @@ def main():
             available = [a for a in cli.split("|") if f" {a.split()[0]} " in usage]
             if not available:
                 print(f"{ghsa:22} {name:32} {'N/A':16} {0:6.2f}s")
+                # The candidate must run every case; N/A is for older CLIs.
+                bad += expect_safe
                 continue
             for alt in available[:1]:
                 parts = alt.split()
                 cmd = [kasane, parts[0], src] + parts[1:]
-                cmd += ["--output", out if parts[0] != "render" else os.path.join(tmp, "out.png")]
+                product = out if parts[0] != "render" else os.path.join(tmp, "out.png")
+                if os.path.exists(product):
+                    os.remove(product)
+                cmd += ["--output", product]
                 t = time.time()
                 try:
                     p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -61,26 +66,45 @@ def main():
                 except subprocess.TimeoutExpired:
                     p, timed_out = None, True
                 elapsed = time.time() - t
-            if expect == "fast":
-                verdict = "SLOW" if timed_out or elapsed > 15 else "SAFE"
-            elif timed_out:
+            # The CLI's result first: a completed success with its output,
+            # or a typed refusal (exit status 1, an "error [" line, no
+            # output). A signal, another status, or a success without
+            # output is a crash — whatever the expectation.
+            if timed_out:
+                result = "slow"
+            elif p.returncode == 0 and os.path.isfile(product):
+                result = "done"
+            elif p.returncode == 1 and "error [" in p.stderr and not os.path.exists(product):
+                result = "refused"
+            else:
+                result = "crash"
+            if result == "slow":
                 verdict = "SLOW"
-            elif not os.path.exists(out):
-                # A refusal is a typed error (exit status 1, an "error ["
-                # line); a crash or a signal is not a refusal.
-                refused = p is not None and p.returncode == 1 and "error [" in p.stderr
-                verdict = "SAFE (refused)" if refused else f"CRASH (exit {p.returncode})"
+            elif result == "crash":
+                verdict = f"CRASH (exit {p.returncode})"
+            elif expect == "fast":
+                verdict = "SLOW" if elapsed > 15 else "SAFE"
+            elif result == "refused":
+                verdict = "SAFE (refused)"
             elif expect == "refused":
                 verdict = "LEAK (accepted)"
             elif expect.startswith("safe-text:"):
-                txt = subprocess.run(["pdftotext", out, "-"], capture_output=True, text=True).stdout
-                verdict = "LEAK" if expect[10:] in txt.replace("\n", "") else "SAFE (removed)"
+                # The witness must have run: an extraction that failed is
+                # not "the secret is absent".
+                w = subprocess.run(["pdftotext", out, "-"], capture_output=True, text=True)
+                if w.returncode != 0:
+                    verdict = "ERROR (witness)"
+                else:
+                    verdict = "LEAK" if expect[10:] in w.stdout.replace("\n", "") else "SAFE (removed)"
             elif expect.startswith("safe-bytes:"):
                 want = expect[11:]
                 want = bytes.fromhex(want[4:]) if want.startswith("hex:") else want.encode()
-                q = subprocess.run(["qpdf", "--qdf", "--object-streams=disable", "--decode-level=all", out, "-"],
-                                   capture_output=True).stdout
-                verdict = "LEAK" if want in q else "SAFE (removed)"
+                w = subprocess.run(["qpdf", "--qdf", "--object-streams=disable", "--decode-level=all", out, "-"],
+                                   capture_output=True)
+                if w.returncode not in (0, 3) or not w.stdout.startswith(b"%PDF-"):
+                    verdict = "ERROR (witness)"
+                else:
+                    verdict = "LEAK" if want in w.stdout else "SAFE (removed)"
             else:
                 verdict = f"? {expect}"
             if not verdict.startswith("SAFE"):
