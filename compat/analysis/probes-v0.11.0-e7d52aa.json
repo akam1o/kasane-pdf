@@ -1,0 +1,37 @@
+{
+ "form-no-bbox": {
+  "kasane_error_kind": "invalid document structure",
+  "kasane_render": "refused",
+  "kasane_text_has_word": null,
+  "mupdf_text_has_word": true,
+  "poppler_text_has_word": false
+ },
+ "freetext-appearance": {
+  "kasane_error_kind": null,
+  "kasane_render": "ok",
+  "kasane_text_has_word": false,
+  "mupdf_text_has_word": true,
+  "poppler_text_has_word": true
+ },
+ "operand-count": {
+  "kasane_error_kind": "parse error",
+  "kasane_render": "refused",
+  "kasane_text_has_word": null,
+  "mupdf_text_has_word": true,
+  "poppler_text_has_word": false
+ },
+ "truetype-symbolic": {
+  "kasane_error_kind": null,
+  "kasane_render": "ok",
+  "kasane_text_has_word": true,
+  "mupdf_text_has_word": true,
+  "poppler_text_has_word": true
+ },
+ "type3-glyph-names": {
+  "kasane_error_kind": null,
+  "kasane_render": "ok",
+  "kasane_text_has_word": true,
+  "mupdf_text_has_word": true,
+  "poppler_text_has_word": true
+ }
+}

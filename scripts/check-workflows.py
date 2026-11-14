@@ -146,7 +146,7 @@ PR_MUST_RUN = {
                      "check-advisory-regressions.py target/release/kasane-pdf /tmp/advisories --expect-safe",
                      "--expected compat/advisories/history.json",
                      "scripts/test_ci_scripts.py", "scripts/test_release_verify.py",
-                     "scripts/test_advisory_history.py"],
+                     "scripts/test_advisory_history.py", "scripts/test_compat_analysis.py"],
     "render-fuzz-smoke": ["ci-run-sharded.sh redact_model", "fuzz/ci-run.sh \"$T\" \"fuzz/seeds/$T\"",
                           "-seed=1 -runs=3000"],
 }

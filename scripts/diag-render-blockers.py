@@ -20,7 +20,7 @@ import json, os, re, sys, time
 RULES = [
     (r"encrypted", "encryption", "§7.6: security handler required", "no (feature)", "no", "no", "5–8 d (v0.3.0)"),
     (r"no MediaBox", "page without /MediaBox", "Table 30: required, inheritable", "no (no default in the standard)", "yes (US Letter, RecoveryRule::MediaBoxDefault)", "no", "done"),
-    (r"no startxref|xref offset .* beyond|expected 'xref'|unbalanced '\)'|expected word token|ASCII85Decode: byte", "damaged file structure", "§7.5: cross-reference table / syntax required", "no", "xref rebuild (recovery parse), then per-content outcome", "no", "varies"),
+    (r"no startxref|xref offset .* beyond|expected 'xref'|unbalanced '\)'|expected word token|ASCII85Decode: byte|bad xref stream entry type|expected '<<' dictionary, found|expected name key in dictionary", "damaged file structure", "§7.5: cross-reference table / syntax required", "no", "xref rebuild (recovery parse), then per-content outcome", "no", "varies"),
     (r"/Type /Template in page tree|cycle detected in page tree", "invalid page tree", "§7.7.3", "no", "no", "no", "—"),
     (r"non-embedded CIDFont", "Identity-ordering CID font without program", "§9.7.4: CIDs are glyph indices of an unknown font", "no", "no (unsound without /ToUnicode)", "would be (fallback face)", "2–3 d, only with a complete /ToUnicode"),
     (r"states without /AS", "/AP /N state dictionary without /AS and more than one state", "§12.5.5: /AS required", "no (no basis to choose)", "no (no basis to choose)", "no", "—"),
@@ -46,6 +46,7 @@ RULES = [
     (r"/Annots entry is not an annotation dictionary", "non-dictionary /Annots entry", "Table 164", "no", "yes (RecoveryRule::IgnoredInvalidAnnotation)", "no", "done"),
     (r"appearance state is not a stream", "appearance state that is not a stream", "§12.5.5", "no", "yes (RecoveryRule::IgnoredInvalidAnnotation)", "no", "done"),
     (r"JBIG2 page is .* but the image dictionary says", "JBIG2 page size ≠ /Width /Height", "§7.4.7 / Table 89", "no", "possible (trust the codestream), approximate", "yes", "1 d"),
+    (r"JPEG frame is .* but the image dictionary says", "JPEG frame size ≠ /Width /Height", "§8.9.5 / Table 87", "no", "possible (trust the codestream), approximate", "yes", "1 d"),
     (r"BrotliDecode", "/BrotliDecode (PDF 2.0 extension)", "ISO 32000-2 extension", "no (feature)", "no", "no", "1–2 d + dependency"),
     (r"/RI must be", "invalid rendering intent", "§8.6.5.8: fallback RelativeColorimetric", "yes (Warning::UnknownRenderingIntent)", "n/a", "no", "done"),
     (r"JPEG in .* decodes to 0 components", "undecodable DCT data", "§7.4.8", "no", "no", "no", "—"),
@@ -70,7 +71,10 @@ def main():
     out = []
     counts = {}
     for f in r["files"]:
-        if f.get("expect") != "pass" or f["render"]["class"] == "pass":
+        # A strict render needs a strict parse: after a failed strict
+        # parse the runner renders the recovered document, and that
+        # render's "pass" is not a strict one (analysis::rated_class).
+        if f.get("expect") != "pass" or (f["parse"]["class"] == "pass" and f["render"]["class"] == "pass"):
             continue
         stage = "render" if f["parse"]["class"] == "pass" else "parse"
         detail = f[stage].get("detail") or ""

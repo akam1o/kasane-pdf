@@ -1,0 +1,175 @@
+{
+ "by_class": {
+  "annotation_layer": {
+   "Type1-nonembedded": 2,
+   "annots": 2,
+   "nonembedded-fonts": 2
+  },
+  "kasane": {
+   "CCITTFaxDecode": 1,
+   "DCTDecode": 1,
+   "FlateDecode": 1,
+   "JPXDecode": 2,
+   "TrueType": 1,
+   "TrueType-nonembedded": 1,
+   "Type1-nonembedded": 3,
+   "annots": 1,
+   "dests": 1,
+   "embedded-fonts": 1,
+   "images": 4,
+   "metadata": 5,
+   "multipage": 2,
+   "nonembedded-fonts": 4,
+   "optional-content": 1,
+   "transparency": 3
+  },
+  "reference_kasane_mupdf": {
+   "CCITTFaxDecode": 1,
+   "CIDFontType0": 4,
+   "CIDFontType2": 1,
+   "DCTDecode": 3,
+   "FlateDecode": 4,
+   "JBIG2Decode": 4,
+   "TrueType": 1,
+   "Type1-CFF": 15,
+   "acroform": 15,
+   "annots": 16,
+   "dests": 15,
+   "embedded-fonts": 15,
+   "images": 11,
+   "incremental": 15,
+   "metadata": 20,
+   "multipage": 14,
+   "none": 1,
+   "optional-content": 3,
+   "outlines": 1,
+   "signed": 15,
+   "transparency": 2
+  },
+  "reference_three_way": {
+   "CIDFontType0": 1,
+   "CIDFontType2": 11,
+   "DCTDecode": 9,
+   "FlateDecode": 13,
+   "JBIG2Decode": 2,
+   "TrueType": 2,
+   "TrueType-nonembedded": 1,
+   "Type1-CFF": 11,
+   "Type1-eexec": 3,
+   "Type1-nonembedded": 5,
+   "Type3": 10,
+   "acroform": 10,
+   "annots": 22,
+   "dests": 21,
+   "embedded-fonts": 23,
+   "images": 16,
+   "incremental": 12,
+   "metadata": 24,
+   "multipage": 21,
+   "nonembedded-fonts": 5,
+   "outlines": 2,
+   "signed": 10,
+   "transparency": 13
+  },
+  "size": {
+   "acroform": 2,
+   "annots": 2,
+   "dests": 1,
+   "incremental": 1,
+   "metadata": 3,
+   "outlines": 2,
+   "transparency": 1
+  }
+ },
+ "classes": {
+  "annotation_layer": 2,
+  "kasane": 7,
+  "reference_kasane_mupdf": 29,
+  "reference_three_way": 27,
+  "size": 3
+ },
+ "files": 68,
+ "resolution_medians": {
+  "annotation_layer": {
+   "150": {
+    "kasane_mupdf": 0.0868,
+    "kasane_poppler": 0.817,
+    "n": 2,
+    "poppler_mupdf": 0.8145
+   },
+   "300": {
+    "kasane_mupdf": 0.0803,
+    "kasane_poppler": 0.8162,
+    "n": 2,
+    "poppler_mupdf": 0.8138
+   },
+   "72": {
+    "kasane_mupdf": 0.0821,
+    "kasane_poppler": 0.8122,
+    "n": 2,
+    "poppler_mupdf": 0.8098
+   }
+  },
+  "kasane": {
+   "150": {
+    "kasane_mupdf": 0.0144,
+    "kasane_poppler": 0.0139,
+    "n": 7,
+    "poppler_mupdf": 0.0119
+   },
+   "300": {
+    "kasane_mupdf": 0.0093,
+    "kasane_poppler": 0.0073,
+    "n": 7,
+    "poppler_mupdf": 0.0156
+   },
+   "72": {
+    "kasane_mupdf": 0.0186,
+    "kasane_poppler": 0.0172,
+    "n": 7,
+    "poppler_mupdf": 0.0183
+   }
+  },
+  "reference_kasane_mupdf": {
+   "150": {
+    "kasane_mupdf": 0.0096,
+    "kasane_poppler": 0.0439,
+    "n": 29,
+    "poppler_mupdf": 0.0635
+   },
+   "300": {
+    "kasane_mupdf": 0.003,
+    "kasane_poppler": 0.0003,
+    "n": 29,
+    "poppler_mupdf": 0.0046
+   },
+   "72": {
+    "kasane_mupdf": 0.0315,
+    "kasane_poppler": 0.0686,
+    "n": 29,
+    "poppler_mupdf": 0.0986
+   }
+  },
+  "reference_three_way": {
+   "150": {
+    "kasane_mupdf": 0.0381,
+    "kasane_poppler": 0.0189,
+    "n": 27,
+    "poppler_mupdf": 0.0591
+   },
+   "300": {
+    "kasane_mupdf": 0.0159,
+    "kasane_poppler": 0.0015,
+    "n": 26,
+    "poppler_mupdf": 0.0199
+   },
+   "72": {
+    "kasane_mupdf": 0.0702,
+    "kasane_poppler": 0.0456,
+    "n": 27,
+    "poppler_mupdf": 0.1068
+   }
+  }
+ },
+ "threshold": 0.95
+}

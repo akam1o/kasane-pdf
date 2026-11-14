@@ -1,0 +1,336 @@
+{
+ "attribution_below_0_95": {
+  "annotation_layer": 2,
+  "kasane": 7,
+  "reference_kasane_mupdf": 29,
+  "reference_three_way": 27,
+  "size": 3
+ },
+ "blockers_expect_pass": {
+  "/AP /N state dictionary without /AS and more than one state": {
+   "skip": 2
+  },
+  "BDC property name not in resources": {
+   "pass": 1
+  },
+  "Identity-ordering CID font without program": {
+   "skip": 3
+  },
+  "JBIG2 page size \u2260 /Width /Height": {
+   "error": 1
+  },
+  "JPEG frame size \u2260 /Width /Height": {
+   "error": 1
+  },
+  "appearance state that is not a stream": {
+   "pass": 1
+  },
+  "corrupt Flate data": {
+   "error": 1
+  },
+  "damaged file structure": {
+   "error": 1,
+   "pass": 7,
+   "skip": 3
+  },
+  "degenerate page box": {
+   "pass": 1
+  },
+  "image /SMask that is not a stream (e.g. the name /None)": {
+   "pass": 1
+  },
+  "image-only filter on a non-image stream": {
+   "skip": 1
+  },
+  "inline image without EI / wrong length": {
+   "error": 1
+  },
+  "invalid page tree": {
+   "skip": 2
+  },
+  "malformed /Differences": {
+   "pass": 1
+  },
+  "non-Latin field value with a single-byte field font": {
+   "skip": 1
+  },
+  "non-dictionary /Annots entry": {
+   "pass": 1
+  },
+  "null resource (undefined reference) where a dictionary is required": {
+   "pass": 1
+  },
+  "operator inside a path object": {
+   "pass": 3
+  },
+  "page without /MediaBox": {
+   "error": 4
+  },
+  "pattern cell cycle": {
+   "error": 1
+  },
+  "shading function output count \u2260 colour-space components": {
+   "error": 1
+  },
+  "stray Q": {
+   "pass": 1
+  },
+  "symbolic non-embedded TrueType with unknown name": {
+   "skip": 1
+  },
+  "unknown operator outside BX/EX": {
+   "error": 1
+  }
+ },
+ "expect": {
+  "any": 42,
+  "pass": 425,
+  "reject": 44
+ },
+ "feature_use_rendered": {
+  "CCITTFaxDecode": {
+   "below_0_95": 2,
+   "files": 2
+  },
+  "CIDFontType0": {
+   "below_0_95": 5,
+   "files": 39
+  },
+  "CIDFontType2": {
+   "below_0_95": 12,
+   "files": 58
+  },
+  "DCTDecode": {
+   "below_0_95": 13,
+   "files": 40
+  },
+  "FlateDecode": {
+   "below_0_95": 18,
+   "files": 51
+  },
+  "JBIG2Decode": {
+   "below_0_95": 6,
+   "files": 45
+  },
+  "JPXDecode": {
+   "below_0_95": 2,
+   "files": 2
+  },
+  "TrueType": {
+   "below_0_95": 4,
+   "files": 67
+  },
+  "TrueType-nonembedded": {
+   "below_0_95": 2,
+   "files": 11
+  },
+  "Type1-CFF": {
+   "below_0_95": 26,
+   "files": 42
+  },
+  "Type1-eexec": {
+   "below_0_95": 3,
+   "files": 27
+  },
+  "Type1-nonembedded": {
+   "below_0_95": 10,
+   "files": 55
+  },
+  "Type3": {
+   "below_0_95": 10,
+   "files": 35
+  },
+  "acroform": {
+   "below_0_95": 27,
+   "files": 83
+  },
+  "annots": {
+   "below_0_95": 43,
+   "files": 157
+  },
+  "dests": {
+   "below_0_95": 38,
+   "files": 78
+  },
+  "embedded-files": {
+   "below_0_95": 0,
+   "files": 2
+  },
+  "embedded-fonts": {
+   "below_0_95": 39,
+   "files": 192
+  },
+  "images": {
+   "below_0_95": 31,
+   "files": 113
+  },
+  "incremental": {
+   "below_0_95": 28,
+   "files": 128
+  },
+  "metadata": {
+   "below_0_95": 52,
+   "files": 257
+  },
+  "multipage": {
+   "below_0_95": 37,
+   "files": 92
+  },
+  "none": {
+   "below_0_95": 1,
+   "files": 6
+  },
+  "nonembedded-fonts": {
+   "below_0_95": 11,
+   "files": 54
+  },
+  "optional-content": {
+   "below_0_95": 4,
+   "files": 16
+  },
+  "outlines": {
+   "below_0_95": 5,
+   "files": 93
+  },
+  "signed": {
+   "below_0_95": 25,
+   "files": 27
+  },
+  "transparency": {
+   "below_0_95": 19,
+   "files": 119
+  }
+ },
+ "files": 511,
+ "schema_version": 1,
+ "ssim_file": {
+  "below_0_80": 11,
+  "below_0_90": 34,
+  "below_0_95": 68,
+  "median": 0.9949,
+  "n": 365,
+  "p25": 0.9736,
+  "p5": 0.8528,
+  "p75": 0.9995,
+  "p95": 1.0
+ },
+ "ssim_page": {
+  "below_0_80": 11,
+  "below_0_90": 63,
+  "below_0_95": 160,
+  "median": 0.9905,
+  "n": 1010,
+  "p25": 0.9706,
+  "p5": 0.8927,
+  "p75": 0.9973,
+  "p95": 1.0
+ },
+ "stages_all": {
+  "parse": {
+   "error": 59,
+   "pass": 449,
+   "unsupported": 3
+  },
+  "recover": {
+   "error": 19,
+   "pass": 38,
+   "skip": 449,
+   "unsupported": 5
+  },
+  "render": {
+   "error": 23,
+   "pass": 416,
+   "skip": 62,
+   "unsupported": 10
+  },
+  "render_recovered": {
+   "error": 20,
+   "pass": 41,
+   "skip": 450
+  },
+  "rewrite": {
+   "error": 4,
+   "pass": 407,
+   "skip": 62,
+   "unsupported": 38
+  },
+  "text": {
+   "error": 13,
+   "pass": 429,
+   "skip": 62,
+   "unsupported": 7
+  }
+ },
+ "stages_expect_pass": {
+  "parse": {
+   "error": 17,
+   "pass": 408
+  },
+  "render": {
+   "error": 18,
+   "pass": 382,
+   "skip": 17,
+   "unsupported": 8
+  },
+  "render_recovered": {
+   "error": 12,
+   "pass": 18,
+   "skip": 395
+  },
+  "rewrite": {
+   "pass": 372,
+   "skip": 17,
+   "unsupported": 36
+  },
+  "text": {
+   "error": 9,
+   "pass": 394,
+   "skip": 17,
+   "unsupported": 5
+  }
+ },
+ "text_empty_with_reference_text": 24,
+ "text_f1": {
+  "below_0_80": 35,
+  "below_0_90": 37,
+  "below_0_95": 39,
+  "median": 1.0,
+  "n": 394,
+  "p25": 1.0,
+  "p5": 0.0,
+  "p75": 1.0,
+  "p95": 1.0
+ },
+ "text_f1_with_annotations_recovers": 15,
+ "unicode_files_majority_unresolved": 12,
+ "unicode_files_some_unresolved": 11,
+ "unicode_files_with_chars": 240,
+ "unicode_sources_page1": {
+  "ActualText": 514,
+  "EncodingFallback": 163713,
+  "FontProgram": 19,
+  "ToUnicode": 119124,
+  "Unresolved": 2557
+ },
+ "verdict": {
+  "error": 83,
+  "pass": 378,
+  "unsupported": 50
+ },
+ "vs_baseline": {
+  "parse": {},
+  "render": {
+   "error->pass": 1,
+   "unsupported->pass": 1
+  },
+  "rewrite": {},
+  "text": {
+   "error->pass": 1,
+   "unsupported->pass": 1
+  },
+  "verdict": {
+   "error->pass": 1,
+   "unsupported->pass": 1
+  }
+ }
+}

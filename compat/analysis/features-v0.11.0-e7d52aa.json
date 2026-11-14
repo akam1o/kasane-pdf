@@ -1,0 +1,301 @@
+{
+ "description": "Feature presence among the expect:pass files (regex over a qpdf --qdf expansion; approximate), with strict-render, blocker and low-SSIM co-occurrence counts. Co-occurrence is not causation: see docs/compatibility-report.md.",
+ "features": {
+  "ASCII85": {
+   "below_0_95": 2,
+   "blockers": 1,
+   "kasane_class": 1,
+   "strict_render": 7,
+   "use": 8
+  },
+  "ASCIIHex": {
+   "below_0_95": 0,
+   "blockers": 3,
+   "kasane_class": 0,
+   "strict_render": 3,
+   "use": 6
+  },
+  "LZW": {
+   "below_0_95": 1,
+   "blockers": 0,
+   "kasane_class": 0,
+   "strict_render": 1,
+   "use": 1
+  },
+  "RunLength": {
+   "below_0_95": 1,
+   "blockers": 1,
+   "kasane_class": 1,
+   "strict_render": 3,
+   "use": 4
+  },
+  "actualtext": {
+   "below_0_95": 9,
+   "blockers": 0,
+   "kasane_class": 0,
+   "strict_render": 22,
+   "use": 22
+  },
+  "alpha_smask": {
+   "below_0_95": 0,
+   "blockers": 0,
+   "kasane_class": 0,
+   "strict_render": 0,
+   "use": 0
+  },
+  "blend": {
+   "below_0_95": 2,
+   "blockers": 1,
+   "kasane_class": 0,
+   "strict_render": 18,
+   "use": 19
+  },
+  "cff_cid": {
+   "below_0_95": 5,
+   "blockers": 0,
+   "kasane_class": 0,
+   "strict_render": 38,
+   "use": 38
+  },
+  "cmap_nonidentity": {
+   "below_0_95": 0,
+   "blockers": 0,
+   "kasane_class": 0,
+   "strict_render": 0,
+   "use": 0
+  },
+  "decode_array": {
+   "below_0_95": 9,
+   "blockers": 2,
+   "kasane_class": 2,
+   "strict_render": 20,
+   "use": 22
+  },
+  "devicen": {
+   "below_0_95": 2,
+   "blockers": 1,
+   "kasane_class": 0,
+   "strict_render": 8,
+   "use": 9
+  },
+  "embedded_files": {
+   "below_0_95": 1,
+   "blockers": 0,
+   "kasane_class": 0,
+   "strict_render": 3,
+   "use": 3
+  },
+  "filter_chain": {
+   "below_0_95": 1,
+   "blockers": 3,
+   "kasane_class": 0,
+   "strict_render": 6,
+   "use": 9
+  },
+  "freetext": {
+   "below_0_95": 0,
+   "blockers": 1,
+   "kasane_class": 0,
+   "strict_render": 6,
+   "use": 7
+  },
+  "icc": {
+   "below_0_95": 13,
+   "blockers": 1,
+   "kasane_class": 0,
+   "strict_render": 54,
+   "use": 55
+  },
+  "image_mask": {
+   "below_0_95": 2,
+   "blockers": 2,
+   "kasane_class": 0,
+   "strict_render": 2,
+   "use": 4
+  },
+  "incremental": {
+   "below_0_95": 27,
+   "blockers": 2,
+   "kasane_class": 0,
+   "strict_render": 91,
+   "use": 93
+  },
+  "indexed": {
+   "below_0_95": 2,
+   "blockers": 0,
+   "kasane_class": 1,
+   "strict_render": 11,
+   "use": 11
+  },
+  "inline_image": {
+   "below_0_95": 2,
+   "blockers": 2,
+   "kasane_class": 0,
+   "strict_render": 9,
+   "use": 11
+  },
+  "isolated": {
+   "below_0_95": 5,
+   "blockers": 2,
+   "kasane_class": 0,
+   "strict_render": 33,
+   "use": 35
+  },
+  "knockout": {
+   "below_0_95": 2,
+   "blockers": 1,
+   "kasane_class": 0,
+   "strict_render": 2,
+   "use": 3
+  },
+  "lab": {
+   "below_0_95": 0,
+   "blockers": 0,
+   "kasane_class": 0,
+   "strict_render": 0,
+   "use": 0
+  },
+  "luminosity": {
+   "below_0_95": 0,
+   "blockers": 0,
+   "kasane_class": 0,
+   "strict_render": 3,
+   "use": 3
+  },
+  "matte": {
+   "below_0_95": 0,
+   "blockers": 0,
+   "kasane_class": 0,
+   "strict_render": 0,
+   "use": 0
+  },
+  "need_appearances": {
+   "below_0_95": 1,
+   "blockers": 2,
+   "kasane_class": 0,
+   "strict_render": 4,
+   "use": 6
+  },
+  "objstm": {
+   "below_0_95": 30,
+   "blockers": 3,
+   "kasane_class": 1,
+   "strict_render": 121,
+   "use": 124
+  },
+  "oc": {
+   "below_0_95": 4,
+   "blockers": 1,
+   "kasane_class": 1,
+   "strict_render": 16,
+   "use": 17
+  },
+  "opentype": {
+   "below_0_95": 0,
+   "blockers": 0,
+   "kasane_class": 0,
+   "strict_render": 3,
+   "use": 3
+  },
+  "separation": {
+   "below_0_95": 2,
+   "blockers": 0,
+   "kasane_class": 0,
+   "strict_render": 4,
+   "use": 4
+  },
+  "shading1": {
+   "below_0_95": 1,
+   "blockers": 1,
+   "kasane_class": 0,
+   "strict_render": 2,
+   "use": 3
+  },
+  "shading2_3": {
+   "below_0_95": 6,
+   "blockers": 3,
+   "kasane_class": 2,
+   "strict_render": 24,
+   "use": 27
+  },
+  "shading4_7": {
+   "below_0_95": 0,
+   "blockers": 0,
+   "kasane_class": 0,
+   "strict_render": 1,
+   "use": 1
+  },
+  "shading_pattern": {
+   "below_0_95": 4,
+   "blockers": 2,
+   "kasane_class": 1,
+   "strict_render": 13,
+   "use": 15
+  },
+  "smask_in_data": {
+   "below_0_95": 0,
+   "blockers": 0,
+   "kasane_class": 0,
+   "strict_render": 0,
+   "use": 0
+  },
+  "tiling": {
+   "below_0_95": 3,
+   "blockers": 3,
+   "kasane_class": 0,
+   "strict_render": 14,
+   "use": 17
+  },
+  "tounicode": {
+   "below_0_95": 18,
+   "blockers": 8,
+   "kasane_class": 0,
+   "strict_render": 117,
+   "use": 125
+  },
+  "type1c": {
+   "below_0_95": 26,
+   "blockers": 0,
+   "kasane_class": 0,
+   "strict_render": 41,
+   "use": 41
+  },
+  "type3": {
+   "below_0_95": 10,
+   "blockers": 2,
+   "kasane_class": 0,
+   "strict_render": 35,
+   "use": 37
+  },
+  "userunit": {
+   "below_0_95": 0,
+   "blockers": 0,
+   "kasane_class": 0,
+   "strict_render": 2,
+   "use": 2
+  },
+  "widget": {
+   "below_0_95": 28,
+   "blockers": 6,
+   "kasane_class": 0,
+   "strict_render": 61,
+   "use": 67
+  },
+  "xfa": {
+   "below_0_95": 25,
+   "blockers": 0,
+   "kasane_class": 0,
+   "strict_render": 30,
+   "use": 30
+  },
+  "xrefstm": {
+   "below_0_95": 30,
+   "blockers": 5,
+   "kasane_class": 1,
+   "strict_render": 122,
+   "use": 127
+  }
+ },
+ "population": "expect:pass",
+ "scanned": 425
+}
