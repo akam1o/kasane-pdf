@@ -65,6 +65,7 @@ PDFium / MuPDF / Poppler. The documentation is split into
 | File | Contents |
 |---|---|
 | [`compat-corpus.md`](compat-corpus.md) | the real-world corpus (manifest, store configuration, licences), the runner and its modes, result classification, round-trip and external verification, CI, results per run, failure-cause analysis, pre-publication audit |
+| [`compat-evaluation.md`](compat-evaluation.md) | how a compatibility run is judged: Poppler and MuPDF as witnesses, the 300 dpi re-check, numeric regressions inside a class, environments, the baseline update procedure, CI |
 | [`compatibility-report.md`](compatibility-report.md) | the corpus measured again on `e7d52aa` for v0.11.0: scores, baseline diff, strict blockers by root cause, low-SSIM attribution and the resolution check, the past feature table re-measured, text and Unicode sources, reproduction |
 | [`compatibility-roadmap.md`](compatibility-roadmap.md) | v0.11.0 and later: improvement estimates without double counting, code-based costs, priorities, Plans A / B / C, the version plan with tasks, the redaction and security impact, the decisions needed |
 

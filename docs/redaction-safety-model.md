@@ -221,6 +221,65 @@ property cannot be decided).
   (or zeroed) whole, not split. Structure elements across a rect lose
   all their text (above).
 
+### 2.8 Recovery mode
+
+A document opened with `Document::from_bytes_recovering` is read under
+the recovery rules (`RecoveryRule`): constructs ISO 32000 forbids, read
+the way the major readers do. Drawing such a document and redacting it
+safely are different claims. The redaction paths (`redact`, the
+region and text removal, the diagnosis) parse content with the
+document's recovery mode, so every rule reaches them. The policy,
+established by `tests/redact_recovery.rs` (R0 in
+[`compatibility-roadmap.md`](compatibility-roadmap.md)):
+
+- **G** — A recovered document is redacted only where the recovered
+  reading is the one the major readers share *and* the redaction walk
+  sees every drawing operation. Today these are:
+  - an ignored `Q` without a saved state (on the page or in a form);
+  - a cross-reference table rebuilt by scanning, where Poppler, MuPDF,
+    qpdf and kasane pick the same definitions: the last definition of
+    an object after a rebuild, the one the table names otherwise;
+  - an invalid `/Differences` entry in a font used only inside the
+    rects;
+  - an invalid appearance on an annotation outside the rects, kept as
+    it is.
+
+  The output then parses strictly, the two variants of every case are
+  byte-identical, and no copy of the secret remains — neither in the
+  text nor in the bytes.
+- **X** — Wherever recovery infers, drops or substitutes something, the
+  redaction refuses:
+  - a page box (no `/MediaBox`);
+  - an unknown operator (kept as `Operation::Unknown`, which marks the
+    page uncertain — never silently dropped);
+  - a substituted font;
+  - a state operator inside a path object;
+  - a skipped annotation that meets a rect;
+  - an undefined marked-content property;
+  - an ignored soft mask;
+  - an invalid `/Differences` entry in a font that stays in the output;
+  - a padded encryption key (and every encrypted document: the writers
+    do not encrypt).
+
+  The same holds for what neither mode reads: an unterminated string,
+  an operand count, a form without `/BBox`, a short or undecodable
+  image (JPEG, JBIG2, Flate), an unresolvable reference, an invalid
+  page tree.
+- **G** — A refusal returns an error and no bytes; the CLI then writes
+  no file and leaves no temporary file. Limits reached while walking or
+  while writing (`max_operations`, `max_output_bytes`,
+  `max_output_objects`) are refusals in both modes. Refusal messages
+  carry nothing of the secret.
+- **G** — Strict mode is unchanged by any of it.
+- **G** — The non-interference model (`tests/redact_model.rs`, the
+  `redact_model` fuzz target) runs its generated documents in recovery
+  mode as well: as generated, and with `startxref` broken so that the
+  table is rebuilt by scanning (incremental updates, object and
+  cross-reference streams included).
+- **N** — Recovery rules added later (R1–R4) are covered only once
+  they add their case to `tests/redact_recovery.rs`. The roadmap makes
+  that a precondition of each rule.
+
 ## 3. Four kinds of data
 
 Every byte of the output falls in one of four kinds, and the guarantees

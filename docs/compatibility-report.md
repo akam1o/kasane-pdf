@@ -40,10 +40,11 @@ The machine-readable results are in [`../compat/analysis/`](../compat/analysis/)
   knockout, luminosity masks, CFF CID, ActualText and Optional Content
   are no longer the cause of any strict failure, and the attribution
   puts no low-SSIM page on JBIG2, CIDFontType0 or Type 1 CFF.
-- **Of the 68 rendered files below SSIM 0.95, 44 are within tolerance
-  of a reference at 300 dpi** (Poppler 36, MuPDF only 8), most likely
-  rasterisation differences; the check failed for 1. **23 are outside
-  tolerance of both references**:
+- **Of the 68 rendered files below SSIM 0.95, 47 are within tolerance
+  of a reference at 300 dpi** (corrected in Phase 1, § 6.2), most
+  likely rasterisation differences; the check failed for 1. **20 are
+  outside tolerance of both references**. The first measurement, with
+  a greyscale bias against MuPDF, found 44 and 23; its 23 were:
   - broad tone or colour differences: 7 (undetermined);
   - borderline Skia pages: 5;
   - non-embedded font substitution: 4;
@@ -309,6 +310,35 @@ from counting as agreement. Agreement with a witness at 300 dpi is an
 observation. It is consistent with rasterisation, but it does not prove
 that the 72 dpi difference had no other cause.
 
+> **Correction (v0.11.0 Phase 1).** The analysis first rendered the
+> witnesses in their own greyscale modes (`pdftoppm -gray`,
+> `mutool -c gray`). Those convert colour with different formulas, which
+> alone made MuPDF differ from kasane and Poppler on coloured pages.
+> The tool now renders every witness in RGB and converts all three
+> alike (`docs/compat-evaluation.md` § 1). The per-file counts, macOS,
+> same commit, each file by its worst page:
+>
+> | class | within tolerance of Poppler (incl. both) | of MuPDF only | of neither | check failed |
+> |---|---:|---:|---:|---:|
+> | reference, kasane ≈ MuPDF (29) | 18 | 7 | 4 | 0 |
+> | reference, three-way (26) | 17 | 0 | 8 | 1 |
+> | kasane (7) | 2 | 1 | 4 | 0 |
+> | annotation layer (4) | 0 | 1 | 3 | 0 |
+> | extra ink (2) | 0 | 1 | 1 | 0 |
+> | **total (68)** | **37** | **10** | **20** | **1** |
+>
+> So 47 files are within tolerance of a witness and **20 are open**,
+> not 23. Over all 151 pages examined, the agreements are both 55,
+> Poppler only 50, MuPDF only 10, neither 35, not comparable 1.
+>
+> The cause table below is the first measurement (23 files) and was
+> not re-derived. Its groups stand, but three of its files are no
+> longer open: the tone group, measured against MuPDF, shrinks most.
+> The Linux nightly measures the same with every run
+> (§ 11).
+
+First measurement (biased MuPDF greyscale, kept for the record):
+
 | class | within tolerance of Poppler | of MuPDF only | of neither | check failed |
 |---|---:|---:|---:|---:|
 | reference, kasane ≈ MuPDF (28) | 17 | 4 | 7 | 0 |
@@ -318,11 +348,11 @@ that the 72 dpi difference had no other cause.
 | extra ink (2) | 0 | 1 | 1 | 0 |
 | **total (68)** | **36** | **8** | **23** | **1** |
 
-So **44 of the 68 files are within tolerance of at least one reference
-at 300 dpi**, and are most likely rasterisation differences. The check
-failed for one file, whose 300 dpi kasane render exceeds the default
-image limits. The **23 files outside tolerance of both references**
-are what remains open:
+So, in that measurement, 44 of the 68 files were within tolerance of at
+least one reference at 300 dpi, most likely rasterisation differences.
+The check failed for one file, whose 300 dpi kasane render exceeds the
+default image limits. The 23 files outside tolerance of both
+references were:
 
 | cause (by inspection of the measures and the file's profile) | files | status |
 |---|---:|---|

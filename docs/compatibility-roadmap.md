@@ -8,6 +8,20 @@ unless stated). Every count is an **upper bound**, and each file is
 assigned to exactly one candidate (§ 2), so the counts of different
 candidates add up without double counting.
 
+## Status
+
+| task | state |
+|---|---|
+| M1-a, M1-b, M1-c | **done (v0.11.0 Phase 1)**: `scripts/compat-attribute.py` as a stage over the runner's report, run by the nightly; numeric regressions and the baseline procedure in `scripts/ci-regression.py`; see [`compat-evaluation.md`](compat-evaluation.md) |
+| R0 | **done (v0.11.0 Phase 1)**: `tests/redact_recovery.rs`, the recovery-mode runs of `redact_model` and its fuzz target; the policy in [`redaction-safety-model.md`](redaction-safety-model.md) § 2.8. Every later recovery rule (R1–R4, R7, A1) adds its case there before it lands |
+| everything else | open |
+
+Correction from Phase 1: with the witnesses converted to grey alike,
+the open files are **20**, not 23 (report § 6.2). The open-file
+estimates below (Q1–Q3, A2) were made from the 23. They are upper
+bounds and stay so; each item re-counts its files from the nightly's
+attribution when it starts.
+
 ## 1. What the measurement changes
 
 The past feature table (JBIG2 45, annotation appearances 42,
