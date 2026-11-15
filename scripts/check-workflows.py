@@ -84,6 +84,50 @@ def argparse_surface():
     return subs, opts, envs
 
 
+def logical_lines(run):
+    """The lines of a step's script with backslash continuations joined."""
+    return re.sub(r"\\\n\s*", " ", run or "").splitlines()
+
+
+# nightly.yml full-corpus: the commands of M1 (docs/compat-evaluation.md)
+# and what each must carry. Each runs in a step nothing switches off.
+NIGHTLY_CORPUS_COMMANDS = {
+    "scripts/ci-regression.py env": [],
+    "scripts/compat-attribute.py": ["--out /tmp/full/attribution.json"],
+    "scripts/ci-regression.py check": ["--env /tmp/full/env.json", "--attribution /tmp/full/attribution.json",
+                                       "--require-same-env", "compat/baselines/corpus-full.json"],
+}
+
+
+def check_nightly_measurement(path, wf):
+    job = (wf.get("jobs") or {}).get("full-corpus") or {}
+    for cmd, need in NIGHTLY_CORPUS_COMMANDS.items():
+        found = False
+        for st in job.get("steps") or []:
+            for line in logical_lines(st.get("run")):
+                if cmd not in line or NOT_RUN.match(line) or "|| true" in line or "|| :" in line:
+                    continue
+                found = True
+                if "if" in st or st.get("continue-on-error"):
+                    problem(f"{path.name}:full-corpus: the step running `{cmd}` can be switched off")
+                for opt in need:
+                    if opt not in line:
+                        problem(f"{path.name}:full-corpus: `{cmd}` runs without `{opt}`")
+        if not found:
+            problem(f"{path.name}:full-corpus: does not run `{cmd}`")
+
+
+def check_no_baseline_writes(path, wf):
+    """Baselines change only by a reviewed commit (update-baseline
+    --write, run by a person): no workflow writes one."""
+    for _, st in steps_of(wf):
+        for line in logical_lines(st.get("run")):
+            if "update-baseline" in line and "--write" in line:
+                problem(f"{path.name}: a workflow writes a baseline (`update-baseline --write`)")
+            if re.search(r">\s*\S*compat/baselines/", line) or re.search(r"(cp|mv|tee)\s.*compat/baselines/", line):
+                problem(f"{path.name}: a workflow writes into compat/baselines/")
+
+
 def check_nightly(path, wf):
     subs, opts, envs = argparse_surface()
     boto_env = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_REGION", "AWS_PROFILE"}
@@ -146,7 +190,8 @@ PR_MUST_RUN = {
                      "check-advisory-regressions.py target/release/kasane-pdf /tmp/advisories --expect-safe",
                      "--expected compat/advisories/history.json",
                      "scripts/test_ci_scripts.py", "scripts/test_release_verify.py",
-                     "scripts/test_advisory_history.py", "scripts/test_compat_analysis.py"],
+                     "scripts/test_advisory_history.py", "scripts/test_compat_analysis.py",
+                     "KASANE_REQUIRE_PILLOW=1 python3 scripts/test_compat_evaluation.py"],
     "render-fuzz-smoke": ["ci-run-sharded.sh redact_model", "fuzz/ci-run.sh \"$T\" \"fuzz/seeds/$T\"",
                           "-seed=1 -runs=3000"],
 }
@@ -154,7 +199,8 @@ FULL_ONLY_IF = "github.event_name != 'pull_request'"
 # Full-gate jobs whose decisive command must run (unconditionally within
 # the job).
 FULL_MUST_RUN = {
-    "renderers-linux": ["python3 scripts/verify-renderers.py target/release/kasane-pdf /tmp/advisories --json /tmp/renderers.json"],
+    "renderers-linux": ["python3 scripts/verify-renderers.py target/release/kasane-pdf /tmp/advisories --json /tmp/renderers.json",
+                        "python3 scripts/test_compat_evaluation.py --real target/release/kasane-pdf"],
 }
 # nightly.yml: the advisory history of every published version.
 NIGHTLY_MUST_RUN = {
@@ -467,8 +513,10 @@ def main():
             continue
         check_pins(path, wf)
         check_no_secret_echo(path, text)
+        check_no_baseline_writes(path, wf)
         if path.name == "nightly.yml":
             check_nightly(path, wf)
+            check_nightly_measurement(path, wf)
             check_must_run(path, wf, NIGHTLY_MUST_RUN)
         check_caches(path, wf)
         wfs.append((path, wf))

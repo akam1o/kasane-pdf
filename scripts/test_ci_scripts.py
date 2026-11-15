@@ -43,6 +43,64 @@ GUARD = ROOT / ".github/workflows/pr-guard.yml"
 OTHERS = [p for p in sorted((ROOT / ".github/workflows").glob("*.yml")) if p not in (PR, GUARD)]
 
 
+class NightlyMeasurement(unittest.TestCase):
+    """M1 in nightly.yml: the second witness and the numeric comparison
+    run, with their options, in steps nothing switches off; no workflow
+    writes a baseline."""
+
+    NIGHTLY = ROOT / ".github/workflows/nightly.yml"
+
+    def problems(self, mutate):
+        wf = yaml.safe_load(self.NIGHTLY.read_text())
+        mutate(wf)
+        cw.problems.clear()
+        with contextlib.redirect_stdout(io.StringIO()):
+            cw.check_nightly_measurement(self.NIGHTLY, wf)
+            for p in (ROOT / ".github/workflows").glob("*.yml"):
+                cw.check_no_baseline_writes(p, wf if p == self.NIGHTLY else yaml.safe_load(p.read_text()))
+        out = list(cw.problems)
+        cw.problems.clear()
+        return out
+
+    def step(self, wf, text):
+        return next(st for st in wf["jobs"]["full-corpus"]["steps"] if text in (st.get("run") or ""))
+
+    def test_committed_nightly_passes(self):
+        self.assertEqual(self.problems(lambda wf: None), [])
+
+    def test_weakenings_are_caught(self):
+        def edit(text, a, b):
+            return lambda wf: self.step(wf, text).__setitem__("run", self.step(wf, text)["run"].replace(a, b))
+
+        cases = {
+            "--require-same-env dropped": edit("ci-regression.py check", " --require-same-env", ""),
+            "--attribution dropped": edit("ci-regression.py check", "--attribution /tmp/full/attribution.json ", ""),
+            "--env dropped": edit("ci-regression.py check", "--env /tmp/full/env.json ", ""),
+            "the check made to pass": edit("ci-regression.py check", '"$GITHUB_STEP_SUMMARY"', '"$GITHUB_STEP_SUMMARY" || true'),
+            "the witness printed, not run": edit("compat-attribute.py", "python3 scripts/compat-attribute.py",
+                                                 "echo scripts/compat-attribute.py"),
+            "the witness step switched off": lambda wf: self.step(wf, "compat-attribute.py").__setitem__("if", "false"),
+            "the witness allowed to fail": lambda wf: self.step(wf, "compat-attribute.py").__setitem__(
+                "continue-on-error", True),
+            "the environment not recorded": edit("ci-regression.py env", "python3 scripts/ci-regression.py env", ": "),
+            "a baseline written by the workflow": edit(
+                "ci-regression.py check", "python3 scripts/ci-regression.py check",
+                "python3 scripts/ci-regression.py update-baseline /tmp/full/latest.json "
+                "compat/baselines/corpus-full.json --env /tmp/full/env.json --write\n"
+                "python3 scripts/ci-regression.py check"),
+            "a baseline copied in": edit("ci-regression.py check", "python3 scripts/ci-regression.py check",
+                                         "cp /tmp/full/x.json compat/baselines/corpus-full.json\n"
+                                         "python3 scripts/ci-regression.py check"),
+            "a summary redirected into the baselines": edit(
+                "ci-regression.py check", "python3 scripts/ci-regression.py check",
+                "python3 scripts/ci-regression.py summarize /tmp/full/latest.json > compat/baselines/corpus-full.json\n"
+                "python3 scripts/ci-regression.py check"),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name):
+                self.assertTrue(self.problems(mutate), f"not caught: {name}")
+
+
 class Gate(unittest.TestCase):
     def jobs(self):
         return sorted(yaml.safe_load(PR.read_text())["jobs"]["gate"]["needs"])

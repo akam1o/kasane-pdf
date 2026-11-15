@@ -348,6 +348,10 @@ jobs:
         run: python3 scripts/test_advisory_history.py
       - name: compatibility-analysis tools' own tests (strict counting, published files hold no corpus ids)
         run: python3 scripts/test_compat_analysis.py
+      - name: compatibility evaluation's own tests (second witness, 300 dpi, numeric regressions; fake renderers)
+        run: |
+          pip3 install --quiet pillow==13.0.0
+          KASANE_REQUIRE_PILLOW=1 python3 scripts/test_compat_evaluation.py
       - name: smoke run over tests/fixtures
         run: |
           mkdir -p /tmp/smoke
@@ -498,7 +502,7 @@ jobs:
       - name: renderers (Poppler, MuPDF, qpdf from apt; pdf.js pinned in tools/pdfjs)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends poppler-utils mupdf-tools qpdf
+          sudo apt-get install -y --no-install-recommends poppler-utils mupdf-tools qpdf python3-pil
           npm ci --no-audit --no-fund --prefix tools/pdfjs
       - name: the CLI and the advisory inputs
         run: |
@@ -506,6 +510,8 @@ jobs:
           KASANE_ADVISORY_DUMP=/tmp/advisories cargo test --locked --release --test redact_advisories
       - name: redacted outputs judged by three renderers against this platform's baseline
         run: python3 scripts/verify-renderers.py target/release/kasane-pdf /tmp/advisories --json /tmp/renderers.json
+      - name: the compatibility second witness with the real renderers (committed fixtures)
+        run: python3 scripts/test_compat_evaluation.py --real target/release/kasane-pdf
       - name: a proposed baseline, for review (never committed by CI; not written over a safety failure)
         if: failure()
         run: |

@@ -41,8 +41,11 @@ jobs:
         with:
           # A run dispatched on another branch reads main's cache only.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: external verifiers (qpdf, poppler)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends qpdf poppler-utils poppler-data python3-pip
+      - name: external verifiers (qpdf, Poppler; MuPDF and Pillow for the second witness)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qpdf poppler-utils poppler-data python3-pip \
+            mupdf-tools python3-pil
       - name: CJK fallback assets (committed; verified against the lock)
         run: ./scripts/fetch-cjk-assets.sh --check
       - name: build runner (with cjk-fallback)
@@ -121,12 +124,37 @@ jobs:
             --corpus compat/corpus --out /tmp/full \
             --with-poppler --dpi 96 --timeout-secs 20 --mode full \
             --rewrite-options carry
+      - name: second witness and 300 dpi re-check of the pages below SSIM 0.95 (M1-a, M1-b)
+        # Every strict-render page below 0.95 is rendered again by kasane
+        # (the CLI built with the runner's features), Poppler and MuPDF,
+        # at 72 and 300 dpi (docs/compat-evaluation.md). The environment
+        # (commit, platform, renderer versions) goes with the results.
+        run: |
+          cargo build --release --features cjk-fallback --bin kasane-pdf --target-dir target/cjk
+          python3 scripts/ci-regression.py env --features cjk-fallback > /tmp/full/env.json
+          python3 scripts/compat-attribute.py /tmp/full/latest.json target/cjk/release/kasane-pdf \
+            --out /tmp/full/attribution.json --summary /tmp/full/attribution-summary.json \
+            --features cjk-fallback --jobs 4
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          s = json.load(open("/tmp/full/attribution-summary.json"))
+          print(f"## Second witness: {s['pages']} pages of {s['files']} files below SSIM {s['threshold']}\n")
+          print("| agreement at 300 dpi | pages |\n|---|---:|")
+          for k, v in s["agreement"].items():
+              print(f"| {k} | {v} |")
+          print(f"\nreferences disagree: {s['references_disagree']}; Poppler {s['env']['poppler']}, MuPDF {s['env']['mupdf']}\n")
+          PY
       - name: regression check and exact-render quality gate vs committed 511 baseline
-        # Fails on any stage / round-trip regression and on a new
-        # quality-gate flag (compat/quality-gate.json); the gate's counts
-        # go to the job summary.
+        # Fails on any stage / round-trip regression, on a new
+        # quality-gate flag (compat/quality-gate.json), on a file missing
+        # from the run, and — against a baseline of the same environment
+        # (--require-same-env) — on a page SSIM, content SSIM or text F1
+        # drop, a page no longer compared, and a page that leaves the
+        # witnesses' tolerance or becomes not comparable (M1-c). The
+        # gate's counts go to the job summary.
         run: |
           python3 scripts/ci-regression.py check /tmp/full/latest.json compat/baselines/corpus-full.json \
+            --env /tmp/full/env.json --attribution /tmp/full/attribution.json --require-same-env \
             --summary-md "$GITHUB_STEP_SUMMARY"
       - name: redaction corpus results (projection — ids, categories, counts)
         if: always()
@@ -147,6 +175,9 @@ jobs:
           path: |
             /tmp/full/latest.md
             /tmp/full/latest.json
+            /tmp/full/env.json
+            /tmp/full/attribution.json
+            /tmp/full/attribution-summary.json
           retention-days: 30
 
   # Every published version of compat/advisories/history.json built from

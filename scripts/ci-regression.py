@@ -39,12 +39,50 @@ docs/plans/quality-gate.md.
       Also append a markdown summary of the quality gate to FILE (the
       nightly passes $GITHUB_STEP_SUMMARY). Counts only, no file names.
 
+  ci-regression.py check RUN.json baseline.json --env ENV.json
+          [--attribution PAGES.json] [--require-same-env]
+      Also compare the numeric measures (M1-c, docs/compat-evaluation.md)
+      when the baseline records them: per-page SSIM and content SSIM,
+      page-1 text F1, pages compared, and the second-witness agreement
+      of every page below the attribution threshold
+      (scripts/compat-attribute.py). They are compared only between runs
+      of the same environment (scripts/compat_env.py: platform, Poppler,
+      MuPDF, features). In another environment they are reported as not
+      compared; with --require-same-env (the nightly) that is a
+      regression, and so is a run without --env or --attribution when
+      the baseline has them.
+
+  ci-regression.py env [--commit SHA] [--features F] > ENV.json
+      The measurement environment of this machine.
+
+  ci-regression.py update-baseline RUN.json baseline.json --env ENV.json
+          [--attribution PAGES.json] [--write] [--allow-removed]
+          [--accept-regressions] [--ids]
+      The only way to change a baseline: prints what the new baseline
+      would change (counts; --ids lists the files, for a local review
+      only), and with --write writes it — refused when files would be
+      removed (without --allow-removed), when `check` finds regressions
+      against the old one (without --accept-regressions), or when the
+      environment is incomplete. No workflow writes a baseline
+      (scripts/check-workflows.py).
+
+Every run is validated first: a report or baseline that is not the
+expected shape, has duplicate ids, or holds a non-finite number (NaN,
+Infinity) is rejected (exit 2), never compared. A file of the baseline
+missing from the run is a regression: a removed case is not an
+improvement.
+
 Only aggregates and cause ids are ever written; the corpus itself and
 rendered images stay out of git.
 """
+import argparse
 import json
+import math
 import os
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import compat_env  # noqa: E402
 
 STAGES = ("parse", "render", "text", "rewrite")
 RT_CHECKS = ("reparse", "structure", "render", "text", "annotations", "external_valid", "external_no_new")
@@ -187,9 +225,106 @@ def quality(f, gate):
     return quality_detail(f, gate)[0]
 
 
-def summarize(run):
+# Numeric regression thresholds (M1-c). Runs of one environment are
+# deterministic: three Linux nightlies (c593bb8, 09a8e78, e7d52aa; 1147
+# pages) agree exactly on every SSIM, content SSIM and text F1, so any
+# move is an engine change; the thresholds sit above the 4-decimal
+# rounding of the baseline and below the smallest change worth a review.
+SSIM_DROP = 0.002
+CONTENT_SSIM_DROP = 0.01
+TEXT_F1_DROP_ENFORCED = 0.02
+# An open page (outside tolerance of both witnesses at 300 dpi) whose
+# difference from the nearer witness grows by more than this is a
+# regression although its class does not change.
+OPEN_DPX_GROWTH = 0.002
+OPEN_MAD_GROWTH = 0.5
+WITHIN = ("both", "poppler", "mupdf")
+
+
+class Invalid(Exception):
+    """A report or baseline that cannot be compared."""
+
+
+def _finite_tree(o, where):
+    if isinstance(o, float) and not math.isfinite(o):
+        raise Invalid(f"non-finite number at {where}")
+    if isinstance(o, dict):
+        for k, v in o.items():
+            _finite_tree(v, f"{where}.{k}")
+    elif isinstance(o, list):
+        for i, v in enumerate(o):
+            _finite_tree(v, f"{where}[{i}]")
+
+
+def validate_run(run):
+    if not isinstance(run, dict) or not isinstance(run.get("files"), list):
+        raise Invalid("run report: no 'files' list")
+    seen = set()
+    for i, f in enumerate(run["files"]):
+        if not isinstance(f, dict) or not isinstance(f.get("id"), str) or not f["id"]:
+            raise Invalid(f"run report: file {i} has no id")
+        if f["id"] in seen:
+            raise Invalid("run report: duplicate file id")
+        seen.add(f["id"])
+        for s in STAGES:
+            if s in f and not isinstance(f[s], dict):
+                raise Invalid(f"run report: stage {s} of file {i} is not a record")
+        _finite_tree(f, f"files[{i}]")
+
+
+def validate_base(base):
+    if not isinstance(base, dict) or not isinstance(base.get("files"), dict):
+        raise Invalid("baseline: no 'files' map")
+    for fid, o in base["files"].items():
+        if not isinstance(o, dict) or not isinstance(o.get("stages"), dict):
+            raise Invalid("baseline: a file without stages")
+    _finite_tree(base, "baseline")
+    meta = base.get("meta") or {}
+    has_pages = any("pages" in o for o in base["files"].values())
+    if has_pages and not meta.get("env"):
+        raise Invalid("baseline: page measures without a recorded environment")
+
+
+def validate_attribution(att):
+    if not isinstance(att, dict) or att.get("schema") != 2 or not isinstance(att.get("pages"), list):
+        raise Invalid("attribution: not a schema-2 page list (scripts/compat-attribute.py)")
+    _finite_tree(att, "attribution")
+    for r in att["pages"]:
+        if r.get("agreement") not in WITHIN + ("neither", "not_comparable"):
+            raise Invalid("attribution: unknown agreement")
+
+
+def strict_pages(f):
+    """Page -> (SSIM, content SSIM) of a strict render (none for a
+    recovered document or a render that did not pass)."""
+    if f.get("recovered") or (f.get("render") or {}).get("class") != "pass" or (f.get("parse") or {}).get("class") != "pass":
+        return {}
+    out = {}
+    for p in (f.get("metrics") or {}).get("render_pages") or []:
+        if isinstance(p, dict) and isinstance(p.get("ssim"), (int, float)):
+            cs = (p.get("quality") or {}).get("content_ssim")
+            out[str(p["page"])] = {"ssim": round(p["ssim"], 4),
+                                   "cssim": None if cs is None else round(cs, 4)}
+    return out
+
+
+def attribution_by_file(att):
+    out = {}
+    for r in (att or {}).get("pages") or []:
+        r3 = r.get("r300") or {}
+        out.setdefault(r["id"], {})[str(r["page"])] = {
+            "agreement": r["agreement"],
+            "references_agree": r.get("references_agree"),
+            "dpx": None if not r3 else round(min(r3["dpx_kp"], r3["dpx_km"]), 5),
+            "mad": None if not r3 else round(min(r3["mad_kp"], r3["mad_km"]), 3),
+        }
+    return out
+
+
+def summarize(run, attribution=None, env=None):
     gate = load_gate()
     files = {}
+    att = attribution_by_file(attribution) if attribution else {}
     for f in run["files"]:
         rt = f.get("roundtrip") or {}
         files[f["id"]] = {
@@ -230,6 +365,10 @@ def summarize(run):
             "text_f1": text_value(f, "text_char_f1"),
             "text_f1_annots": text_value(f, "text_char_f1_with_annots"),
         }
+        if env is not None:
+            files[f["id"]]["pages"] = strict_pages(f)
+        if attribution is not None:
+            files[f["id"]]["attribution"] = att.get(f["id"], {})
         cls, n_pages, n_flag, _, _ = quality_detail(f, gate)
         files[f["id"]]["quality"] = cls
         files[f["id"]]["quality_pages"] = n_pages
@@ -249,7 +388,17 @@ def summarize(run):
     agg["quality_exempt"] = sum(1 for v in files.values() if v["quality"].startswith("exempt:"))
     agg["quality_pages"] = sum(v["quality_pages"] for v in files.values())
     agg["by_config"] = by_config(run)
-    return {"aggregate": agg, "files": files}
+    out = {"aggregate": agg, "files": files}
+    if env is not None:
+        meta = {"env": env}
+        if attribution is not None:
+            meta["attribution"] = {"threshold": attribution.get("threshold"),
+                                   "tolerance": attribution.get("tolerance"),
+                                   "pages": len(attribution.get("pages") or [])}
+            agg["attribution"] = {a: sum(1 for r in attribution["pages"] if r["agreement"] == a)
+                                  for a in WITHIN + ("neither", "not_comparable")}
+        out["meta"] = meta
+    return out
 
 
 def policy_summary(f):
@@ -458,10 +607,110 @@ def worse(new, old):
     return RANK.get(new, 9) > RANK.get(old, 9)
 
 
-def check(run, base, summary_md=None):
+def numeric_regressions(cur, old, base, env, attribution, require_same_env, improvements, notes):
+    """M1-c: the numeric comparisons, each page judged on its own — an
+    improvement elsewhere never offsets a regression."""
+    regs = []
+    meta = base.get("meta") or {}
+    benv = meta.get("env")
+    if benv is None:
+        notes.append("numeric measures not compared: the baseline records none (update-baseline arms them)")
+        return regs
+    if env is None:
+        msg = "numeric measures not compared: this run's environment was not given (--env)"
+        (regs if require_same_env else notes).append(msg)
+        return regs
+    diff = compat_env.differences(benv, env)
+    if diff:
+        msg = ("numeric measures not compared: the environment differs from the baseline's in "
+               + ", ".join(f"{k} ({benv.get(k)} -> {env.get(k)})" for k in diff))
+        (regs if require_same_env else notes).append(msg)
+        return regs
+    armed_att = bool(meta.get("attribution"))
+    if armed_att and attribution is None:
+        regs.append("attribution not measured (the baseline has it; --attribution)")
+    if attribution is not None and armed_att:
+        aenv = attribution.get("env") or {}
+        d = compat_env.differences(env, aenv)
+        if d:
+            regs.append("attribution measured in another environment than the run: " + ", ".join(d))
+        if attribution.get("threshold") != meta["attribution"].get("threshold") or \
+                attribution.get("tolerance") != meta["attribution"].get("tolerance"):
+            regs.append("attribution threshold or tolerance differs from the baseline's")
+    thr = (meta.get("attribution") or {}).get("threshold")
+    for fid, o in old.items():
+        n = cur.get(fid)
+        if n is None:
+            continue
+        op, np_ = o.get("pages"), n.get("pages") or {}
+        if op is not None:
+            for pg, ov in op.items():
+                nv = np_.get(pg)
+                if nv is None:
+                    regs.append(f"{fid}: page {pg} no longer compared with the reference")
+                    continue
+                if nv["ssim"] < ov["ssim"] - SSIM_DROP:
+                    regs.append(f"{fid}: page {pg} SSIM {ov['ssim']} -> {nv['ssim']}")
+                elif nv["ssim"] > ov["ssim"] + SSIM_DROP:
+                    improvements.append(f"{fid}: page {pg} SSIM {ov['ssim']} -> {nv['ssim']}")
+                if ov.get("cssim") is not None:
+                    if nv.get("cssim") is None:
+                        regs.append(f"{fid}: page {pg} content SSIM no longer measured")
+                    elif nv["cssim"] < ov["cssim"] - CONTENT_SSIM_DROP:
+                        regs.append(f"{fid}: page {pg} content SSIM {ov['cssim']} -> {nv['cssim']}")
+            for key in ("text_f1", "text_f1_annots"):
+                was, now = o.get(key), n.get(key)
+                if was is None:
+                    continue
+                if now is None:
+                    regs.append(f"{fid}: {key} no longer measured (was {was})")
+                elif now < was - TEXT_F1_DROP_ENFORCED:
+                    regs.append(f"{fid}: {key} {was} -> {now}")
+        if not armed_att or attribution is None:
+            continue
+        oa, na = o.get("attribution") or {}, n.get("attribution") or {}
+        for pg, a in oa.items():
+            b = na.get(pg)
+            if b is None:
+                s_now = (np_.get(pg) or {}).get("ssim")
+                if s_now is not None and thr is not None and s_now >= thr:
+                    improvements.append(f"{fid}: page {pg} no longer below the attribution threshold")
+                else:
+                    regs.append(f"{fid}: page {pg} not attributed (the baseline attributes it)")
+                continue
+            was, now = a["agreement"], b["agreement"]
+            if was in WITHIN and now not in WITHIN:
+                regs.append(f"{fid}: page {pg} agreement {was} -> {now}")
+            elif was == "neither" and now == "not_comparable":
+                regs.append(f"{fid}: page {pg} agreement neither -> not_comparable (an open page hidden)")
+            elif was == "neither" and now == "neither":
+                if (b["dpx"] - a["dpx"] > OPEN_DPX_GROWTH) or (b["mad"] - a["mad"] > OPEN_MAD_GROWTH):
+                    regs.append(f"{fid}: open page {pg} differs more (dpx {a['dpx']} -> {b['dpx']}, "
+                                f"mad {a['mad']} -> {b['mad']})")
+            elif was not in WITHIN and now in WITHIN:
+                improvements.append(f"{fid}: page {pg} agreement {was} -> {now}")
+        for pg, b in na.items():
+            if pg not in oa and b["agreement"] not in WITHIN:
+                regs.append(f"{fid}: page {pg} newly {b['agreement']} (below the threshold, not in the baseline)")
+    if armed_att and attribution is not None:
+        for fid, n in cur.items():
+            if fid in old:
+                continue
+            for pg, b in (n.get("attribution") or {}).items():
+                if b["agreement"] not in WITHIN:
+                    regs.append(f"{fid}: page {pg} {b['agreement']} (file not in the baseline)")
+    return regs
+
+
+def check(run, base, summary_md=None, env=None, attribution=None, require_same_env=False):
+    validate_run(run)
+    validate_base(base)
+    if attribution is not None:
+        validate_attribution(attribution)
     gate = load_gate()
-    cur = summarize(run)["files"]
+    cur = summarize(run, attribution, env if env is not None else None)["files"]
     old = base["files"]
+    notes = []
     armed = any("quality" in o for o in old.values())
     regressions, improvements, known_flags, unrecorded = [], [], [], []
     new_flags = []
@@ -530,8 +779,8 @@ def check(run, base, summary_md=None):
                 semantic_changes.append(
                     f"{fid}: semantic {cat} {was or 'unrecorded'} -> transformed ({', '.join(rules)})"
                 )
-        # Text agreement: reported, not enforced. Older baselines have no
-        # values (nothing to compare).
+        # Text agreement: listed here; enforced among the numeric
+        # measures (same environment, a baseline with page measures).
         for key in ("text_f1", "text_f1_annots"):
             was, now = o.get(key), n.get(key)
             if was is not None and (now is None or now <= was - TEXT_F1_DROP):
@@ -612,7 +861,12 @@ def check(run, base, summary_md=None):
         )
     missing = sorted(set(old) - set(cur))
     added = sorted(set(cur) - set(old))
+    for fid in missing:
+        regressions.append(f"{fid}: in the baseline, missing from the run")
+    regressions.extend(numeric_regressions(cur, old, base, env, attribution, require_same_env, improvements, notes))
     print(f"files: {len(cur)} now, {len(old)} in baseline, {len(missing)} missing, {len(added)} new")
+    for line in notes:
+        print("note:", line)
     for line in improvements:
         print("improved:", line)
     for line in known_flags:
@@ -694,34 +948,168 @@ def write_gate_summary(
         fh.write("\nRules and thresholds: `compat/quality-gate.json`, `docs/plans/quality-gate.md`.\n\n")
 
 
+def load(path, what):
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except (OSError, ValueError) as e:
+        raise Invalid(f"{what} {path}: {e}")
+
+
+def baseline_diff(new, old):
+    """What replacing `old` by `new` changes: {category: [file ids]}."""
+    d = {}
+    add = lambda k, fid: d.setdefault(k, []).append(fid)
+    of, nf = (old or {}).get("files") or {}, new["files"]
+    for fid in sorted(set(of) - set(nf)):
+        add("removed files", fid)
+    for fid in sorted(set(nf) - set(of)):
+        add("added files", fid)
+    for fid in sorted(set(of) & set(nf)):
+        o, n = of[fid], nf[fid]
+        for s in STAGES:
+            if o["stages"].get(s) != n["stages"].get(s):
+                add(f"{s} {o['stages'].get(s)} -> {n['stages'].get(s)}", fid)
+        if o.get("quality") != n.get("quality"):
+            add(f"quality {str(o.get('quality')).split(':')[0]} -> {str(n.get('quality')).split(':')[0]}", fid)
+        op, np_ = o.get("pages"), n.get("pages") or {}
+        if op is None and np_:
+            add("page measures recorded (new)", fid)
+        for pg, ov in (op or {}).items():
+            nv = np_.get(pg)
+            if nv is None:
+                add("pages no longer compared", fid)
+            elif nv["ssim"] < ov["ssim"] - SSIM_DROP:
+                add("page SSIM lower", fid)
+            elif nv["ssim"] > ov["ssim"] + SSIM_DROP:
+                add("page SSIM higher", fid)
+        oa, na = o.get("attribution"), n.get("attribution") or {}
+        for pg, b in na.items():
+            was = (oa or {}).get(pg, {}).get("agreement", "unrecorded")
+            if was != b["agreement"]:
+                add(f"agreement {was} -> {b['agreement']}", fid)
+    return d
+
+
+def update_baseline(a):
+    run = load(a.run, "run report")
+    validate_run(run)
+    env = load(a.env, "environment")
+    att = load(a.attribution, "attribution") if a.attribution else None
+    if att is not None:
+        validate_attribution(att)
+        d = compat_env.differences(env, att.get("env") or {})
+        if d:
+            raise Invalid("the attribution was measured in another environment: " + ", ".join(d))
+    missing = compat_env.incomplete(env, need_mupdf=att is not None)
+    if missing:
+        raise Invalid("environment incomplete: " + ", ".join(missing))
+    old = None
+    if os.path.exists(a.baseline):
+        old = load(a.baseline, "baseline")
+        validate_base(old)
+    new = summarize(run, att, env)
+    diff = baseline_diff(new, old)
+    print(f"update-baseline: {a.baseline} ({'new file' if old is None else 'replacing'}); environment "
+          + ", ".join(f"{k} {env.get(k)}" for k in ("commit", "os", "arch", "poppler", "mupdf", "features")))
+    if old is not None and (old.get("meta") or {}).get("env"):
+        changed = compat_env.differences(old["meta"]["env"], env)
+        print("environment change: " + (", ".join(changed) if changed else "none"))
+    for k, ids in sorted(diff.items()):
+        print(f"  {k}: {len(ids)}" + (f"  [{', '.join(ids)}]" if a.ids else ""))
+    if not diff:
+        print("  no file changes")
+    regressions = 0
+    if old is not None:
+        print("--- check of this run against the current baseline:")
+        regressions = check(run, old, env=env, attribution=att, require_same_env=True)
+    if not a.write:
+        print("dry run: nothing written (--write writes it)")
+        return 0
+    if diff.get("removed files") and not a.allow_removed:
+        print(f"refused: {len(diff['removed files'])} file(s) would be removed (--allow-removed)")
+        return 1
+    if regressions and not a.accept_regressions:
+        print("refused: the run has regressions against the current baseline (--accept-regressions "
+              "after reviewing them)")
+        return 1
+    with open(a.baseline, "w") as fh:
+        json.dump(new, fh, indent=1, sort_keys=True)
+        fh.write("\n")
+    print(f"written: {a.baseline}")
+    return 0
+
+
 def main(argv):
-    if len(argv) >= 3 and argv[1] == "summarize":
-        with open(argv[2]) as fh:
-            json.dump(summarize(json.load(fh)), sys.stdout, indent=1, sort_keys=True)
-        sys.stdout.write("\n")
-        return 0
-    if len(argv) >= 4 and argv[1] == "check":
-        with open(argv[2]) as fh:
-            run = json.load(fh)
-        with open(argv[3]) as fh:
-            base = json.load(fh)
-        summary_md = None
-        if len(argv) >= 6 and argv[4] == "--summary-md":
-            summary_md = argv[5]
-        return check(run, base, summary_md)
-    if len(argv) >= 3 and argv[1] == "quality":
-        with open(argv[2]) as fh:
-            run = json.load(fh)
-        gate = load_gate()
-        import collections
-        c = collections.Counter()
-        for f in run["files"]:
-            q = quality(f, gate)
-            c[q.split(":")[0]] += 1
-            if q.startswith(("flag:", "report:", "exempt:")):
-                print(f"{q}\t{f['id']}")
-        print("summary:", dict(c))
-        return 0
+    ap = argparse.ArgumentParser(prog="ci-regression.py", description="Regression gate over a kasane-compat report.")
+    sub = ap.add_subparsers(dest="cmd")
+    p = sub.add_parser("summarize")
+    p.add_argument("run")
+    p.add_argument("--env")
+    p.add_argument("--attribution")
+    p = sub.add_parser("check")
+    p.add_argument("run")
+    p.add_argument("baseline")
+    p.add_argument("--summary-md")
+    p.add_argument("--env")
+    p.add_argument("--attribution")
+    p.add_argument("--require-same-env", action="store_true")
+    p = sub.add_parser("quality")
+    p.add_argument("run")
+    p = sub.add_parser("env")
+    p.add_argument("--commit")
+    p.add_argument("--features", default="")
+    p = sub.add_parser("update-baseline")
+    p.add_argument("run")
+    p.add_argument("baseline")
+    p.add_argument("--env", required=True)
+    p.add_argument("--attribution")
+    p.add_argument("--write", action="store_true")
+    p.add_argument("--allow-removed", action="store_true")
+    p.add_argument("--accept-regressions", action="store_true")
+    p.add_argument("--ids", action="store_true")
+    try:
+        a = ap.parse_args(argv[1:])
+    except SystemExit:
+        return 2
+    try:
+        if a.cmd == "summarize":
+            run = load(a.run, "run report")
+            validate_run(run)
+            env = load(a.env, "environment") if a.env else None
+            att = load(a.attribution, "attribution") if a.attribution else None
+            if att is not None:
+                validate_attribution(att)
+            json.dump(summarize(run, att, env), sys.stdout, indent=1, sort_keys=True)
+            sys.stdout.write("\n")
+            return 0
+        if a.cmd == "check":
+            run, base = load(a.run, "run report"), load(a.baseline, "baseline")
+            env = load(a.env, "environment") if a.env else None
+            att = load(a.attribution, "attribution") if a.attribution else None
+            return check(run, base, a.summary_md, env=env, attribution=att, require_same_env=a.require_same_env)
+        if a.cmd == "env":
+            json.dump(compat_env.environment(commit=a.commit, features=a.features), sys.stdout, indent=1,
+                      sort_keys=True)
+            sys.stdout.write("\n")
+            return 0
+        if a.cmd == "update-baseline":
+            return update_baseline(a)
+        if a.cmd == "quality":
+            run = load(a.run, "run report")
+            gate = load_gate()
+            import collections
+            c = collections.Counter()
+            for f in run["files"]:
+                q = quality(f, gate)
+                c[q.split(":")[0]] += 1
+                if q.startswith(("flag:", "report:", "exempt:")):
+                    print(f"{q}\t{f['id']}")
+            print("summary:", dict(c))
+            return 0
+    except Invalid as e:
+        print(f"INVALID: {e}")
+        return 2
     sys.stderr.write(__doc__)
     return 2
 

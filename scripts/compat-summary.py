@@ -100,8 +100,18 @@ def main():
     for r in diag:
         rc[r["root_cause"]][(byid[r["id"]].get("render_recovered") or {}).get("class") or "none"] += 1
     out["blockers_expect_pass"] = {k: dict(v) for k, v in sorted(rc.items(), key=lambda kv: -sum(kv[1].values()))}
-    att = json.load(open(a.attribution))["files"]
-    out["attribution_below_0_95"] = dict(C(r["class"] for r in att))
+    with open(a.attribution) as fh:
+        att = json.load(fh)
+    if "pages" in att:
+        # Schema 2 (per page): each file counted once, by its worst page.
+        worst = {}
+        for r in att["pages"]:
+            if r["id"] not in worst or r["ssim"] < worst[r["id"]]["ssim"]:
+                worst[r["id"]] = r
+        out["attribution_below_0_95"] = dict(C(r["class"] for r in worst.values()))
+        out["agreement_300_worst_page"] = dict(C(r["agreement"] for r in worst.values()))
+    else:
+        out["attribution_below_0_95"] = dict(C(r["class"] for r in att["files"]))
     uni = json.load(open(a.unicode))
     srcs = C()
     for r in uni:

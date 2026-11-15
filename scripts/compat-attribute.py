@@ -1,71 +1,79 @@
 #!/usr/bin/env python3
-"""Attribute the low-similarity pages of a compatibility run: is the
-difference kasane's, an annotation appearance, or the reference
-renderers disagreeing with each other?
+"""Second witness and 300 dpi re-check for the low-similarity pages of a
+compatibility run (M1-a, M1-b; docs/compat-evaluation.md).
 
-    .venv-corpus/bin/python scripts/compat-attribute.py <runner report.json> <kasane-pdf> \
-        --out compat/reports/attribution-<run>.json [--threshold 0.95] [--summary OUT.json]
+    compat-attribute.py RUN.json KASANE --out PAGES.json [--summary SUMMARY.json]
+        [--threshold 0.95] [--max-pages-per-file 8] [--timeout 120] [--jobs 4]
+        [--features FEATURES] [--commit SHA]
 
-For every `expect: pass` file that rendered and whose worst page's SSIM
-against Poppler is below the threshold, that page is rendered again at
-72 dpi, greyscale, by kasane, Poppler (`pdftoppm`), Poppler with
-annotations hidden (`-hide-annotations`) and MuPDF (`mutool draw`), and
-compared pairwise: `dpx`, the share of pixels whose grey level differs by
-more than 48, and the ink (non-white share) of each. The classes, first
-match wins:
+For every page of an `expect: pass` file whose strict render passed and
+whose SSIM against Poppler (the runner's measurement) is below the
+threshold, the page is rendered again by kasane (the KASANE binary,
+built as the runner was), Poppler (`pdftoppm -cropbox`, the runner's
+page box) and MuPDF (`mutool draw`), in RGB, converted to grey by one
+formula (ITU-R 601 luma, Pillow) — the renderers' own greyscale modes
+convert colour differently, which alone made MuPDF differ from the
+others on coloured pages — and compared pairwise
+on the 72 dpi grid with two measures:
 
-  size          the renders' sizes differ (page box handling)
-  blank         kasane drew (almost) nothing where Poppler drew ink
-  missing_ink   kasane has much less ink than both references
-  extra_ink     kasane has much more ink than both references
-  annotation_layer
-                with /Annots removed from the file (every renderer then
-                draws no annotation), kasane and Poppler agree (dpx falls
-                below a quarter): the difference is in the annotation
-                layer — appearance streams, widgets, flags
-  annotation    kasane is much closer to Poppler without annotations
-                (dpx halves): an annotation appearance differs
-  reference_kasane_mupdf
-                Poppler and MuPDF differ from each other, and kasane is
-                much closer to MuPDF (under half their difference).
-                Neither reference class clears kasane; the resolution
-                check does, per file
-  reference_three_way
-                Poppler and MuPDF differ from each other by more than
-                kasane differs from MuPDF, but kasane is not close to
-                either: the cause is not attributable
-  kasane        kasane differs from both references, which agree
+  dpx  share of pixels whose grey levels differ by more than 48
+  mad  mean absolute grey difference (0–255): broad tone differences
+       that stay under 48 everywhere
 
---resolution-check repeats the three pairwise comparisons from 150 and
-300 dpi renders, box-downsampled to the 72 dpi grid: a difference that
-vanishes at higher resolution is rasterisation (sampling, anti-aliasing,
-snapping), not content; one that stays is. Per file: `vanishes` when
-kasane is within tolerance of Poppler at 300 dpi, `persists` otherwise,
-`failed` when a render at a higher resolution failed; and which
-reference kasane is within tolerance of at 300 dpi (`dpx` under 0.5 %
-and `mad` under 2 grey levels): Poppler, MuPDF only, or neither. Being
-within tolerance of a witness at 300 dpi is an observation, not proof
-that the 72 dpi difference was rasterisation alone. `mad` (mean
-absolute grey difference) is recorded beside `dpx`, which ignores
-differences under 48 grey levels.
+At 72 dpi the page gets a descriptive class (first match wins; kasane's
+own defect signals first, so that a disagreement between the
+references cannot hide them): blank, missing_ink, extra_ink,
+annotation_layer (with /Annots removed from the file kasane and Poppler
+agree), reference_kasane_mupdf, reference_three_way, kasane.
 
-The per-file results (ids, classes, measures) go to --out, which belongs
-in the gitignored compat/reports/; --summary writes counts only (per
-class, and per class × font kind / image filter of the profile), the
-form that may be published. Requires Pillow (.venv-corpus).
+The verdict comes from 300 dpi renders box-downsampled to the 72 dpi
+grid. kasane is *within tolerance* of a witness when dpx < 0.5 % and
+mad < 2 (TOLERANCE). The page's `agreement`:
+
+  both            within tolerance of Poppler and of MuPDF
+  poppler         of Poppler only
+  mupdf           of MuPDF only
+  neither         of neither: the page is *open*
+  not_comparable  a render failed, timed out, produced nothing, or the
+                  sizes differ; `reason` says which (never counted as
+                  agreement)
+
+and `references_agree` (Poppler within tolerance of MuPDF; None when
+not comparable). Agreement with a witness is an observation, not a
+proof that the 72 dpi difference was rasterisation alone; neither is
+agreement between the references a proof that they are right.
+
+PAGES.json (per page: id, page, measures, class, agreement) belongs in
+the gitignored compat/reports/ or a CI artifact; --summary writes counts
+only, the form that may be published. Both record the environment
+(scripts/compat_env.py). Renderers can be replaced through
+KASANE_ATTR_PDFTOPPM, KASANE_ATTR_MUTOOL, KASANE_ATTR_QPDF and
+KASANE_ATTR_FIXQDF (tests). Requires Pillow.
 """
 import argparse
 import collections
+import concurrent.futures
 import json
+import math
 import os
 import subprocess
 import sys
 import tempfile
 
-from PIL import Image
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import compat_env  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SCHEMA = 2
 DELTA = 48
+# Within tolerance of a witness at 300 dpi (compared on the 72 dpi grid).
+# Set in the v0.11.0 analysis (docs/compatibility-report.md § 6.2).
+TOLERANCE = {"dpx": 0.005, "mad": 2.0}
+AGREEMENTS = ("both", "poppler", "mupdf", "neither", "not_comparable")
+
+
+def tool(name, default):
+    return os.environ.get(f"KASANE_ATTR_{name}") or default
 
 
 def corpus_path(fid):
@@ -77,240 +85,262 @@ def corpus_path(fid):
     return None
 
 
+# ---- decisions (pure: measures in, verdict out) -------------------------
+
+def finite(*xs):
+    return all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) for x in xs)
+
+
+def within(dpx, mad):
+    return finite(dpx, mad) and dpx < TOLERANCE["dpx"] and mad < TOLERANCE["mad"]
+
+
+def verdict(r300):
+    """(agreement, references_agree) from the 300 dpi measures
+    {dpx_kp, dpx_km, dpx_pm, mad_kp, mad_km, mad_pm}; None or any
+    missing or non-finite value: not comparable."""
+    keys = ("dpx_kp", "dpx_km", "dpx_pm", "mad_kp", "mad_km", "mad_pm")
+    if not r300 or not all(finite(r300.get(k)) for k in keys):
+        return "not_comparable", None
+    wp, wm = within(r300["dpx_kp"], r300["mad_kp"]), within(r300["dpx_km"], r300["mad_km"])
+    refs = within(r300["dpx_pm"], r300["mad_pm"])
+    agreement = "both" if wp and wm else "poppler" if wp else "mupdf" if wm else "neither"
+    return agreement, refs
+
+
+def classify72(m):
+    """Descriptive class from the 72 dpi measures (see the module doc)."""
+    need = ("ink_kasane", "ink_poppler", "dpx_kp")
+    if not all(finite(m.get(k)) for k in need):
+        return "not_comparable"
+    if m["ink_poppler"] > 0.01 and m["ink_kasane"] < 0.1 * m["ink_poppler"]:
+        return "blank"
+    refs = [m[k] for k in ("ink_poppler", "ink_mupdf") if finite(m.get(k))]
+    if refs and m["ink_kasane"] < 0.7 * min(refs):
+        return "missing_ink"
+    if refs and m["ink_kasane"] > 1.3 * max(refs) and m["ink_kasane"] - max(refs) > 0.005:
+        return "extra_ink"
+    if finite(m.get("dpx_kp_na")) and m["dpx_kp"] > 0.002 and m["dpx_kp_na"] < 0.25 * m["dpx_kp"]:
+        return "annotation_layer"
+    if finite(m.get("dpx_pm"), m.get("dpx_km")) and m["dpx_pm"] > m["dpx_km"] and m["dpx_pm"] > 0.002:
+        return "reference_kasane_mupdf" if m["dpx_km"] < 0.5 * m["dpx_pm"] else "reference_three_way"
+    return "kasane"
+
+
+# ---- measuring -----------------------------------------------------------
+
+def image():
+    from PIL import Image  # Pillow: imported here so the decisions test without it
+    return Image
+
+
 def grey(path):
-    return Image.open(path).convert("L")
-
-
-def without_annotations(pdf, tmp):
-    """The same file with every /Annots key renamed (same length, so
-    fix-qdf repairs the offsets): no renderer draws an annotation. None
-    when qpdf cannot rewrite it."""
-    plain, fixed = os.path.join(tmp, "plain.pdf"), os.path.join(tmp, "noannots.pdf")
-    q = subprocess.run(["qpdf", "--qdf", "--object-streams=disable", pdf, plain], capture_output=True, timeout=120)
-    if q.returncode not in (0, 3) or not os.path.exists(plain):
-        return None
-    data = open(plain, "rb").read().replace(b"/Annots", b"/XAnnot")
-    open(plain, "wb").write(data)
-    fx = subprocess.run(["fix-qdf", plain], capture_output=True, timeout=120)
-    if fx.returncode != 0:
-        return None
-    open(fixed, "wb").write(fx.stdout)
-    return fixed
-
-
-def render_all(kasane, pdf, page, tmp):
-    out = {}
-    k = os.path.join(tmp, "k.png")
-    r = subprocess.run([kasane, "render", pdf, str(page), "--dpi", "72", "--output", k], capture_output=True, timeout=120)
-    out["kasane"] = grey(k) if r.returncode == 0 and os.path.exists(k) else None
-    for name, extra in (("poppler", []), ("poppler_noannot", ["-hide-annotations"])):
-        base = os.path.join(tmp, name)
-        subprocess.run(["pdftoppm", "-r", "72", "-gray", "-png", "-f", str(page), "-l", str(page), "-singlefile", "-cropbox",
-                        *extra, pdf, base], capture_output=True, timeout=120)
-        out[name] = grey(base + ".png") if os.path.exists(base + ".png") else None
-    m = os.path.join(tmp, "m.png")
-    subprocess.run(["mutool", "draw", "-q", "-r", "72", "-c", "gray", "-o", m, pdf, str(page)], capture_output=True,
-                   timeout=120)
-    out["mupdf"] = grey(m) if os.path.exists(m) else None
-    na = without_annotations(pdf, tmp)
-    if na:
-        for name, argv in (("kasane_na", [kasane, "render", na, str(page), "--dpi", "72", "--output",
-                                           os.path.join(tmp, "kna.png")]),
-                           ("poppler_na", ["pdftoppm", "-r", "72", "-gray", "-png", "-f", str(page), "-l", str(page),
-                                           "-singlefile", "-cropbox", na, os.path.join(tmp, "pna")]),
-                           ("mupdf_na", ["mutool", "draw", "-q", "-r", "72", "-c", "gray", "-o",
-                                         os.path.join(tmp, "mna.png"), na, str(page)])):
-            subprocess.run(argv, capture_output=True, timeout=120)
-        for name, f in (("kasane_na", "kna.png"), ("poppler_na", "pna.png"), ("mupdf_na", "mna.png")):
-            out[name] = grey(os.path.join(tmp, f)) if os.path.exists(os.path.join(tmp, f)) else None
-    return out
+    return image().open(path).convert("L")
 
 
 def ink(img):
-    h = img.histogram()
-    return sum(h[:250]) / max(1, img.width * img.height)
+    return sum(img.histogram()[:250]) / max(1, img.width * img.height)
 
 
 def dpx(a, b):
-    if a.size != b.size:
-        return None
     from PIL import ImageChops
-    d = ImageChops.difference(a, b).histogram()
-    return sum(d[DELTA + 1:]) / max(1, a.width * a.height)
+    return sum(ImageChops.difference(a, b).histogram()[DELTA + 1:]) / max(1, a.width * a.height)
 
 
 def mad(a, b):
-    """Mean absolute grey difference (0–255): sees broad tone differences
-    that stay under DELTA everywhere."""
-    if a.size != b.size:
-        return None
     from PIL import ImageChops
     h = ImageChops.difference(a, b).histogram()
     return sum(i * n for i, n in enumerate(h)) / max(1, a.width * a.height)
 
 
-def classify(r):
-    k, p, pn, m = r["kasane"], r["poppler"], r["poppler_noannot"], r["mupdf"]
-    if k is None or p is None:
-        return "error", {}
-    meas = {"ink_kasane": ink(k), "ink_poppler": ink(p)}
-    if k.size != p.size:
-        return "size", meas
-    meas["dpx_kp"] = dpx(k, p)
-    meas["mad_kp"] = mad(k, p)
-    if pn is not None:
-        meas["dpx_kpn"] = dpx(k, pn)
-    if m is not None and m.size == k.size:
-        meas["dpx_km"] = dpx(k, m)
-        meas["dpx_pm"] = dpx(p, m)
-        meas["ink_mupdf"] = ink(m)
-        meas["mad_km"] = mad(k, m)
-        meas["mad_pm"] = mad(p, m)
-    kn, pn2, mn = r.get("kasane_na"), r.get("poppler_na"), r.get("mupdf_na")
-    if kn is not None and pn2 is not None and kn.size == pn2.size:
-        meas["dpx_kp_na"] = dpx(kn, pn2)
-        if mn is not None and mn.size == kn.size:
-            meas["dpx_km_na"] = dpx(kn, mn)
-            meas["dpx_pm_na"] = dpx(pn2, mn)
-    if meas["ink_poppler"] > 0.01 and meas["ink_kasane"] < 0.1 * meas["ink_poppler"]:
-        return "blank", meas
-    # Without annotations kasane and Poppler (nearly) agree: what differs
-    # is the annotation layer (widgets, appearances) — whoever is right.
-    if meas.get("dpx_kp_na") is not None and meas["dpx_kp"] > 0.002 and meas["dpx_kp_na"] < 0.25 * meas["dpx_kp"]:
-        return "annotation_layer", meas
-    if meas.get("dpx_kpn") is not None and meas["dpx_kp"] > 0.002 and meas["dpx_kpn"] < 0.5 * meas["dpx_kp"]:
-        return "annotation", meas
-    # Defect signals of kasane's own come before any reference
-    # disagreement, so that disagreement cannot hide them.
-    refs = [x for x in (meas.get("ink_poppler"), meas.get("ink_mupdf")) if x is not None]
-    if refs and meas["ink_kasane"] < 0.7 * min(refs):
-        return "missing_ink", meas
-    if refs and meas["ink_kasane"] > 1.3 * max(refs) and meas["ink_kasane"] - max(refs) > 0.005:
-        return "extra_ink", meas
-    if meas.get("dpx_pm") is not None and meas["dpx_pm"] > meas["dpx_km"] and meas["dpx_pm"] > 0.002:
-        # The references disagree. kasane with MuPDF (much closer to it
-        # than Poppler is), or all three apart. Neither clears kasane:
-        # the resolution check says whether the difference is content.
-        return ("reference_kasane_mupdf" if meas["dpx_km"] < 0.5 * meas["dpx_pm"] else "reference_three_way"), meas
-    return "kasane", meas
+class NotComparable(Exception):
+    pass
 
 
-def resolution_check(kasane, pdf, page):
-    """{dpi: (dpx kasane-poppler, kasane-mupdf, poppler-mupdf, mad
-    kasane-poppler, kasane-mupdf)} at 72, 150, 300 dpi, compared on the
-    72 dpi grid."""
-    out = {}
-    with tempfile.TemporaryDirectory() as t:
-        for dpi in (72, 150, 300):
-            k, b, m = os.path.join(t, f"k{dpi}.png"), os.path.join(t, f"p{dpi}"), os.path.join(t, f"m{dpi}.png")
-            subprocess.run([kasane, "render", pdf, str(page), "--dpi", str(dpi), "--output", k], capture_output=True,
-                           timeout=300)
-            subprocess.run(["pdftoppm", "-r", str(dpi), "-gray", "-png", "-f", str(page), "-l", str(page),
-                            "-singlefile", "-cropbox", pdf, b], capture_output=True, timeout=300)
-            subprocess.run(["mutool", "draw", "-q", "-r", str(dpi), "-c", "gray", "-o", m, pdf, str(page)],
-                           capture_output=True, timeout=300)
-            if not all(os.path.exists(x) for x in (k, b + ".png", m)):
-                out[dpi] = None
-                continue
-            kk, pp, mm = grey(k), grey(b + ".png"), grey(m)
-            if dpi != 72:
-                w, h = max(1, round(pp.width * 72 / dpi)), max(1, round(pp.height * 72 / dpi))
-                kk, pp, mm = (x.resize((w, h), Image.BOX) for x in (kk, pp, mm))
-            out[dpi] = (dpx(kk, pp), dpx(kk, mm), dpx(pp, mm), mad(kk, pp), mad(kk, mm))
+def run(argv, what, timeout):
+    try:
+        r = subprocess.run(argv, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        raise NotComparable(f"timeout:{what}")
+    except OSError:
+        raise NotComparable(f"not_runnable:{what}")
+    if r.returncode != 0:
+        raise NotComparable(f"failed:{what}")
+
+
+def render(who, kasane, pdf, page, dpi, tmp, timeout):
+    """Render one page greyscale; raise NotComparable on any failure."""
+    base = os.path.join(tmp, f"{who}-{dpi}")
+    if who.startswith("kasane"):
+        out = base + ".png"
+        run([kasane, "render", pdf, str(page), "--dpi", str(dpi), "--output", out], who, timeout)
+    elif who.startswith("poppler"):
+        out = base + ".png"
+        run([tool("PDFTOPPM", "pdftoppm"), "-r", str(dpi), "-png", "-f", str(page), "-l", str(page),
+             "-singlefile", "-cropbox", pdf, base], who, timeout)
+    else:
+        out = base + ".png"
+        run([tool("MUTOOL", "mutool"), "draw", "-q", "-r", str(dpi), "-c", "rgb", "-o", out, pdf, str(page)], who,
+            timeout)
+    if not os.path.exists(out) or os.path.getsize(out) == 0:
+        raise NotComparable(f"no_output:{who}")
+    try:
+        return grey(out)
+    except Exception:
+        raise NotComparable(f"unreadable:{who}")
+
+
+def without_annotations(pdf, tmp, timeout):
+    """The file with every /Annots key renamed (same length; fix-qdf
+    repairs the offsets): no renderer draws an annotation. None when
+    qpdf cannot rewrite it."""
+    plain, fixed = os.path.join(tmp, "plain.pdf"), os.path.join(tmp, "noannots.pdf")
+    try:
+        q = subprocess.run([tool("QPDF", "qpdf"), "--qdf", "--object-streams=disable", pdf, plain],
+                           capture_output=True, timeout=timeout)
+        if q.returncode not in (0, 3) or not os.path.exists(plain):
+            return None
+        with open(plain, "rb") as fh:
+            data = fh.read().replace(b"/Annots", b"/XAnnot")
+        with open(plain, "wb") as fh:
+            fh.write(data)
+        fx = subprocess.run([tool("FIXQDF", "fix-qdf"), plain], capture_output=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if fx.returncode != 0 or not fx.stdout:
+        return None
+    with open(fixed, "wb") as fh:
+        fh.write(fx.stdout)
+    return fixed
+
+
+# Renderers round a page's pixel size differently (kasane rounds up,
+# Poppler and MuPDF to nearest): up to this many pixels per axis the
+# renders are cropped to their common size; beyond it they are not
+# comparable.
+SIZE_SLACK_PX = 1
+
+
+def common(imgs, what):
+    w, h = min(i.width for i in imgs), min(i.height for i in imgs)
+    if max(i.width for i in imgs) - w > SIZE_SLACK_PX or max(i.height for i in imgs) - h > SIZE_SLACK_PX:
+        raise NotComparable(what)
+    return [i if i.size == (w, h) else i.crop((0, 0, w, h)) for i in imgs]
+
+
+def pairwise(k, p, m):
+    k, p, m = common([k, p, m], "size_mismatch")
+    return {"dpx_kp": dpx(k, p), "dpx_km": dpx(k, m), "dpx_pm": dpx(p, m),
+            "mad_kp": mad(k, p), "mad_km": mad(k, m), "mad_pm": mad(p, m)}
+
+
+def measure_page(kasane, pdf, page, timeout):
+    """(measures72, r300, reason): reason is None, or why the page is not
+    comparable (then r300 is None)."""
+    m72, reason, r300 = {}, None, None
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            k, p, m = (render(w, kasane, pdf, page, 72, tmp, timeout) for w in ("kasane", "poppler", "mupdf"))
+            m72 = {"ink_kasane": ink(k), "ink_poppler": ink(p), "ink_mupdf": ink(m), **pairwise(k, p, m)}
+            na = without_annotations(pdf, tmp, timeout)
+            if na:
+                try:
+                    kn = render("kasane_na", kasane, na, page, 72, tmp, timeout)
+                    pn = render("poppler_na", kasane, na, page, 72, tmp, timeout)
+                    kn, pn = common([kn, pn], "size_mismatch")
+                    m72["dpx_kp_na"] = dpx(kn, pn)
+                except NotComparable:
+                    pass  # descriptive only; the verdict does not use it
+            hi = [render(w, kasane, pdf, page, 300, tmp, timeout) for w in ("kasane", "poppler", "mupdf")]
+            hi = common(hi, "size_mismatch_300")
+            w, h = max(1, round(hi[1].width * 72 / 300)), max(1, round(hi[1].height * 72 / 300))
+            Image = image()
+            r300 = pairwise(*(x.resize((w, h), Image.BOX) for x in hi))
+        except NotComparable as e:
+            reason, r300 = str(e), None
+    return m72, r300, reason
+
+
+def pages_to_check(run_report, threshold, max_pages):
+    """(file record, page, ssim) of every strict-render page below the
+    threshold, worst first, at most max_pages per file."""
+    out = []
+    for f in run_report["files"]:
+        if f.get("expect") != "pass" or f.get("recovered") or (f.get("render") or {}).get("class") != "pass":
+            continue
+        pages = [p for p in ((f.get("metrics") or {}).get("render_pages") or [])
+                 if isinstance(p, dict) and finite(p.get("ssim")) and p["ssim"] < threshold]
+        for p in sorted(pages, key=lambda p: p["ssim"])[:max_pages]:
+            out.append((f, p["page"], p["ssim"]))
     return out
 
 
-# Agreement at 300 dpi: under 0.5 % of pixels more than DELTA apart and
-# a mean grey difference under MAD_TOL, so that neither a local defect
-# nor a broad tone difference counts as agreement.
-DPX_TOL, MAD_TOL = 0.005, 2.0
+def assess(item, kasane, timeout):
+    f, page, ssim = item
+    pdf = corpus_path(f["id"])
+    if pdf is None:
+        m72, r300, reason = {}, None, "not_fetched"
+    else:
+        m72, r300, reason = measure_page(kasane, pdf, page, timeout)
+    agreement, refs = verdict(r300)
+    if agreement == "not_comparable" and reason is None:
+        reason = "invalid_measure"
+    rnd = lambda d: {k: round(v, 5) for k, v in d.items() if finite(v)}
+    return {"id": f["id"], "page": page, "ssim": round(ssim, 5),
+            "class": classify72(m72) if reason is None or m72 else "not_comparable",
+            "agreement": agreement, "references_agree": refs, "reason": reason,
+            "m72": rnd(m72), "r300": rnd(r300) if r300 else None}
 
 
-def within(d, m):
-    return d is not None and m is not None and d < DPX_TOL and m < MAD_TOL
+def summary(rows, env, threshold, files):
+    by = collections.Counter(r["agreement"] for r in rows)
+    cross = collections.defaultdict(collections.Counter)
+    for r in rows:
+        cross[r["class"]][r["agreement"]] += 1
+    return {
+        "schema": SCHEMA, "env": env, "threshold": threshold, "tolerance": TOLERANCE,
+        "files": files, "pages": len(rows),
+        "agreement": {a: by.get(a, 0) for a in AGREEMENTS},
+        "references_disagree": sum(1 for r in rows if r["references_agree"] is False),
+        "not_comparable_reasons": dict(collections.Counter(r["reason"].split(":")[0] for r in rows if r["reason"])),
+        "class_by_agreement": {c: dict(v) for c, v in sorted(cross.items())},
+    }
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("report")
     ap.add_argument("kasane")
     ap.add_argument("--out", required=True)
     ap.add_argument("--summary")
     ap.add_argument("--threshold", type=float, default=0.95)
-    ap.add_argument("--resolution-check", action="store_true")
-    a = ap.parse_args()
-    run = json.load(open(a.report))
-    rows = []
-    for f in run["files"]:
-        # Strict renders only: after a failed strict parse the runner's
-        # render is of the recovered document.
-        if f["expect"] != "pass" or f.get("recovered") or (f.get("render") or {}).get("class") != "pass":
-            continue
-        pages = [p for p in (f["metrics"].get("render_pages") or []) if isinstance(p, dict) and p.get("ssim") is not None]
-        if not pages:
-            continue
-        worst = min(pages, key=lambda p: p["ssim"])
-        if worst["ssim"] >= a.threshold:
-            continue
-        pdf = corpus_path(f["id"])
-        if pdf is None:
-            rows.append({"id": f["id"], "class": "not_fetched"})
-            continue
-        with tempfile.TemporaryDirectory() as tmp:
-            try:
-                cls, meas = classify(render_all(a.kasane, pdf, worst["page"], tmp))
-            except (subprocess.TimeoutExpired, OSError):
-                cls, meas = "error", {}
-        prof = f.get("profile") or {}
-        rows.append({"id": f["id"], "category": f.get("category"), "page": worst["page"], "ssim": worst["ssim"],
-                     "class": cls, **{k: round(v, 4) for k, v in meas.items() if v is not None},
-                     "font_kinds": prof.get("font_kinds") or [], "image_filters": prof.get("image_filters") or [],
-                     "features": f.get("features") or [], "font_substitutions": len(f["metrics"].get(
-                         "render_font_substitutions") or []), "text_f1": f["metrics"].get("text_char_f1")})
-        if a.resolution_check and cls not in ("error", "size"):
-            rows[-1]["resolution"] = {str(k): v for k, v in resolution_check(a.kasane, pdf, worst["page"]).items()}
+    ap.add_argument("--max-pages-per-file", type=int, default=8)
+    ap.add_argument("--timeout", type=int, default=120)
+    ap.add_argument("--jobs", type=int, default=4)
+    ap.add_argument("--features", default="")
+    ap.add_argument("--commit")
+    ap.add_argument("--resolution-check", action="store_true", help="always on; accepted for older commands")
+    a = ap.parse_args(argv)
+    with open(a.report) as fh:
+        report = json.load(fh)
+    items = pages_to_check(report, a.threshold, a.max_pages_per_file)
+    env = compat_env.environment(commit=a.commit, features=a.features, pdftoppm=tool("PDFTOPPM", "pdftoppm"),
+                                 mutool=tool("MUTOOL", "mutool"), qpdf=tool("QPDF", "qpdf"))
+    with concurrent.futures.ThreadPoolExecutor(max(1, a.jobs)) as ex:
+        rows = list(ex.map(lambda it: assess(it, a.kasane, a.timeout), items))
+    files = len({r["id"] for r in rows})
+    doc = {"schema": SCHEMA, "env": env, "threshold": a.threshold, "tolerance": TOLERANCE,
+           "source": os.path.basename(a.report), "pages": rows}
     with open(a.out, "w") as fh:
-        json.dump({"source": os.path.basename(a.report), "threshold": a.threshold, "files": rows}, fh, indent=1)
-    by = collections.Counter(r["class"] for r in rows)
-    print(f"compat-attribute: {len(rows)} files below SSIM {a.threshold}: " + ", ".join(f"{k} {v}" for k, v in by.most_common()))
+        json.dump(doc, fh, indent=1, sort_keys=True)
+    s = summary(rows, env, a.threshold, files)
     if a.summary:
-        cross = collections.defaultdict(collections.Counter)
-        for r in rows:
-            for t in r.get("font_kinds", []) + r.get("image_filters", []) + r.get("features", []):
-                cross[r["class"]][t] += 1
-        res = {}
-        for c in by:
-            for dpi in ("72", "150", "300"):
-                v = [r["resolution"][dpi] for r in rows if r["class"] == c and r.get("resolution") and r["resolution"].get(dpi)
-                     and None not in r["resolution"][dpi]]
-                if v:
-                    res.setdefault(c, {})[dpi] = {"n": len(v), **{name: round(sorted(x[i] for x in v)[len(v) // 2], 4)
-                                                                   for i, name in enumerate(("kasane_poppler", "kasane_mupdf",
-                                                                                             "poppler_mupdf"))}}
-        outcome = collections.defaultdict(collections.Counter)
-        agree = collections.defaultdict(collections.Counter)
-        worst300 = {}
-        for r in rows:
-            if "resolution" not in r:
-                continue
-            v = r["resolution"].get("300")
-            if not v or None in v:
-                outcome[r["class"]]["failed"] += 1
-                continue
-            near_p, near_m = within(v[0], v[3]), within(v[1], v[4])
-            outcome[r["class"]]["vanishes" if near_p else "persists"] += 1
-            agree[r["class"]]["poppler" if near_p else "mupdf_only" if near_m else "neither"] += 1
-            worst300[r["class"]] = round(max(worst300.get(r["class"], 0), v[0]), 4)
-        mads = {}
-        for c in by:
-            v = sorted(r["mad_kp"] for r in rows if r["class"] == c and r.get("mad_kp") is not None)
-            if v:
-                mads[c] = {"median": round(v[len(v) // 2], 2), "max": round(v[-1], 2)}
-        json.dump({"threshold": a.threshold, "files": len(rows), "classes": dict(by), "resolution_medians": res,
-                   "resolution_outcome": {c: dict(v) for c, v in outcome.items()},
-                   "agreement_300": {c: dict(v) for c, v in agree.items()},
-                   "resolution_worst_kasane_poppler_300": worst300, "mad_kasane_poppler_72": mads,
-                   "by_class": {c: dict(v) for c, v in cross.items()}}, open(a.summary, "w"), indent=1, sort_keys=True)
+        with open(a.summary, "w") as fh:
+            json.dump(s, fh, indent=1, sort_keys=True)
+            fh.write("\n")
+    print(f"compat-attribute: {len(rows)} pages of {files} files below SSIM {a.threshold}: "
+          + ", ".join(f"{k} {v}" for k, v in s["agreement"].items()))
+    return 0
 
 
 if __name__ == "__main__":
