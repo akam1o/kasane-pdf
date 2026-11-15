@@ -16,6 +16,11 @@ are never committed; run the projection before committing a new round.
 `scripts/check-redact-corpus.py` compares a run with these
 (`nightly.yml`); `ci/`, when present, holds the projections measured on
 the CI runner, whose Poppler and MuPDF shift word and pixel counts.
+Each run records the state of its four text measurements
+(`text_measures`: Poppler and MuPDF, input and output); a run whose
+measurements are not all `success` or `empty` is `incomplete` and fails
+the comparison. The results here predate the states (v0.11 V1); the
+comparison requires them of every new run regardless.
 
 | file | what |
 |---|---|
