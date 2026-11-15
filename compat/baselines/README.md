@@ -22,6 +22,12 @@ A baseline that records numeric measures (per-page SSIM, the second
 witness) also records its environment, and is compared numerically
 only with runs of that environment.
 
+The current `corpus-full.json` (v0.11.0 Phase 1) was armed from the
+nightly run on the Phase 1 branch (commit `ae88f27`, Linux, Poppler
+26.01.0, MuPDF 1.27.0, `cjk-fallback`). Stage classes are those of the
+`e7d52aa` nightly; it adds the environment, per-page SSIM and the
+second-witness agreement (docs/compatibility-report.md § 11).
+
 ## How to read the fixtures smoke result
 
 The fixtures are not a compatibility population: most are built to

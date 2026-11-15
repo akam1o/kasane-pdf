@@ -84,8 +84,14 @@ Every input is validated first. A report or baseline is rejected
 - it is not the expected shape;
 - it has duplicate ids;
 - it holds `NaN` or `Infinity`;
-- it is an attribution of another schema;
-- it is a baseline with page measures but no environment.
+- it records a page twice;
+- it is a baseline with page measures but no environment;
+- it is an attribution of another schema or tolerance, without its
+  threshold or page cap, with a page twice, with a measure missing or
+  out of range (dpx outside 0–1, mad outside 0–255), or with an
+  agreement that its measures do not give. The gate recomputes every
+  agreement (`scripts/compat_verdict.py`) and never trusts a recorded
+  label.
 
 A file of the baseline that is missing from the run is a regression,
 in every mode: a removed case is not an improvement.
@@ -102,8 +108,9 @@ in the **same environment**, each of the following is a regression:
 | a page compared in the baseline is no longer compared | — |
 | a page within a witness's tolerance (`both` / `poppler` / `mupdf`) becomes `neither` or `not_comparable` | — |
 | an open page becomes `not_comparable` (hidden) | — |
-| an open page's difference from the nearer witness grows | `dpx` +0.002 or `mad` +0.5 |
-| a page attributed in the baseline is not attributed, while still below the threshold | — |
+| an open page's difference from either witness grows (each witness judged on its own) | `dpx` +0.002 or `mad` +0.5 |
+| a page of the run below the threshold (among its file's 8 worst) is not attributed, or a page is attributed that is not | — |
+| the attribution is of another commit or environment than the run, or of another threshold, tolerance or page cap than the baseline's | — |
 | a page below the threshold that the baseline did not attribute is `neither` or `not_comparable` (also in a file new to the baseline) | — |
 
 How the rules are applied:
@@ -143,9 +150,10 @@ MuPDF and features are equal. Otherwise:
   runner image's Poppler therefore fails the nightly until the baseline
   is measured again.
 
-A baseline without numeric measures (`fixtures-smoke.json`, and
-`corpus-full.json` before it was armed) is reported as *"the baseline
-records none"*.
+A baseline without numeric measures is reported as *"the baseline
+records none"* — a note for `fixtures-smoke.json` and `release-verify`,
+a regression with `--require-same-env`, so the nightly cannot pass
+against an unarmed baseline.
 
 ## 4. Baselines
 

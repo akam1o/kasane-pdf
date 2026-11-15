@@ -408,6 +408,22 @@ class Decisions(unittest.TestCase):
                     dict(self.r(), dpx_pm=float("inf")), dict(self.r(), dpx_kp=True)):
             self.assertEqual(ca.verdict(bad), ("not_comparable", None), bad)
 
+    def test_a_produced_record_validates_at_the_tolerance_boundary(self):
+        # Measures just under the tolerance, rounded on output: the
+        # record compat-attribute writes is the one the gate accepts.
+        orig, orig_path = ca.measure_page, ca.corpus_path
+        try:
+            for d in (0.004999, 0.0049999, 0.005, 0.0050001):
+                ca.measure_page = lambda *a, d=d: ({}, {"dpx_kp": d, "dpx_km": d, "dpx_pm": 0.0,
+                                                       "mad_kp": 1.0, "mad_km": 1.999996, "mad_pm": 0.0}, None)
+                ca.corpus_path = lambda fid: "x.pdf"
+                row = ca.assess(({"id": "a"}, 1, 0.9), "kasane", 1)
+                doc = {"schema": 2, "env": ENV, "threshold": 0.95, "tolerance": TOL, "max_pages_per_file": 8,
+                       "pages": [row]}
+                cr.validate_attribution(doc)
+        finally:
+            ca.measure_page, ca.corpus_path = orig, orig_path
+
     def test_kasane_defects_come_before_reference_disagreement(self):
         m = {"ink_kasane": 0.01, "ink_poppler": 0.2, "ink_mupdf": 0.2, "dpx_kp": 0.3, "dpx_km": 0.01, "dpx_pm": 0.5}
         self.assertEqual(ca.classify72(m), "blank")

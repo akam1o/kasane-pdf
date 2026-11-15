@@ -14,6 +14,7 @@ candidates add up without double counting.
 |---|---|
 | M1-a, M1-b, M1-c | **done (v0.11.0 Phase 1)**: `scripts/compat-attribute.py` as a stage over the runner's report, run by the nightly; numeric regressions and the baseline procedure in `scripts/ci-regression.py`; see [`compat-evaluation.md`](compat-evaluation.md) |
 | R0 | **done (v0.11.0 Phase 1)**: `tests/redact_recovery.rs`, the recovery-mode runs of `redact_model` and its fuzz target; the policy in [`redaction-safety-model.md`](redaction-safety-model.md) § 2.8. Every later recovery rule (R1–R4, R7, A1) adds its case there before it lands |
+| V1 (found in Phase 1, pre-existing) | open: the nightly redaction corpus's MuPDF text measure counts no characters on Linux (report § 11). The stext parser must not depend on attribute order, and an empty MuPDF result where Poppler has text must count as *not measured*, never as zero lost. Then measure again on the Linux runner and review `compat/redaction/ci` (0.5–1 d, tooling only) |
 | everything else | open |
 
 Correction from Phase 1: with the witnesses converted to grey alike,

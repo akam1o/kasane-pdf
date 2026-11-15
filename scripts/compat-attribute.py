@@ -258,14 +258,17 @@ def assess(item, kasane, timeout):
         m72, r300, reason = {}, None, "not_fetched"
     else:
         m72, r300, reason = measure_page(kasane, pdf, page, timeout)
+    # Quantized before the verdict: the gate recomputes it from the
+    # recorded values, which must give the same answer.
+    rnd = lambda d: {k: round(v, 5) for k, v in d.items() if finite(v)}
+    r300 = rnd(r300) if r300 else None
     agreement, refs = verdict(r300)
     if agreement == "not_comparable" and reason is None:
         reason = "invalid_measure"
-    rnd = lambda d: {k: round(v, 5) for k, v in d.items() if finite(v)}
     return {"id": f["id"], "page": page, "ssim": round(ssim, 5),
             "class": classify72(m72) if reason is None or m72 else "not_comparable",
             "agreement": agreement, "references_agree": refs, "reason": reason,
-            "m72": rnd(m72), "r300": rnd(r300) if r300 else None}
+            "m72": rnd(m72), "r300": r300}
 
 
 def summary(rows, env, threshold, files):
