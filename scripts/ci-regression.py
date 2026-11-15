@@ -83,6 +83,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import compat_env  # noqa: E402
+import compat_verdict  # noqa: E402
 
 STAGES = ("parse", "render", "text", "rewrite")
 RT_CHECKS = ("reparse", "structure", "render", "text", "annotations", "external_valid", "external_no_new")
@@ -269,6 +270,10 @@ def validate_run(run):
         for s in STAGES:
             if s in f and not isinstance(f[s], dict):
                 raise Invalid(f"run report: stage {s} of file {i} is not a record")
+        pages = [p.get("page") for p in (f.get("metrics") or {}).get("render_pages") or []
+                 if isinstance(p, dict) and p.get("page") is not None]
+        if len(pages) != len(set(pages)):
+            raise Invalid(f"run report: file {i} records a page twice")
         _finite_tree(f, f"files[{i}]")
 
 
@@ -286,12 +291,42 @@ def validate_base(base):
 
 
 def validate_attribution(att):
+    """Shape, uniqueness, and every label recomputed from its measures:
+    a recorded agreement is never trusted."""
     if not isinstance(att, dict) or att.get("schema") != 2 or not isinstance(att.get("pages"), list):
         raise Invalid("attribution: not a schema-2 page list (scripts/compat-attribute.py)")
     _finite_tree(att, "attribution")
+    if att.get("tolerance") != compat_verdict.TOLERANCE:
+        raise Invalid("attribution: another tolerance than compat_verdict.TOLERANCE")
+    if not compat_verdict.finite(att.get("threshold")) or not isinstance(att.get("max_pages_per_file"), int):
+        raise Invalid("attribution: no threshold or page cap")
+    seen = set()
     for r in att["pages"]:
-        if r.get("agreement") not in WITHIN + ("neither", "not_comparable"):
+        if not isinstance(r, dict) or not isinstance(r.get("id"), str) or not isinstance(r.get("page"), int):
+            raise Invalid("attribution: a page record without id or page")
+        if (r["id"], r["page"]) in seen:
+            raise Invalid("attribution: a page recorded twice")
+        seen.add((r["id"], r["page"]))
+        if r.get("agreement") not in compat_verdict.AGREEMENTS:
             raise Invalid("attribution: unknown agreement")
+        if (r["agreement"], r.get("references_agree")) != compat_verdict.verdict(r.get("r300")):
+            raise Invalid("attribution: an agreement its measures do not give")
+        if (r["agreement"] == "not_comparable") != bool(r.get("reason")):
+            raise Invalid("attribution: a reason without not_comparable, or not_comparable without a reason")
+
+
+def expected_attribution(run, threshold, cap):
+    """(id, page) the attribution must hold: every strict-render page
+    of an expect: pass file below the threshold, the `cap` worst per
+    file (as scripts/compat-attribute.py selects them)."""
+    out = set()
+    for f in run["files"]:
+        if f.get("expect") != "pass":
+            continue
+        pages = strict_pages(f)
+        low = sorted(((v["ssim_raw"], int(pg)) for pg, v in pages.items() if v["ssim_raw"] < threshold))
+        out.update((f["id"], pg) for _, pg in low[:cap])
+    return out
 
 
 def strict_pages(f):
@@ -301,9 +336,9 @@ def strict_pages(f):
         return {}
     out = {}
     for p in (f.get("metrics") or {}).get("render_pages") or []:
-        if isinstance(p, dict) and isinstance(p.get("ssim"), (int, float)):
+        if isinstance(p, dict) and isinstance(p.get("page"), int) and isinstance(p.get("ssim"), (int, float)):
             cs = (p.get("quality") or {}).get("content_ssim")
-            out[str(p["page"])] = {"ssim": round(p["ssim"], 4),
+            out[str(p["page"])] = {"ssim": round(p["ssim"], 4), "ssim_raw": p["ssim"],
                                    "cssim": None if cs is None else round(cs, 4)}
     return out
 
@@ -315,8 +350,8 @@ def attribution_by_file(att):
         out.setdefault(r["id"], {})[str(r["page"])] = {
             "agreement": r["agreement"],
             "references_agree": r.get("references_agree"),
-            "dpx": None if not r3 else round(min(r3["dpx_kp"], r3["dpx_km"]), 5),
-            "mad": None if not r3 else round(min(r3["mad_kp"], r3["mad_km"]), 3),
+            # Per witness: kasane–Poppler (kp) and kasane–MuPDF (km).
+            **{k: (None if not r3 else round(r3[k], 5)) for k in ("dpx_kp", "dpx_km", "mad_kp", "mad_km")},
         }
     return out
 
@@ -366,7 +401,8 @@ def summarize(run, attribution=None, env=None):
             "text_f1_annots": text_value(f, "text_char_f1_with_annots"),
         }
         if env is not None:
-            files[f["id"]]["pages"] = strict_pages(f)
+            files[f["id"]]["pages"] = {pg: {k: v for k, v in m.items() if k != "ssim_raw"}
+                                       for pg, m in strict_pages(f).items()}
         if attribution is not None:
             files[f["id"]]["attribution"] = att.get(f["id"], {})
         cls, n_pages, n_flag, _, _ = quality_detail(f, gate)
@@ -394,6 +430,7 @@ def summarize(run, attribution=None, env=None):
         if attribution is not None:
             meta["attribution"] = {"threshold": attribution.get("threshold"),
                                    "tolerance": attribution.get("tolerance"),
+                                   "max_pages_per_file": attribution.get("max_pages_per_file"),
                                    "pages": len(attribution.get("pages") or [])}
             agg["attribution"] = {a: sum(1 for r in attribution["pages"] if r["agreement"] == a)
                                   for a in WITHIN + ("neither", "not_comparable")}
@@ -607,14 +644,15 @@ def worse(new, old):
     return RANK.get(new, 9) > RANK.get(old, 9)
 
 
-def numeric_regressions(cur, old, base, env, attribution, require_same_env, improvements, notes):
+def numeric_regressions(run, cur, old, base, env, attribution, require_same_env, improvements, notes):
     """M1-c: the numeric comparisons, each page judged on its own — an
     improvement elsewhere never offsets a regression."""
     regs = []
     meta = base.get("meta") or {}
     benv = meta.get("env")
     if benv is None:
-        notes.append("numeric measures not compared: the baseline records none (update-baseline arms them)")
+        msg = "numeric measures not compared: the baseline records none (update-baseline arms them)"
+        (regs if require_same_env else notes).append(msg)
         return regs
     if env is None:
         msg = "numeric measures not compared: this run's environment was not given (--env)"
@@ -631,12 +669,19 @@ def numeric_regressions(cur, old, base, env, attribution, require_same_env, impr
         regs.append("attribution not measured (the baseline has it; --attribution)")
     if attribution is not None and armed_att:
         aenv = attribution.get("env") or {}
-        d = compat_env.differences(env, aenv)
+        d = compat_env.differences(env, aenv, keys=compat_env.COMPARED + ("commit",))
         if d:
-            regs.append("attribution measured in another environment than the run: " + ", ".join(d))
-        if attribution.get("threshold") != meta["attribution"].get("threshold") or \
-                attribution.get("tolerance") != meta["attribution"].get("tolerance"):
-            regs.append("attribution threshold or tolerance differs from the baseline's")
+            regs.append("attribution measured in another environment or commit than the run: " + ", ".join(d))
+        for k in ("threshold", "tolerance", "max_pages_per_file"):
+            if attribution.get(k) != meta["attribution"].get(k):
+                regs.append(f"attribution {k} differs from the baseline's")
+        if not regs:
+            have = {(r["id"], r["page"]) for r in attribution["pages"]}
+            want = expected_attribution(run, attribution["threshold"], attribution["max_pages_per_file"])
+            for fid, pg in sorted(want - have):
+                regs.append(f"{fid}: page {pg} below the attribution threshold but not attributed")
+            for fid, pg in sorted(have - want):
+                regs.append(f"{fid}: page {pg} attributed but not among the run's pages below the threshold")
     thr = (meta.get("attribution") or {}).get("threshold")
     for fid, o in old.items():
         n = cur.get(fid)
@@ -684,9 +729,14 @@ def numeric_regressions(cur, old, base, env, attribution, require_same_env, impr
             elif was == "neither" and now == "not_comparable":
                 regs.append(f"{fid}: page {pg} agreement neither -> not_comparable (an open page hidden)")
             elif was == "neither" and now == "neither":
-                if (b["dpx"] - a["dpx"] > OPEN_DPX_GROWTH) or (b["mad"] - a["mad"] > OPEN_MAD_GROWTH):
-                    regs.append(f"{fid}: open page {pg} differs more (dpx {a['dpx']} -> {b['dpx']}, "
-                                f"mad {a['mad']} -> {b['mad']})")
+                # Each witness on its own: a growing difference from
+                # either is a change of kasane's render.
+                grew = [k for k, lim in (("dpx_kp", OPEN_DPX_GROWTH), ("dpx_km", OPEN_DPX_GROWTH),
+                                         ("mad_kp", OPEN_MAD_GROWTH), ("mad_km", OPEN_MAD_GROWTH))
+                        if b[k] - a[k] > lim]
+                if grew:
+                    regs.append(f"{fid}: open page {pg} differs more ("
+                                + ", ".join(f"{k} {a[k]} -> {b[k]}" for k in grew) + ")")
             elif was not in WITHIN and now in WITHIN:
                 improvements.append(f"{fid}: page {pg} agreement {was} -> {now}")
         for pg, b in na.items():
@@ -863,7 +913,8 @@ def check(run, base, summary_md=None, env=None, attribution=None, require_same_e
     added = sorted(set(cur) - set(old))
     for fid in missing:
         regressions.append(f"{fid}: in the baseline, missing from the run")
-    regressions.extend(numeric_regressions(cur, old, base, env, attribution, require_same_env, improvements, notes))
+    regressions.extend(numeric_regressions(run, cur, old, base, env, attribution, require_same_env, improvements,
+                                           notes))
     print(f"files: {len(cur)} now, {len(old)} in baseline, {len(missing)} missing, {len(added)} new")
     for line in notes:
         print("note:", line)
@@ -998,9 +1049,9 @@ def update_baseline(a):
     att = load(a.attribution, "attribution") if a.attribution else None
     if att is not None:
         validate_attribution(att)
-        d = compat_env.differences(env, att.get("env") or {})
+        d = compat_env.differences(env, att.get("env") or {}, keys=compat_env.COMPARED + ("commit",))
         if d:
-            raise Invalid("the attribution was measured in another environment: " + ", ".join(d))
+            raise Invalid("the attribution was measured in another environment or commit: " + ", ".join(d))
     missing = compat_env.incomplete(env, need_mupdf=att is not None)
     if missing:
         raise Invalid("environment incomplete: " + ", ".join(missing))

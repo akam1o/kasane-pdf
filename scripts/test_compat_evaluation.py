@@ -73,13 +73,30 @@ def run(*files):
     return {"files": list(files)}
 
 
+FAR = (0.05, 10.0)
+
+
+def r300(ag, d, m):
+    """Measures that give `ag`: (d, m) from the witness(es) it names
+    (from both for `neither`), far from the other; references agree."""
+    if ag == "not_comparable":
+        return None
+    kp = (d, m) if ag in ("both", "poppler", "neither") else FAR
+    km = (d, m) if ag in ("both", "mupdf", "neither") else FAR
+    return {"dpx_kp": kp[0], "mad_kp": kp[1], "dpx_km": km[0], "mad_km": km[1], "dpx_pm": 0.0, "mad_pm": 0.0}
+
+
 def att(*rows, env=ENV, threshold=0.95):
-    return {"schema": 2, "env": env, "threshold": threshold, "tolerance": TOL, "pages": [
-        {"id": fid, "page": pg, "ssim": 0.9, "class": "kasane", "agreement": ag, "references_agree": True,
-         "reason": None if ag != "not_comparable" else "failed:mupdf",
-         "r300": None if ag == "not_comparable" else
-         {"dpx_kp": d, "dpx_km": d, "dpx_pm": 0.0, "mad_kp": m, "mad_km": m, "mad_pm": 0.0}}
-        for fid, pg, ag, d, m in rows]}
+    pages = []
+    for fid, pg, ag, d, m in rows:
+        r = r300(ag, d, m)
+        got, refs = ca.verdict(r)
+        assert got == ag, (ag, d, m, got)
+        pages.append({"id": fid, "page": pg, "ssim": 0.9, "class": "kasane", "agreement": ag,
+                      "references_agree": refs, "reason": "failed:mupdf" if ag == "not_comparable" else None,
+                      "r300": r})
+    return {"schema": 2, "env": env, "threshold": threshold, "tolerance": TOL, "max_pages_per_file": 8,
+            "pages": pages}
 
 
 def check(r, base, **kw):
@@ -208,7 +225,7 @@ class NumericRegressions(unittest.TestCase):
     def test_a_newly_open_page_of_a_known_file_is_a_regression(self):
         f = file("a", [page(1, 0.9), page(2, 0.99)])
         b = self.base(f, a=att(("a", 1, "both", 0.0, 0.1)))
-        g = file("a", [page(1, 0.9), page(2, 0.99)])
+        g = file("a", [page(1, 0.9), page(2, 0.9)])
         rc, out = check(run(g), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), ("a", 2, "neither", 0.02, 3)),
                         require_same_env=True)
         self.assertEqual(rc, 1, out)
@@ -227,7 +244,41 @@ class NumericRegressions(unittest.TestCase):
         rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), threshold=0.9),
                         require_same_env=True)
         self.assertEqual(rc, 1, out)
-        self.assertIn("threshold or tolerance differs", out)
+        self.assertIn("attribution threshold differs", out)
+        # The witness results of another commit do not go with this run.
+        rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), env=dict(ENV, commit="d" * 40)),
+                        require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("another environment or commit", out)
+
+    def test_an_unarmed_baseline_fails_the_nightly(self):
+        b = cr.summarize(run(file("a", [page(1, 0.99)])))
+        rc, out = check(run(file("a", [page(1, 0.1)])), b, env=ENV, attribution=att(("a", 1, "neither", 0.2, 50)),
+                        require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the baseline records none", out)
+
+    def test_every_page_below_the_threshold_must_be_attributed(self):
+        # A page that crosses the threshold by less than the SSIM
+        # threshold needs its witness measurement all the same.
+        b = self.base(file("a", [page(1, 0.9505)]), a=att())
+        rc, out = check(run(file("a", [page(1, 0.9495)])), b, env=ENV, attribution=att(), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a: page 1 below the attribution threshold but not attributed", out)
+        # Attributing a page the run does not have below it is as wrong.
+        rc, out = check(run(file("a", [page(1, 0.9505)])), b, env=ENV, attribution=att(("a", 1, "both", 0, 0)),
+                        require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("attributed but not among", out)
+
+    def test_one_witness_growing_is_a_regression(self):
+        f = file("a", [page(1, 0.9)])
+        b = self.base(f, a=att(("a", 1, "neither", 0.02, 3.0)))
+        a = att(("a", 1, "neither", 0.02, 3.0))
+        a["pages"][0]["r300"]["mad_kp"] = 20.0  # Poppler side much worse, MuPDF side unchanged
+        rc, out = check(run(f), b, env=ENV, attribution=a, require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("mad_kp 3.0 -> 20.0", out)
 
 
 class InvalidInputs(unittest.TestCase):
@@ -263,6 +314,21 @@ class InvalidInputs(unittest.TestCase):
                 "unknown agreement": ("check", r, b, "--attribution", self.write(
                     d, "a2.json", dict(att(("a", 1, "both", 0, 0)), pages=[dict(att(("a", 1, "both", 0, 0))[
                         "pages"][0], agreement="ok")]))),
+                "a label its measures do not give": ("check", r, b, "--attribution", self.write(
+                    d, "a3.json", dict(att(("a", 1, "neither", 0.2, 9)), pages=[dict(att(("a", 1, "neither", 0.2, 9))[
+                        "pages"][0], agreement="both")]))),
+                "agreement without measures": ("check", r, b, "--attribution", self.write(
+                    d, "a4.json", dict(att(("a", 1, "both", 0, 0)), pages=[dict(att(("a", 1, "both", 0, 0))[
+                        "pages"][0], r300=None)]))),
+                "a measure out of range": ("check", r, b, "--attribution", self.write(
+                    d, "a5.json", json.loads(json.dumps(att(("a", 1, "both", 0, 0))).replace(
+                        '"dpx_pm": 0.0', '"dpx_pm": 7.0')))),
+                "a page attributed twice": ("check", r, b, "--attribution", self.write(
+                    d, "a6.json", att(("a", 1, "both", 0, 0), ("a", 1, "neither", 0.2, 9)))),
+                "another tolerance": ("check", r, b, "--attribution", self.write(
+                    d, "a7.json", dict(att(("a", 1, "both", 0, 0)), tolerance={"dpx": 1, "mad": 255}))),
+                "a page measured twice in the report": ("check", self.write(d, "p2.json", run(
+                    file("a", [page(1, 0.5), page(1, 0.99)]))), b),
             }
             for name, argv in cases.items():
                 rc, out = main_cli(*argv)
@@ -332,6 +398,9 @@ class Decisions(unittest.TestCase):
         self.assertEqual(ca.verdict(self.r(kp=far, pm=far)), ("mupdf", False))
         self.assertEqual(ca.verdict(self.r(kp=far, km=far)), ("neither", True))
         self.assertEqual(ca.verdict(self.r(kp=far, km=far, pm=far)), ("neither", False))
+        # Local differences with an almost untouched mean are not agreement.
+        self.assertEqual(ca.verdict(self.r(kp=(0.01, 0.5), km=(0.01, 0.5)))[0], "neither")
+        self.assertEqual(ca.verdict(self.r(kp=(0.0049, 1.99)))[0], "both")
         # A broad tone difference (no pixel past 48 levels) is not agreement.
         self.assertEqual(ca.verdict(self.r(kp=(0.0, 3.0), km=(0.0, 3.0)))[0], "neither")
         # Missing or non-finite measures: not comparable, never agreement.
@@ -379,8 +448,35 @@ off = s if mode == "shift" else 0
 d.rectangle([s + off, s, 2 * s + off, 2 * s], fill=0)
 if mode == "tone":
     img = img.point(lambda v: max(0, v - 20))
+if mode == "speckle":
+    # Dark blocks of 1/24 of the side on the white margin, 1 in 64 of the
+    # area: they survive the box downsampling as pixels far apart.
+    b = max(1, n // 24)
+    for x in range(0, w - b, 8 * b):
+        d.rectangle([x, n - 2 * b, x + b - 1, n - b - 1], fill=0)
 img.save(out)
 '''
+
+
+@unittest.skipUnless(HAVE_PIL, "Pillow not installed (KASANE_REQUIRE_PILLOW=1 makes this a failure)")
+class Measures(unittest.TestCase):
+    """dpx and mad on known pictures, with their boundaries."""
+
+    def test_dpx_and_mad(self):
+        from PIL import Image
+        white = Image.new("L", (100, 100), 255)
+        for level, want_dpx in ((255 - 48, 0.0), (255 - 49, 1.0)):
+            g = Image.new("L", (100, 100), level)
+            self.assertEqual(ca.dpx(white, g), want_dpx, level)
+            self.assertAlmostEqual(ca.mad(white, g), 255 - level)
+        # 100 of 10000 pixels 200 levels apart: dpx 1 %, mad 2.
+        speck = white.copy()
+        for i in range(100):
+            speck.putpixel((i, 7), 55)
+        self.assertAlmostEqual(ca.dpx(white, speck), 0.01)
+        self.assertAlmostEqual(ca.mad(white, speck), 2.0)
+        self.assertEqual(ca.dpx(white, white), 0.0)
+        self.assertEqual(ca.mad(white, white), 0.0)
 
 
 @unittest.skipUnless(HAVE_PIL, "Pillow not installed (KASANE_REQUIRE_PILLOW=1 makes this a failure)")
@@ -395,6 +491,9 @@ class Witnesses(unittest.TestCase):
         "mupdf-shifted": ({"mutool": {"all": "shift"}}, "poppler", None),
         "poppler-shifted": ({"pdftoppm": {"all": "shift"}}, "mupdf", None),
         "kasane-tone": ({"kasane": {"all": "tone"}}, "neither", None),
+        # Pixels far apart on 1 % of the page, the mean nearly untouched:
+        # only dpx sees it.
+        "kasane-speckled": ({"kasane": {"all": "speckle"}}, "neither", None),
         "one-pixel-rounding": ({"kasane": {"all": "size+1"}}, "both", None),
         "size-mismatch": ({"kasane": {"all": "size+9"}}, "not_comparable", "size_mismatch"),
         "resolution-mismatch-300": ({"mutool": {"300": "size+9"}}, "not_comparable", "size_mismatch_300"),
@@ -450,6 +549,9 @@ class Witnesses(unittest.TestCase):
             # Only the strict pages below the threshold.
             self.assertEqual(set(rows), set(self.CASES))
             self.assertTrue(all(r["page"] == 1 for r in rows.values()))
+            sp = rows["kasane-speckled"]["r300"]
+            self.assertGreater(sp["dpx_kp"], ca.TOLERANCE["dpx"], sp)
+            self.assertLess(sp["mad_kp"], ca.TOLERANCE["mad"], sp)
             for fid, (_, agreement, reason) in self.CASES.items():
                 r = rows[fid]
                 self.assertEqual(r["agreement"], agreement, f"{fid}: {r}")

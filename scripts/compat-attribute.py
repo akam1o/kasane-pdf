@@ -62,14 +62,11 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import compat_env  # noqa: E402
+from compat_verdict import AGREEMENTS, TOLERANCE, finite, verdict, within  # noqa: E402,F401
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCHEMA = 2
 DELTA = 48
-# Within tolerance of a witness at 300 dpi (compared on the 72 dpi grid).
-# Set in the v0.11.0 analysis (docs/compatibility-report.md § 6.2).
-TOLERANCE = {"dpx": 0.005, "mad": 2.0}
-AGREEMENTS = ("both", "poppler", "mupdf", "neither", "not_comparable")
 
 
 def tool(name, default):
@@ -86,27 +83,6 @@ def corpus_path(fid):
 
 
 # ---- decisions (pure: measures in, verdict out) -------------------------
-
-def finite(*xs):
-    return all(isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) for x in xs)
-
-
-def within(dpx, mad):
-    return finite(dpx, mad) and dpx < TOLERANCE["dpx"] and mad < TOLERANCE["mad"]
-
-
-def verdict(r300):
-    """(agreement, references_agree) from the 300 dpi measures
-    {dpx_kp, dpx_km, dpx_pm, mad_kp, mad_km, mad_pm}; None or any
-    missing or non-finite value: not comparable."""
-    keys = ("dpx_kp", "dpx_km", "dpx_pm", "mad_kp", "mad_km", "mad_pm")
-    if not r300 or not all(finite(r300.get(k)) for k in keys):
-        return "not_comparable", None
-    wp, wm = within(r300["dpx_kp"], r300["mad_kp"]), within(r300["dpx_km"], r300["mad_km"])
-    refs = within(r300["dpx_pm"], r300["mad_pm"])
-    agreement = "both" if wp and wm else "poppler" if wp else "mupdf" if wm else "neither"
-    return agreement, refs
-
 
 def classify72(m):
     """Descriptive class from the 72 dpi measures (see the module doc)."""
@@ -330,6 +306,7 @@ def main(argv=None):
         rows = list(ex.map(lambda it: assess(it, a.kasane, a.timeout), items))
     files = len({r["id"] for r in rows})
     doc = {"schema": SCHEMA, "env": env, "threshold": a.threshold, "tolerance": TOLERANCE,
+           "max_pages_per_file": a.max_pages_per_file,
            "source": os.path.basename(a.report), "pages": rows}
     with open(a.out, "w") as fh:
         json.dump(doc, fh, indent=1, sort_keys=True)
