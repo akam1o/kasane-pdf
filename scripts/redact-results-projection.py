@@ -38,7 +38,14 @@ METRICS = (
     "outside_chars_lost", "outside_chars_mupdf", "outside_chars_mupdf_lost", "outside_chars_mupdf_moved",
     "words_regrouped", "outside_pixels_changed",
 )
-OUTCOMES = {"ok", "refused", "unexpected"}
+OUTCOMES = {"ok", "refused", "unexpected", "incomplete"}
+# Text measurements: which, their states and reasons (closed; mirrors
+# scripts/eval-redact-corpus.py — TEXT_STATES, TEXT_REASONS).
+MEASUREMENTS = ("poppler_in", "poppler_out", "mupdf_in", "mupdf_out")
+TEXT_STATES = ("success", "empty", "error", "timeout", "incomplete", "incomparable")
+TEXT_REASONS = ("not_installed", "exit_status", "crashed", "timeout", "no_output", "encoding", "corrupt_output",
+                "no_page", "page_count", "page_size", "char_fields", "empty_while_poppler_has_text",
+                "not_measured")
 
 
 def vocabulary():
@@ -72,6 +79,14 @@ def eval_run(r):
         out["check_by_hand"] = bool(r["check_by_hand"])
     if out["outcome"] == "refused":
         out["reason"] = term(r.get("reason"))
+    tm = r.get("text_measures")
+    if isinstance(tm, dict):
+        out["text_measures"] = {k: (tm.get(k) if tm.get(k) in TEXT_STATES else "incomplete") for k in MEASUREMENTS
+                                if k in tm}
+        why = r.get("text_measure_reasons") or {}
+        reasons = {k: (why[k] if why.get(k) in TEXT_REASONS else "not_measured") for k in MEASUREMENTS if k in why}
+        if reasons:
+            out["text_measure_reasons"] = reasons
     for k in METRICS:
         n = number(r.get(k))
         if n is not None:

@@ -91,6 +91,13 @@ class NightlyMeasurement(unittest.TestCase):
             "a baseline copied in": edit("ci-regression.py check", "python3 scripts/ci-regression.py check",
                                          "cp /tmp/full/x.json compat/baselines/corpus-full.json\n"
                                          "python3 scripts/ci-regression.py check"),
+            "the redaction comparison made to pass": edit(
+                "check-redact-corpus.py", "--summary-md \"$GITHUB_STEP_SUMMARY\" || failed=1",
+                "--summary-md \"$GITHUB_STEP_SUMMARY\" || true"),
+            "the redaction comparison printed, not run": edit(
+                "check-redact-corpus.py", "python3 scripts/check-redact-corpus.py", "echo scripts/check-redact-corpus.py"),
+            "redaction results copied into the committed ones": edit(
+                "check-redact-corpus.py", "exit $failed", "cp /tmp/redact-projection/*.json compat/redaction/ci/\nexit $failed"),
             "a summary redirected into the baselines": edit(
                 "ci-regression.py check", "python3 scripts/ci-regression.py check",
                 "python3 scripts/ci-regression.py summarize /tmp/full/latest.json > compat/baselines/corpus-full.json\n"

@@ -93,6 +93,11 @@ def logical_lines(run):
 # and what each must carry. Each runs in a step nothing switches off.
 NIGHTLY_CORPUS_COMMANDS = {
     "scripts/ci-regression.py env": [],
+    # The redaction corpus (V1): evaluated, projected and compared, the
+    # comparison's verdict deciding the step.
+    "scripts/eval-redact-corpus.py": ["--json"],
+    "scripts/redact-results-projection.py": [],
+    "scripts/check-redact-corpus.py": ["--baseline"],
     "scripts/compat-attribute.py": ["--out /tmp/full/attribution.json"],
     "scripts/ci-regression.py check": ["--env /tmp/full/env.json", "--attribution /tmp/full/attribution.json",
                                        "--require-same-env", "compat/baselines/corpus-full.json"],
@@ -124,8 +129,9 @@ def check_no_baseline_writes(path, wf):
         for line in logical_lines(st.get("run")):
             if "update-baseline" in line and "--write" in line:
                 problem(f"{path.name}: a workflow writes a baseline (`update-baseline --write`)")
-            if re.search(r">\s*\S*compat/baselines/", line) or re.search(r"(cp|mv|tee)\s.*compat/baselines/", line):
-                problem(f"{path.name}: a workflow writes into compat/baselines/")
+            for d in ("compat/baselines/", "compat/redaction/"):
+                if re.search(r">\s*\S*" + d, line) or re.search(r"(cp|mv|tee)\s.*" + d, line):
+                    problem(f"{path.name}: a workflow writes into {d}")
 
 
 def check_nightly(path, wf):
@@ -191,7 +197,8 @@ PR_MUST_RUN = {
                      "--expected compat/advisories/history.json",
                      "scripts/test_ci_scripts.py", "scripts/test_release_verify.py",
                      "scripts/test_advisory_history.py", "scripts/test_compat_analysis.py",
-                     "KASANE_REQUIRE_PILLOW=1 python3 scripts/test_compat_evaluation.py"],
+                     "KASANE_REQUIRE_PILLOW=1 python3 scripts/test_compat_evaluation.py",
+                     "python3 scripts/test_redact_text_measure.py"],
     "render-fuzz-smoke": ["ci-run-sharded.sh redact_model", "fuzz/ci-run.sh \"$T\" \"fuzz/seeds/$T\"",
                           "-seed=1 -runs=3000"],
 }
@@ -200,7 +207,8 @@ FULL_ONLY_IF = "github.event_name != 'pull_request'"
 # the job).
 FULL_MUST_RUN = {
     "renderers-linux": ["python3 scripts/verify-renderers.py target/release/kasane-pdf /tmp/advisories --json /tmp/renderers.json",
-                        "python3 scripts/test_compat_evaluation.py --real target/release/kasane-pdf"],
+                        "python3 scripts/test_compat_evaluation.py --real target/release/kasane-pdf",
+                        "python3 scripts/test_redact_text_measure.py --real"],
 }
 # nightly.yml: the advisory history of every published version.
 NIGHTLY_MUST_RUN = {

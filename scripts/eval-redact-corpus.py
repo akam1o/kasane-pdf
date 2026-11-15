@@ -37,7 +37,7 @@ Checks on a success (tools that share no code with kasane):
   the edge is removed whole; square and round caps are cut
   conservatively);
 - characters (MuPDF `mutool draw -F stext`, a second text engine,
-  when installed): no character is extracted inside the rect, and each
+  required): no character is extracted inside the rect, and each
   character of the input clear of the rect is found again at the same
   origin (to 0.01 pt) — lost and moved characters are counted
   separately from words pdftotext merely regroups;
@@ -60,6 +60,17 @@ empty form), no unchanged ink may stay inside — then it is all image samples, 
 are zero inside the rect (`unchanged_ink_not_from_images`, 0; the run
 stays `unexpected`).
 
+Every text measurement (Poppler's words and MuPDF's characters, of the
+input and of the output) has a state (TEXT_STATES): success, empty (the
+tool ran and the page has no text), error (the tool failed, crashed or
+is missing), timeout, incomplete (no output, an output that does not
+parse, a page missing, a character without its fields), incomparable
+(MuPDF finds no character on an input page where Poppler finds text: a
+measurement that cannot be told from a broken one). Only success and
+empty are measurements. A success whose checks pass but one of whose
+required measurements is not established is `incomplete` — never `ok`:
+a check that did not run is not a check that passed.
+
 Pages whose geometry differs from plain MediaBox space (a /Rotate, a
 CropBox, a MediaBox not at the origin) are skipped: the generated rects
 would not map 1:1. Usage:
@@ -71,12 +82,14 @@ would not map 1:1. Usage:
 import collections
 import html
 import json
+import math
 import os
 import re
 import subprocess
 import sys
 import tempfile
 import time
+import xml.etree.ElementTree as ET
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # $KASANE_CORPUS_DIR: the corpus outside this checkout (scripts/release-verify.py
@@ -84,6 +97,43 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CORPUS = os.environ.get("KASANE_CORPUS_DIR") or os.path.join(ROOT, "compat", "corpus")
 MANIFEST = os.path.join(ROOT, "compat", "manifest.yaml")
 DPI = 100
+TOOL_TIMEOUT = 120
+# The states of a text measurement and the reasons of the ones that are
+# not measurements (closed vocabularies: they are published).
+TEXT_STATES = ("success", "empty", "error", "timeout", "incomplete", "incomparable")
+MEASURED = ("success", "empty")
+TEXT_REASONS = ("not_installed", "exit_status", "crashed", "timeout", "no_output", "encoding", "corrupt_output",
+                "no_page", "page_count", "page_size", "char_fields", "empty_while_poppler_has_text",
+                "not_measured")
+
+
+def tool(name):
+    """The command for a text tool ($KASANE_EVAL_<NAME> replaces it: tests)."""
+    return os.environ.get("KASANE_EVAL_" + name.upper()) or name
+
+
+def run_tool(argv, timeout=TOOL_TIMEOUT):
+    """(state, reason, stdout bytes): error / timeout with the reason, or
+    None and the output. The exit status is always checked; a negative
+    one (a signal) is a crash."""
+    try:
+        r = subprocess.run(argv, capture_output=True, timeout=timeout)
+    except FileNotFoundError:
+        return "error", "not_installed", None
+    except subprocess.TimeoutExpired:
+        return "timeout", "timeout", None
+    if r.returncode < 0:
+        return "error", "crashed", None
+    if r.returncode != 0:
+        return "error", "exit_status", None
+    if not r.stdout.strip():
+        # Standard error only, or nothing at all.
+        return "incomplete", "no_output", None
+    return None, None, r.stdout
+
+
+def measure(state, reason=None, **data):
+    return {"state": state, "reason": reason, **data}
 
 
 def manifest():
@@ -140,19 +190,39 @@ def plain_geometry(pdf):
     return m[2], m[3]
 
 
-def words(pdf, height):
-    """Page-1 words as (text, llx, lly, urx, ury) in PDF space."""
-    r = subprocess.run(["pdftotext", "-bbox", "-f", "1", "-l", "1", pdf, "-"], capture_output=True, text=True)
+def parse_bbox(data, height):
+    """pdftotext -bbox output of one page -> a measurement whose `words`
+    are (text, llx, lly, urx, ury) in PDF space."""
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return measure("incomplete", "encoding")
+    pages = re.findall(r"<page\b", text)
+    if len(pages) != 1:
+        return measure("incomplete", "no_page" if not pages else "page_count")
     out = []
-    for m in re.finditer(r'<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">([^<]*)</word>', r.stdout):
-        x0, y0, x1, y1 = (float(v) for v in m.groups()[:4])
-        out.append((html.unescape(m.group(5)), x0, height - y1, x1, height - y0))
-    return out
+    for m in re.finditer(r"<word\b([^>]*)>([^<]*)</word>", text):
+        attrs = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
+        try:
+            x0, y0, x1, y1 = (float(attrs[k]) for k in ("xMin", "yMin", "xMax", "yMax"))
+        except (KeyError, ValueError):
+            return measure("incomplete", "char_fields")
+        if not all(math.isfinite(v) for v in (x0, y0, x1, y1)):
+            return measure("incomplete", "char_fields")
+        out.append((html.unescape(m.group(2)), x0, height - y1, x1, height - y0))
+    return measure("success" if out else "empty", words=out)
 
 
-def rects_for(pdf, size):
+def poppler_words(pdf, height):
+    """Page-1 words by Poppler (`pdftotext -bbox`), as a measurement."""
+    st, why, data = run_tool([tool("pdftotext"), "-bbox", "-f", "1", "-l", "1", pdf, "-"])
+    if st:
+        return measure(st, why)
+    return parse_bbox(data, height)
+
+
+def rects_for(pdf, size, ws):
     w, h = size
-    ws = words(pdf, h)
     rects = []
     long_words = [x for x in ws if sum(c.isalpha() for c in x[0]) >= 4 and x[3] - x[1] > 1 and x[4] - x[2] > 1]
     if long_words:
@@ -163,33 +233,55 @@ def rects_for(pdf, size):
     return rects, ws
 
 
-def mupdf_chars(pdf, size):
-    """Page-1 characters as (char, origin x, origin y, llx, lly, urx, ury)
-    in the page space Poppler reports (`size`), from MuPDF (`mutool draw
-    -F stext`) — a second text engine, character by character. MuPDF
-    applies /UserUnit, so its coordinates are scaled back. None when
-    mutool is not installed."""
+def parse_stext(data, size):
+    """`mutool draw -F stext` output of one page -> a measurement whose
+    `chars` are (char, origin x, origin y, llx, lly, urx, ury) in the
+    page space Poppler reports (`size`). Parsed as XML: element and
+    attribute order do not matter (MuPDF 1.27 and 1.28 write the
+    attributes of <char> in different orders). MuPDF applies /UserUnit,
+    so its coordinates are scaled back."""
     try:
-        r = subprocess.run(["mutool", "draw", "-q", "-F", "stext", "-o", "-", pdf, "1"],
-                           capture_output=True, text=True)
-    except FileNotFoundError:
-        return None
-    if r.returncode != 0:
-        return None
-    m = re.search(r'<page id="[^"]*" width="([^"]+)" height="([^"]+)"', r.stdout)
-    if not m:
-        # Output MuPDF did not structure as a page: not measured, never
-        # an empty page.
-        return None
-    k = size[0] / float(m.group(1)) if float(m.group(1)) > 0 else 1.0
+        root = ET.fromstring(data)
+    except ET.ParseError:
+        return measure("incomplete", "corrupt_output")
+    pages = root.findall(".//page") if root.tag != "page" else [root]
+    if len(pages) != 1:
+        return measure("incomplete", "no_page" if not pages else "page_count")
+    try:
+        width = float(pages[0].get("width"))
+    except (TypeError, ValueError):
+        return measure("incomplete", "page_size")
+    if not (math.isfinite(width) and width > 0):
+        return measure("incomplete", "page_size")
+    k = size[0] / width
     height = size[1]
     out = []
-    for m in re.finditer(r'<char c="([^"]*)" quad="([^"]+)" x="([^"]+)" y="([^"]+)"', r.stdout):
-        q = [float(v) * k for v in m.group(2).split()]
+    for c in pages[0].iter("char"):
+        try:
+            q = [float(v) * k for v in c.get("quad").split()]
+            x, y = float(c.get("x")) * k, float(c.get("y")) * k
+            ch = c.get("c")
+        except (AttributeError, TypeError, ValueError):
+            return measure("incomplete", "char_fields")
+        if ch is None or len(q) != 8 or not all(math.isfinite(v) for v in q + [x, y]):
+            return measure("incomplete", "char_fields")
         xs, ys = q[0::2], q[1::2]
-        out.append((html.unescape(m.group(1)), float(m.group(3)) * k, height - float(m.group(4)) * k,
-                    min(xs), height - max(ys), max(xs), height - min(ys)))
-    return out
+        out.append((ch, x, height - y, min(xs), height - max(ys), max(xs), height - min(ys)))
+    return measure("success" if out else "empty", chars=out)
+
+
+def mupdf_chars(pdf, size):
+    """Page-1 characters by MuPDF, as a measurement (see parse_stext)."""
+    st, why, data = run_tool([tool("mutool"), "draw", "-q", "-F", "stext", "-o", "-", pdf, "1"])
+    if st:
+        return measure(st, why)
+    return parse_stext(data, size)
+
+
+def page_count(pdf):
+    r = subprocess.run([tool("pdfinfo"), pdf], capture_output=True, text=True, timeout=TOOL_TIMEOUT)
+    m = re.search(r"^Pages:\s+(\d+)", r.stdout, re.M) if r.returncode == 0 else None
+    return int(m.group(1)) if m else None
 
 
 def image_digests(pdf, tmp, tag):
@@ -274,7 +366,9 @@ def clear_of(word, r, pad):
     return word[3] < r[0] - pad or word[1] > r[2] + pad or word[4] < r[1] - pad or word[2] > r[3] + pad
 
 
-def run_one(kasane, pdf, kind, rect, size, in_words, tmp, extra_args=()):
+def run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args=()):
+    """One redaction and its checks. `in_pop` / `in_mu`: the input's
+    Poppler words and MuPDF characters, as measurements."""
     out = os.path.join(tmp, "out.pdf")
     if os.path.exists(out):
         os.remove(out)
@@ -310,31 +404,44 @@ def run_one(kasane, pdf, kind, rect, size, in_words, tmp, extra_args=()):
         problems.append("qpdf --check failed")
     m = re.search(r"(\d+) finding", r.stdout)
     res["elsewhere"] = sum(1 for l in r.stdout.splitlines() if " also shown on page " in l or " also stored in object " in l)
-    out_words = words(out, size[1])
-    leaked = [w for w in out_words if within(w, rect, -0.5)]
-    if leaked:
-        problems.append(f"{len(leaked)} word(s) still extracted inside the rect")
-    kept_in = collections.Counter(w[0] for w in in_words if clear_of(w, rect, 1.0))
-    kept_out = collections.Counter(w[0] for w in out_words)
-    lost = sum((kept_in - kept_out).values())
-    res["outside_words"] = sum(kept_in.values())
-    res["outside_words_lost"] = lost
-    # The same by character: pdftotext may regroup kept glyphs into
-    # other words once a neighbour is removed (per-glyph words in
-    # vertical CJK text); characters do not depend on the grouping.
-    chars_in = collections.Counter(c for w in in_words if clear_of(w, rect, 1.0) for c in w[0])
-    chars_out = collections.Counter(c for w in out_words if not within(w, rect, -0.5) for c in w[0])
-    res["outside_chars"] = sum(chars_in.values())
-    res["outside_chars_lost"] = sum((chars_in - chars_out).values())
+    n_in, n_out = page_count(pdf), page_count(out)
+    if n_in is None or n_out is None:
+        incomplete = ["page_count"]
+    else:
+        incomplete = []
+        if n_in != n_out:
+            problems.append("the page count changed")
+    # Each measurement on its own: one engine's success never stands in
+    # for the other's failure.
+    out_pop = poppler_words(out, size[1])
+    out_mu = mupdf_chars(out, size)
+    states = {"poppler_in": in_pop, "poppler_out": out_pop, "mupdf_in": in_mu, "mupdf_out": out_mu}
+    res["text_measures"] = {k: v["state"] for k, v in states.items()}
+    res["text_measure_reasons"] = {k: v["reason"] for k, v in states.items() if v["reason"]}
+    incomplete += [k for k, v in states.items() if v["state"] not in MEASURED]
+    if in_pop["state"] in MEASURED and out_pop["state"] in MEASURED:
+        in_words, out_words = in_pop["words"], out_pop["words"]
+        leaked = [w for w in out_words if within(w, rect, -0.5)]
+        if leaked:
+            problems.append(f"{len(leaked)} word(s) still extracted inside the rect")
+        kept_in = collections.Counter(w[0] for w in in_words if clear_of(w, rect, 1.0))
+        kept_out = collections.Counter(w[0] for w in out_words)
+        lost = sum((kept_in - kept_out).values())
+        res["outside_words"] = sum(kept_in.values())
+        res["outside_words_lost"] = lost
+        # The same by character: pdftotext may regroup kept glyphs into
+        # other words once a neighbour is removed (per-glyph words in
+        # vertical CJK text); characters do not depend on the grouping.
+        chars_in = collections.Counter(c for w in in_words if clear_of(w, rect, 1.0) for c in w[0])
+        chars_out = collections.Counter(c for w in out_words if not within(w, rect, -0.5) for c in w[0])
+        res["outside_chars"] = sum(chars_in.values())
+        res["outside_chars_lost"] = sum((chars_in - chars_out).values())
     # Character by character with MuPDF: kept characters clear of the
     # rect must be found again at the same origin (to 0.01 pt) — a
     # word regrouped by pdftotext is not a loss, a character gone or
     # moved is; no character may be extracted inside the rect.
-    cin = mupdf_chars(pdf, size)
-    cout = mupdf_chars(out, size) if cin is not None else None
-    if cin is not None and cout is None:
-        problems.append("MuPDF could not read the output")
-    if cin is not None and cout is not None:
+    if in_mu["state"] in MEASURED and out_mu["state"] in MEASURED:
+        cin, cout = in_mu["chars"], out_mu["chars"]
         boxed = lambda c: (c[0], c[3], c[4], c[5], c[6])
         kept = [c for c in cin if c[0].strip() and clear_of(boxed(c), rect, 1.0)]
         index = collections.defaultdict(list)
@@ -353,7 +460,8 @@ def run_one(kasane, pdf, kind, rect, size, in_words, tmp, extra_args=()):
         res["outside_chars_mupdf"] = len(kept)
         res["outside_chars_mupdf_lost"] = lost
         res["outside_chars_mupdf_moved"] = moved
-        res["words_regrouped"] = max(0, res["outside_words_lost"] - res["outside_chars_lost"])
+        if "outside_words_lost" in res:
+            res["words_regrouped"] = max(0, res["outside_words_lost"] - res["outside_chars_lost"])
         if inside:
             problems.append(f"{len(inside)} character(s) still extracted inside the rect (MuPDF)")
     left_ink, changed_out, left_black = pixel_checks(pdf, out, rect, size, tmp)
@@ -399,9 +507,24 @@ def run_one(kasane, pdf, kind, rect, size, in_words, tmp, extra_args=()):
                                     "(zero inside the rect)")
     if problems:
         res.update(outcome="unexpected", reason="; ".join(problems))
+    elif incomplete:
+        # The checks that ran passed, but a required one did not run.
+        res.update(outcome="incomplete", reason="measurement not established: " + ", ".join(sorted(incomplete)))
     else:
         res["outcome"] = "ok"
     return res
+
+
+def input_measures(pdf, size):
+    """The input's Poppler words and MuPDF characters. MuPDF finding no
+    character where Poppler finds text cannot be told from a MuPDF
+    measurement that broke (a changed output format read as an empty
+    page): it is incomparable, not empty."""
+    pop = poppler_words(pdf, size[1])
+    mu = mupdf_chars(pdf, size)
+    if mu["state"] == "empty" and pop["state"] == "success" and any(w[0].strip() for w in pop["words"]):
+        mu = measure("incomparable", "empty_while_poppler_has_text")
+    return pop, mu
 
 
 def main():
@@ -421,9 +544,11 @@ def main():
             extra_args.append(a[1]); a = a[2:]
         else:
             sys.exit(f"unknown argument {a[0]}")
-    for tool in ("qpdf", "pdftotext", "pdftoppm", "pdfinfo"):
-        if subprocess.run(["which", tool], capture_output=True).returncode != 0:
-            sys.exit(f"{tool} not found")
+    # MuPDF is a required witness, not an optional one: without it the
+    # character checks would silently not run.
+    for t in ("qpdf", "pdftotext", "pdftoppm", "pdfinfo", "mutool"):
+        if subprocess.run(["which", tool(t)], capture_output=True).returncode != 0:
+            sys.exit(f"{t} not found")
     results = []
     skipped = []
     for f in pick(manifest(), per_category):
@@ -435,10 +560,11 @@ def main():
         if size is None:
             skipped.append((f["id"], "page geometry not plain MediaBox space"))
             continue
-        rects, in_words = rects_for(pdf, size)
+        in_pop, in_mu = input_measures(pdf, size)
+        rects, _ = rects_for(pdf, size, in_pop.get("words") or [])
         for kind, rect in rects:
             with tempfile.TemporaryDirectory() as tmp:
-                res = run_one(kasane, pdf, kind, rect, size, in_words, tmp, extra_args)
+                res = run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args)
             res.update(id=f["id"], category=f["category"], producer=f.get("producer"))
             results.append(res)
             extra = res.get("reason", "")
@@ -448,8 +574,11 @@ def main():
     files_ok = len({r["id"] for r in results if r["outcome"] == "ok"})
     print()
     print(f"files: {len({r['id'] for r in results})} evaluated, {len(skipped)} skipped; runs: {len(results)}")
-    for k in ("ok", "refused", "unexpected"):
+    for k in ("ok", "refused", "unexpected", "incomplete"):
         print(f"  {k:<10} {counts.get(k, 0)}")
+    measured = collections.Counter((k, v) for r in results for k, v in (r.get("text_measures") or {}).items())
+    print("  text measurements (redacted runs): " + ", ".join(
+        f"{k} {st} {n}" for (k, st), n in sorted(measured.items())))
     print(f"  files with at least one success: {files_ok}")
     oks = [r for r in results if r["outcome"] == "ok"]
     if oks:
@@ -476,7 +605,7 @@ def main():
         print(f"skipped {i}: {why}")
     if out_json:
         json.dump({"results": results, "skipped": skipped}, open(out_json, "w"), indent=1)
-    sys.exit(1 if counts.get("unexpected") else 0)
+    sys.exit(1 if counts.get("unexpected") or counts.get("incomplete") else 0)
 
 
 if __name__ == "__main__":
