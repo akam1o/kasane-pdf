@@ -171,6 +171,26 @@ but external tools are used to *confirm* behaviour on real files:
   fuzzer's bytes: a false success fails like a crash (PR smoke, nightly).
   Inputs whose first byte has bits 2 and 3 set are checked in recovery
   mode too (bit 4: with the table rebuilt).
+- Text measurements of the redaction corpus (V1, v0.11).
+  `scripts/eval-redact-corpus.py` records the state of each of its four
+  text measurements per run (Poppler and MuPDF, input and output):
+  `success`, `empty`, `error`, `timeout`, `incomplete` or
+  `incomparable`. The rules:
+  - a run that redacted but lacks one is `incomplete`, which
+    `scripts/check-redact-corpus.py` fails;
+  - an `ok` run must carry all four measurements and every count,
+    whatever the committed results hold;
+  - results that are not valid JSON, have duplicate runs or hold
+    non-finite numbers are rejected (exit 2);
+  - MuPDF's stext is parsed as XML, since versions order the
+    attributes differently.
+
+  Tests in `scripts/test_redact_text_measure.py`:
+  - fake tools for every failure (PR);
+  - `--real` (Full Gate): the installed MuPDF and Poppler on ten
+    synthetic PDFs, among them Latin and Japanese text, three pages,
+    an image only, a blank page, annotation text, an embedded and a
+    non-embedded font, a broken file and an encrypted one.
 - `tests/redact_recovery.rs` (R0, v0.11): redaction of documents opened
   in recovery mode. Every recovery rule and each malformed-input class
   of the roadmap is covered: content streams, unknown operators,

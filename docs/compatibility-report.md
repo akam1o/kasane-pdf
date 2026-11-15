@@ -606,7 +606,8 @@ the Full Gate adds the real-renderer run on four fixtures.
 
 No case redacts unsafely. No new security issue was found.
 
-**Found on the way (pre-existing, not in Phase 1's code).** The
+**Found on the way (pre-existing, not in Phase 1's code; fixed in V1,
+below).** The
 redaction-corpus job of the nightly measures characters kept outside
 the rects with a second text engine (MuPDF, `mutool draw -F stext`).
 On the Linux runner it counts 0 characters on all 67 measured results,
@@ -614,3 +615,48 @@ while Poppler counts 66,259 (the macOS results committed in
 `compat/redaction/` count them). The empty measure reads as *nothing
 lost*. The Poppler-based measures are unaffected. The fix is proposed
 as V1 in the roadmap.
+
+### V1: the MuPDF text measurement of the redaction corpus
+
+- **Cause.** `scripts/eval-redact-corpus.py` matched MuPDF's
+  `<char c=… quad=… x=… y=…>` with a regular expression fixed to that
+  attribute order (MuPDF 1.28). MuPDF 1.23 (the Full Gate runner) writes
+  `quad x y color c`, and 1.27 (the nightly runner) also puts `c`
+  elsewhere. The page element still matched, so every page read as a
+  page without characters: zero characters kept, zero lost, zero
+  inside the rect, and the run counted `ok`. Poppler's measurement had
+  the same shape of problem (a failing `pdftotext` read as a page
+  without words), and the pattern also skipped words with a negative
+  coordinate.
+- **Fix.** The stext output is parsed as XML. Each of the four
+  measurements (Poppler and MuPDF, input and output) has a state:
+  success, empty, error, timeout, incomplete or incomparable. A run
+  whose measurements are not all success or empty is `incomplete`,
+  never `ok`. MuPDF finding nothing on an input page where Poppler
+  finds text is incomparable.
+- **Linux nightly, before → after** (same commit range, ubuntu runner,
+  MuPDF 1.27.0, Poppler 26.01.0):
+
+| | before | after |
+|---|---:|---:|
+| ok runs, the four configurations | 65 / 99 / 104 / 100 | 65 / 99 / 104 / 100 |
+| MuPDF characters kept outside the rects (default) | 0 | 68,006 |
+| MuPDF characters lost / moved (default) | 0 / 0 | 6 / 1,589 |
+| Poppler characters kept outside the rects (default) | 66,259 | 66,261 |
+| text measurements not established | not recorded | 0 |
+| MuPDF empty on an input page (all with Poppler empty too) | not recorded | 11 of 65 |
+
+- **Per run.** Against the committed results (macOS, MuPDF 1.28.6),
+  every run has the same outcome and the same lost and moved counts. 3
+  runs, all of one file with Arabic CID TrueType text, count 2–4 fewer
+  kept characters under MuPDF 1.27. That is a reference renderer
+  difference, with no character lost. The two extra Poppler characters
+  are two words with a negative y that the old pattern skipped. The
+  MuPDF check for characters left inside the rects ran on Linux for the
+  first time and found none beyond the known zeroed-image runs.
+- **Earlier safety judgements.** The committed results, and the
+  release gate run on macOS, always measured MuPDF. Only the Linux
+  nightly's MuPDF checks were blind, and measured again they agree.
+  No earlier "no loss" judgement changes, and no kasane defect was
+  found.
+
