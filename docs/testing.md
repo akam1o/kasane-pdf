@@ -163,8 +163,35 @@ but external tools are used to *confirm* behaviour on real files:
   the output (the external checks and the advisory tests do that).
   Passing it is evidence for the verification, not a proof that every
   copy of the removed content is gone.
+- The model also opens its documents in recovery mode
+  (`from_bytes_recovering`): as generated, and with `startxref` broken
+  so that the table is rebuilt (`generated_documents_are_non_interfering_in_recovery_mode`,
+  a quarter of the seeds).
 - `fuzz/fuzz_targets/redact_model.rs` drives the same generator from the
   fuzzer's bytes: a false success fails like a crash (PR smoke, nightly).
+  Inputs whose first byte has bits 2 and 3 set are checked in recovery
+  mode too (bit 4: with the table rebuilt).
+- `tests/redact_recovery.rs` (R0, v0.11): redaction of documents opened
+  in recovery mode. Every recovery rule and each malformed-input class
+  of the roadmap is covered: content streams, unknown operators,
+  operand counts, graphics state, image sizes and decoders, page tree,
+  broken cross-reference tables with duplicate definitions, missing
+  `/MediaBox`, annotations, form XObjects, fonts, marked content,
+  encodings, the recovered encryption key, several faults at once,
+  valid input. Each case is opened strictly and in recovery mode,
+  rendered and redacted, with every expected outcome stated in the
+  case.
+  - Oracle: refused alike, with the expected cause and without the
+    secret in the message; or redacted to byte-identical outputs that
+    parse strictly, keep the public text and hold no copy of the
+    secret.
+  - Fail-closed paths: limits while walking or writing return no
+    output, and a CLI refusal leaves no file.
+  - The policy is in `redaction-safety-model.md` § 2.8.
+  - Fault injection confirmed that the tests catch:
+    - an unknown operator not marking the page uncertain;
+    - a recovered page's content appended to the output;
+    - a CLI that writes the output before redacting.
 - `tests/redact_advisories.rs`: one test per published advisory;
   `KASANE_ADVISORY_DUMP=dir` writes its inputs for
   `scripts/check-advisory-regressions.py`, which judges any CLI with
@@ -346,6 +373,24 @@ fixture compatibility smoke. What it leaves to later gates, and why:
 | redaction corpus, 511-file compatibility | nightly (credentials; not on pull requests) | the nightly fails the next morning; the release gate requires it green on the release commit |
 
 ## Compatibility suite
+
+The evaluation beyond the runner's classes — Poppler and MuPDF as
+witnesses, the 300 dpi re-check, numeric regressions inside a class,
+the environment a baseline is valid for and the `update-baseline`
+procedure — is in [`compat-evaluation.md`](compat-evaluation.md). Its
+tests: `scripts/test_compat_evaluation.py` (PR, with fake renderers for
+every failure mode) and `--real` (Full Gate, with Poppler and MuPDF).
+Fault injection confirmed that 14 planted faults are caught, among
+them:
+- a removed file not reported;
+- an SSIM drop ignored;
+- an open page hidden as not comparable;
+- an environment difference passed;
+- NaN accepted;
+- a lost measure read as zero;
+- a regression written into a baseline;
+- the tone measure, the timeout, the renderer exit status and the size
+  slack each disabled.
 
 `compat/runner` (`kasane-compat`) runs the real-world corpus through
 parse / render / text / rewrite, classifies each file

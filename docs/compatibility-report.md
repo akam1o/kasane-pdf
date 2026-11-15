@@ -40,10 +40,11 @@ The machine-readable results are in [`../compat/analysis/`](../compat/analysis/)
   knockout, luminosity masks, CFF CID, ActualText and Optional Content
   are no longer the cause of any strict failure, and the attribution
   puts no low-SSIM page on JBIG2, CIDFontType0 or Type 1 CFF.
-- **Of the 68 rendered files below SSIM 0.95, 44 are within tolerance
-  of a reference at 300 dpi** (Poppler 36, MuPDF only 8), most likely
-  rasterisation differences; the check failed for 1. **23 are outside
-  tolerance of both references**:
+- **Of the 68 rendered files below SSIM 0.95, 47 are within tolerance
+  of a reference at 300 dpi** (corrected in Phase 1, § 6.2), most
+  likely rasterisation differences; the check failed for 1. **20 are
+  outside tolerance of both references**. The first measurement, with
+  a greyscale bias against MuPDF, found 44 and 23; its 23 were:
   - broad tone or colour differences: 7 (undetermined);
   - borderline Skia pages: 5;
   - non-embedded font substitution: 4;
@@ -309,6 +310,35 @@ from counting as agreement. Agreement with a witness at 300 dpi is an
 observation. It is consistent with rasterisation, but it does not prove
 that the 72 dpi difference had no other cause.
 
+> **Correction (v0.11.0 Phase 1).** The analysis first rendered the
+> witnesses in their own greyscale modes (`pdftoppm -gray`,
+> `mutool -c gray`). Those convert colour with different formulas, which
+> alone made MuPDF differ from kasane and Poppler on coloured pages.
+> The tool now renders every witness in RGB and converts all three
+> alike (`docs/compat-evaluation.md` § 1). The per-file counts, macOS,
+> same commit, each file by its worst page:
+>
+> | class | within tolerance of Poppler (incl. both) | of MuPDF only | of neither | check failed |
+> |---|---:|---:|---:|---:|
+> | reference, kasane ≈ MuPDF (29) | 18 | 7 | 4 | 0 |
+> | reference, three-way (26) | 17 | 0 | 8 | 1 |
+> | kasane (7) | 2 | 1 | 4 | 0 |
+> | annotation layer (4) | 0 | 1 | 3 | 0 |
+> | extra ink (2) | 0 | 1 | 1 | 0 |
+> | **total (68)** | **37** | **10** | **20** | **1** |
+>
+> So 47 files are within tolerance of a witness and **20 are open**,
+> not 23. Over all 151 pages examined, the agreements are both 55,
+> Poppler only 50, MuPDF only 10, neither 35, not comparable 1.
+>
+> The cause table below is the first measurement (23 files) and was
+> not re-derived. Its groups stand, but three of its files are no
+> longer open: the tone group, measured against MuPDF, shrinks most.
+> The Linux nightly measures the same with every run
+> (§ 11).
+
+First measurement (biased MuPDF greyscale, kept for the record):
+
 | class | within tolerance of Poppler | of MuPDF only | of neither | check failed |
 |---|---:|---:|---:|---:|
 | reference, kasane ≈ MuPDF (28) | 17 | 4 | 7 | 0 |
@@ -318,11 +348,11 @@ that the 72 dpi difference had no other cause.
 | extra ink (2) | 0 | 1 | 1 | 0 |
 | **total (68)** | **36** | **8** | **23** | **1** |
 
-So **44 of the 68 files are within tolerance of at least one reference
-at 300 dpi**, and are most likely rasterisation differences. The check
-failed for one file, whose 300 dpi kasane render exceeds the default
-image limits. The **23 files outside tolerance of both references**
-are what remains open:
+So, in that measurement, 44 of the 68 files were within tolerance of at
+least one reference at 300 dpi, most likely rasterisation differences.
+The check failed for one file, whose 300 dpi kasane render exceeds the
+default image limits. The 23 files outside tolerance of both
+references were:
 
 | cause (by inspection of the measures and the file's profile) | files | status |
 |---|---:|---|
@@ -507,3 +537,80 @@ refused as designed) and 132 renderer comparisons, passed.
      without a signal are undetermined;
    - the 5 files that recovery parse cannot read (xref / page-tree
      rebuild limits).
+
+## 11. v0.11.0 Phase 1: the measurement armed
+
+Phase 1 implemented M1 and R0 of the roadmap; see
+[`compat-evaluation.md`](compat-evaluation.md) and
+[`redaction-safety-model.md`](redaction-safety-model.md) § 2.8. No
+production code changed.
+
+**The nightly measurement.** The figures come from the nightly run on
+the Phase 1 branch (commit `ae88f27`, engine identical to `e7d52aa`):
+Linux, ubuntu 26.04, x86_64, Poppler 26.01.0, MuPDF 1.27.0, runner and
+CLI with `cjk-fallback`.
+
+| | before (baseline 2026-11-07) | after (Phase 1 run) |
+|---|---:|---:|
+| verdict pass / error / unsupported | 376 / 84 / 51 | 378 / 83 / 50 |
+| strict render (`expect: pass`) | 380 | 382 |
+| stage regressions | — | 0 |
+| strict-render pages below SSIM 0.95 | — | 152 |
+| pages attributed (8 worst per file) | — | 143 of 65 files |
+| agreement: both / Poppler only / MuPDF only / neither / not comparable | — | 51 / 48 / 11 / 32 / 1 |
+| files by worst page: within a witness / open / not comparable | — | 47 / 17 / 1 |
+| pages where the references disagree | — | 95 |
+
+On the stage level the run equals the `e7d52aa` nightly. The only
+differences from the committed baseline are the two improvements of
+§ 4, plus one quality class that moved with one of them (`n/a` →
+`exempt`). The page that is not comparable is one whose 300 dpi
+kasane render exceeds the default image limits.
+
+**The baseline.** `compat/baselines/corpus-full.json` was armed from
+that run with `update-baseline --write --accept-regressions`. The only
+regression accepted is the bootstrap one: "the baseline records no
+numeric measures". It now records:
+- the environment above;
+- per-page SSIM and content SSIM of 1,048 pages in 398 files;
+- the second-witness agreement of the 143 attributed pages.
+
+From the next nightly on, the check enforces all of it with
+`--require-same-env`. A run in another environment (`release-verify`
+on macOS) is reported as *numeric measures not compared* and checked
+on stages only.
+
+**Detection, injected into a copy of the Linux run** (each must fail):
+
+| injection | result |
+|---|---|
+| page SSIM −0.004, staying above 0.95 (in-class) | regression |
+| a page within tolerance made open (consistent measures) | regression |
+| an attributed page dropped from the attribution | regression |
+| a file removed from the run | regression |
+| text F1 1.0 → 0.95 | regression |
+| one page up, another down | regression (not netted) |
+| an open page relabelled `both` | rejected as invalid |
+
+**Cost.** The second witness adds 204 s to the nightly corpus job
+(1504 s → 1903 s, which also includes a separate CLI build). The PR
+Fast Gate adds the evaluation tests (about 5 s, plus a Pillow install);
+the Full Gate adds the real-renderer run on four fixtures.
+
+**Recovery mode and redaction (R0).**
+- `tests/redact_recovery.rs`: 17 tests over every recovery rule and
+  the malformed-input classes, opened strictly and in recovery mode.
+- `redact_model`: in recovery mode, 4000 seeds locally (481 / 1519
+  ok / refused in each recovery way).
+- The `redact_model` fuzz target: 8 shards × 375 new inputs, passed.
+
+No case redacts unsafely. No new security issue was found.
+
+**Found on the way (pre-existing, not in Phase 1's code).** The
+redaction-corpus job of the nightly measures characters kept outside
+the rects with a second text engine (MuPDF, `mutool draw -F stext`).
+On the Linux runner it counts 0 characters on all 67 measured results,
+while Poppler counts 66,259 (the macOS results committed in
+`compat/redaction/` count them). The empty measure reads as *nothing
+lost*. The Poppler-based measures are unaffected. The fix is proposed
+as V1 in the roadmap.

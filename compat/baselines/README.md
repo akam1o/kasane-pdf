@@ -10,6 +10,24 @@ smoke run; nightly: the full corpus).
 | `fixtures-smoke.json` | `kasane-compat run --corpus tests/fixtures --mode smoke --with-poppler` | the 66 deterministic fixtures under `tests/fixtures/` |
 | `corpus-full.json` | the nightly job: runner built with `--features cjk-fallback` on ubuntu-latest, `kasane-compat run --corpus compat/corpus --mode full --with-poppler --dpi 96 --timeout-secs 20` | the 511-file real-world corpus (`compat/manifest.yaml`) |
 
+## Updating a baseline
+
+Only by a person, with a commit: `scripts/ci-regression.py
+update-baseline RUN.json BASELINE --env ENV.json [--attribution
+PAGES.json]` shows the diff (counts; `--ids` for a local review), and
+`--write` writes it. Removals and accepted regressions need their own
+flags. No workflow writes a baseline (`scripts/check-workflows.py`).
+See [`docs/compat-evaluation.md`](../../docs/compat-evaluation.md) § 4.
+A baseline that records numeric measures (per-page SSIM, the second
+witness) also records its environment, and is compared numerically
+only with runs of that environment.
+
+The current `corpus-full.json` (v0.11.0 Phase 1) was armed from the
+nightly run on the Phase 1 branch (commit `ae88f27`, Linux, Poppler
+26.01.0, MuPDF 1.27.0, `cjk-fallback`). Stage classes are those of the
+`e7d52aa` nightly; it adds the environment, per-page SSIM and the
+second-witness agreement (docs/compatibility-report.md § 11).
+
 ## How to read the fixtures smoke result
 
 The fixtures are not a compatibility population: most are built to
