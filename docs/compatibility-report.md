@@ -572,7 +572,7 @@ that run with `update-baseline --write --accept-regressions`. The only
 regression accepted is the bootstrap one: "the baseline records no
 numeric measures". It now records:
 - the environment above;
-- per-page SSIM and content SSIM of 398 pages;
+- per-page SSIM and content SSIM of 1,048 pages in 398 files;
 - the second-witness agreement of the 143 attributed pages.
 
 From the next nightly on, the check enforces all of it with
