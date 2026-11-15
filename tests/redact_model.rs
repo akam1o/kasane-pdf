@@ -23,7 +23,15 @@
 //! so the position after removed text (which redaction keeps, by
 //! contract) is the same.
 //!
-//! `KASANE_MODEL_SEEDS` sets the number of seeds (default 160).
+//! The same documents are also opened in recovery mode
+//! (`Document::from_bytes_recovering`) — as they are, and with
+//! `startxref` broken so that the cross-reference table is rebuilt by
+//! scanning (incremental updates, object and cross-reference streams
+//! included) — under the same oracle (docs/redaction-safety-model.md
+//! § Recovery mode).
+//!
+//! `KASANE_MODEL_SEEDS` sets the number of seeds (default 160; the
+//! recovery-mode runs take a quarter of them).
 
 mod model;
 
@@ -44,7 +52,33 @@ struct Tally {
     refused: u32,
 }
 
+/// How a generated document is opened.
+#[derive(Clone, Copy, Debug)]
+enum Open {
+    Strict,
+    /// `from_bytes_recovering` on the document as generated.
+    Recovering,
+    /// `from_bytes_recovering` with `startxref` past the end: the table
+    /// is rebuilt by scanning.
+    Rebuilt,
+}
+
+fn break_startxref(mut pdf: Vec<u8>) -> Vec<u8> {
+    let i = pdf
+        .windows(10)
+        .rposition(|w| w == b"startxref\n")
+        .expect("startxref")
+        + 10;
+    pdf.truncate(i);
+    pdf.extend_from_slice(b"999999999\n%%EOF\n");
+    pdf
+}
+
 fn check(seed: u64, annotations: bool, t: &mut Tally, font: &[u8]) {
+    check_opened(seed, annotations, Open::Strict, t, font)
+}
+
+fn check_opened(seed: u64, annotations: bool, how: Open, t: &mut Tally, font: &[u8]) {
     // With annotations removed, every other seed removes scripts too.
     let opts = RedactOptions::new()
         .remove_annotations(annotations)
@@ -52,16 +86,30 @@ fn check(seed: u64, annotations: bool, t: &mut Tally, font: &[u8]) {
     let (a, public) = make(Rng::seeded(seed), 1, font);
     let (b, _) = make(Rng::seeded(seed), 2, font);
     assert!(a != b, "seed {seed}: the variants do not differ");
+    let (a, b) = match how {
+        Open::Rebuilt => (break_startxref(a), break_startxref(b)),
+        _ => (a, b),
+    };
     let run = |pdf: &[u8]| {
-        let doc = Document::from_bytes(pdf).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
+        let doc = match how {
+            Open::Strict => Document::from_bytes(pdf),
+            Open::Recovering | Open::Rebuilt => Document::from_bytes_recovering(pdf),
+        }
+        .unwrap_or_else(|e| panic!("seed {seed} ({how:?}): {e}"));
+        if let Open::Rebuilt = how {
+            assert!(
+                doc.recovery().is_some(),
+                "seed {seed}: the table was not rebuilt"
+            );
+        }
         redact(&doc, &[(0, vec![RECT])], &opts)
     };
     match (run(&a), run(&b)) {
         (Ok(x), Ok(y)) => {
             assert!(
                 x.output == y.output,
-                "seed {seed} (annotations {annotations}): the outputs differ — something of the \
-                 secret reached the output"
+                "seed {seed} (annotations {annotations}, {how:?}): the outputs differ — something \
+                 of the secret reached the output"
             );
             let doc = Document::from_bytes(&x.output).unwrap();
             for (p, texts) in public.iter().enumerate() {
@@ -75,7 +123,7 @@ fn check(seed: u64, annotations: bool, t: &mut Tally, font: &[u8]) {
                 for want in texts {
                     assert!(
                         got.contains(want.as_str()),
-                        "seed {seed}: page {} lost public text {want}",
+                        "seed {seed} ({how:?}): page {} lost public text {want}",
                         p + 1
                     );
                 }
@@ -83,7 +131,7 @@ fn check(seed: u64, annotations: bool, t: &mut Tally, font: &[u8]) {
             t.ok += 1;
         }
         (Err(x), Err(y)) => {
-            assert_eq!(mask(&x), mask(&y), "seed {seed}: refused unlike");
+            assert_eq!(mask(&x), mask(&y), "seed {seed} ({how:?}): refused unlike");
             t.refused += 1;
             if std::env::var("KASANE_MODEL_VERBOSE").is_ok() {
                 let m = mask(&x);
@@ -91,7 +139,7 @@ fn check(seed: u64, annotations: bool, t: &mut Tally, font: &[u8]) {
             }
         }
         (x, y) => panic!(
-            "seed {seed} (annotations {annotations}): one redacted, one refused: {:?} / {:?}",
+            "seed {seed} (annotations {annotations}, {how:?}): one redacted, one refused: {:?} / {:?}",
             x.map(|r| r.codes_removed).map_err(|e| e.to_string()),
             y.map(|r| r.codes_removed).map_err(|e| e.to_string())
         ),
@@ -113,4 +161,26 @@ fn generated_documents_are_non_interfering() {
     eprintln!("model: {t:?}");
     // The generator must exercise successes, not only refusals.
     assert!(t.ok * 5 >= t.ok + t.refused, "too few successes: {t:?}");
+}
+
+#[test]
+fn generated_documents_are_non_interfering_in_recovery_mode() {
+    let seeds: u64 = std::env::var("KASANE_MODEL_SEEDS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(160)
+        / 4;
+    let font = font();
+    for how in [Open::Recovering, Open::Rebuilt] {
+        let mut t = Tally::default();
+        for seed in 0..seeds.max(1) {
+            check_opened(seed, false, how, &mut t, &font);
+            check_opened(seed, true, how, &mut t, &font);
+        }
+        eprintln!("model ({how:?}): {t:?}");
+        assert!(
+            t.ok * 5 >= t.ok + t.refused,
+            "{how:?}: too few successes: {t:?}"
+        );
+    }
 }
