@@ -500,14 +500,15 @@ def real():
             for who, m, want in (("poppler", pop, want_pop), ("mupdf", mu, want_mu)):
                 good = m["state"] not in ev.MEASURED if want == "not measured" else m["state"] == want
                 ok &= good
-            # The text, where the case has it, is read correctly.
-            if ok and name.startswith(("1 ", "3 ", "8 ")):
-                ok &= "PUBLICWORD" in "".join(c[0] for c in mu["chars"])
-            if ok and name.startswith("2 "):
-                ok &= "".join(c[0] for c in mu["chars"]) == "\u65e5\u672c"
-            if ok and name.startswith("6 "):
-                ok &= "ANNOTWORD" in "".join(c[0] for c in mu["chars"])
-                ok &= "ANNOTWORD" in "".join(w[0] for w in pop["words"])
+            # The text, where the case has it, is read correctly — without
+            # whitespace, as the evaluation compares it: MuPDF inserts
+            # spaces where a glyph's advance differs from its width (1.23).
+            read_mu = "".join(c[0] for c in mu.get("chars") or [] if c[0].strip())
+            read_pop = "".join(w[0] for w in pop.get("words") or [])
+            want_text = {"1": "PUBLICWORD123", "3": "PUBLICWORD123", "7": "PUBLICWORD123", "8": "PUBLICWORD123",
+                         "2": "\u65e5\u672c", "6": "ANNOTWORD"}.get(name.split()[0])
+            if ok and want_text:
+                ok &= read_mu == want_text and read_pop == want_text
             print(f"{'ok  ' if ok else 'FAIL'} {name}: Poppler {pop['state']}/{pop['reason']}, "
                   f"MuPDF {mu['state']}/{mu['reason']} (want {want_pop}, {want_mu})")
             if not ok:
