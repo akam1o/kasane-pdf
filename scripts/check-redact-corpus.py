@@ -146,7 +146,11 @@ def main():
             regress(k, f"ok_to_{n['outcome']}", f"ok -> {n['outcome']}")
         if n["outcome"] == "incomplete":
             regress(k, "measurement_incomplete", "a required text measurement was not established")
-        if n["outcome"] == "ok":
+        accepted_now = n["outcome"] == "unexpected" and n.get("check_by_hand") and \
+            n.get("unchanged_ink_not_from_images") == 0
+        if n["outcome"] == "ok" or accepted_now:
+            # Every run that passes — ok, or the accepted zeroed-image
+            # signal — carries all its measurements, whatever it was before.
             tm = n.get("text_measures") or {}
             bad = [m for m in MEASUREMENTS if tm.get(m) not in MEASURED]
             if bad:

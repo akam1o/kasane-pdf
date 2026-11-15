@@ -189,7 +189,12 @@ class Measurements(unittest.TestCase):
                                     ("crash", b"", ("error", "crashed")), ("stderr_only", b"", ("incomplete", "no_output")),
                                     ("ok", b"<doc></doc>", ("incomplete", "no_page")),
                                     ("ok", BBOX.replace(b'xMin="10.000000"', b'xMin="nan"'), ("incomplete", "char_fields")),
-                                    ("ok", b"\xff\xfe<page>", ("incomplete", "encoding"))):
+                                    ("ok", b"\xff\xfe<page>", ("incomplete", "corrupt_output")),
+                                    # Malformed or truncated outputs are never a page without words.
+                                    ("ok", b"<page>", ("incomplete", "corrupt_output")),
+                                    ("ok", BBOX[:BBOX.index(b"PUBLIC") + 3], ("incomplete", "corrupt_output")),
+                                    ("ok", BBOX.replace(b"</word>", b""), ("incomplete", "corrupt_output")),
+                                    ("ok", BBOX.replace(b' xMin="10.000000"', b""), ("incomplete", "char_fields"))):
                 with self.subTest(f"poppler {mode} {want}"):
                     m = self.pop(mode, out)
                     self.assertEqual((m["state"], m["reason"]), want)
@@ -214,11 +219,11 @@ class Measurements(unittest.TestCase):
         with self.mutool(output=STEXT_EMPTY), self.pdftotext(output=BBOX_EMPTY):
             pop, mu = ev.input_measures("x.pdf", (200, 200))
         self.assertEqual((pop["state"], mu["state"]), ("empty", "empty"))
-        # MuPDF has text where Poppler has none: both measured (a page
-        # Poppler cannot read the text of is not MuPDF's failure).
+        # The other way round as well: Poppler empty where MuPDF has text.
         with self.mutool(output=STEXT_1_28), self.pdftotext(output=BBOX_EMPTY):
             pop, mu = ev.input_measures("x.pdf", (200, 200))
-        self.assertEqual((pop["state"], mu["state"]), ("empty", "success"))
+        self.assertEqual((pop["state"], pop["reason"], mu["state"]),
+                         ("incomparable", "empty_while_mupdf_has_text", "success"))
 
 
 def m_ok(words=None, chars=None):
@@ -235,12 +240,14 @@ RECT = (100.0, 100.0, 150.0, 150.0)
 class RunOutcomes(unittest.TestCase):
     """One run's outcome from its measurements (Phase F 9, 10, 14–16)."""
 
-    def run_one(self, in_pop, in_mu, out_pop, out_mu, pages=(1, 1)):
+    def run_one(self, in_pop, in_mu, out_pop, out_mu, pages=(1, 1), pixels=(0, 0, 0), images_edited=False):
         stubs = {
             "poppler_words": lambda pdf, h: out_pop,
             "mupdf_chars": lambda pdf, size: out_mu,
             "page_count": lambda pdf: pages[0] if pdf.endswith("in.pdf") else pages[1],
-            "pixel_checks": lambda *a: (0, 0, 0),
+            "pixel_checks": lambda *a: pixels,
+            "ink_not_from_images": lambda *a: 0,
+            "image_digests": lambda pdf, tmp, tag: __import__("collections").Counter({tag: 1}),
         }
         old = {k: getattr(ev, k) for k in stubs}
         real_run = ev.subprocess.run
@@ -249,7 +256,8 @@ class RunOutcomes(unittest.TestCase):
             if argv[1:2] == ["redact"]:
                 with open(argv[-1], "wb") as fh:
                     fh.write(b"%PDF-1.7\n")
-                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+                return subprocess.CompletedProcess(argv, 0, stdout="images edited: 1\n" if images_edited else "",
+                                                   stderr="")
             return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
 
         try:
@@ -304,6 +312,16 @@ class RunOutcomes(unittest.TestCase):
         inside = ("S", 120.0, 120.0, 118.0, 118.0, 126.0, 130.0)
         r = self.run_one(m_ok([WORD]), m_ok(chars=[CHAR]), m_ok([WORD]), m_ok(chars=[CHAR, inside]))
         self.assertEqual(r["outcome"], "unexpected", r)
+
+    def test_the_zeroed_image_signal_needs_every_measurement(self):
+        # The one accepted unexpected run: black ink inside where images
+        # were zeroed, all of it image samples.
+        sig = dict(pixels=(5, 0, 5), images_edited=True)
+        r = self.run_one(m_ok([WORD]), m_ok(chars=[CHAR]), m_ok([WORD]), m_ok(chars=[CHAR]), **sig)
+        self.assertEqual((r["outcome"], r["unchanged_ink_not_from_images"]), ("unexpected", 0), r)
+        # With a measurement missing it is not accepted: incomplete.
+        r = self.run_one(m_ok([WORD]), m_ok(chars=[CHAR]), m_ok([WORD]), ev.measure("error", "exit_status"), **sig)
+        self.assertEqual(r["outcome"], "incomplete", r)
 
     def test_10_page_count(self):
         r = self.run_one(m_ok([WORD]), m_ok(chars=[CHAR]), m_ok([WORD]), m_ok(chars=[CHAR]), pages=(2, 1))
@@ -405,6 +423,20 @@ class Comparison(unittest.TestCase):
         rc, doc, _ = self.compare([ok_run(outside_chars_mupdf_lost=0)], [run])
         self.assertEqual(rc, 1)
         self.assertIn("measurement_incomplete", self.whats(doc))
+
+    def test_the_accepted_image_signal_carries_its_measurements(self):
+        sig = dict(outcome="unexpected", check_by_hand=True, unchanged_ink_not_from_images=0, unchanged_ink_inside=5)
+        # Accepted only with every measurement, whatever the run was before.
+        for before in (dict(ok_run(), outcome="refused", reason="x"), ok_run(**sig)):
+            rc, _, _ = self.compare([before], [ok_run(**sig)])
+            self.assertEqual(rc, 0, before["outcome"])
+            broken = ok_run(**sig)
+            broken["text_measures"] = dict(broken["text_measures"], mupdf_out="error")
+            for k in ("outside_chars_mupdf", "outside_chars_mupdf_lost", "outside_chars_mupdf_moved"):
+                broken.pop(k)
+            rc, doc, _ = self.compare([before], [broken])
+            self.assertEqual(rc, 1, before["outcome"])
+            self.assertIn("measurement_incomplete", self.whats(doc))
 
     def test_20_a_run_removed(self):
         rc, doc, _ = self.compare([ok_run("a"), ok_run("b")], [ok_run("a")])

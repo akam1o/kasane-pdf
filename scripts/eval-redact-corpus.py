@@ -65,8 +65,9 @@ input and of the output) has a state (TEXT_STATES): success, empty (the
 tool ran and the page has no text), error (the tool failed, crashed or
 is missing), timeout, incomplete (no output, an output that does not
 parse, a page missing, a character without its fields), incomparable
-(MuPDF finds no character on an input page where Poppler finds text: a
-measurement that cannot be told from a broken one). Only success and
+(one engine finds no text on an
+input page where the other finds some: a measurement that cannot be
+told from a broken one). Only success and
 empty are measurements. A success whose checks pass but one of whose
 required measurements is not established is `incomplete` — never `ok`:
 a check that did not run is not a check that passed.
@@ -104,7 +105,7 @@ TEXT_STATES = ("success", "empty", "error", "timeout", "incomplete", "incomparab
 MEASURED = ("success", "empty")
 TEXT_REASONS = ("not_installed", "exit_status", "crashed", "timeout", "no_output", "encoding", "corrupt_output",
                 "no_page", "page_count", "page_size", "char_fields", "empty_while_poppler_has_text",
-                "not_measured")
+                "empty_while_mupdf_has_text", "not_measured")
 
 
 def tool(name):
@@ -190,26 +191,33 @@ def plain_geometry(pdf):
     return m[2], m[3]
 
 
+def _local(tag):
+    return tag.rsplit("}", 1)[-1]
+
+
 def parse_bbox(data, height):
     """pdftotext -bbox output of one page -> a measurement whose `words`
-    are (text, llx, lly, urx, ury) in PDF space."""
+    are (text, llx, lly, urx, ury) in PDF space. Parsed as XML: a
+    truncated or malformed output is incomplete, never a page without
+    words."""
     try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        return measure("incomplete", "encoding")
-    pages = re.findall(r"<page\b", text)
+        root = ET.fromstring(data)
+    except ET.ParseError:
+        return measure("incomplete", "corrupt_output")
+    pages = [e for e in root.iter() if _local(e.tag) == "page"]
     if len(pages) != 1:
         return measure("incomplete", "no_page" if not pages else "page_count")
     out = []
-    for m in re.finditer(r"<word\b([^>]*)>([^<]*)</word>", text):
-        attrs = dict(re.findall(r'(\w+)="([^"]*)"', m.group(1)))
+    for w in pages[0].iter():
+        if _local(w.tag) != "word":
+            continue
         try:
-            x0, y0, x1, y1 = (float(attrs[k]) for k in ("xMin", "yMin", "xMax", "yMax"))
-        except (KeyError, ValueError):
+            x0, y0, x1, y1 = (float(w.get(k)) for k in ("xMin", "yMin", "xMax", "yMax"))
+        except (TypeError, ValueError):
             return measure("incomplete", "char_fields")
         if not all(math.isfinite(v) for v in (x0, y0, x1, y1)):
             return measure("incomplete", "char_fields")
-        out.append((html.unescape(m.group(2)), x0, height - y1, x1, height - y0))
+        out.append((w.text or "", x0, height - y1, x1, height - y0))
     return measure("success" if out else "empty", words=out)
 
 
@@ -505,7 +513,12 @@ def run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args=()):
         if rest == 0:
             res["check_by_hand"] = ("verified: the unchanged ink inside is all image samples "
                                     "(zero inside the rect)")
-    if problems:
+    if problems and incomplete and res.get("check_by_hand"):
+        # The accepted zeroed-image signal is only accepted with every
+        # other check established.
+        res.update(outcome="incomplete", reason="; ".join(problems) + "; measurement not established: "
+                   + ", ".join(sorted(incomplete)))
+    elif problems:
         res.update(outcome="unexpected", reason="; ".join(problems))
     elif incomplete:
         # The checks that ran passed, but a required one did not run.
@@ -516,14 +529,16 @@ def run_one(kasane, pdf, kind, rect, size, in_pop, in_mu, tmp, extra_args=()):
 
 
 def input_measures(pdf, size):
-    """The input's Poppler words and MuPDF characters. MuPDF finding no
-    character where Poppler finds text cannot be told from a MuPDF
-    measurement that broke (a changed output format read as an empty
-    page): it is incomparable, not empty."""
+    """The input's Poppler words and MuPDF characters. One engine finding
+    no text where the other finds some cannot be told from a measurement
+    that broke (a changed output format read as an empty page): it is
+    incomparable, not empty — either way round."""
     pop = poppler_words(pdf, size[1])
     mu = mupdf_chars(pdf, size)
     if mu["state"] == "empty" and pop["state"] == "success" and any(w[0].strip() for w in pop["words"]):
         mu = measure("incomparable", "empty_while_poppler_has_text")
+    elif pop["state"] == "empty" and mu["state"] == "success" and any(c[0].strip() for c in mu["chars"]):
+        pop = measure("incomparable", "empty_while_mupdf_has_text")
     return pop, mu
 
 

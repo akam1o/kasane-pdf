@@ -45,7 +45,7 @@ MEASUREMENTS = ("poppler_in", "poppler_out", "mupdf_in", "mupdf_out")
 TEXT_STATES = ("success", "empty", "error", "timeout", "incomplete", "incomparable")
 TEXT_REASONS = ("not_installed", "exit_status", "crashed", "timeout", "no_output", "encoding", "corrupt_output",
                 "no_page", "page_count", "page_size", "char_fields", "empty_while_poppler_has_text",
-                "not_measured")
+                "empty_while_mupdf_has_text", "not_measured")
 
 
 def vocabulary():

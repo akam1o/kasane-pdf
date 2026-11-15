@@ -727,7 +727,9 @@ class RedactCorpusCompare(unittest.TestCase):
 
     def test_the_accepted_image_signal_keeps_its_measurements(self):
         sig = dict(check_by_hand=True, unchanged_ink_not_from_images=0, outside_words=3, outside_words_lost=0,
-                   outside_chars_mupdf=5, outside_chars_mupdf_lost=0)
+                   outside_chars=3, outside_chars_lost=0, outside_chars_mupdf=5, outside_chars_mupdf_lost=0,
+                   outside_chars_mupdf_moved=0, unchanged_ink_inside=4, outside_pixels_changed=0,
+                   text_measures={k: "success" for k in ("poppler_in", "poppler_out", "mupdf_in", "mupdf_out")})
         old = [self.run_("unexpected", **sig)]
         self.assertEqual(self.compare(old, [self.run_("unexpected", **sig)])[0], 0)
         gone = dict(sig)
