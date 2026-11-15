@@ -510,6 +510,10 @@ def real():
                 ok &= "ANNOTWORD" in "".join(w[0] for w in pop["words"])
             print(f"{'ok  ' if ok else 'FAIL'} {name}: Poppler {pop['state']}/{pop['reason']}, "
                   f"MuPDF {mu['state']}/{mu['reason']} (want {want_pop}, {want_mu})")
+            if not ok:
+                # Synthetic input: its text may be shown.
+                print("     MuPDF read:", repr("".join(c[0] for c in mu.get("chars") or [])),
+                      "Poppler read:", repr(" ".join(w[0] for w in pop.get("words") or [])))
             failed += not ok
     print(f"test_redact_text_measure --real: {'failed' if failed else 'passed'} ({failed} failing)")
     return 1 if failed else 0
