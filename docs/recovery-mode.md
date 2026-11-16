@@ -151,9 +151,14 @@ and MuPDF 1.28:
 - **Extra inputs.** The first input is used and the rest of `/Domain`
   is ignored (`FunctionExtraInputsIgnored`).
 - **Extra outputs.** The first outputs are used, as many as the colour
-  space has components (`ShadingOutputsTruncated`).
+  space has components (`ShadingOutputsTruncated`). For a `/Function`
+  array, the extra members are dropped when the shading is parsed and
+  are never evaluated.
 
-Both are what MuPDF draws.
+Both are what MuPDF draws. The input rule is applied where the function
+is parsed, so it covers every use of a one-input function: shadings,
+the tint transform of a `Separation` or single-colorant `DeviceN`
+space, and a soft mask's `/TR`.
 
 **Not recovered** (an error in both modes): a shading function with
 *fewer* outputs than components. The roadmap proposed padding with 0.
