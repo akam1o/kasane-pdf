@@ -34,7 +34,8 @@
 # legitimate inputs twice in three nightly runs on main (2026-11-16). 90 s
 # leaves room for about five such paths. It is not a bound: the
 # generator can write more, and processing time is not bounded by the
-# engine (SECURITY.md). A hang still fails, after 90 s.
+# engine (SECURITY.md). A hang still fails, at the nominal 90 s (libFuzzer
+# checks the bound every timeout/2 + 1 s, so up to about 136 s).
 set -uo pipefail
 # Coverage-only mode (the cmin step's) runs no oracle: never fuzz with it.
 if [ -n "${KASANE_FUZZ_COVERAGE_ONLY+x}" ]; then
