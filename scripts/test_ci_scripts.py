@@ -521,7 +521,9 @@ class CoverageOnly(unittest.TestCase):
         return out
 
     def step(self, wf, text):
-        return next(st for st in wf["jobs"]["render"]["steps"] if text in (st.get("run") or ""))
+        # The coverage-only cmin step for "fuzz cmin"; the first other match otherwise.
+        steps = [st for st in wf["jobs"]["render"]["steps"] if text in (st.get("run") or "")]
+        return next((st for st in steps if "KASANE_FUZZ_COVERAGE_ONLY" in (st.get("env") or {})), steps[0])
 
     def test_committed_workflow_passes(self):
         self.assertEqual(self.problems(lambda wf: None), [])
@@ -538,6 +540,17 @@ class CoverageOnly(unittest.TestCase):
                 "run", "KASANE_FUZZ_COVERAGE_ONLY=1 " + self.step(wf, "ci-run.sh")["run"]),
             "the cmin step also fuzzing": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
                 "run", self.step(wf, "fuzz cmin")["run"] + "\nfuzz/ci-run.sh x y -- -runs=1"),
+            "the cmin step running the target directly": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
+                "run", self.step(wf, "fuzz cmin")["run"] + "\ntarget/x86_64-unknown-linux-gnu/release/render_content -runs=100"),
+            "written to $GITHUB_ENV on the cmin step": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
+                "run", 'echo "KASANE_FUZZ_COVERAGE_ONLY=1" >> "$GITHUB_ENV"\n' + self.step(wf, "fuzz cmin")["run"]),
+            "exported on another step": lambda wf: self.step(wf, "ci-run.sh").__setitem__(
+                "run", "export KASANE_FUZZ_COVERAGE_ONLY=1\n" + self.step(wf, "ci-run.sh")["run"]),
+            "a step whose only cmin is a comment": lambda wf: (
+                self.step(wf, "ci-run.sh").__setitem__("env", dict(on)),
+                self.step(wf, "ci-run.sh").__setitem__("run", "# fuzz cmin\n" + self.step(wf, "ci-run.sh")["run"])),
+            "cmin without its time bound": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
+                "run", self.step(wf, "fuzz cmin")["run"].replace("timeout 600 ", "")),
         }
         for name, mutate in cases.items():
             with self.subTest(name):

@@ -110,12 +110,12 @@ pub fn exercise(doc: &Document) {
 }
 
 /// Coverage-only mode for corpus minimisation (`fuzz-nightly.yml`'s
-/// cmin step sets `KASANE_FUZZ_COVERAGE_ONLY=1`). In it a target runs
-/// each engine path its input reaches once and skips the oracle's
-/// repeats: libFuzzer's merge only decides which inputs to keep and
-/// does not fail on a crash, so the repeats add no detection there,
-/// only hit-count features and time. `fuzz/ci-run.sh` refuses to fuzz
-/// with it set, so the oracles always run while fuzzing.
+/// cmin step sets `KASANE_FUZZ_COVERAGE_ONLY=1`). In it a target renders
+/// every distinct content its oracles render once, leaving out the
+/// re-renders of the same content and the comparisons. A merge reports
+/// a crash and saves the input but does not fail the step, and drops
+/// the input; the fuzz step has run every oracle on every input it
+/// keeps. `fuzz/ci-run.sh` refuses to fuzz with the variable set.
 pub fn coverage_only() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("KASANE_FUZZ_COVERAGE_ONLY").is_some())

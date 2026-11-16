@@ -313,11 +313,20 @@ def check_fuzz_matrix(path, job):
         problem(f"{path.name}:render-fuzz-smoke: redact_model's jobs cover shards {sorted(covered)}, not each of 1..N once")
 
 
+# The only commands a step with KASANE_FUZZ_COVERAGE_ONLY may run: the
+# bounded corpus minimisation and a count of what it kept.
+COVERAGE_ONLY_LINES = (
+    re.compile(r'^timeout \d+ cargo \+[\w.-]+ fuzz cmin -O "[^"]+" "[^"]+"( -- -set_cover_merge=1)?$'),
+    re.compile(r'^echo "[^"$`]*\$\(find "[^"]*" -type f \| wc -l\)"$'),
+)
+
+
 def check_coverage_only(path, wf):
     """KASANE_FUZZ_COVERAGE_ONLY switches the fuzz targets' oracles off
-    (fuzz/src/lib.rs coverage_only): it is set on a step that runs
-    `cargo fuzz cmin` and nothing else — never on a workflow or a job,
-    never on a step that fuzzes."""
+    (fuzz/src/lib.rs coverage_only): it is set in the env of a step that
+    only minimises a corpus — never on a workflow or a job, never written
+    by a command (an `export`, `$GITHUB_ENV`), never on a step that runs
+    anything but `cargo fuzz cmin`."""
     key = "KASANE_FUZZ_COVERAGE_ONLY"
     if key in (wf.get("env") or {}):
         problem(f"{path.name}: {key} set for the whole workflow")
@@ -326,10 +335,13 @@ def check_coverage_only(path, wf):
             problem(f"{path.name}:{jid}: {key} set for the whole job")
     for jid, st in steps_of(wf):
         run = st.get("run") or ""
-        if key in run and key not in (st.get("env") or {}):
-            problem(f"{path.name}:{jid}: {key} set inside a command; set it in the step's env")
-        if key in (st.get("env") or {}) or key in run:
-            if "fuzz cmin" not in run or "ci-run" in run or "fuzz run" in run:
+        if key in run:
+            problem(f"{path.name}:{jid}: {key} named in a command; it is set in the step's env only")
+        if key in (st.get("env") or {}):
+            lines = [ln.strip() for ln in logical_lines(run)]
+            lines = [ln for ln in lines if ln and not ln.startswith("#")]
+            if not lines or not any(COVERAGE_ONLY_LINES[0].match(ln) for ln in lines) or any(
+                    not any(r.match(ln) for r in COVERAGE_ONLY_LINES) for ln in lines):
                 problem(f"{path.name}:{jid}: {key} on a step that does not only minimise a corpus")
 
 

@@ -27,8 +27,10 @@
 //!   renders deterministically (checked on one input in four).
 //!
 //! In coverage-only mode (corpus minimisation, `kasane_pdf_fuzz::
-//! coverage_only`) the page is rendered once strictly and once in
-//! recovery mode, and no oracle runs.
+//! coverage_only`) every distinct content the oracles render is
+//! rendered once (the page strictly and in recovery mode; the
+//! equivalent contents and the shared form's copy when it renders), and
+//! nothing is compared.
 #![no_main]
 
 use kasane_pdf::{render_page, Document, Error, Limits, RenderOptions};
@@ -231,7 +233,17 @@ fuzz_target!(|data: &[u8]| {
     let a = render(&page(&body, false), &l);
     kasane_pdf_fuzz::reach(a.as_ref().map(|r| r.2.as_slice()));
     if kasane_pdf_fuzz::coverage_only() {
+        // Every distinct content the oracles below render, rendered
+        // once: the recovery-mode page, and the equivalent contents and
+        // the shared form's copy when the page renders. Only the
+        // re-renders of the same content and the comparisons are left out.
         let _ = render_in(&page(&body, false), &l, true);
+        if a.is_ok() {
+            for variant in [[&b"q\n"[..], &body, b"\nQ"].concat(), [&b"1 0 0 1 0 0 cm\n"[..], &body].concat()] {
+                let _ = render(&page(&variant, false), &l);
+            }
+            let _ = render(&page(&body, true), &l);
+        }
         return;
     }
     let b = render(&page(&body, false), &l);

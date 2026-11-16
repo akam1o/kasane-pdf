@@ -73,17 +73,25 @@ jobs:
           fuzz/ci-run.sh "${{ matrix.target }}" "fuzz/corpus/${{ matrix.target }}" "fuzz/seeds/${{ matrix.target }}" -- \
             -max_total_time=900
       - name: keep the corpus small for the cache
-        if: success()
+        if: success() && matrix.target != 'render_content'
         working-directory: fuzz
-        # Coverage-only: each input's engine paths run once, the oracles'
-        # repeats do not (a merge keeps or drops inputs and never fails
-        # on a crash, so they detect nothing here; fuzz/src/lib.rs
-        # coverage_only). The fuzz step above runs every oracle.
+        run: |
+          # Bounded: the job must end well inside timeout-minutes.
+          timeout 600 cargo +nightly-2026-10-29 fuzz cmin -O "${{ matrix.target }}" "corpus/${{ matrix.target }}"
+          echo "corpus files saved: $(find "corpus/${{ matrix.target }}" -type f | wc -l)"
+      - name: keep the corpus small for the cache (coverage-only, set cover)
+        if: success() && matrix.target == 'render_content'
+        working-directory: fuzz
+        # Coverage-only (fuzz/src/lib.rs coverage_only): every distinct
+        # content the target's oracles render is rendered once, without
+        # the same-content repeats and the comparisons; the fuzz step
+        # above runs every oracle on every input it keeps. The set-cover
+        # merge keeps fewer inputs reaching the same PCs (fuzz/README.md).
         env:
           KASANE_FUZZ_COVERAGE_ONLY: "1"
         run: |
           # Bounded: the job must end well inside timeout-minutes.
-          timeout 600 cargo +nightly-2026-10-29 fuzz cmin -O "${{ matrix.target }}" "corpus/${{ matrix.target }}"
+          timeout 600 cargo +nightly-2026-10-29 fuzz cmin -O "${{ matrix.target }}" "corpus/${{ matrix.target }}" -- -set_cover_merge=1
           echo "corpus files saved: $(find "corpus/${{ matrix.target }}" -type f | wc -l)"
       - name: keep the corpus for the next run (main only; never a pull request's)
         if: success() && github.ref == 'refs/heads/main'
