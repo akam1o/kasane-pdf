@@ -11,9 +11,10 @@
 # locally with a scratch directory first, so the committed seeds stay as
 # they are:  fuzz/ci-run.sh TARGET "$(mktemp -d)" fuzz/seeds/TARGET -- ...
 #
-# Limits: 2 GiB RSS and malloc, 30 s per input ($FUZZ_TIMEOUT; an input
-# slower than that is a timeout, and libFuzzer's slow-unit report uses the
-# same bound); the caller adds the run count or -max_total_time.
+# Limits: 2 GiB RSS and malloc, 30 s per input, 90 s for render_content
+# ($FUZZ_TIMEOUT overrides both; an input slower than that is a timeout,
+# and libFuzzer's slow-unit report uses the same bound); the caller adds
+# the run count or -max_total_time.
 # Toolchain: $FUZZ_TOOLCHAIN (CI's pinned nightly by default).
 #
 # Why 30 s: a render target renders each input up to five times (two
@@ -24,6 +25,16 @@
 # 500 000 butt-capped dash segments along a million-unit path), which
 # that multiplies to ≈ 14 s on the runner: a 10 s limit fired on
 # legitimate inputs (fuzz-nightly, PR #3).
+#
+# Why 90 s for render_content: that estimate is one dashed path. A page
+# of two million-unit dashed rectangles renders in ≈ 210 ms natively
+# (the renderer bounds the dashing, not the time: the work grows with
+# the number of such paths, ≈ 100 ms each), five times per input, ≈ 17 s
+# under ASan on a workstation and 31–35 s on the runner, so 30 s fired on
+# legitimate inputs twice in three nightly runs on main (2026-11-16). 90 s
+# leaves room for about five such paths. It is not a bound: the
+# generator can write more, and processing time is not bounded by the
+# engine (SECURITY.md). A hang still fails, after 90 s.
 set -uo pipefail
 # Coverage-only mode (the cmin step's) runs no oracle: never fuzz with it.
 if [ -n "${KASANE_FUZZ_COVERAGE_ONLY+x}" ]; then
@@ -44,7 +55,11 @@ done
 [ $# -gt 0 ] && shift
 cd "$(dirname "$0")"
 toolchain=${FUZZ_TOOLCHAIN:-nightly-2026-10-29}
-timeout=${FUZZ_TIMEOUT:-30}
+case $target in
+  render_content) default_timeout=90 ;;
+  *) default_timeout=30 ;;
+esac
+timeout=${FUZZ_TIMEOUT:-$default_timeout}
 log=$(mktemp)
 cargo "+$toolchain" fuzz run -O "$target" "${dirs[@]}" -- \
   -rss_limit_mb=2048 -malloc_limit_mb=2048 -timeout="$timeout" -report_slow_units="$timeout" \
