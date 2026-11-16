@@ -107,11 +107,50 @@ impl Json {
                 {
                     *i += 1;
                 }
-                std::str::from_utf8(&b[start..*i])
-                    .ok()
-                    .and_then(|t| t.parse::<f64>().ok())
+                // RFC 8259 § 6: -?(0|[1-9]d*)(.d+)?([eE][+-]?d+)?
+                let t = std::str::from_utf8(&b[start..*i]).map_err(|_| "bad number")?;
+                let ok = {
+                    let mut c = t.chars().peekable();
+                    let digits = |c: &mut std::iter::Peekable<std::str::Chars>| {
+                        let mut n = 0;
+                        while c.peek().is_some_and(|d| d.is_ascii_digit()) {
+                            c.next();
+                            n += 1;
+                        }
+                        n
+                    };
+                    if c.peek() == Some(&'-') {
+                        c.next();
+                    }
+                    let int_ok = if c.peek() == Some(&'0') {
+                        c.next();
+                        true
+                    } else {
+                        digits(&mut c) > 0
+                    };
+                    let frac_ok = if c.peek() == Some(&'.') {
+                        c.next();
+                        digits(&mut c) > 0
+                    } else {
+                        true
+                    };
+                    let exp_ok = if matches!(c.peek(), Some('e' | 'E')) {
+                        c.next();
+                        if matches!(c.peek(), Some('+' | '-')) {
+                            c.next();
+                        }
+                        digits(&mut c) > 0
+                    } else {
+                        true
+                    };
+                    int_ok && frac_ok && exp_ok && c.next().is_none()
+                };
+                if !ok {
+                    return Err(format!("bad number {t:?} at {start}"));
+                }
+                t.parse::<f64>()
                     .map(Json::Num)
-                    .ok_or_else(|| format!("bad value at {start}"))
+                    .map_err(|_| format!("bad number at {start}"))
             }
         }
     }
@@ -238,9 +277,16 @@ fn sample() -> Vec<u8> {
 }
 
 fn text(args: &[&str]) -> (bool, String, String) {
-    let dir = tmpdir("text-annots");
+    run_on(&sample(), args)
+}
+
+/// Each invocation in its own directory: the tests run in parallel.
+fn run_on(pdf: &[u8], args: &[&str]) -> (bool, String, String) {
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = tmpdir(&format!("text-annots-{n}"));
     let f = dir.join("in.pdf");
-    fs::write(&f, sample()).unwrap();
+    fs::write(&f, pdf).unwrap();
     let mut a = vec![
         "text".to_string(),
         f.to_string_lossy().into_owned(),
@@ -285,7 +331,8 @@ fn json_with_annotations() {
     // The page's characters, as without the flag. That output keeps
     // its historical form (the `via` value unquoted, so it is not JSON);
     // with the flag the same entries are written as JSON.
-    let (_, plain, _) = text(&[]);
+    let (ok, plain, err) = text(&[]);
+    assert!(ok, "{err}");
     assert!(Json::parse(&plain).is_err(), "the default output changed");
     let quoted: String = plain
         .lines()
@@ -331,11 +378,57 @@ fn json_with_annotations() {
     }
 }
 
+/// A value that is not finite (a /Rect corner of 10^400, on a hidden annotation
+/// so that nothing draws it) is written as null: the output stays JSON.
+/// (Review.)
+#[test]
+fn json_with_annotations_stays_json_for_values_that_are_not_finite() {
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R \
+              /Resources << /Font << /F 5 0 R >> >> /Annots [10 0 R] >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"BT /F 12 Tf 10 280 Td (Body) Tj ET")),
+        (
+            5,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_vec(),
+        ),
+        (
+            10,
+            format!(
+                "<< /Type /Annot /Subtype /Text /F 2 /Rect [0 0 1{} 10] /Contents (N) >>",
+                "0".repeat(400)
+            )
+            .into_bytes(),
+        ),
+    ]);
+    let (ok, out, err) = run_on(&pdf, &["--annotations"]);
+    assert!(ok, "{err}");
+    let v = Json::parse(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
+    let Json::Arr(a) = v.get("annotations") else {
+        panic!("{out}")
+    };
+    assert_eq!(
+        a[0].get("rect"),
+        &Json::Arr(vec![
+            Json::Num(0.0),
+            Json::Num(0.0),
+            Json::Null,
+            Json::Num(10.0)
+        ])
+    );
+}
+
 #[test]
 fn lines_with_annotations() {
     let (ok, out, err) = text(&["--format", "lines", "--annotations"]);
     assert!(ok, "{err}");
-    let (_, plain, _) = text(&["--format", "lines"]);
+    let (ok, plain, err) = text(&["--format", "lines"]);
+    assert!(ok, "{err}");
     assert!(
         out.starts_with(&plain),
         "the page's lines come first, unchanged"

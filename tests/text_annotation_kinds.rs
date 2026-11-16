@@ -503,6 +503,53 @@ fn a_broken_appearance_fails_strictly_and_is_skipped_and_marked_in_recovery() {
     assert!(!only(&t).recovered);
 }
 
+/// The recovery flag counts every rule applied, also those whose
+/// warnings the full warning list could not keep: here a font whose
+/// /Widths names 1,030 undefined objects (a warning each) before an
+/// invalid /Differences entry is skipped (a recovery rule), loaded
+/// twice (the second time from the font cache). (Review.)
+#[test]
+fn a_recovery_beyond_the_warning_list_still_marks_the_annotation() {
+    let widths: String = (0..1030).map(|i| format!("{} 0 R ", 5000 + i)).collect();
+    let font = format!(
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FirstChar 0 /LastChar 1029 \
+         /Widths [{widths}] /Encoding << /Differences [65 /A true] >> >>"
+    );
+    let appearance = stream_obj(
+        "/Type /XObject /Subtype /Form /BBox [0 0 100 20] /Resources << /Font << /W 20 0 R >> >>",
+        b"BT /W 10 Tf 2 5 Td (A) Tj ET",
+    );
+    let p = pdf(
+        "10 0 R 12 0 R",
+        vec![
+            (
+                10,
+                b"<< /Type /Annot /Subtype /Stamp /Rect [10 100 110 120] /AP << /N 11 0 R >> >>"
+                    .to_vec(),
+            ),
+            (11, appearance.clone()),
+            (
+                12,
+                b"<< /Type /Annot /Subtype /Stamp /Rect [10 150 110 170] /AP << /N 13 0 R >> >>"
+                    .to_vec(),
+            ),
+            (13, appearance),
+            (20, font.into_bytes()),
+        ],
+        "",
+    );
+    let doc = Document::open(&p, &OpenOptions::new().with_recovery(true)).unwrap();
+    let t = extract_text(
+        &doc,
+        &doc.pages()[0],
+        &TextOptions::new().with_annotations(true),
+    )
+    .unwrap();
+    assert!(doc.warnings_dropped() > 0, "the warning list overflowed");
+    let rec: Vec<bool> = t.annotations.iter().map(|a| a.recovered).collect();
+    assert_eq!(rec, vec![true, true]);
+}
+
 #[test]
 fn several_pages_keep_their_own_annotations() {
     let objs = vec![

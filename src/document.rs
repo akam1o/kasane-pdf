@@ -168,6 +168,8 @@ pub(crate) struct CachedFont {
     pub(crate) font: crate::font::Font,
     pub(crate) warnings: Vec<crate::Warning>,
     pub(crate) dropped: u64,
+    /// Recovery rules applied while it loaded, retained or not.
+    pub(crate) recoveries: u64,
 }
 
 /// The decoded bytes a document's font cache may keep alive, and the
@@ -588,27 +590,31 @@ impl Document {
         self.raw_cr_object_strings.get()
     }
 
-    /// Run `f`, returning what it returned and the warnings it recorded
-    /// (also recorded on the document).
+    /// Run `f`, returning what it returned, the warnings it recorded
+    /// (also recorded on the document), how many it could not retain,
+    /// and how many recovery rules it applied (retained or not).
     pub(crate) fn capture_warnings<T>(
         &self,
         f: impl FnOnce() -> T,
-    ) -> (T, Vec<crate::Warning>, u64) {
+    ) -> (T, Vec<crate::Warning>, u64, u64) {
         let outer = std::mem::take(&mut *self.warnings.borrow_mut());
         let r = f();
         let inner = std::mem::replace(&mut *self.warnings.borrow_mut(), outer);
-        self.replay_warnings(&inner.list, inner.dropped);
-        (r, inner.list, inner.dropped)
+        self.replay_warnings(&inner.list, inner.dropped, inner.recoveries);
+        (r, inner.list, inner.dropped, inner.recoveries)
     }
 
-    /// Record `warnings` again, and `dropped` more the list had no room
-    /// for.
-    fn replay_warnings(&self, warnings: &[crate::Warning], dropped: u64) {
+    /// Record `warnings` again, `dropped` more the list had no room for,
+    /// and `recoveries` recovery rules in all (those among `warnings`
+    /// included).
+    fn replay_warnings(&self, warnings: &[crate::Warning], dropped: u64, recoveries: u64) {
         let mut sink = self.warnings.borrow_mut();
+        let before = sink.recoveries;
         for w in warnings {
             sink.push(w.clone());
         }
         sink.dropped = sink.dropped.saturating_add(dropped);
+        sink.recoveries = before.saturating_add(recoveries);
     }
 
     /// Keep the fonts this document loads until the guard (the
@@ -634,7 +640,7 @@ impl Document {
         let me = self as *const Document as usize;
         let hit = FONT_CACHE.with(|c| c.borrow().get(&me).and_then(|f| f.fonts.get(&key).cloned()));
         hit.map(|c| {
-            self.replay_warnings(&c.warnings, c.dropped);
+            self.replay_warnings(&c.warnings, c.dropped, c.recoveries);
             c.font
         })
     }

@@ -49,7 +49,7 @@ NoPrint concerns printing only, so a NoPrint annotation is shown.
 | `Highlight`, `Underline`, `Squiggly`, `StrikeOut` | their appearance (usually no text) | `/Contents` |
 | `Stamp`, `Square`, `Circle`, `Line`, `Polygon`, `PolyLine`, `Ink`, `Caret`, `FileAttachment`, `Sound`, `Redact`, `Projection` | their appearance | `/Contents` |
 | `Widget` (form field) | its appearance, or the one drawn from the value | none |
-| `Link` | none: a link has no appearance of its own | none: `/Contents` is an alternate description |
+| `Link` | its appearance when it has one (usually none) | none: `/Contents` is an alternate description |
 | `Popup` | not reported: it shows its parent's `/Contents`, reported on the parent | — |
 | any other (`Screen`, `Movie`, `PrinterMark`, `Watermark`, `3D`, unknown) | its appearance | none: `/Contents` is an alternate description |
 
@@ -95,8 +95,9 @@ Text strings are decoded as § 7.9.2.2 defines:
   removed;
 - else PDFDocEncoding.
 
-Undefined or invalid sequences become U+FFFD: an odd UTF-16 byte, an
-unpaired surrogate, invalid UTF-8, an undefined PDFDocEncoding code. No
+Undefined or invalid sequences become U+FFFD: an unpaired surrogate,
+invalid UTF-8, an undefined PDFDocEncoding code. A trailing odd byte of
+UTF-16 is dropped. No
 Unicode normalisation is applied: text is reported as stored. A
 decomposed é stays two code points.
 
@@ -119,8 +120,9 @@ Duplicates are removed by what the strings *are*, not by their bytes:
 | case | shown | note |
 |---|---|---|
 | no appearance stream | what kasane draws for it (a field, a free text), else none | as above |
-| an appearance stream that does not parse, or whose state is not a stream | strict mode: the extraction fails | |
+| an appearance state that is not a stream, or an appearance stream without `/BBox` | strict mode: the extraction fails | |
 | | recovery mode: none, with `recovered` set | as above |
+| an appearance stream whose content does not parse | the extraction fails, in recovery mode too, unless a rule of [`recovery-mode.md`](recovery-mode.md) reads it (then `recovered` is set) | |
 | a hidden annotation | none | none |
 
 ## Recovery mode
@@ -139,9 +141,10 @@ dictionary values are read as usual. An `/Annots` entry that is not a
 dictionary is skipped, with `Warning::RecoveryApplied`, and is not
 reported. The CLI opens documents in strict mode.
 
-Annotation text is extraction only. Redaction never uses it to decide
-anything: it reads annotations itself and refuses what it cannot
-remove.
+Redaction does not use `shown_text`, `note` or `recovered`. Its search
+for copies of the removed text elsewhere reads annotation appearances
+through the same extraction, as before T1. Redaction decides what to
+remove, and what to refuse, from its own reading of the annotations.
 
 ## The CLI
 
@@ -169,7 +172,9 @@ An object:
 - `field` is `null`, or
   `{"name", "type", "value": […], "default_value": […], "first_widget"}`.
 - A string longer than 65,536 characters is cut, and the annotation
-  carries `"truncated": true`.
+  carries `"truncated": true`. This applies to every string, the
+  subtype and the field's name and type included.
+- A number that is not finite is written as `null`.
 - At most 50,000 annotations are listed; the rest are counted in an
   `_omitted` entry.
 
@@ -198,6 +203,11 @@ A line ends with ` (recovered)` or ` (truncated)` when that applies.
   field font is F1 in the roadmap, not done, so a field value in a
   script that font does not cover may not be shown as other readers
   show it.
+- **The Invisible flag (bit 1) is not applied.** An annotation of an
+  unknown subtype with the Invisible flag set and an appearance is
+  drawn and shown. § 12.5.3 says such an annotation is not displayed
+  when no handler is available for it. This is the renderer's
+  behaviour, older than T1, and it is left for a change of its own.
 - **A cycle in a field's `/Parent` chain fails the extraction.** It is
   caught as a cycle, or by the 32-level depth bound of the
   inherited-attribute walk that meets it first.

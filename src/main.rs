@@ -1333,21 +1333,48 @@ fn chars_json(t: &kasane_pdf::ExtractedText, rfc8259: bool) -> String {
         } else {
             out.push_str(&format!("\"via\": {:?}, ", c.resolved_via));
         }
-        out.push_str(&format!(
-            "\"origin\": [{:.2}, {:.2}], \"advance\": [{:.2}, {:.2}], ",
-            c.origin.0, c.origin.1, c.advance.0, c.advance.1
-        ));
+        if rfc8259 {
+            out.push_str(&format!(
+                "\"origin\": [{}, {}], \"advance\": [{}, {}], ",
+                json_num(c.origin.0),
+                json_num(c.origin.1),
+                json_num(c.advance.0),
+                json_num(c.advance.1)
+            ));
+        } else {
+            out.push_str(&format!(
+                "\"origin\": [{:.2}, {:.2}], \"advance\": [{:.2}, {:.2}], ",
+                c.origin.0, c.origin.1, c.advance.0, c.advance.1
+            ));
+        }
         match c.bounds {
+            Some(b) if rfc8259 => out.push_str(&format!(
+                "\"bounds\": [{}, {}, {}, {}], ",
+                json_num(b.0),
+                json_num(b.1),
+                json_num(b.2),
+                json_num(b.3)
+            )),
             Some(b) => out.push_str(&format!(
                 "\"bounds\": [{:.2}, {:.2}, {:.2}, {:.2}], ",
                 b.0, b.1, b.2, b.3
             )),
             None => out.push_str("\"bounds\": null, "),
         }
-        out.push_str(&format!(
-            "\"mode\": {}, \"size\": {:.2}, \"rise\": {:.2}, \"tj\": {:.2}",
-            c.render_mode, c.font_size, c.rise, c.tj_adjust
-        ));
+        if rfc8259 {
+            out.push_str(&format!(
+                "\"mode\": {}, \"size\": {}, \"rise\": {}, \"tj\": {}",
+                c.render_mode,
+                json_num(c.font_size),
+                json_num(c.rise),
+                json_num(c.tj_adjust)
+            ));
+        } else {
+            out.push_str(&format!(
+                "\"mode\": {}, \"size\": {:.2}, \"rise\": {:.2}, \"tj\": {:.2}",
+                c.render_mode, c.font_size, c.rise, c.tj_adjust
+            ));
+        }
         out.push('}');
     }
     if shown < t.chars.len() {
@@ -1387,6 +1414,16 @@ fn json_string(s: &str) -> String {
     out
 }
 
+/// A number with two decimals, or `null` when it is not finite (JSON
+/// has no infinity or NaN).
+fn json_num(v: f64) -> String {
+    if v.is_finite() {
+        format!("{v:.2}")
+    } else {
+        "null".to_string()
+    }
+}
+
 /// `s` capped at `MAX_ANNOTATION_TEXT_CHARS`, and whether it was cut.
 fn clip_annotation_text(s: &str) -> (String, bool) {
     match s.char_indices().nth(MAX_ANNOTATION_TEXT_CHARS) {
@@ -1411,6 +1448,7 @@ fn annotations_json(annots: &[kasane_pdf::AnnotationText]) -> String {
             }
             None => "null".to_string(),
         };
+        let subtype = text(Some(a.subtype.clone()));
         let shown_text = text(a.shown_text());
         let note = text(a.note());
         let contents = text(a.contents.clone());
@@ -1423,11 +1461,12 @@ fn annotations_json(annots: &[kasane_pdf::AnnotationText]) -> String {
                     format!("[{}]", items.join(", "))
                 };
                 let name = text(Some(f.name.clone()));
+                let field_type = text(Some(f.field_type.clone()));
                 let value = list(&f.value, &mut text);
                 let default_value = list(&f.default_value, &mut text);
                 format!(
                     "{{\"name\": {name}, \"type\": {}, \"value\": {value}, \"default_value\": {default_value}, \"first_widget\": {}}}",
-                    json_string(&f.field_type),
+                    field_type,
                     f.first_widget
                 )
             }
@@ -1436,15 +1475,15 @@ fn annotations_json(annots: &[kasane_pdf::AnnotationText]) -> String {
             out.push(',');
         }
         out.push_str(&format!(
-            "\n  {{\"index\": {}, \"subtype\": {}, \"rect\": [{:.2}, {:.2}, {:.2}, {:.2}], \"hidden\": {}, \
+            "\n  {{\"index\": {}, \"subtype\": {}, \"rect\": [{}, {}, {}, {}], \"hidden\": {}, \
              \"recovered\": {}, \"shown\": {shown_text}, \"note\": {note}, \"contents\": {contents}, \
              \"rich_text\": {rich_text}, \"field\": {field}{}}}",
             a.index,
-            json_string(&a.subtype),
-            a.rect.llx,
-            a.rect.lly,
-            a.rect.urx,
-            a.rect.ury,
+            subtype,
+            json_num(a.rect.llx),
+            json_num(a.rect.lly),
+            json_num(a.rect.urx),
+            json_num(a.rect.ury),
             a.hidden,
             a.recovered,
             if cut { ", \"truncated\": true" } else { "" }

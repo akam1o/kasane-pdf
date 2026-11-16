@@ -425,7 +425,7 @@ pub(crate) fn load_font(
         }
     };
     let before = doc.decoded_left();
-    let (font, warnings, dropped) =
+    let (font, warnings, dropped, recoveries) =
         doc.capture_warnings(|| load_font_dict(doc, &dict, name, limits));
     let font = font?;
     if let Some(r) = key {
@@ -434,6 +434,7 @@ pub(crate) fn load_font(
             font: font.clone(),
             warnings,
             dropped,
+            recoveries,
         };
         doc.cache_font(r, limits, cached, bytes);
     }
