@@ -557,6 +557,13 @@ impl Document {
         out
     }
 
+    /// How many recovery rules have been applied so far (a count that
+    /// only grows): compared before and after a step, whether the step
+    /// applied one.
+    pub(crate) fn recoveries_recorded(&self) -> u64 {
+        self.warnings.borrow().recoveries
+    }
+
     /// Record a warning (engine-internal producers that have no
     /// stream of their own, e.g. the ToUnicode parser).
     pub(crate) fn push_warning(&self, w: crate::Warning) {

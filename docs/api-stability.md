@@ -104,6 +104,19 @@ patch release.
   class of input is refused with `max_pattern_tiles`, and `rewrite`
   carries `/OCProperties`.
 
+## Unreleased (0.11.0; additive)
+
+- `AnnotationText::shown_text()`, `AnnotationText::note()` and the
+  field `AnnotationText::recovered` (the struct is `#[non_exhaustive]`)
+  ([`annotation-text.md`](annotation-text.md)); `AnnotationText::text()`
+  is unchanged. The CLI's `text` gains `--annotations`; its output
+  without it is unchanged.
+- `RecoveryRule::{IgnoredWrongOperandCount, UnclippedFormWithoutBBox,
+  FunctionExtraInputsIgnored, ShadingOutputsTruncated,
+  ImageSamplesReadAtDictionarySize}` ([`recovery-mode.md`](recovery-mode.md);
+  the enum is `#[non_exhaustive]`).
+- `cargo semver-checks` against 0.10.0: no update required.
+
 ## 0.10.0
 
 (0.9.0 was not released; its changes are part of 0.10.0.)

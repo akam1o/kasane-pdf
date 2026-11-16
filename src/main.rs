@@ -275,7 +275,9 @@ fn main() -> ExitCode {
             eprintln!(
                 "       {prog} render <file.pdf> <page-number> --output <file.png> [--dpi <dpi>]"
             );
-            eprintln!("       {prog} text <file.pdf> <page-number> [--format json|lines]");
+            eprintln!(
+                "       {prog} text <file.pdf> <page-number> [--format json|lines] [--annotations]"
+            );
             eprintln!("       {prog} rewrite <file.pdf> --output <out.pdf>");
             eprintln!("       {prog} inspect <file.pdf> <page-number>");
             eprintln!(
@@ -1222,14 +1224,21 @@ fn report_warnings(doc: &Document) {
     }
 }
 
-/// `text` subcommand: `text <file.pdf> <page> [--format json|lines]`.
-/// Prints each extracted character in content order with its
-/// resolved Unicode value and page-space geometry.
+/// `text` subcommand: `text <file.pdf> <page> [--format json|lines]
+/// [--annotations]`. Prints each extracted character in content order
+/// with its resolved Unicode value and page-space geometry; with
+/// `--annotations`, then each annotation's shown text and note
+/// (`docs/annotation-text.md`).
 fn run_text(path: &str, page_no: usize, args: &[String]) -> Result<(), Error> {
     let mut format = "json";
+    let mut annotations = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--annotations" => {
+                annotations = true;
+                i += 1;
+            }
             "--format" => {
                 format = args
                     .get(i + 1)
@@ -1255,10 +1264,24 @@ fn run_text(path: &str, page_no: usize, args: &[String]) -> Result<(), Error> {
         .get(page_no - 1)
         .ok_or_else(|| Error::Structure(format!("page {page_no} does not exist")))?;
 
-    let text = kasane_pdf::extract_text(&doc, page, &kasane_pdf::TextOptions::default())?;
-    match format {
-        "json" => print_json(&text),
-        "lines" => print_lines(&text),
+    let text = kasane_pdf::extract_text(
+        &doc,
+        page,
+        &kasane_pdf::TextOptions::default().with_annotations(annotations),
+    )?;
+    match (format, annotations) {
+        ("json", false) => print!("{}", chars_json(&text, false)),
+        ("json", true) => print!(
+            "{{\n\"chars\": {},\n\"annotations\": {}}}\n",
+            chars_json(&text, true).trim_end(),
+            annotations_json(&text.annotations)
+        ),
+        ("lines", _) => {
+            print_lines(&text);
+            if annotations {
+                print_annotation_lines(&text.annotations);
+            }
+        }
         _ => unreachable!(),
     }
     report_warnings(&doc);
@@ -1277,7 +1300,11 @@ fn clip_unicode(s: &str) -> (String, bool) {
     (s.chars().take(MAX_TEXT_UNICODE_CHARS).collect(), true)
 }
 
-fn print_json(t: &kasane_pdf::ExtractedText) {
+/// The page's characters as an array (the `text` command's whole output
+/// without `--annotations`). `rfc8259`: strings escaped as JSON and
+/// `via` quoted, as `--annotations` prints it; without it the output is
+/// exactly what it has been (Rust escapes, `via` unquoted).
+fn chars_json(t: &kasane_pdf::ExtractedText, rfc8259: bool) -> String {
     let shown = t.chars.len().min(MAX_TEXT_ENTRIES);
     let mut out = String::from("[\n");
     for (i, c) in t.chars.iter().take(shown).enumerate() {
@@ -1289,14 +1316,23 @@ fn print_json(t: &kasane_pdf::ExtractedText) {
         match &c.unicode {
             Some(s) => {
                 let (u, clipped) = clip_unicode(s);
-                out.push_str(&format!("\"unicode\": {:?}, ", u));
+                if rfc8259 {
+                    out.push_str(&format!("\"unicode\": {}, ", json_string(&u)));
+                } else {
+                    out.push_str(&format!("\"unicode\": {:?}, ", u));
+                }
                 if clipped {
                     out.push_str("\"truncated\": true, ");
                 }
             }
             None => out.push_str("\"unicode\": null, "),
         }
-        out.push_str(&format!("\"via\": {:?}, ", c.resolved_via));
+        if rfc8259 {
+            let via = format!("{:?}", c.resolved_via);
+            out.push_str(&format!("\"via\": {}, ", json_string(&via)));
+        } else {
+            out.push_str(&format!("\"via\": {:?}, ", c.resolved_via));
+        }
         out.push_str(&format!(
             "\"origin\": [{:.2}, {:.2}], \"advance\": [{:.2}, {:.2}], ",
             c.origin.0, c.origin.1, c.advance.0, c.advance.1
@@ -1324,7 +1360,127 @@ fn print_json(t: &kasane_pdf::ExtractedText) {
         ));
     }
     out.push_str("\n]\n");
-    print!("{out}");
+    out
+}
+
+/// Each annotation string the `text --annotations` output carries is
+/// capped at this many characters; a cut is stated.
+const MAX_ANNOTATION_TEXT_CHARS: usize = 65_536;
+
+/// A JSON string literal (RFC 8259): quotes, backslashes and control
+/// characters escaped, everything else as UTF-8.
+fn json_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// `s` capped at `MAX_ANNOTATION_TEXT_CHARS`, and whether it was cut.
+fn clip_annotation_text(s: &str) -> (String, bool) {
+    match s.char_indices().nth(MAX_ANNOTATION_TEXT_CHARS) {
+        Some((end, _)) => (s[..end].to_string(), true),
+        None => (s.to_string(), false),
+    }
+}
+
+/// The annotations as a JSON array: per annotation its shown text and
+/// note, then the dictionary values they come from, labelled (never
+/// text: `/T`, `/Subj`, `/NM` are not reported).
+fn annotations_json(annots: &[kasane_pdf::AnnotationText]) -> String {
+    let shown = annots.len().min(MAX_TEXT_ENTRIES);
+    let mut out = String::from("[");
+    for (n, a) in annots.iter().take(shown).enumerate() {
+        let mut cut = false;
+        let mut text = |s: Option<String>| match s {
+            Some(s) => {
+                let (s, c) = clip_annotation_text(&s);
+                cut |= c;
+                json_string(&s)
+            }
+            None => "null".to_string(),
+        };
+        let shown_text = text(a.shown_text());
+        let note = text(a.note());
+        let contents = text(a.contents.clone());
+        let rich_text = text(a.rich_text.clone());
+        let field = match &a.field {
+            None => "null".to_string(),
+            Some(f) => {
+                let list = |v: &[String], text: &mut dyn FnMut(Option<String>) -> String| {
+                    let items: Vec<String> = v.iter().map(|s| text(Some(s.clone()))).collect();
+                    format!("[{}]", items.join(", "))
+                };
+                let name = text(Some(f.name.clone()));
+                let value = list(&f.value, &mut text);
+                let default_value = list(&f.default_value, &mut text);
+                format!(
+                    "{{\"name\": {name}, \"type\": {}, \"value\": {value}, \"default_value\": {default_value}, \"first_widget\": {}}}",
+                    json_string(&f.field_type),
+                    f.first_widget
+                )
+            }
+        };
+        if n > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "\n  {{\"index\": {}, \"subtype\": {}, \"rect\": [{:.2}, {:.2}, {:.2}, {:.2}], \"hidden\": {}, \
+             \"recovered\": {}, \"shown\": {shown_text}, \"note\": {note}, \"contents\": {contents}, \
+             \"rich_text\": {rich_text}, \"field\": {field}{}}}",
+            a.index,
+            json_string(&a.subtype),
+            a.rect.llx,
+            a.rect.lly,
+            a.rect.urx,
+            a.rect.ury,
+            a.hidden,
+            a.recovered,
+            if cut { ", \"truncated\": true" } else { "" }
+        ));
+    }
+    if shown < annots.len() {
+        out.push_str(&format!(
+            ",\n  {{\"_omitted\": {}, \"_note\": \"output capped at {MAX_TEXT_ENTRIES} entries\"}}",
+            annots.len() - shown
+        ));
+    }
+    out.push_str(if annots.is_empty() { "]" } else { "\n]" });
+    out
+}
+
+/// One line per shown text and per note, after the page's lines.
+fn print_annotation_lines(annots: &[kasane_pdf::AnnotationText]) {
+    for a in annots.iter().take(MAX_TEXT_ENTRIES) {
+        let tag = if a.recovered { " (recovered)" } else { "" };
+        for (kind, s) in [("shown", a.shown_text()), ("note", a.note())] {
+            if let Some(s) = s {
+                let (s, cut) = clip_annotation_text(&s);
+                let cut = if cut { " (truncated)" } else { "" };
+                println!(
+                    "annotation {} {} {kind} {:?}{tag}{cut}",
+                    a.index, a.subtype, s
+                );
+            }
+        }
+    }
+    if annots.len() > MAX_TEXT_ENTRIES {
+        println!(
+            "... ({} more annotation(s) omitted — output capped at {MAX_TEXT_ENTRIES})",
+            annots.len() - MAX_TEXT_ENTRIES
+        );
+    }
 }
 
 /// `preflight-redaction` subcommand:

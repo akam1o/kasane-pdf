@@ -585,6 +585,7 @@ pub fn render_page(
         extract: None,
         annot_spans: Vec::new(),
         annot_hidden: Vec::new(),
+        annot_recovered: Vec::new(),
         extract_unicode_bytes: 0,
         extraction_only: false,
         glyph_bounds: true,
@@ -1352,6 +1353,17 @@ fn page_dict_entry(doc: &Document, page: &Page, key: &[u8]) -> Result<Option<Obj
     }
 }
 
+/// What `draw_annotations` recorded per `/Annots` index for extraction
+/// (`Renderer::take_annotation_spans`).
+pub(crate) struct AnnotationSpans {
+    /// The extracted characters each drawn appearance produced.
+    pub(crate) spans: Vec<(usize, std::ops::Range<usize>)>,
+    /// Not drawn: Hidden, NoView, or optional content that is OFF.
+    pub(crate) hidden: Vec<usize>,
+    /// Read under a recovery rule.
+    pub(crate) recovered: Vec<usize>,
+}
+
 /// The page's `/Annots` entries (`None` when absent or null).
 pub(crate) fn page_annots(doc: &Document, page: &Page) -> Result<Option<Vec<Object>>, Error> {
     match page_dict_entry(doc, page, b"Annots")? {
@@ -1493,6 +1505,9 @@ pub(crate) struct Renderer<'a> {
     /// drawn because they are hidden (flags or optional content).
     annot_spans: Vec<(usize, std::ops::Range<usize>)>,
     annot_hidden: Vec<usize>,
+    /// `/Annots` indices read under a recovery rule (an appearance
+    /// skipped, or drawn with one): see `draw_annotations`.
+    annot_recovered: Vec<usize>,
     /// Cumulative UTF-8 bytes of resolved Unicode stored in `extract`.
     extract_unicode_bytes: u64,
     /// `true` while serving `extract_text`: painting work (path
@@ -1799,6 +1814,7 @@ impl<'a> Renderer<'a> {
             extract: Some(Vec::new()),
             annot_spans: Vec::new(),
             annot_hidden: Vec::new(),
+            annot_recovered: Vec::new(),
             extract_unicode_bytes: 0,
             extraction_only: true,
             glyph_bounds: true,
@@ -3677,7 +3693,17 @@ impl<'a> Renderer<'a> {
             Object::Null => return Ok(()),
             _ => return Err(Error::Structure("/Annots is not an array".into())),
         };
+        // Whether a recovery rule was applied while an annotation was
+        // read: the count before it, checked when the next one starts
+        // (every `continue` below ends an annotation) and after the last.
+        let mut pending: Option<(usize, u64)> = None;
         for (index, entry) in entries.iter().enumerate() {
+            if let Some((i, before)) = pending.take() {
+                if self.doc.recoveries_recorded() > before {
+                    self.annot_recovered.push(i);
+                }
+            }
+            pending = Some((index, self.doc.recoveries_recorded()));
             let entry_ref = entry.as_ref();
             let annot = self.doc.deref(entry)?;
             if matches!(annot, Object::Null) {
@@ -4032,18 +4058,23 @@ impl<'a> Renderer<'a> {
                 self.annot_spans.push((index, start..buf.len()));
             }
         }
+        if let Some((i, before)) = pending {
+            if self.doc.recoveries_recorded() > before {
+                self.annot_recovered.push(i);
+            }
+        }
         Ok(())
     }
 
-    /// Extraction with annotations: the appearance spans and hidden
-    /// indices recorded by `draw_annotations`.
-    pub(crate) fn take_annotation_spans(
-        &mut self,
-    ) -> (Vec<(usize, std::ops::Range<usize>)>, Vec<usize>) {
-        (
-            std::mem::take(&mut self.annot_spans),
-            std::mem::take(&mut self.annot_hidden),
-        )
+    /// Extraction with annotations: the appearance spans, the hidden
+    /// indices and those read under a recovery rule, recorded by
+    /// `draw_annotations`.
+    pub(crate) fn take_annotation_spans(&mut self) -> AnnotationSpans {
+        AnnotationSpans {
+            spans: std::mem::take(&mut self.annot_spans),
+            hidden: std::mem::take(&mut self.annot_hidden),
+            recovered: std::mem::take(&mut self.annot_recovered),
+        }
     }
 
     /// Intersect the current clip with `rect` (in user space under the

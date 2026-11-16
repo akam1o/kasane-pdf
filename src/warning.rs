@@ -305,10 +305,17 @@ impl fmt::Display for Warning {
 pub(crate) struct WarningSink {
     pub(crate) list: Vec<Warning>,
     pub(crate) dropped: u64,
+    /// Recovery rules applied (`Warning::RecoveryApplied`), retained or
+    /// not; never reset by `take_warnings`. Lets a caller tell whether a
+    /// step of its own applied one.
+    pub(crate) recoveries: u64,
 }
 
 impl WarningSink {
     pub(crate) fn push(&mut self, w: Warning) {
+        if matches!(w, Warning::RecoveryApplied { .. }) {
+            self.recoveries = self.recoveries.saturating_add(1);
+        }
         // One record per undefined reference: the same dangling
         // reference is resolved again on every page that uses it.
         if matches!(w, Warning::UndefinedReference { .. }) && self.list.contains(&w) {

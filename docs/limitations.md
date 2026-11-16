@@ -183,8 +183,10 @@ are on the [roadmap](architecture.md#roadmap).
   name table is still consulted first, unchanged, so its readings stay
   as before: ZapfDingbats names such as `a12` read as dingbats and
   `uniXXXX` names are read as written, private-use values included.
-- Annotation text (`TextOptions::with_annotations`): `/RC` is reported
-  as stored (XHTML, not interpreted); a field's value is read per page
+- Annotation text (`TextOptions::with_annotations`, `text
+  --annotations`; [`annotation-text.md`](annotation-text.md)): `/RC` is
+  reported as stored (XHTML, not interpreted), so a note with `/RC` and
+  no `/Contents` is empty; a field's value is read per page
   (a field with widgets on several pages reports it once per page);
   buttons and signatures have no text value; appearance text exists
   only when the annotation has an appearance the renderer draws.

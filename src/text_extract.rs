@@ -336,7 +336,11 @@ fn extract_text_impl(
             .cloned()
             .unwrap_or(crate::object::Object::Dict(Default::default()));
         r.draw_annotations(page, &page_resources)?;
-        let (spans, hidden) = r.take_annotation_spans();
+        let crate::render::AnnotationSpans {
+            spans,
+            hidden,
+            recovered,
+        } = r.take_annotation_spans();
         let used = r.extracted_unicode_bytes();
         let mut all = r.take_extracted().unwrap_or_default();
         let drawn: Vec<(usize, Vec<CharInfo>)> = spans
@@ -349,6 +353,7 @@ fn extract_text_impl(
             page,
             drawn,
             &hidden,
+            &recovered,
             used,
             limits.max_extracted_unicode_bytes,
         )?;

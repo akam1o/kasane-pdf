@@ -21,6 +21,12 @@
 //! [`AnnotationText::text`] picks one string by priority, so the same
 //! words are not counted twice: a field's value (first widget only),
 //! else for other annotations their `/Contents`, else the appearance.
+//!
+//! [`AnnotationText::shown_text`] and [`AnnotationText::note`] split it
+//! by what the reader sees instead (the CLI's `text --annotations`,
+//! `docs/annotation-text.md`): the text drawn on the page, and the
+//! comment a markup annotation shows in its pop-up. `/T`, `/Subj`,
+//! `/NM`, `/TU`, `/DV` and `/RC` are never either.
 
 use crate::document::Document;
 use crate::error::Error;
@@ -57,7 +63,35 @@ pub struct AnnotationText {
     pub field: Option<FieldText>,
     /// Characters drawn by the normal appearance, in page space.
     pub appearance: Vec<CharInfo>,
+    /// A recovery rule was applied while this annotation was read
+    /// (recovery mode only): its appearance was skipped (it is then
+    /// empty) or drawn under a rule, so `appearance` may not be what
+    /// another reader shows. The dictionary values are read as usual.
+    pub recovered: bool,
 }
+
+/// Markup annotations (§12.5.6.2, Table 170), whose `/Contents` is a
+/// comment shown in a pop-up, not on the page. `FreeText` is one too,
+/// but its `/Contents` is the text it draws.
+const MARKUP: [&str; 17] = [
+    "Text",
+    "Line",
+    "Square",
+    "Circle",
+    "Polygon",
+    "PolyLine",
+    "Highlight",
+    "Underline",
+    "Squiggly",
+    "StrikeOut",
+    "Caret",
+    "Ink",
+    "Stamp",
+    "FileAttachment",
+    "Sound",
+    "Redact",
+    "Projection",
+];
 
 /// The form field behind a widget annotation (§12.7.3).
 ///
@@ -83,6 +117,35 @@ pub struct FieldText {
 }
 
 impl AnnotationText {
+    /// The text its normal appearance draws on the page — what a viewer
+    /// shows, and what Poppler and MuPDF extract — or `None` when it
+    /// draws none or is hidden. For a widget this is its appearance,
+    /// even when the field's `/V` differs (`field` reports the value).
+    pub fn shown_text(&self) -> Option<String> {
+        if self.hidden {
+            return None;
+        }
+        let t: String = self
+            .appearance
+            .iter()
+            .filter_map(|c| c.unicode.as_deref())
+            .collect();
+        (!t.trim().is_empty()).then_some(t)
+    }
+
+    /// The comment of a markup annotation (a note, a highlight's
+    /// comment, a stamp's: its `/Contents`, shown in its pop-up), or
+    /// `None`: when hidden, and for every other kind — a free-text
+    /// annotation's `/Contents` is the text it draws ([`Self::
+    /// shown_text`]), a link's, a widget's and the others' an alternate
+    /// description.
+    pub fn note(&self) -> Option<String> {
+        if self.hidden || !MARKUP.contains(&self.subtype.as_str()) {
+            return None;
+        }
+        self.contents.clone().filter(|c| !c.trim().is_empty())
+    }
+
     /// The annotation's text, by priority, or `None`: nothing for a
     /// hidden annotation; a widget's field value (first widget only;
     /// further widgets of the field `None`), else its appearance; any
@@ -330,13 +393,15 @@ fn values(
 
 /// The annotations of `page` (module documentation). `appearance`:
 /// per `/Annots` index the characters its appearance drew; `hidden`:
-/// the indices not drawn because hidden. `used` is the page content's
-/// share of the Unicode budget.
+/// the indices not drawn because hidden; `recovered`: those read under
+/// a recovery rule. `used` is the page content's share of the Unicode
+/// budget.
 pub(crate) fn collect(
     doc: &Document,
     page: &crate::page::Page,
     appearance: Vec<(usize, Vec<CharInfo>)>,
     hidden: &[usize],
+    recovered: &[usize],
     used: u64,
     max: u64,
 ) -> Result<Vec<AnnotationText>, Error> {
@@ -350,6 +415,7 @@ pub(crate) fn collect(
     // entries, so nothing here may be quadratic in its length.
     let mut appearance: HashMap<usize, Vec<CharInfo>> = appearance.into_iter().collect();
     let hidden: HashSet<usize> = hidden.iter().copied().collect();
+    let recovered: HashSet<usize> = recovered.iter().copied().collect();
     let mut out: Vec<AnnotationText> = Vec::new();
     let mut seen_annots: HashSet<IndirectRef> = HashSet::new();
     let mut seen_fields: HashSet<IndirectRef> = HashSet::new();
@@ -441,6 +507,7 @@ pub(crate) fn collect(
             rich_text,
             field,
             appearance: chars,
+            recovered: recovered.contains(&index),
         });
     }
     Ok(out)

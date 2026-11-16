@@ -769,3 +769,52 @@ Peak memory changes by at most +0.2 MB per file.
 The recovered inputs take longer because they now render instead of
 stopping at the first error. The recovered JPEG holds 6 MB more, for
 the frame it decodes.
+
+## 13. v0.11.0 Phase 3: annotation text (T1)
+
+`kasane-pdf text --annotations` reports each annotation's shown text
+and markup note beside the page's text
+([`annotation-text.md`](annotation-text.md)). Measured on page 1 of the
+corpus (macOS, Poppler 26.10.0, MuPDF 1.28.6).
+
+**The default output is unchanged.** `text --format json` and
+`--format lines`, without the flag, are byte-identical before and after
+on all 511 files.
+
+**The headline (default) text score is unchanged**, since the default
+extraction is: 357 of the 394 strict text passes at F1 ≥ 0.9.
+
+**The annotation-inclusive score** is computed by the runner, the page
+text plus each shown annotation's appearance: 369 of 390 at F1 ≥ 0.9.
+The 4 files not scored are those whose annotation appearance does not
+parse in strict mode.
+
+**The CLI's own output against both readers.** The scored population
+is the same. The character F1 is computed by a script that follows the
+runner's definition (NFKC; whitespace, control and format characters
+removed), and its default counts differ from the runner's by up to 4
+files.
+
+| reference | scored | default ≥ 0.9 | + shown ≥ 0.9 | + shown + note ≥ 0.9 |
+|---|---:|---:|---:|---:|
+| Poppler (`pdftotext`) | 390 | 353 | 368 | 344 |
+| MuPDF (`mutool draw -F txt`) | 389 | 354 | 369 | 345 |
+
+Improvements and regressions are counted apart:
+- **Adding shown text** raises 15 files above 0.9 against each reader,
+  and drops none below it. Against Poppler, F1 is higher on 20 files
+  and lower on none. Against MuPDF, it is higher on 19 and lower on 1,
+  a file of 75 annotations where the two readers disagree on what is
+  drawn; that file stays above 0.9.
+- **Adding notes** drops 24 files below 0.9 against each reader, and
+  raises none. Neither reader extracts a pop-up comment, so notes are
+  reported apart, not as page text.
+
+**Performance.** All pages extracted, the median of seven alternating
+runs, compared with the commit before T1:
+- default extraction: unchanged on every input (11–12 ms; 3.15 s for
+  300 pages);
+- with annotations: 0 to +2.3 %, within noise (2,000 free-text
+  annotations 36 ms; 2,000 widgets 41 ms; 50 appearances of 400
+  operators 116 ms);
+- peak memory: unchanged.
