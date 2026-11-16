@@ -252,6 +252,9 @@ established by `tests/redact_recovery.rs` (R0 in
   - a page box (no `/MediaBox`);
   - a form XObject without `/BBox`, drawn unclipped (R2): its extent is
     unknown;
+  - an image whose codestream is not the dictionary's size (R4), where
+    it meets a rect: its samples are edited by the dictionary's
+    geometry, which the codestream does not have;
   - an unknown operator, or a known one with the wrong number of
     operands (R1) — kept as `Operation::Unknown`, which marks the page
     uncertain, never silently dropped;

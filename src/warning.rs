@@ -203,6 +203,14 @@ pub enum RecoveryRule {
     /// does not draw it). Fewer outputs stay an error: no value is
     /// defined for the missing components.
     ShadingOutputsTruncated,
+    /// An image whose JBIG2 page or JPEG frame is not the size its
+    /// dictionary says is decoded at the codestream's own size, and its
+    /// samples are read, in order, as rows of the dictionary's size — as
+    /// Poppler and MuPDF both read it. Reported as an image
+    /// approximation. A codestream with fewer samples than the
+    /// dictionary needs stays an error (the readers pad differently).
+    /// Image redaction keeps refusing such an image.
+    ImageSamplesReadAtDictionarySize,
 }
 
 impl fmt::Display for RecoveryRule {
@@ -233,6 +241,9 @@ impl fmt::Display for RecoveryRule {
             }
             RecoveryRule::ShadingOutputsTruncated => {
                 "shading function outputs beyond the colour space's components ignored"
+            }
+            RecoveryRule::ImageSamplesReadAtDictionarySize => {
+                "image codestream of another size read as rows of the dictionary's size"
             }
         })
     }

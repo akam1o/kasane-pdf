@@ -590,7 +590,7 @@ pub fn render_page(
         glyph_bounds: true,
         substitutions: Vec::new(),
         color_approximations: Vec::new(),
-        image_approximations: Vec::new(),
+        image_approximations: Default::default(),
         knockout_shape: 0,
         dct_target: std::cell::Cell::new(None),
         default_spaces: None,
@@ -615,7 +615,7 @@ pub fn render_page(
     renderer.draw_annotations(page, &page_resources)?;
     let font_substitutions = std::mem::take(&mut renderer.substitutions);
     let color_approximations = std::mem::take(&mut renderer.color_approximations);
-    let image_approximations = std::mem::take(&mut renderer.image_approximations);
+    let image_approximations = renderer.image_approximations.take();
     drop(renderer);
     if transparent_page {
         // C = (1 − αg)·W + αg·Cg on premultiplied pixels: c + (1 − α).
@@ -1515,7 +1515,7 @@ pub(crate) struct Renderer<'a> {
     /// Depth of knockout *shape* passes in progress (see
     /// `knockout_pass`): opacity is not applied while > 0.
     knockout_shape: u32,
-    image_approximations: Vec<String>,
+    image_approximations: std::cell::RefCell<Vec<String>>,
     /// Requested JPEG output size for the next DCT decode (scaled
     /// decode of an oversized image), consumed by `dct_decode`.
     dct_target: std::cell::Cell<Option<(u16, u16)>>,
@@ -1804,7 +1804,7 @@ impl<'a> Renderer<'a> {
             glyph_bounds: true,
             substitutions: Vec::new(),
             color_approximations: Vec::new(),
-            image_approximations: Vec::new(),
+            image_approximations: Default::default(),
             knockout_shape: 0,
             dct_target: std::cell::Cell::new(None),
             default_spaces: None,
@@ -4781,9 +4781,7 @@ impl<'a> Renderer<'a> {
                 show_name(name),
                 if below { "below" } else { "at least" }
             );
-            if !self.image_approximations.contains(&note) {
-                self.image_approximations.push(note);
-            }
+            self.image_approximation(note);
         }
         if is_dct {
             // JPEG always yields 8-bit interleaved samples; the dict's
@@ -5257,6 +5255,31 @@ impl<'a> Renderer<'a> {
     /// decoder) because it produces *pixels*, not bytes; the PDF
     /// dict's Width/Height/ColorSpace are authoritative for the
     /// result's shape, the JPEG's own headers must agree.
+    /// Record an image approximation once.
+    fn image_approximation(&self, note: String) {
+        let mut v = self.image_approximations.borrow_mut();
+        if !v.contains(&note) {
+            v.push(note);
+        }
+    }
+
+    /// Recovery rule R4: an image codestream of another size than the
+    /// dictionary's, read as rows of the dictionary's size.
+    fn recovered_image_size(&self, what: &str, page: (u32, u32), dict: (u32, u32)) {
+        self.doc.push_warning(crate::Warning::RecoveryApplied {
+            rule: crate::RecoveryRule::ImageSamplesReadAtDictionarySize,
+            detail: format!(
+                "{what} {}x{}, dictionary {}x{}",
+                page.0, page.1, dict.0, dict.1
+            ),
+        });
+        self.image_approximation(format!(
+            "{what} is {}x{} but the image dictionary says {}x{}: its samples read as rows of the \
+             dictionary's size (recovery)",
+            page.0, page.1, dict.0, dict.1
+        ));
+    }
+
     fn decode_image_data(&self, dict: &Dict, raw: &[u8]) -> Result<Vec<u8>, Error> {
         let filters = crate::filter::normalize_filters(dict.get(b"Filter".as_slice()))?;
         if filters.is_empty() {
@@ -5289,7 +5312,7 @@ impl<'a> Renderer<'a> {
                 )));
             }
             buf = match name {
-                b"DCTDecode" | b"DCT" => self.dct_decode(&buf, parm, image_dims_u32(dict)?)?,
+                b"DCTDecode" | b"DCT" => self.dct_decode(&buf, parm, dict)?,
                 b"JBIG2Decode" => {
                     let (w, h) = image_dims_u32(dict)?;
                     let globals = match parm.and_then(|p| p.get(b"JBIG2Globals".as_slice())) {
@@ -5302,7 +5325,21 @@ impl<'a> Renderer<'a> {
                             Some(self.doc.decode_stream(gd, graw)?)
                         }
                     };
-                    crate::bilevel::jbig2_decode(&buf, globals.as_deref(), w, h, self.limits)?
+                    if self.doc.recovery_mode() {
+                        let (rows, page) = crate::bilevel::jbig2_decode_recovering(
+                            &buf,
+                            globals.as_deref(),
+                            w,
+                            h,
+                            self.limits,
+                        )?;
+                        if let Some(page) = page {
+                            self.recovered_image_size("JBIG2 page", page, (w, h));
+                        }
+                        rows
+                    } else {
+                        crate::bilevel::jbig2_decode(&buf, globals.as_deref(), w, h, self.limits)?
+                    }
                 }
                 b"CCITTFaxDecode" | b"CCF" => {
                     let (w, h) = image_dims_u32(dict)?;
@@ -5350,12 +5387,8 @@ impl<'a> Renderer<'a> {
     /// decide whether YCbCr→RGB conversion is applied — we trust the
     /// decoder's output format and verify it against `/ColorSpace`
     /// afterwards.
-    fn dct_decode(
-        &self,
-        data: &[u8],
-        parms: Option<&Dict>,
-        dict_dims: (u32, u32),
-    ) -> Result<Vec<u8>, Error> {
+    fn dct_decode(&self, data: &[u8], parms: Option<&Dict>, dict: &Dict) -> Result<Vec<u8>, Error> {
+        let dict_dims = image_dims_u32(dict)?;
         // DecodeParms for DCTDecode: only /ColorTransform is defined.
         if let Some(p) = parms {
             match p.get(b"ColorTransform".as_slice()) {
@@ -5388,7 +5421,14 @@ impl<'a> Renderer<'a> {
         let info = dec
             .info()
             .ok_or_else(|| Error::Parse("DCTDecode (JPEG) header: no frame".into()))?;
-        if (info.width as u32, info.height as u32) != dict_dims {
+        let frame = (info.width as u32, info.height as u32);
+        // Recovery rule R4: a frame of another size, decoded at its own
+        // size (within the limits) and read as rows of the dictionary's
+        // size. Not with a reduced decode, which is sized from the
+        // dictionary.
+        let recovering =
+            frame != dict_dims && self.doc.recovery_mode() && self.dct_target.get().is_none();
+        if frame != dict_dims && !recovering {
             return Err(Error::Structure(format!(
                 "JPEG frame is {}x{} but the image dictionary says {}x{}",
                 info.width, info.height, dict_dims.0, dict_dims.1
@@ -5400,6 +5440,107 @@ impl<'a> Renderer<'a> {
             jpeg_decoder::PixelFormat::RGB24 => 3,
             jpeg_decoder::PixelFormat::CMYK32 => 4,
         };
+        // The bytes of the dictionary's image when the frame is read as
+        // its rows (R4), once the frame was checked to fit the limits.
+        let mut need = 0;
+        if recovering {
+            // Only an 8-bit DCT frame (baseline, extended or progressive)
+            // is read in another size: lossless frames and other
+            // precisions decode to other sample layouts and buffers.
+            let geometry = jpeg_frame_geometry(data).filter(|g| {
+                g.precision == 8
+                    && info.coding_process != jpeg_decoder::CodingProcess::Lossless
+                    && g.components as u64 == comps
+            });
+            let Some(g) = geometry else {
+                return Err(Error::Structure(format!(
+                    "JPEG frame is {}x{} but the image dictionary says {}x{} (and the frame is \
+                     not an 8-bit DCT frame)",
+                    frame.0, frame.1, dict_dims.0, dict_dims.1
+                )));
+            };
+            // The frame is not the dictionary's image, so the limits the
+            // dictionary was checked against do not bound it: check it
+            // here, before the decoder allocates anything. Each
+            // component's plane is at most the frame padded to whole MCUs
+            // (8 × the largest sampling factor on each axis). Buffers of
+            // a fixed size (metadata segments) are as in strict mode.
+            if frame.0 > self.limits.max_image_dimension
+                || frame.1 > self.limits.max_image_dimension
+            {
+                return Err(Error::LimitExceeded {
+                    limit: "max_image_dimension",
+                    max: self.limits.max_image_dimension as u64,
+                });
+            }
+            if frame.0 as u64 * frame.1 as u64 > self.limits.max_image_total_samples {
+                return Err(Error::LimitExceeded {
+                    limit: "max_image_total_samples",
+                    max: self.limits.max_image_total_samples,
+                });
+            }
+            let padded = |v: u32, f: u8| {
+                let mcu = 8 * u64::from(f.max(1));
+                u64::from(v).div_ceil(mcu) * mcu
+            };
+            // Live together while decoding (jpeg-decoder 0.3): the planes,
+            // a progressive frame's coefficients (2 bytes a sample), the
+            // coefficient rows in flight between its decoder and worker
+            // threads, a colour-conversion line per MCU row, and the
+            // output. 5 × planes covers the first three for every
+            // process and sampling (a frame thinner than one MCU row has
+            // coefficient rows of twice its padded plane).
+            let (pw, ph) = (padded(frame.0, g.max_h), padded(frame.1, g.max_v));
+            let line = pw.checked_mul(8 * u64::from(g.max_v.max(1)));
+            let frame_bytes = pw
+                .checked_mul(ph)
+                .and_then(|n| n.checked_mul(5 * comps))
+                .and_then(|n| n.checked_add(frame.0 as u64 * frame.1 as u64 * comps))
+                .and_then(|n| n.checked_add(line?.checked_mul(comps)?));
+            if frame_bytes.is_none_or(|n| n > self.limits.max_image_bytes) {
+                return Err(Error::LimitExceeded {
+                    limit: "max_image_bytes",
+                    max: self.limits.max_image_bytes,
+                });
+            }
+            // The samples are read as the dictionary's image only when
+            // they have its layout: 8 bits, and the components its colour
+            // space (or a mask's one) has. Soft masks do not check this
+            // after decoding, so it is checked here.
+            let is_mask = dict
+                .get(b"ImageMask".as_slice())
+                .or_else(|| dict.get(b"IM".as_slice()))
+                .and_then(|o| o.as_bool())
+                == Some(true);
+            let want = match dict.get(b"ColorSpace".as_slice()) {
+                _ if is_mask => 1,
+                None => 1,
+                Some(cs) => {
+                    ColorSpace::parse(self.doc, cs, &self.resources, self.limits)?.ncomps() as u64
+                }
+            };
+            let bpc = dict
+                .get(b"BitsPerComponent".as_slice())
+                .and_then(|o| o.as_i64());
+            if comps != want || bpc.is_some_and(|b| b != 8) {
+                return Err(Error::Structure(format!(
+                    "JPEG frame is {}x{} but the image dictionary says {}x{} (and its samples \
+                     are not laid out as the dictionary's)",
+                    frame.0, frame.1, dict_dims.0, dict_dims.1
+                )));
+            }
+            let samples = u64::from(dict_dims.0) * u64::from(dict_dims.1);
+            need = match samples.checked_mul(comps) {
+                Some(n) if n <= u64::from(frame.0) * u64::from(frame.1) * comps => n,
+                _ => {
+                    return Err(Error::Structure(format!(
+                        "JPEG frame is {}x{} but the image dictionary says {}x{} (too few samples \
+                         for the dictionary's size)",
+                        frame.0, frame.1, dict_dims.0, dict_dims.1
+                    )))
+                }
+            };
+        }
         let blocks = (info.width as u64).div_ceil(8) * (info.height as u64).div_ceil(8);
         let held = if info.coding_process == jpeg_decoder::CodingProcess::DctProgressive {
             blocks * 64 * 2 * comps
@@ -5429,6 +5570,16 @@ impl<'a> Renderer<'a> {
             for b in &mut pixels {
                 *b = 255 - *b;
             }
+        }
+        if recovering {
+            if (pixels.len() as u64) < need {
+                return Err(Error::Parse(format!(
+                    "DCTDecode (JPEG): {} bytes decoded, {need} expected",
+                    pixels.len()
+                )));
+            }
+            pixels.truncate(need as usize);
+            self.recovered_image_size("JPEG frame", frame, dict_dims);
         }
         Ok(pixels)
     }
@@ -8144,6 +8295,53 @@ pub(crate) fn pdf_text_string(b: &[u8]) -> String {
 
 /// `/Width` × `/Height` as `u32` for the bilevel filters; the
 /// dictionary has already passed `image_dims`, so this only re-reads.
+/// What a JPEG's frame header (SOFn, ITU T.81 B.2.2) says of its
+/// layout: sample precision, component count and the largest sampling
+/// factors. `None` when no well-formed frame header precedes the scan.
+struct JpegFrameGeometry {
+    precision: u8,
+    components: u8,
+    max_h: u8,
+    max_v: u8,
+}
+
+fn jpeg_frame_geometry(data: &[u8]) -> Option<JpegFrameGeometry> {
+    if !data.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let mut i = 2;
+    loop {
+        while *data.get(i)? == 0xFF && *data.get(i + 1)? == 0xFF {
+            i += 1;
+        }
+        if *data.get(i)? != 0xFF {
+            return None;
+        }
+        let marker = *data.get(i + 1)?;
+        let len = usize::from(u16::from_be_bytes([*data.get(i + 2)?, *data.get(i + 3)?]));
+        let seg = data.get(i + 4..i + 2 + len)?;
+        match marker {
+            0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => {
+                let components = *seg.get(5)?;
+                let specs = seg.get(6..6 + 3 * usize::from(components))?;
+                let (mut max_h, mut max_v) = (0, 0);
+                for c in specs.as_chunks::<3>().0 {
+                    max_h = max_h.max(c[1] >> 4);
+                    max_v = max_v.max(c[1] & 0x0F);
+                }
+                return Some(JpegFrameGeometry {
+                    precision: *seg.first()?,
+                    components,
+                    max_h,
+                    max_v,
+                });
+            }
+            0xDA | 0xD9 => return None,
+            _ => i += 2 + len,
+        }
+    }
+}
+
 fn image_dims_u32(dict: &Dict) -> Result<(u32, u32), Error> {
     let get = |key: &[u8]| -> Result<u32, Error> {
         dict.get(key)
