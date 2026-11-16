@@ -191,6 +191,16 @@ but external tools are used to *confirm* behaviour on real files:
     synthetic PDFs, among them Latin and Japanese text, three pages,
     an image only, a blank page, annotation text, an embedded and a
     non-embedded font, a broken file and an encrypted one.
+- Recovery rules (v0.11 Phase 2; `docs/recovery-mode.md`):
+  `tests/recovery_rules.rs` holds each rule's reading, and
+  `tests/redact_recovery.rs` its redaction cases.
+  - R1 (wrong operand counts): 21 operator families; what is not
+    recovered (block operators, operands of the wrong type, operands
+    left over); `BX`/`EX`.
+  - The `render_content` fuzz target, which generates operators with
+    one operand too few or too many, also renders in recovery mode. It
+    checks that rendering is deterministic, that the page has its
+    size, and that recovery changes nothing that renders strictly.
 - `tests/redact_recovery.rs` (R0, v0.11): redaction of documents opened
   in recovery mode. Every recovery rule and each malformed-input class
   of the roadmap is covered: content streams, unknown operators,

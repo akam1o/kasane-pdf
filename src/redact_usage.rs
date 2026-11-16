@@ -115,8 +115,11 @@ pub(crate) enum Bound {
 #[derive(Default, Debug)]
 pub(crate) struct Usage {
     pub(crate) used: HashMap<IndirectRef, (BTreeSet<Use>, BTreeSet<usize>)>,
-    /// Per page: why its use could not (wholly) be decided.
+    /// Per page: why its use could not (wholly) be decided (the first
+    /// 64 reasons).
     pub(crate) undecided: Vec<(usize, String)>,
+    /// Every page whose use could not (wholly) be decided.
+    pub(crate) undecided_pages: BTreeSet<usize>,
 }
 
 impl Usage {
@@ -718,6 +721,7 @@ impl Walk<'_> {
 
     fn undecided(&mut self, why: String) {
         self.undecided_here = true;
+        self.u.undecided_pages.insert(self.page);
         if self.u.undecided.len() < 64 {
             self.u.undecided.push((self.page, why));
         }
@@ -1274,6 +1278,18 @@ impl Walk<'_> {
                             self.show_painted(&mut st, b, &f, stack)?;
                         }
                     }
+                }
+                // In recovery mode an operator kept uninterpreted (an
+                // unknown one, or one with the wrong operand count, R1)
+                // may use what its operands name: the page is undecided,
+                // as when its content does not parse. In a strict
+                // document an `Unknown` is inside `BX … EX`, ignored by
+                // definition (§7.8.2).
+                Operation::Unknown { operator, .. } if self.doc.recovery_mode() => {
+                    self.undecided(format!(
+                        "operator '{}' not interpreted (recovery mode)",
+                        String::from_utf8_lossy(operator)
+                    ));
                 }
                 _ => {}
             }
@@ -2050,6 +2066,36 @@ mod tests {
         assert!(!under.used.contains_key(&IndirectRef::new(5, 0)));
         let over = usage(&doc, &|_| true, Bound::Over, &Limits::default()).unwrap();
         assert!(over.used.contains_key(&IndirectRef::new(5, 0)));
+    }
+
+    /// In recovery mode an operator kept uninterpreted (R1: `Do` given
+    /// two names) is undecided: over the input, the page's streams all
+    /// count as possibly used — as when the content does not parse. In a
+    /// strict document an unknown operator inside `BX … EX` is ignored.
+    /// (Review.)
+    #[test]
+    fn an_uninterpreted_operator_in_recovery_mode_is_undecided() {
+        let objs = |content: &[u8]| {
+            pdf(&[
+                (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+                (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+                (
+                    3,
+                    b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Contents 4 0 R \
+                      /Resources << /XObject << /Im 5 0 R >> >> >>"
+                        .to_vec(),
+                ),
+                (4, stream("", content)),
+                (5, stream("/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 8", b"\x01")),
+            ])
+        };
+        let doc = Document::from_bytes_recovering(&objs(b"/Im /Im Do")).unwrap();
+        let over = usage(&doc, &|_| true, Bound::Over, &Limits::default()).unwrap();
+        assert_eq!(over.undecided.len(), 1, "{:?}", over.undecided);
+        assert!(over.used.contains_key(&IndirectRef::new(5, 0)));
+        let doc = Document::from_bytes(&objs(b"BX /Im frob EX")).unwrap();
+        let over = usage(&doc, &|_| true, Bound::Over, &Limits::default()).unwrap();
+        assert!(over.undecided.is_empty(), "{:?}", over.undecided);
     }
 
     /// A soft mask selected in two resource scopes is walked in each

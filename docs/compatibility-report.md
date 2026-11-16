@@ -660,3 +660,38 @@ as V1 in the roadmap.
   No earlier "no loss" judgement changes, and no kasane defect was
   found.
 
+## 12. v0.11.0 Phase 2: recovery rules
+
+Measured with the same settings as § 2 (macOS, Poppler 26.10.0,
+`release-verify --only compat_corpus`). The before column is the
+`e7d52aa` run of § 3, with the same engine as Phase 1. Each rule is
+measured on its own commit.
+
+### R1 — wrong operand counts
+
+| | before | after R1 |
+|---|---:|---:|
+| strict parse / render / text / rewrite (`expect: pass`) | 408 / 382 / 394 / 372 | 408 / 382 / 394 / 372 |
+| verdict pass (511) | 378 | 378 |
+| recovery-mode render pass (all 511) | 41 | 43 |
+| recovery-mode render pass among the 43 strict blockers | 18 | 20 |
+| SSIM median / files below 0.95 | 0.9949 / 68 | 0.9949 / 68 |
+| crash / timeout | 0 / 0 | 0 / 0 |
+
+Of the three files whose first recovery error was an operand count,
+two now render in recovery mode. The third gets past it and stops at
+the error that follows: text after the dropped `Tf` has no font, so it
+does not count. No other file changed in any stage, and nothing changed
+in strict mode.
+
+**Performance.** Three alternating runs of the runner before (`61a0c8c`)
+and after, median per file, on the same machine:
+- normal synthetic pages (30,000 operators, a 2000 × 2000 image, 300
+  pages): −4 to −6 %, within noise;
+- 32 corpus files, including the slowest and all recovery cases:
+  −6 %;
+- peak memory: +1 MB, +9 MB.
+
+A page with 3,000 wrong operand counts now renders in recovery mode, in
+490 ms. Before, it failed at the first one, in 234 ms.
+

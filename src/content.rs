@@ -812,6 +812,28 @@ impl<'a> ContentParser<'a> {
 
     fn dispatch_operator(&mut self, op: &[u8], offset: usize) -> Result<(), Error> {
         let n_operands = self.operands.len();
+        if self.lenient {
+            if let Some(expected) = leaf_arity(op) {
+                if expected != n_operands {
+                    // Recovery rule (R1): kept uninterpreted with all its
+                    // operands, never completed or truncated.
+                    self.warnings.push(Warning::RecoveryApplied {
+                        rule: RecoveryRule::IgnoredWrongOperandCount,
+                        detail: format!(
+                            "'{}' expects {expected} operand(s), found {n_operands} at byte {offset}",
+                            String::from_utf8_lossy(op)
+                        ),
+                    });
+                    let operands = std::mem::take(&mut self.operands);
+                    self.op_names.push(op.to_vec());
+                    self.ops.push(Operation::Unknown {
+                        operator: op.to_vec(),
+                        operands,
+                    });
+                    return Ok(());
+                }
+            }
+        }
         let result = match op {
             // Graphics state & matrix
             b"q" => {
@@ -1707,6 +1729,27 @@ fn zlib_stream_complete(data: &[u8], limits: &Limits) -> bool {
     }
     // Every input byte must have been consumed by the stream itself.
     dec.total_in() == data.len() as u64
+}
+
+/// The operand count of an operator that the operand-count recovery
+/// rule (R1, [`RecoveryRule::IgnoredWrongOperandCount`]) may keep
+/// uninterpreted: fixed-arity operators that open or close no block.
+/// `q`, `Q`, `BT`, `ET`, `BMC`, `BDC`, `EMC`, `BX` and `EX` are not
+/// among them — dropping one would change the nesting of everything
+/// that follows — nor are the colour operators of variable arity
+/// (`SC`, `SCN`, `sc`, `scn`) or the inline-image operators.
+fn leaf_arity(op: &[u8]) -> Option<usize> {
+    Some(match op {
+        b"h" | b"S" | b"s" | b"f" | b"F" | b"f*" | b"B" | b"B*" | b"b" | b"b*" | b"n" | b"W"
+        | b"W*" | b"T*" => 0,
+        b"w" | b"J" | b"j" | b"M" | b"ri" | b"i" | b"gs" | b"G" | b"g" | b"CS" | b"cs" | b"Tc"
+        | b"Tw" | b"Tz" | b"TL" | b"Tr" | b"Ts" | b"Tj" | b"TJ" | b"'" | b"Do" | b"sh" | b"MP" => 1,
+        b"d" | b"m" | b"l" | b"Tf" | b"Td" | b"TD" | b"d0" | b"DP" => 2,
+        b"RG" | b"rg" | b"\"" => 3,
+        b"v" | b"y" | b"re" | b"K" | b"k" => 4,
+        b"cm" | b"c" | b"Tm" | b"d1" => 6,
+        _ => return None,
+    })
 }
 
 fn word_as_operand(bytes: &[u8], offset: usize) -> Result<Object, Error> {

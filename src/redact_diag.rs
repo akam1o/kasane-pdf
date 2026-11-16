@@ -2026,11 +2026,11 @@ impl<'a> DiagWalker<'a> {
             | O::BeginCompatibility
             | O::EndCompatibility => {}
             O::Unknown { operator, .. } => {
-                // `Unknown` ops only reach here inside `BX … EX` —
-                // outside, the parser fails outright (§7.8.2). A
-                // compatibility-section op is *by definition* one the
-                // consumer doesn't understand and must ignore, so it
-                // does not taint state. (An op that *would* change
+                // `Unknown` ops reach here inside `BX … EX` and, in
+                // recovery mode, for an unknown operator anywhere or a
+                // known one with the wrong number of operands (R1). What
+                // it would have drawn or set is not known: an uncertain
+                // entry, which refuses region removal. (An op that *would* change
                 // state still reports as a blocker if it's one we
                 // know — `gs`, `sh`, Pattern — those set
                 // `uncertain_state` directly.)
@@ -2038,7 +2038,7 @@ impl<'a> DiagWalker<'a> {
                     kind: TargetKind::Other,
                     site: self.site(),
                     reason: format!(
-                        "unknown operator '{}' ignored inside BX…EX",
+                        "operator '{}' not interpreted (unknown, or with the wrong number of operands)",
                         String::from_utf8_lossy(operator)
                     ),
                 })?;

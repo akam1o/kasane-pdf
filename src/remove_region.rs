@@ -3164,14 +3164,29 @@ fn prune_original_names(
         }
         let drawn: BTreeSet<Vec<u8>> = match drawn_after.get(&pr) {
             Some(d) => d.clone(),
-            None => doc
-                .page_operations(page)?
-                .into_iter()
-                .filter_map(|op| match op {
-                    Operation::Do(n) => Some(n),
-                    _ => None,
-                })
-                .collect(),
+            None => {
+                let ops = doc.page_operations(page)?;
+                // In recovery mode an operator kept uninterpreted (R1)
+                // may draw any name its operands hold: which names the
+                // page uses is not known, so none may be pruned.
+                if doc.recovery_mode()
+                    && ops.iter().any(|op| matches!(op, Operation::Unknown { .. }))
+                {
+                    return Err(Error::Unsupported {
+                        feature: "redaction: cannot tell whether a page uses an edited image",
+                        detail: format!(
+                            "page {}: an operator recovery mode did not interpret",
+                            page_label(index)
+                        ),
+                    });
+                }
+                ops.into_iter()
+                    .filter_map(|op| match op {
+                        Operation::Do(n) => Some(n),
+                        _ => None,
+                    })
+                    .collect()
+            }
         };
         // A page that still draws an original shows it unredacted:
         // the name stays (verification finds the display and reports it).

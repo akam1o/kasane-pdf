@@ -127,6 +127,137 @@ fn unknown_operator_is_an_error_in_strict_mode_and_dropped_in_recovery() {
     );
 }
 
+/// The rule recorded for an operator with the wrong number of operands
+/// (R1).
+fn wrong_count(rules: &[RecoveryRule]) -> usize {
+    rules
+        .iter()
+        .filter(|r| **r == RecoveryRule::IgnoredWrongOperandCount)
+        .count()
+}
+
+/// R1: a fixed-arity operator that does not open or close a block,
+/// given too few or too many operands, is an error in strict mode. In
+/// recovery mode it is kept, uninterpreted, as `Operation::Unknown`
+/// with all its operands — Poppler uses the last operands and MuPDF the
+/// first (or zeros for missing ones), so no reading is shared — and the
+/// renderer skips it.
+#[test]
+fn wrong_operand_count_is_kept_uninterpreted_only_in_recovery() {
+    for (bad, op, n) in [
+        ("0 0 10 re", "re", 3),
+        ("1 2 3 m", "m", 3),
+        ("2 0 0 2 0 cm", "cm", 5),
+        ("9 1 0 0 1 0 0 cm", "cm", 7),
+        ("1 f", "f", 1),
+        ("0 0 rg", "rg", 2),
+        ("1 1 1 1 1 k", "k", 5),
+        ("/GS1 /GS2 gs", "gs", 2),
+        ("[3] d", "d", 1),
+        ("1 2 w", "w", 2),
+        ("1 W n", "W", 1),
+        ("BT 12 Tf ET", "Tf", 1),
+        ("BT 7 60 100 Td ET", "Td", 3),
+        ("BT 1 (x) Tj ET", "Tj", 2),
+        ("BT 1 (x) ' ET", "'", 2),
+        ("BT 1 1 1 1 0 0 0 Tm ET", "Tm", 7),
+        ("Do", "Do", 0),
+        ("/A /B sh", "sh", 2),
+        ("MP", "MP", 0),
+        ("/T DP", "DP", 1),
+        ("1 2 3 d0", "d0", 3),
+    ] {
+        let pdf = page(
+            format!("{bad} 1 0 0 rg 0 0 100 100 re f").as_bytes(),
+            "",
+            &[],
+        );
+        let strict = Document::from_bytes(&pdf).unwrap();
+        let e = strict.page_operations(&strict.pages()[0]).unwrap_err();
+        assert!(
+            e.to_string().contains("expects") && e.to_string().contains(&format!("found {n}")),
+            "{bad}: {e}"
+        );
+        let rec = Document::from_bytes_recovering(&pdf).unwrap();
+        let ops = rec
+            .page_operations(&rec.pages()[0])
+            .unwrap_or_else(|e| panic!("{bad}: {e}"));
+        let kept: Vec<_> = ops
+            .iter()
+            .filter_map(|o| match o {
+                kasane_pdf::Operation::Unknown { operator, operands } => {
+                    Some((operator.clone(), operands.len()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            kept,
+            vec![(op.as_bytes().to_vec(), n)],
+            "{bad}: kept uninterpreted with its operands"
+        );
+        let _ = rec.take_warnings();
+        let r = render(&rec).unwrap_or_else(|e| panic!("{bad}: {e}"));
+        assert_eq!(px(&r, 50, 50), (255, 0, 0), "{bad}: the rest is drawn");
+        assert_eq!(
+            wrong_count(&recovery_rules(&rec)),
+            1,
+            "{bad}: recorded once"
+        );
+    }
+}
+
+/// Operators that open or close a block (`q Q BT ET BMC BDC EMC BX EX`)
+/// are not recovered: dropping one would change the nesting of all
+/// that follows. Neither are operands of the wrong type, or operands
+/// left before an inline image or at the end of the stream.
+#[test]
+fn what_the_operand_count_rule_does_not_recover() {
+    for bad in [
+        "1 q 0 0 1 1 re f Q",
+        "q 1 Q",
+        "1 BT ET",
+        "BT 1 ET",
+        "1 /T BMC EMC",
+        "/T BMC 1 EMC",
+        "/T /P <<>> BDC EMC",
+        "1 BX EX",
+        "(a) 2 m",
+        "/N 1 2 3 re",
+        "BT /F1 (x) Tf ET",
+        "1 2",
+        "1 BI /W 1 /H 1 /BPC 8 /CS /G ID \u{0} EI",
+    ] {
+        let pdf = page(bad.as_bytes(), "", &[]);
+        for recovering in [false, true] {
+            let doc = if recovering {
+                Document::from_bytes_recovering(&pdf)
+            } else {
+                Document::from_bytes(&pdf)
+            }
+            .unwrap();
+            assert!(
+                doc.page_operations(&doc.pages()[0]).is_err(),
+                "{bad} (recovery {recovering}): parsed"
+            );
+            assert_eq!(wrong_count(&recovery_rules(&doc)), 0, "{bad}");
+        }
+    }
+}
+
+/// Inside `BX … EX` the same: strict mode still counts operands of a
+/// known operator; recovery keeps the wrong one uninterpreted.
+#[test]
+fn wrong_operand_count_inside_a_compatibility_section() {
+    let pdf = page(b"BX 0 0 10 re EX 1 0 0 rg 0 0 100 100 re f", "", &[]);
+    let strict = Document::from_bytes(&pdf).unwrap();
+    assert!(strict.page_operations(&strict.pages()[0]).is_err());
+    let rec = Document::from_bytes_recovering(&pdf).unwrap();
+    let r = render(&rec).unwrap();
+    assert_eq!(px(&r, 50, 50), (255, 0, 0));
+    assert_eq!(wrong_count(&recovery_rules(&rec)), 1);
+}
+
 #[test]
 fn operator_inside_a_path_object_is_applied_only_in_recovery() {
     // `rg` between `re` and `f`: §8.2 Figure 9 forbids it; every major

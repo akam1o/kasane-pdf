@@ -17,7 +17,14 @@
 //! - rendering is deterministic (the same input twice: the same pixels);
 //! - when the content renders, wrapping it in `q … Q` and prepending an
 //!   identity `cm` change nothing;
-//! - drawing a shared form twice equals drawing two equal copies.
+//! - drawing a shared form twice equals drawing two equal copies;
+//! - in recovery mode (where an operator with the wrong operand count is
+//!   kept uninterpreted, R1), rendered for every content that does not
+//!   render strictly and for one in four that does (by the input's first
+//!   byte, to bound each input's cost): the page is the size it must
+//!   be, content that renders strictly renders to the same pixels
+//!   (recovery changes nothing that conforms), and content that does not
+//!   renders deterministically (checked on one input in four).
 #![no_main]
 
 use kasane_pdf::{render_page, Document, Error, Limits, RenderOptions};
@@ -202,7 +209,11 @@ fn limits_for(page_limits: &Limits) -> RenderOptions {
 
 /// Pixels of the page, or the error kind.
 fn render(b: &[u8], l: &Limits) -> Result<(u32, u32, Vec<u8>), Error> {
-    let d = Document::open(b, &kasane_pdf::OpenOptions::new().with_limits(l.clone()))?;
+    render_in(b, l, false)
+}
+
+fn render_in(b: &[u8], l: &Limits, recovering: bool) -> Result<(u32, u32, Vec<u8>), Error> {
+    let d = Document::open(b, &kasane_pdf::OpenOptions::new().with_limits(l.clone()).with_recovery(recovering))?;
     let p = &d.pages()[0];
     let r = render_page(&d, p, &limits_for(l))?;
     let _ = kasane_pdf::extract_text(&d, p, &kasane_pdf::TextOptions::default().with_limits(l.clone()));
@@ -220,6 +231,36 @@ fuzz_target!(|data: &[u8]| {
         (Ok(x), Ok(y)) => assert!(x == y, "rendering is not deterministic"),
         (Err(x), Err(y)) => assert_eq!(format!("{x:?}"), format!("{y:?}"), "errors differ"),
         _ => panic!("one of two identical renders failed"),
+    }
+    // Recovery mode on the same content, rendered once — on every page
+    // that does not render strictly (what recovery changes), and on one
+    // in four of those that do (by the input's first byte), to keep each
+    // input's cost near the strict renders'. A page that renders strictly
+    // must render to the same pixels (deterministic by that); one that
+    // does not is rendered a second time for determinism on one input in
+    // four.
+    let sample = data.first().map(|b| b % 4);
+    if a.is_err() || sample == Some(1) {
+        let ra = render_in(&page(&body, false), &l, true);
+        if let Ok((rw, rh, _)) = &ra {
+            assert_eq!((*rw, *rh), (30, 30), "page size (recovery)");
+        }
+        match &a {
+            Ok((_, _, px)) => {
+                // What renders strictly renders, identically, in recovery mode.
+                let rpx = &ra.as_ref().expect("a page that renders strictly fails in recovery mode").2;
+                assert!(rpx == px, "recovery mode changes a page that renders strictly");
+            }
+            Err(_) if sample == Some(0) => {
+                let rb = render_in(&page(&body, false), &l, true);
+                match (&ra, &rb) {
+                    (Ok(x), Ok(y)) => assert!(x == y, "recovery rendering is not deterministic"),
+                    (Err(x), Err(y)) => assert_eq!(format!("{x:?}"), format!("{y:?}"), "recovery errors differ"),
+                    _ => panic!("one of two identical recovery renders failed"),
+                }
+            }
+            Err(_) => {}
+        }
     }
     let Ok((w, h, px)) = a else { return };
     // 60 pt at 36 dpi.
