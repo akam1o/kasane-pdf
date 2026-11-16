@@ -1505,12 +1505,14 @@ fn print_annotation_lines(annots: &[kasane_pdf::AnnotationText]) {
         let tag = if a.recovered { " (recovered)" } else { "" };
         for (kind, s) in [("shown", a.shown_text()), ("note", a.note())] {
             if let Some(s) = s {
+                let (subtype, cut_subtype) = clip_annotation_text(&a.subtype);
                 let (s, cut) = clip_annotation_text(&s);
-                let cut = if cut { " (truncated)" } else { "" };
-                println!(
-                    "annotation {} {} {kind} {:?}{tag}{cut}",
-                    a.index, a.subtype, s
-                );
+                let cut = if cut || cut_subtype {
+                    " (truncated)"
+                } else {
+                    ""
+                };
+                println!("annotation {} {subtype} {kind} {s:?}{tag}{cut}", a.index);
             }
         }
     }
