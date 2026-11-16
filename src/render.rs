@@ -3218,17 +3218,29 @@ impl<'a> Renderer<'a> {
             });
         }
 
-        // Required geometry: BBox in form space.
-        let bbox = dict
-            .get(b"BBox".as_slice())
-            .ok_or_else(|| Error::Structure("form XObject has no /BBox".into()))
-            .and_then(|o| {
-                crate::page::Rect::from_object(o)
-                    .ok_or_else(|| Error::Structure("/BBox is not a 4-number rectangle".into()))
-            })?;
-        if !rect_is_finite(&bbox) {
-            return Err(Error::Structure("/BBox has non-finite values".into()));
-        }
+        // Required geometry: BBox in form space. Absent (or null) only
+        // in recovery mode: drawn unclipped (R2).
+        let bbox = match dict.get(b"BBox".as_slice()) {
+            None | Some(Object::Null) if self.doc.recovery_mode() => {
+                self.doc.push_warning(crate::Warning::RecoveryApplied {
+                    rule: crate::RecoveryRule::UnclippedFormWithoutBBox,
+                    detail: match entry_ref {
+                        Some(r) => format!("form {} {} R", r.number, r.generation),
+                        None => "inline form".into(),
+                    },
+                });
+                None
+            }
+            None => return Err(Error::Structure("form XObject has no /BBox".into())),
+            Some(o) => {
+                let b = crate::page::Rect::from_object(o)
+                    .ok_or_else(|| Error::Structure("/BBox is not a 4-number rectangle".into()))?;
+                if !rect_is_finite(&b) {
+                    return Err(Error::Structure("/BBox has non-finite values".into()));
+                }
+                Some(b)
+            }
+        };
 
         // Optional matrix: default identity.
         let form_matrix = match dict.get(b"Matrix".as_slice()) {
@@ -3356,10 +3368,9 @@ impl<'a> Renderer<'a> {
         // Clip to BBox in *form space* — build the BBox path in user
         // space and intersect via the same mechanism as W.
         // Clip to BBox — skipped in extraction mode (no raster clip).
-        let clip_result = if self.extraction_only {
-            Ok(())
-        } else {
-            self.intersect_clip_rect(&bbox)
+        let clip_result = match &bbox {
+            Some(bbox) if !self.extraction_only => self.intersect_clip_rect(bbox),
+            _ => Ok(()),
         };
 
         // Decode and run the form's content stream.

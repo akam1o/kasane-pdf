@@ -847,11 +847,67 @@ fn invalid_annotations() {
 
 #[test]
 fn invalid_form_xobjects() {
+    // R2: recovery draws a form without /BBox unclipped; its extent is
+    // not known, so redaction refuses — wherever the form draws.
+    for (name, dict, body) in [
+        ("form without /BBox", "", "{S}"),
+        ("form with /BBox null", "/BBox null", "{S}"),
+        (
+            "form without /BBox drawing only outside the rect",
+            "",
+            "BT /F1 10 Tf 10 180 Td (PUBLIC2) Tj ET",
+        ),
+        (
+            "form without /BBox, the secret drawn by the page",
+            "",
+            "0 0 1 rg 1 1 2 2 re f",
+        ),
+    ] {
+        case(
+            name,
+            move |v| {
+                let f = form_page(dict, |v| body.replace("{S}", &shown(v)))(v);
+                if body.contains("{S}") {
+                    f
+                } else {
+                    doc(
+                        &format!("/Fm Do {} {KEPT}", shown(v)),
+                        "/XObject << /Fm 30 0 R >>",
+                        "",
+                        true,
+                        vec![(
+                            30,
+                            stream_obj(
+                                &format!("/Type /XObject /Subtype /Form /Resources << /Font << /F1 20 0 R >> >> {dict}"),
+                                body.as_bytes(),
+                            ),
+                        )],
+                    )
+                }
+            },
+            strict(false, Refused("form XObject has no /BBox")),
+            recovery(
+                true,
+                &[R::UnclippedFormWithoutBBox],
+                Refused("form XObject has no /BBox"),
+            ),
+        );
+    }
     case(
-        "form without /BBox",
-        form_page("", shown),
-        strict(false, Refused("form XObject has no /BBox")),
-        recovery(false, &[], Refused("form XObject has no /BBox")),
+        "form with a /BBox that is not a rectangle",
+        form_page("/BBox [0 0 50]", shown),
+        strict(false, Refused("")),
+        recovery(false, &[], Refused("")),
+    );
+    case(
+        "form without /BBox and an operator with the wrong operand count",
+        form_page("", |v| format!("0 0 10 re f {}", shown(v))),
+        strict(false, Refused("")),
+        recovery(
+            true,
+            &[R::UnclippedFormWithoutBBox, R::IgnoredWrongOperandCount],
+            Refused(""),
+        ),
     );
     case(
         "unknown operator inside a form",

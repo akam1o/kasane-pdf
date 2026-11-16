@@ -31,6 +31,7 @@ together with its cases there (R0 in
 | `IgnoredInvalidSoftMask` | an image `/SMask` that is not a stream | no soft mask | refused |
 | `PaddedShortEncryptionKey` | a revision-4 key shorter than 128 bits | zero-padded, as Acrobat does | refused (no writer encrypts) |
 | `IgnoredWrongOperandCount` (R1, v0.11) | an operator with the wrong number of operands | see below | refused |
+| `UnclippedFormWithoutBBox` (R2, v0.11) | a form XObject without `/BBox`, or with `/BBox null` | drawn without the clip | refused |
 
 ## R1 — operators with the wrong number of operands
 
@@ -85,3 +86,39 @@ follows a dropped operator.
   without its `m`, text without its `Tf`) still does not render.
 - The drawing of a page that does render may differ from every other
   reader's, which disagree among themselves.
+
+## R2 — form XObjects without `/BBox`
+
+**The construct.** A form XObject without the required `/BBox`
+(ISO 32000-1 Table 93), or with `/BBox null`. Strict mode refuses the
+page: `Error::Structure("form XObject has no /BBox")`.
+
+**Readers disagree.** Measured on synthetic pages with Poppler 26.10
+and MuPDF 1.28:
+- MuPDF draws the form without a clip, with its `/Matrix`.
+- Poppler reports *Bad form bounding box* and draws nothing of the
+  form.
+
+**Recovery mode.** A form painted by `Do` (from a page, another form, a
+pattern or a Type 3 glyph) or used as a soft-mask group is drawn
+without the clip a `/BBox` would set, as MuPDF draws it. Its `/Matrix` still applies, and so does every
+clip around the `Do`, including an enclosing form's `/BBox`.
+`UnclippedFormWithoutBBox` records the form's object number. Nothing
+of the form is dropped, and no box is invented. An annotation
+appearance without `/BBox` is not covered by this rule: it has no
+placement on the page (Algorithm 8.1 maps the box to `/Rect`), and it
+is skipped as before (`IgnoredInvalidAnnotation`).
+
+**Not recovered** (an error in both modes): a `/BBox` that is present
+but is not a rectangle of four finite numbers. MuPDF does not draw such
+a form either.
+
+**Region redaction** refuses every page that draws such a form, in both
+modes and wherever the form draws. A form painted by `Do` is refused
+with the strict cause (*form XObject has no /BBox*). A soft-mask group
+or a Type 3 glyph's form is refused earlier, by the refusal those
+constructs already have. The redaction geometry bounds a form by its `/BBox`. It
+does not invent one, so the form's extent stays unknown.
+
+**Known limits.** A form drawn unclipped may show more than a reader
+that clips would show. Poppler shows nothing of it.

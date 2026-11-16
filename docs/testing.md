@@ -197,6 +197,9 @@ but external tools are used to *confirm* behaviour on real files:
   - R1 (wrong operand counts): 21 operator families; what is not
     recovered (block operators, operands of the wrong type, operands
     left over); `BX`/`EX`.
+  - R2 (form without `/BBox`): absent, null, with `/Matrix`, nested in
+    a form with a `/BBox`; a `/BBox` that is not a rectangle stays an
+    error. Redaction refuses wherever the form draws.
   - The `render_content` fuzz target, which generates operators with
     one operand too few or too many, also renders in recovery mode. It
     checks that rendering is deterministic, that the page has its

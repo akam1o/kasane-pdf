@@ -250,6 +250,8 @@ established by `tests/redact_recovery.rs` (R0 in
 - **X** — Wherever recovery infers, drops or substitutes something, the
   redaction refuses:
   - a page box (no `/MediaBox`);
+  - a form XObject without `/BBox`, drawn unclipped (R2): its extent is
+    unknown;
   - an unknown operator, or a known one with the wrong number of
     operands (R1) — kept as `Operation::Unknown`, which marks the page
     uncertain, never silently dropped;
