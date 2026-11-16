@@ -733,15 +733,16 @@ fn recovered_jpeg_frame_is_held_to_the_byte_limit() {
         "/Width 20 /Height 10 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode",
         &jpeg,
     );
-    // The frame (no subsampling) needs 40 × 24 × 3 = 2880 bytes in
-    // planes padded to whole MCUs, and 2400 of output; the dictionary's
-    // image 600.
+    // The frame (no subsampling) is counted as 5 × 40 × 24 × 3 = 14400
+    // bytes for its planes padded to whole MCUs (with coefficients and
+    // rows in flight), 960 for a conversion line and 2400 of output:
+    // 17760. The dictionary's image is 600.
     let limits = |bytes| {
         let mut l = Limits::default();
         l.max_image_bytes = bytes;
         l
     };
-    let e = render_with(&pdf, limits(4000)).unwrap_err();
+    let e = render_with(&pdf, limits(17_000)).unwrap_err();
     assert!(
         matches!(
             e,
@@ -752,9 +753,9 @@ fn recovered_jpeg_frame_is_held_to_the_byte_limit() {
         ),
         "{e}"
     );
-    render_with(&pdf, limits(6000)).unwrap();
+    render_with(&pdf, limits(18_000)).unwrap();
     // The same frame header with its first component sampled 2 × 2:
-    // MCUs of 16 × 16, 48 × 32 × 3 + 2400 = 7008 bytes. Refused before
+    // MCUs of 16 × 16, 5 × 48 × 32 × 3 + 2304 + 2400 = 27744. Refused before
     // the (now inconsistent) scan is decoded.
     let sof = jpeg.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
     assert_eq!(jpeg[sof + 9], 3, "three components");
@@ -764,7 +765,7 @@ fn recovered_jpeg_frame_is_held_to_the_byte_limit() {
         "/Width 20 /Height 10 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode",
         &sub,
     );
-    let e = render_with(&pdf_sub, limits(6000)).unwrap_err();
+    let e = render_with(&pdf_sub, limits(18_000)).unwrap_err();
     assert!(
         matches!(
             e,

@@ -5463,9 +5463,8 @@ impl<'a> Renderer<'a> {
             // dictionary was checked against do not bound it: check it
             // here, before the decoder allocates anything. Each
             // component's plane is at most the frame padded to whole MCUs
-            // (8 × the largest sampling factor on each axis); a
-            // progressive frame also keeps its DCT coefficients (2 bytes
-            // a sample); the output is the frame's samples.
+            // (8 × the largest sampling factor on each axis). Buffers of
+            // a fixed size (metadata segments) are as in strict mode.
             if frame.0 > self.limits.max_image_dimension
                 || frame.1 > self.limits.max_image_dimension
             {
@@ -5484,15 +5483,20 @@ impl<'a> Renderer<'a> {
                 let mcu = 8 * u64::from(f.max(1));
                 u64::from(v).div_ceil(mcu) * mcu
             };
-            let per_plane = if info.coding_process == jpeg_decoder::CodingProcess::DctProgressive {
-                3
-            } else {
-                1
-            };
-            let frame_bytes = padded(frame.0, g.max_h)
-                .checked_mul(padded(frame.1, g.max_v))
-                .and_then(|n| n.checked_mul(comps * per_plane))
-                .and_then(|n| n.checked_add(frame.0 as u64 * frame.1 as u64 * comps));
+            // Live together while decoding (jpeg-decoder 0.3): the planes,
+            // a progressive frame's coefficients (2 bytes a sample), the
+            // coefficient rows in flight between its decoder and worker
+            // threads, a colour-conversion line per MCU row, and the
+            // output. 5 × planes covers the first three for every
+            // process and sampling (a frame thinner than one MCU row has
+            // coefficient rows of twice its padded plane).
+            let (pw, ph) = (padded(frame.0, g.max_h), padded(frame.1, g.max_v));
+            let line = pw.checked_mul(8 * u64::from(g.max_v.max(1)));
+            let frame_bytes = pw
+                .checked_mul(ph)
+                .and_then(|n| n.checked_mul(5 * comps))
+                .and_then(|n| n.checked_add(frame.0 as u64 * frame.1 as u64 * comps))
+                .and_then(|n| n.checked_add(line?.checked_mul(comps)?));
             if frame_bytes.is_none_or(|n| n > self.limits.max_image_bytes) {
                 return Err(Error::LimitExceeded {
                     limit: "max_image_bytes",
