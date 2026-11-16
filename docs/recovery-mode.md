@@ -34,6 +34,7 @@ together with its cases there (R0 in
 | `UnclippedFormWithoutBBox` (R2, v0.11) | a form XObject without `/BBox`, or with `/BBox null` | drawn without the clip | refused |
 | `FunctionExtraInputsIgnored` (R3, v0.11) | a type 2 or 3 function whose `/Domain` gives more than one input | the first input used | as strict mode (see below) |
 | `ShadingOutputsTruncated` (R3, v0.11) | a shading function with more outputs than the colour space has components | the first outputs used | as strict mode (see below) |
+| `ImageSamplesReadAtDictionarySize` (R4, v0.11) | an image whose JBIG2 page or JPEG frame is not the dictionary's size | the samples read as rows of the dictionary's size | refused where the image meets a rect |
 
 ## R1 — operators with the wrong number of operands
 
@@ -176,3 +177,68 @@ case are byte-identical.
 
 **Known limits.** The colours drawn are MuPDF's reading. Poppler draws
 nothing of such a shading.
+
+## R4 — image codestreams of another size
+
+**The construct.** An image whose `/JBIG2Decode` page or `/DCTDecode`
+frame is not the size `/Width` and `/Height` give. Strict mode refuses
+it (*JBIG2 page is 8x2 but the image dictionary says 16x1*, *JPEG frame
+is 40x20 but the image dictionary says 20x10*).
+
+**Readers agree when there are samples enough.** Measured on synthetic
+pages with Poppler 26.10 and MuPDF 1.28, both read such an image the
+same way. They decode the codestream at its own size and read its
+samples, in order, as rows of the dictionary's size:
+- an 8 × 2 JBIG2 page under a 16 × 1 dictionary is one row of 16 pixels;
+- a 40 × 20 JPEG frame under a 20 × 10 dictionary is 10 rows, each half
+  a frame row.
+
+They disagree when the codestream holds fewer samples than the
+dictionary needs: Poppler pads with white, MuPDF with black.
+
+**Deviation from the roadmap.** The roadmap proposed trusting the
+codestream's size, which would draw the 40 × 20 frame whole. Neither
+reader does that, so recovery mode follows the reading they share.
+
+**Recovery mode.** The codestream is decoded at its own size and its
+samples are read as rows of the dictionary's size: whole bytes per row
+for JBIG2, interleaved samples for JPEG. Samples beyond the
+dictionary's image are not drawn. `ImageSamplesReadAtDictionarySize`
+records both sizes, and the page's `image_approximations()` reports
+it. `/Decode`, `/SMask`, masks and the image's placement apply as for
+any image: the image fills the unit square of its `cm`, whatever its
+samples hold.
+
+**Not recovered** (an error in both modes):
+- **Too few samples** for the dictionary's size: the readers pad
+  differently.
+- **A JBIG2 page whose width is not a whole number of bytes**, read in
+  rows of another width. Its row padding has no established value, and
+  other rows would draw it. Fewer rows of the same width are recovered.
+- **A JPEG frame that is not 8-bit DCT** (lossless, or another
+  precision), or whose samples do not have the dictionary's layout:
+  8 bits, and the components of its colour space (one for a mask or a
+  soft mask).
+- **A JPEG decoded at a reduced size** (an image beyond the limits),
+  whose output size comes from the dictionary.
+- **A frame beyond the limits.** The frame is checked against
+  `max_image_dimension`, `max_image_total_samples` and `max_image_bytes`
+  before anything is decoded. For `max_image_bytes`, every buffer the
+  decoder holds at once that grows with the frame is counted (planes
+  padded to whole MCUs, coefficients and rows in flight, a
+  colour-conversion line, the output).
+
+**Region redaction** decodes images with the strict decoder, which
+edits samples by the dictionary's geometry. It does not use the
+recovered reading:
+- **An image that meets a rect** is refused in both modes, with the
+  strict cause.
+- **An image away from the rects** is kept as it is, in both modes. Its
+  placement does not depend on its samples.
+
+**Known limits.**
+- The drawing is the readers' shared reading, which is the drawing the
+  dictionary's size gives. It is not the drawing the codestream's
+  producer may have meant.
+- The byte bound covers what grows with the frame. Buffers of a fixed
+  size (metadata segments, decoder threads) are as in strict mode.

@@ -725,3 +725,25 @@ The roadmap attributes two files to R3, and neither renders:
 **Performance.** The checks run once per function and per shading,
 when they are parsed. Truncating the outputs costs a slice per sample,
 and only on the recovered shading.
+
+### R4 — image codestreams of another size
+
+Measured against the R3 commit. No stage of any file changed class.
+The counts are all as after R1: strict stages, verdict pass (378),
+recovery-mode renders (43), SSIM, and crash/timeout (0).
+
+The roadmap attributes two files to R4. Each gets past the size check
+and stops at a case R4 does not recover:
+- **The JPEG file** has too few samples for its dictionary. Poppler pads
+  with white and MuPDF with black.
+- **The JBIG2 file** has a page width that is not a whole number of
+  bytes, read in rows of another width. That reading would draw the
+  page's row padding, whose value no standard defines.
+
+A first version without that restriction rendered the JBIG2 file (one
+more recovery render, 44). The review found the padding problem, and
+the file is refused since.
+
+**Performance.** The new checks run only on an image whose codestream
+size differs from its dictionary's. A conforming image takes the same
+path as before.

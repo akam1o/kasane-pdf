@@ -204,6 +204,12 @@ but external tools are used to *confirm* behaviour on real files:
     with two inputs; a shading with extra outputs; too few outputs stays
     an error. Redaction rows paint the shading across the rect and as a
     pattern far from it; both modes redact.
+  - R4 (image codestream sizes): JBIG2 and JPEG under other dictionary
+    sizes; every dictionary size up to 24 × 24 over both; too few
+    samples, row padding, sample layout (soft masks), precision, the
+    limits (a frame header with 2 × 2 sampling, an overflowing size).
+    Redaction refuses an image across the rect in both modes and keeps
+    one away from it (`redact_recovery.rs`, `redact_images.rs`).
   - The `render_content` fuzz target, which generates operators with
     one operand too few or too many, also renders in recovery mode. It
     checks that rendering is deterministic, that the page has its
