@@ -82,8 +82,10 @@ mode and Unicode through `/ToUnicode`, the font encoding's glyph names
 (Adobe Glyph List), the embedded font program's own Unicode `cmap`,
 the Adobe-Japan1 collection (`cjk-fallback`) or `/ActualText` —
 `ResolveKind` says which. Unresolved codes are `None`, never a guess.
-Optionally (`TextOptions::with_annotations`) the text of annotations
-and form fields, reported apart from the page content.
+Optionally (`TextOptions::with_annotations`; `text --annotations` in
+the CLI) the text of annotations and form fields, reported apart from
+the page content: what each draws, and markup annotations' comments
+([`docs/annotation-text.md`](docs/annotation-text.md)).
 
 **Writing and editing** — `rewrite` produces a fresh single-revision
 file from the reachable object graph (streams verbatim). An `Edit`
@@ -298,7 +300,7 @@ kasane-pdf <file.pdf>                                   page list and document i
 kasane-pdf contents <pdf> <page>                        decoded content stream
 kasane-pdf operations <pdf> <page>                      typed operator dump
 kasane-pdf render <pdf> <page> --output out.png [--dpi N]
-kasane-pdf text <pdf> <page> [--format json|lines]
+kasane-pdf text <pdf> <page> [--format json|lines] [--annotations]
 kasane-pdf rewrite <in.pdf> --output <out.pdf>
 kasane-pdf annotate-rect <in> <page> --rect llx lly urx ury --color r g b --width w --output <out>
 kasane-pdf inspect <pdf> <page>                         structural dump

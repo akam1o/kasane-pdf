@@ -214,6 +214,15 @@ but external tools are used to *confirm* behaviour on real files:
     one operand too few or too many, also renders in recovery mode. It
     checks that rendering is deterministic, that the page has its
     size, and that recovery changes nothing that renders strictly.
+- Annotation text (T1, v0.11; `docs/annotation-text.md`):
+  `tests/text_annotation_kinds.rs` covers shown text and notes per
+  annotation type, metadata never reported as text, value and default
+  value, popups, hidden flags and optional content, duplicates,
+  Unicode / Japanese / CJK (a Type 0 appearance), invalid encodings,
+  recovery mode (a skipped or R1-recovered appearance), several pages,
+  cycles, the depth and text-budget limits. `tests/cli_text_annotations.rs`
+  covers the CLI: the default output unchanged, JSON (checked by a
+  strict parser) and lines with `--annotations`.
 - `tests/redact_recovery.rs` (R0, v0.11): redaction of documents opened
   in recovery mode. Every recovery rule and each malformed-input class
   of the roadmap is covered: content streams, unknown operators,
