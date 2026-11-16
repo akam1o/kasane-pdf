@@ -5444,23 +5444,55 @@ impl<'a> Renderer<'a> {
         // its rows (R4), once the frame was checked to fit the limits.
         let mut need = 0;
         if recovering {
+            // Only an 8-bit DCT frame (baseline, extended or progressive)
+            // is read in another size: lossless frames and other
+            // precisions decode to other sample layouts and buffers.
+            let geometry = jpeg_frame_geometry(data).filter(|g| {
+                g.precision == 8
+                    && info.coding_process != jpeg_decoder::CodingProcess::Lossless
+                    && g.components as u64 == comps
+            });
+            let Some(g) = geometry else {
+                return Err(Error::Structure(format!(
+                    "JPEG frame is {}x{} but the image dictionary says {}x{} (and the frame is \
+                     not an 8-bit DCT frame)",
+                    frame.0, frame.1, dict_dims.0, dict_dims.1
+                )));
+            };
             // The frame is not the dictionary's image, so the limits the
             // dictionary was checked against do not bound it: check it
-            // here, before the decoder allocates anything (its planes are
-            // padded to whole 16 × 16 blocks).
-            let padded = |v: u32| u64::from(v.div_ceil(16)) * 16;
-            let frame_bytes = padded(frame.0)
-                .checked_mul(padded(frame.1))
-                .and_then(|n| n.checked_mul(comps));
+            // here, before the decoder allocates anything. Each
+            // component's plane is at most the frame padded to whole MCUs
+            // (8 × the largest sampling factor on each axis); a
+            // progressive frame also keeps its DCT coefficients (2 bytes
+            // a sample); the output is the frame's samples.
             if frame.0 > self.limits.max_image_dimension
                 || frame.1 > self.limits.max_image_dimension
-                || frame.0 as u64 * frame.1 as u64 > self.limits.max_image_total_samples
             {
+                return Err(Error::LimitExceeded {
+                    limit: "max_image_dimension",
+                    max: self.limits.max_image_dimension as u64,
+                });
+            }
+            if frame.0 as u64 * frame.1 as u64 > self.limits.max_image_total_samples {
                 return Err(Error::LimitExceeded {
                     limit: "max_image_total_samples",
                     max: self.limits.max_image_total_samples,
                 });
             }
+            let padded = |v: u32, f: u8| {
+                let mcu = 8 * u64::from(f.max(1));
+                u64::from(v).div_ceil(mcu) * mcu
+            };
+            let per_plane = if info.coding_process == jpeg_decoder::CodingProcess::DctProgressive {
+                3
+            } else {
+                1
+            };
+            let frame_bytes = padded(frame.0, g.max_h)
+                .checked_mul(padded(frame.1, g.max_v))
+                .and_then(|n| n.checked_mul(comps * per_plane))
+                .and_then(|n| n.checked_add(frame.0 as u64 * frame.1 as u64 * comps));
             if frame_bytes.is_none_or(|n| n > self.limits.max_image_bytes) {
                 return Err(Error::LimitExceeded {
                     limit: "max_image_bytes",
@@ -8259,6 +8291,53 @@ pub(crate) fn pdf_text_string(b: &[u8]) -> String {
 
 /// `/Width` × `/Height` as `u32` for the bilevel filters; the
 /// dictionary has already passed `image_dims`, so this only re-reads.
+/// What a JPEG's frame header (SOFn, ITU T.81 B.2.2) says of its
+/// layout: sample precision, component count and the largest sampling
+/// factors. `None` when no well-formed frame header precedes the scan.
+struct JpegFrameGeometry {
+    precision: u8,
+    components: u8,
+    max_h: u8,
+    max_v: u8,
+}
+
+fn jpeg_frame_geometry(data: &[u8]) -> Option<JpegFrameGeometry> {
+    if !data.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let mut i = 2;
+    loop {
+        while *data.get(i)? == 0xFF && *data.get(i + 1)? == 0xFF {
+            i += 1;
+        }
+        if *data.get(i)? != 0xFF {
+            return None;
+        }
+        let marker = *data.get(i + 1)?;
+        let len = usize::from(u16::from_be_bytes([*data.get(i + 2)?, *data.get(i + 3)?]));
+        let seg = data.get(i + 4..i + 2 + len)?;
+        match marker {
+            0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF => {
+                let components = *seg.get(5)?;
+                let specs = seg.get(6..6 + 3 * usize::from(components))?;
+                let (mut max_h, mut max_v) = (0, 0);
+                for c in specs.as_chunks::<3>().0 {
+                    max_h = max_h.max(c[1] >> 4);
+                    max_v = max_v.max(c[1] & 0x0F);
+                }
+                return Some(JpegFrameGeometry {
+                    precision: *seg.first()?,
+                    components,
+                    max_h,
+                    max_v,
+                });
+            }
+            0xDA | 0xD9 => return None,
+            _ => i += 2 + len,
+        }
+    }
+}
+
 fn image_dims_u32(dict: &Dict) -> Result<(u32, u32), Error> {
     let get = |key: &[u8]| -> Result<u32, Error> {
         dict.get(key)

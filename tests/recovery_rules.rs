@@ -733,8 +733,9 @@ fn recovered_jpeg_frame_is_held_to_the_byte_limit() {
         "/Width 20 /Height 10 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode",
         &jpeg,
     );
-    // The frame needs 48 × 32 × 3 = 4608 bytes in padded planes; the
-    // dictionary's image 600.
+    // The frame (no subsampling) needs 40 × 24 × 3 = 2880 bytes in
+    // planes padded to whole MCUs, and 2400 of output; the dictionary's
+    // image 600.
     let limits = |bytes| {
         let mut l = Limits::default();
         l.max_image_bytes = bytes;
@@ -751,7 +752,42 @@ fn recovered_jpeg_frame_is_held_to_the_byte_limit() {
         ),
         "{e}"
     );
-    render_with(&pdf, limits(5000)).unwrap();
+    render_with(&pdf, limits(6000)).unwrap();
+    // The same frame header with its first component sampled 2 × 2:
+    // MCUs of 16 × 16, 48 × 32 × 3 + 2400 = 7008 bytes. Refused before
+    // the (now inconsistent) scan is decoded.
+    let sof = jpeg.windows(2).position(|w| w == [0xFF, 0xC0]).unwrap();
+    assert_eq!(jpeg[sof + 9], 3, "three components");
+    let mut sub = jpeg.clone();
+    sub[sof + 11] = 0x22;
+    let pdf_sub = image_page(
+        "/Width 20 /Height 10 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode",
+        &sub,
+    );
+    let e = render_with(&pdf_sub, limits(6000)).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            Error::LimitExceeded {
+                limit: "max_image_bytes",
+                ..
+            }
+        ),
+        "{e}"
+    );
+    // A frame of another precision than 8 bits is not recovered.
+    let mut p12 = jpeg.clone();
+    p12[sof + 4] = 12;
+    let pdf12 = image_page(
+        "/Width 20 /Height 10 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode",
+        &p12,
+    );
+    let rec = Document::from_bytes_recovering(&pdf12).unwrap();
+    assert!(render(&rec).is_err());
+    assert_eq!(
+        rule_count(&recovery_rules(&rec), "ImageSamplesReadAtDictionarySize"),
+        0
+    );
     // A dictionary size whose byte count overflows: an error, not a
     // panic, under limits that let it through.
     let pdf = image_page(
