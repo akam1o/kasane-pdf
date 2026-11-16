@@ -387,6 +387,114 @@ fn form_without_bbox_is_drawn_unclipped_only_in_recovery() {
     assert_eq!(unclipped(&recovery_rules(&rec)), 1);
 }
 
+/// A page painting shading 10 (`/Sh`) over the whole page.
+fn shading_page(shading: &str, more: &[(u32, Vec<u8>)]) -> Vec<u8> {
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+              /Resources << /Shading << /Sh 10 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"/Sh sh")),
+        (10, shading.as_bytes().to_vec()),
+    ];
+    objs.extend(more.iter().cloned());
+    build_pdf(&objs)
+}
+
+fn rule_count(rules: &[RecoveryRule], name: &str) -> usize {
+    rules.iter().filter(|r| format!("{r:?}") == name).count()
+}
+
+/// R3: a type 2 or 3 function takes one input (§7.10.3, §7.10.4); one
+/// whose /Domain gives more is an error in strict mode. In recovery
+/// mode the first input is used (as MuPDF does; Poppler draws nothing),
+/// recorded.
+#[test]
+fn function_with_extra_inputs_uses_the_first_only_in_recovery() {
+    let red_to_blue = "/C0 [1 0 0] /C1 [0 0 1] /N 1";
+    for (name, func) in [
+        ("type 2", format!("<< /FunctionType 2 /Domain [0 1 0 1] {red_to_blue} >>")),
+        (
+            "type 3",
+            format!("<< /FunctionType 3 /Domain [0 1 0 1] /Functions [<< /FunctionType 2 /Domain [0 1] {red_to_blue} >>] /Bounds [] /Encode [0 1] >>"),
+        ),
+    ] {
+        let pdf = shading_page(
+            &format!("<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 100 0] /Function {func} /Extend [true true] >>"),
+            &[],
+        );
+        let strict = Document::from_bytes(&pdf).unwrap();
+        let e = render(&strict).unwrap_err();
+        assert!(e.to_string().contains("takes exactly one input"), "{name}: {e}");
+        let rec = Document::from_bytes_recovering(&pdf).unwrap();
+        let r = render(&rec).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let (left, right) = (px(&r, 2, 50), px(&r, 97, 50));
+        assert!(left.0 > 200 && left.2 < 40 && right.2 > 200 && right.0 < 40, "{name}: {left:?} {right:?}");
+        assert_eq!(rule_count(&recovery_rules(&rec), "FunctionExtraInputsIgnored"), 1, "{name}");
+    }
+}
+
+/// R3: a shading whose function yields more outputs than its colour
+/// space has components is an error in strict mode; recovery mode uses
+/// the first ones (as MuPDF does). Fewer outputs stay an error in both
+/// modes: no value is defined for the missing components (MuPDF fills
+/// them with each function type's own defaults).
+#[test]
+fn shading_with_extra_outputs_is_truncated_only_in_recovery() {
+    let sh = |cs: &str, c0: &str, c1: &str| {
+        shading_page(
+            &format!("<< /ShadingType 2 /ColorSpace /{cs} /Coords [0 0 100 0] /Function << /FunctionType 2 /Domain [0 1] /C0 {c0} /C1 {c1} /N 1 >> /Extend [true true] >>"),
+            &[],
+        )
+    };
+    // Gray from an RGB-sized function: the first output, 1 → 0.
+    let pdf = sh("DeviceGray", "[1 0 0]", "[0 0 1]");
+    let strict = Document::from_bytes(&pdf).unwrap();
+    assert!(render(&strict)
+        .unwrap_err()
+        .to_string()
+        .contains("outputs, colour space has 1"));
+    let rec = Document::from_bytes_recovering(&pdf).unwrap();
+    let r = render(&rec).unwrap();
+    assert!(
+        px(&r, 2, 50).0 > 240 && px(&r, 97, 50).0 < 15,
+        "{:?} {:?}",
+        px(&r, 2, 50),
+        px(&r, 97, 50)
+    );
+    assert_eq!(
+        rule_count(&recovery_rules(&rec), "ShadingOutputsTruncated"),
+        1
+    );
+    // Fewer outputs than components: an error in both modes.
+    for (cs, c0, c1) in [
+        ("DeviceRGB", "[1]", "[0]"),
+        ("DeviceCMYK", "[1 0]", "[0 1]"),
+    ] {
+        let pdf = sh(cs, c0, c1);
+        for recovering in [false, true] {
+            let d = if recovering {
+                Document::from_bytes_recovering(&pdf)
+            } else {
+                Document::from_bytes(&pdf)
+            }
+            .unwrap();
+            assert!(
+                render(&d).is_err(),
+                "{cs} {c0} (recovery {recovering}) rendered"
+            );
+            assert_eq!(
+                rule_count(&recovery_rules(&d), "ShadingOutputsTruncated"),
+                0
+            );
+        }
+    }
+}
+
 #[test]
 fn operator_inside_a_path_object_is_applied_only_in_recovery() {
     // `rg` between `re` and `f`: §8.2 Figure 9 forbids it; every major

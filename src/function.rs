@@ -241,8 +241,20 @@ fn parse_function_depth(
         .get(b"FunctionType".as_slice())
         .and_then(|o| o.as_i64())
         .ok_or_else(|| Error::Structure("function has no /FunctionType".into()))?;
-    let domain = pairs(dict.get(b"Domain".as_slice()), doc, "Domain")?
+    let mut domain = pairs(dict.get(b"Domain".as_slice()), doc, "Domain")?
         .ok_or_else(|| Error::Structure("function has no /Domain".into()))?;
+    // Recovery rule (R3): a one-input function whose /Domain gives more
+    // inputs uses the first.
+    if matches!(ftype, 2 | 3) && domain.len() > 1 && doc.recovery_mode() {
+        doc.push_warning(crate::Warning::RecoveryApplied {
+            rule: crate::RecoveryRule::FunctionExtraInputsIgnored,
+            detail: format!(
+                "type {ftype} function: /Domain gives {} inputs",
+                domain.len()
+            ),
+        });
+        domain.truncate(1);
+    }
     let range = pairs(dict.get(b"Range".as_slice()), doc, "Range")?;
     match ftype {
         0 => {

@@ -194,6 +194,15 @@ pub enum RecoveryRule {
     /// region redaction refuses it. A `/BBox` that is present but not a
     /// rectangle stays an error.
     UnclippedFormWithoutBBox,
+    /// A type 2 or type 3 function (one input, §7.10.3–4) whose
+    /// `/Domain` gives more inputs uses the first and ignores the rest
+    /// (as MuPDF does; Poppler does not draw it).
+    FunctionExtraInputsIgnored,
+    /// A shading whose function yields more outputs than its colour
+    /// space has components uses the first ones (as MuPDF does; Poppler
+    /// does not draw it). Fewer outputs stay an error: no value is
+    /// defined for the missing components.
+    ShadingOutputsTruncated,
 }
 
 impl fmt::Display for RecoveryRule {
@@ -219,6 +228,12 @@ impl fmt::Display for RecoveryRule {
                 "operator with the wrong number of operands kept uninterpreted"
             }
             RecoveryRule::UnclippedFormWithoutBBox => "form XObject without /BBox drawn unclipped",
+            RecoveryRule::FunctionExtraInputsIgnored => {
+                "one-input function with more inputs in /Domain: the first used"
+            }
+            RecoveryRule::ShadingOutputsTruncated => {
+                "shading function outputs beyond the colour space's components ignored"
+            }
         })
     }
 }

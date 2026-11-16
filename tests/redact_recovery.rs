@@ -359,7 +359,9 @@ fn check_mode(
                 added.is_empty(),
                 "{tag}: the output needs recovery the input did not: {added:?}"
             );
-            let t = page_text(&out);
+            // The text is read in recovery mode, which reads all strict
+            // mode reads (and a kept construct strict mode refuses).
+            let t = page_text(&Document::from_bytes_recovering(&x.output).unwrap());
             assert!(
                 t.contains("PUBLICWORD"),
                 "{tag}: lost the public text outside the rect"
@@ -921,6 +923,53 @@ fn invalid_form_xobjects() {
         strict(false, Refused("'Q' without matching 'q'")),
         recovery(true, &[R::IgnoredRestoreWithoutSave], Redacted),
     );
+}
+
+// ---- R3: functions and shadings ------------------------------------------
+
+fn shading_doc(shading: &str, content: String) -> Vec<u8> {
+    doc(
+        &content,
+        "/Shading << /Sh 30 0 R >> /Pattern << /P 31 0 R >>",
+        "",
+        true,
+        vec![
+            (30, shading.as_bytes().to_vec()),
+            (31, b"<< /PatternType 2 /Shading 30 0 R >>".to_vec()),
+        ],
+    )
+}
+
+#[test]
+fn recovered_functions_and_shadings() {
+    let two_inputs = "<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 200 0] /Function << /FunctionType 2 \
+                      /Domain [0 1 0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >> /Extend [true true] >>";
+    let extra_outputs = "<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [0 0 200 0] /Function << /FunctionType 2 \
+                         /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >> /Extend [true true] >>";
+    const INPUTS: &[RecoveryRule] = &[R::FunctionExtraInputsIgnored];
+    const OUTPUTS: &[RecoveryRule] = &[R::ShadingOutputsTruncated];
+    for (name, sh, rule) in [
+        ("function with two inputs", two_inputs, INPUTS),
+        ("shading with extra outputs", extra_outputs, OUTPUTS),
+    ] {
+        for (how, content) in [
+            (
+                "painted with sh across the rect",
+                "q 0 0 200 200 re W n /Sh sh Q {S} {K}",
+            ),
+            (
+                "as a pattern fill far from the rect",
+                "q /Pattern cs /P scn 1 1 20 20 re f Q {S} {K}",
+            ),
+        ] {
+            case(
+                &format!("{name}, {how}"),
+                move |v| shading_doc(sh, content.replace("{S}", &shown(v)).replace("{K}", KEPT)),
+                strict(false, Redacted),
+                recovery(true, rule, Redacted),
+            );
+        }
+    }
 }
 
 // ---- fonts, marked content, encodings, encryption -------------------------
