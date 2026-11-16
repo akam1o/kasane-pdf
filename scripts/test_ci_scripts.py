@@ -504,6 +504,79 @@ class Projection(unittest.TestCase):
         self.assertEqual(p["summary"]["first_reasons"], {"other": 1, "JavaScript name tree": 1})
 
 
+class CoverageOnly(unittest.TestCase):
+    """KASANE_FUZZ_COVERAGE_ONLY (the fuzz targets' oracles off) is
+    allowed on the cmin step only, and fuzz/ci-run.sh refuses it."""
+
+    FUZZ = ROOT / ".github/workflows/fuzz-nightly.yml"
+
+    def problems(self, mutate):
+        wf = yaml.safe_load(self.FUZZ.read_text())
+        mutate(wf)
+        cw.problems.clear()
+        with contextlib.redirect_stdout(io.StringIO()):
+            cw.check_coverage_only(self.FUZZ, wf)
+        out = list(cw.problems)
+        cw.problems.clear()
+        return out
+
+    def step(self, wf, text):
+        # The coverage-only cmin step for "fuzz cmin"; the first other match otherwise.
+        steps = [st for st in wf["jobs"]["render"]["steps"] if text in (st.get("run") or "")]
+        return next((st for st in steps if "KASANE_FUZZ_COVERAGE_ONLY" in (st.get("env") or {})), steps[0])
+
+    def test_committed_workflow_passes(self):
+        self.assertEqual(self.problems(lambda wf: None), [])
+        self.assertEqual(self.step(yaml.safe_load(self.FUZZ.read_text()), "fuzz cmin")["env"],
+                         {"KASANE_FUZZ_COVERAGE_ONLY": "1"})
+
+    def test_misplaced_settings_are_caught(self):
+        on = {"KASANE_FUZZ_COVERAGE_ONLY": "1"}
+        cases = {
+            "on the fuzz step": lambda wf: self.step(wf, "ci-run.sh").__setitem__("env", dict(on)),
+            "for the job": lambda wf: wf["jobs"]["render"].__setitem__("env", dict(on)),
+            "for the workflow": lambda wf: wf.__setitem__("env", dict(wf.get("env") or {}, **on)),
+            "inside the fuzz command": lambda wf: self.step(wf, "ci-run.sh").__setitem__(
+                "run", "KASANE_FUZZ_COVERAGE_ONLY=1 " + self.step(wf, "ci-run.sh")["run"]),
+            "the cmin step also fuzzing": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
+                "run", self.step(wf, "fuzz cmin")["run"] + "\nfuzz/ci-run.sh x y -- -runs=1"),
+            "the cmin step running the target directly": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
+                "run", self.step(wf, "fuzz cmin")["run"] + "\ntarget/x86_64-unknown-linux-gnu/release/render_content -runs=100"),
+            "written to $GITHUB_ENV on the cmin step": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
+                "run", 'echo "KASANE_FUZZ_COVERAGE_ONLY=1" >> "$GITHUB_ENV"\n' + self.step(wf, "fuzz cmin")["run"]),
+            "exported on another step": lambda wf: self.step(wf, "ci-run.sh").__setitem__(
+                "run", "export KASANE_FUZZ_COVERAGE_ONLY=1\n" + self.step(wf, "ci-run.sh")["run"]),
+            "a step whose only cmin is a comment": lambda wf: (
+                self.step(wf, "ci-run.sh").__setitem__("env", dict(on)),
+                self.step(wf, "ci-run.sh").__setitem__("run", "# fuzz cmin\n" + self.step(wf, "ci-run.sh")["run"])),
+            "cmin without its time bound": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
+                "run", self.step(wf, "fuzz cmin")["run"].replace("timeout 600 ", "")),
+            "a time bound of zero (none)": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
+                "run", self.step(wf, "fuzz cmin")["run"].replace("timeout 600 ", "timeout 0 ")),
+            "a command substituted into a cmin argument": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
+                "run", self.step(wf, "fuzz cmin")["run"].replace(
+                    '"corpus/${{ matrix.target }}" -- -set',
+                    '"$(target/x86_64-unknown-linux-gnu/release/render_content -runs=100)" -- -set')),
+            "a command substituted into the count": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
+                "run", self.step(wf, "fuzz cmin")["run"].replace(
+                    'find "corpus/${{ matrix.target }}"', 'find "$(render_content -runs=1)"')),
+            "a backtick in an argument": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
+                "run", self.step(wf, "fuzz cmin")["run"].replace('-O "${{ matrix.target }}"', '-O "`id`"')),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(name):
+                self.assertTrue(self.problems(mutate), f"not caught: {name}")
+
+    def test_ci_run_refuses_it(self):
+        for value in ("1", ""):
+            with self.subTest(value=value):
+                r = subprocess.run(["bash", str(ROOT / "fuzz/ci-run.sh"), "render_content", "/nonexistent", "--", "-runs=1"],
+                                   capture_output=True, text=True,
+                                   env=dict(os.environ, KASANE_FUZZ_COVERAGE_ONLY=value, FUZZ_TOOLCHAIN="none"))
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertIn("KASANE_FUZZ_COVERAGE_ONLY is set", r.stdout + r.stderr)
+
+
 class Shards(unittest.TestCase):
     """fuzz/ci-run-sharded.sh with a stub in place of fuzz/ci-run.sh."""
 

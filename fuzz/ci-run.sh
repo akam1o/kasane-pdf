@@ -25,6 +25,11 @@
 # that multiplies to ≈ 14 s on the runner: a 10 s limit fired on
 # legitimate inputs (fuzz-nightly, PR #3).
 set -uo pipefail
+# Coverage-only mode (the cmin step's) runs no oracle: never fuzz with it.
+if [ -n "${KASANE_FUZZ_COVERAGE_ONLY+x}" ]; then
+  echo "::error::KASANE_FUZZ_COVERAGE_ONLY is set: the targets would run without their oracles"
+  exit 1
+fi
 target=$1
 shift
 # Corpus directories are relative to the caller's directory.

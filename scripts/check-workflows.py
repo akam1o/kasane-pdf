@@ -313,6 +313,41 @@ def check_fuzz_matrix(path, job):
         problem(f"{path.name}:render-fuzz-smoke: redact_model's jobs cover shards {sorted(covered)}, not each of 1..N once")
 
 
+# The only commands a step with KASANE_FUZZ_COVERAGE_ONLY may run: the
+# bounded corpus minimisation and a count of what it kept.
+# Quoted arguments are literal paths or `${{ matrix.target }}`: no
+# command substitution, no shell variable.
+_ARG = r'"(?:[\w./-]|\$\{\{ matrix\.target \}\})+"'
+COVERAGE_ONLY_LINES = (
+    re.compile(r"^timeout [1-9]\d* cargo \+[\w.-]+ fuzz cmin -O " + _ARG + " " + _ARG + r"( -- -set_cover_merge=1)?$"),
+    re.compile(r'^echo "[\w ]*: \$\(find ' + _ARG + r' -type f \| wc -l\)"$'),
+)
+
+
+def check_coverage_only(path, wf):
+    """KASANE_FUZZ_COVERAGE_ONLY switches the fuzz targets' oracles off
+    (fuzz/src/lib.rs coverage_only): it is set in the env of a step that
+    only minimises a corpus — never on a workflow or a job, never written
+    by a command (an `export`, `$GITHUB_ENV`), never on a step that runs
+    anything but `cargo fuzz cmin`."""
+    key = "KASANE_FUZZ_COVERAGE_ONLY"
+    if key in (wf.get("env") or {}):
+        problem(f"{path.name}: {key} set for the whole workflow")
+    for jid, job in (wf.get("jobs") or {}).items():
+        if key in (job.get("env") or {}):
+            problem(f"{path.name}:{jid}: {key} set for the whole job")
+    for jid, st in steps_of(wf):
+        run = st.get("run") or ""
+        if key in run:
+            problem(f"{path.name}:{jid}: {key} named in a command; it is set in the step's env only")
+        if key in (st.get("env") or {}):
+            lines = [ln.strip() for ln in logical_lines(run)]
+            lines = [ln for ln in lines if ln and not ln.startswith("#")]
+            if not lines or not any(COVERAGE_ONLY_LINES[0].match(ln) for ln in lines) or any(
+                    not any(r.match(ln) for r in COVERAGE_ONLY_LINES) for ln in lines):
+                problem(f"{path.name}:{jid}: {key} on a step that does not only minimise a corpus")
+
+
 def check_gate(path, wf):
     jobs = wf.get("jobs") or {}
     # The checked commands must run in the repository root: no default
@@ -527,6 +562,7 @@ def main():
             check_nightly_measurement(path, wf)
             check_must_run(path, wf, NIGHTLY_MUST_RUN)
         check_caches(path, wf)
+        check_coverage_only(path, wf)
         wfs.append((path, wf))
         if path.name == "pr.yml":
             check_gate(path, wf)

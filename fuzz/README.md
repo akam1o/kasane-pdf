@@ -96,6 +96,52 @@ exhausts memory, and `fuzz-nightly.yml`'s `selftest` job checks that
 `ci-run.sh` reports each as a failure with its input saved; unset, it
 does nothing.
 
+`fuzz-nightly.yml` fuzzes each target for 15 minutes from the corpus
+the previous runs left in the Actions cache, then minimises it with
+`cargo fuzz cmin` for the next run. For `render_content` the
+minimisation runs under `KASANE_FUZZ_COVERAGE_ONLY=1` with
+`-set_cover_merge=1`. The other targets keep the plain merge: on a
+`redact_model` corpus the set-cover merge reached 2 PCs fewer than the
+plain merge.
+
+**Coverage-only mode.** In this mode `render_content` renders every
+distinct content its oracles render once each:
+- the page strictly and in recovery mode;
+- when it renders, the two equivalent contents and the shared form's
+  copy.
+
+It leaves out the re-renders of the same content and the comparisons.
+
+**Why the repeats can go.** A merge reports a crash, a timeout or an
+out-of-memory and saves the input, but it does not fail the step, and
+it drops that input. Every input the fuzz step keeps has already run
+with every oracle. The repeats added hit-count features, which kept
+more inputs, and they took a share of the time.
+
+**The set-cover merge** is libFuzzer's greedy reduction. It keeps
+inputs until every feature bucket it observed is covered, with
+features counted modulo 2^21. This is not a minimum. It also does not
+guarantee that every PC is kept: the PCs below were kept on this
+corpus.
+
+**Measured on one 3,149-input synthetic corpus**, three runs each in
+rotating order:
+
+| | cmin time | inputs kept |
+|---|---:|---:|
+| before | 59.8 s | 2,355 |
+| after | 54.5 s | 1,090 |
+
+Replayed three times by the full target, the whole corpus reached
+10,519–10,521 PCs, and 10,515 of them in all three replays. The kept
+corpus reached all 10,515 in each of its own three replays. It has
+2.0 % fewer hit-count features.
+
+**Guards.** `ci-run.sh` refuses to fuzz with the variable set.
+`scripts/check-workflows.py` allows the variable only in the env of a
+step that runs nothing but the bounded `cargo fuzz cmin`. It is never
+allowed on a job, a workflow, an `export` or `$GITHUB_ENV`.
+
 The seed replay gives the same inputs every run; the 3000-input phase
 is bounded but not bit-reproducible (libFuzzer's coverage feedback
 follows the library's per-process hash order). A failing input is
