@@ -695,3 +695,17 @@ and after, median per file, on the same machine:
 A page with 3,000 wrong operand counts now renders in recovery mode, in
 490 ms. Before, it failed at the first one, in 234 ms.
 
+### R2 — form XObjects without `/BBox`
+
+Measured against the R1 commit. No stage of any file changed class:
+strict parse, render, text and rewrite, verdict pass (378), the
+recovery-mode render count (43), SSIM and crash/timeout (0) are all as
+after R1.
+
+The missing `/BBox` was the first recovery error of two files, one
+`expect: pass` and one `reject`. Both now get past it and stop at the
+same next error, a tiling pattern with an invalid `/PaintType`, so
+neither counts as rendered.
+
+**Performance.** The change is a match on the form dictionary in
+`do_form`; nothing else is evaluated for a conforming form.
