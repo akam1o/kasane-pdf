@@ -17,7 +17,11 @@
 //! - rendering is deterministic (the same input twice: the same pixels);
 //! - when the content renders, wrapping it in `q … Q` and prepending an
 //!   identity `cm` change nothing;
-//! - drawing a shared form twice equals drawing two equal copies.
+//! - drawing a shared form twice equals drawing two equal copies;
+//! - in recovery mode (where an operator with the wrong operand count is
+//!   kept uninterpreted, R1): rendering is deterministic and the page
+//!   the size it must be, and content that renders strictly renders to
+//!   the same pixels (recovery changes nothing that conforms).
 #![no_main]
 
 use kasane_pdf::{render_page, Document, Error, Limits, RenderOptions};
@@ -202,7 +206,11 @@ fn limits_for(page_limits: &Limits) -> RenderOptions {
 
 /// Pixels of the page, or the error kind.
 fn render(b: &[u8], l: &Limits) -> Result<(u32, u32, Vec<u8>), Error> {
-    let d = Document::open(b, &kasane_pdf::OpenOptions::new().with_limits(l.clone()))?;
+    render_in(b, l, false)
+}
+
+fn render_in(b: &[u8], l: &Limits, recovering: bool) -> Result<(u32, u32, Vec<u8>), Error> {
+    let d = Document::open(b, &kasane_pdf::OpenOptions::new().with_limits(l.clone()).with_recovery(recovering))?;
     let p = &d.pages()[0];
     let r = render_page(&d, p, &limits_for(l))?;
     let _ = kasane_pdf::extract_text(&d, p, &kasane_pdf::TextOptions::default().with_limits(l.clone()));
@@ -220,6 +228,20 @@ fuzz_target!(|data: &[u8]| {
         (Ok(x), Ok(y)) => assert!(x == y, "rendering is not deterministic"),
         (Err(x), Err(y)) => assert_eq!(format!("{x:?}"), format!("{y:?}"), "errors differ"),
         _ => panic!("one of two identical renders failed"),
+    }
+    // Recovery mode on the same content.
+    let ra = render_in(&page(&body, false), &l, true);
+    let rb = render_in(&page(&body, false), &l, true);
+    match (&ra, &rb) {
+        (Ok(x), Ok(y)) => assert!(x == y, "recovery rendering is not deterministic"),
+        (Err(x), Err(y)) => assert_eq!(format!("{x:?}"), format!("{y:?}"), "recovery errors differ"),
+        _ => panic!("one of two identical recovery renders failed"),
+    }
+    if let Ok((rw, rh, rpx)) = &ra {
+        assert_eq!((*rw, *rh), (30, 30), "page size (recovery)");
+        if let Ok((_, _, px)) = &a {
+            assert!(rpx == px, "recovery mode changes a page that renders strictly");
+        }
     }
     let Ok((w, h, px)) = a else { return };
     // 60 pt at 36 dpi.

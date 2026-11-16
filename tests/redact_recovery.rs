@@ -451,12 +451,116 @@ fn unknown_operator() {
 
 #[test]
 fn wrong_operand_count() {
-    case(
+    // R1: recovery keeps the operator uninterpreted (Poppler and MuPDF
+    // read it differently — the last operands, the first, zeros), so
+    // the renderer skips it and the redaction walker, which cannot know
+    // what it would have drawn or set, refuses the page.
+    let wrong_renders = |name: &str,
+                         content: fn(u32) -> String,
+                         strict_cause: &'static str,
+                         renders: bool,
+                         cause: &'static str| {
+        case(
+            name,
+            move |v| page(&content(v)),
+            strict(false, Refused(strict_cause)),
+            recovery(renders, &[R::IgnoredWrongOperandCount], Refused(cause)),
+        );
+    };
+    let wrong = |name: &str, content: fn(u32) -> String, strict_cause: &'static str| {
+        wrong_renders(name, content, strict_cause, true, UNCERTAIN)
+    };
+    wrong(
         "re with three operands",
-        |v| page(&format!("0 0 10 re f {} {KEPT}", shown(v))),
-        strict(false, Refused("expects 4 operand(s), found 3")),
-        recovery(false, &[], Refused("expects 4 operand(s), found 3")),
+        |v| format!("0 0 10 re f {} {KEPT}", shown(v)),
+        "expects 4 operand(s), found 3",
     );
+    // Not completed: the `l` that follows has no current point, and the
+    // render says so rather than inventing one.
+    wrong_renders(
+        "m with three operands",
+        |v| format!("1 2 3 m 50 50 l S {} {KEPT}", shown(v)),
+        "expects 2 operand(s), found 3",
+        false,
+        "no current point",
+    );
+    // A state operator before the secret: what follows is drawn under a
+    // state no reader agrees on.
+    wrong(
+        "cm with five operands before the secret",
+        |v| format!("q 2 0 0 2 0 cm {} Q {KEPT}", shown(v)),
+        "expects 6 operand(s), found 5",
+    );
+    // Likewise the text that follows has no font: the render says so.
+    wrong_renders(
+        "Tf with one operand drawing the secret",
+        |v| format!("BT 12 Tf 80 100 Td ({}) Tj ET {KEPT}", secret(v)),
+        "expects 2 operand(s), found 1",
+        false,
+        "no font selected",
+    );
+    // The operator showing the secret itself.
+    wrong(
+        "Tj with two operands showing the secret",
+        |v| format!("BT /F1 10 Tf 80 100 Td 5 ({}) Tj ET {KEPT}", secret(v)),
+        "expects 1 operand(s), found 2",
+    );
+    wrong(
+        "TJ with two operands showing the secret",
+        |v| format!("BT /F1 10 Tf 80 100 Td 5 [({})] TJ ET {KEPT}", secret(v)),
+        "expects 1 operand(s), found 2",
+    );
+    // Far from the rect: the page is refused all the same (the walker
+    // cannot bound what an uninterpreted operator draws).
+    wrong(
+        "rg with two operands, far from the rect",
+        |v| format!("{} 0 0 rg 1 1 2 2 re f {KEPT}", shown(v)),
+        "expects 3 operand(s), found 2",
+    );
+    wrong(
+        "Do without a name",
+        |v| format!("Do {} {KEPT}", shown(v)),
+        "expects 1 operand(s), found 0",
+    );
+    case(
+        "wrong operand count inside a form",
+        form_page("/BBox [0 0 200 200]", |v| {
+            format!("0 0 10 re f {}", shown(v))
+        }),
+        strict(false, Refused("expects 4 operand(s), found 3")),
+        recovery(true, &[R::IgnoredWrongOperandCount], Refused(UNCERTAIN)),
+    );
+    case(
+        "wrong operand count inside BX/EX",
+        |v| page(&format!("BX 0 0 10 re EX {} {KEPT}", shown(v))),
+        strict(false, Refused("expects 4 operand(s), found 3")),
+        recovery(true, &[R::IgnoredWrongOperandCount], Refused(UNCERTAIN)),
+    );
+    // Not recovered: an operand of the wrong type, or a block operator.
+    for (name, content, cause) in [
+        (
+            "m with a string operand",
+            "(a) 2 m 5 5 l S {S} {K}",
+            "operand",
+        ),
+        (
+            "q with an operand",
+            "1 q {S} Q {K}",
+            "expects 0 operand(s), found 1",
+        ),
+        (
+            "BT with an operand",
+            "1 BT ET {S} {K}",
+            "expects 0 operand(s), found 1",
+        ),
+    ] {
+        case(
+            name,
+            move |v| page(&content.replace("{S}", &shown(v)).replace("{K}", KEPT)),
+            strict(false, Refused(cause)),
+            recovery(false, &[], Refused(cause)),
+        );
+    }
 }
 
 // ---- 4. graphics state ---------------------------------------------------
@@ -896,6 +1000,40 @@ fn several_faults() {
             &[R::IgnoredRestoreWithoutSave, R::IgnoredUnknownOperator],
             Refused(UNCERTAIN),
         ),
+    );
+    case(
+        "stray Q and an operator with the wrong operand count",
+        |v| page(&format!("Q 0 0 10 re f {} {KEPT}", shown(v))),
+        strict(false, Refused("'Q' without matching 'q'")),
+        recovery(
+            true,
+            &[R::IgnoredRestoreWithoutSave, R::IgnoredWrongOperandCount],
+            Refused(UNCERTAIN),
+        ),
+    );
+    case(
+        "no /MediaBox and an operator with the wrong operand count",
+        |v| {
+            doc(
+                &format!("0 0 10 re f {} {KEPT}", shown(v)),
+                "",
+                "",
+                false,
+                vec![],
+            )
+        },
+        no_open("page 1 has no MediaBox"),
+        recovery(
+            true,
+            &[R::MediaBoxDefault, R::IgnoredWrongOperandCount],
+            Refused(UNCERTAIN),
+        ),
+    );
+    case(
+        "wrong operand count and a rebuilt cross-reference table",
+        |v| broken_xref(page(&format!("0 0 10 re f {} {KEPT}", shown(v)))),
+        no_open("is beyond end of input"),
+        recovery(true, &[R::IgnoredWrongOperandCount], Refused(UNCERTAIN)),
     );
     case(
         "stray Q and a rebuilt cross-reference table",

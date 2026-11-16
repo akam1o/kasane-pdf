@@ -180,6 +180,14 @@ pub enum RecoveryRule {
     /// ISO 32000 uses the key as is, so a strict document derives the
     /// specified object keys and such a file's data does not decrypt.
     PaddedShortEncryptionKey,
+    /// An operator with a fixed number of operands that opens or closes
+    /// no block, given too few or too many, is kept uninterpreted
+    /// ([`Operation::Unknown`](crate::Operation::Unknown), with all its
+    /// operands) and not drawn. No reading is shared: Poppler uses the
+    /// last operands, MuPDF the first (or zeros for missing ones), so
+    /// what follows may be drawn under another state than other readers
+    /// show; region redaction refuses the page.
+    IgnoredWrongOperandCount,
 }
 
 impl fmt::Display for RecoveryRule {
@@ -200,6 +208,9 @@ impl fmt::Display for RecoveryRule {
             RecoveryRule::IgnoredInvalidSoftMask => "image /SMask that is not a stream ignored",
             RecoveryRule::PaddedShortEncryptionKey => {
                 "revision-4 encryption key shorter than 128 bits zero-padded to 16 bytes"
+            }
+            RecoveryRule::IgnoredWrongOperandCount => {
+                "operator with the wrong number of operands kept uninterpreted"
             }
         })
     }
