@@ -313,6 +313,26 @@ def check_fuzz_matrix(path, job):
         problem(f"{path.name}:render-fuzz-smoke: redact_model's jobs cover shards {sorted(covered)}, not each of 1..N once")
 
 
+def check_coverage_only(path, wf):
+    """KASANE_FUZZ_COVERAGE_ONLY switches the fuzz targets' oracles off
+    (fuzz/src/lib.rs coverage_only): it is set on a step that runs
+    `cargo fuzz cmin` and nothing else — never on a workflow or a job,
+    never on a step that fuzzes."""
+    key = "KASANE_FUZZ_COVERAGE_ONLY"
+    if key in (wf.get("env") or {}):
+        problem(f"{path.name}: {key} set for the whole workflow")
+    for jid, job in (wf.get("jobs") or {}).items():
+        if key in (job.get("env") or {}):
+            problem(f"{path.name}:{jid}: {key} set for the whole job")
+    for jid, st in steps_of(wf):
+        run = st.get("run") or ""
+        if key in run and key not in (st.get("env") or {}):
+            problem(f"{path.name}:{jid}: {key} set inside a command; set it in the step's env")
+        if key in (st.get("env") or {}) or key in run:
+            if "fuzz cmin" not in run or "ci-run" in run or "fuzz run" in run:
+                problem(f"{path.name}:{jid}: {key} on a step that does not only minimise a corpus")
+
+
 def check_gate(path, wf):
     jobs = wf.get("jobs") or {}
     # The checked commands must run in the repository root: no default
@@ -527,6 +547,7 @@ def main():
             check_nightly_measurement(path, wf)
             check_must_run(path, wf, NIGHTLY_MUST_RUN)
         check_caches(path, wf)
+        check_coverage_only(path, wf)
         wfs.append((path, wf))
         if path.name == "pr.yml":
             check_gate(path, wf)

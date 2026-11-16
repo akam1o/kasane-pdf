@@ -96,6 +96,19 @@ exhausts memory, and `fuzz-nightly.yml`'s `selftest` job checks that
 `ci-run.sh` reports each as a failure with its input saved; unset, it
 does nothing.
 
+`fuzz-nightly.yml` fuzzes each target for 15 minutes from the corpus
+the previous runs left in the Actions cache, then minimises it with
+`cargo fuzz cmin` for the next run. The minimisation runs with
+`KASANE_FUZZ_COVERAGE_ONLY=1`: `render_content` then renders each input
+once strictly and once in recovery mode, and skips its oracles'
+repeats (determinism, the equivalent contents, the shared form's copy,
+the comparison of the two modes). libFuzzer's merge only keeps or
+drops inputs and does not fail on a crash, so the repeats detect
+nothing there. They only add hit-count features, which kept about a
+fifth more inputs, and they took most of the time. `ci-run.sh` refuses to
+fuzz with the variable set, and `scripts/check-workflows.py` allows it
+on a step that runs `cargo fuzz cmin` only.
+
 The seed replay gives the same inputs every run; the 3000-input phase
 is bounded but not bit-reproducible (libFuzzer's coverage feedback
 follows the library's per-process hash order). A failing input is

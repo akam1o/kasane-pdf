@@ -25,6 +25,10 @@
 //!   be, content that renders strictly renders to the same pixels
 //!   (recovery changes nothing that conforms), and content that does not
 //!   renders deterministically (checked on one input in four).
+//!
+//! In coverage-only mode (corpus minimisation, `kasane_pdf_fuzz::
+//! coverage_only`) the page is rendered once strictly and once in
+//! recovery mode, and no oracle runs.
 #![no_main]
 
 use kasane_pdf::{render_page, Document, Error, Limits, RenderOptions};
@@ -226,6 +230,10 @@ fuzz_target!(|data: &[u8]| {
     let l = limits();
     let a = render(&page(&body, false), &l);
     kasane_pdf_fuzz::reach(a.as_ref().map(|r| r.2.as_slice()));
+    if kasane_pdf_fuzz::coverage_only() {
+        let _ = render_in(&page(&body, false), &l, true);
+        return;
+    }
     let b = render(&page(&body, false), &l);
     match (&a, &b) {
         (Ok(x), Ok(y)) => assert!(x == y, "rendering is not deterministic"),
