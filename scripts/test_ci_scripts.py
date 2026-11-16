@@ -551,6 +551,17 @@ class CoverageOnly(unittest.TestCase):
                 self.step(wf, "ci-run.sh").__setitem__("run", "# fuzz cmin\n" + self.step(wf, "ci-run.sh")["run"])),
             "cmin without its time bound": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
                 "run", self.step(wf, "fuzz cmin")["run"].replace("timeout 600 ", "")),
+            "a time bound of zero (none)": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
+                "run", self.step(wf, "fuzz cmin")["run"].replace("timeout 600 ", "timeout 0 ")),
+            "a command substituted into a cmin argument": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
+                "run", self.step(wf, "fuzz cmin")["run"].replace(
+                    '"corpus/${{ matrix.target }}" -- -set',
+                    '"$(target/x86_64-unknown-linux-gnu/release/render_content -runs=100)" -- -set')),
+            "a command substituted into the count": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
+                "run", self.step(wf, "fuzz cmin")["run"].replace(
+                    'find "corpus/${{ matrix.target }}"', 'find "$(render_content -runs=1)"')),
+            "a backtick in an argument": lambda wf: self.step(wf, "fuzz cmin").__setitem__(
+                "run", self.step(wf, "fuzz cmin")["run"].replace('-O "${{ matrix.target }}"', '-O "`id`"')),
         }
         for name, mutate in cases.items():
             with self.subTest(name):

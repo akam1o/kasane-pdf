@@ -118,8 +118,11 @@ it drops that input. Every input the fuzz step keeps has already run
 with every oracle. The repeats added hit-count features, which kept
 more inputs, and they took a share of the time.
 
-**The set-cover merge** keeps the fewest inputs that still reach every
-feature.
+**The set-cover merge** is libFuzzer's greedy reduction. It keeps
+inputs until every feature bucket it observed is covered, with
+features counted modulo 2^21. This is not a minimum. It also does not
+guarantee that every PC is kept: the PCs below were kept on this
+corpus.
 
 **Measured on one 3,149-input synthetic corpus**, three runs each in
 rotating order:
@@ -129,9 +132,10 @@ rotating order:
 | before | 59.8 s | 2,355 |
 | after | 54.5 s | 1,090 |
 
-Replayed by the full target, the kept corpus reaches every PC that the
-whole corpus reaches in each of three replays. It has 2.0 % fewer
-hit-count features.
+Replayed three times by the full target, the whole corpus reached
+10,519–10,521 PCs, and 10,515 of them in all three replays. The kept
+corpus reached all 10,515 in each of its own three replays. It has
+2.0 % fewer hit-count features.
 
 **Guards.** `ci-run.sh` refuses to fuzz with the variable set.
 `scripts/check-workflows.py` allows the variable only in the env of a

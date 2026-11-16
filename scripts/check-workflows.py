@@ -315,9 +315,12 @@ def check_fuzz_matrix(path, job):
 
 # The only commands a step with KASANE_FUZZ_COVERAGE_ONLY may run: the
 # bounded corpus minimisation and a count of what it kept.
+# Quoted arguments are literal paths or `${{ matrix.target }}`: no
+# command substitution, no shell variable.
+_ARG = r'"(?:[\w./-]|\$\{\{ matrix\.target \}\})+"'
 COVERAGE_ONLY_LINES = (
-    re.compile(r'^timeout \d+ cargo \+[\w.-]+ fuzz cmin -O "[^"]+" "[^"]+"( -- -set_cover_merge=1)?$'),
-    re.compile(r'^echo "[^"$`]*\$\(find "[^"]*" -type f \| wc -l\)"$'),
+    re.compile(r"^timeout [1-9]\d* cargo \+[\w.-]+ fuzz cmin -O " + _ARG + " " + _ARG + r"( -- -set_cover_merge=1)?$"),
+    re.compile(r'^echo "[\w ]*: \$\(find ' + _ARG + r' -type f \| wc -l\)"$'),
 )
 
 

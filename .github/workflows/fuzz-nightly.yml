@@ -86,7 +86,8 @@ jobs:
         # content the target's oracles render is rendered once, without
         # the same-content repeats and the comparisons; the fuzz step
         # above runs every oracle on every input it keeps. The set-cover
-        # merge keeps fewer inputs reaching the same PCs (fuzz/README.md).
+        # merge, a greedy reduction over the observed feature buckets,
+        # keeps fewer inputs; the PCs it kept are measured in fuzz/README.md.
         env:
           KASANE_FUZZ_COVERAGE_ONLY: "1"
         run: |
