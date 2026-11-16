@@ -747,3 +747,25 @@ the file is refused since.
 **Performance.** The new checks run only on an image whose codestream
 size differs from its dictionary's. A conforming image takes the same
 path as before.
+
+### R1–R4 together
+
+The runner after R4 (all four rules) against `61a0c8c`, run alternately
+on the same machine. Each figure is the median of three runs (five for
+the image pages), with peak memory the median per file:
+
+| input | before | after | |
+|---|---:|---:|---:|
+| 30,000 operators | 999 ms | 1000 ms | +0.1 % |
+| 300 pages | 1689 ms | 1665 ms | −1.4 % |
+| a 2000 × 2000 Flate image | 132 ms | 135 ms | +2 % (noise across five runs) |
+| a 2000 × 2000 JPEG | 162 ms | 167 ms | +3 % (noise across five runs) |
+| the same JPEG under a 1000 × 2000 dictionary | 53 ms (error) | 90 ms (rendered) | recovered |
+| 3,000 wrong operand counts | 119 ms (error) | 287 ms (rendered) | recovered |
+| 32 corpus files (the slowest, and all recovery cases) | 63.9 s | 64.1 s | +0.2 % |
+
+Peak memory changes by at most +0.2 MB per file.
+
+The recovered inputs take longer because they now render instead of
+stopping at the first error. The recovered JPEG holds 6 MB more, for
+the frame it decodes.
