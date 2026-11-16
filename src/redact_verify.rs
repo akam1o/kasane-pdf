@@ -483,6 +483,15 @@ fn non_interference(
     let a = usage_of(input, &sel, Bound::Complete, limits)?;
     let b = usage_of(out, &sel, Bound::Complete, limits)?;
     for &i in &walk {
+        // A page whose use could not be decided (content that does not
+        // parse, an operator kept uninterpreted in recovery mode) cannot
+        // be shown to draw the same.
+        if a.undecided_pages.contains(&i) || b.undecided_pages.contains(&i) {
+            return Err(fail(format!(
+                "page {} (not edited) changed, and what it draws could not be decided",
+                i + 1
+            )));
+        }
         let set = |doc: &Document,
                    u: &Usage,
                    idx: Option<&Index>|

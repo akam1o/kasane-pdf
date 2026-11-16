@@ -1043,6 +1043,61 @@ fn several_faults() {
     );
 }
 
+/// Two pages share an image; page 2 names it in an operator recovery
+/// mode keeps uninterpreted (`/Im /Im Do`). Redacting part of the
+/// image on page 1 must not prune the name from page 2 (it may draw
+/// it) or pass verification with page 2 changed: it is refused.
+/// (Review.)
+#[test]
+fn an_uninterpreted_operator_on_another_page_keeps_its_resources() {
+    let make = |v: u32, page2: &str| {
+        let img: Vec<u8> = (0..16 * 16 * 3)
+            .map(|i| ((i as u32 * 31 + v * 97) % 251) as u8)
+            .collect();
+        let mut o = vec![
+            (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+            (2, b"<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>".to_vec()),
+            (
+                3,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /Font << /F1 20 0 R >> /XObject << /Im 30 0 R >> >> /Contents 4 0 R >>"
+                    .to_vec(),
+            ),
+            (4, stream_obj("", format!("q 160 0 0 160 20 20 cm /Im Do Q {KEPT}").as_bytes())),
+            (
+                5,
+                b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+                  /Resources << /Font << /F1 20 0 R >> /XObject << /Im 30 0 R >> >> /Contents 6 0 R >>"
+                    .to_vec(),
+            ),
+            (6, stream_obj("", format!("q 160 0 0 160 20 20 cm {page2} Q {KEPT}").as_bytes())),
+            (
+                30,
+                stream_obj(
+                    "/Type /XObject /Subtype /Image /Width 16 /Height 16 /ColorSpace /DeviceRGB /BitsPerComponent 8",
+                    &img,
+                ),
+            ),
+        ];
+        o.extend(font_objs());
+        build_pdf(&o)
+    };
+    // The same shape with an interpreted `Do` on page 2 redacts, page 2
+    // keeping its image (the control).
+    let d = Document::from_bytes_recovering(&make(1, "/Im Do")).unwrap();
+    let r = redact(&d, &[(0, vec![RECT])], &RedactOptions::new());
+    assert!(r.is_ok(), "control: {:?}", r.err());
+    for v in [1, 2] {
+        let d = Document::from_bytes_recovering(&make(v, "/Im /Im Do")).unwrap();
+        let e = redact(&d, &[(0, vec![RECT])], &RedactOptions::new()).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("cannot tell whether a page uses an edited image"),
+            "{e}"
+        );
+    }
+}
+
 /// The residual audit of a recovered page with an operator kept
 /// uninterpreted (R1) says its content is incomplete: the operator's
 /// operands (here a marked-content point with /ActualText) are not

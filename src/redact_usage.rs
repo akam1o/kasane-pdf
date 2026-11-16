@@ -115,8 +115,11 @@ pub(crate) enum Bound {
 #[derive(Default, Debug)]
 pub(crate) struct Usage {
     pub(crate) used: HashMap<IndirectRef, (BTreeSet<Use>, BTreeSet<usize>)>,
-    /// Per page: why its use could not (wholly) be decided.
+    /// Per page: why its use could not (wholly) be decided (the first
+    /// 64 reasons).
     pub(crate) undecided: Vec<(usize, String)>,
+    /// Every page whose use could not (wholly) be decided.
+    pub(crate) undecided_pages: BTreeSet<usize>,
 }
 
 impl Usage {
@@ -718,6 +721,7 @@ impl Walk<'_> {
 
     fn undecided(&mut self, why: String) {
         self.undecided_here = true;
+        self.u.undecided_pages.insert(self.page);
         if self.u.undecided.len() < 64 {
             self.u.undecided.push((self.page, why));
         }
