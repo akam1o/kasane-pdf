@@ -31,7 +31,7 @@
 
 mod common;
 
-use common::{build_pdf, stream_obj};
+use common::{build_pdf, jbig2_8x2, stream_obj, unhex, JPEG_40X20};
 use kasane_pdf::{
     extract_text, redact, render_page, Document, Error, Limits, OpenOptions, RecoveryRule,
     RedactOptions, RenderOptions, TextOptions, Warning,
@@ -692,6 +692,95 @@ fn invalid_images_and_decoders() {
         "/Width 2 /Height 2 /BitsPerComponent 8 /Filter /FlateDecode",
         |v| vec![0x78, 0x9c, 0xff, v as u8, 1, 2, 3],
         "FlateDecode failed",
+    );
+}
+
+/// R4: a page drawing an image whose JBIG2 page or JPEG frame is not
+/// the size its dictionary says, at `place` (a `cm`), with the secret
+/// shown in the rect.
+fn mismatched_image_page(
+    dict: &'static str,
+    data: fn() -> Vec<u8>,
+    place: &'static str,
+) -> impl Fn(u32) -> Vec<u8> {
+    move |v| {
+        doc(
+            &format!("q {place} cm /Im Do Q {} {KEPT}", shown(v)),
+            "/XObject << /Im 30 0 R >>",
+            "",
+            true,
+            vec![(
+                30,
+                stream_obj(&format!("/Type /XObject /Subtype /Image {dict}"), &data()),
+            )],
+        )
+    }
+}
+
+#[test]
+fn image_codestream_of_another_size() {
+    // Recovery draws the samples as rows of the dictionary's size (as
+    // Poppler and MuPDF do); image redaction edits samples by the
+    // dictionary's geometry and does not trust that reading: refused.
+    const JB16X1: &str =
+        "/Width 16 /Height 1 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode";
+    const JB8X4: &str =
+        "/Width 8 /Height 4 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode";
+    const JPEG20X10: &str =
+        "/Width 20 /Height 10 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode";
+    const RULE: &[RecoveryRule] = &[R::ImageSamplesReadAtDictionarySize];
+    let jpeg = || unhex(JPEG_40X20);
+    // Across the rect: image redaction decodes strictly and refuses,
+    // in both modes, with the decoder's own cause.
+    for (name, dict, data, cause) in [
+        (
+            "JBIG2 page of another size across the rect",
+            JB16X1,
+            jbig2_8x2 as fn() -> Vec<u8>,
+            "JBIG2 page is 8x2",
+        ),
+        (
+            "JPEG frame of another size across the rect",
+            JPEG20X10,
+            jpeg as fn() -> Vec<u8>,
+            "JPEG dimensions 40x20",
+        ),
+    ] {
+        case(
+            name,
+            mismatched_image_page(dict, data, "40 0 0 40 80 80"),
+            strict(false, Refused(cause)),
+            recovery(true, RULE, Refused(cause)),
+        );
+    }
+    // Far from the rect: the image is kept as it is, in both modes —
+    // where it draws is the unit square under its `cm`, whatever its
+    // codestream holds — and the secret in the rect is removed.
+    for (name, dict, data) in [
+        (
+            "JBIG2 page of another size far from the rect",
+            JB16X1,
+            jbig2_8x2 as fn() -> Vec<u8>,
+        ),
+        (
+            "JPEG frame of another size far from the rect",
+            JPEG20X10,
+            jpeg as fn() -> Vec<u8>,
+        ),
+    ] {
+        case(
+            name,
+            mismatched_image_page(dict, data, "20 0 0 20 0 0"),
+            strict(false, Redacted),
+            recovery(true, RULE, Redacted),
+        );
+    }
+    // Too few samples for the dictionary: not recovered.
+    case(
+        "JBIG2 page with too few samples",
+        mismatched_image_page(JB8X4, jbig2_8x2, "40 0 0 40 80 80"),
+        strict(false, Refused("JBIG2 page is 8x2")),
+        recovery(false, &[], Refused("JBIG2 page is 8x2")),
     );
 }
 

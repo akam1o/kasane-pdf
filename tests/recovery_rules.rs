@@ -6,9 +6,10 @@
 
 mod common;
 
-use common::{build_pdf, stream_obj};
+use common::{build_pdf, jbig2_8x2, stream_obj, unhex, JPEG_40X20};
 use kasane_pdf::{
-    render_page, Document, Error, RecoveryRule, RenderOptions, RenderedPage, Warning,
+    render_page, Document, Error, Limits, OpenOptions, RecoveryRule, RenderOptions, RenderedPage,
+    Warning,
 };
 
 fn page(content: &[u8], page_extra: &str, extra: &[(u32, Vec<u8>)]) -> Vec<u8> {
@@ -518,6 +519,338 @@ fn extra_functions_of_an_array_are_not_evaluated() {
     assert!(px(&r, 2, 50).0 > 240 && px(&r, 97, 50).0 < 15);
     assert_eq!(
         rule_count(&recovery_rules(&rec), "ShadingOutputsTruncated"),
+        1
+    );
+}
+
+fn image_page(dict: &str, data: &[u8]) -> Vec<u8> {
+    let mut img = format!(
+        "<< /Type /XObject /Subtype /Image {dict} /Length {} >>\nstream\n",
+        data.len()
+    )
+    .into_bytes();
+    img.extend_from_slice(data);
+    img.extend_from_slice(b"\nendstream");
+    build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+              /Resources << /XObject << /Im 10 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"q 100 0 0 100 0 0 cm /Im Do Q")),
+        (10, img),
+    ])
+}
+
+/// The page as a grid of `w` × `h` cells, `#` where a cell's centre is
+/// dark, `.` where it is light.
+fn cells(r: &RenderedPage, w: u32, h: u32) -> String {
+    (0..h)
+        .map(|j| {
+            (0..w)
+                .map(|i| {
+                    let p = px(r, (i * 2 + 1) * 50 / w, (j * 2 + 1) * 50 / h);
+                    if (p.0 as u32 + p.1 as u32 + p.2 as u32) < 384 {
+                        '#'
+                    } else {
+                        '.'
+                    }
+                })
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// R4: an image whose JBIG2 page or JPEG frame is not the size its
+/// dictionary says is an error in strict mode. Poppler and MuPDF both
+/// decode the codestream and read its samples, in order, as rows of the
+/// dictionary's size; recovery mode does the same when the codestream
+/// holds enough of them (recorded, and reported as an approximation).
+/// With too few, they disagree (Poppler pads white, MuPDF black): an
+/// error in both modes.
+#[test]
+fn image_codestream_of_another_size_is_read_in_the_dictionary_size_only_in_recovery() {
+    let jb = jbig2_8x2();
+    for (w, h, want) in [
+        (16, 1, "....####....####"),
+        (4, 2, "..../...."),
+        (8, 1, "....####"),
+    ] {
+        let pdf = image_page(
+            &format!("/Width {w} /Height {h} /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode"),
+            &jb,
+        );
+        let strict = Document::from_bytes(&pdf).unwrap();
+        assert!(
+            render(&strict)
+                .unwrap_err()
+                .to_string()
+                .contains("JBIG2 page is 8x2"),
+            "{w}x{h}"
+        );
+        let rec = Document::from_bytes_recovering(&pdf).unwrap();
+        let r = render(&rec).unwrap_or_else(|e| panic!("{w}x{h}: {e}"));
+        assert_eq!(cells(&r, w, h), want, "{w}x{h}");
+        assert_eq!(
+            rule_count(&recovery_rules(&rec), "ImageSamplesReadAtDictionarySize"),
+            1,
+            "{w}x{h}"
+        );
+        assert!(
+            !r.image_approximations().is_empty(),
+            "{w}x{h}: not reported as an approximation"
+        );
+    }
+    let jpeg = unhex(JPEG_40X20);
+    // 20 × 10 from 40 × 20: each dictionary row is half a frame row —
+    // red, then blue, alternately.
+    let pdf = image_page(
+        "/Width 20 /Height 10 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode",
+        &jpeg,
+    );
+    let strict = Document::from_bytes(&pdf).unwrap();
+    assert!(render(&strict)
+        .unwrap_err()
+        .to_string()
+        .contains("JPEG frame is 40x20"));
+    let rec = Document::from_bytes_recovering(&pdf).unwrap();
+    let r = render(&rec).unwrap();
+    let (top, second) = (px(&r, 50, 5), px(&r, 50, 15));
+    assert!(
+        top.0 > 200 && top.2 < 60 && second.2 > 200 && second.0 < 60,
+        "{top:?} {second:?}"
+    );
+    assert_eq!(
+        rule_count(&recovery_rules(&rec), "ImageSamplesReadAtDictionarySize"),
+        1
+    );
+    // Too few samples for the dictionary: an error in both modes.
+    for pdf in [
+        image_page(
+            "/Width 8 /Height 4 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode",
+            &jb,
+        ),
+        image_page(
+            "/Width 2 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode",
+            &jb,
+        ),
+        image_page(
+            "/Width 80 /Height 40 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode",
+            &jpeg,
+        ),
+    ] {
+        for recovering in [false, true] {
+            let d = if recovering {
+                Document::from_bytes_recovering(&pdf)
+            } else {
+                Document::from_bytes(&pdf)
+            }
+            .unwrap();
+            assert!(render(&d).is_err(), "recovery {recovering}: rendered");
+            assert_eq!(
+                rule_count(&recovery_rules(&d), "ImageSamplesReadAtDictionarySize"),
+                0
+            );
+        }
+    }
+}
+
+/// R4 boundaries: every dictionary size up to 24 × 24 over the 8 × 2
+/// JBIG2 page and the 40 × 20 JPEG frame. Recovery renders exactly
+/// when the codestream holds the samples the dictionary needs (whole
+/// bytes per JBIG2 row), and records the rule exactly when the sizes
+/// differ; strict mode renders only the codestream's own size. A
+/// dictionary beyond the image limits stays a limit error.
+#[test]
+fn image_codestream_size_boundaries() {
+    let jb = jbig2_8x2();
+    let jpeg = unhex(JPEG_40X20);
+    for w in 1..=24u32 {
+        for h in 1..=24u32 {
+            for (kind, dict, data, own, enough) in [
+                (
+                    "JBIG2",
+                    format!("/Width {w} /Height {h} /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode"),
+                    &jb,
+                    (8, 2),
+                    w.div_ceil(8) * h <= 2,
+                ),
+                (
+                    "JPEG",
+                    format!("/Width {w} /Height {h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode"),
+                    &jpeg,
+                    (40, 20),
+                    w * h <= 40 * 20,
+                ),
+            ] {
+                let pdf = image_page(&dict, data);
+                let same = (w, h) == own;
+                let strict = Document::from_bytes(&pdf).unwrap();
+                assert_eq!(render(&strict).is_ok(), same, "{kind} {w}x{h} strict");
+                let rec = Document::from_bytes_recovering(&pdf).unwrap();
+                assert_eq!(render(&rec).is_ok(), enough, "{kind} {w}x{h} recovery");
+                let n = rule_count(&recovery_rules(&rec), "ImageSamplesReadAtDictionarySize");
+                assert_eq!(n, usize::from(enough && !same), "{kind} {w}x{h} rule");
+            }
+        }
+    }
+    for dict in [
+        "/Width 1 /Height 400000000 /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode",
+        "/Width 400000000 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode",
+    ] {
+        let pdf = image_page(dict, if dict.contains("JBIG2") { &jb } else { &jpeg });
+        let rec = Document::from_bytes_recovering(&pdf).unwrap();
+        let e = render(&rec).unwrap_err();
+        assert!(matches!(e, Error::LimitExceeded { .. }), "{dict}: {e}");
+    }
+}
+
+fn render_with(pdf: &[u8], limits: Limits) -> Result<RenderedPage, Error> {
+    let d = Document::open(
+        pdf,
+        &OpenOptions::new()
+            .with_limits(limits.clone())
+            .with_recovery(true),
+    )?;
+    render_page(
+        &d,
+        &d.pages()[0],
+        &RenderOptions::default().with_limits(limits),
+    )
+}
+
+/// R4 (review): the JPEG frame recovery decodes is not the image the
+/// dictionary was checked against, so it is checked against
+/// `max_image_bytes` itself, before anything is decoded.
+#[test]
+fn recovered_jpeg_frame_is_held_to_the_byte_limit() {
+    let jpeg = unhex(JPEG_40X20);
+    let pdf = image_page(
+        "/Width 20 /Height 10 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode",
+        &jpeg,
+    );
+    // The frame needs 48 × 32 × 3 = 4608 bytes in padded planes; the
+    // dictionary's image 600.
+    let limits = |bytes| {
+        let mut l = Limits::default();
+        l.max_image_bytes = bytes;
+        l
+    };
+    let e = render_with(&pdf, limits(4000)).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            Error::LimitExceeded {
+                limit: "max_image_bytes",
+                ..
+            }
+        ),
+        "{e}"
+    );
+    render_with(&pdf, limits(5000)).unwrap();
+    // A dictionary size whose byte count overflows: an error, not a
+    // panic, under limits that let it through.
+    let pdf = image_page(
+        "/Width 4294967295 /Height 4294967295 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode",
+        &jpeg,
+    );
+    let mut all = Limits::default();
+    all.max_image_dimension = u32::MAX;
+    all.max_image_total_samples = u64::MAX;
+    all.max_image_bytes = u64::MAX;
+    assert!(render_with(&pdf, all).is_err());
+}
+
+/// R4 (review): a soft mask is read from a JPEG frame of another size
+/// only when the frame has the mask's layout (one component); an RGB
+/// frame is not read as grey.
+#[test]
+fn recovered_jpeg_soft_mask_needs_one_component() {
+    let jpeg = unhex(JPEG_40X20);
+    let mut smask = format!(
+        "<< /Type /XObject /Subtype /Image /Width 20 /Height 10 /ColorSpace /DeviceGray \
+         /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n",
+        jpeg.len()
+    )
+    .into_bytes();
+    smask.extend_from_slice(&jpeg);
+    smask.extend_from_slice(b"\nendstream");
+    let pdf = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+              /Resources << /XObject << /Im 10 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", b"q 100 0 0 100 0 0 cm /Im Do Q")),
+        (
+            10,
+            stream_obj(
+                "/Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceGray \
+                 /BitsPerComponent 8 /SMask 11 0 R",
+                &[0],
+            ),
+        ),
+        (11, smask),
+    ]);
+    let rec = Document::from_bytes_recovering(&pdf).unwrap();
+    let e = render(&rec).unwrap_err();
+    assert!(
+        e.to_string().contains("not laid out as the dictionary's"),
+        "{e}"
+    );
+    assert_eq!(
+        rule_count(&recovery_rules(&rec), "ImageSamplesReadAtDictionarySize"),
+        0
+    );
+}
+
+/// R4 (review): a JBIG2 page whose width is not a whole number of bytes
+/// has row padding of no established value (here a black page, 5 × 2).
+/// Rows of another width would draw it: an error in both modes. Fewer
+/// rows of the same width read no padding and are recovered.
+#[test]
+fn recovered_jbig2_never_reads_row_padding() {
+    let be = |v: u32| v.to_be_bytes();
+    let mut info = [be(5), be(2), be(0), be(0)].concat();
+    info.extend_from_slice(&[0x04, 0, 0]); // default pixel 1 (black)
+    let mut jb = be(0).to_vec();
+    jb.extend_from_slice(&[48, 0, 1]);
+    jb.extend_from_slice(&be(info.len() as u32));
+    jb.extend_from_slice(&info);
+    let page = |w: u32, h: u32| {
+        image_page(
+            &format!("/Width {w} /Height {h} /ColorSpace /DeviceGray /BitsPerComponent 1 /Filter /JBIG2Decode"),
+            &jb,
+        )
+    };
+    assert_eq!(
+        cells(
+            &render(&Document::from_bytes(&page(5, 2)).unwrap()).unwrap(),
+            5,
+            2
+        ),
+        "#####/#####"
+    );
+    for recovering in [false, true] {
+        let d = if recovering {
+            Document::from_bytes_recovering(&page(16, 1))
+        } else {
+            Document::from_bytes(&page(16, 1))
+        }
+        .unwrap();
+        assert!(render(&d).is_err(), "16x1 (recovery {recovering}) rendered");
+    }
+    let rec = Document::from_bytes_recovering(&page(5, 1)).unwrap();
+    assert_eq!(cells(&render(&rec).unwrap(), 5, 1), "#####");
+    assert_eq!(
+        rule_count(&recovery_rules(&rec), "ImageSamplesReadAtDictionarySize"),
         1
     );
 }

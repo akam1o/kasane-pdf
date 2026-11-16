@@ -150,12 +150,75 @@ pub(crate) fn jbig2_decode(
     height: u32,
     limits: &Limits,
 ) -> Result<Vec<u8>, Error> {
+    let image = jbig2_image(data, globals)?;
+    if image.width() != width || image.height() != height {
+        return Err(Error::Structure(format!(
+            "JBIG2 page is {}x{} but the image dictionary says {width}x{height}",
+            image.width(),
+            image.height()
+        )));
+    }
+    jbig2_rows(&image, limits)
+}
+
+/// A JBIG2 page's width and height.
+type PageSize = (u32, u32);
+
+/// [`jbig2_decode`] for recovery mode (R4): a page of another size than
+/// the dictionary's is decoded at its own size, and its packed rows are
+/// read, in order, as `height` rows of `width` pixels — as Poppler and
+/// MuPDF read it. Also returns the page's size when it differed. Too few
+/// rows' worth of data is an error (the readers pad differently). Not
+/// for image redaction, which edits samples by the dictionary's
+/// geometry and keeps refusing a mismatch.
+pub(crate) fn jbig2_decode_recovering(
+    data: &[u8],
+    globals: Option<&[u8]>,
+    width: u32,
+    height: u32,
+    limits: &Limits,
+) -> Result<(Vec<u8>, Option<PageSize>), Error> {
+    let image = jbig2_image(data, globals)?;
+    let page = (image.width(), image.height());
+    if page == (width, height) {
+        return Ok((jbig2_rows(&image, limits)?, None));
+    }
+    // A page whose width is not a whole number of bytes has padding
+    // bits at each row's end, whose value the decoder does not establish
+    // (readers fill them differently): read in rows of another width,
+    // they would be drawn.
+    if page.0 % 8 != 0 && width != page.0 {
+        return Err(Error::Structure(format!(
+            "JBIG2 page is {}x{} but the image dictionary says {width}x{height} \
+             (rows of another width would read the page's row padding)",
+            page.0, page.1
+        )));
+    }
+    let mut rows = jbig2_rows(&image, limits)?;
+    let need = u64::from(width)
+        .div_ceil(8)
+        .saturating_mul(u64::from(height));
+    if (rows.len() as u64) < need {
+        return Err(Error::Structure(format!(
+            "JBIG2 page is {}x{} but the image dictionary says {width}x{height} \
+             (too few samples for the dictionary's size)",
+            page.0, page.1
+        )));
+    }
+    rows.truncate(need as usize);
+    Ok((rows, Some(page)))
+}
+
+fn jbig2_image<'a>(
+    data: &'a [u8],
+    globals: Option<&'a [u8]>,
+) -> Result<hayro_jbig2::Image<'a>, Error> {
     // §7.4.7 says the embedded stream carries segments only, yet some
     // producers prepend the T.88 Annex D.4 file header (`97 4A 42 32 0D
     // 0A 1A 0A`). Its signature is unambiguous, so such a stream is read
     // in the file organisation instead of being refused as a bad segment.
     const FILE_HEADER: &[u8] = b"\x97JB2\r\n\x1a\n";
-    let image = if data.starts_with(FILE_HEADER) {
+    if data.starts_with(FILE_HEADER) {
         if globals.is_some() {
             return Err(Error::Structure(
                 "JBIG2Decode: stream has a file header and /JBIG2Globals (the globals cannot be placed)".into(),
@@ -165,14 +228,12 @@ pub(crate) fn jbig2_decode(
     } else {
         hayro_jbig2::Image::new_embedded(data, globals)
     }
-    .map_err(|e| Error::Parse(format!("JBIG2Decode: {e}")))?;
-    if image.width() != width || image.height() != height {
-        return Err(Error::Structure(format!(
-            "JBIG2 page is {}x{} but the image dictionary says {width}x{height}",
-            image.width(),
-            image.height()
-        )));
-    }
+    .map_err(|e| Error::Parse(format!("JBIG2Decode: {e}")))
+}
+
+/// The page's packed rows (0 = black), all of them, within `limits`.
+fn jbig2_rows(image: &hayro_jbig2::Image<'_>, limits: &Limits) -> Result<Vec<u8>, Error> {
+    let (width, height) = (image.width(), image.height());
     let mut rows = PackedRows::new(width, height, limits)?;
     image
         .decode(&mut rows)

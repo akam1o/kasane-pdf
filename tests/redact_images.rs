@@ -190,6 +190,37 @@ fn ccitt_and_jbig2_images() {
             assert_eq!(sample_at(&data, 8, 1, 1, x, y, 0), want, "JBIG2 ({x},{y})");
         }
     }
+    // A JBIG2 page, or a JPEG frame, of another size than the
+    // dictionary's: refused in both modes. Recovery mode draws such an
+    // image by reading its samples as rows of the dictionary's size
+    // (R4), but the samples are edited by the dictionary's geometry, and
+    // that reading is not trusted to place the removed area.
+    for (dict, data) in [
+        (
+            "/Type /XObject /Subtype /Image /Width 16 /Height 1 /ColorSpace /DeviceGray \
+             /BitsPerComponent 1 /Filter /JBIG2Decode",
+            jb.clone(),
+        ),
+        (
+            "/Type /XObject /Subtype /Image /Width 20 /Height 10 /ColorSpace /DeviceRGB \
+             /BitsPerComponent 8 /Filter /DCTDecode",
+            common::unhex(common::JPEG_40X20),
+        ),
+    ] {
+        let pdf = page(stream_obj(dict, &data));
+        for doc in [
+            Document::from_bytes(&pdf).unwrap(),
+            Document::from_bytes_recovering(&pdf).unwrap(),
+        ] {
+            let e = redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()).unwrap_err();
+            assert!(
+                e.to_string().contains("JBIG2 page is 8x2")
+                    || e.to_string().contains("JPEG dimensions 40x20"),
+                "recovery {}: {e}",
+                doc.recovery_mode()
+            );
+        }
+    }
     let mut with_header = b"\x97JB2\r\n\x1a\n\x01\x00\x00\x00\x01".to_vec();
     with_header.extend_from_slice(&jb);
     assert!(run(&page(jbig2(&with_header))).is_err());
