@@ -99,19 +99,25 @@ and MuPDF 1.28:
 - Poppler reports *Bad form bounding box* and draws nothing of the
   form.
 
-**Recovery mode.** The form is drawn without the clip a `/BBox` would
-set, as MuPDF draws it. Its `/Matrix` still applies, and so does every
+**Recovery mode.** A form painted by `Do` (from a page, another form, a
+pattern or a Type 3 glyph) or used as a soft-mask group is drawn
+without the clip a `/BBox` would set, as MuPDF draws it. Its `/Matrix` still applies, and so does every
 clip around the `Do`, including an enclosing form's `/BBox`.
 `UnclippedFormWithoutBBox` records the form's object number. Nothing
-of the form is dropped, and no box is invented.
+of the form is dropped, and no box is invented. An annotation
+appearance without `/BBox` is not covered by this rule: it has no
+placement on the page (Algorithm 8.1 maps the box to `/Rect`), and it
+is skipped as before (`IgnoredInvalidAnnotation`).
 
 **Not recovered** (an error in both modes): a `/BBox` that is present
 but is not a rectangle of four finite numbers. MuPDF does not draw such
 a form either.
 
 **Region redaction** refuses every page that draws such a form, in both
-modes and wherever the form draws, with the strict cause (*form XObject
-has no /BBox*). The redaction geometry bounds a form by its `/BBox`. It
+modes and wherever the form draws. A form painted by `Do` is refused
+with the strict cause (*form XObject has no /BBox*). A soft-mask group
+or a Type 3 glyph's form is refused earlier, by the refusal those
+constructs already have. The redaction geometry bounds a form by its `/BBox`. It
 does not invent one, so the form's extent stays unknown.
 
 **Known limits.** A form drawn unclipped may show more than a reader
