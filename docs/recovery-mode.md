@@ -32,6 +32,8 @@ together with its cases there (R0 in
 | `PaddedShortEncryptionKey` | a revision-4 key shorter than 128 bits | zero-padded, as Acrobat does | refused (no writer encrypts) |
 | `IgnoredWrongOperandCount` (R1, v0.11) | an operator with the wrong number of operands | see below | refused |
 | `UnclippedFormWithoutBBox` (R2, v0.11) | a form XObject without `/BBox`, or with `/BBox null` | drawn without the clip | refused |
+| `FunctionExtraInputsIgnored` (R3, v0.11) | a type 2 or 3 function whose `/Domain` gives more than one input | the first input used | as strict mode (see below) |
+| `ShadingOutputsTruncated` (R3, v0.11) | a shading function with more outputs than the colour space has components | the first outputs used | as strict mode (see below) |
 
 ## R1 — operators with the wrong number of operands
 
@@ -122,3 +124,50 @@ does not invent one, so the form's extent stays unknown.
 
 **Known limits.** A form drawn unclipped may show more than a reader
 that clips would show. Poppler shows nothing of it.
+
+## R3 — function input and shading output counts
+
+**The constructs.**
+- **Extra inputs.** A type 2 (exponential) or type 3 (stitching)
+  function takes one input (§7.10.3, § 7.10.4), but its `/Domain` gives
+  more.
+- **Extra outputs.** A shading whose function yields more outputs than
+  its colour space has components (§ 8.7.4.5).
+
+Strict mode refuses both (*type 2 function takes exactly one input*,
+*shading /Function yields 3 outputs, colour space has 1 components*).
+
+**Readers disagree.** Measured on synthetic pages with Poppler 26.10
+and MuPDF 1.28:
+- **Extra inputs.** MuPDF uses the first input. Poppler reports
+  *function with more than one input* and draws nothing of the shading.
+- **Extra outputs.** MuPDF uses the first outputs. Poppler reports
+  *function with wrong output size* and draws nothing.
+- **Too few outputs.** Poppler draws nothing. MuPDF fills the missing
+  components with each function type's own defaults (for a type 2
+  function, the defaults of `/C0` and `/C1`).
+
+**Recovery mode.**
+- **Extra inputs.** The first input is used and the rest of `/Domain`
+  is ignored (`FunctionExtraInputsIgnored`).
+- **Extra outputs.** The first outputs are used, as many as the colour
+  space has components (`ShadingOutputsTruncated`).
+
+Both are what MuPDF draws.
+
+**Not recovered** (an error in both modes): a shading function with
+*fewer* outputs than components. The roadmap proposed padding with 0.
+No value is defined for the missing components, and MuPDF does not pad
+with 0 either, so no reading is shared and none is invented. A function
+with too few inputs for its use (a function-based shading needs two)
+stays an error too.
+
+**Region redaction** is unchanged. It does not evaluate these
+functions to place anything. A shading meeting a rect is removed or cut
+by its geometry, and strict mode already redacts such a page (the
+render it cannot do is not needed). Both modes give the same output,
+and `tests/redact_recovery.rs` checks that the two variants of each
+case are byte-identical.
+
+**Known limits.** The colours drawn are MuPDF's reading. Poppler draws
+nothing of such a shading.

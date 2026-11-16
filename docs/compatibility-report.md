@@ -709,3 +709,19 @@ neither counts as rendered.
 
 **Performance.** The change is a match on the form dictionary in
 `do_form`; nothing else is evaluated for a conforming form.
+
+### R3 — function input and shading output counts
+
+Measured against the R2 commit. No stage of any file changed class.
+The counts are all as after R1: strict stages, verdict pass (378),
+recovery-mode renders (43), SSIM, and crash/timeout (0).
+
+The roadmap attributes two files to R3, and neither renders:
+- **The function file** gets past the input count and stops at the next
+  error, a stitching function's `/Bounds` of the wrong length.
+- **The shading file** has a function with *fewer* outputs than
+  components (1 for 3). R3 does not recover that, by design.
+
+**Performance.** The checks run once per function and per shading,
+when they are parsed. Truncating the outputs costs a slice per sample,
+and only on the recovered shading.
