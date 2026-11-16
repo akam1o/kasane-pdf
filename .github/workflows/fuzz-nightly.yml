@@ -109,6 +109,51 @@ jobs:
           retention-days: 14
           if-no-files-found: ignore
 
+  bench:
+    name: TEMPORARY cmin bench (${{ matrix.rep }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        rep: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+        with:
+          toolchain: nightly-2026-10-29
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: fuzz
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - run: cargo install cargo-fuzz --locked --version 0.13.2
+      - name: corpus from earlier runs
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: fuzz/corpus/render_content
+          key: fuzz-corpus-render_content-${{ github.run_id }}
+          restore-keys: fuzz-corpus-render_content-
+      - name: build
+        run: cargo +nightly-2026-10-29 fuzz build -O render_content
+        working-directory: fuzz
+      - name: both cmin modes on copies of the same corpus, alternating
+        working-directory: fuzz
+        run: |
+          echo "restored: $(ls corpus/render_content | wc -l)"
+          nproc; grep -m1 "model name" /proc/cpuinfo
+          one() {
+            rm -rf /tmp/c; cp -R corpus/render_content /tmp/c
+            s=$(date +%s.%N)
+            if [ "$1" = old ]; then
+              cargo +nightly-2026-10-29 fuzz cmin -O render_content /tmp/c > /tmp/log-$1 2>&1
+            else
+              env KASANE_FUZZ_COVERAGE_ONLY=1 cargo +nightly-2026-10-29 fuzz cmin -O render_content /tmp/c -- -set_cover_merge=1 > /tmp/log-$1 2>&1
+            fi
+            e=$(date +%s.%N)
+            echo "BENCH rep=${{ matrix.rep }} mode=$1 seconds=$(echo "$e - $s" | bc) kept=$(ls /tmp/c | wc -l) $(grep -oE 'rss: [0-9]+Mb' /tmp/log-$1 | tail -1)"
+          }
+          if [ $(( ${{ matrix.rep }} % 2 )) = 1 ]; then one old; one new; else one new; one old; fi
+
   selftest:
     name: runner self-test (${{ matrix.mode }})
     if: github.event_name != 'schedule'
