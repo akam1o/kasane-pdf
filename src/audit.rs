@@ -2194,8 +2194,24 @@ impl<'d> Audit<'d> {
                 }
             };
             let mut n = 0u64;
+            let mut uninterpreted = false;
             for (i, op) in ops.iter().enumerate() {
                 n += 1;
+                // In recovery mode an operator kept uninterpreted (R1) may
+                // carry what an interpreted one would be audited for (its
+                // operands are not read as properties): the page's content
+                // is incomplete, as when it does not parse.
+                if matches!(op, Operation::Unknown { .. })
+                    && self.doc.recovery_mode()
+                    && !uninterpreted
+                {
+                    uninterpreted = true;
+                    self.out.incomplete.push(AuditIncomplete {
+                        scope: format!("page {} content", p.index() + 1),
+                        reason: "an operator recovery mode did not interpret".into(),
+                        limit: false,
+                    });
+                }
                 if n > self.limits.max_audit_content_ops {
                     self.out.incomplete.push(AuditIncomplete {
                         scope: format!("page {} content", p.index() + 1),

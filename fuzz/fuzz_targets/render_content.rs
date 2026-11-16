@@ -237,11 +237,13 @@ fuzz_target!(|data: &[u8]| {
         (Err(x), Err(y)) => assert_eq!(format!("{x:?}"), format!("{y:?}"), "recovery errors differ"),
         _ => panic!("one of two identical recovery renders failed"),
     }
-    if let Ok((rw, rh, rpx)) = &ra {
+    if let Ok((rw, rh, _)) = &ra {
         assert_eq!((*rw, *rh), (30, 30), "page size (recovery)");
-        if let Ok((_, _, px)) = &a {
-            assert!(rpx == px, "recovery mode changes a page that renders strictly");
-        }
+    }
+    if let Ok((_, _, px)) = &a {
+        // What renders strictly renders, identically, in recovery mode.
+        let rpx = &ra.as_ref().expect("a page that renders strictly fails in recovery mode").2;
+        assert!(rpx == px, "recovery mode changes a page that renders strictly");
     }
     let Ok((w, h, px)) = a else { return };
     // 60 pt at 36 dpi.

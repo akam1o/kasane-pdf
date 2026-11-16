@@ -1043,6 +1043,31 @@ fn several_faults() {
     );
 }
 
+/// The residual audit of a recovered page with an operator kept
+/// uninterpreted (R1) says its content is incomplete: the operator's
+/// operands (here a marked-content point with /ActualText) are not
+/// audited as interpreted ones would be. (Review.)
+#[test]
+fn audit_of_an_uninterpreted_operator_is_incomplete() {
+    let pdf = page(&format!(
+        "1 /Span << /ActualText ({}) >> DP {KEPT}",
+        secret(1)
+    ));
+    assert!(Document::from_bytes(&pdf)
+        .unwrap()
+        .page_operations(&Document::from_bytes(&pdf).unwrap().pages()[0])
+        .is_err());
+    let d = Document::from_bytes_recovering(&pdf).unwrap();
+    let a = kasane_pdf::audit_residuals(&d, &Limits::default()).unwrap();
+    assert!(
+        a.incomplete
+            .iter()
+            .any(|i| i.scope == "page 1 content" && i.reason.contains("did not interpret")),
+        "{:?}",
+        a.incomplete
+    );
+}
+
 #[test]
 fn valid_document_redacts_identically_in_both_modes() {
     let make = |v: u32| page(&format!("{} {KEPT}", shown(v)));
