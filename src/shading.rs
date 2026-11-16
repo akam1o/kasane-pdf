@@ -653,10 +653,21 @@ pub(crate) fn parse_shading(
             Some([to_u8(rgb[0]), to_u8(rgb[1]), to_u8(rgb[2])])
         }
     };
-    let func = match dict.get(b"Function".as_slice()) {
+    let mut func = match dict.get(b"Function".as_slice()) {
         Some(f) => Some(parse_function(doc, f, limits)?),
         None => None,
     };
+    // An array of one-output functions longer than the components (R3,
+    // recovery): the extra members are dropped here, never evaluated.
+    if let Some(crate::function::Function::Array(fs)) = &mut func {
+        if fs.len() > cs.ncomps() && doc.recovery_mode() {
+            doc.push_warning(crate::Warning::RecoveryApplied {
+                rule: crate::RecoveryRule::ShadingOutputsTruncated,
+                detail: format!("{} functions, {} components", fs.len(), cs.ncomps()),
+            });
+            fs.truncate(cs.ncomps());
+        }
+    }
     // Recovery rule (R3): more outputs than components, the first used;
     // fewer stay an error.
     let mut truncate = false;

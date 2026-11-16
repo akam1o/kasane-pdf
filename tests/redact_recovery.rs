@@ -228,13 +228,43 @@ fn open(pdf: &[u8], recovering: bool) -> Result<Document, Error> {
     }
 }
 
-fn page_text(d: &Document) -> String {
-    extract_text(d, &d.pages()[0], &TextOptions::default())
-        .unwrap()
+fn try_page_text(d: &Document) -> Result<String, Error> {
+    Ok(extract_text(d, &d.pages()[0], &TextOptions::default())?
         .chars
         .iter()
         .filter_map(|c| c.unicode.clone())
-        .collect()
+        .collect())
+}
+
+/// Constructs a redaction keeps as they are that strict text extraction
+/// refuses (a shading function of R3, which extraction parses with the
+/// shading): the only rules the output's text may be read under.
+const KEPT_FOR_TEXT: &[RecoveryRule] = &[
+    RecoveryRule::FunctionExtraInputsIgnored,
+    RecoveryRule::ShadingOutputsTruncated,
+];
+
+/// The output's text, read strictly; in recovery mode only when strict
+/// extraction refuses a construct of `KEPT_FOR_TEXT`, and then under
+/// those rules alone.
+fn output_text(tag: &str, output: &[u8]) -> String {
+    let strict = Document::from_bytes(output).unwrap();
+    match try_page_text(&strict) {
+        Ok(t) => t,
+        Err(e) => {
+            let d = Document::from_bytes_recovering(output).unwrap();
+            let _ = d.take_warnings();
+            let t = try_page_text(&d).unwrap_or_else(|e2| {
+                panic!("{tag}: the output's text does not extract: {e} / {e2}")
+            });
+            let used = rules(&d);
+            assert!(
+                !used.is_empty() && used.iter().all(|r| KEPT_FOR_TEXT.contains(r)),
+                "{tag}: strict extraction of the output fails ({e}); recovery reads it with {used:?}"
+            );
+            t
+        }
+    }
 }
 
 fn rules(d: &Document) -> Vec<RecoveryRule> {
@@ -359,9 +389,7 @@ fn check_mode(
                 added.is_empty(),
                 "{tag}: the output needs recovery the input did not: {added:?}"
             );
-            // The text is read in recovery mode, which reads all strict
-            // mode reads (and a kept construct strict mode refuses).
-            let t = page_text(&Document::from_bytes_recovering(&x.output).unwrap());
+            let t = output_text(&tag, &x.output);
             assert!(
                 t.contains("PUBLICWORD"),
                 "{tag}: lost the public text outside the rect"

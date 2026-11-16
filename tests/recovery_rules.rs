@@ -495,6 +495,33 @@ fn shading_with_extra_outputs_is_truncated_only_in_recovery() {
     }
 }
 
+/// R3: an array of one-output functions longer than the colour space's
+/// components keeps the first members, and the rest are never
+/// evaluated. The third member here fails when evaluated (it pops more
+/// than its one input). (Review: evaluating every member made the
+/// array an amplifier.)
+#[test]
+fn extra_functions_of_an_array_are_not_evaluated() {
+    let one = "<< /FunctionType 2 /Domain [0 1] /C0 [1] /C1 [0] /N 1 >>";
+    let fails = "11 0 R";
+    let pdf = shading_page(
+        &format!(
+            "<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [0 0 100 0] /Function [{one} {one} {fails}] \
+             /Extend [true true] >>"
+        ),
+        &[(11, stream_obj("/FunctionType 4 /Domain [0 1] /Range [0 1]", b"{ pop pop 0 }"))],
+    );
+    let strict = Document::from_bytes(&pdf).unwrap();
+    assert!(render(&strict).is_err());
+    let rec = Document::from_bytes_recovering(&pdf).unwrap();
+    let r = render(&rec).unwrap_or_else(|e| panic!("{e}"));
+    assert!(px(&r, 2, 50).0 > 240 && px(&r, 97, 50).0 < 15);
+    assert_eq!(
+        rule_count(&recovery_rules(&rec), "ShadingOutputsTruncated"),
+        1
+    );
+}
+
 #[test]
 fn operator_inside_a_path_object_is_applied_only_in_recovery() {
     // `rg` between `re` and `f`: §8.2 Figure 9 forbids it; every major
