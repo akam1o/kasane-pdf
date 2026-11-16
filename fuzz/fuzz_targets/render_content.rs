@@ -19,9 +19,11 @@
 //!   identity `cm` change nothing;
 //! - drawing a shared form twice equals drawing two equal copies;
 //! - in recovery mode (where an operator with the wrong operand count is
-//!   kept uninterpreted, R1): rendering is deterministic and the page
-//!   the size it must be, and content that renders strictly renders to
-//!   the same pixels (recovery changes nothing that conforms).
+//!   kept uninterpreted, R1): the page is the size it must be, content
+//!   that renders strictly renders to the same pixels (recovery changes
+//!   nothing that conforms), and content that does not renders
+//!   deterministically (checked on one input in four, by its first
+//!   byte, to bound each input's cost).
 #![no_main]
 
 use kasane_pdf::{render_page, Document, Error, Limits, RenderOptions};
@@ -229,21 +231,31 @@ fuzz_target!(|data: &[u8]| {
         (Err(x), Err(y)) => assert_eq!(format!("{x:?}"), format!("{y:?}"), "errors differ"),
         _ => panic!("one of two identical renders failed"),
     }
-    // Recovery mode on the same content.
+    // Recovery mode on the same content, rendered once: a page that
+    // renders strictly must render to the same pixels (which, strict
+    // rendering being deterministic, makes this one deterministic too).
+    // A page that does not is rendered a second time for determinism on
+    // one input in four (by its first byte), to keep each input's cost
+    // near the strict renders'.
     let ra = render_in(&page(&body, false), &l, true);
-    let rb = render_in(&page(&body, false), &l, true);
-    match (&ra, &rb) {
-        (Ok(x), Ok(y)) => assert!(x == y, "recovery rendering is not deterministic"),
-        (Err(x), Err(y)) => assert_eq!(format!("{x:?}"), format!("{y:?}"), "recovery errors differ"),
-        _ => panic!("one of two identical recovery renders failed"),
-    }
     if let Ok((rw, rh, _)) = &ra {
         assert_eq!((*rw, *rh), (30, 30), "page size (recovery)");
     }
-    if let Ok((_, _, px)) = &a {
-        // What renders strictly renders, identically, in recovery mode.
-        let rpx = &ra.as_ref().expect("a page that renders strictly fails in recovery mode").2;
-        assert!(rpx == px, "recovery mode changes a page that renders strictly");
+    match &a {
+        Ok((_, _, px)) => {
+            // What renders strictly renders, identically, in recovery mode.
+            let rpx = &ra.as_ref().expect("a page that renders strictly fails in recovery mode").2;
+            assert!(rpx == px, "recovery mode changes a page that renders strictly");
+        }
+        Err(_) if data.first().is_some_and(|b| b % 4 == 0) => {
+            let rb = render_in(&page(&body, false), &l, true);
+            match (&ra, &rb) {
+                (Ok(x), Ok(y)) => assert!(x == y, "recovery rendering is not deterministic"),
+                (Err(x), Err(y)) => assert_eq!(format!("{x:?}"), format!("{y:?}"), "recovery errors differ"),
+                _ => panic!("one of two identical recovery renders failed"),
+            }
+        }
+        Err(_) => {}
     }
     let Ok((w, h, px)) = a else { return };
     // 60 pt at 36 dpi.
