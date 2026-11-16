@@ -653,13 +653,33 @@ pub(crate) fn parse_shading(
             Some([to_u8(rgb[0]), to_u8(rgb[1]), to_u8(rgb[2])])
         }
     };
-    let func = match dict.get(b"Function".as_slice()) {
+    let mut func = match dict.get(b"Function".as_slice()) {
         Some(f) => Some(parse_function(doc, f, limits)?),
         None => None,
     };
+    // An array of one-output functions longer than the components (R3,
+    // recovery): the extra members are dropped here, never evaluated.
+    if let Some(crate::function::Function::Array(fs)) = &mut func {
+        if fs.len() > cs.ncomps() && doc.recovery_mode() {
+            doc.push_warning(crate::Warning::RecoveryApplied {
+                rule: crate::RecoveryRule::ShadingOutputsTruncated,
+                detail: format!("{} functions, {} components", fs.len(), cs.ncomps()),
+            });
+            fs.truncate(cs.ncomps());
+        }
+    }
+    // Recovery rule (R3): more outputs than components, the first used;
+    // fewer stay an error.
+    let mut truncate = false;
     if let Some(f) = &func {
         if let Some(n) = f.n_outputs() {
-            if n != cs.ncomps() {
+            if n > cs.ncomps() && doc.recovery_mode() {
+                doc.push_warning(crate::Warning::RecoveryApplied {
+                    rule: crate::RecoveryRule::ShadingOutputsTruncated,
+                    detail: format!("{n} outputs, {} components", cs.ncomps()),
+                });
+                truncate = true;
+            } else if n != cs.ncomps() {
                 return Err(Error::Structure(format!(
                     "shading /Function yields {n} outputs, colour space has {} components",
                     cs.ncomps()
@@ -711,7 +731,7 @@ pub(crate) fn parse_shading(
                 for i in 0..FN_GRID {
                     let x = domain[0] + (domain[1] - domain[0]) * i as f64 / (FN_GRID - 1) as f64;
                     let out = func.eval(&[x, y])?;
-                    grid.push(rgb8(&cs, &out)?);
+                    grid.push(rgb8(&cs, &out, truncate)?);
                 }
             }
             ShadingKind::Function(FunctionShading { domain, inv, grid })
@@ -772,7 +792,7 @@ pub(crate) fn parse_shading(
                     "shading /Function must take one input (t)".into(),
                 ));
             }
-            lut = sample_lut(&func, &cs, domain)?;
+            lut = sample_lut(&func, &cs, domain, truncate)?;
             kind
         }
         _ => {
@@ -814,7 +834,7 @@ pub(crate) fn parse_shading(
                         "mesh shading /Decode range for t must be increasing".into(),
                     ));
                 }
-                lut = sample_lut(f, &cs, (t0, t1))?;
+                lut = sample_lut(f, &cs, (t0, t1), truncate)?;
             }
             let params = MeshParams {
                 bpc,
@@ -879,17 +899,29 @@ pub(crate) fn parse_shading(
     })
 }
 
-fn sample_lut(func: &Function, cs: &ColorSpace, domain: (f64, f64)) -> Result<Vec<[u8; 3]>, Error> {
+fn sample_lut(
+    func: &Function,
+    cs: &ColorSpace,
+    domain: (f64, f64),
+    truncate: bool,
+) -> Result<Vec<[u8; 3]>, Error> {
     let mut lut = Vec::with_capacity(LUT_SIZE);
     for i in 0..LUT_SIZE {
         let t = domain.0 + (domain.1 - domain.0) * i as f64 / (LUT_SIZE - 1) as f64;
         let out = func.eval(&[t])?;
-        lut.push(rgb8(cs, &out)?);
+        lut.push(rgb8(cs, &out, truncate)?);
     }
     Ok(lut)
 }
 
-fn rgb8(cs: &ColorSpace, comps: &[f64]) -> Result<[u8; 3], Error> {
+/// `truncate`: the function's extra outputs are ignored (recovery,
+/// `ShadingOutputsTruncated`).
+fn rgb8(cs: &ColorSpace, comps: &[f64], truncate: bool) -> Result<[u8; 3], Error> {
+    let comps = if truncate && comps.len() > cs.ncomps() {
+        &comps[..cs.ncomps()]
+    } else {
+        comps
+    };
     if comps.len() != cs.ncomps() {
         return Err(Error::Structure(format!(
             "shading /Function yields {} outputs, colour space has {} components",

@@ -200,6 +200,10 @@ but external tools are used to *confirm* behaviour on real files:
   - R2 (form without `/BBox`): absent, null, with `/Matrix`, nested in
     a form with a `/BBox`; a `/BBox` that is not a rectangle stays an
     error. Redaction refuses wherever the form draws.
+  - R3 (function inputs, shading outputs): type 2 and type 3 functions
+    with two inputs; a shading with extra outputs; too few outputs stays
+    an error. Redaction rows paint the shading across the rect and as a
+    pattern far from it; both modes redact.
   - The `render_content` fuzz target, which generates operators with
     one operand too few or too many, also renders in recovery mode. It
     checks that rendering is deterministic, that the page has its
