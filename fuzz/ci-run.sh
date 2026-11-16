@@ -7,6 +7,10 @@
 #
 #   fuzz/ci-run.sh TARGET CORPUS_DIR... -- [extra libFuzzer flags]
 #
+# libFuzzer writes the new inputs it keeps into the first CORPUS_DIR. Run
+# locally with a scratch directory first, so the committed seeds stay as
+# they are:  fuzz/ci-run.sh TARGET "$(mktemp -d)" fuzz/seeds/TARGET -- ...
+#
 # Limits: 2 GiB RSS and malloc, 30 s per input ($FUZZ_TIMEOUT; an input
 # slower than that is a timeout, and libFuzzer's slow-unit report uses the
 # same bound); the caller adds the run count or -max_total_time.
