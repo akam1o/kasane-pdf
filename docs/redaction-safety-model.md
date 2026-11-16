@@ -250,8 +250,9 @@ established by `tests/redact_recovery.rs` (R0 in
 - **X** — Wherever recovery infers, drops or substitutes something, the
   redaction refuses:
   - a page box (no `/MediaBox`);
-  - an unknown operator (kept as `Operation::Unknown`, which marks the
-    page uncertain — never silently dropped);
+  - an unknown operator, or a known one with the wrong number of
+    operands (R1) — kept as `Operation::Unknown`, which marks the page
+    uncertain, never silently dropped;
   - a substituted font;
   - a state operator inside a path object;
   - a skipped annotation that meets a rect;

@@ -15,6 +15,7 @@ candidates add up without double counting.
 | M1-a, M1-b, M1-c | **done (v0.11.0 Phase 1)**: `scripts/compat-attribute.py` as a stage over the runner's report, run by the nightly; numeric regressions and the baseline procedure in `scripts/ci-regression.py`; see [`compat-evaluation.md`](compat-evaluation.md) |
 | R0 | **done (v0.11.0 Phase 1)**: `tests/redact_recovery.rs`, the recovery-mode runs of `redact_model` and its fuzz target; the policy in [`redaction-safety-model.md`](redaction-safety-model.md) § 2.8. Every later recovery rule (R1–R4, R7, A1) adds its case there before it lands |
 | V1 | **done**: the MuPDF character check of the redaction corpus parsed `<char>` with a pattern fixed to one attribute order; MuPDF 1.23 and 1.27 write `c` last, so the Linux nightly read every page as having no characters and counted the runs `ok`. Every text measurement now has a state, a measurement that is not established makes the run `incomplete` (a regression), and the Linux nightly measures 68,006 MuPDF characters where it measured 0 (`testing.md` § Redaction, report § 11) |
+| R1 | **done (v0.11.0 Phase 2)**: an operator with the wrong operand count is kept uninterpreted in recovery mode ([`recovery-mode.md`](recovery-mode.md)); of the 3 corpus files it was the first recovery error of, 2 now render in recovery mode and 1 stops at the error that follows (a dropped `Tf`) |
 | everything else | open |
 
 Correction from Phase 1: with the witnesses converted to grey alike,
