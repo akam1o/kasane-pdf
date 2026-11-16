@@ -19,11 +19,12 @@
 //!   identity `cm` change nothing;
 //! - drawing a shared form twice equals drawing two equal copies;
 //! - in recovery mode (where an operator with the wrong operand count is
-//!   kept uninterpreted, R1): the page is the size it must be, content
-//!   that renders strictly renders to the same pixels (recovery changes
-//!   nothing that conforms), and content that does not renders
-//!   deterministically (checked on one input in four, by its first
-//!   byte, to bound each input's cost).
+//!   kept uninterpreted, R1), rendered for every content that does not
+//!   render strictly and for one in four that does (by the input's first
+//!   byte, to bound each input's cost): the page is the size it must
+//!   be, content that renders strictly renders to the same pixels
+//!   (recovery changes nothing that conforms), and content that does not
+//!   renders deterministically (checked on one input in four).
 #![no_main]
 
 use kasane_pdf::{render_page, Document, Error, Limits, RenderOptions};
@@ -231,31 +232,35 @@ fuzz_target!(|data: &[u8]| {
         (Err(x), Err(y)) => assert_eq!(format!("{x:?}"), format!("{y:?}"), "errors differ"),
         _ => panic!("one of two identical renders failed"),
     }
-    // Recovery mode on the same content, rendered once: a page that
-    // renders strictly must render to the same pixels (which, strict
-    // rendering being deterministic, makes this one deterministic too).
-    // A page that does not is rendered a second time for determinism on
-    // one input in four (by its first byte), to keep each input's cost
-    // near the strict renders'.
-    let ra = render_in(&page(&body, false), &l, true);
-    if let Ok((rw, rh, _)) = &ra {
-        assert_eq!((*rw, *rh), (30, 30), "page size (recovery)");
-    }
-    match &a {
-        Ok((_, _, px)) => {
-            // What renders strictly renders, identically, in recovery mode.
-            let rpx = &ra.as_ref().expect("a page that renders strictly fails in recovery mode").2;
-            assert!(rpx == px, "recovery mode changes a page that renders strictly");
+    // Recovery mode on the same content, rendered once — on every page
+    // that does not render strictly (what recovery changes), and on one
+    // in four of those that do (by the input's first byte), to keep each
+    // input's cost near the strict renders'. A page that renders strictly
+    // must render to the same pixels (deterministic by that); one that
+    // does not is rendered a second time for determinism on one input in
+    // four.
+    let sample = data.first().map(|b| b % 4);
+    if a.is_err() || sample == Some(1) {
+        let ra = render_in(&page(&body, false), &l, true);
+        if let Ok((rw, rh, _)) = &ra {
+            assert_eq!((*rw, *rh), (30, 30), "page size (recovery)");
         }
-        Err(_) if data.first().is_some_and(|b| b % 4 == 0) => {
-            let rb = render_in(&page(&body, false), &l, true);
-            match (&ra, &rb) {
-                (Ok(x), Ok(y)) => assert!(x == y, "recovery rendering is not deterministic"),
-                (Err(x), Err(y)) => assert_eq!(format!("{x:?}"), format!("{y:?}"), "recovery errors differ"),
-                _ => panic!("one of two identical recovery renders failed"),
+        match &a {
+            Ok((_, _, px)) => {
+                // What renders strictly renders, identically, in recovery mode.
+                let rpx = &ra.as_ref().expect("a page that renders strictly fails in recovery mode").2;
+                assert!(rpx == px, "recovery mode changes a page that renders strictly");
             }
+            Err(_) if sample == Some(0) => {
+                let rb = render_in(&page(&body, false), &l, true);
+                match (&ra, &rb) {
+                    (Ok(x), Ok(y)) => assert!(x == y, "recovery rendering is not deterministic"),
+                    (Err(x), Err(y)) => assert_eq!(format!("{x:?}"), format!("{y:?}"), "recovery errors differ"),
+                    _ => panic!("one of two identical recovery renders failed"),
+                }
+            }
+            Err(_) => {}
         }
-        Err(_) => {}
     }
     let Ok((w, h, px)) = a else { return };
     // 60 pt at 36 dpi.
