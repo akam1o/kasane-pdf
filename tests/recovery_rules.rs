@@ -258,6 +258,135 @@ fn wrong_operand_count_inside_a_compatibility_section() {
     assert_eq!(wrong_count(&recovery_rules(&rec)), 1);
 }
 
+/// A page whose resources name form 10 `/Fm` (and 11 `/In`).
+fn form_page(content: &[u8], forms: &[(u32, Vec<u8>)]) -> Vec<u8> {
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+              /Resources << /XObject << /Fm 10 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", content)),
+    ];
+    objs.extend(forms.iter().cloned());
+    build_pdf(&objs)
+}
+
+fn unclipped(rules: &[RecoveryRule]) -> usize {
+    rules
+        .iter()
+        .filter(|r| format!("{r:?}") == "UnclippedFormWithoutBBox")
+        .count()
+}
+
+/// R2: a form XObject without the required `/BBox` (Table 93) is an
+/// error in strict mode. In recovery mode it is drawn unclipped (as
+/// MuPDF does; Poppler draws nothing), recorded; a `/BBox` that is
+/// present but not a rectangle stays an error in both modes.
+#[test]
+fn form_without_bbox_is_drawn_unclipped_only_in_recovery() {
+    // The form paints the whole page blue; with any /BBox it would be
+    // clipped to it. /Matrix still applies: the second form is moved
+    // half a page right and paints only there.
+    let whole = "/Type /XObject /Subtype /Form";
+    for (name, dict, body, at, want) in [
+        (
+            "absent",
+            whole.to_string(),
+            "0 0 1 rg -1000 -1000 3000 3000 re f",
+            (10, 50),
+            (0, 0, 255),
+        ),
+        (
+            "null",
+            format!("{whole} /BBox null"),
+            "0 0 1 rg -1000 -1000 3000 3000 re f",
+            (10, 50),
+            (0, 0, 255),
+        ),
+        (
+            "with /Matrix",
+            format!("{whole} /Matrix [1 0 0 1 50 0]"),
+            "0 0 1 rg 0 0 50 100 re f",
+            (75, 50),
+            (0, 0, 255),
+        ),
+        (
+            "with /Matrix, left half",
+            format!("{whole} /Matrix [1 0 0 1 50 0]"),
+            "0 0 1 rg 0 0 50 100 re f",
+            (25, 50),
+            (255, 255, 255),
+        ),
+    ] {
+        let pdf = form_page(b"/Fm Do", &[(10, stream_obj(&dict, body.as_bytes()))]);
+        let strict = Document::from_bytes(&pdf).unwrap();
+        let e = render(&strict).unwrap_err();
+        assert!(e.to_string().contains("no /BBox"), "{name}: {e}");
+        let rec = Document::from_bytes_recovering(&pdf).unwrap();
+        let r = render(&rec).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(px(&r, at.0, at.1), want, "{name}");
+        assert_eq!(unclipped(&recovery_rules(&rec)), 1, "{name}: recorded once");
+    }
+    // Present but not a rectangle: an error in both modes (MuPDF does
+    // not draw it either).
+    for bad in ["[0 0 50]", "[0 0 (a) 50]", "/Box", "[0 0 1e400 50]"] {
+        let pdf = form_page(
+            b"/Fm Do",
+            &[(
+                10,
+                stream_obj(
+                    &format!("{whole} /BBox {bad}"),
+                    b"0 0 1 rg 0 0 100 100 re f",
+                ),
+            )],
+        );
+        for recovering in [false, true] {
+            let d = if recovering {
+                Document::from_bytes_recovering(&pdf)
+            } else {
+                Document::from_bytes(&pdf)
+            }
+            .unwrap();
+            assert!(
+                render(&d).is_err(),
+                "{bad} (recovery {recovering}) rendered"
+            );
+            assert_eq!(unclipped(&recovery_rules(&d)), 0, "{bad}");
+        }
+    }
+    // Nested: a form without /BBox inside one with a /BBox is clipped
+    // by the outer one.
+    let pdf = form_page(
+        b"/Fm Do",
+        &[
+            (
+                10,
+                stream_obj(
+                    &format!(
+                        "{whole} /BBox [0 0 50 100] /Resources << /XObject << /In 11 0 R >> >>"
+                    ),
+                    b"/In Do",
+                ),
+            ),
+            (
+                11,
+                stream_obj(whole, b"0 0 1 rg -1000 -1000 3000 3000 re f"),
+            ),
+        ],
+    );
+    let rec = Document::from_bytes_recovering(&pdf).unwrap();
+    let r = render(&rec).unwrap();
+    assert_eq!(
+        (px(&r, 25, 50), px(&r, 75, 50)),
+        ((0, 0, 255), (255, 255, 255))
+    );
+    assert_eq!(unclipped(&recovery_rules(&rec)), 1);
+}
+
 #[test]
 fn operator_inside_a_path_object_is_applied_only_in_recovery() {
     // `rg` between `re` and `f`: §8.2 Figure 9 forbids it; every major

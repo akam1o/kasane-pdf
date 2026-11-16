@@ -188,6 +188,12 @@ pub enum RecoveryRule {
     /// what follows may be drawn under another state than other readers
     /// show; region redaction refuses the page.
     IgnoredWrongOperandCount,
+    /// A form XObject without the required `/BBox` (Table 93), or with
+    /// `/BBox null`, is drawn without the clip a `/BBox` would set (as
+    /// MuPDF does; Poppler does not draw it). Its extent is not known:
+    /// region redaction refuses it. A `/BBox` that is present but not a
+    /// rectangle stays an error.
+    UnclippedFormWithoutBBox,
 }
 
 impl fmt::Display for RecoveryRule {
@@ -212,6 +218,7 @@ impl fmt::Display for RecoveryRule {
             RecoveryRule::IgnoredWrongOperandCount => {
                 "operator with the wrong number of operands kept uninterpreted"
             }
+            RecoveryRule::UnclippedFormWithoutBBox => "form XObject without /BBox drawn unclipped",
         })
     }
 }
