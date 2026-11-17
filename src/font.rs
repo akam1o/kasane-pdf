@@ -3211,7 +3211,11 @@ impl OutlineBuilder for GlyphPath {
 // --------------------------------------------------------------------
 
 /// WinAnsiEncoding (Annex D) — char code → glyph name.
-/// `None` = undefined slot (rendered as `.notdef`).
+/// `None` = undefined slot (rendered as `.notdef`): the control codes.
+/// The unused codes above them — 0x7F, 0x81, 0x8D, 0x8F, 0x90, 0x9D —
+/// are the bullet, as Annex D.2's note 3 has it: "all unused codes
+/// greater than 40 map to the bullet character" (octal 40; only 0x95 is
+/// the bullet's own code).
 const WINANSI: [Option<&'static str>; 256] = [
     None,
     None,
@@ -3340,9 +3344,9 @@ const WINANSI: [Option<&'static str>; 256] = [
     Some("bar"),
     Some("braceright"),
     Some("asciitilde"),
-    None, // 0x7F
+    Some("bullet"), // 0x7F: unused, the bullet (note 3)
     Some("Euro"),
-    None,
+    Some("bullet"), // 0x81: unused, the bullet (note 3)
     Some("quotesinglbase"),
     Some("florin"),
     Some("quotedblbase"),
@@ -3354,10 +3358,10 @@ const WINANSI: [Option<&'static str>; 256] = [
     Some("Scaron"),
     Some("guilsinglleft"),
     Some("OE"),
-    None,
+    Some("bullet"), // 0x8D: unused, the bullet (note 3)
     Some("Zcaron"),
-    None,
-    None,
+    Some("bullet"), // 0x8F: unused, the bullet (note 3)
+    Some("bullet"), // 0x90: unused, the bullet (note 3)
     Some("quoteleft"),
     Some("quoteright"),
     Some("quotedblleft"),
@@ -3370,7 +3374,7 @@ const WINANSI: [Option<&'static str>; 256] = [
     Some("scaron"),
     Some("guilsinglright"),
     Some("oe"),
-    None,
+    Some("bullet"), // 0x9D: unused, the bullet (note 3)
     Some("zcaron"),
     Some("Ydieresis"),
     Some("space"), // NBSP
