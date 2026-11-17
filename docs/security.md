@@ -83,14 +83,17 @@ cost none, yet each was still built, stroked and clipped away, so a
 page could repeat strokes, each within the per-stroke bound, without
 end: an 11 KB content stream of 512 long dashed rectangles took over a
 minute (54–96 s) to render. The outline edges of a render's dashed
-strokes are now bounded together (4 × 10⁶, about 0.4 s of dashing at
-worst on a workstation; the busiest corpus page uses 74 916), counted
+strokes are now bounded together (4 × 10⁶: a page of strokes reaching
+the pixmap took ≈ 0.37 s at the budget in a release build on a
+workstation; the busiest corpus page uses 74 916), counted
 across the page, its forms, patterns, soft masks, glyphs and annotation
 appearances, in strict and recovery mode, and refused with
 `Error::Unsupported { feature: "dashed stroke" }` from the stroke that
 would exceed them. A dashed path of more than a million dashes, which
 the dasher gives up on and the rasteriser would draw as nothing, is
-refused the same way. As before, this is a bound on work, not time.
+refused the same way. A stroke wide enough to cover the page, which
+draws one dash, is counted for all the dashes it built. As before, this
+is a bound on work, not time.
 
 ## Typed errors, not partial results
 

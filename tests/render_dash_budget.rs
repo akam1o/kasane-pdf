@@ -295,3 +295,52 @@ fn extreme_dashes_end_in_a_drawing_or_an_error() {
         assert!(t.elapsed().as_secs() < 30, "{content}: {:?}", t.elapsed());
     }
 }
+
+/// A stroke wide enough to cover the page draws one dash only, but every
+/// dash was built and walked: each counts (as a butt-capped segment's
+/// edges, 4), so repeating it runs out of the budget like any dashed
+/// stroke. (Review.)
+#[test]
+fn covering_strokes_are_counted_in_full() {
+    let line = "0 30 m 1000000 30 l S";
+    let wide = "3000000 w 1 J [1 1] 0 d";
+    // One: 500 000 dashes, 2 × 10⁶ units — drawn, covering the page.
+    let px = assert_drawn(&page(&format!("{wide} {line}")), "one covering stroke");
+    assert!(
+        px.chunks(4).all(|p| p[..3] == [0, 0, 0]),
+        "the page is covered"
+    );
+    // Two: 4 × 10⁶, the budget exactly — drawn. Three: over it.
+    assert_drawn(
+        &page(&format!("{wide} {line} {line}")),
+        "two covering strokes",
+    );
+    assert_refused(
+        &page(&format!("{wide} {line} {line} {line}")),
+        "three covering strokes",
+    );
+    // 512: refused before the dashing of all of them.
+    let many: String = (0..512).map(|_| line).collect::<Vec<_>>().join(" ");
+    let t = std::time::Instant::now();
+    assert_refused(&page(&format!("{wide} {many}")), "512 covering strokes");
+    assert!(t.elapsed().as_secs() < 60, "took {:?}", t.elapsed());
+}
+
+/// A path that dashes to nothing — it lies in a gap, or it is several
+/// points — is drawn as nothing, not refused as a stroke the dasher gave
+/// up on. (Review.)
+#[test]
+fn a_path_in_the_gaps_is_drawn_as_nothing() {
+    for content in [
+        "1 w [3 100] 4 d 5 30 m 10 30 l S",
+        "1 w [3 100] 4 d 5 30 m 5 50 l S",
+        "1 w [1 1] 0 d 5 5 m 5 5 l 30 30 m 30 30 l S",
+        "1 w [2 50] 3 d 5 30 m 20 30 25 30 30 30 c S",
+    ] {
+        let px = assert_drawn(&page(content), content);
+        assert!(
+            px.chunks(4).all(|p| p[..3] == [255, 255, 255]),
+            "{content}: painted"
+        );
+    }
+}
