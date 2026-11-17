@@ -214,6 +214,12 @@ but external tools are used to *confirm* behaviour on real files:
     one operand too few or too many, also renders in recovery mode. It
     checks that rendering is deterministic, that the page has its
     size, and that recovery changes nothing that renders strictly.
+- WinAnsiEncoding's unused codes (Q1, v0.11):
+  `tests/render_winansi_unused.rs` — each of 0x7F, 0x81, 0x8D, 0x8F,
+  0x90 and 0x9D draws and reads as the bullet (0x95) in a substituted
+  and an embedded TrueType font, strict and recovery mode; control
+  codes, `/Differences` names, `StandardEncoding` and
+  `MacRomanEncoding` are unchanged.
 - Dashed-stroke budget (D1, v0.11): `tests/render_dash_budget.rs`
   checks the render-wide outline-edge budget — one long dashed stroke
   drawn, two refused; many short strokes adding up; the budget shared
