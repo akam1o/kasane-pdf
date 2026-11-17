@@ -160,16 +160,18 @@ are on the [roadmap](architecture.md#roadmap).
   grow with the resolution scale, up to 2²⁰ where the tolerance is below
   the coordinates' rounding — and its dashes their outline edges; a
   stroke wide enough to cover the page, which draws one dash, is charged
-  for every dash it built. While dashing, the dashes built (4 units
-  each) may not exceed what is left: a cap, not a further charge. A path
+  for every dash it built. After each contour is dashed, the dashes
+  built so far (4 units each) may not exceed what is left: a cap, not a
+  further charge (one contour builds at most the dasher's million). A path
   is dashed one contour at a time (the same dashes: the pattern restarts
   at every contour), so the dasher's limit — it gives up on a million
   dashes and the rasteriser would draw nothing — is not met silently: a
   contour it returns nothing for is drawn as nothing only when it is
   shorter than one dash period (its length bounded by its control
-  polygon), the array has at most 1 000 pairs, and no piece measures
-  under 10⁻¹⁵ per measured piece (a conservative threshold, far above
-  where the dasher's `f32` length underflows); otherwise the stroke is
+  polygon), the array has at most 1 000 pairs, and no piece of positive
+  length has a control polygon under 10⁻¹⁵ per piece it may be measured
+  in (a conservative threshold, far above where the dasher's `f32`
+  length underflows); otherwise the stroke is
   refused. So a curve in a gap whose control polygon is longer than the
   period, or a minute contour in a gap, is refused although it would
   draw nothing. The 1 000-pair margin is not a proof: it holds while the
