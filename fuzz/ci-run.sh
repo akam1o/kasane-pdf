@@ -27,15 +27,16 @@
 # legitimate inputs (fuzz-nightly, PR #3).
 #
 # Why 90 s for render_content: that estimate is one dashed path. A page
-# of two million-unit dashed rectangles renders in ≈ 210 ms natively
-# (the renderer bounds the dashing, not the time: the work grows with
-# the number of such paths, ≈ 100 ms each), five times per input, ≈ 17 s
-# under ASan on a workstation and 31–35 s on the runner, so 30 s fired on
-# legitimate inputs twice in three nightly runs on main (2026-11-16). 90 s
-# leaves room for about five such paths. It is not a bound: the
-# generator can write more, and processing time is not bounded by the
-# engine (SECURITY.md). A hang still fails, at the nominal 90 s (libFuzzer
-# checks the bound every timeout/2 + 1 s, so up to about 136 s).
+# of two million-unit dashed rectangles rendered in ≈ 210 ms natively,
+# five times per input: ≈ 8 s per execution under ASan on a workstation
+# and 31–35 s on the slowest runners, so 30 s fired on legitimate inputs
+# twice in three nightly runs on main (2026-11-16). Since D1 the
+# renderer bounds a render's dashed outline edges together (4 × 10⁶):
+# that page is refused after its first rectangle (≈ 3 s per execution),
+# but a page just within the budget still takes ≈ 10 s per execution on
+# a workstation, ≈ 21 s on such a runner — too near 30 s to go back. A
+# hang still fails, at the nominal 90 s (libFuzzer checks the bound
+# every timeout/2 + 1 s, so up to about 136 s).
 set -uo pipefail
 # Coverage-only mode (the cmin step's) runs no oracle: never fuzz with it.
 if [ -n "${KASANE_FUZZ_COVERAGE_ONLY+x}" ]; then

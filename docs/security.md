@@ -77,6 +77,33 @@ it and refuses one over a bound per stroke and per page with
 bound on the rasteriser's work, not a time guarantee: dashed strokes
 inside it have been measured at up to a few seconds.
 
+**Repeated dashed strokes (D1, v0.11).** The per-page bound of 0.5.1
+counted the work on the pixel rows only. Dash segments off the pixmap
+cost none, yet each was still built, stroked and clipped away, so a
+page could repeat strokes, each within the per-stroke bound, without
+end: an 11 KB content stream of 512 long dashed rectangles took over a
+minute (54–96 s) to render. The outline edges of a render's dashed
+strokes are now bounded together (4 × 10⁶: the heaviest synthetic page
+still within it took ≈ 0.43 s in a release build on a workstation, as
+long as before; the busiest corpus page uses 74 916), counted
+across the page, its forms, patterns, soft masks, glyphs and annotation
+appearances, in strict and recovery mode, and refused with
+`Error::Unsupported { feature: "dashed stroke" }` from the stroke that
+would exceed them. Each dashed path is charged its own pieces before
+it is dashed, so one that dashes to nothing still costs, a curve at
+least the pieces the dasher measures it in (they grow with the
+resolution scale); a stroke wide
+enough to cover the page, which draws one dash, is counted for every
+dash it built, by its pieces. Paths are dashed one contour at a time
+and the dashes bounded as they are built; a contour the dasher returns
+nothing for — it gives up past a million dashes, and the rasteriser
+would draw nothing — is drawn as nothing only when it is shorter than
+one dash period (with at most 1 000 pairs in the array, and no piece
+near where its `f32` length could underflow), and refused otherwise, so
+a stroke the dasher gave up on is not drawn as nothing; the margin of
+the 1 000 pairs is checked, not proved (`limitations.md`).
+As before, this is a bound on work, not time.
+
 ## Typed errors, not partial results
 
 `Error::kind()` gives a stable machine-readable category, the
