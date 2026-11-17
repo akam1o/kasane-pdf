@@ -1089,9 +1089,10 @@ const MAX_DASHED_EDGES: u64 = 4_000_000;
 /// the corpus's busiest page uses 74 916 (D1, 2026-11-17).
 const MAX_DASHED_RENDER_EDGES: u64 = 4_000_000;
 
-/// What a dash that is built but not drawn (a covering stroke's, past
-/// the one segment it draws) costs against `MAX_DASHED_RENDER_EDGES`: a
-/// butt-capped straight dash's outline edges, the least any dash has.
+/// The least a dash that is built but not drawn (a covering stroke's,
+/// past the one segment it draws) costs against
+/// `MAX_DASHED_RENDER_EDGES`: a butt-capped straight dash's outline edges.
+/// More pieces cost more (`dashed_stroke`).
 const BUILT_DASH_EDGES: u64 = 4;
 
 /// tiny-skia's dasher gives up (and returns no path) once a path's dash
@@ -1099,23 +1100,35 @@ const BUILT_DASH_EDGES: u64 = 4;
 const DASHER_GIVES_UP: f64 = 1_000_000.0;
 
 /// An upper bound of the count the dasher compares with
-/// `DASHER_GIVES_UP` for `path` and `dash_array` (as tiny-skia's: the
-/// pairs of the array per interval, the arc length of each contour):
-/// straight pieces by their length, curves by their control polygon's
-/// (never shorter than the curve). Infinite when the array cannot be
-/// read so (the dasher was built from it, so it can).
+/// `DASHER_GIVES_UP` for `path` and `dash_array`. tiny-skia counts, in
+/// `f32`, contour by contour: Σ length × pairs / interval, the interval
+/// the sum of the array converted to `f32`, a contour's length its
+/// flattened arc length. Here: straight pieces by their length, curves by
+/// their control polygon's (never shorter than the curve, nor the curve
+/// than its flattening), in `f64` from the same `f32` points; then the
+/// rounding the dasher's `f32` arithmetic can add — at most 2⁻²⁴
+/// relative per operation, one per piece and contour summed, a few per
+/// count, one per interval term — taken against it twice over. Infinite
+/// when the array cannot be read so (the dasher was built from it, so it
+/// can).
 fn dash_count_upper_bound(path: &tiny_skia::Path, dash_array: &[f64]) -> f64 {
-    let interval: f64 = dash_array.iter().sum();
-    if !(interval > 0.0 && interval.is_finite()) || dash_array.len() < 2 {
+    if dash_array.len() < 2 {
+        return f64::INFINITY;
+    }
+    let interval: f64 = dash_array.iter().map(|v| *v as f32 as f64).sum();
+    if !(interval > 0.0 && interval.is_finite()) {
         return f64::INFINITY;
     }
     let pairs = (dash_array.len() / 2) as f64;
+    let ulp = f64::powi(2.0, -23); // twice f32's unit roundoff
     use tiny_skia::PathSegment as S;
     let (mut length, mut start, mut last) = (0.0f64, None, None);
+    let mut operations = 0.0f64;
     let dist = |a: tiny_skia::Point, b: tiny_skia::Point| {
         ((b.x as f64 - a.x as f64).powi(2) + (b.y as f64 - a.y as f64).powi(2)).sqrt()
     };
     for seg in path.segments() {
+        operations += 8.0;
         match seg {
             S::MoveTo(p) => {
                 start = Some(p);
@@ -1141,7 +1154,10 @@ fn dash_count_upper_bound(path: &tiny_skia::Path, dash_array: &[f64]) -> f64 {
             }
         }
     }
-    length * pairs / interval
+    // The interval low by its terms' roundoff; the count high by every
+    // operation's.
+    let interval = interval * (1.0 - ulp * dash_array.len() as f64);
+    length * pairs / interval * (1.0 + ulp * (operations + 16.0))
 }
 
 /// What one render's dashed strokes have used of their budgets
@@ -1189,19 +1205,21 @@ fn dashed_stroke(
         return Ok(DashedStroke::Undashed);
     };
     let res_scale = tiny_skia::PathStroker::compute_resolution_scale(&ts);
-    let Some(dashed) = path.dash(dash, res_scale) else {
-        // No dashes: the path lies in the gaps, or the dasher gave up
-        // past a million dashes in one path (and the rasteriser then
-        // draws nothing). The second is refused, not drawn as nothing
-        // (D1): told apart by the count the dasher compares, bounded from
-        // above (a curve's length by its control polygon's).
-        if dash_count_upper_bound(path, dash_array) < DASHER_GIVES_UP {
-            return Ok(DashedStroke::Nothing);
-        }
+    // The dasher gives up past a million dashes in one path (after
+    // building those of its earlier contours), and the rasteriser then
+    // draws nothing. A path whose count cannot be shown below that is
+    // refused before it is dashed, not drawn as nothing (D1) — some of
+    // them would dash to nothing, curves whose control polygon is far
+    // longer than they are; a refusal, not a guess.
+    if dash_count_upper_bound(path, dash_array) >= DASHER_GIVES_UP {
         return Err(Error::Unsupported {
             feature: "dashed stroke",
-            detail: "a dashed stroke of more than a million dashes is not drawn".into(),
+            detail: "a dashed stroke of a million dashes or more is not drawn".into(),
         });
+    }
+    // Below it, no dashes means the path lies in the gaps.
+    let Some(dashed) = path.dash(dash, res_scale) else {
+        return Ok(DashedStroke::Nothing);
     };
     let (a, b, c, d) = (ts.sx as f64, ts.ky as f64, ts.kx as f64, ts.sy as f64);
     let p = a * a + b * b + c * c + d * d;
@@ -1370,8 +1388,14 @@ fn dashed_stroke(
     let mut segments = dashed.segments().peekable();
     // A covering stroke draws its first segment that reaches the pixmap
     // only — but every segment was dashed and is walked here, so all are
-    // counted (D1): as `BUILT_DASH_EDGES` each, since none of them but the
-    // one drawn has its outline built and rasterised.
+    // counted (D1): by their pieces' edges without the caps (none of them
+    // but the one drawn has its outline built), at least
+    // `BUILT_DASH_EDGES`; the one drawn with its caps.
+    let cap_edges: u64 = match stroke.line_cap {
+        tiny_skia::LineCap::Butt => 0,
+        tiny_skia::LineCap::Square => 8,
+        tiny_skia::LineCap::Round => 16,
+    };
     let mut covering: Option<Vec<S>> = None;
     while let Some(seg) = segments.next() {
         contour.push(seg);
@@ -1380,9 +1404,13 @@ fn dashed_stroke(
         }
         let (rows, edges) = measure(&contour);
         if covering.is_some() || (rows.is_some() && covers) {
-            covering.get_or_insert_with(|| contour.clone());
-            let _ = edges;
-            work = work.saturating_add(BUILT_DASH_EDGES);
+            let units = if covering.is_none() {
+                covering = Some(contour.clone());
+                edges
+            } else {
+                edges.saturating_sub(cap_edges).max(BUILT_DASH_EDGES)
+            };
+            work = work.saturating_add(units);
             if work > left {
                 return Err(too_much(
                     "the render's dashed strokes together, outline edges",
@@ -8881,6 +8909,68 @@ mod tests {
         assert_eq!(b.edges, fits * e);
         assert!(dashed_stroke(&path, &stroke, &[3.0, 1.0], ts, 64, 64, &mut b).is_err());
         assert_eq!(b.edges, fits * e);
+    }
+
+    /// A covering stroke draws one dash but counts every dash it built,
+    /// by its pieces: a path of 100 curves dashed into a few dashes costs
+    /// at least their 100 × 16 edges (the 4 of a straight dash each would
+    /// be far less) — drawn with exactly that much left, refused with one
+    /// unit less, recording nothing. (Review.)
+    #[test]
+    fn a_covering_dash_costs_by_its_pieces() {
+        let mut pb = PathBuilder::new();
+        pb.move_to(0.0, 30.0);
+        for _ in 0..100 {
+            pb.cubic_to(60.0, 0.0, 0.0, 60.0, 0.0, 30.0);
+        }
+        let path = pb.finish().unwrap();
+        let array = [3000.0, 1.0];
+        let stroke = Stroke {
+            width: 300.0,
+            line_cap: tiny_skia::LineCap::Round,
+            dash: StrokeDash::new(array.iter().map(|v| *v as f32).collect(), 0.0),
+            ..Default::default()
+        };
+        let ts = Transform::identity();
+        let mut fresh = DashBudget::default();
+        match dashed_stroke(&path, &stroke, &array, ts, 64, 64, &mut fresh) {
+            Ok(DashedStroke::Segments(one, _)) => {
+                assert!(
+                    one.segments().count() < path.segments().count(),
+                    "one dash drawn, not the whole path"
+                );
+            }
+            other => panic!("{:?}", other.map(|_| ())),
+        }
+        let dashes = path.dash(stroke.dash.as_ref().unwrap(), 1.0).unwrap();
+        let contours = dashes
+            .segments()
+            .filter(|s| matches!(s, tiny_skia::PathSegment::MoveTo(_)))
+            .count();
+        assert!(contours > 1, "dashed into {contours}");
+        assert!(fresh.edges >= 1600, "{} units for 100 curves", fresh.edges);
+        let e = fresh.edges;
+        let with = |edges: u64| DashBudget {
+            row_work: 0.0,
+            edges,
+        };
+        assert!(dashed_stroke(
+            &path,
+            &stroke,
+            &array,
+            ts,
+            64,
+            64,
+            &mut with(MAX_DASHED_RENDER_EDGES - e)
+        )
+        .is_ok());
+        let mut over = with(MAX_DASHED_RENDER_EDGES - e + 1);
+        assert!(dashed_stroke(&path, &stroke, &array, ts, 64, 64, &mut over).is_err());
+        assert_eq!(
+            over.edges,
+            MAX_DASHED_RENDER_EDGES - e + 1,
+            "a refusal records nothing"
+        );
     }
 
     /// The per-stroke bound's edge: a dashed path grown one piece at a

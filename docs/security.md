@@ -89,10 +89,13 @@ workstation; the busiest corpus page uses 74 916), counted
 across the page, its forms, patterns, soft masks, glyphs and annotation
 appearances, in strict and recovery mode, and refused with
 `Error::Unsupported { feature: "dashed stroke" }` from the stroke that
-would exceed them. A dashed path of more than a million dashes, which
-the dasher gives up on and the rasteriser would draw as nothing, is
-refused the same way. A stroke wide enough to cover the page, which
-draws one dash, is counted for all the dashes it built. As before, this
+would exceed them. A stroke wide enough to cover the page, which draws
+one dash, is counted for every dash it built, by its pieces. A dashed
+path whose dash count cannot be shown below a million — the dasher's
+limit, past which it gives up after building the dashes of the earlier
+contours and the rasteriser draws nothing — is refused before it is
+dashed; the count is bounded from above, the dasher's `f32` rounding
+included. As before, this
 is a bound on work, not time.
 
 ## Typed errors, not partial results

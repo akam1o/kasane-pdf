@@ -154,10 +154,15 @@ are on the [roadmap](architecture.md#roadmap).
   than drawn for minutes. Since D1 (v0.11) the outline edges are bounded
   for one render as a whole as well — the page and its forms, patterns,
   soft masks, glyphs and annotation appearances together, 4 × 10⁶ — and
-  a dashed path the dasher gives up on (more than a million dashes, which
-  it would draw as nothing) is refused as well; strict and recovery
-  mode alike. A path that dashes to nothing because it lies in the gaps
-  is drawn as nothing, as before. The busiest corpus page uses 74 916 outline edges. A page of 90 000 round-capped dots at
+  a dashed path the dasher may give up on (a million dashes or more,
+  which it would draw as nothing) is refused before it is dashed; strict
+  and recovery mode alike. The count is bounded from above — curves by
+  their control polygon, the dasher's `f32` rounding allowed for — so a
+  path whose count cannot be shown below a million is refused even when
+  it would dash to nothing (a curve in a gap whose control polygon is
+  far longer than the curve). A path whose count is below it and that
+  dashes to nothing, because it lies in the gaps, is drawn as nothing,
+  as before. The busiest corpus page uses 74 916 outline edges. A page of 90 000 round-capped dots at
   600 dpi is 5 × 10¹² (drawn, 0.4 s, as in 0.5.0). The bound is on
   estimated work, not time: strokes inside it have been measured at up
   to a few seconds, and rendering time in general is not bounded

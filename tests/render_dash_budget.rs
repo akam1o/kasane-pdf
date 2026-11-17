@@ -252,7 +252,7 @@ fn a_stroke_of_more_than_a_million_dashes_is_refused() {
                     ..
                 },
             ) => {
-                assert!(e.to_string().contains("more than a million dashes"), "{e}")
+                assert!(e.to_string().contains("a million dashes or more"), "{e}")
             }
             other => panic!("recovery {recovering}: {:?}", other.map(|_| ())),
         }
@@ -297,27 +297,24 @@ fn extreme_dashes_end_in_a_drawing_or_an_error() {
 }
 
 /// A stroke wide enough to cover the page draws one dash only, but every
-/// dash was built and walked: each counts (as a butt-capped segment's
-/// edges, 4), so repeating it runs out of the budget like any dashed
-/// stroke. (Review.)
+/// dash was built and walked: each counts by its pieces (4 for a straight
+/// one; the dash drawn with its caps), so repeating it runs out of the
+/// budget like any dashed stroke. (Review.)
 #[test]
 fn covering_strokes_are_counted_in_full() {
     let line = "0 30 m 1000000 30 l S";
     let wide = "3000000 w 1 J [1 1] 0 d";
-    // One: 500 000 dashes, 2 × 10⁶ units — drawn, covering the page.
+    // One: 500 000 dashes, ≈ 2 × 10⁶ units — drawn, covering the page.
     let px = assert_drawn(&page(&format!("{wide} {line}")), "one covering stroke");
     assert!(
         px.chunks(4).all(|p| p[..3] == [0, 0, 0]),
         "the page is covered"
     );
-    // Two: 4 × 10⁶, the budget exactly — drawn. Three: over it.
-    assert_drawn(
+    // Two: 4 × 10⁶ for the dashes built, and the drawn dashes' caps —
+    // over the budget.
+    assert_refused(
         &page(&format!("{wide} {line} {line}")),
         "two covering strokes",
-    );
-    assert_refused(
-        &page(&format!("{wide} {line} {line} {line}")),
-        "three covering strokes",
     );
     // 512: refused before the dashing of all of them.
     let many: String = (0..512).map(|_| line).collect::<Vec<_>>().join(" ");
@@ -343,4 +340,58 @@ fn a_path_in_the_gaps_is_drawn_as_nothing() {
             "{content}: painted"
         );
     }
+}
+
+/// Refused as a million-dash stroke, in both modes.
+fn assert_million(pdf: &[u8], what: &str) {
+    for recovering in [false, true] {
+        match render(pdf, recovering) {
+            Err(
+                e @ Error::Unsupported {
+                    feature: "dashed stroke",
+                    ..
+                },
+            ) => {
+                assert!(
+                    e.to_string().contains("a million dashes or more"),
+                    "{what}: {e}"
+                )
+            }
+            other => panic!("{what} (recovery {recovering}): {:?}", other.map(|_| ())),
+        }
+    }
+}
+
+/// The dasher counts in `f32`, contour by contour: its count can exceed
+/// the exact one. A path whose `f32` count passes a million is refused,
+/// never drawn as nothing — here by the interval's conversion, and by
+/// the rounding of 10 001 contours' sum. (Review.)
+#[test]
+fn the_dashers_rounding_is_bounded_from_above() {
+    assert_million(
+        &page("1 w [0.29729731351137162 0.29729731351137162] 0 d 0 30 m 594594.625 30 l S"),
+        "an interval rounded down",
+    );
+    let pieces: String = (0..10_001)
+        .map(|_| "0 30 m 199.97998046875 30 l ")
+        .collect();
+    assert_million(
+        &page(&format!("1 w [1 1] 0 d {pieces}S")),
+        "10 001 contours",
+    );
+}
+
+/// The bound is a bound: a curve whose control polygon is far longer
+/// than the curve may be refused although it would dash to nothing (it
+/// lies in a gap). A refusal, never a guess (docs/limitations.md).
+#[test]
+fn a_count_that_cannot_be_shown_below_the_limit_is_refused() {
+    let array = format!("{}1 200", "0 0 ".repeat(99));
+    let curves: String = (0..10_001)
+        .map(|_| "0 30 m 100 30 -100 30 0 30 c ")
+        .collect();
+    assert_million(
+        &page(&format!("1 w [{array}] 2 d {curves}S")),
+        "curves in a gap",
+    );
 }

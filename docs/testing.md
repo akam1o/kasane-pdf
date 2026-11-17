@@ -219,8 +219,11 @@ but external tools are used to *confirm* behaviour on real files:
   drawn, two refused; many short strokes adding up; the budget shared
   with nested forms, a tiling pattern's cell and an annotation
   appearance; each page render with its own; a path of more than a
-  million dashes refused, one in the gaps drawn as nothing; covering
-  strokes counted in full; extreme dash arrays and transforms drawn or
+  million dashes refused (also where only the dasher's `f32` rounding
+  takes it there), one in the gaps drawn as nothing, a count that cannot
+  be shown below the limit refused; covering strokes counted in full
+  (`render::tests::a_covering_dash_costs_by_its_pieces` for a dash of
+  many curves); extreme dash arrays and transforms drawn or
   refused the same way in strict and recovery mode; ordinary dashes
   drawn as before. `render::tests::the_render_edge_budget_is_exact`
   checks the bound to one edge and up to `u64::MAX`.
