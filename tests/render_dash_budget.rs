@@ -107,6 +107,16 @@ fn one_long_dashed_stroke_is_drawn_two_are_refused() {
     assert!(t.elapsed().as_secs() < 60, "took {:?}", t.elapsed());
 }
 
+/// Round caps count their edges too: a rectangle 150 000 wide is
+/// ≈ 75 000 dashes of 20 edges, 1.5 × 10⁶ — two are within the budget,
+/// three are not.
+#[test]
+fn round_caps_count_their_edges() {
+    let n = |k: usize| (0..k).map(|_| rect(150_000)).collect::<Vec<_>>().join(" ");
+    assert_drawn(&page(&format!("1 J {DASH} {}", n(2))), "two rectangles");
+    assert_refused(&page(&format!("1 J {DASH} {}", n(3))), "three rectangles");
+}
+
 #[test]
 fn many_short_strokes_add_up() {
     // 40 020 edges each: 99 are within the budget, 101 are not.
@@ -362,28 +372,56 @@ fn assert_million(pdf: &[u8], what: &str) {
     }
 }
 
-/// The dasher counts in `f32`, contour by contour: its count can exceed
-/// the exact one. A path whose `f32` count passes a million is refused,
-/// never drawn as nothing — here by the interval's conversion, and by
-/// the rounding of 10 001 contours' sum. (Review.)
+/// Refused, in both modes, as a dashed stroke (whichever bound).
+fn assert_dash_refused(pdf: &[u8], what: &str) {
+    for recovering in [false, true] {
+        match render(pdf, recovering) {
+            Err(Error::Unsupported {
+                feature: "dashed stroke",
+                ..
+            }) => {}
+            other => panic!("{what} (recovery {recovering}): {:?}", other.map(|_| ())),
+        }
+    }
+}
+
+/// Paths the rasteriser's dasher gives up on — in one contour where only
+/// its `f32` arithmetic takes the count past a million, and over 10 001
+/// contours whose rounded sum passes it — are never drawn as nothing:
+/// refused, as the dasher's limit or the render's budget. (Review; that
+/// the dasher gives up on them is checked in
+/// `render::tests::dashing_by_contour_tells_a_gap_from_the_dashers_limit`.)
 #[test]
-fn the_dashers_rounding_is_bounded_from_above() {
+fn what_the_dasher_gives_up_on_is_refused() {
     assert_million(
-        &page("1 w [0.29729731351137162 0.29729731351137162] 0 d 0 30 m 594594.625 30 l S"),
+        &page("1 w [0.2972973135113716 0.2972973135113716] 0 d 0 30 m 594594.625 30 l S"),
         "an interval rounded down",
     );
     let pieces: String = (0..10_001)
         .map(|_| "0 30 m 199.97998046875 30 l ")
         .collect();
-    assert_million(
+    assert_dash_refused(
         &page(&format!("1 w [1 1] 0 d {pieces}S")),
         "10 001 contours",
     );
 }
 
-/// The bound is a bound: a curve whose control polygon is far longer
-/// than the curve may be refused although it would dash to nothing (it
-/// lies in a gap). A refusal, never a guess (docs/limitations.md).
+/// Each contour is dashed on its own, so the dasher's million is per
+/// contour: the dashes are bounded as they are built, and two contours
+/// of 600 000 dashes each are refused before the second is finished.
+#[test]
+fn contours_are_dashed_within_the_budget() {
+    let two = "1 w [1 1] 0 d 0 30 m 1200000 30 l 0 31 m 1200000 31 l S";
+    let t = std::time::Instant::now();
+    assert_refused(&page(two), "two contours of 600 000 dashes");
+    assert!(t.elapsed().as_secs() < 60, "took {:?}", t.elapsed());
+}
+
+/// A contour the dasher returns nothing for is taken to lie in the gap
+/// only when it is no longer than one dash period, its length bounded by
+/// its control polygon: a curve whose polygon is far longer than the
+/// curve is refused although it would dash to nothing. A refusal, never
+/// a guess (docs/limitations.md).
 #[test]
 fn a_count_that_cannot_be_shown_below_the_limit_is_refused() {
     let array = format!("{}1 200", "0 0 ".repeat(99));

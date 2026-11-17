@@ -218,12 +218,16 @@ but external tools are used to *confirm* behaviour on real files:
   checks the render-wide outline-edge budget — one long dashed stroke
   drawn, two refused; many short strokes adding up; the budget shared
   with nested forms, a tiling pattern's cell and an annotation
-  appearance; each page render with its own; a path of more than a
-  million dashes refused (also where only the dasher's `f32` rounding
-  takes it there), one in the gaps drawn as nothing, a count that cannot
-  be shown below the limit refused; covering strokes counted in full
-  (`render::tests::a_covering_dash_costs_by_its_pieces` for a dash of
-  many curves); extreme dash arrays and transforms drawn or
+  appearance; each page render with its own; a path the dasher gives up
+  on refused (also where only its `f32` arithmetic takes it there),
+  contours dashed within the budget, one in the gaps drawn as nothing, a
+  curve whose control polygon is longer than the period refused;
+  covering strokes counted in full. Unit tests in `render::tests`:
+  `dashing_by_contour_tells_a_gap_from_the_dashers_limit` (the same
+  dashes as the dasher's on the whole path; the gap rule and its pair
+  limit; an `f32` overflow; the dashes bounded as built),
+  `a_stroke_that_dashes_to_nothing_still_costs`,
+  `a_covering_dash_costs_by_its_pieces` (a dash of many curves); extreme dash arrays and transforms drawn or
   refused the same way in strict and recovery mode; ordinary dashes
   drawn as before. `render::tests::the_render_edge_budget_is_exact`
   checks the bound to one edge and up to `u64::MAX`.

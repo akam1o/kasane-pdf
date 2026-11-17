@@ -153,17 +153,21 @@ are on the [roadmap](architecture.md#roadmap).
   outline edges — is refused (`Unsupported`, "dashed stroke") rather
   than drawn for minutes. Since D1 (v0.11) the outline edges are bounded
   for one render as a whole as well — the page and its forms, patterns,
-  soft masks, glyphs and annotation appearances together, 4 × 10⁶ — and
-  a dashed path the dasher may give up on (a million dashes or more,
-  which it would draw as nothing) is refused before it is dashed; strict
-  and recovery mode alike. The count is bounded from above — curves by
-  their control polygon, the dasher's `f32` rounding allowed for — so a
-  path whose count cannot be shown below a million is refused even when
-  it would dash to nothing (a curve in a gap whose control polygon is
-  far longer than the curve). A path whose count is below it and that
-  dashes to nothing, because it lies in the gaps, is drawn as nothing,
-  as before. The busiest corpus page uses 74 916 outline edges. A page of 90 000 round-capped dots at
-  600 dpi is 5 × 10¹² (drawn, 0.4 s, as in 0.5.0). The bound is on
+  soft masks, glyphs and annotation appearances together, 4 × 10⁶;
+  strict and recovery mode alike. Every dashed path is charged its own
+  pieces before it is dashed (so one that dashes to nothing still
+  costs), and a stroke wide enough to cover the page, which draws one
+  dash, every dash it built. A path is dashed one contour at a time (the
+  same dashes: the pattern restarts at every contour), so the dasher's
+  limit — it gives up on a million dashes and the rasteriser would draw
+  nothing — is never met silently: a contour it returns nothing for is
+  drawn as nothing only when it is shorter than one dash period (its
+  length bounded by its control polygon) and the array has at most 1 000
+  pairs; otherwise the stroke is refused. So a curve in a gap whose
+  control polygon is longer than the period is refused although it
+  would draw nothing. The busiest corpus page uses 74 916 outline edges.
+  A page of 90 000 round-capped dots at 600 dpi is 5 × 10¹² (drawn,
+  0.4 s, as in 0.5.0). The bound is on
   estimated work, not time: strokes inside it have been measured at up
   to a few seconds, and rendering time in general is not bounded
   ([`security.md`](security.md)).
