@@ -151,8 +151,10 @@ How the rules are applied:
   a witness: it fails as `first attributed: … — unverified` until the
   baseline attributes every page. That migration is a reviewed
   `update-baseline --write --accept-unverified`, which accepts these
-  first measurements and nothing else: any other regression still
-  needs `--accept-regressions`. A baseline written by M2 has no
+  first measurements (as the ledger records them, never by their text)
+  and nothing else: any other regression, and a first measurement that
+  is `not_comparable` (it would become a quiet gap), still needs
+  `--accept-regressions`. A baseline written by M2 has no
   such pages: `update-baseline` refuses an attribution with a cap per
   file, a `truncated` one, or one that misses a page below the
   threshold. Below the threshold in a baseline that had room to

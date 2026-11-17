@@ -473,9 +473,10 @@ class PageSets(unittest.TestCase):
         rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "neither", *OPEN), cap=8), require_same_env=True)
         self.assertEqual(rc, 1, out)
         self.assertIn("attribution capped at 8 page(s) per file", out)
-        b8 = cr.summarize(run(f), att(("a", 1, "neither", *OPEN), cap=8), ENV)
-        g = file("a", [page(1, 0.9), page(2, 0.9)])  # a second low page, beyond a cap of 1
-        rc, out = check(run(g), b8, env=ENV, attribution=att(("a", 1, "neither", *OPEN), cap=1), require_same_env=True)
+        # The same cap as the baseline's, a second low page beyond it.
+        b1 = cr.summarize(run(f), att(("a", 1, "neither", *OPEN), cap=1), ENV)
+        g = file("a", [page(1, 0.9), page(2, 0.9)])
+        rc, out = check(run(g), b1, env=ENV, attribution=att(("a", 1, "neither", *OPEN), cap=1), require_same_env=True)
         self.assertEqual(rc, 1, out)
         self.assertIn("attribution capped at 1 page(s) per file", out)
         # A budget that left pages out: incomplete, never a pass.
@@ -708,6 +709,27 @@ class InvalidInputsM2(unittest.TestCase):
             self.assertIn("regressions against the current baseline (1;", out)
             with open(b) as fh:
                 self.assertEqual(json.load(fh), json.loads(json.dumps(old)))
+            # The kind is the ledger's, not the text's: a case whose id
+            # carries the mark gains nothing from it.
+            mark = "x" + cr.UNVERIFIED
+            g = file(mark, [page(1, 0.95)])
+            old2 = cr.summarize(run(f, g), att(("a", 1, "neither", *OPEN), cap=1), ENV)
+            self.write(d, "b.json", old2)
+            r2 = self.write(d, "r2.json", run(f, file(mark, [page(1, 0.90)])))
+            a2 = self.write(d, "a2.json", att(("a", 1, "neither", *OPEN), ("a", 2, "neither", *OPEN),
+                                              (mark, 1, "neither", *OPEN)))
+            rc, out = main_cli("update-baseline", r2, b, "--env", env, "--attribution", a2, "--write",
+                               "--accept-unverified")
+            self.assertEqual(rc, 1, out)
+            self.assertIn("regressions against the current baseline (2;", out)
+            # A first measurement that cannot be measured is not accepted
+            # as a migration: it is a regression to decide on.
+            self.write(d, "b.json", old)
+            a3 = self.write(d, "a3.json", att(("a", 1, "neither", *OPEN), ("a", 2, "not_comparable", 0, 0)))
+            rc, out = main_cli("update-baseline", r, b, "--env", env, "--attribution", a3, "--write",
+                               "--accept-unverified")
+            self.assertEqual(rc, 1, out)
+            self.assertIn("regressions against the current baseline (1;", out)
 
 
 class Selection(unittest.TestCase):

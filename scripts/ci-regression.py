@@ -794,7 +794,7 @@ def attribution_ledger(run, cur, old, meta, attribution):
              "selected_because": ("baseline target" if oa is not None else
                                   "below the threshold" if (fid, pg) in run_low else "attributed"),
              "attributed": na is not None, "comparable": na is not None and na["agreement"] != "not_comparable",
-             "reason": None, "regressions": [], "improvements": [], "notes": []}
+             "reason": None, "regressions": [], "improvements": [], "notes": [], "unverified": []}
         reg, imp, note = e["regressions"].append, e["improvements"].append, e["notes"].append
         out.append(e)
         if n is None:
@@ -881,13 +881,19 @@ def attribution_ledger(run, cur, old, meta, attribution):
             # anything short of `both` now cannot be told from a lost
             # witness — unverified, not passed. A baseline that attributes
             # every page ends it.
-            reg(f"{fid}: page {pg} first attributed: {na['agreement']}{UNVERIFIED}: below the threshold in "
-                f"the baseline too, beyond its {base_cap} worst per file, so no witness result to compare "
-                f"(update the baseline to one that attributes every page){refs}")
+            msg = (f"{fid}: page {pg} first attributed: {na['agreement']}{UNVERIFIED}: below the threshold in "
+                   f"the baseline too, beyond its {base_cap} worst per file, so no witness result to compare "
+                   f"(update the baseline to one that attributes every page){refs}")
+            reg(msg)
+            if na["agreement"] != "not_comparable":
+                # A measured page: the migration may accept it. A page
+                # that cannot be measured stays a regression to decide on.
+                e["unverified"].append(msg)
     return out
 
 
-def numeric_regressions(run, cur, old, base, env, attribution, require_same_env, improvements, notes):
+def numeric_regressions(run, cur, old, base, env, attribution, require_same_env, improvements, notes,
+                        unverified=None):
     """M1-c: the numeric comparisons, each page judged on its own — an
     improvement elsewhere never offsets a regression."""
     regs = []
@@ -912,6 +918,8 @@ def numeric_regressions(run, cur, old, base, env, attribution, require_same_env,
     ledger = attribution_ledger(run, cur, old, meta, attribution if usable else None)
     for e in ledger:
         regs.extend(e["regressions"])
+        if unverified is not None:
+            unverified.extend(e["unverified"])
         improvements.extend(e["improvements"])
         notes.extend(e["notes"])
     for fid, o in old.items():
@@ -946,7 +954,7 @@ def numeric_regressions(run, cur, old, base, env, attribution, require_same_env,
 
 
 def check(run, base, summary_md=None, env=None, attribution=None, require_same_env=False, ledger_path=None,
-          collect=None):
+          collect=None, collect_unverified=None):
     validate_run(run)
     validate_base(base)
     if attribution is not None:
@@ -1114,12 +1122,12 @@ def check(run, base, summary_md=None, env=None, attribution=None, require_same_e
         usable = same and attribution_usable(meta, env, attribution)[1]
         led = attribution_ledger(run, cur, old, meta, attribution if usable else None)
         with open(ledger_path, "w") as fh:
-            json.dump([{k: v for k, v in e.items() if k not in ("regressions", "improvements", "notes")}
+            json.dump([{k: v for k, v in e.items() if k not in ("regressions", "improvements", "notes", "unverified")}
                        | {"decisions": e["regressions"] + e["improvements"] + e["notes"]} for e in led],
                       fh, indent=1, sort_keys=True)
             fh.write("\n")
     regressions.extend(numeric_regressions(run, cur, old, base, env, attribution, require_same_env, improvements,
-                                           notes))
+                                           notes, collect_unverified))
     print(f"files: {len(cur)} now, {len(old)} in baseline, {len(missing)} missing, {len(added)} new")
     for line in notes:
         print("note:", line)
@@ -1304,18 +1312,21 @@ def update_baseline(a):
         print(f"  {k}: {len(ids)}" + (f"  [{', '.join(ids)}]" if a.ids else ""))
     if not diff:
         print("  no file changes")
-    regressions, found = 0, []
+    regressions, found, unverified = 0, [], []
     if old is not None:
         print("--- check of this run against the current baseline:")
-        regressions = check(run, old, env=env, attribution=att, require_same_env=True, collect=found)
+        regressions = check(run, old, env=env, attribution=att, require_same_env=True, collect=found,
+                            collect_unverified=unverified)
     if not a.write:
         print("dry run: nothing written (--write writes it)")
         return 0
     if diff.get("removed files") and not a.allow_removed:
         print(f"refused: {len(diff['removed files'])} file(s) would be removed (--allow-removed)")
         return 1
-    unverified = [r for r in found if UNVERIFIED in r]
-    others = [r for r in found if UNVERIFIED not in r]
+    # By the ledger's record of each, never by the text.
+    others = list(found)
+    for r in unverified:
+        others.remove(r)
     if others and not a.accept_regressions:
         print(f"refused: the run has regressions against the current baseline ({len(others)}; "
               "--accept-regressions after reviewing them)")
