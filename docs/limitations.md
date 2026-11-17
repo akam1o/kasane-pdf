@@ -156,14 +156,17 @@ are on the [roadmap](architecture.md#roadmap).
   soft masks, glyphs and annotation appearances together, 4 × 10⁶;
   strict and recovery mode alike. Every dashed path is charged its own
   pieces before it is dashed (so one that dashes to nothing still
-  costs), and a stroke wide enough to cover the page, which draws one
+  costs) — a curve at least the pieces the dasher measures it in, which
+  grow with the resolution scale, up to 2²⁰ where the tolerance is below
+  the coordinates' rounding — and a stroke wide enough to cover the page, which draws one
   dash, every dash it built. A path is dashed one contour at a time (the
   same dashes: the pattern restarts at every contour), so the dasher's
   limit — it gives up on a million dashes and the rasteriser would draw
   nothing — is never met silently: a contour it returns nothing for is
   drawn as nothing only when it is shorter than one dash period (its
-  length bounded by its control polygon) and the array has at most 1 000
-  pairs; otherwise the stroke is refused. So a curve in a gap whose
+  length bounded by its control polygon), the array has at most 1 000
+  pairs and no piece is so short that the dasher's `f32` length of it
+  may underflow; otherwise the stroke is refused. So a curve in a gap whose
   control polygon is longer than the period is refused although it
   would draw nothing. The busiest corpus page uses 74 916 outline edges.
   A page of 90 000 round-capped dots at 600 dpi is 5 × 10¹² (drawn,

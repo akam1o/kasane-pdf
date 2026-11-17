@@ -417,6 +417,35 @@ fn contours_are_dashed_within_the_budget() {
     assert!(t.elapsed().as_secs() < 60, "took {:?}", t.elapsed());
 }
 
+/// Curves cost the pieces the dasher measures them in, which grow with
+/// the resolution scale: 1 000 copies of a small curve under a scale of
+/// 10²⁰ in one axis, each split up to 2²⁰ times, all in a gap — refused,
+/// not measured for seconds and drawn as nothing. (Review.)
+#[test]
+fn curves_cost_the_pieces_they_are_measured_in() {
+    let curves: String = (0..1000).map(|_| "0 0 m 0 0.5 0 0.5 0 0.6 c ").collect();
+    let content = format!(
+        "0.00000000000000000001 w [3 100] 4 d 100000000000000000000 0 0 1 0 0 cm {curves}S"
+    );
+    let t = std::time::Instant::now();
+    assert_refused(&page(&content), "1 000 finely measured curves");
+    assert!(t.elapsed().as_secs() < 60, "took {:?}", t.elapsed());
+}
+
+/// A line so short that the dasher's `f32` length of it underflows to
+/// nothing dashes to nothing although it starts in a dash: refused, not
+/// drawn as nothing. (Review.)
+#[test]
+fn a_contour_measured_as_nothing_is_refused() {
+    let tiny = "0.0000000000000000000000001";
+    let content = format!(
+        "{tiny} w [0.00000000000000000000001 0.00000000000000000000001] 0 d \
+         q 10000000000000000000000000 0 0 10000000000000000000000000 30 30 cm \
+         0 0 m {tiny} 0 l S Q"
+    );
+    assert_dash_refused(&page(&content), "an underflowing line");
+}
+
 /// A contour the dasher returns nothing for is taken to lie in the gap
 /// only when it is no longer than one dash period, its length bounded by
 /// its control polygon: a curve whose polygon is far longer than the

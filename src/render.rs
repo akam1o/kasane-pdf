@@ -1103,6 +1103,85 @@ const BUILT_DASH_EDGES: u64 = 4;
 /// thousand times the contour's for its count to reach a million.
 const GAP_MAX_PAIRS: usize = 1_000;
 
+/// The deepest the dasher's measure splits a curve: it halves the
+/// parameter span, 2³⁰, while it is at least 2¹⁰.
+const MEASURE_MAX_PIECES: u64 = 1 << 20;
+
+/// An upper bound of the straight pieces tiny-skia's dasher measures a
+/// curve from `from` through `ctrl` in (one for a line). It halves a
+/// curve while a control point lies farther than 0.5 / `res_scale` (per
+/// axis) from where a straight one would have it. For the exact
+/// halves, that distance is at most `b` · 4⁻ᵈ at depth `d`: `b` a
+/// quadratic's second difference / 4, a cubic's larger one × 5/3. The
+/// `f32` halving and the comparison add rounding of a few units in the
+/// last place of the largest coordinate — allowed for as 16 of them (no
+/// curve split deeper than this bound in 600 000 random ones compared
+/// with the dasher's own splitting, a third chosen with the tolerance
+/// near that rounding, D1); a tolerance not above it is taken to split to
+/// the deepest level. Ordinary curves (to 10⁴ units, scales 0.1–10) are
+/// bounded at most 4 times over, mostly exactly.
+fn measured_pieces(from: tiny_skia::Point, ctrl: &[tiny_skia::Point], res_scale: f32) -> u64 {
+    if ctrl.len() < 2 {
+        return 1;
+    }
+    let pts: Vec<(f64, f64)> = std::iter::once(from)
+        .chain(ctrl.iter().copied())
+        .map(|p| (p.x as f64, p.y as f64))
+        .collect();
+    let second = |i: usize| {
+        let (a, b, c) = (pts[i], pts[i + 1], pts[i + 2]);
+        (a.0 - 2.0 * b.0 + c.0)
+            .abs()
+            .max((a.1 - 2.0 * b.1 + c.1).abs())
+    };
+    let b = if pts.len() == 3 {
+        second(0) / 4.0
+    } else {
+        second(0).max(second(1)) * 5.0 / 3.0
+    };
+    let largest = pts
+        .iter()
+        .fold(0.0f64, |m, p| m.max(p.0.abs()).max(p.1.abs()));
+    let noise = 16.0 * largest * f64::powi(2.0, -23) + 1e-37;
+    let tolerance = (0.5f32 * (1.0f32 / res_scale)) as f64 - noise;
+    if !(tolerance > 0.0 && b.is_finite()) {
+        return MEASURE_MAX_PIECES;
+    }
+    let mut pieces = 1u64;
+    let mut deviation = b;
+    while deviation > tolerance && pieces < MEASURE_MAX_PIECES {
+        deviation /= 4.0;
+        pieces *= 2;
+    }
+    pieces
+}
+
+/// What dashing `path` costs before any dash, whatever the dashes:
+/// each piece's edges (`piece_edges`), a curve at least the pieces it is
+/// measured in (`measured_pieces`), which grow with the resolution scale.
+fn input_edges(path: &tiny_skia::Path, res_scale: f32) -> u64 {
+    use tiny_skia::PathSegment as S;
+    let mut input = 0u64;
+    let (mut start, mut last) = (None, None);
+    for seg in path.segments() {
+        let measured = match (last, seg) {
+            (Some(a), S::QuadTo(c, p)) => measured_pieces(a, &[c, p], res_scale),
+            (Some(a), S::CubicTo(c1, c2, p)) => measured_pieces(a, &[c1, c2, p], res_scale),
+            _ => 0,
+        };
+        input = input.saturating_add(piece_edges(&seg).max(measured));
+        last = match seg {
+            S::MoveTo(p) => {
+                start = Some(p);
+                Some(p)
+            }
+            S::LineTo(p) | S::QuadTo(_, p) | S::CubicTo(_, _, p) => Some(p),
+            S::Close => start,
+        };
+    }
+    input
+}
+
 /// The outline edges a path's piece stands for, as `dashed_stroke`
 /// counts its dashes' (4 a line, 8 a quadratic, 16 a cubic, 4 a close).
 fn piece_edges(seg: &tiny_skia::PathSegment) -> u64 {
@@ -1126,8 +1205,11 @@ fn piece_edges(seg: &tiny_skia::PathSegment) -> u64 {
 /// most `GAP_MAX_PAIRS` pairs counts far fewer than a million dashes, so
 /// it lies in the gap; any other is refused (D1) — some of them would
 /// dash to nothing, a refusal, not a guess. `None`: no dashes at all.
-/// The dashes are bounded as they are built, `BUILT_DASH_EDGES` each
-/// against `room`: one contour builds at most the dasher's million.
+/// A contour with a piece so short that the dasher's `f32` length of it
+/// may underflow to nothing (its pieces' measured length under 10⁻¹⁵)
+/// is never taken to lie in the gap either. The dashes are bounded as
+/// they are built, `BUILT_DASH_EDGES` each against `room`: one contour
+/// builds at most the dasher's million.
 fn dash_by_contour(
     path: &tiny_skia::Path,
     dash: &StrokeDash,
@@ -1153,75 +1235,93 @@ fn dash_by_contour(
     let mut contour = tiny_skia::PathBuilder::new();
     // Its length bounded from above, its first and last points.
     let (mut length, mut start, mut last) = (0.0f64, None::<tiny_skia::Point>, None);
-    let mut flush = |contour: &mut tiny_skia::PathBuilder, length: f64| -> Result<(), Error> {
-        let Some(c) = std::mem::take(contour).finish() else {
-            return Ok(()); // a lone move: no contour
-        };
-        match c.dash(dash, res_scale) {
-            Some(d) => {
-                let dashes = d.segments().filter(|s| matches!(s, S::MoveTo(_))).count();
-                built = built.saturating_add((dashes as u64).saturating_mul(BUILT_DASH_EDGES));
-                if built > room {
-                    return Err(Error::Unsupported {
-                        feature: "dashed stroke",
-                        detail: "a dashed stroke whose segments would take too long to \
+    // A piece of positive length whose measured pieces may underflow.
+    let tiny = |len: f64, pieces: u64| len > 0.0 && len / (pieces as f64) < 1e-15;
+    let mut underflow = false;
+    let mut flush =
+        |contour: &mut tiny_skia::PathBuilder, length: f64, underflow: bool| -> Result<(), Error> {
+            let Some(c) = std::mem::take(contour).finish() else {
+                return Ok(()); // a lone move: no contour
+            };
+            match c.dash(dash, res_scale) {
+                Some(d) => {
+                    let dashes = d.segments().filter(|s| matches!(s, S::MoveTo(_))).count();
+                    built = built.saturating_add((dashes as u64).saturating_mul(BUILT_DASH_EDGES));
+                    if built > room {
+                        return Err(Error::Unsupported {
+                            feature: "dashed stroke",
+                            detail: "a dashed stroke whose segments would take too long to \
                                  rasterise (the render's dashed strokes together, outline \
                                  edges) is not drawn"
-                            .into(),
-                    });
-                }
-                dashed.push(d);
-                Ok(())
-            }
-            None => {
-                let in_the_gap = interval > 0.0
-                    && interval.is_finite()
-                    && length.is_finite()
-                    && length < interval
-                    && length * (pairs.max(1) as f64) < 1e30
-                    && pairs <= GAP_MAX_PAIRS;
-                if in_the_gap {
+                                .into(),
+                        });
+                    }
+                    dashed.push(d);
                     Ok(())
-                } else {
-                    Err(refused())
+                }
+                None => {
+                    let in_the_gap = interval > 0.0
+                        && interval.is_finite()
+                        && length.is_finite()
+                        && length < interval
+                        && length * (pairs.max(1) as f64) < 1e30
+                        && pairs <= GAP_MAX_PAIRS
+                        && !underflow;
+                    if in_the_gap {
+                        Ok(())
+                    } else {
+                        Err(refused())
+                    }
                 }
             }
-        }
-    };
+        };
     for seg in path.segments() {
         match seg {
             S::MoveTo(p) => {
-                flush(&mut contour, length)?;
+                flush(&mut contour, length, underflow)?;
                 contour.move_to(p.x, p.y);
                 length = 0.0;
+                underflow = false;
                 start = Some(p);
                 last = Some(p);
             }
             S::LineTo(p) => {
                 contour.line_to(p.x, p.y);
-                length += last.map_or(0.0, |a| dist(a, p));
+                let l = last.map_or(0.0, |a| dist(a, p));
+                underflow |= tiny(l, 1);
+                length += l;
                 last = Some(p);
             }
             S::QuadTo(c, p) => {
                 contour.quad_to(c.x, c.y, p.x, p.y);
-                length += last.map_or(0.0, |a| dist(a, c) + dist(c, p));
+                if let Some(a) = last {
+                    let l = dist(a, c) + dist(c, p);
+                    underflow |= tiny(l, measured_pieces(a, &[c, p], res_scale));
+                    length += l;
+                }
                 last = Some(p);
             }
             S::CubicTo(c1, c2, p) => {
                 contour.cubic_to(c1.x, c1.y, c2.x, c2.y, p.x, p.y);
-                length += last.map_or(0.0, |a| dist(a, c1) + dist(c1, c2) + dist(c2, p));
+                if let Some(a) = last {
+                    let l = dist(a, c1) + dist(c1, c2) + dist(c2, p);
+                    underflow |= tiny(l, measured_pieces(a, &[c1, c2, p], res_scale));
+                    length += l;
+                }
                 last = Some(p);
             }
             S::Close => {
                 contour.close();
                 if let (Some(a), Some(b)) = (last, start) {
-                    length += dist(a, b);
+                    let l = dist(a, b);
+                    underflow |= tiny(l, 1);
+                    length += l;
                 }
                 last = start;
             }
         }
     }
-    flush(&mut contour, length)?;
+    flush(&mut contour, length, underflow)?;
     if dashed.len() <= 1 {
         return Ok(dashed.pop());
     }
@@ -1287,10 +1387,7 @@ fn dashed_stroke(
     // charged first, before any dashing (D1), so that a path that dashes
     // to nothing still costs. Edges the render may still give dashed
     // strokes, after them.
-    let input: u64 = path
-        .segments()
-        .map(|s| piece_edges(&s))
-        .fold(0, u64::saturating_add);
+    let input = input_edges(path, res_scale);
     let left = MAX_DASHED_RENDER_EDGES.saturating_sub(spent.edges);
     if input > left {
         return Err(Error::Unsupported {
@@ -9085,6 +9182,38 @@ mod tests {
         );
     }
 
+    /// A curve is charged at least the pieces the dasher measures it in:
+    /// one piece flat or below the tolerance, more as the resolution
+    /// scale grows, the deepest split (2²⁰) where the tolerance is below
+    /// the coordinates' rounding. (Review.)
+    #[test]
+    fn a_curve_costs_the_pieces_it_is_measured_in() {
+        let p = |x: f32, y: f32| tiny_skia::Point::from_xy(x, y);
+        let straight = [p(1.0, 0.0), p(2.0, 0.0), p(3.0, 0.0)];
+        assert_eq!(measured_pieces(p(0.0, 0.0), &straight, 1e3), 1);
+        let bend = [p(60.0, 0.0), p(0.0, 60.0), p(0.0, 30.0)];
+        let at = |s: f32| measured_pieces(p(0.0, 30.0), &bend, s);
+        assert!(
+            at(0.001) == 1 && at(1.0) > 1 && at(1.0) < at(100.0),
+            "{} {}",
+            at(1.0),
+            at(100.0)
+        );
+        let tiny = [p(0.0, 0.5), p(0.0, 0.5), p(0.0, 0.6)];
+        assert_eq!(
+            measured_pieces(p(0.0, 0.0), &tiny, 1e20),
+            MEASURE_MAX_PIECES
+        );
+        let mut pb = PathBuilder::new();
+        pb.move_to(0.0, 0.0);
+        pb.cubic_to(0.0, 0.5, 0.0, 0.5, 0.0, 0.6);
+        assert_eq!(input_edges(&pb.finish().unwrap(), 1e20), MEASURE_MAX_PIECES);
+        let mut pb = PathBuilder::new();
+        pb.move_to(0.0, 0.0);
+        pb.cubic_to(0.0, 0.5, 0.0, 0.5, 0.0, 0.6);
+        assert_eq!(input_edges(&pb.finish().unwrap(), 1.0), 16);
+    }
+
     /// A stroke that dashes to nothing still costs its pieces: 1 000
     /// contours in the gap are 4 000 units — drawn as nothing with that
     /// much left, refused with one unit less, recording nothing. (Review.)
@@ -9165,7 +9294,7 @@ mod tests {
             .filter(|s| matches!(s, tiny_skia::PathSegment::MoveTo(_)))
             .count();
         assert!(contours > 1, "dashed into {contours}");
-        // The path's 100 cubics, and each dash at least its pieces (caps
+        // The path's own cost, and each dash at least its pieces (caps
         // aside, at least 4), at most with its round caps (16).
         let mut per_dash: Vec<u64> = Vec::new();
         for seg in dashes.segments() {
@@ -9175,8 +9304,10 @@ mod tests {
                 *per_dash.last_mut().unwrap() += piece_edges(&seg);
             }
         }
-        let least = 1600 + per_dash.iter().map(|e| *e.max(&4)).sum::<u64>();
-        let most = 1600 + per_dash.iter().map(|e| e + 16).sum::<u64>();
+        let input = input_edges(&path, 1.0);
+        assert!(input >= 1600, "{input}");
+        let least = input + per_dash.iter().map(|e| *e.max(&4)).sum::<u64>();
+        let most = input + per_dash.iter().map(|e| e + 16).sum::<u64>();
         assert!(
             (least..=most).contains(&fresh.edges),
             "{} not in {least}..={most} ({per_dash:?})",
