@@ -11,10 +11,15 @@
 mod common;
 
 use common::{build_pdf, stream_obj};
-use kasane_pdf::{extract_text, render_page, Document, OpenOptions, RenderOptions, TextOptions};
+use kasane_pdf::{
+    extract_text, redact, render_page, Document, OpenOptions, RedactOptions, RenderOptions,
+    ResolveKind, TextOptions,
+};
 
 const UNUSED: [u8; 6] = [0x7F, 0x81, 0x8D, 0x8F, 0x90, 0x9D];
 const SANS: &[u8] = include_bytes!("../fonts/liberation/LiberationSans-Regular.ttf");
+/// A CFF subset of A–f only: no `bullet` (tests/fixtures/README.md).
+const CFF: &[u8] = include_bytes!("fixtures/type1_cff.bin");
 
 /// A one-page PDF showing the bytes `show` (and then "A") with font
 /// object 5; `objects` supplies 5 and anything it references (from 6).
@@ -54,6 +59,11 @@ fn helvetica(encoding: Option<&str>) -> Vec<(u32, Vec<u8>)> {
 /// Liberation Sans embedded as a non-symbolic TrueType font with
 /// WinAnsiEncoding; every code 600 wide.
 fn embedded_sans() -> Vec<(u32, Vec<u8>)> {
+    embedded_sans_with(32, "")
+}
+
+/// The same with `/Flags flags` and `extra` in the font dictionary.
+fn embedded_sans_with(flags: u32, extra: &str) -> Vec<(u32, Vec<u8>)> {
     let widths = vec!["600"; 224].join(" ");
     vec![
         (
@@ -61,16 +71,18 @@ fn embedded_sans() -> Vec<(u32, Vec<u8>)> {
             format!(
                 "<< /Type /Font /Subtype /TrueType /BaseFont /LiberationSans \
                  /Encoding /WinAnsiEncoding /FirstChar 32 /LastChar 255 /Widths [{widths}] \
-                 /FontDescriptor 6 0 R >>"
+                 /FontDescriptor 6 0 R {extra} >>"
             )
             .into_bytes(),
         ),
         (
             6,
-            b"<< /Type /FontDescriptor /FontName /LiberationSans /Flags 32 \
-              /FontBBox [-203 -303 1050 910] /ItalicAngle 0 /Ascent 905 /Descent -212 \
-              /CapHeight 729 /StemV 80 /FontFile2 7 0 R >>"
-                .to_vec(),
+            format!(
+                "<< /Type /FontDescriptor /FontName /LiberationSans /Flags {flags} \
+                 /FontBBox [-203 -303 1050 910] /ItalicAngle 0 /Ascent 905 /Descent -212 \
+                 /CapHeight 729 /StemV 80 /FontFile2 7 0 R >>"
+            )
+            .into_bytes(),
         ),
         (7, stream_obj(&format!("/Length1 {}", SANS.len()), SANS)),
     ]
@@ -85,12 +97,23 @@ fn pixels(pdf: &[u8], recovering: bool) -> Vec<u8> {
 }
 
 fn text(pdf: &[u8]) -> String {
-    let d = Document::from_bytes(pdf).unwrap();
+    text_in(pdf, false)
+}
+
+fn text_in(pdf: &[u8], recovering: bool) -> String {
+    chars(pdf, recovering)
+        .into_iter()
+        .map(|(u, _)| u.unwrap_or_else(|| "\u{FFFD}".into()))
+        .collect()
+}
+
+fn chars(pdf: &[u8], recovering: bool) -> Vec<(Option<String>, ResolveKind)> {
+    let d = Document::open(pdf, &OpenOptions::new().with_recovery(recovering)).unwrap();
     extract_text(&d, &d.pages()[0], &TextOptions::default())
         .unwrap()
         .chars
         .into_iter()
-        .map(|c| c.unicode.unwrap_or_else(|| "\u{FFFD}".into()))
+        .map(|c| (c.unicode, c.resolved_via))
         .collect()
 }
 
@@ -125,16 +148,24 @@ fn unused_codes_draw_the_bullet() {
     }
 }
 
-/// The text of an unused code is the bullet, U+2022.
+/// The text of an unused code is the bullet, U+2022, through the
+/// encoding's glyph name — in strict and recovery mode.
 #[test]
 fn unused_codes_read_as_the_bullet() {
     for font in [helvetica(Some("/WinAnsiEncoding")), embedded_sans()] {
-        for code in UNUSED {
-            assert_eq!(
-                text(&pdf(&[code], font.clone())),
-                "\u{2022}A",
-                "code {code:#04X}"
-            );
+        for recovering in [false, true] {
+            for code in UNUSED {
+                let got = chars(&pdf(&[code], font.clone()), recovering);
+                assert_eq!(
+                    got[0],
+                    (Some("\u{2022}".to_string()), ResolveKind::EncodingFallback),
+                    "code {code:#04X}, recovery {recovering}"
+                );
+                assert_eq!(
+                    text_in(&pdf(&[code], font.clone()), recovering),
+                    "\u{2022}A"
+                );
+            }
         }
     }
 }
@@ -188,4 +219,128 @@ fn other_encodings_are_unchanged() {
     let bullet = pixels(&pdf(&[0x95], helvetica(Some("/WinAnsiEncoding"))), false);
     assert!(pixels(&pdf(&[0x81], mac.clone()), false) != bullet);
     assert_eq!(text(&pdf(&[0x81], mac)), "\u{C5}A");
+}
+
+/// A `/ToUnicode` entry still wins over the encoding's bullet.
+#[test]
+fn to_unicode_wins() {
+    let cmap = b"/CIDInit /ProcSet findresource begin 12 dict begin begincmap \
+        /CMapName /T def 1 begincodespacerange <00> <FF> endcodespacerange \
+        1 beginbfchar <81> <0058> endbfchar endcmap CMapName currentdict /CMap defineresource pop end end";
+    let mut font = embedded_sans_with(32, "/ToUnicode 8 0 R");
+    font.push((8, stream_obj("", cmap)));
+    let got = chars(&pdf(&[0x81], font), false);
+    assert_eq!(got[0], (Some("X".to_string()), ResolveKind::ToUnicode));
+}
+
+/// A symbolic TrueType font with an explicit WinAnsiEncoding takes the
+/// names first (Table 114): the unused codes are its bullet as well.
+#[test]
+fn a_symbolic_truetype_font_names_the_bullet_too() {
+    let font = embedded_sans_with(4, "");
+    let bullet = pixels(&pdf(&[0x95], font.clone()), false);
+    assert!(ink(&bullet) > ink(&pixels(&pdf(&[], font.clone()), false)));
+    for code in UNUSED {
+        assert!(
+            pixels(&pdf(&[code], font.clone()), false) == bullet,
+            "code {code:#04X}"
+        );
+    }
+}
+
+/// A Type 3 font on a WinAnsiEncoding base draws its `/bullet`
+/// procedure for the unused codes.
+#[test]
+fn a_type3_font_draws_its_bullet_procedure() {
+    let mut widths = vec!["1000"; 256];
+    widths[0x41] = "1000";
+    let widths = widths.join(" ");
+    let font = vec![
+        (
+            5,
+            format!(
+                "<< /Type /Font /Subtype /Type3 /FontBBox [0 0 1000 1000] \
+                 /FontMatrix [0.001 0 0 0.001 0 0] /FirstChar 0 /LastChar 255 /Widths [{widths}] \
+                 /Encoding << /BaseEncoding /WinAnsiEncoding >> /CharProcs << /A 8 0 R /bullet 9 0 R >> \
+                 /Resources << >> >>"
+            )
+            .into_bytes(),
+        ),
+        (8, stream_obj("", b"1000 0 0 0 1000 1000 d1 0 0 400 1000 re f")),
+        (9, stream_obj("", b"1000 0 0 0 1000 1000 d1 300 300 400 400 re f")),
+    ];
+    let bullet = pixels(&pdf(&[0x95], font.clone()), false);
+    assert!(ink(&bullet) > ink(&pixels(&pdf(&[], font.clone()), false)));
+    for code in UNUSED {
+        assert!(
+            pixels(&pdf(&[code], font.clone()), false) == bullet,
+            "code {code:#04X}"
+        );
+    }
+}
+
+/// An embedded program without a `bullet` glyph (a CFF subset of A–f)
+/// draws `.notdef` for the unused codes, as before — nothing — while the
+/// text follows the encoding, as for any name a subset lacks.
+#[test]
+fn a_program_without_a_bullet_draws_nothing_for_them() {
+    let widths = vec!["600"; 224].join(" ");
+    let font = vec![
+        (
+            5,
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /PAXEKO+KasaneSansPro-Bold \
+                 /Encoding /WinAnsiEncoding /FirstChar 32 /LastChar 255 /Widths [{widths}] \
+                 /FontDescriptor 6 0 R >>"
+            )
+            .into_bytes(),
+        ),
+        (
+            6,
+            b"<< /Type /FontDescriptor /FontName /PAXEKO+KasaneSansPro-Bold /Flags 32 \
+              /FontBBox [0 0 1000 1000] /ItalicAngle 0 /Ascent 800 /Descent -200 \
+              /CapHeight 700 /StemV 80 /FontFile3 7 0 R >>"
+                .to_vec(),
+        ),
+        (7, stream_obj("/Subtype /Type1C", CFF)),
+    ];
+    let space = pixels(&pdf(b" ", font.clone()), false);
+    for code in UNUSED {
+        assert!(
+            pixels(&pdf(&[code], font.clone()), false) == space,
+            "code {code:#04X}"
+        );
+        assert_eq!(
+            text(&pdf(&[code], font.clone())),
+            "\u{2022}A",
+            "code {code:#04X}"
+        );
+    }
+}
+
+/// 0xA0 and 0xAD are WinAnsiEncoding's space and hyphen, not unused.
+#[test]
+fn nbsp_and_hyphen_are_not_bullets() {
+    let font = helvetica(Some("/WinAnsiEncoding"));
+    let draw = |b: &[u8]| pixels(&pdf(b, font.clone()), false);
+    assert!(draw(&[0xA0]) == draw(b" "));
+    assert!(draw(&[0xAD]) == draw(b"-"));
+    assert!(draw(&[0xAD]) != draw(&[0x95]));
+}
+
+/// Redaction removes an unused code drawn as a bullet like any glyph:
+/// a rectangle over the bullet takes it, the text after it stays, and
+/// the output reads without it.
+#[test]
+fn a_bullet_from_an_unused_code_is_redacted() {
+    let doc = Document::from_bytes(&pdf(&[0x81], embedded_sans())).unwrap();
+    // 24 pt at (10, 12): the bullet's 600-unit cell is x 10..24.4.
+    let r = redact(
+        &doc,
+        &[(0, vec![(9.0, 8.0, 23.0, 36.0)])],
+        &RedactOptions::new(),
+    )
+    .unwrap();
+    assert_eq!(r.codes_removed, 1);
+    assert_eq!(text(&r.output), "A");
 }

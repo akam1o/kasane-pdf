@@ -217,8 +217,11 @@ but external tools are used to *confirm* behaviour on real files:
 - WinAnsiEncoding's unused codes (Q1, v0.11):
   `tests/render_winansi_unused.rs` — each of 0x7F, 0x81, 0x8D, 0x8F,
   0x90 and 0x9D draws and reads as the bullet (0x95) in a substituted
-  and an embedded TrueType font, strict and recovery mode; control
-  codes, `/Differences` names, `StandardEncoding` and
+  and an embedded TrueType font, strict and recovery mode, a symbolic
+  TrueType font and a Type 3 font's `/bullet` procedure; a program
+  without a `bullet` draws `.notdef` as before; `/ToUnicode` still wins;
+  a redaction rectangle over the bullet removes it; control codes,
+  0xA0 / 0xAD, `/Differences` names, `StandardEncoding` and
   `MacRomanEncoding` are unchanged.
 - Dashed-stroke budget (D1, v0.11): `tests/render_dash_budget.rs`
   checks the render-wide outline-edge budget — one long dashed stroke

@@ -211,6 +211,13 @@ are on the [roadmap](architecture.md#roadmap).
   name table is still consulted first, unchanged, so its readings stay
   as before: ZapfDingbats names such as `a12` read as dingbats and
   `uniXXXX` names are read as written, private-use values included.
+- The codes WinAnsiEncoding leaves unused above the control codes
+  (0x7F, 0x81, 0x8D, 0x8F, 0x90, 0x9D) read as the bullet, U+2022
+  (Annex D.2, note 3; since v0.11), and draw the font's `bullet`. An
+  embedded program without a `bullet` glyph draws what it drew before —
+  `.notdef`, or, for a CFF program, the glyph its built-in encoding
+  gives the code — while the text still reads as the bullet, as for any
+  name a subset lacks.
 - Annotation text (`TextOptions::with_annotations`, `text
   --annotations`; [`annotation-text.md`](annotation-text.md)): `/RC` is
   reported as stored (XHTML, not interpreted), so a note with `/RC` and
