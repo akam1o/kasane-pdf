@@ -99,7 +99,7 @@ Every input is validated first. A report or baseline is rejected
   give;
 - it is a baseline with page measures but no environment;
 - it is an attribution of another schema or tolerance, without its
-  threshold or page cap, with a page twice, with a measure missing or
+  threshold or page cap (a number from 1, or null for every page), with a page twice, with a measure missing or
   out of range (dpx outside 0–1, mad outside 0–255), or with an
   agreement that its measures do not give. The gate recomputes every
   agreement (`scripts/compat_verdict.py`) and never trusts a recorded
@@ -121,8 +121,8 @@ in the **same environment**, each of the following is a regression:
 | a page within a witness's tolerance (`both` / `poppler` / `mupdf`) becomes `neither` or `not_comparable` | — |
 | an open page becomes `not_comparable` (hidden) | — |
 | an open page's difference from either witness grows (each witness judged on its own) | `dpx` +0.002 or `mad` +0.5 |
-| a page of the run below the threshold (among its file's 8 worst) is not attributed, or a page is attributed that is not | — |
-| the attribution is of another commit or environment than the run, or of another threshold, tolerance or page cap than the baseline's | — |
+| a page of the run below the threshold is not attributed, or a page is attributed that is not | — |
+| the attribution is of another commit or environment than the run, or of another threshold or tolerance than the baseline's | — |
 | a page below the threshold that the baseline did not attribute, and that was not below it in the baseline (or is new), is `neither` or `not_comparable` (also in a file new to the baseline) | — |
 | a page the baseline attributed leaves either witness's tolerance (`both` → `poppler` / `mupdf` / `neither`, `poppler` → `neither`, …), each witness on its own | — |
 | the attribution covers fewer pages than the baseline's (a cap per file), or is `truncated` | — |
@@ -143,10 +143,17 @@ How the rules are applied:
   measures (a regression). A page the baseline did not attribute is new
   when it was not below the threshold there (the baseline records
   `below`, from the unrounded SSIM): outside both witnesses, a
-  regression. When it was below it already and outside an older
-  baseline's cap, it is a known difference measured for the first time
-  — listed (`first attributed`), not failed, and recorded by the next
-  baseline update.
+  regression. When it was below it already but beyond an older (M1)
+  baseline's cap of 8 per file, the baseline has no witness result for
+  it, so `neither` or `not_comparable` now cannot be told from a page
+  that was `both` and got worse: it fails as `first attributed: … —
+  unverified` until the baseline attributes every page (a reviewed
+  `update-baseline`, the M2 migration). A baseline written by M2 has no
+  such pages: `update-baseline` refuses an attribution with a cap per
+  file, a `truncated` one, or one that misses a page below the
+  threshold. Below the threshold in a baseline that had room to
+  attribute it, yet not attributed: the baseline is incomplete, a
+  regression whatever the run's verdict.
 - **The rules hold in every class.** They apply in every quality-gate
   class (`ok`, `report`, `exempt`, `n/a`, `flag`), so a worsening that
   stays inside its class is still caught.

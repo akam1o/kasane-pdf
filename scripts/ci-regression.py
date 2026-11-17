@@ -65,7 +65,8 @@ docs/plans/quality-gate.md.
       removed (without --allow-removed), when `check` finds regressions
       against the old one (without --accept-regressions), when the
       environment is incomplete, or when the attribution does not cover
-      every page below its threshold. No workflow writes a baseline
+      every page below its threshold (capped per file, truncated, or
+      missing one). No workflow writes a baseline
       (scripts/check-workflows.py).
 
 Every run is validated first: a report or baseline that is not the
@@ -278,17 +279,21 @@ def validate_run(run):
         for s in STAGES:
             if s in f and not isinstance(f[s], dict):
                 raise Invalid(f"run report: stage {s} of file {i} is not a record")
-        pages = [p.get("page") for p in (f.get("metrics") or {}).get("render_pages") or []
-                 if isinstance(p, dict) and p.get("page") is not None]
+        records = (f.get("metrics") or {}).get("render_pages") or []
+        if not isinstance(records, list) or any(not isinstance(p, dict) for p in records):
+            raise Invalid(f"run report: file {i} has a page record that is not a record")
+        pages = [p.get("page") for p in records]
+        if any(not isinstance(pg, int) or isinstance(pg, bool) or pg < 1 for pg in pages):
+            raise Invalid(f"run report: file {i} has a page that is not a number from 1")
         if len(pages) != len(set(pages)):
             raise Invalid(f"run report: file {i} records a page twice")
         _finite_tree(f, f"files[{i}]")
-        if any(not isinstance(pg, int) or isinstance(pg, bool) or pg < 1 for pg in pages):
-            raise Invalid(f"run report: file {i} has a page that is not a number from 1")
-        for p in (f.get("metrics") or {}).get("render_pages") or []:
-            if isinstance(p, dict) and not (_in_range(p.get("ssim"), -1, 1) and _in_range(
+        for p in records:
+            # A compared page has its SSIM: a record without one would
+            # drop out of every comparison unseen.
+            if p.get("ssim") is None or not (_in_range(p.get("ssim"), -1, 1) and _in_range(
                     (p.get("quality") or {}).get("content_ssim"), -1, 1)):
-                raise Invalid(f"run report: file {i} has an SSIM outside -1..1")
+                raise Invalid(f"run report: file {i} has a page without an SSIM, or one outside -1..1")
         for key in ("text_char_f1", "text_char_f1_with_annots"):
             if not _in_range((f.get("metrics") or {}).get(key), 0, 1):
                 raise Invalid(f"run report: file {i} has a text F1 outside 0..1")
@@ -400,8 +405,10 @@ def attribution_by_file(att):
         out.setdefault(r["id"], {})[str(r["page"])] = {
             "agreement": r["agreement"],
             "references_agree": r.get("references_agree"),
-            # Per witness: kasane–Poppler (kp) and kasane–MuPDF (km).
-            **{k: (None if not r3 else round(r3[k], 5)) for k in ("dpx_kp", "dpx_km", "mad_kp", "mad_km")},
+            # Per witness: kasane–Poppler (kp) and kasane–MuPDF (km), as
+            # measured (compat-attribute quantizes them before its verdict;
+            # rounding again could move one across the tolerance).
+            **{k: (None if not r3 else r3[k]) for k in ("dpx_kp", "dpx_km", "mad_kp", "mad_km")},
         }
     return out
 
@@ -701,6 +708,32 @@ def worse(new, old):
 WITNESSES = (("Poppler", "kp"), ("MuPDF", "km"))
 
 
+def attribution_usable(meta, env, attribution):
+    """(regressions, usable): whether the run's attribution can be judged
+    against the baseline's — the same environment and commit as the run,
+    the same threshold and tolerance, at least the baseline's coverage,
+    nothing truncated. Decided once, for the check and its ledger."""
+    regs = []
+    if not meta.get("attribution"):
+        return regs, False
+    if attribution is None:
+        return ["attribution not measured (the baseline has it; --attribution)"], False
+    d = compat_env.differences(env or {}, attribution.get("env") or {}, keys=compat_env.COMPARED + ("commit",))
+    if d:
+        regs.append("attribution measured in another environment or commit than the run: " + ", ".join(d))
+    for k in ("threshold", "tolerance"):
+        if attribution.get(k) != meta["attribution"].get(k):
+            regs.append(f"attribution {k} differs from the baseline's")
+    run_cap, base_cap = attribution.get("max_pages_per_file"), meta["attribution"].get("max_pages_per_file")
+    if run_cap is not None and (base_cap is None or run_cap < base_cap):
+        regs.append(f"attribution covers fewer pages than the baseline's (at most {run_cap} per file, "
+                    f"the baseline {'every page' if base_cap is None else base_cap})")
+    if attribution.get("truncated"):
+        regs.append(f"attribution incomplete: {attribution['truncated']} page(s) below the threshold "
+                    "not measured (--max-pages-total)")
+    return regs, not regs
+
+
 def _within(a, k):
     return compat_verdict.within(a.get(f"dpx_{k}"), a.get(f"mad_{k}"))
 
@@ -817,21 +850,26 @@ def attribution_ledger(run, cur, old, meta, attribution):
             if na["agreement"] not in WITHIN:
                 reg(f"{fid}: page {pg} {na['agreement']} (file not in the baseline){refs}")
             continue
+        if ov is not None and base_low and (base_cap is None or len(base_attr) < base_cap):
+            # Below the threshold in the baseline, which had room for it:
+            # the baseline cannot vouch for this page at all.
+            reg(f"{fid}: page {pg} {na['agreement']}: below the threshold in the baseline, which does not "
+                f"attribute it (the baseline is incomplete){refs}")
+            continue
         if na["agreement"] in WITHIN:
             note(f"{fid}: page {pg} newly attributed: {na['agreement']}")
             continue
         if ov is None or not base_low:
             what = "a page the baseline does not have" if ov is None else f"SSIM {ov['ssim']} -> {nv['ssim']}"
             reg(f"{fid}: page {pg} newly {na['agreement']} (below the threshold, not in the baseline: {what}){refs}")
-        elif base_cap is not None and len(base_attr) >= base_cap:
-            # Below the threshold in the baseline too, beyond its cap of
-            # pages per file: a known difference measured for the first
-            # time, not a new one.
-            note(f"{fid}: page {pg} first attributed: {na['agreement']} (below the threshold in the baseline "
-                 f"too, beyond its {base_cap} worst per file)")
         else:
-            reg(f"{fid}: page {pg} {na['agreement']}: below the threshold in the baseline, which does not "
-                f"attribute it (the baseline is incomplete){refs}")
+            # Below the threshold in the baseline too, beyond an older
+            # baseline's cap: its witness result then is unknown, so this
+            # one cannot be told from a worsening — unverified, not
+            # passed. A baseline that attributes every page ends it.
+            reg(f"{fid}: page {pg} first attributed: {na['agreement']} — unverified: below the threshold in "
+                f"the baseline too, beyond its {base_cap} worst per file, so no witness result to compare "
+                f"(update the baseline to one that attributes every page){refs}")
     return out
 
 
@@ -855,27 +893,9 @@ def numeric_regressions(run, cur, old, base, env, attribution, require_same_env,
                + ", ".join(f"{k} ({benv.get(k)} -> {env.get(k)})" for k in diff))
         (regs if require_same_env else notes).append(msg)
         return regs
-    armed_att = bool(meta.get("attribution"))
-    if armed_att and attribution is None:
-        regs.append("attribution not measured (the baseline has it; --attribution)")
-    complete = False
-    if attribution is not None and armed_att:
-        aenv = attribution.get("env") or {}
-        d = compat_env.differences(env, aenv, keys=compat_env.COMPARED + ("commit",))
-        if d:
-            regs.append("attribution measured in another environment or commit than the run: " + ", ".join(d))
-        for k in ("threshold", "tolerance"):
-            if attribution.get(k) != meta["attribution"].get(k):
-                regs.append(f"attribution {k} differs from the baseline's")
-        run_cap, base_cap = attribution.get("max_pages_per_file"), meta["attribution"].get("max_pages_per_file")
-        if run_cap is not None and (base_cap is None or run_cap < base_cap):
-            regs.append(f"attribution covers fewer pages than the baseline's (at most {run_cap} per file, "
-                        f"the baseline {'every page' if base_cap is None else base_cap})")
-        if attribution.get("truncated"):
-            regs.append(f"attribution incomplete: {attribution['truncated']} page(s) below the threshold "
-                        "not measured (--max-pages-total)")
-        complete = not regs
-    ledger = attribution_ledger(run, cur, old, meta, attribution if complete else None)
+    att_regs, usable = attribution_usable(meta, env, attribution)
+    regs.extend(att_regs)
+    ledger = attribution_ledger(run, cur, old, meta, attribution if usable else None)
     for e in ledger:
         regs.extend(e["regressions"])
         improvements.extend(e["improvements"])
@@ -1074,7 +1094,10 @@ def check(run, base, summary_md=None, env=None, attribution=None, require_same_e
         regressions.append(f"{fid}: in the baseline, missing from the run")
     if ledger_path:
         meta = base.get("meta") or {}
-        led = attribution_ledger(run, cur, old, meta, attribution) if attribution is not None else []
+        benv = meta.get("env")
+        same = benv is not None and env is not None and not compat_env.differences(benv, env)
+        usable = same and attribution_usable(meta, env, attribution)[1]
+        led = attribution_ledger(run, cur, old, meta, attribution if usable else None)
         with open(ledger_path, "w") as fh:
             json.dump([{k: v for k, v in e.items() if k not in ("regressions", "improvements", "notes")}
                        | {"decisions": e["regressions"] + e["improvements"] + e["notes"]} for e in led],
@@ -1239,6 +1262,9 @@ def update_baseline(a):
     if missing:
         raise Invalid("environment incomplete: " + ", ".join(missing))
     if att is not None:
+        if att.get("max_pages_per_file") is not None:
+            raise Invalid(f"the attribution is capped at {att['max_pages_per_file']} page(s) per file; a "
+                          "baseline records every page below the threshold")
         if att.get("truncated"):
             raise Invalid(f"the attribution is truncated ({att['truncated']} page(s) not measured)")
         have = {(r["id"], r["page"]) for r in att["pages"]}
