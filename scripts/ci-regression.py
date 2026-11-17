@@ -63,7 +63,9 @@ docs/plans/quality-gate.md.
       would change (counts; --ids lists the files, for a local review
       only), and with --write writes it — refused when files would be
       removed (without --allow-removed), when `check` finds regressions
-      against the old one (without --accept-regressions), when the
+      against the old one (without --accept-regressions; the first
+      measurements of pages an older baseline did not attribute alone:
+      --accept-unverified, which accepts nothing else), when the
       environment is incomplete, or when the attribution does not cover
       every page below its threshold (capped per file, truncated, or
       missing one). No workflow writes a baseline
@@ -706,6 +708,9 @@ def worse(new, old):
 
 
 WITNESSES = (("Poppler", "kp"), ("MuPDF", "km"))
+# The mark of a first measurement with no witness result in the baseline
+# (update-baseline --accept-unverified accepts these and nothing else).
+UNVERIFIED = " — unverified"
 
 
 def attribution_usable(meta, env, attribution):
@@ -718,16 +723,23 @@ def attribution_usable(meta, env, attribution):
         return regs, False
     if attribution is None:
         return ["attribution not measured (the baseline has it; --attribution)"], False
-    d = compat_env.differences(env or {}, attribution.get("env") or {}, keys=compat_env.COMPARED + ("commit",))
+    aenv = attribution.get("env") or {}
+    gaps = [f"{side} {k}" for side, e in (("run", env or {}), ("attribution", aenv))
+            for k in compat_env.COMPARED + ("commit",) if k != "features" and not e.get(k)]
+    if gaps:
+        regs.append("environment incomplete: " + ", ".join(gaps) + " (the same commit cannot be established)")
+    d = compat_env.differences(env or {}, aenv, keys=compat_env.COMPARED + ("commit",))
     if d:
         regs.append("attribution measured in another environment or commit than the run: " + ", ".join(d))
     for k in ("threshold", "tolerance"):
         if attribution.get(k) != meta["attribution"].get(k):
             regs.append(f"attribution {k} differs from the baseline's")
-    run_cap, base_cap = attribution.get("max_pages_per_file"), meta["attribution"].get("max_pages_per_file")
-    if run_cap is not None and (base_cap is None or run_cap < base_cap):
-        regs.append(f"attribution covers fewer pages than the baseline's (at most {run_cap} per file, "
-                    f"the baseline {'every page' if base_cap is None else base_cap})")
+    run_cap = attribution.get("max_pages_per_file")
+    if run_cap is not None:
+        # Whatever the baseline's own coverage: a page beyond a cap would
+        # be below the threshold and never judged.
+        regs.append(f"attribution capped at {run_cap} page(s) per file: every page below the threshold is "
+                    "required")
     if attribution.get("truncated"):
         regs.append(f"attribution incomplete: {attribution['truncated']} page(s) below the threshold "
                     "not measured (--max-pages-total)")
@@ -856,18 +868,20 @@ def attribution_ledger(run, cur, old, meta, attribution):
             reg(f"{fid}: page {pg} {na['agreement']}: below the threshold in the baseline, which does not "
                 f"attribute it (the baseline is incomplete){refs}")
             continue
-        if na["agreement"] in WITHIN:
+        first = ov is not None and base_low  # below the threshold before, beyond the old cap
+        if na["agreement"] == "both" or (na["agreement"] in WITHIN and not first):
             note(f"{fid}: page {pg} newly attributed: {na['agreement']}")
             continue
-        if ov is None or not base_low:
+        if not first:
             what = "a page the baseline does not have" if ov is None else f"SSIM {ov['ssim']} -> {nv['ssim']}"
             reg(f"{fid}: page {pg} newly {na['agreement']} (below the threshold, not in the baseline: {what}){refs}")
         else:
             # Below the threshold in the baseline too, beyond an older
-            # baseline's cap: its witness result then is unknown, so this
-            # one cannot be told from a worsening — unverified, not
-            # passed. A baseline that attributes every page ends it.
-            reg(f"{fid}: page {pg} first attributed: {na['agreement']} — unverified: below the threshold in "
+            # baseline's cap: its witness result then is unknown, so
+            # anything short of `both` now cannot be told from a lost
+            # witness — unverified, not passed. A baseline that attributes
+            # every page ends it.
+            reg(f"{fid}: page {pg} first attributed: {na['agreement']}{UNVERIFIED}: below the threshold in "
                 f"the baseline too, beyond its {base_cap} worst per file, so no witness result to compare "
                 f"(update the baseline to one that attributes every page){refs}")
     return out
@@ -931,7 +945,8 @@ def numeric_regressions(run, cur, old, base, env, attribution, require_same_env,
     return regs
 
 
-def check(run, base, summary_md=None, env=None, attribution=None, require_same_env=False, ledger_path=None):
+def check(run, base, summary_md=None, env=None, attribution=None, require_same_env=False, ledger_path=None,
+          collect=None):
     validate_run(run)
     validate_base(base)
     if attribution is not None:
@@ -1126,6 +1141,8 @@ def check(run, base, summary_md=None, env=None, attribution=None, require_same_e
         print("rewrite configuration not in the baseline:", name, "(nothing to compare; not enforced)")
     for line in option_changes:
         print("rewrite configuration change (not enforced, review):", line)
+    if collect is not None:
+        collect.extend(regressions)
     for line in regressions:
         print("REGRESSION:", line)
     if regressions:
@@ -1287,20 +1304,28 @@ def update_baseline(a):
         print(f"  {k}: {len(ids)}" + (f"  [{', '.join(ids)}]" if a.ids else ""))
     if not diff:
         print("  no file changes")
-    regressions = 0
+    regressions, found = 0, []
     if old is not None:
         print("--- check of this run against the current baseline:")
-        regressions = check(run, old, env=env, attribution=att, require_same_env=True)
+        regressions = check(run, old, env=env, attribution=att, require_same_env=True, collect=found)
     if not a.write:
         print("dry run: nothing written (--write writes it)")
         return 0
     if diff.get("removed files") and not a.allow_removed:
         print(f"refused: {len(diff['removed files'])} file(s) would be removed (--allow-removed)")
         return 1
-    if regressions and not a.accept_regressions:
-        print("refused: the run has regressions against the current baseline (--accept-regressions "
-              "after reviewing them)")
+    unverified = [r for r in found if UNVERIFIED in r]
+    others = [r for r in found if UNVERIFIED not in r]
+    if others and not a.accept_regressions:
+        print(f"refused: the run has regressions against the current baseline ({len(others)}; "
+              "--accept-regressions after reviewing them)")
         return 1
+    if unverified and not (a.accept_unverified or a.accept_regressions):
+        print(f"refused: {len(unverified)} page(s) measured for the first time are unverified "
+              "(--accept-unverified, the M2 migration, after reviewing them)")
+        return 1
+    if unverified and a.accept_unverified and not others:
+        print(f"accepted: {len(unverified)} first measurement(s) of pages below the threshold in the old baseline")
     with open(a.baseline, "w") as fh:
         json.dump(new, fh, indent=1, sort_keys=True)
         fh.write("\n")
@@ -1336,6 +1361,9 @@ def main(argv):
     p.add_argument("--write", action="store_true")
     p.add_argument("--allow-removed", action="store_true")
     p.add_argument("--accept-regressions", action="store_true")
+    p.add_argument("--accept-unverified", action="store_true",
+                   help="accept the first measurements of pages an older baseline did not attribute (M2), "
+                        "and no other regression")
     p.add_argument("--ids", action="store_true")
     try:
         a = ap.parse_args(argv[1:])

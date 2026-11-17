@@ -86,7 +86,7 @@ def r300(ag, d, m):
     return {"dpx_kp": kp[0], "mad_kp": kp[1], "dpx_km": km[0], "mad_km": km[1], "dpx_pm": 0.0, "mad_pm": 0.0}
 
 
-def att(*rows, env=ENV, threshold=0.95, cap=8, truncated=None):
+def att(*rows, env=ENV, threshold=0.95, cap=None, truncated=None):
     pages = []
     for fid, pg, ag, d, m in rows:
         r = r300(ag, d, m)
@@ -326,17 +326,12 @@ class PageSets(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertNotIn("newly", out)
         self.assertNotIn("not attributed", out)
-        # The M1 selection against an M1 baseline: the old false
-        # regressions, for the record — page 8 (left the 8 worst, still
-        # below) cannot be compared, page 10 (entered them) has no
-        # witness result in the baseline. Neither is read as a pass, and
-        # neither is called a new defect any more.
+        # The M1 selection (8 worst) is refused outright: a page beyond
+        # it would be below the threshold and never judged.
         old_base = self.base(before, a0)
         rc, out = check(run(after), old_base, env=ENV, attribution=a1, require_same_env=True)
         self.assertEqual(rc, 1, out)
-        self.assertIn("sf: page 8 not attributed (the baseline attributes it)", out)
-        self.assertIn("sf: page 10 first attributed: neither — unverified", out)
-        self.assertNotIn("page 10 newly", out)
+        self.assertIn("attribution capped at 8 page(s) per file", out)
         # Every page against an M1 baseline (the migration): the pages the
         # old cap left out are unverified until the baseline attributes
         # them; the baseline's own targets are compared as usual.
@@ -350,20 +345,21 @@ class PageSets(unittest.TestCase):
 
     def test_a_first_measurement_is_never_a_pass(self):
         # A page below the threshold beyond an M1 baseline's cap whose
-        # witness result now is neither or not comparable: unknown
-        # before, so it cannot pass — it might have been both.
+        # witness result now is anything short of both: unknown before,
+        # so it cannot pass — it might have been both and lost one.
         f = file("a", [page(1, 0.9), page(2, 0.91)])
         b = self.base(f, att(("a", 1, "both", 0.0, 0.1), cap=1))
-        for ag in ("neither", "not_comparable"):
-            rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), ("a", 2, ag, *OPEN),
+        for ag in ("neither", "not_comparable", "poppler", "mupdf"):
+            m = (0.0, 0.1) if ag in ("poppler", "mupdf") else OPEN
+            rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), ("a", 2, ag, *m),
                                                                 cap=None), require_same_env=True)
             self.assertEqual(rc, 1, (ag, out))
             self.assertIn(f"a: page 2 first attributed: {ag} — unverified", out)
-        # Within a witness: recorded.
-        rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), ("a", 2, "poppler", 0.0, 0.1),
+        # Within both: nothing can have been lost.
+        rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), ("a", 2, "both", 0.0, 0.1),
                                                             cap=None), require_same_env=True)
         self.assertEqual(rc, 0, out)
-        self.assertIn("a: page 2 newly attributed: poppler", out)
+        self.assertIn("a: page 2 newly attributed: both", out)
 
     def test_a_page_that_worsened_is_a_regression_whatever_its_rank(self):
         before, b = self.q1(Q1_BEFORE, None)
@@ -473,10 +469,15 @@ class PageSets(unittest.TestCase):
     def test_coverage_and_truncation(self):
         f = file("a", [page(1, 0.9)])
         b = cr.summarize(run(f), att(("a", 1, "neither", *OPEN), cap=None), ENV)
-        # A run that measures fewer pages per file than the baseline.
+        # A run with a cap per file, whatever the baseline's.
         rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "neither", *OPEN), cap=8), require_same_env=True)
         self.assertEqual(rc, 1, out)
-        self.assertIn("attribution covers fewer pages than the baseline's", out)
+        self.assertIn("attribution capped at 8 page(s) per file", out)
+        b8 = cr.summarize(run(f), att(("a", 1, "neither", *OPEN), cap=8), ENV)
+        g = file("a", [page(1, 0.9), page(2, 0.9)])  # a second low page, beyond a cap of 1
+        rc, out = check(run(g), b8, env=ENV, attribution=att(("a", 1, "neither", *OPEN), cap=1), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("attribution capped at 1 page(s) per file", out)
         # A budget that left pages out: incomplete, never a pass.
         rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "neither", *OPEN), cap=None, truncated=3),
                         require_same_env=True)
@@ -549,6 +550,11 @@ class PageSets(unittest.TestCase):
         rc, out = check(run(f), b, env=ENV, attribution=dict(a, env=dict(ENV, commit="d" * 40)), require_same_env=True)
         self.assertEqual(rc, 1, out)
         self.assertIn("another environment or commit", out)
+        # No commit on either side: the same commit cannot be established.
+        nc = dict(ENV, commit=None)
+        rc, out = check(run(f), b, env=nc, attribution=dict(a, env=nc), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("environment incomplete: run commit, attribution commit", out)
 
     def test_an_unusable_attribution_is_not_judged_in_the_ledger(self):
         f = file("a", [page(1, 0.9)])
@@ -677,6 +683,31 @@ class InvalidInputsM2(unittest.TestCase):
             self.assertEqual(rc, 0, out)
             with open(out_b) as fh:
                 self.assertIsNone(json.load(fh)["meta"]["attribution"]["max_pages_per_file"])
+
+    def test_the_migration_accepts_first_measurements_and_nothing_else(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = self.write(d, "e.json", ENV)
+            f = file("a", [page(1, 0.9), page(2, 0.91)])
+            old = cr.summarize(run(f), att(("a", 1, "neither", *OPEN), cap=1), ENV)  # an M1 baseline
+            b = self.write(d, "b.json", old)
+            r = self.write(d, "r.json", run(f))
+            a = self.write(d, "a.json", att(("a", 1, "neither", *OPEN), ("a", 2, "neither", *OPEN)))
+            rc, out = main_cli("update-baseline", r, b, "--env", env, "--attribution", a, "--write")
+            self.assertEqual(rc, 1, out)
+            self.assertIn("1 page(s) measured for the first time are unverified", out)
+            rc, out = main_cli("update-baseline", r, b, "--env", env, "--attribution", a, "--write",
+                               "--accept-unverified")
+            self.assertEqual(rc, 0, out)
+            self.assertIn("accepted: 1 first measurement(s)", out)
+            # With any other regression, --accept-unverified is not enough.
+            self.write(d, "b.json", old)
+            worse = self.write(d, "w.json", run(file("a", [page(1, 0.8), page(2, 0.91)])))
+            rc, out = main_cli("update-baseline", worse, b, "--env", env, "--attribution", a, "--write",
+                               "--accept-unverified")
+            self.assertEqual(rc, 1, out)
+            self.assertIn("regressions against the current baseline (1;", out)
+            with open(b) as fh:
+                self.assertEqual(json.load(fh), json.loads(json.dumps(old)))
 
 
 class Selection(unittest.TestCase):

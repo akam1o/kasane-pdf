@@ -125,7 +125,8 @@ in the **same environment**, each of the following is a regression:
 | the attribution is of another commit or environment than the run, or of another threshold or tolerance than the baseline's | — |
 | a page below the threshold that the baseline did not attribute, and that was not below it in the baseline (or is new), is `neither` or `not_comparable` (also in a file new to the baseline) | — |
 | a page the baseline attributed leaves either witness's tolerance (`both` → `poppler` / `mupdf` / `neither`, `poppler` → `neither`, …), each witness on its own | — |
-| the attribution covers fewer pages than the baseline's (a cap per file), or is `truncated` | — |
+| the attribution has a cap per file (whatever the baseline's), or is `truncated` | — |
+| the run's or the attribution's environment lacks the commit, OS, architecture, Poppler or MuPDF version | — |
 | a page below the threshold in the baseline that the baseline should have attributed but did not (it is incomplete) | — |
 
 How the rules are applied:
@@ -145,10 +146,13 @@ How the rules are applied:
   `below`, from the unrounded SSIM): outside both witnesses, a
   regression. When it was below it already but beyond an older (M1)
   baseline's cap of 8 per file, the baseline has no witness result for
-  it, so `neither` or `not_comparable` now cannot be told from a page
-  that was `both` and got worse: it fails as `first attributed: … —
-  unverified` until the baseline attributes every page (a reviewed
-  `update-baseline`, the M2 migration). A baseline written by M2 has no
+  it, so anything short of `both` now (`poppler`, `mupdf`, `neither`,
+  `not_comparable`) cannot be told from a page that was `both` and lost
+  a witness: it fails as `first attributed: … — unverified` until the
+  baseline attributes every page. That migration is a reviewed
+  `update-baseline --write --accept-unverified`, which accepts these
+  first measurements and nothing else: any other regression still
+  needs `--accept-regressions`. A baseline written by M2 has no
   such pages: `update-baseline` refuses an attribution with a cap per
   file, a `truncated` one, or one that misses a page below the
   threshold. Below the threshold in a baseline that had room to
