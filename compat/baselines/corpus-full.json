@@ -101,7 +101,7 @@
   "quality_flag": 2,
   "quality_pages": 845,
   "quality_report": 9,
-  "render_pass": 445,
+  "render_pass": 446,
   "rewrite_pass": 436,
   "roundtrip_full": 432,
   "text_pass": 464,
@@ -28089,14 +28089,14 @@
    "quality_pages": 0,
    "quality_pages_flagged": 0,
    "quality_report_rules": [],
-   "recovery_notes": 0,
+   "recovery_notes": 1,
    "render_approximate": false,
-   "render_recovered": "error",
+   "render_recovered": "pass",
    "roundtrip": {
     "annotations": "Pass",
     "external_no_new": "Pass",
     "external_valid": "Fail",
-    "render": "NotApplicable",
+    "render": "Pass",
     "reparse": "Pass",
     "structure": "Pass",
     "text": "Pass"
@@ -28126,14 +28126,14 @@
    },
    "stages": {
     "parse": "error",
-    "render": "error",
+    "render": "pass",
     "rewrite": "pass",
     "text": "pass"
    },
    "text_f1": 1.0,
-   "text_f1_annots": null,
+   "text_f1_annots": 1.0,
    "verdict": "error",
-   "warnings": 0
+   "warnings": 1
   },
   "pdfbox-4352-0": {
    "attribution": {},
@@ -29682,7 +29682,7 @@
    "quality_pages": 0,
    "quality_pages_flagged": 0,
    "quality_report_rules": [],
-   "recovery_notes": 2,
+   "recovery_notes": 4,
    "render_approximate": false,
    "render_recovered": "error",
    "roundtrip": {
@@ -29706,7 +29706,7 @@
    "text_f1": null,
    "text_f1_annots": null,
    "verdict": "error",
-   "warnings": 2
+   "warnings": 4
   },
   "pdfium-bug_554790604": {
    "attribution": {},
@@ -31491,9 +31491,9 @@
    "quality_pages": 0,
    "quality_pages_flagged": 0,
    "quality_report_rules": [],
-   "recovery_notes": 0,
+   "recovery_notes": 2,
    "render_approximate": false,
-   "render_recovered": "error",
+   "render_recovered": "pass",
    "roundtrip": {
     "annotations": "NotApplicable",
     "external_no_new": "Pass",
@@ -31535,7 +31535,7 @@
    "text_f1": null,
    "text_f1_annots": null,
    "verdict": "error",
-   "warnings": 0
+   "warnings": 2
   },
   "pdfium-text_color": {
    "attribution": {},
@@ -33809,10 +33809,18 @@
    "attribution": {
     "1": {
      "agreement": "neither",
-     "dpx_km": 0.02073,
-     "dpx_kp": 0.00871,
-     "mad_km": 3.25803,
-     "mad_kp": 1.6967,
+     "dpx_km": 0.02063,
+     "dpx_kp": 0.0085,
+     "mad_km": 3.2226,
+     "mad_kp": 1.65476,
+     "references_agree": false
+    },
+    "10": {
+     "agreement": "neither",
+     "dpx_km": 0.01175,
+     "dpx_kp": 0.00866,
+     "mad_km": 1.84111,
+     "mad_kp": 1.69634,
      "references_agree": false
     },
     "13": {
@@ -33833,42 +33841,34 @@
     },
     "2": {
      "agreement": "neither",
-     "dpx_km": 0.02216,
-     "dpx_kp": 0.00882,
-     "mad_km": 3.69119,
-     "mad_kp": 1.70105,
+     "dpx_km": 0.02207,
+     "dpx_kp": 0.00859,
+     "mad_km": 3.65695,
+     "mad_kp": 1.65385,
      "references_agree": false
     },
     "5": {
      "agreement": "neither",
-     "dpx_km": 0.01102,
-     "dpx_kp": 0.00885,
-     "mad_km": 1.89958,
-     "mad_kp": 1.75471,
+     "dpx_km": 0.01086,
+     "dpx_kp": 0.00864,
+     "mad_km": 1.86677,
+     "mad_kp": 1.71165,
      "references_agree": false
     },
     "6": {
      "agreement": "neither",
-     "dpx_km": 0.01262,
-     "dpx_kp": 0.00892,
-     "mad_km": 2.06949,
-     "mad_kp": 1.72596,
-     "references_agree": false
-    },
-    "8": {
-     "agreement": "neither",
-     "dpx_km": 0.02813,
-     "dpx_kp": 0.00871,
-     "mad_km": 4.50574,
-     "mad_kp": 1.72402,
+     "dpx_km": 0.01258,
+     "dpx_kp": 0.00867,
+     "mad_km": 2.0492,
+     "mad_kp": 1.6774,
      "references_agree": false
     },
     "9": {
      "agreement": "neither",
-     "dpx_km": 0.0094,
-     "dpx_kp": 0.00878,
-     "mad_km": 1.64029,
-     "mad_kp": 1.70828,
+     "dpx_km": 0.00929,
+     "dpx_kp": 0.00861,
+     "mad_km": 1.60577,
+     "mad_kp": 1.675,
      "references_agree": false
     }
    },
@@ -33885,20 +33885,20 @@
    },
    "pages": {
     "1": {
-     "cssim": 0.8394,
-     "ssim": 0.9417
+     "cssim": 0.8425,
+     "ssim": 0.9428
     },
     "10": {
-     "cssim": 0.8403,
-     "ssim": 0.9419
+     "cssim": 0.8435,
+     "ssim": 0.943
     },
     "11": {
-     "cssim": 0.8382,
-     "ssim": 0.9421
+     "cssim": 0.8412,
+     "ssim": 0.9431
     },
     "12": {
-     "cssim": 0.8399,
-     "ssim": 0.9421
+     "cssim": 0.843,
+     "ssim": 0.9431
     },
     "13": {
      "cssim": 0.8071,
@@ -33909,36 +33909,36 @@
      "ssim": 0.937
     },
     "2": {
-     "cssim": 0.8414,
-     "ssim": 0.9417
+     "cssim": 0.8447,
+     "ssim": 0.9428
     },
     "3": {
-     "cssim": 0.8401,
-     "ssim": 0.9419
+     "cssim": 0.8433,
+     "ssim": 0.943
     },
     "4": {
-     "cssim": 0.8423,
-     "ssim": 0.9419
+     "cssim": 0.8455,
+     "ssim": 0.943
     },
     "5": {
-     "cssim": 0.8417,
-     "ssim": 0.9418
+     "cssim": 0.8447,
+     "ssim": 0.9429
     },
     "6": {
-     "cssim": 0.8428,
-     "ssim": 0.9416
+     "cssim": 0.8464,
+     "ssim": 0.9428
     },
     "7": {
-     "cssim": 0.8428,
-     "ssim": 0.9421
+     "cssim": 0.8458,
+     "ssim": 0.9431
     },
     "8": {
-     "cssim": 0.8436,
-     "ssim": 0.9419
+     "cssim": 0.8471,
+     "ssim": 0.9431
     },
     "9": {
-     "cssim": 0.8382,
-     "ssim": 0.9419
+     "cssim": 0.8411,
+     "ssim": 0.9429
     }
    },
    "policy": {
@@ -33991,8 +33991,8 @@
     "rewrite": "pass",
     "text": "pass"
    },
-   "text_f1": 0.991,
-   "text_f1_annots": 0.991,
+   "text_f1": 1.0,
+   "text_f1_annots": 1.0,
    "verdict": "pass",
    "warnings": 0
   },
@@ -39096,7 +39096,7 @@
   },
   "env": {
    "arch": "x86_64",
-   "commit": "ae88f27c059b49546084485add8c35232483ca19",
+   "commit": "d211993f86e09bf85d585ea9099d8dc9e2bb6c14",
    "features": "cjk-fallback",
    "mupdf": "1.27.0",
    "os": "linux-ubuntu-26.04",
