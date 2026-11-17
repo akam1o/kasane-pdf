@@ -99,7 +99,9 @@ and the dashes bounded as they are built; a contour the dasher returns
 nothing for — it gives up past a million dashes, and the rasteriser
 would draw nothing — is drawn as nothing only when it is shorter than
 one dash period (with at most 1 000 pairs in the array, and no piece
-short enough for its `f32` length to underflow), and refused otherwise, so a stroke the dasher gave up on is never drawn as nothing.
+near where its `f32` length could underflow), and refused otherwise, so
+a stroke the dasher gave up on is not drawn as nothing; the margin of
+the 1 000 pairs is checked, not proved (`limitations.md`).
 As before, this is a bound on work, not time.
 
 ## Typed errors, not partial results

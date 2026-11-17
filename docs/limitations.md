@@ -158,22 +158,30 @@ are on the [roadmap](architecture.md#roadmap).
   pieces before it is dashed (so one that dashes to nothing still
   costs) — a curve at least the pieces the dasher measures it in, which
   grow with the resolution scale, up to 2²⁰ where the tolerance is below
-  the coordinates' rounding — and a stroke wide enough to cover the page, which draws one
-  dash, every dash it built. A path is dashed one contour at a time (the
-  same dashes: the pattern restarts at every contour), so the dasher's
-  limit — it gives up on a million dashes and the rasteriser would draw
-  nothing — is never met silently: a contour it returns nothing for is
-  drawn as nothing only when it is shorter than one dash period (its
-  length bounded by its control polygon), the array has at most 1 000
-  pairs and no piece is so short that the dasher's `f32` length of it
-  may underflow; otherwise the stroke is refused. So a curve in a gap whose
-  control polygon is longer than the period is refused although it
-  would draw nothing. The busiest corpus page uses 74 916 outline edges.
-  A page of 90 000 round-capped dots at 600 dpi is 5 × 10¹² (drawn,
-  0.4 s, as in 0.5.0). The bound is on
-  estimated work, not time: strokes inside it have been measured at up
-  to a few seconds, and rendering time in general is not bounded
-  ([`security.md`](security.md)).
+  the coordinates' rounding — and its dashes their outline edges; a
+  stroke wide enough to cover the page, which draws one dash, is charged
+  for every dash it built. While dashing, the dashes built (4 units
+  each) may not exceed what is left: a cap, not a further charge. A path
+  is dashed one contour at a time (the same dashes: the pattern restarts
+  at every contour), so the dasher's limit — it gives up on a million
+  dashes and the rasteriser would draw nothing — is not met silently: a
+  contour it returns nothing for is drawn as nothing only when it is
+  shorter than one dash period (its length bounded by its control
+  polygon), the array has at most 1 000 pairs, and no piece measures
+  under 10⁻¹⁵ per measured piece (a conservative threshold, far above
+  where the dasher's `f32` length underflows); otherwise the stroke is
+  refused. So a curve in a gap whose control polygon is longer than the
+  period, or a minute contour in a gap, is refused although it would
+  draw nothing. The 1 000-pair margin is not a proof: it holds while the
+  dasher's `f32` length of a contour stays under a thousand times the
+  contour's own (no case found). A curve whose ends coincide and that
+  the dasher does not split (a loop flat enough at the scale) measures
+  as nothing and draws nothing, dashed, as in earlier releases. The
+  busiest corpus page uses 74 916 outline edges. A page of 90 000
+  round-capped dots at 600 dpi is 5 × 10¹² (drawn, 0.4 s, as in 0.5.0).
+  The bound is on estimated work, not time: strokes inside it have been
+  measured at up to a few seconds, and rendering time in general is not
+  bounded ([`security.md`](security.md)).
 - A stroke in a **pattern** colour is drawn without its dash pattern
   (since 0.1; the outline is filled with the pattern undashed).
 

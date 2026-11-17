@@ -1205,11 +1205,13 @@ fn piece_edges(seg: &tiny_skia::PathSegment) -> u64 {
 /// most `GAP_MAX_PAIRS` pairs counts far fewer than a million dashes, so
 /// it lies in the gap; any other is refused (D1) — some of them would
 /// dash to nothing, a refusal, not a guess. `None`: no dashes at all.
-/// A contour with a piece so short that the dasher's `f32` length of it
-/// may underflow to nothing (its pieces' measured length under 10⁻¹⁵)
-/// is never taken to lie in the gap either. The dashes are bounded as
-/// they are built, `BUILT_DASH_EDGES` each against `room`: one contour
-/// builds at most the dasher's million.
+/// A contour with a piece whose measured pieces are under 10⁻¹⁵ long is
+/// never taken to lie in the gap either: a conservative threshold, far
+/// above where the dasher's `f32` length of it underflows to nothing.
+/// The dashes are capped as they are built, `BUILT_DASH_EDGES` each
+/// against `room` — a cap, not a charge: `dashed_stroke` then charges
+/// their outline edges, at least as many. One contour builds at most the
+/// dasher's million.
 fn dash_by_contour(
     path: &tiny_skia::Path,
     dash: &StrokeDash,
