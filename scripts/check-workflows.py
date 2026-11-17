@@ -104,8 +104,20 @@ NIGHTLY_CORPUS_COMMANDS = {
 }
 
 
+# Options a nightly command may not carry: a per-file cap brings back the
+# rank-dependent selection M2 removed (docs/compat-evaluation.md § 2).
+NIGHTLY_FORBIDDEN_OPTIONS = {"scripts/compat-attribute.py": ["--max-pages-per-file"]}
+
+
 def check_nightly_measurement(path, wf):
     job = (wf.get("jobs") or {}).get("full-corpus") or {}
+    for cmd, bad in NIGHTLY_FORBIDDEN_OPTIONS.items():
+        for st in job.get("steps") or []:
+            for line in logical_lines(st.get("run")):
+                if cmd in line and not NOT_RUN.match(line):
+                    for opt in bad:
+                        if opt in line:
+                            problem(f"{path.name}:full-corpus: `{cmd}` runs with `{opt}`")
     for cmd, need in NIGHTLY_CORPUS_COMMANDS.items():
         found = False
         for st in job.get("steps") or []:

@@ -125,10 +125,13 @@ jobs:
             --with-poppler --dpi 96 --timeout-secs 20 --mode full \
             --rewrite-options carry
       - name: second witness and 300 dpi re-check of the pages below SSIM 0.95 (M1-a, M1-b)
-        # Every strict-render page below 0.95 is rendered again by kasane
-        # (the CLI built with the runner's features), Poppler and MuPDF,
-        # at 72 and 300 dpi (docs/compat-evaluation.md). The environment
-        # (commit, platform, renderer versions) goes with the results.
+        # Every strict-render page below 0.95 — all of them, no cap per
+        # file (M2) — is rendered again by kasane (the CLI built with the
+        # runner's features), Poppler and MuPDF, at 72 and 300 dpi
+        # (docs/compat-evaluation.md). The environment (commit, platform,
+        # renderer versions) goes with the results. Beyond
+        # --max-pages-total the rest is recorded as truncated, and the
+        # check fails on it.
         run: |
           cargo build --release --features cjk-fallback --bin kasane-pdf --target-dir target/cjk
           python3 scripts/ci-regression.py env --features cjk-fallback > /tmp/full/env.json
@@ -143,6 +146,8 @@ jobs:
           for k, v in s["agreement"].items():
               print(f"| {k} | {v} |")
           print(f"\nreferences disagree: {s['references_disagree']}; Poppler {s['env']['poppler']}, MuPDF {s['env']['mupdf']}\n")
+          if s.get("truncated"):
+              print(f"**{s['truncated']} page(s) below the threshold not measured (--max-pages-total)**\n")
           PY
       - name: regression check and exact-render quality gate vs committed 511 baseline
         # Fails on any stage / round-trip regression, on a new
