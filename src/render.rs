@@ -1084,8 +1084,10 @@ const MAX_DASHED_EDGES: u64 = 4_000_000;
 /// work, yet each is built, stroked and clipped away: without this a page
 /// could repeat strokes within `MAX_DASHED_EDGES` without end (512
 /// million-unit dashed rectangles took 54 s to render, D1). Measured
-/// (release): a page of strokes reaching the pixmap took ≈ 0.37 s at
-/// the budget, strokes off it far less — measurements, not a time bound;
+/// (release): the heaviest synthetic pages still within the budget —
+/// dashed lines on the pixmap — took ≈ 0.43 s, as long as before D1;
+/// strokes off it, curves and dashes in gaps less — measurements, not a
+/// time bound;
 /// the corpus's busiest page uses 74 916 (D1, 2026-11-17).
 const MAX_DASHED_RENDER_EDGES: u64 = 4_000_000;
 

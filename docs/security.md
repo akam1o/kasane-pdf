@@ -83,9 +83,9 @@ cost none, yet each was still built, stroked and clipped away, so a
 page could repeat strokes, each within the per-stroke bound, without
 end: an 11 KB content stream of 512 long dashed rectangles took over a
 minute (54–96 s) to render. The outline edges of a render's dashed
-strokes are now bounded together (4 × 10⁶: a page of strokes reaching
-the pixmap took ≈ 0.37 s at the budget in a release build on a
-workstation; the busiest corpus page uses 74 916), counted
+strokes are now bounded together (4 × 10⁶: the heaviest synthetic page
+still within it took ≈ 0.43 s in a release build on a workstation, as
+long as before; the busiest corpus page uses 74 916), counted
 across the page, its forms, patterns, soft masks, glyphs and annotation
 appearances, in strict and recovery mode, and refused with
 `Error::Unsupported { feature: "dashed stroke" }` from the stroke that
