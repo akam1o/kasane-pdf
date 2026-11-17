@@ -77,6 +77,21 @@ it and refuses one over a bound per stroke and per page with
 bound on the rasteriser's work, not a time guarantee: dashed strokes
 inside it have been measured at up to a few seconds.
 
+**Repeated dashed strokes (D1, v0.11).** The per-page bound of 0.5.1
+counted the work on the pixel rows only. Dash segments off the pixmap
+cost none, yet each was still built, stroked and clipped away, so a
+page could repeat strokes, each within the per-stroke bound, without
+end: an 11 KB content stream of 512 long dashed rectangles took over a
+minute (54–96 s) to render. The outline edges of a render's dashed
+strokes are now bounded together (4 × 10⁶, about 0.4 s of dashing at
+worst on a workstation; the busiest corpus page uses 74 916), counted
+across the page, its forms, patterns, soft masks, glyphs and annotation
+appearances, in strict and recovery mode, and refused with
+`Error::Unsupported { feature: "dashed stroke" }` from the stroke that
+would exceed them. A dashed path of more than a million dashes, which
+the dasher gives up on and the rasteriser would draw as nothing, is
+refused the same way. As before, this is a bound on work, not time.
+
 ## Typed errors, not partial results
 
 `Error::kind()` gives a stable machine-readable category, the

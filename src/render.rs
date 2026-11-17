@@ -597,7 +597,7 @@ pub fn render_page(
         default_spaces: None,
         layer_bytes: 0,
         mask_bytes: Rc::default(),
-        dash_work: 0.0,
+        dash_work: DashBudget::default(),
         pattern_base: Matrix::IDENTITY,
         pattern_depth: 0,
         type3_depth: 0,
@@ -1076,7 +1076,29 @@ const MAX_DASHED_PAGE_WORK: f64 = 1e14;
 
 /// And on the outline edges of all the segments, reached or not: each
 /// is built and clipped away.
-const MAX_DASHED_EDGES: f64 = 4e6;
+const MAX_DASHED_EDGES: u64 = 4_000_000;
+
+/// The same edges summed over the dashed strokes of one render — the
+/// page and everything it draws: forms, patterns, soft masks, Type 3
+/// glyphs, annotation appearances. Segments off the pixmap take no row
+/// work, yet each is built, stroked and clipped away: without this a page
+/// could repeat strokes within `MAX_DASHED_EDGES` without end (512
+/// million-unit dashed rectangles took 54 s to render, D1). Measured
+/// (release): ≈ 10⁷ edges a second where the strokes reach the pixmap
+/// (far more off it), so the budget is ≈ 0.4 s of dashing at worst; the
+/// corpus's busiest page uses 74 916 (D1, 2026-11-17).
+const MAX_DASHED_RENDER_EDGES: u64 = 4_000_000;
+
+/// What one render's dashed strokes have used of their budgets
+/// (`MAX_DASHED_PAGE_WORK`, `MAX_DASHED_RENDER_EDGES`). One per render,
+/// never reset during it.
+#[derive(Debug, Default)]
+struct DashBudget {
+    /// Σ of the strokes' row work.
+    row_work: f64,
+    /// Σ of the strokes' outline edges.
+    edges: u64,
+}
 
 /// How to draw `stroke` along `path` under `ts` on a `w`×`h` pixmap.
 enum DashedStroke {
@@ -1091,8 +1113,9 @@ enum DashedStroke {
 /// A dashed stroke, dashed here exactly as the rasteriser dashes it
 /// (the same resolution scale), so its work can be bounded first
 /// (`MAX_DASHED_ROW_WORK`, `MAX_DASHED_EDGES`, and with `spent`, the
-/// work of the render's earlier dashed strokes, `MAX_DASHED_PAGE_WORK`),
-/// else `Unsupported` ("dashed stroke") — never approximated. Every
+/// work of the render's earlier dashed strokes, `MAX_DASHED_PAGE_WORK`
+/// and `MAX_DASHED_RENDER_EDGES`), else `Unsupported` ("dashed stroke")
+/// — never approximated. A refusal records nothing in `spent`. Every
 /// segment is drawn (dropping even an invisible one changes the
 /// rasteriser's rounding), except when the stroke covers the whole
 /// pixmap from every point of the path through its round or square
@@ -1104,13 +1127,23 @@ fn dashed_stroke(
     ts: Transform,
     w: u32,
     h: u32,
-    spent: &mut f64,
+    spent: &mut DashBudget,
 ) -> Result<DashedStroke, Error> {
     let Some(dash) = &stroke.dash else {
         return Ok(DashedStroke::Undashed);
     };
     let res_scale = tiny_skia::PathStroker::compute_resolution_scale(&ts);
     let Some(dashed) = path.dash(dash, res_scale) else {
+        // The dasher gives up past a million dashes in one path (and the
+        // rasteriser then draws nothing): refused, not drawn as nothing
+        // (D1). A path without extent has nothing to dash.
+        let b = path.bounds();
+        if b.width() > 0.0 || b.height() > 0.0 {
+            return Err(Error::Unsupported {
+                feature: "dashed stroke",
+                detail: "a dashed stroke of more than a million dashes is not drawn".into(),
+            });
+        }
         return Ok(DashedStroke::Nothing);
     };
     let (a, b, c, d) = (ts.sx as f64, ts.ky as f64, ts.kx as f64, ts.sy as f64);
@@ -1156,14 +1189,14 @@ fn dashed_stroke(
     use tiny_skia::PathSegment as S;
     let mut undashed = stroke.clone();
     undashed.dash = None;
-    let mut work = 0.0f64;
+    let mut work = 0u64;
     let mut contour: Vec<S> = Vec::new();
     // The device box a segment's outline can occupy: each straight piece
     // sweeps its two ends ± the normal × the half-width (what a butt cap
     // and a bevel cover); round and square caps, joins (a miter up to its
     // limit) and curves add the half-width × `factor` around their points.
     let round_reach = half * s_max * factor + 2.0;
-    let outline_box = |contour: &[S]| -> ([f64; 4], f64) {
+    let outline_box = |contour: &[S]| -> ([f64; 4], u64) {
         let mut bbox = [
             f64::INFINITY,
             f64::INFINITY,
@@ -1179,10 +1212,10 @@ fn dashed_stroke(
             ];
         };
         // Edges: the two caps (curves for round), then each piece's sides.
-        let mut edges = match stroke.line_cap {
-            tiny_skia::LineCap::Butt => 0.0,
-            tiny_skia::LineCap::Square => 8.0,
-            tiny_skia::LineCap::Round => 16.0,
+        let mut edges: u64 = match stroke.line_cap {
+            tiny_skia::LineCap::Butt => 0,
+            tiny_skia::LineCap::Square => 8,
+            tiny_skia::LineCap::Round => 16,
         };
         let mut last: Option<tiny_skia::Point> = None;
         let (mut first, mut corners) = (None, 0usize);
@@ -1193,7 +1226,7 @@ fn dashed_stroke(
                     last = Some(p);
                 }
                 S::LineTo(p) => {
-                    edges += 4.0;
+                    edges = edges.saturating_add(4);
                     if let Some(a) = last {
                         let (dx, dy) = (p.x as f64 - a.x as f64, p.y as f64 - a.y as f64);
                         let len = (dx * dx + dy * dy).sqrt();
@@ -1217,11 +1250,7 @@ fn dashed_stroke(
                     last = Some(p);
                 }
                 S::QuadTo(p1, p2) | S::CubicTo(p1, _, p2) => {
-                    edges += if matches!(seg, S::QuadTo(..)) {
-                        8.0
-                    } else {
-                        16.0
-                    };
+                    edges = edges.saturating_add(if matches!(seg, S::QuadTo(..)) { 8 } else { 16 });
                     let pts: &[tiny_skia::Point] = match seg {
                         S::CubicTo(c1, c2, e) => &[*c1, *c2, *e],
                         _ => &[p1, p2],
@@ -1234,7 +1263,7 @@ fn dashed_stroke(
                     corners += 1;
                 }
                 // `Path::dash` emits open segments only; counted for safety.
-                S::Close => edges += 4.0,
+                S::Close => edges = edges.saturating_add(4),
             }
         }
         // Caps at the two ends (a butt cap adds nothing).
@@ -1248,7 +1277,7 @@ fn dashed_stroke(
     };
     // A segment's outline edges and, when it can reach the pixmap, the
     // pixmap rows it can reach.
-    let measure = |contour: &[S]| -> (Option<(usize, usize)>, f64) {
+    let measure = |contour: &[S]| -> (Option<(usize, usize)>, u64) {
         let ([bx0, by0, bx1, by1], edges) = outline_box(contour);
         let reaches = bx1 >= 0.0 && by1 >= 0.0 && bx0 <= w as f64 && by0 <= h as f64;
         let rows = reaches.then(|| {
@@ -1271,6 +1300,8 @@ fn dashed_stroke(
         }
         pb.finish()
     };
+    // Edges the render may still give dashed strokes.
+    let left = MAX_DASHED_RENDER_EDGES.saturating_sub(spent.edges);
     let too_much = |what: &str| Error::Unsupported {
         feature: "dashed stroke",
         detail: format!(
@@ -1292,13 +1323,18 @@ fn dashed_stroke(
                 None => DashedStroke::Nothing,
             });
         }
-        work += edges;
+        work = work.saturating_add(edges);
         if work > MAX_DASHED_EDGES {
             return Err(too_much("outline edges"));
         }
+        if work > left {
+            return Err(too_much(
+                "the render's dashed strokes together, outline edges",
+            ));
+        }
         if let Some((top, bottom)) = rows {
-            rows_delta[top] += edges;
-            rows_delta[bottom] -= edges;
+            rows_delta[top] += edges as f64;
+            rows_delta[bottom] -= edges as f64;
         }
         contour.clear();
     }
@@ -1310,17 +1346,21 @@ fn dashed_stroke(
     if row_work > MAX_DASHED_ROW_WORK {
         return Err(too_much("edges per row"));
     }
-    if *spent + row_work > MAX_DASHED_PAGE_WORK {
-        return Err(too_much("the page's dashed strokes together"));
+    if spent.row_work + row_work > MAX_DASHED_PAGE_WORK {
+        return Err(too_much(
+            "the render's dashed strokes together, edges per row",
+        ));
     }
-    *spent += row_work;
+    spent.row_work += row_work;
+    // Within `left`, checked above: no overflow.
+    spent.edges += work;
     Ok(DashedStroke::Segments(dashed, undashed))
 }
 
 /// Stroke `path` on `pixmap` through [`dashed_stroke`].
 fn stroke_bounded(
     pixmap: &mut Pixmap,
-    spent: &mut f64,
+    spent: &mut DashBudget,
     path: &tiny_skia::Path,
     paint: &Paint,
     stroke: &Stroke,
@@ -1542,8 +1582,8 @@ pub(crate) struct Renderer<'a> {
     /// `max_render_buffer_bytes` together with the page pixmap.
     layer_bytes: u64,
     /// `dashed_stroke`'s work so far in this render, bounded by
-    /// `MAX_DASHED_PAGE_WORK`.
-    dash_work: f64,
+    /// `MAX_DASHED_PAGE_WORK` and `MAX_DASHED_RENDER_EDGES`.
+    dash_work: DashBudget,
     /// Bytes of the graphics-state masks currently alive (`GsMask`),
     /// bounded by `max_render_buffer_bytes` apart from the layers.
     mask_bytes: Rc<std::cell::Cell<u64>>,
@@ -1826,7 +1866,7 @@ impl<'a> Renderer<'a> {
             default_spaces: None,
             layer_bytes: 0,
             mask_bytes: Rc::default(),
-            dash_work: 0.0,
+            dash_work: DashBudget::default(),
             pattern_base: Matrix::IDENTITY,
             pattern_depth: 0,
             type3_depth: 0,
@@ -8603,7 +8643,7 @@ mod tests {
             let mut direct = Pixmap::new(64, 64).unwrap();
             direct.stroke_path(&path, &paint, &stroke, ts, None);
             let mut ours = Pixmap::new(64, 64).unwrap();
-            match dashed_stroke(&path, &stroke, ts, 64, 64, &mut 0.0) {
+            match dashed_stroke(&path, &stroke, ts, 64, 64, &mut DashBudget::default()) {
                 Ok(DashedStroke::Undashed) => ours.stroke_path(&path, &paint, &stroke, ts, None),
                 Ok(DashedStroke::Nothing) => {}
                 Ok(DashedStroke::Segments(p, s)) => {
@@ -8649,13 +8689,16 @@ mod tests {
             ..Default::default()
         };
         let ts = Transform::identity();
-        let mut spent = 0.0;
+        let mut spent = DashBudget::default();
         assert!(matches!(
             dashed_stroke(&path, &stroke, ts, 64, 64, &mut spent),
             Ok(DashedStroke::Segments(..))
         ));
-        assert!(spent > 0.0 && spent < MAX_DASHED_ROW_WORK);
-        let mut spent = MAX_DASHED_PAGE_WORK - 1.0;
+        assert!(spent.row_work > 0.0 && spent.row_work < MAX_DASHED_ROW_WORK);
+        let mut spent = DashBudget {
+            row_work: MAX_DASHED_PAGE_WORK - 1.0,
+            edges: 0,
+        };
         assert!(matches!(
             dashed_stroke(&path, &stroke, ts, 64, 64, &mut spent),
             Err(Error::Unsupported {
@@ -8663,7 +8706,82 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(spent, MAX_DASHED_PAGE_WORK - 1.0, "a refusal adds nothing");
+        assert_eq!(
+            spent.row_work,
+            MAX_DASHED_PAGE_WORK - 1.0,
+            "a refusal adds nothing"
+        );
+        assert_eq!(spent.edges, 0, "a refusal adds nothing");
+    }
+
+    /// The render's outline-edge budget (D1), exactly: a stroke of `e`
+    /// edges is drawn with `MAX_DASHED_RENDER_EDGES - e` already spent
+    /// (the budget reached exactly) and refused, recording nothing, one
+    /// edge later; refused from any spent count beyond, up to `u64::MAX`
+    /// (no overflow). Spent edges carry over from stroke to stroke.
+    #[test]
+    fn the_render_edge_budget_is_exact() {
+        let mut pb = PathBuilder::new();
+        pb.move_to(-1000.0, 10.0);
+        pb.line_to(1000.0, 10.0);
+        let path = pb.finish().unwrap();
+        let stroke = Stroke {
+            width: 2.0,
+            dash: StrokeDash::new(vec![3.0, 1.0], 0.0),
+            ..Default::default()
+        };
+        let ts = Transform::identity();
+        let mut fresh = DashBudget::default();
+        assert!(matches!(
+            dashed_stroke(&path, &stroke, ts, 64, 64, &mut fresh),
+            Ok(DashedStroke::Segments(..))
+        ));
+        let e = fresh.edges;
+        assert_eq!(e, 2000, "500 dashes of 4 edges");
+        let with = |edges: u64| DashBudget {
+            row_work: 0.0,
+            edges,
+        };
+        let mut at = with(MAX_DASHED_RENDER_EDGES - e);
+        assert!(matches!(
+            dashed_stroke(&path, &stroke, ts, 64, 64, &mut at),
+            Ok(DashedStroke::Segments(..))
+        ));
+        assert_eq!(
+            at.edges, MAX_DASHED_RENDER_EDGES,
+            "the budget reached exactly"
+        );
+        for spent in [
+            MAX_DASHED_RENDER_EDGES - e + 1,
+            MAX_DASHED_RENDER_EDGES,
+            MAX_DASHED_RENDER_EDGES + 1,
+            u64::MAX - 1,
+            u64::MAX,
+        ] {
+            let mut over = with(spent);
+            match dashed_stroke(&path, &stroke, ts, 64, 64, &mut over) {
+                Err(
+                    e @ Error::Unsupported {
+                        feature: "dashed stroke",
+                        ..
+                    },
+                ) => assert!(e.to_string().contains("dashed strokes together"), "{e}"),
+                other => panic!("{spent}: {:?}", other.map(|_| ())),
+            }
+            assert_eq!(over.edges, spent, "{spent}: a refusal records nothing");
+        }
+        // Carried over: the budget's worth of strokes, one more refused.
+        let mut b = DashBudget::default();
+        let fits = MAX_DASHED_RENDER_EDGES / e;
+        for i in 0..fits {
+            assert!(
+                dashed_stroke(&path, &stroke, ts, 64, 64, &mut b).is_ok(),
+                "stroke {i}"
+            );
+        }
+        assert_eq!(b.edges, fits * e);
+        assert!(dashed_stroke(&path, &stroke, ts, 64, 64, &mut b).is_err());
+        assert_eq!(b.edges, fits * e);
     }
 
     /// The per-stroke bound's edge: a dashed path grown one piece at a
@@ -8689,17 +8807,18 @@ mod tests {
         };
         let (mut last_drawn, mut refused_at) = (0.0, None);
         for pieces in (1..20_000).step_by(25) {
-            let mut spent = 0.0;
+            let mut spent = DashBudget::default();
             match dashed_stroke(&path(pieces), &stroke, ts, 64, 64, &mut spent) {
                 Ok(DashedStroke::Segments(..)) => {
-                    assert!(spent <= MAX_DASHED_ROW_WORK, "{pieces}: {spent}");
-                    last_drawn = spent;
+                    assert!(spent.row_work <= MAX_DASHED_ROW_WORK, "{pieces}: {spent:?}");
+                    last_drawn = spent.row_work;
                 }
                 Err(Error::Unsupported {
                     feature: "dashed stroke",
                     ..
                 }) => {
-                    assert_eq!(spent, 0.0, "a refusal records nothing");
+                    assert_eq!(spent.row_work, 0.0, "a refusal records nothing");
+                    assert_eq!(spent.edges, 0, "a refusal records nothing");
                     refused_at = Some(pieces);
                     break;
                 }

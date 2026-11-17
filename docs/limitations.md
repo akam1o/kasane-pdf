@@ -150,8 +150,13 @@ are on the [roadmap](architecture.md#roadmap).
   work is estimated too high — many dash segments crossing the same
   pixel rows (Σ over rows of edges² above 10¹³ for one stroke, or
   10¹⁴ for a page's dashed strokes together), or more than 4 × 10⁶
-  outline edges in all — is refused (`Unsupported`, "dashed stroke")
-  rather than drawn for minutes. A page of 90 000 round-capped dots at
+  outline edges — is refused (`Unsupported`, "dashed stroke") rather
+  than drawn for minutes. Since D1 (v0.11) the outline edges are bounded
+  for one render as a whole as well — the page and its forms, patterns,
+  soft masks, glyphs and annotation appearances together, 4 × 10⁶ — and
+  a dashed path the dasher gives up on (more than a million dashes, which
+  it would draw as nothing) is refused as well; strict and recovery
+  mode alike. The busiest corpus page uses 74 916 outline edges. A page of 90 000 round-capped dots at
   600 dpi is 5 × 10¹² (drawn, 0.4 s, as in 0.5.0). The bound is on
   estimated work, not time: strokes inside it have been measured at up
   to a few seconds, and rendering time in general is not bounded
