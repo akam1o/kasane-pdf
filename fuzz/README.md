@@ -71,8 +71,8 @@ old 2 000-invocation budget).
 CI runs every target through `fuzz/ci-run.sh`, which fails on
 libFuzzer's exit status *and* on any file left in
 `fuzz/artifacts/<target>/`, an error marker in the log, or a missing
-final `Done … runs` line; limits 2 GiB RSS and malloc, 30 s per input
-(`FUZZ_TIMEOUT`; the script says why).
+final `Done … runs` line; limits 2 GiB RSS and malloc, 30 s per input,
+90 s for `render_content` (`FUZZ_TIMEOUT`; the script says why).
 Reproduce the PR smoke exactly as CI runs it, then fuzz longer
 (`FUZZ_TOOLCHAIN` overrides the pinned `nightly-2026-10-29`):
 
