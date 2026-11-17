@@ -214,10 +214,12 @@ are on the [roadmap](architecture.md#roadmap).
 - The codes WinAnsiEncoding leaves unused above the control codes
   (0x7F, 0x81, 0x8D, 0x8F, 0x90, 0x9D) read as the bullet, U+2022
   (Annex D.2, note 3; since v0.11), and draw the font's `bullet`. An
-  embedded program without a `bullet` glyph draws what it drew before —
-  `.notdef`, or, for a CFF program, the glyph its built-in encoding
-  gives the code — while the text still reads as the bullet, as for any
-  name a subset lacks.
+  embedded program without a `bullet` glyph draws `.notdef` for them;
+  a CFF program falls back to the glyph its built-in encoding gives the
+  code, as for any name it lacks (unchanged), while a Type 1 program no
+  longer uses its built-in encoding for these six codes once the PDF's
+  WinAnsiEncoding names them. Either way the text reads as the bullet,
+  as for any name a subset lacks.
 - Annotation text (`TextOptions::with_annotations`, `text
   --annotations`; [`annotation-text.md`](annotation-text.md)): `/RC` is
   reported as stored (XHTML, not interpreted), so a note with `/RC` and
