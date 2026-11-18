@@ -40,6 +40,9 @@ def page(ours, ref, cssim=0.8, diff=0.01, sizes=(612, 792, 612, 792), shift_cssi
 
 
 def file(fid, pages, approximate=False, verdict="pass"):
+    # As the runner writes them: every page record has its number and its
+    # SSIM (the gate reads neither; the report validation requires both).
+    pages = [{"page": i + 1, "ssim": 0.99, **p} for i, p in enumerate(pages)]
     return {
         "id": fid,
         "expect": "pass",

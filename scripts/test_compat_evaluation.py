@@ -86,7 +86,7 @@ def r300(ag, d, m):
     return {"dpx_kp": kp[0], "mad_kp": kp[1], "dpx_km": km[0], "mad_km": km[1], "dpx_pm": 0.0, "mad_pm": 0.0}
 
 
-def att(*rows, env=ENV, threshold=0.95):
+def att(*rows, env=ENV, threshold=0.95, cap=None, truncated=None):
     pages = []
     for fid, pg, ag, d, m in rows:
         r = r300(ag, d, m)
@@ -95,8 +95,11 @@ def att(*rows, env=ENV, threshold=0.95):
         pages.append({"id": fid, "page": pg, "ssim": 0.9, "class": "kasane", "agreement": ag,
                       "references_agree": refs, "reason": "failed:mupdf" if ag == "not_comparable" else None,
                       "r300": r})
-    return {"schema": 2, "env": env, "threshold": threshold, "tolerance": TOL, "max_pages_per_file": 8,
-            "pages": pages}
+    out = {"schema": 2, "env": env, "threshold": threshold, "tolerance": TOL, "max_pages_per_file": cap,
+           "pages": pages}
+    if truncated is not None:
+        out["truncated"] = truncated
+    return out
 
 
 def check(r, base, **kw):
@@ -280,6 +283,467 @@ class NumericRegressions(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertIn("mad_kp 3.0 -> 20.0", out)
 
+
+
+# The Q1 situation, invented values: 14 pages below the threshold, a fix
+# raises 12 of them by about 0.001, unevenly, and the 8 worst change —
+# page 8 leaves them, page 10 enters them — though no page got worse.
+Q1_BEFORE = [0.9311, 0.9312, 0.9326, 0.9318, 0.9316, 0.9305, 0.9330, 0.9317, 0.93175, 0.93177, 0.9331,
+             0.9333, 0.9201, 0.9255]
+Q1_AFTER = [0.9321, 0.9322, 0.9336, 0.9328, 0.9326, 0.9315, 0.9340, 0.9330, 0.93185, 0.93179, 0.9341,
+            0.9343, 0.9201, 0.9255]
+OPEN = (0.02, 3.0)  # outside both witnesses' tolerance
+
+
+def worst(ssims, cap):
+    return sorted(range(1, len(ssims) + 1), key=lambda pg: (ssims[pg - 1], pg))[:cap]
+
+
+class PageSets(unittest.TestCase):
+    """M2: which pages are measured is decided per (case, page), never by
+    rank — a page that only changed rank is not a regression, a real
+    change is."""
+
+    def q1(self, ssims, cap, open_=OPEN):
+        f = file("sf", [page(i + 1, s) for i, s in enumerate(ssims)])
+        pages = list(range(1, len(ssims) + 1)) if cap is None else worst(ssims, cap)
+        return f, att(*[("sf", pg, "neither", *open_) for pg in pages], cap=cap)
+
+    def base(self, f, a):
+        return cr.summarize(run(f), a, ENV)
+
+    def test_q1_rank_swap_is_not_a_regression(self):
+        before, a0 = self.q1(Q1_BEFORE, 8)
+        after, a1 = self.q1(Q1_AFTER, 8)
+        self.assertEqual(set(worst(Q1_BEFORE, 8)) - set(worst(Q1_AFTER, 8)), {8})
+        self.assertEqual(set(worst(Q1_AFTER, 8)) - set(worst(Q1_BEFORE, 8)), {10})
+        self.assertTrue(all(b >= a for a, b in zip(Q1_BEFORE, Q1_AFTER)), "no page got worse")
+        # Both sides attribute every page below the threshold (M2): the
+        # ranks no longer decide what is measured, and nothing fails.
+        _, b_all = self.q1(Q1_BEFORE, None)
+        _, all_ = self.q1(Q1_AFTER, None)
+        rc, out = check(run(after), self.base(before, b_all), env=ENV, attribution=all_, require_same_env=True)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("newly", out)
+        self.assertNotIn("not attributed", out)
+        # The M1 selection (8 worst) is refused outright: a page beyond
+        # it would be below the threshold and never judged.
+        old_base = self.base(before, a0)
+        rc, out = check(run(after), old_base, env=ENV, attribution=a1, require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("attribution capped at 8 page(s) per file", out)
+        # Every page against an M1 baseline (the migration): the pages the
+        # old cap left out are unverified until the baseline attributes
+        # them; the baseline's own targets are compared as usual.
+        rc, out = check(run(after), old_base, env=ENV, attribution=all_, require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        unverified = sorted(set(range(1, 15)) - set(worst(Q1_BEFORE, 8)))
+        for pg in unverified:
+            self.assertIn(f"sf: page {pg} first attributed: neither — unverified", out)
+        self.assertEqual(out.count("unverified"), len(unverified))
+        self.assertNotIn("newly", out)
+
+    def test_a_first_measurement_is_never_a_pass(self):
+        # A page below the threshold beyond an M1 baseline's cap whose
+        # witness result now is anything short of both: unknown before,
+        # so it cannot pass — it might have been both and lost one.
+        f = file("a", [page(1, 0.9), page(2, 0.91)])
+        b = self.base(f, att(("a", 1, "both", 0.0, 0.1), cap=1))
+        for ag in ("neither", "not_comparable", "poppler", "mupdf"):
+            m = (0.0, 0.1) if ag in ("poppler", "mupdf") else OPEN
+            rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), ("a", 2, ag, *m),
+                                                                cap=None), require_same_env=True)
+            self.assertEqual(rc, 1, (ag, out))
+            self.assertIn(f"a: page 2 first attributed: {ag} — unverified", out)
+        # Within both: nothing can have been lost.
+        rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), ("a", 2, "both", 0.0, 0.1),
+                                                            cap=None), require_same_env=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("a: page 2 newly attributed: both", out)
+
+    def test_a_page_that_worsened_is_a_regression_whatever_its_rank(self):
+        before, b = self.q1(Q1_BEFORE, None)
+        worse = list(Q1_BEFORE)
+        worse[9] -= 0.003  # page 10, now the 3rd worst
+        after, a = self.q1(worse, None)
+        rc, out = check(run(after), self.base(before, b), env=ENV, attribution=a, require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("sf: page 10 SSIM 0.9318 -> 0.9288", out)
+        # Its distance to a witness growing is caught on its own as well.
+        a2 = att(*[("sf", pg, "neither", *(OPEN if pg != 10 else (0.03, 3.0))) for pg in range(1, 15)], cap=None)
+        rc, out = check(run(before), self.base(before, b), env=ENV, attribution=a2, require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("open page 10 differs more from Poppler", out)
+        self.assertIn("open page 10 differs more from MuPDF", out)
+
+    def test_pages_in_another_order_change_nothing(self):
+        f = file("a", [page(1, 0.9), page(2, 0.8), page(3, 0.99)])
+        a = att(("a", 1, "poppler", 0.001, 0.5), ("a", 2, "neither", *OPEN), cap=None)
+        b = cr.summarize(run(f), a, ENV)
+        g = file("a", [page(3, 0.99), page(2, 0.8), page(1, 0.9)])
+        a2 = att(("a", 2, "neither", *OPEN), ("a", 1, "poppler", 0.001, 0.5), cap=None)
+        rc, out = check(run(g), b, env=ENV, attribution=a2, require_same_env=True)
+        self.assertEqual(rc, 0, out)
+
+    def test_a_new_low_page_is_measured_and_judged(self):
+        f = file("a", [page(1, 0.9), page(2, 0.9505)])
+        b = cr.summarize(run(f), att(("a", 1, "both", 0.0, 0.1), cap=None), ENV)
+        g = file("a", [page(1, 0.9), page(2, 0.9495)])  # drops by less than the SSIM threshold
+        # Not measured: incomplete, never a pass.
+        rc, out = check(run(g), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), cap=None),
+                        require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a: page 2 below the attribution threshold but not attributed", out)
+        # Measured, outside both witnesses: a regression ...
+        rc, out = check(run(g), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), ("a", 2, "neither", *OPEN),
+                                                             cap=None), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a: page 2 newly neither (below the threshold, not in the baseline: SSIM 0.9505 -> 0.9495)", out)
+        # ... labelled when the witnesses agree and kasane alone differs.
+        self.assertIn("the references agree, kasane alone differs", out)
+        # Within a witness: recorded, not failed.
+        rc, out = check(run(g), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), ("a", 2, "mupdf", 0.0, 0.1),
+                                                             cap=None), require_same_env=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("a: page 2 newly attributed: mupdf", out)
+
+    def test_a_page_the_baseline_does_not_have(self):
+        f = file("a", [page(1, 0.9)])
+        b = cr.summarize(run(f), att(("a", 1, "both", 0.0, 0.1), cap=None), ENV)
+        g = file("a", [page(1, 0.9), page(2, 0.5)])
+        rc, out = check(run(g), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), ("a", 2, "neither", *OPEN),
+                                                             cap=None), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a: page 2 newly neither (below the threshold, not in the baseline: a page the baseline "
+                      "does not have)", out)
+
+    def test_deleted_pages_and_cases(self):
+        f = file("a", [page(1, 0.9), page(2, 0.9)])
+        b = cr.summarize(run(f, file("b", [page(1, 0.99)])),
+                         att(("a", 1, "neither", *OPEN), ("a", 2, "neither", *OPEN), cap=None), ENV)
+        # A page gone: its measures are lost.
+        rc, out = check(run(file("a", [page(1, 0.9)]), file("b", [page(1, 0.99)])), b, env=ENV,
+                        attribution=att(("a", 1, "neither", *OPEN), cap=None), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a: page 2 no longer compared", out)
+        # A case gone.
+        rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "neither", *OPEN), ("a", 2, "neither", *OPEN),
+                                                            cap=None), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("b: in the baseline, missing from the run", out)
+
+    def test_a_baseline_target_without_its_measurement(self):
+        f = file("a", [page(1, 0.9), page(2, 0.9)])
+        b = cr.summarize(run(f), att(("a", 1, "both", 0.0, 0.1), ("a", 2, "neither", *OPEN), cap=None), ENV)
+        rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), cap=None),
+                        require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a: page 2 not attributed (below the attribution threshold; the baseline attributes it)", out)
+        # One that left the threshold is an improvement, not a loss.
+        g = file("a", [page(1, 0.9), page(2, 0.99)])
+        rc, out = check(run(g), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), cap=None),
+                        require_same_env=True)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("a: page 2 no longer below the attribution threshold", out)
+
+    def test_each_witness_on_its_own(self):
+        f = file("a", [page(1, 0.9), page(2, 0.9)])
+        b = cr.summarize(run(f), att(("a", 1, "both", 0.0, 0.1), ("a", 2, "neither", *OPEN), cap=None), ENV)
+        for now, lost in (("mupdf", "Poppler"), ("poppler", "MuPDF"), ("neither", "Poppler and MuPDF")):
+            rows = [("a", 1, now, *(OPEN if now == "neither" else (0.0, 0.1))), ("a", 2, "neither", *OPEN)]
+            rc, out = check(run(f), b, env=ENV, attribution=att(*rows, cap=None), require_same_env=True)
+            self.assertEqual(rc, 1, (now, out))
+            self.assertIn(f"a: page 1 agreement both -> {now} (outside {lost}'s tolerance now", out)
+        # An improvement elsewhere never offsets it.
+        rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "mupdf", 0.0, 0.1), ("a", 2, "poppler", 0.0, 0.1),
+                                                            cap=None), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("improved: a: page 2 agreement neither -> poppler", out)
+        self.assertIn("REGRESSION: a: page 1 agreement both -> mupdf", out)
+        # Not comparable is never an improvement.
+        rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "not_comparable", 0, 0), ("a", 2, "neither", *OPEN),
+                                                            cap=None), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a: page 1 agreement both -> not_comparable", out)
+
+    def test_coverage_and_truncation(self):
+        f = file("a", [page(1, 0.9)])
+        b = cr.summarize(run(f), att(("a", 1, "neither", *OPEN), cap=None), ENV)
+        # A run with a cap per file, whatever the baseline's.
+        rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "neither", *OPEN), cap=8), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("attribution capped at 8 page(s) per file", out)
+        # The same cap as the baseline's, a second low page beyond it.
+        b1 = cr.summarize(run(f), att(("a", 1, "neither", *OPEN), cap=1), ENV)
+        g = file("a", [page(1, 0.9), page(2, 0.9)])
+        rc, out = check(run(g), b1, env=ENV, attribution=att(("a", 1, "neither", *OPEN), cap=1), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("attribution capped at 1 page(s) per file", out)
+        # A budget that left pages out: incomplete, never a pass.
+        rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "neither", *OPEN), cap=None, truncated=3),
+                        require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("attribution incomplete: 3 page(s)", out)
+        # More pages than an older capped baseline: fine.
+        b8 = cr.summarize(run(f), att(("a", 1, "neither", *OPEN), cap=8), ENV)
+        rc, out = check(run(f), b8, env=ENV, attribution=att(("a", 1, "neither", *OPEN), cap=None),
+                        require_same_env=True)
+        self.assertEqual(rc, 0, out)
+
+    def test_a_baseline_that_should_have_attributed_a_page(self):
+        f = file("a", [page(1, 0.9), page(2, 0.9)])
+        # Below the threshold, under a cap that was not reached, yet not
+        # attributed: the baseline cannot vouch for it.
+        b = cr.summarize(run(f), att(("a", 1, "neither", *OPEN), cap=8), ENV)
+        rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "neither", *OPEN), ("a", 2, "neither", *OPEN),
+                                                            cap=None), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the baseline is incomplete", out)
+        rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "neither", *OPEN), ("a", 2, "both", 0, 0),
+                                                            cap=None), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a: page 2 both: below the threshold in the baseline", out)
+
+    def test_rounding_and_boundaries(self):
+        # SSIM drop of exactly 0.002 (recorded values): not a regression;
+        # just over it: a regression.
+        b = cr.summarize(run(file("a", [page(1, 0.99)])), None, ENV)
+        self.assertEqual(check(run(file("a", [page(1, 0.988)])), b, env=ENV)[0], 0)
+        rc, out = check(run(file("a", [page(1, 0.9879)])), b, env=ENV)
+        self.assertEqual(rc, 1, out)
+        # A page whose SSIM rounds to the threshold but is below it: the
+        # baseline records that it was below, and it must be measured.
+        f = file("a", [page(1, 0.94996)])
+        b = cr.summarize(run(f), att(("a", 1, "neither", *OPEN), cap=None), ENV)
+        self.assertEqual(b["files"]["a"]["pages"]["1"], {"ssim": 0.95, "cssim": 0.9, "below": True})
+        rc, out = check(run(f), b, env=ENV, attribution=att(cap=None), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a: page 1 not attributed", out)
+        # Beyond an older baseline's cap, the recorded flag (not the
+        # rounded 0.95) says the page was below the threshold already: a
+        # first measurement (unverified), not a new defect.
+        f = file("a", [page(1, 0.9), page(2, 0.94996)])
+        b = cr.summarize(run(f), att(("a", 1, "neither", *OPEN), cap=1), ENV)
+        rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "neither", *OPEN), ("a", 2, "neither", *OPEN),
+                                                            cap=None), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a: page 2 first attributed: neither — unverified", out)
+        self.assertNotIn("newly", out)
+        # The witness measures at the tolerance: 0.005 / 2 are outside.
+        self.assertEqual(ca.verdict({"dpx_kp": 0.005, "mad_kp": 0.0, "dpx_km": 0.0, "mad_km": 2.0,
+                                     "dpx_pm": 0.0, "mad_pm": 0.0}), ("neither", True))
+        self.assertEqual(ca.verdict({"dpx_kp": 0.00499, "mad_kp": 1.99, "dpx_km": 0.0, "mad_km": 0.0,
+                                     "dpx_pm": 0.0, "mad_pm": 0.0}), ("both", True))
+        # A negative SSIM is a value (-1..1), below -1 it is not.
+        self.assertEqual(check(run(file("a", [page(1, -0.2)])), cr.summarize(run(file("a", [page(1, -0.2)])), None,
+                                                                            ENV), env=ENV)[0], 0)
+
+    def test_environment_mismatches(self):
+        f = file("a", [page(1, 0.9)])
+        b = cr.summarize(run(f), att(("a", 1, "neither", *OPEN), cap=None), ENV)
+        a = att(("a", 1, "neither", *OPEN), cap=None)
+        for k, v in (("os", "macos-26"), ("arch", "arm64"), ("poppler", "26.10.0"), ("mupdf", "1.28.6"),
+                     ("features", "")):
+            rc, out = check(run(f), b, env=dict(ENV, **{k: v}), attribution=dict(a, env=dict(ENV, **{k: v})),
+                            require_same_env=True)
+            self.assertEqual(rc, 1, (k, out))
+            self.assertIn("numeric measures not compared: the environment differs", out)
+        rc, out = check(run(f), b, env=ENV, attribution=dict(a, env=dict(ENV, commit="d" * 40)), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("another environment or commit", out)
+        # No commit on either side: the same commit cannot be established.
+        nc = dict(ENV, commit=None)
+        rc, out = check(run(f), b, env=nc, attribution=dict(a, env=nc), require_same_env=True)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("environment incomplete: run commit, attribution commit", out)
+
+    def test_an_unusable_attribution_is_not_judged_in_the_ledger(self):
+        f = file("a", [page(1, 0.9)])
+        b = cr.summarize(run(f), att(("a", 1, "both", 0, 0), cap=None), ENV)
+        for a in (att(("a", 1, "neither", *OPEN), cap=None, env=dict(ENV, commit="d" * 40)),
+                  att(("a", 1, "neither", *OPEN), cap=None, truncated=2)):
+            with tempfile.TemporaryDirectory() as d:
+                p = os.path.join(d, "l.json")
+                rc, out = check(run(f), b, env=ENV, attribution=a, require_same_env=True, ledger_path=p)
+                with open(p) as fh:
+                    led = json.load(fh)
+            self.assertEqual(rc, 1, out)
+            self.assertEqual([(e["page"], e["reason"], e["decisions"]) for e in led], [(1, "attribution not usable", [])])
+
+    def test_witness_measures_round_trip_at_the_tolerance(self):
+        # Measures on both sides of each tolerance survive summarize ->
+        # validate -> check unchanged in their verdicts.
+        f = file("a", [page(1, 0.9), page(2, 0.9), page(3, 0.9), page(4, 0.9)])
+        rows = [("a", 1, "both", 0.00499, 1.99999), ("a", 2, "neither", 0.005, 2.0),
+                ("a", 3, "neither", 0.00499, 2.0), ("a", 4, "neither", 0.005, 1.99999)]
+        a = att(*rows, cap=None)
+        b = cr.summarize(run(f), a, ENV)
+        cr.validate_base(json.loads(json.dumps(b)))
+        self.assertEqual({pg: v["agreement"] for pg, v in b["files"]["a"]["attribution"].items()},
+                         {"1": "both", "2": "neither", "3": "neither", "4": "neither"})
+        rc, out = check(run(f), b, env=ENV, attribution=a, require_same_env=True)
+        self.assertEqual(rc, 0, out)
+
+    def test_the_ledger(self):
+        f = file("a", [page(1, 0.9), page(2, 0.99), page(3, 0.9)])
+        b = cr.summarize(run(f), att(("a", 1, "neither", *OPEN), ("a", 3, "both", 0, 0), cap=None), ENV)
+        g = file("a", [page(1, 0.9), page(2, 0.9), page(3, 0.99)])
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "ledger.json")
+            check(run(g), b, env=ENV, attribution=att(("a", 1, "neither", *OPEN), ("a", 2, "both", 0, 0), cap=None),
+                  require_same_env=True, ledger_path=p)
+            with open(p) as fh:
+                led = {e["page"]: e for e in json.load(fh)}
+        self.assertEqual(sorted(led), [1, 2, 3])
+        self.assertEqual((led[1]["baseline_target"], led[1]["attributed"], led[1]["selected_because"]),
+                         (True, True, "baseline target"))
+        self.assertEqual((led[2]["new_candidate"], led[2]["selected_because"]), (True, "below the threshold"))
+        self.assertEqual(led[3]["reason"], "no longer below the threshold")
+        for e in led.values():
+            for k in ("id", "page", "in_baseline", "in_run", "baseline_target", "new_candidate", "selected_because",
+                      "comparable", "reason", "decisions"):
+                self.assertIn(k, e)
+
+
+class InvalidInputsM2(unittest.TestCase):
+    def write(self, d, name, text):
+        p = os.path.join(d, name)
+        with open(p, "w") as fh:
+            fh.write(text if isinstance(text, str) else json.dumps(text))
+        return p
+
+    def test_rejected(self):
+        good = run(file("a", [page(1, 0.9)]))
+        a = att(("a", 1, "neither", *OPEN), cap=None)
+        base = cr.summarize(good, a, ENV)
+        with tempfile.TemporaryDirectory() as d:
+            r, b = self.write(d, "r.json", good), self.write(d, "b.json", base)
+            at = self.write(d, "a.json", a)
+            env = self.write(d, "e.json", ENV)
+            ok = ("check", r, b, "--env", env, "--attribution", at, "--require-same-env")
+            self.assertEqual(main_cli(*ok)[0], 0)
+            bt = json.dumps(base)
+            cases = {
+                "a duplicate case id in the baseline (JSON keys)": ("check", r, self.write(
+                    d, "dupk.json", bt.replace('"files": {', '"files": {"a": {"stages": {}}, ', 1))),
+                "a duplicate key in the attribution": ("check", r, b, "--attribution", self.write(
+                    d, "dupa.json", json.dumps(a).replace('"schema": 2', '"schema": 2, "schema": 2'))),
+                "an SSIM below -1": ("check", self.write(d, "neg.json", run(file("a", [page(1, -1.5)]))), b),
+                "an SSIM above 1": ("check", self.write(d, "big.json", run(file("a", [page(1, 1.5)]))), b),
+                "a content SSIM out of range": ("check", self.write(d, "cs.json", run(file("a", [page(1, 0.9, 2.0)]))), b),
+                "a text F1 above 1": ("check", self.write(d, "f1.json", run(file("a", [page(1, 0.9)], f1=1.5))), b),
+                "a text F1 below 0": ("check", self.write(d, "f0.json", run(file("a", [page(1, 0.9)], f1=-0.1))), b),
+                "page 0": ("check", self.write(d, "p0.json", run(file("a", [page(0, 0.9)]))), b),
+                "a page without an SSIM, in a new case": ("check", self.write(d, "ns.json", run(
+                    file("a", [page(1, 0.9)]), file("new", [page(1, None)]))), b),
+                "a page record that is not a record": ("check", self.write(d, "nr.json", dict(run(
+                    file("a", [page(1, 0.9)])), files=[dict(file("a", [page(1, 0.9)]), metrics={
+                        "render_pages": [page(1, 0.9), 7]})])), b),
+                "a page that is not a number": ("check", self.write(d, "pn.json", run(file("a", [page("1", 0.9)]))), b),
+                "a baseline SSIM out of range": ("check", r, self.write(d, "bs.json", bt.replace(
+                    '"ssim": 0.9', '"ssim": 9.0'))),
+                "a baseline agreement its measures do not give": ("check", r, self.write(d, "ba.json", bt.replace(
+                    '"agreement": "neither"', '"agreement": "both"'))),
+                "a baseline agreement without measures": ("check", r, self.write(d, "bm.json", bt.replace(
+                    '"dpx_kp": 0.02', '"dpx_kp": null'))),
+                "a page cap of 0": ("check", r, b, "--attribution", self.write(d, "c0.json", dict(
+                    a, max_pages_per_file=0))),
+                "a negative truncation": ("check", r, b, "--attribution", self.write(d, "tn.json", dict(a, truncated=-1))),
+                "a non-JSON attribution": ("check", r, b, "--attribution", self.write(d, "nj.json", "{not json")),
+                "an empty attribution file": ("check", r, b, "--attribution", self.write(d, "em.json", "")),
+            }
+            for name, argv in cases.items():
+                rc, out = main_cli(*argv)
+                self.assertEqual(rc, 2, f"{name}: {out}")
+                self.assertIn("INVALID", out, name)
+
+    def test_update_baseline_never_records_an_incomplete_attribution(self):
+        good = run(file("a", [page(1, 0.9), page(2, 0.9)]))
+        with tempfile.TemporaryDirectory() as d:
+            r, env = self.write(d, "r.json", good), self.write(d, "e.json", ENV)
+            out_b = os.path.join(d, "b.json")
+            for name, a in (("missing", att(("a", 1, "neither", *OPEN), cap=None)),
+                            ("truncated", att(("a", 1, "neither", *OPEN), ("a", 2, "neither", *OPEN), cap=None,
+                                              truncated=1))):
+                rc, out = main_cli("update-baseline", r, out_b, "--env", env, "--attribution",
+                                   self.write(d, f"a-{name}.json", a), "--write")
+                self.assertEqual(rc, 2, f"{name}: {out}")
+                self.assertFalse(os.path.exists(out_b), name)
+            capped = att(("a", 1, "neither", *OPEN), ("a", 2, "neither", *OPEN), cap=8)
+            rc, out = main_cli("update-baseline", r, out_b, "--env", env, "--attribution",
+                               self.write(d, "a-capped.json", capped), "--write")
+            self.assertEqual(rc, 2, out)
+            self.assertIn("capped", out)
+            self.assertFalse(os.path.exists(out_b))
+            full = att(("a", 1, "neither", *OPEN), ("a", 2, "neither", *OPEN), cap=None)
+            rc, out = main_cli("update-baseline", r, out_b, "--env", env, "--attribution", self.write(d, "a.json", full))
+            self.assertEqual(rc, 0, out)
+            self.assertFalse(os.path.exists(out_b), "a dry run writes nothing")
+            rc, out = main_cli("update-baseline", r, out_b, "--env", env, "--attribution",
+                               self.write(d, "a.json", full), "--write")
+            self.assertEqual(rc, 0, out)
+            with open(out_b) as fh:
+                self.assertIsNone(json.load(fh)["meta"]["attribution"]["max_pages_per_file"])
+
+    def test_the_migration_accepts_first_measurements_and_nothing_else(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = self.write(d, "e.json", ENV)
+            f = file("a", [page(1, 0.9), page(2, 0.91)])
+            old = cr.summarize(run(f), att(("a", 1, "neither", *OPEN), cap=1), ENV)  # an M1 baseline
+            b = self.write(d, "b.json", old)
+            r = self.write(d, "r.json", run(f))
+            a = self.write(d, "a.json", att(("a", 1, "neither", *OPEN), ("a", 2, "neither", *OPEN)))
+            rc, out = main_cli("update-baseline", r, b, "--env", env, "--attribution", a, "--write")
+            self.assertEqual(rc, 1, out)
+            self.assertIn("1 page(s) measured for the first time are unverified", out)
+            rc, out = main_cli("update-baseline", r, b, "--env", env, "--attribution", a, "--write",
+                               "--accept-unverified")
+            self.assertEqual(rc, 0, out)
+            self.assertIn("accepted: 1 first measurement(s)", out)
+            # With any other regression, --accept-unverified is not enough.
+            self.write(d, "b.json", old)
+            worse = self.write(d, "w.json", run(file("a", [page(1, 0.8), page(2, 0.91)])))
+            rc, out = main_cli("update-baseline", worse, b, "--env", env, "--attribution", a, "--write",
+                               "--accept-unverified")
+            self.assertEqual(rc, 1, out)
+            self.assertIn("regressions against the current baseline (1;", out)
+            with open(b) as fh:
+                self.assertEqual(json.load(fh), json.loads(json.dumps(old)))
+            # The kind is the ledger's, not the text's: a case whose id
+            # carries the mark gains nothing from it.
+            mark = "x" + cr.UNVERIFIED
+            g = file(mark, [page(1, 0.95)])
+            old2 = cr.summarize(run(f, g), att(("a", 1, "neither", *OPEN), cap=1), ENV)
+            self.write(d, "b.json", old2)
+            r2 = self.write(d, "r2.json", run(f, file(mark, [page(1, 0.90)])))
+            a2 = self.write(d, "a2.json", att(("a", 1, "neither", *OPEN), ("a", 2, "neither", *OPEN),
+                                              (mark, 1, "neither", *OPEN)))
+            rc, out = main_cli("update-baseline", r2, b, "--env", env, "--attribution", a2, "--write",
+                               "--accept-unverified")
+            self.assertEqual(rc, 1, out)
+            self.assertIn("regressions against the current baseline (2;", out)
+            # A first measurement that cannot be measured is not accepted
+            # as a migration: it is a regression to decide on.
+            self.write(d, "b.json", old)
+            a3 = self.write(d, "a3.json", att(("a", 1, "neither", *OPEN), ("a", 2, "not_comparable", 0, 0)))
+            rc, out = main_cli("update-baseline", r, b, "--env", env, "--attribution", a3, "--write",
+                               "--accept-unverified")
+            self.assertEqual(rc, 1, out)
+            self.assertIn("regressions against the current baseline (1;", out)
+
+
+class Selection(unittest.TestCase):
+    """compat-attribute's page selection (no renderers)."""
+
+    def test_every_page_below_the_threshold_and_a_budget(self):
+        rep = run(file("a", [page(i, 0.9 - i / 100) for i in range(1, 13)]), file("b", [page(1, 0.99)]))
+        items = ca.pages_to_check(rep, 0.95)
+        self.assertEqual([pg for _, pg, _ in items], list(range(12, 0, -1)))
+        self.assertEqual(len(ca.pages_to_check(rep, 0.95, 8)), 8)
+        keep, cut = ca.within_budget(items, 5)
+        self.assertEqual((len(keep), cut), (5, 7))
+        self.assertEqual([pg for _, pg, _ in keep], [12, 11, 10, 9, 8])
+        self.assertEqual(ca.within_budget(items, 100), (items, 0))
 
 class InvalidInputs(unittest.TestCase):
     """A report or baseline that cannot be compared is rejected (2), never

@@ -38,8 +38,17 @@ comparable.
 Every page of an `expect: pass` file is examined when:
 - its strict render passed;
 - its runner SSIM is below **0.95** (the threshold of the v0.11.0
-  analysis);
-- it is among the file's 8 worst such pages.
+  analysis).
+
+All such pages are examined (M2). M1 examined the file's 8 worst only:
+which pages those were depended on their ranks, so a fix that improved
+pages pushed a page with a known difference into the set, and the check
+read it as a new one (v0.11 Q1: 12 pages of one file improved, page 8
+left the 8 worst, page 10 — outside both witnesses before as well —
+entered them). Counted on the corpus (Linux nightly): 143 pages with the
+cap, 152 without it, of the same 65 files; two files have more than 8.
+`--max-pages-total` (1000) bounds the work; pages beyond it are recorded
+as `truncated`, and the check fails on them.
 
 At **300 dpi**, box-downsampled to the 72 dpi grid, kasane is **within
 tolerance** of a witness when `dpx < 0.5 %` **and** `mad < 2`
@@ -81,13 +90,16 @@ pdf.js is not a witness here; it stays a judge of redacted outputs
 
 Every input is validated first. A report or baseline is rejected
 (exit 2, `INVALID`) and never compared when:
-- it is not the expected shape;
-- it has duplicate ids;
-- it holds `NaN` or `Infinity`;
-- it records a page twice;
+- it is not the expected shape (or not JSON, or empty);
+- it has duplicate ids, or a key twice anywhere;
+- it holds `NaN` or `Infinity`, an SSIM or content SSIM outside -1..1,
+  or a text F1 outside 0..1;
+- it records a page twice, or a page that is not a number from 1;
+- it is a baseline whose recorded agreement its witness measures do not
+  give;
 - it is a baseline with page measures but no environment;
 - it is an attribution of another schema or tolerance, without its
-  threshold or page cap, with a page twice, with a measure missing or
+  threshold or page cap (a number from 1, or null for every page), with a page twice, with a measure missing or
   out of range (dpx outside 0–1, mad outside 0–255), or with an
   agreement that its measures do not give. The gate recomputes every
   agreement (`scripts/compat_verdict.py`) and never trusts a recorded
@@ -109,14 +121,45 @@ in the **same environment**, each of the following is a regression:
 | a page within a witness's tolerance (`both` / `poppler` / `mupdf`) becomes `neither` or `not_comparable` | — |
 | an open page becomes `not_comparable` (hidden) | — |
 | an open page's difference from either witness grows (each witness judged on its own) | `dpx` +0.002 or `mad` +0.5 |
-| a page of the run below the threshold (among its file's 8 worst) is not attributed, or a page is attributed that is not | — |
-| the attribution is of another commit or environment than the run, or of another threshold, tolerance or page cap than the baseline's | — |
-| a page below the threshold that the baseline did not attribute is `neither` or `not_comparable` (also in a file new to the baseline) | — |
+| a page of the run below the threshold is not attributed, or a page is attributed that is not | — |
+| the attribution is of another commit or environment than the run, or of another threshold or tolerance than the baseline's | — |
+| a page below the threshold that the baseline did not attribute, and that was not below it in the baseline (or is new), is `neither` or `not_comparable` (also in a file new to the baseline) | — |
+| a page the baseline attributed leaves either witness's tolerance (`both` → `poppler` / `mupdf` / `neither`, `poppler` → `neither`, …), each witness on its own | — |
+| the attribution has a cap per file (whatever the baseline's), or is `truncated` | — |
+| the run's or the attribution's environment lacks the commit, OS, architecture, Poppler or MuPDF version | — |
+| a page below the threshold in the baseline that the baseline should have attributed but did not (it is incomplete) | — |
 
 How the rules are applied:
 - **Per page, with no netting.** Each page is judged on its own; an
   improvement elsewhere (listed as `improved:`) never offsets a
   regression.
+- **By (case, page), never by rank (M2).** The check builds a ledger of
+  every page the baseline attributes, the run attributes, or the run
+  has below the threshold — which side has it, whether it is a baseline
+  target or a new candidate, why it is measured, whether it is
+  comparable — and judges each record (`check --ledger FILE` writes it:
+  ids, page numbers and decisions). A baseline target still below the
+  threshold must be measured again and is compared with itself; one
+  that rose above it is an improvement; one whose page is gone is lost
+  measures (a regression). A page the baseline did not attribute is new
+  when it was not below the threshold there (the baseline records
+  `below`, from the unrounded SSIM): outside both witnesses, a
+  regression. When it was below it already but beyond an older (M1)
+  baseline's cap of 8 per file, the baseline has no witness result for
+  it, so anything short of `both` now (`poppler`, `mupdf`, `neither`,
+  `not_comparable`) cannot be told from a page that was `both` and lost
+  a witness: it fails as `first attributed: … — unverified` until the
+  baseline attributes every page. That migration is a reviewed
+  `update-baseline --write --accept-unverified`, which accepts these
+  first measurements (as the ledger records them, never by their text)
+  and nothing else: any other regression, and a first measurement that
+  is `not_comparable` (it would become a quiet gap), still needs
+  `--accept-regressions`. A baseline written by M2 has no
+  such pages: `update-baseline` refuses an attribution with a cap per
+  file, a `truncated` one, or one that misses a page below the
+  threshold. Below the threshold in a baseline that had room to
+  attribute it, yet not attributed: the baseline is incomplete, a
+  regression whatever the run's verdict.
 - **The rules hold in every class.** They apply in every quality-gate
   class (`ok`, `report`, `exempt`, `n/a`, `flag`), so a worsening that
   stays inside its class is still caught.
@@ -205,8 +248,16 @@ private store, as before.
 
 - `fixtures-smoke.json` records no numeric measures: the PR smoke run
   compares stages only.
-- Pages past the 8 worst of a file below the threshold are not
-  attributed.
+- The attribution covers at most `--max-pages-total` pages (1000; 152
+  today); a run with more is truncated and fails rather than passing
+  unmeasured. A baseline written before M2 has no `below` flag: a page
+  whose SSIM rounds to the threshold reads as not below it there, so
+  its first measurement can fail as new until the baseline is updated
+  (the safe side).
+- A page that crosses the threshold by less than the SSIM drop rule
+  (0.002) is still measured, and fails when it is outside both
+  witnesses; one that stays above the threshold is screened by the SSIM,
+  content SSIM and text F1 rules only, not by the witnesses.
 - The witnesses are Poppler and MuPDF at the versions of the runner
   image. A defect both share is invisible here, and so is one in a
   page they both cannot draw.

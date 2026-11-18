@@ -3,12 +3,14 @@
 compatibility run (M1-a, M1-b; docs/compat-evaluation.md).
 
     compat-attribute.py RUN.json KASANE --out PAGES.json [--summary SUMMARY.json]
-        [--threshold 0.95] [--max-pages-per-file 8] [--timeout 120] [--jobs 4]
-        [--features FEATURES] [--commit SHA]
+        [--threshold 0.95] [--max-pages-per-file N] [--max-pages-total 1000]
+        [--timeout 120] [--jobs 4] [--features FEATURES] [--commit SHA]
 
 For every page of an `expect: pass` file whose strict render passed and
 whose SSIM against Poppler (the runner's measurement) is below the
-threshold, the page is rendered again by kasane (the KASANE binary,
+threshold — all of them (M2): a per-file cap made the measured set
+depend on the pages' ranks, so a page that improved could push a known
+one into it — the page is rendered again by kasane (the KASANE binary,
 built as the runner was), Poppler (`pdftoppm -cropbox`, the runner's
 page box) and MuPDF (`mutool draw`), in RGB, converted to grey by one
 formula (ITU-R 601 luma, Pillow) — the renderers' own greyscale modes
@@ -237,18 +239,32 @@ def measure_page(kasane, pdf, page, timeout):
     return m72, r300, reason
 
 
-def pages_to_check(run_report, threshold, max_pages):
+def pages_to_check(run_report, threshold, max_pages=None):
     """(file record, page, ssim) of every strict-render page below the
-    threshold, worst first, at most max_pages per file."""
+    threshold, worst first; at most max_pages per file when given (an
+    older selection, kept for comparisons)."""
     out = []
     for f in run_report["files"]:
         if f.get("expect") != "pass" or f.get("recovered") or (f.get("render") or {}).get("class") != "pass":
             continue
         pages = [p for p in ((f.get("metrics") or {}).get("render_pages") or [])
                  if isinstance(p, dict) and finite(p.get("ssim")) and p["ssim"] < threshold]
-        for p in sorted(pages, key=lambda p: p["ssim"])[:max_pages]:
+        pages = sorted(pages, key=lambda p: (p["ssim"], p["page"]))
+        for p in (pages if max_pages is None else pages[:max_pages]):
             out.append((f, p["page"], p["ssim"]))
     return out
+
+
+def within_budget(items, total):
+    """The items to measure and how many are left out: when more pages
+    than `total` are below the threshold, the worst `total` (by SSIM,
+    then case and page), and the rest is recorded as `truncated` — the
+    regression check fails on it, so a budget never passes as a
+    complete measurement."""
+    if total is None or len(items) <= total:
+        return items, 0
+    keep = sorted(items, key=lambda it: (it[2], it[0]["id"], it[1]))[:total]
+    return keep, len(items) - total
 
 
 def assess(item, kasane, timeout):
@@ -293,7 +309,10 @@ def main(argv=None):
     ap.add_argument("--out", required=True)
     ap.add_argument("--summary")
     ap.add_argument("--threshold", type=float, default=0.95)
-    ap.add_argument("--max-pages-per-file", type=int, default=8)
+    ap.add_argument("--max-pages-per-file", type=int, default=None,
+                    help="cap per file (default: every page below the threshold)")
+    ap.add_argument("--max-pages-total", type=int, default=1000,
+                    help="pages measured at most; beyond it the result is recorded as truncated")
     ap.add_argument("--timeout", type=int, default=120)
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--features", default="")
@@ -302,24 +321,27 @@ def main(argv=None):
     a = ap.parse_args(argv)
     with open(a.report) as fh:
         report = json.load(fh)
-    items = pages_to_check(report, a.threshold, a.max_pages_per_file)
+    items, truncated = within_budget(pages_to_check(report, a.threshold, a.max_pages_per_file),
+                                     a.max_pages_total)
     env = compat_env.environment(commit=a.commit, features=a.features, pdftoppm=tool("PDFTOPPM", "pdftoppm"),
                                  mutool=tool("MUTOOL", "mutool"), qpdf=tool("QPDF", "qpdf"))
     with concurrent.futures.ThreadPoolExecutor(max(1, a.jobs)) as ex:
         rows = list(ex.map(lambda it: assess(it, a.kasane, a.timeout), items))
     files = len({r["id"] for r in rows})
     doc = {"schema": SCHEMA, "env": env, "threshold": a.threshold, "tolerance": TOLERANCE,
-           "max_pages_per_file": a.max_pages_per_file,
+           "max_pages_per_file": a.max_pages_per_file, "truncated": truncated,
            "source": os.path.basename(a.report), "pages": rows}
     with open(a.out, "w") as fh:
         json.dump(doc, fh, indent=1, sort_keys=True)
     s = summary(rows, env, a.threshold, files)
+    s["truncated"] = truncated
     if a.summary:
         with open(a.summary, "w") as fh:
             json.dump(s, fh, indent=1, sort_keys=True)
             fh.write("\n")
     print(f"compat-attribute: {len(rows)} pages of {files} files below SSIM {a.threshold}: "
-          + ", ".join(f"{k} {v}" for k, v in s["agreement"].items()))
+          + ", ".join(f"{k} {v}" for k, v in s["agreement"].items())
+          + (f"; {truncated} more not measured (--max-pages-total)" if truncated else ""))
     return 0
 
 
