@@ -381,6 +381,10 @@ def check_security_regressions(r, cfg, work):
     alog = r.logfile("advisories")
     need(r.run([sys.executable, "scripts/check-advisory-regressions.py", str(k), str(dump_dir), "--expect-safe",
                 "--expected", "compat/advisories/history.json"], log=alog), "advisories")
+    # The same inputs against both external-renderer baselines (no renderer
+    # run): an input without its entry fails here, not in the full gate.
+    need(r.run([sys.executable, "scripts/check-renderer-baselines.py", "--dump", str(dump_dir), "--platforms",
+                "linux-x86_64,darwin-arm64"], log=r.logfile("renderer-baselines")), "renderer_baselines")
     text = alog.read_text(errors="replace")
     verdicts = re.findall(r"^GHSA-\S+\s+\S+\s+([A-Z/]+)\b", text, re.M)
     safe = sum(v == "SAFE" for v in verdicts)

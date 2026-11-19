@@ -299,6 +299,12 @@ class Public(unittest.TestCase):
         subprocess.run([sys.executable, str(VERIFIER), "report", "--results", str(d), "--public", str(pub)],
                        capture_output=True, text=True)
         text = pub.read_text()
+        # The commit and tree ids are random here: a needle such as "712"
+        # can occur in one by chance. They are checked as ids below.
+        doc = json.loads(text)
+        self.assertRegex(doc["commit"], r"^[0-9a-f]{40}$")
+        self.assertRegex(doc["tree"], r"^[0-9a-f]{40}$")
+        text = text.replace(doc["commit"], "<commit>").replace(doc["tree"], "<tree>")
         for needle in ("Quarterly", "ACME", "61.5", "712", "/Users/", "private.pdf", "AKIAFAKEKEY", "rect", "argv",
                        secret, "note", "path", "binary_sha256", "secret_env"):
             self.assertNotIn(needle, text)
@@ -487,6 +493,37 @@ class Production(unittest.TestCase):
         except rv.CheckFailed as e:
             return e.status, e.reason
 
+    def test_the_disclosure_profile_judges_the_renderer_baselines(self):
+        # The committed profiles: S's run checks the renderer baselines
+        # (security_regressions) and runs the external renderers.
+        cfg = json.loads((ROOT / "scripts" / "release-verify.json").read_text())
+        self.assertEqual(set(cfg["profiles"]["disclosure"]), {"security_regressions", "external_renderers"})
+
+        class Runner(self.FakeRunner):
+            def __init__(self, baselines_code):
+                super().__init__("")
+                self.env = {"CARGO_TARGET_DIR": str(self.dir / "target")}
+                (self.dir / "target" / "release").mkdir(parents=True)
+                (self.dir / "target" / "release" / "kasane-pdf").write_text("x")
+                self.baselines_code, self.ran = baselines_code, []
+
+            def run(self, argv, cwd=None, env=None, log=None):
+                cmd = " ".join(str(a) for a in argv)
+                self.ran.append(cmd)
+                if log:
+                    Path(log).write_text("35/35 cases as expected\n" if "verify-redact" in cmd else
+                                         "".join(f"GHSA-x-{i}  in{i}.pdf  SAFE (refused)\n" for i in range(50)))
+                return self.baselines_code if "check-renderer-baselines.py" in cmd else 0
+        cfg = {"min_verify_redact_cases": 35, "min_advisory_cases": 44}
+        r = Runner(0)
+        work = r.dir / "work"
+        rv.check_security_regressions(r, cfg, work)
+        self.assertTrue(any("check-renderer-baselines.py --dump" in c and "linux-x86_64,darwin-arm64" in c
+                            for c in r.ran))
+        with self.assertRaises(rv.CheckFailed) as e:
+            rv.check_security_regressions(Runner(1), cfg, work)
+        self.assertEqual(e.exception.reason, "exit:renderer_baselines")
+
     def test_model_seed_count(self):
         ok = ("model (Recovering): Tally { ok: 10, refused: 5 }\n"
               "test generated_documents_are_non_interfering_in_recovery_mode ... ok\n"
@@ -586,6 +623,47 @@ class ReleaseCheckLocal(unittest.TestCase):
         s4 = self.repo.git("rev-parse", "HEAD")
         code, out, log = self.repo.run(ref=s4)
         self.assertTrue(any("outside tests/" in p for p in self.problems(self.r, self.r_out, s4, out, history_results=out)))
+
+    def test_s_may_change_the_renderer_baselines(self):
+        # The new advisory inputs' entries in both renderer baselines are
+        # disclosure material too; any other file there is not. R's
+        # baselines exist (this throwaway repo's R had none: S0 adds them).
+        d = self.repo.path / "compat" / "renderers"
+        d.mkdir(parents=True)
+        base = {"cases": {"vr:a": {"outcome": "ok", "renderers": {}}}, "dpi": 72, "platform": "p", "reason": "r",
+                "schema_version": 1, "tools": {"poppler": "1"}}
+        for platform in ("linux-x86_64", "darwin-arm64"):
+            (d / f"baseline-{platform}.json").write_text(json.dumps(base))
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-qm", "S5")
+        s5 = self.repo.git("rev-parse", "HEAD")
+        # Added to R's baselines: only new advisory cases.
+        rc = load("release_check", "scripts/release-check.py")
+        added = dict(base, cases=dict(base["cases"], **{"adv:new": {"outcome": "refused", "renderers": {}}}),
+                     reason="adds adv:new")
+        self.assertEqual(rc.baseline_problems("b.json", json.dumps(base), json.dumps(added)), [])
+        for name, s_doc in {
+            "an existing case relaxed": dict(base, cases={"vr:a": {"outcome": "refused", "renderers": {}}}),
+            "an existing case removed": dict(base, cases={}),
+            "a case added that is no advisory input": dict(base, cases=dict(base["cases"], **{"vr:b": {}})),
+            "the renderer versions changed": dict(base, tools={"poppler": "2"}),
+            "the dpi changed": dict(base, dpi=96),
+        }.items():
+            self.assertTrue(rc.baseline_problems("b.json", json.dumps(base), json.dumps(s_doc)), name)
+        self.assertTrue(rc.baseline_problems("b.json", None, json.dumps(base)))
+        self.assertTrue(rc.baseline_problems("b.json", json.dumps(base), "{not json"))
+        s5 = self.repo.git("rev-parse", "HEAD")
+        code, out, log = self.repo.run(ref=s5)
+        self.assertEqual(code, 0, log)
+        # A disclosure commit adding the baselines R does not have: refused.
+        self.assertTrue(any("not readable at R" in p for p in
+                            self.problems(self.r, self.r_out, s5, out, history_results=out)))
+        (d / "baseline-other-arch.json").write_text("{}\n")
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-qm", "S6")
+        s6 = self.repo.git("rev-parse", "HEAD")
+        code, out, log = self.repo.run(ref=s6)
+        self.assertTrue(any("outside tests/" in p for p in self.problems(self.r, self.r_out, s6, out, history_results=out)))
 
     def test_s_not_after_r(self):
         self.assertTrue(any("does not descend" in p for p in self.problems(self.s, self.s_out, self.r, self.r_out)))

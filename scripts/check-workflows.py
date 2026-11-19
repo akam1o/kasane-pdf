@@ -207,6 +207,7 @@ PR_MUST_RUN = {
                      "KASANE_ADVISORY_DUMP=/tmp/advisories cargo test --release --test redact_advisories",
                      "check-advisory-regressions.py target/release/kasane-pdf /tmp/advisories --expect-safe",
                      "--expected compat/advisories/history.json",
+                     "check-renderer-baselines.py --dump /tmp/advisories --platforms linux-x86_64,darwin-arm64",
                      "scripts/test_ci_scripts.py", "scripts/test_release_verify.py",
                      "scripts/test_advisory_history.py", "scripts/test_compat_analysis.py",
                      "KASANE_REQUIRE_PILLOW=1 python3 scripts/test_compat_evaluation.py",
