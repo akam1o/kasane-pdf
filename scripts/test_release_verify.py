@@ -299,6 +299,12 @@ class Public(unittest.TestCase):
         subprocess.run([sys.executable, str(VERIFIER), "report", "--results", str(d), "--public", str(pub)],
                        capture_output=True, text=True)
         text = pub.read_text()
+        # The commit and tree ids are random here: a needle such as "712"
+        # can occur in one by chance. They are checked as ids below.
+        doc = json.loads(text)
+        self.assertRegex(doc["commit"], r"^[0-9a-f]{40}$")
+        self.assertRegex(doc["tree"], r"^[0-9a-f]{40}$")
+        text = text.replace(doc["commit"], "<commit>").replace(doc["tree"], "<tree>")
         for needle in ("Quarterly", "ACME", "61.5", "712", "/Users/", "private.pdf", "AKIAFAKEKEY", "rect", "argv",
                        secret, "note", "path", "binary_sha256", "secret_env"):
             self.assertNotIn(needle, text)
