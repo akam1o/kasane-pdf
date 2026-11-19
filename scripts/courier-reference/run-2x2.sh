@@ -25,8 +25,12 @@ case "$ENV" in
   e1) P=$(cd "${5:?E1DIR}" && pwd)/bin:$PATH; [ -x "${P%%:*}/pdftoppm" ] || { echo "no E1 at $5" >&2; exit 2; } ;;
   *) echo "e0 or e1" >&2; exit 2 ;;
 esac
+[ -z "$(git -C "$SRC" status --porcelain)" ] || { echo "run-2x2: $SRC has changes" >&2; exit 2; }
 git -C "$SRC" rev-parse HEAD > "$OUT/implementation.sha"
+git -C "$(dirname "$0")" rev-parse HEAD > "$OUT/harness.sha"
 echo "$ENV" > "$OUT/environment"
+# E1's configuration as used (its hashes), nothing for E0.
+if [ "$ENV" = e1 ]; then sha256sum "$5/fonts.conf" "$5"/fonts/* > "$OUT/reference-fonts.sha256"; else : > "$OUT/reference-fonts.sha256"; fi
 mkdir -p "$OUT/run"
 PATH=$P "$T/release/kasane-compat" run --corpus "$CORPUS" --out "$OUT/run" --with-poppler --dpi 96 --timeout-secs 20 \
   --mode full --rewrite-options carry > "$OUT/run.log" 2>&1

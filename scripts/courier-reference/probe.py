@@ -95,6 +95,9 @@ def main():
     e1 = os.path.abspath(a.e1dir)
     real = shutil.which("pdftoppm")
     wrapped = os.path.join(e1, "bin", "pdftoppm")
+    if real and (os.path.realpath(real).startswith(e1 + os.sep) or os.environ.get("FONTCONFIG_FILE")):
+        print("probe: E0 would not be the system's Poppler (PATH or FONTCONFIG_FILE points at E1)")
+        return 2
     if not real or not os.access(wrapped, os.X_OK) or not shutil.which("fc-list"):
         print("probe: pdftoppm, fc-list or the E1 wrapper missing")
         return 2

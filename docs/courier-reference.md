@@ -29,7 +29,11 @@ nightly runs.
   (built-in Nimbus Mono PS) and pdf.js (its Foxit Fixed) are unchanged;
   kasane reads no fontconfig.
 
-`courier-reference.yml` records both on the runner (`env.py`: packages,
+`probe.py` and `reference-diff.py` refuse to run when E0 would not be
+the system's Poppler (E1's wrappers first on PATH, or FONTCONFIG_FILE
+set); `run-2x2.sh` refuses a source tree with changes and records, per
+cell, the implementation's and the harness's commits and E1's
+configuration hashes. `courier-reference.yml` records both on the runner (`env.py`: packages,
 every font file's SHA-256, E1's configuration and fonts) and runs
 `probe.py`: for probe fonts — the four Courier styles, Courier New
 names, Helvetica, Times, Arial, Times New Roman, Symbol, ZapfDingbats,
@@ -66,12 +70,18 @@ C/E0 gives exactly the 21 regressions that nightly reported.
 
 ## Results (implementations `19a2d00` A, `2e3a518` C; harness `8c342cd`)
 
-**Reference pixels, E0 → E1** (all 511 files, 1,777 Poppler pages): 11
-pages of 6 files change — the 9 pages of the 5 files kasane draws with
-its Courier substitute, and 2 pages of a file kasane rejects (no render
-to compare). Every changed page's file lost a Liberation Mono or DejaVu
-Sans Mono face for Nimbus Mono PS and gained no other; the other 1,766
-pages are pixel-identical.
+**Reference pixels, E0 → E1** (`reference-diff.py`, all 511 files):
+Poppler draws every page of 487 files in both environments (1,777 pages,
+their pdfinfo page counts reached, status 0) and no page of the other 24
+in either, with the same status in both (14 exit 1, 8 exit 99, one
+killed by a signal 9, one crashing with signal 11) — files the nightly
+has no Poppler reference for either (none has an SSIM in the runner's
+report); they are not compared, and not counted as such. Of the 1,777
+pages, 11 of 6 files change: the 9 pages of the 5 files kasane draws
+with its Courier substitute, and 2 pages of a file kasane rejects (no
+render to compare). Every changed file lost a Liberation Mono or DejaVu
+Sans Mono face for Nimbus Mono PS and gained no other font (fontconfig's
+trace per file, not per page); the other 1,766 pages are pixel-identical.
 
 | delta | pages SSIM better / worse / same | content SSIM better / worse | classes, text F1, crashes, timeouts, missing |
 |---|---|---|---|

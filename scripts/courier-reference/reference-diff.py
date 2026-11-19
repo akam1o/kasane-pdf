@@ -5,7 +5,10 @@ E1 changes, and which font files fontconfig gave Poppler for each file.
     scripts/courier-reference/reference-diff.py CORPUS_DIR E1DIR --json OUT [--dpi 96] [--jobs N]
 
 The runner's reference (`pdftoppm -r DPI -gray`), all pages, decoded
-pixels compared (PGM headers and file metadata play no part). The JSON
+pixels compared (PGM headers and file metadata play no part). A file
+Poppler cannot draw whole (its page count from pdfinfo unknown or not
+reached, or a failing status) is reported as partial or none — compared
+as far as both environments drew it, never counted as fully compared. The JSON
 names files by their corpus id with page counts and the basenames of the
 system font files matched — no page content; it is for the private
 evaluation record, its counts for the public report. A file whose pages
@@ -13,7 +16,7 @@ E1 changes must be one whose E0 trace matched a Liberation Mono or
 DejaVu Sans Mono face that E1 replaced for Courier — anything else is
 listed as unexplained.
 """
-import argparse, concurrent.futures, glob, json, os, re, subprocess, sys, tempfile
+import argparse, concurrent.futures, glob, json, os, re, shutil, subprocess, sys, tempfile
 
 COURIER_E0 = ("LiberationMono-", "DejaVuSansMono")
 
@@ -49,9 +52,20 @@ def pages(tool, pdf, out, dpi):
     return imgs, matched(r.stdout + r.stderr), r.returncode
 
 
+def page_count(pdf):
+    """Poppler's page count (pdfinfo), or None when it cannot tell."""
+    try:
+        r = subprocess.run(["pdfinfo", pdf], capture_output=True, text=True, errors="replace", timeout=120)
+    except subprocess.TimeoutExpired:
+        return None
+    m = re.search(r"^Pages:\s+(\d+)", r.stdout, re.M)
+    return int(m.group(1)) if r.returncode == 0 and m else None
+
+
 def one(args):
     pdf, e1, dpi = args
     fid = os.path.splitext(os.path.basename(pdf))[0]
+    expected = page_count(pdf)
     with tempfile.TemporaryDirectory() as tmp:
         i0, f0, rc0 = pages("pdftoppm", pdf, os.path.join(tmp, "e0"), dpi)
         i1, f1, rc1 = pages(os.path.join(e1, "bin", "pdftoppm"), pdf, os.path.join(tmp, "e1"), dpi)
@@ -60,7 +74,12 @@ def one(args):
     if rc0 != rc1:
         return fid, {"error": "status_differs", "status": [rc0, rc1]}
     diff = sorted(p for p in set(i0) | set(i1) if i0.get(p) != i1.get(p))
-    return fid, {"pages": len(i0), "status": rc0, "pages_changed": len(diff), "changed_pages": diff,
+    # Coverage: every page Poppler says the file has, drawn without error
+    # in both; else partial (some pages, or a failing status) or none.
+    coverage = ("complete" if rc0 == 0 and expected is not None and len(i0) == len(i1) == expected
+                else "none" if not i0 and not i1 else "partial")
+    return fid, {"pages": len(i0), "pages_e1": len(i1), "expected_pages": expected, "status": rc0,
+                 "coverage": coverage, "pages_changed": len(diff), "changed_pages": diff,
                  "e0_fonts": sorted(set(f0)), "e1_fonts": sorted(set(f1))}
 
 
@@ -74,6 +93,11 @@ def main():
     a = ap.parse_args()
     pdfs = sorted(glob.glob(os.path.join(a.corpus, "*.pdf")))
     e1 = os.path.abspath(a.e1)
+    # E0 is the system's Poppler: not E1's wrapper through PATH.
+    real = shutil.which("pdftoppm")
+    if not real or os.path.realpath(real).startswith(e1 + os.sep) or os.environ.get("FONTCONFIG_FILE"):
+        print("reference-diff: E0 would not be the system's Poppler (PATH or FONTCONFIG_FILE points at E1)")
+        return 2
     res = {}
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
         for fid, r in ex.map(one, [(p, e1, a.dpi) for p in pdfs]):
@@ -85,8 +109,12 @@ def main():
                          or set(r["e1_fonts"]) - set(r["e0_fonts"]) - {x for x in r["e1_fonts"] if x.startswith("NimbusMonoPS-")})
     nimbus_unchanged = sorted(f for f, r in res.items() if "error" not in r and not r["pages_changed"]
                               and any(x.startswith("NimbusMonoPS-") for x in r["e1_fonts"]))
+    cov = {c: sorted(f for f, r in res.items() if r.get("coverage") == c) for c in ("complete", "partial", "none")}
     summary = {"files": len(res), "errors": sorted(f for f, r in res.items() if "error" in r),
-               "pages": sum(r.get("pages", 0) for r in res.values()),
+               "pages_compared": sum(r.get("pages", 0) for r in res.values()),
+               "coverage_complete": cov["complete"], "coverage_partial": cov["partial"], "coverage_none": cov["none"],
+               "poppler_status_nonzero": sorted(f"{f}:{r['status']}" for f, r in res.items() if r.get("status")),
+               "expected_pages_known": sum(r["expected_pages"] for r in res.values() if r.get("expected_pages")),
                "files_changed": len(changed), "pages_changed": sum(r["pages_changed"] for r in changed.values()),
                "unexplained": unexplained, "nimbus_used_without_change": nimbus_unchanged,
                "files_using_nimbus_in_e1": sorted(f for f, r in res.items() if any(x.startswith("NimbusMonoPS-")

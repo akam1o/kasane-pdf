@@ -113,7 +113,8 @@ def main():
     ap.add_argument("--public")
     a = ap.parse_args()
     runs = {k: load(getattr(a, k)) for k in ("a_e0", "a_e1", "c_e0", "c_e1")}
-    if runs["a_e0"]["impl"] != runs["a_e1"]["impl"] or runs["c_e0"]["impl"] != runs["c_e1"]["impl"] \
+    if runs["a_e0"]["impl"] == runs["c_e0"]["impl"] \
+            or runs["a_e0"]["impl"] != runs["a_e1"]["impl"] or runs["c_e0"]["impl"] != runs["c_e1"]["impl"] \
             or [runs[k]["env"] for k in ("a_e0", "a_e1", "c_e0", "c_e1")] != ["e0", "e1", "e0", "e1"]:
         print("compare-2x2: the four runs are not A/E0, A/E1, C/E0, C/E1 of two implementations")
         return 2
