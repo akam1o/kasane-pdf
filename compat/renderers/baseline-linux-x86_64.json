@@ -131,6 +131,18 @@
     }
    }
   },
+  "adv:4q38-glyph": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:4q38-operator": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:4q38-signature": {
+   "outcome": "refused",
+   "renderers": {}
+  },
   "adv:6pgh-goto-A-catalog": {
    "outcome": "refused",
    "renderers": {}
@@ -1630,7 +1642,7 @@
  },
  "dpi": 72,
  "platform": "linux-x86_64",
- "reason": "initial Linux baseline: GitHub Actions ubuntu-24.04 x86_64 (apt poppler-utils 24.02.0, mupdf-tools 1.23.10; pdf.js 6.5.438 from tools/pdfjs), proposed by pr.yml run 43550976388 on commit of ci/security-history. Checked against baseline-darwin-arm64.json case by case: the same outcome for all 110 cases and the same changed pixels for all four cases that have any (fqgr-truetype-bearing and fqgr-cidfonttype2-bearing: the glyph crossing the rect goes whole; curve-crossing: pdf.js; text-annotation-removed: the annotation removed by option); no leak, no text lost.",
+ "reason": "adds the three GHSA-4q38-qhh6-c256 advisory inputs (refused), proposed by pr.yml run 44452854098 on main e1e11ab and checked case by case: 113 cases, the 110 earlier ones unchanged",
  "schema_version": 1,
  "tools": {
   "mupdf": "1.23.10",
