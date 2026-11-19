@@ -402,15 +402,25 @@ MODEL_TESTS = ("generated_documents_are_non_interfering", "generated_documents_a
 
 def check_noninterference(r, cfg, work):
     log = r.logfile("model")
+    # Two test threads, whatever the environment says: with one, libtest
+    # prints `test <name> ... ` before the test's own output and `ok` after
+    # it, and the lines judged below are not whole.
     code = r.run(["cargo", "test", "--locked", "--release", "--test", "redact_model", "--", "--nocapture"],
-                 env={"KASANE_MODEL_SEEDS": str(cfg["seeds"])}, log=log)
+                 env={"KASANE_MODEL_SEEDS": str(cfg["seeds"]), "RUST_TEST_THREADS": "2"}, log=log)
     text = log.read_text(errors="replace")
-    m = re.search(r"model: Tally \{ ok: (\d+), refused: (\d+)", text)
-    summary = {"seeds": cfg["seeds"], "ok": int(m.group(1)) if m else None, "refused": int(m.group(2)) if m else None}
+    tallies = re.findall(r"^model: Tally \{ ok: (\d+), refused: (\d+)", text, re.M)
+    m = tallies[0] if len(tallies) == 1 else None
+    summary = {"seeds": cfg["seeds"], "ok": int(m[0]) if m else None, "refused": int(m[1]) if m else None}
     need(code, "redact_model")
-    # Both tests of the file — strict and recovery mode — passed.
-    if not m or not re.search(r"test result: ok\. 2 passed; 0 failed", text) or not all(
-            re.search(rf"^test {t} \.\.\. ok$", text, re.M) for t in MODEL_TESTS):
+    # Both tests of the file — strict and recovery mode — ran once each and
+    # passed, and nothing else: one complete summary (no test ignored or
+    # filtered out), each name once, no other test, one tally of the
+    # strict model. A count alone is not enough.
+    ran = re.findall(r"^test (\S+) \.\.\. (\S+)$", text, re.M)
+    summaries = re.findall(r"^test result: .*$", text, re.M)
+    if not m or len(summaries) != 1 or not re.match(
+            r"test result: ok\. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;", summaries[0]) \
+            or sorted(ran) != sorted((t, "ok") for t in MODEL_TESTS):
         raise CheckFailed("error", "no_summary:redact_model", summary=summary)
     # Two variants per seed: every document of every seed was redacted,
     # not a default seed count (an environment that did not reach the
