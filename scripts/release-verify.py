@@ -402,8 +402,11 @@ MODEL_TESTS = ("generated_documents_are_non_interfering", "generated_documents_a
 
 def check_noninterference(r, cfg, work):
     log = r.logfile("model")
+    # Two test threads, whatever the environment says: with one, libtest
+    # prints `test <name> ... ` before the test's own output and `ok` after
+    # it, and the lines judged below are not whole.
     code = r.run(["cargo", "test", "--locked", "--release", "--test", "redact_model", "--", "--nocapture"],
-                 env={"KASANE_MODEL_SEEDS": str(cfg["seeds"])}, log=log)
+                 env={"KASANE_MODEL_SEEDS": str(cfg["seeds"]), "RUST_TEST_THREADS": "2"}, log=log)
     text = log.read_text(errors="replace")
     tallies = re.findall(r"^model: Tally \{ ok: (\d+), refused: (\d+)", text, re.M)
     m = tallies[0] if len(tallies) == 1 else None

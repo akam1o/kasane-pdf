@@ -567,6 +567,19 @@ class Production(unittest.TestCase):
             self.assertEqual(self.model(text), ("error", "no_summary:redact_model"), name)
         # Exit 0 is not enough, and a failing exit wins over a good text.
         self.assertEqual(self.model(ok, code=101), ("failed", "exit:redact_model"))
+        # One test thread's layout (the name, the test's output, then `ok`)
+        # is not accepted — the run pins two threads.
+        serial = ("running 2 tests\ntest generated_documents_are_non_interfering ... model: Tally { ok: 17000, "
+                  "refused: 3000 }\nok\ntest generated_documents_are_non_interfering_in_recovery_mode ... model "
+                  "(Recovering): Tally { ok: 10, refused: 5 }\nok\n\ntest result: ok. 2 passed; 0 failed; 0 ignored; "
+                  "0 measured; 0 filtered out; finished in 51.87s\n")
+        self.assertEqual(self.model(serial), ("error", "no_summary:redact_model"))
+        runner = self.FakeRunner(ok)
+        seen = {}
+        run = runner.run
+        runner.run = lambda argv, cwd=None, env=None, log=None: (seen.update(env or {}), run(argv, cwd, env, log))[1]
+        rv.check_noninterference(runner, {"seeds": 10000}, None)
+        self.assertEqual(seen.get("RUST_TEST_THREADS"), "2")
 
     def test_verify_redact_counts_a_crash_as_a_crash(self):
         fake = Path(tempfile.mkdtemp()) / "kasane"
