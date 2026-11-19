@@ -6,6 +6,13 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `RedactOptions::embed_substitute_fonts`: the check of the rewritten
+  document covers every font it embedded, whatever the font's name, and
+  compares each with what was written (program bytes, encoding,
+  advances); it skipped fonts not named `Liberation…` — every substitute
+  so far was one, so no released output was affected.
+
 ## [0.11.0] - 2026-11-19
 
 ### Security
