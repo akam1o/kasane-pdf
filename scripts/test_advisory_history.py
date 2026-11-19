@@ -595,6 +595,20 @@ class Modes(unittest.TestCase):
         self.TIMES = dict(self.TIMES, **{"0.9.0": "yesterday"})
         with self.assertRaises(SystemExit):
             self.run_mode("--mode", "release-tag", "--tag-version", "0.8.0")
+        # Published at the tag's own time: neither before nor after.
+        self.TIMES = dict(self.TIMES, **{"0.9.0": "2026-01-04T00:00:00Z"})
+        code, doc = self.run_mode("--mode", "release-tag", "--tag-version", "0.8.0")
+        self.assertEqual(code, 1)
+        self.assertIn("publication_time_of_tag:0.9.0", doc["problems"])
+        self.assertEqual(doc["after_tag"], [])
+        # A version listed twice by the API.
+        saved = ah.fetch
+        ah.fetch = lambda url: (json.dumps({"versions": [{"num": "0.8.0", "created_at": "2026-01-04T00:00:00Z"},
+                                                         {"num": "0.8.0", "created_at": "2026-01-09T00:00:00Z"}],
+                                            "meta": {}}).encode() if url.startswith(ah.VERSIONS_API) else saved(url))
+        with self.assertRaises(SystemExit):
+            self.run_mode("--mode", "release-tag", "--tag-version", "0.8.0")
+        ah.fetch = saved
 
     def test_17_a_version_before_the_tag_missing(self):
         self.cfg["versions"].remove("0.6.0")

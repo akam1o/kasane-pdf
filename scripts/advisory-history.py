@@ -573,9 +573,12 @@ def publication_times():
         d = json.loads(fetch(url))
         for e in d.get("versions") or []:
             try:
-                out[e["num"]] = datetime.datetime.fromisoformat(e["created_at"].replace("Z", "+00:00"))
+                num, t = e["num"], datetime.datetime.fromisoformat(e["created_at"].replace("Z", "+00:00"))
             except (KeyError, TypeError, ValueError, AttributeError):
                 raise SystemExit("advisory-history: a crates.io version without a publication time")
+            if num in out:
+                raise SystemExit(f"advisory-history: crates.io lists {num} twice")
+            out[num] = t
         nxt = (d.get("meta") or {}).get("next_page")
         if not nxt:
             return out
@@ -594,8 +597,10 @@ def tag_cut(index, times, tag):
     if tag not in published or tag not in times:
         return {"tag": tag, "before": set(), "after": [], "problems": problems + [f"tag_not_published:{tag}"]}
     t = times[tag]
+    # The same time as the tag's says neither before nor after.
+    problems += [f"publication_time_of_tag:{v}" for v in sorted(published) if v != tag and times.get(v) == t]
     before = {v for v in published if v != tag and v in times and times[v] < t}
-    after = sorted((v for v in published if v != tag and v in times and times[v] >= t), key=lambda v: times[v])
+    after = sorted((v for v in published if v != tag and v in times and times[v] > t), key=lambda v: times[v])
     return {"tag": tag, "before": before, "after": after, "problems": problems}
 
 
