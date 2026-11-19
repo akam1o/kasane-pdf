@@ -9,10 +9,20 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [0.11.0] - 2026-11-19
 
 ### Security
-- This version fixes a security issue in redaction. An advisory with the
-  details will be published once it is available on crates.io; upgrading
-  is recommended for every application that uses `redact` or the content
-  removers.
+- Refusals that quoted the document (GHSA-4q38-qhh6-c256, Low): when
+  `redact`, `remove_region(s)`, `remove_regions_and_document_metadata`,
+  `remove_text` or `remove_image_region` refused a page, the error's
+  message could include values taken from the document — the character
+  code of the first glyph whose outline could not be evaluated (for a
+  simple font with a standard encoding, the character itself), bytes of
+  a damaged token or stream, a ToUnicode entry, a signature field's name,
+  an XFA packet's name, a button field's state, a CIDFont ordering or
+  `/W` CIDs; `redact --explain` listed every such glyph's code. Nothing
+  was written (the refusal was right); it matters where the message
+  reaches someone without the document, such as a log (0.1.0–0.10.0).
+  Refusals now give the cause and the position only; docs/security.md
+  lists which interfaces carry the document's content
+  (`diagnose_redaction`, `preflight-redaction`, `Document::take_warnings`).
 
 ### Added
 - Recovery mode reads more damaged content, each case recorded as a

@@ -22,8 +22,9 @@ const RECT: (f64, f64, f64, f64) = (60.0, 60.0, 140.0, 140.0);
 
 /// Write `pdf` for the CLI check when asked: `expect` is `safe-text:T`
 /// (refused, or no `T` extracted), `safe-bytes:T` (refused, or no `T` in
-/// the fully decoded file), `refused`, or `fast` (renders, or refuses,
-/// within the script's time bound).
+/// the fully decoded file), `refused`, `fast` (renders, or refuses,
+/// within the script's time bound), or `quiet:T` (refused, with a
+/// message that does not say `T`).
 fn dump(name: &str, ghsa: &str, args: &str, expect: &str, pdf: &[u8]) {
     let Ok(dir) = std::env::var("KASANE_ADVISORY_DUMP") else {
         return;
@@ -1377,6 +1378,92 @@ fn ghsa_fqgr_glyphs_viewers_draw_elsewhere() {
                 rect.0, rect.1, rect.2, rect.3
             ),
             &format!("safe-text:{marker}"),
+            &pdf,
+        );
+    }
+}
+
+// ---- GHSA-4q38-qhh6-c256 (0.1.0–0.10.0): refusal messages -------------
+
+/// A refusal says why, not what the page holds: refused, with a message
+/// that carries neither the shown character's code, nor the bytes of a
+/// damaged token, nor a field's name.
+#[test]
+fn ghsa_4q38_refusals_do_not_quote_the_document() {
+    // A non-embedded font: its glyphs' extent is unknown. The first
+    // shown code is Q (0x51).
+    let content = format!("BT /F2 14 Tf 70 100 Td (QZXWVK) Tj ET {KEPT}");
+    let mut objs = vec![
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] \
+              /Resources << /Font << /F1 20 0 R /F2 50 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+        ),
+        (4, stream_obj("", content.as_bytes())),
+        (
+            50,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+                .to_vec(),
+        ),
+    ];
+    objs.extend(font_objs());
+    let cases: Vec<(&str, Vec<u8>, &str)> = vec![
+        ("glyph", build_pdf(&objs), "0x51"),
+        // A bare word where an operator is expected.
+        (
+            "operator",
+            page(
+                format!("0 0 5 5 re f QWERTYUIOP {KEPT}").as_bytes(),
+                "",
+                "",
+                "",
+                vec![],
+            ),
+            "QWERTYUIOP",
+        ),
+        // A signed signature field, named.
+        (
+            "signature",
+            page(
+                KEPT.as_bytes(),
+                "",
+                "/AcroForm << /Fields [60 0 R] /SigFlags 3 >>",
+                "",
+                vec![
+                    (60, b"<< /FT /Sig /T (SIGNERNAMEQ) /V 61 0 R >>".to_vec()),
+                    (
+                        61,
+                        b"<< /Type /Sig /ByteRange [0 1 2 3] /Contents <00> >>".to_vec(),
+                    ),
+                ],
+            ),
+            "SIGNERNAMEQ",
+        ),
+    ];
+    for (name, pdf, marker) in cases {
+        for recovering in [false, true] {
+            let doc = if recovering {
+                Document::from_bytes_recovering(&pdf).unwrap()
+            } else {
+                Document::from_bytes(&pdf).unwrap()
+            };
+            match redact(&doc, &[(0, vec![RECT])], &RedactOptions::new()) {
+                Ok(_) => panic!("{name}: redacted a page it must refuse"),
+                Err(e) => {
+                    let said = format!("{e} {e:?}");
+                    assert!(!said.contains(marker), "{name} ({recovering}): {said}");
+                }
+            }
+        }
+        // Before 0.6 there is no `redact`: the editor of that time.
+        dump(
+            &format!("4q38-{name}"),
+            "GHSA-4q38-qhh6-c256",
+            &format!("{REDACT_ARGS}|experimental-remove-text 1 --rect 60 60 140 140"),
+            &format!("quiet:{marker}"),
             &pdf,
         );
     }

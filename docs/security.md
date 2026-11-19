@@ -116,6 +116,39 @@ resource bound, a caller's bad argument and a signature's policy are
 message text. `ErrorKind::is_malformed_input()` groups the
 "the file is broken" kinds.
 
+## What errors and diagnostics say about the document
+
+The refusals of the editors — `redact`, `remove_region(s)`,
+`remove_regions_and_document_metadata`, `remove_text`,
+`remove_image_region` — and the errors they pass on name the cause and
+where it is (a byte offset, an object number, an operator or glyph
+index), never what the document holds: no character code, CID, glyph
+id, glyph name or Unicode value of shown text, no string object (a
+field name, an XFA packet name, an encoding declaration), no field
+value or button state, and no bytes of a stream or a damaged token.
+Names that designate structure may appear: an unsupported subtype or
+filter, a resource name, a font's `/BaseFont`, one of the registered
+CIDFont orderings. The CLI `redact` prints the same text. A refusal
+can therefore be logged or shown to someone who does not have the
+document; its `Display` and `Debug` read alike.
+
+These, on the other hand, are **diagnostics of the document** and carry
+its content — treat them as you treat the document:
+
+- `diagnose_redaction` and the CLI `preflight-redaction`: every target's
+  character code, Unicode text and position;
+- `Document::take_warnings` (and the `warning:` lines of the CLI
+  `render` and `text`): a recovery rule or a malformed entry can quote
+  what it skipped — an unknown operator, a ToUnicode entry;
+- text extraction, annotation text and the structure-tree reports,
+  by definition.
+
+`redact --explain` (corpus analysis) lists every finding of the
+redaction walk, one JSON line each, under the rules of the refusals:
+causes, with a byte offset or an index where the reason gives one —
+never the codes or bytes. It does show *how many*
+findings a page has, and of which kind.
+
 ## Three outcomes: strict pass, accepted with warnings, recovery
 
 | outcome | how it is produced | what it means | how to see it |
