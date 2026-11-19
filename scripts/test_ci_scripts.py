@@ -168,6 +168,17 @@ class Workflows(unittest.TestCase):
     def test_committed_workflows_pass(self):
         self.assertEqual(self.problems(lambda wf: None), [])
 
+    def test_the_renderer_baseline_check_cannot_be_dropped(self):
+        step = lambda wf: self.step(wf, "compat-smoke", "check-renderer-baselines.py")
+        for name, mutate in {
+            "switched off": lambda wf: step(wf).__setitem__("if", "false"),
+            "allowed to fail": lambda wf: step(wf).__setitem__("continue-on-error", True),
+            "removed": lambda wf: wf["jobs"]["compat-smoke"]["steps"].remove(step(wf)),
+            "one platform only": lambda wf: step(wf).__setitem__("run", step(wf)["run"].replace(
+                "linux-x86_64,darwin-arm64", "linux-x86_64")),
+        }.items():
+            self.assertTrue(self.problems(mutate), name)
+
     def test_weakenings_are_caught(self):
         on = lambda wf: wf.get("on") if "on" in wf else wf[True]
         cases = {

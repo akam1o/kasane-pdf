@@ -487,6 +487,37 @@ class Production(unittest.TestCase):
         except rv.CheckFailed as e:
             return e.status, e.reason
 
+    def test_the_disclosure_profile_judges_the_renderer_baselines(self):
+        # The committed profiles: S's run checks the renderer baselines
+        # (security_regressions) and runs the external renderers.
+        cfg = json.loads((ROOT / "scripts" / "release-verify.json").read_text())
+        self.assertEqual(set(cfg["profiles"]["disclosure"]), {"security_regressions", "external_renderers"})
+
+        class Runner(self.FakeRunner):
+            def __init__(self, baselines_code):
+                super().__init__("")
+                self.env = {"CARGO_TARGET_DIR": str(self.dir / "target")}
+                (self.dir / "target" / "release").mkdir(parents=True)
+                (self.dir / "target" / "release" / "kasane-pdf").write_text("x")
+                self.baselines_code, self.ran = baselines_code, []
+
+            def run(self, argv, cwd=None, env=None, log=None):
+                cmd = " ".join(str(a) for a in argv)
+                self.ran.append(cmd)
+                if log:
+                    Path(log).write_text("35/35 cases as expected\n" if "verify-redact" in cmd else
+                                         "".join(f"GHSA-x-{i}  in{i}.pdf  SAFE (refused)\n" for i in range(50)))
+                return self.baselines_code if "check-renderer-baselines.py" in cmd else 0
+        cfg = {"min_verify_redact_cases": 35, "min_advisory_cases": 44}
+        r = Runner(0)
+        work = r.dir / "work"
+        rv.check_security_regressions(r, cfg, work)
+        self.assertTrue(any("check-renderer-baselines.py --dump" in c and "linux-x86_64,darwin-arm64" in c
+                            for c in r.ran))
+        with self.assertRaises(rv.CheckFailed) as e:
+            rv.check_security_regressions(Runner(1), cfg, work)
+        self.assertEqual(e.exception.reason, "exit:renderer_baselines")
+
     def test_model_seed_count(self):
         ok = ("model (Recovering): Tally { ok: 10, refused: 5 }\n"
               "test generated_documents_are_non_interfering_in_recovery_mode ... ok\n"
