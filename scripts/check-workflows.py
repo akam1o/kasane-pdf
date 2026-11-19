@@ -225,7 +225,15 @@ FULL_MUST_RUN = {
 }
 # nightly.yml: the advisory history of every published version.
 NIGHTLY_MUST_RUN = {
-    "advisory-history": ["python3 scripts/advisory-history.py run --dump /tmp/advisories --candidate"],
+    "advisory-history": ["python3 scripts/advisory-history.py run $mode --dump /tmp/advisories --candidate",
+                         'refs/heads/*) mode="--mode main"', "*) echo \"::error::cannot tell"],
+}
+# advisory-history-tag.yml: a release tag's own history, judged with this
+# branch's scripts (a tag's workflow cannot be changed after the fact).
+TAG_HISTORY_MUST_RUN = {
+    "advisory-history-tag": ["scripts/advisory-history.py run --mode release-tag --tag-version \"$V\"",
+                             "--expected /tmp/tag/compat/advisories/history.json",
+                             "--candidate /tmp/tag/target/release/kasane-pdf"],
 }
 MAIN_ONLY = "${{ github.ref == 'refs/heads/main' }}"
 MAIN_ONLY_SAVE = "success() && github.ref == 'refs/heads/main'"
@@ -574,6 +582,8 @@ def main():
             check_nightly(path, wf)
             check_nightly_measurement(path, wf)
             check_must_run(path, wf, NIGHTLY_MUST_RUN)
+        if path.name == "advisory-history-tag.yml":
+            check_must_run(path, wf, TAG_HISTORY_MUST_RUN)
         check_caches(path, wf)
         check_coverage_only(path, wf)
         wfs.append((path, wf))

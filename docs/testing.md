@@ -423,7 +423,8 @@ Where each runs:
 | --- | --- | --- | --- |
 | advisory regressions on the candidate (`--expect-safe`), the history and baseline scripts' own tests | synthetic | every pull request (fast gate) | Linux (CI) |
 | external renderers on synthetic cases, against `baseline-linux-x86_64.json` | synthetic | full gate (pushes to `main`, `release/**`, dispatch) | Linux (CI) |
-| advisory history: every published version and the candidate | synthetic | nightly and dispatch (`nightly.yml`) | Linux (CI) |
+| advisory history: every published version and the candidate | synthetic | nightly and dispatch (`nightly.yml`; on a tag, `release-tag` mode) | Linux (CI) |
+| advisory history of a release tag, with the branch's scripts | synthetic | dispatch (`advisory-history-tag.yml`) | Linux (CI) |
 | the release profile (corpora, renderers, fuzz, model, regressions) | private corpus + synthetic | before a release (`release-verify.py`) | the maintainer's machine |
 | `security-history` with private reproduction material | private + synthetic | before a security advisory (`release-verify.py --profile security-history --private-inputs`) | the maintainer's machine |
 

@@ -330,14 +330,32 @@ cd /tmp/rel && ./scripts/fetch-cjk-assets.sh --check && cargo publish
 3. The GitHub Release (A.4's command), its body the release notes plus
    the *Security* section: each advisory's id and link, and that the
    crate's own CHANGELOG has the general entry only.
-4. S: rebase it on `main` if needed (the diff stays tests/docs/
-   CHANGELOG), open a pull request, merge it when green. The tag stays
-   on R.
+4. The advisory history of the new version, on S — now that it can be
+   built from crates.io (before, no history can name it): add
+   `<version>` to `compat/advisories/history.json`'s `versions`, run
+   `scripts/advisory-history.py run --mode main …` and
+   `update-expected` (the published package must give the candidate's
+   states), commit it on S, and run S's `disclosure` and
+   `security-history` profiles again. Then
+   `scripts/release-check.py --published <version> <S>`: the version is
+   on crates.io from the tag's commit and S's history covers it, every
+   input with its state. Without this, main's advisory history fails
+   with `version_not_covered:<version>`.
+5. S: rebase it on `main` if needed (the diff stays tests/docs/
+   CHANGELOG/history/renderer baselines), open a pull request, merge it
+   when green. The tag stays on R.
 
 ### B.5 After publishing
 
 - `gh workflow run nightly.yml --ref v<version>` — the corpus on R in
-  CI, confirming the local run.
+  CI, confirming the local run. Its advisory-history job runs in
+  `release-tag` mode (the ref is a `v<version>` tag of this package):
+  the tag's own history and build, the release from crates.io giving
+  the build's states, versions published after the tag listed as not
+  judged. A tag made before that mode existed runs its own older
+  workflow; judge it with `gh workflow run advisory-history-tag.yml
+  --ref main -f tag=v<version>` (this branch's scripts on the tag's
+  build, inputs and history).
 - docs.rs, the clean consumer, branch clean-up as in A.4.
 - The global GitHub Advisory Database lists the advisories after
   GitHub's review (hours to days); check that its entries match.

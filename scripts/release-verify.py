@@ -578,7 +578,9 @@ def check_advisory_history(r, cfg, work):
     need(r.run(["npm", "ci", "--no-audit", "--no-fund"], cwd=Path(r.src) / "tools" / "pdfjs"), "npm_ci")
     dump_dir = advisory_dump(r, work)
     out = work / "history.json"
-    argv = [sys.executable, "scripts/advisory-history.py", "run", "--dump", str(dump_dir), "--candidate", str(k),
+    # A release candidate is judged as main is: every published version.
+    argv = [sys.executable, "scripts/advisory-history.py", "run", "--mode", "main", "--dump", str(dump_dir),
+            "--candidate", str(k),
             "--json", str(out), "--log", str(r.logfile("builds"))]
     private = os.environ.get("KASANE_PRIVATE_ADVISORY_INPUTS")
     if private:

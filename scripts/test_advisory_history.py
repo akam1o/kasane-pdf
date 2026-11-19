@@ -8,6 +8,7 @@ accident.
 
     python3 scripts/test_advisory_history.py
 """
+import contextlib
 import hashlib
 import importlib.util
 import io
@@ -454,11 +455,155 @@ class Private(unittest.TestCase):
 
     def test_private_inputs_refused_in_actions(self):
         env = dict(os.environ, GITHUB_ACTIONS="true")
-        r = subprocess.run([sys.executable, str(ROOT / "scripts" / "advisory-history.py"), "run", "--dump", "/x",
+        r = subprocess.run([sys.executable, str(ROOT / "scripts" / "advisory-history.py"), "run", "--mode", "main",
+                            "--dump", "/x",
                             "--candidate", "/x", "--json", "/tmp/x.json", "--private-inputs", "/y",
                             "--private-json", "/tmp/y.json"], capture_output=True, text=True, env=env)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("never run in GitHub Actions", r.stdout + r.stderr)
+
+
+
+class Modes(unittest.TestCase):
+    """`run --mode main|release-tag`, with the builds, the crates.io index,
+    the renderers and the judging replaced: what each mode requires."""
+
+    INDEX = ["0.5.0", "0.6.0", "0.7.0", "0.8.0"]
+
+    def setUp(self):
+        import platform as pf
+        self.d = Path(tempfile.mkdtemp())
+        self.dump = self.d / "dump"
+        self.dump.mkdir()
+        (self.dump / "manifest-a.tsv").write_text(f"a.pdf\t{GHSA}\tredact --page 1 --rect 1 1 2 2\tsafe-bytes:X\n")
+        self.cand = self.d / "cand"
+        self.cand.write_text("#!/bin/sh\n")
+        self.cfg = {"versions": ["0.5.0", "0.6.0", "0.7.0"], "advisories": dict(ADV), "toolchain": "1.92",
+                    "features": [], "expected": {"a.pdf": {"0.5.0": "NA", "0.6.0": "LEAK", "0.7.0": "LEAK",
+                                                           "candidate": "REFUSED"}}}
+        self.cfg["advisories"][GHSA] = {"affected": [">= 0.6.0", "< 0.8.0"], "patched": "0.8.0"}
+        self.plat = f"{pf.system()}-{pf.machine()}"
+        self.release_state = "REFUSED"
+        self.saved = {k: getattr(ah, k) for k in ("build_version", "evaluate", "fetch", "load", "cache_dir")}
+
+        def rec(v):
+            return {"status": "built", "version": v, "tag": f"v{v}", "source": "crates.io", "toolchain": "1.92",
+                    "features": [], "builder": ah.BUILDER, "platform": self.plat, "crate_sha256": "c",
+                    "commit": "d", "rustc_commit": "e"}
+        ah.build_version = lambda v, *a, **k: rec(v)
+        ah.fetch = lambda url: "\n".join(json.dumps({"vers": v}) for v in self.INDEX).encode()
+        ah.cache_dir = lambda a: self.d / "cache"
+        self.saved_usage = ah.car.usage_of
+        ah.car.usage_of = lambda path: "usage: kasane-pdf redact"
+
+        class VR:
+            @staticmethod
+            def tool_versions():
+                return {"poppler": "1", "mupdf": "1", "pdfjs": "1"}
+        ah.load = lambda *a: VR
+
+        def evaluate(rows, dump, binaries, usage, vr, jobs):
+            states = {"0.5.0": "NA", "0.6.0": "LEAK", "0.7.0": "LEAK", "candidate": "REFUSED",
+                      "release": self.release_state}
+            return {r[0]: {label: {"state": states.get(label, "LEAK")} for label in binaries} for r in rows}
+        ah.evaluate = evaluate
+
+    def tearDown(self):
+        for k, v in self.saved.items():
+            setattr(ah, k, v)
+        ah.car.usage_of = self.saved_usage
+
+    def run_mode(self, *mode):
+        exp = self.d / "history.json"
+        exp.write_text(json.dumps(self.cfg))
+        out = self.d / "out.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            code = ah.main(["run", *mode, "--dump", str(self.dump), "--candidate", str(self.cand), "--json", str(out),
+                            "--expected", str(exp), "--log", str(self.d / "log")])
+        return code, json.loads(out.read_text())
+
+    def test_16_19_a_release_tag(self):
+        # The tag 0.8.0, published; 0.9.0 came after it.
+        self.INDEX = self.INDEX + ["0.9.0"]
+        code, doc = self.run_mode("--mode", "release-tag", "--tag-version", "0.8.0")
+        self.assertEqual((code, doc["problems"]), (0, []))
+        self.assertEqual((doc["mode"], doc["tag_version"], doc["after_tag"]), ("release-tag", "0.8.0", ["0.9.0"]))
+        self.assertEqual(doc["tag_release"]["published"], True)
+        self.assertEqual(doc["tag_release"]["differs"], 0)
+        # Not judged is not safe: it is in no range, no record, no cell.
+        self.assertNotIn("0.9.0", doc["versions"])
+        self.assertNotIn("0.9.0", doc["inputs"]["a.pdf"]["cells"])
+        # The same data in main mode: 0.8.0 and 0.9.0 are not covered.
+        code, doc = self.run_mode("--mode", "main")
+        self.assertEqual(code, 1)
+        self.assertIn("version_not_covered:0.8.0", doc["problems"])
+        self.assertIn("version_not_covered:0.9.0", doc["problems"])
+
+    def test_16_a_tag_not_yet_published(self):
+        code, doc = self.run_mode("--mode", "release-tag", "--tag-version", "0.9.0")
+        self.assertEqual(code, 1)  # 0.8.0, published before the tag, is not in its history
+        self.assertIn("version_not_covered:0.8.0", doc["problems"])
+        self.cfg["versions"].append("0.8.0")
+        self.cfg["expected"]["a.pdf"]["0.8.0"] = "LEAK"
+        self.cfg["advisories"][GHSA]["affected"] = [">= 0.6.0", "< 0.9.0"]
+        code, doc = self.run_mode("--mode", "release-tag", "--tag-version", "0.9.0")
+        self.assertEqual((code, doc["problems"]), (0, []))
+        self.assertEqual(doc["tag_release"], {"version": "0.9.0", "published": False})
+
+    def test_17_a_version_before_the_tag_missing(self):
+        self.cfg["versions"].remove("0.6.0")
+        del self.cfg["expected"]["a.pdf"]["0.6.0"]
+        code, doc = self.run_mode("--mode", "release-tag", "--tag-version", "0.8.0")
+        self.assertEqual(code, 1)
+        self.assertIn("version_not_covered:0.6.0", doc["problems"])
+
+    def test_18_the_tag_itself(self):
+        # The published release is not what the tag builds.
+        self.release_state = "LEAK"
+        code, doc = self.run_mode("--mode", "release-tag", "--tag-version", "0.8.0")
+        self.assertEqual(code, 1)
+        self.assertIn("tag_release_differs:a.pdf", doc["problems"])
+        # The tag's history naming the tag or a later version.
+        self.release_state = "REFUSED"
+        self.cfg["versions"].append("0.8.0")
+        self.cfg["expected"]["a.pdf"]["0.8.0"] = "REFUSED"
+        code, doc = self.run_mode("--mode", "release-tag", "--tag-version", "0.8.0")
+        self.assertEqual(code, 1)
+        self.assertIn("history_version_not_before_tag:0.8.0", doc["problems"])
+
+    def test_20_21_25_the_mode_is_never_guessed(self):
+        for argv in (["--mode", "release-tag"], ["--mode", "release-tag", "--tag-version", "v0.8.0"],
+                     ["--mode", "release-tag", "--tag-version", "0.8"], ["--mode", "main", "--tag-version", "0.8.0"]):
+            with self.assertRaises(SystemExit, msg=argv):
+                self.run_mode(*argv)
+        with contextlib.redirect_stderr(io.StringIO()):
+            for argv in ([], ["--mode", "tag"], ["--mode", "nightly"]):
+                with self.assertRaises(SystemExit, msg=argv):
+                    self.run_mode(*argv)
+
+    def test_22_23_nothing_to_judge(self):
+        for f in self.dump.iterdir():
+            f.unlink()
+        code, doc = self.run_mode("--mode", "release-tag", "--tag-version", "0.8.0")
+        self.assertEqual(code, 1)
+        self.assertIn("no_inputs", doc["problems"])
+
+    def test_22_no_versions(self):
+        self.cfg["versions"] = []
+        self.cfg["expected"]["a.pdf"] = {"candidate": "REFUSED"}
+        self.INDEX = []
+        code, doc = self.run_mode("--mode", "main")
+        self.assertEqual(code, 1)
+        self.assertIn("no_versions", doc["problems"])
+
+    def test_24_a_range_it_cannot_read(self):
+        for bad in (["~0.6"], [], [">= 0.6"], "<= 0.8.0", [">= 0.6.0", 7]):
+            self.cfg["advisories"][GHSA]["affected"] = bad
+            with self.assertRaises(SystemExit, msg=bad):
+                self.run_mode("--mode", "main")
+        self.cfg["advisories"][GHSA] = {"affected": [">= 0.6.0"], "patched": "next"}
+        with self.assertRaises(SystemExit):
+            self.run_mode("--mode", "main")
 
 
 class UpdateExpected(unittest.TestCase):

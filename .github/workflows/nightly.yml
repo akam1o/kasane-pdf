@@ -229,9 +229,25 @@ jobs:
         run: |
           cargo build --locked --release --bin kasane-pdf
           KASANE_ADVISORY_DUMP=/tmp/advisories cargo test --locked --release --test redact_advisories
+      # The mode is the ref's, never guessed: a branch is judged against
+      # every published version (main); a vX.Y.Z tag against its own
+      # history, the versions published after it listed as not judged
+      # (release-tag); any other ref fails.
       - name: every published version and the candidate, judged
         run: |
-          python3 scripts/advisory-history.py run --dump /tmp/advisories --candidate target/release/kasane-pdf \
+          case "$GITHUB_REF" in
+            refs/heads/*) mode="--mode main" ;;
+            refs/tags/v*)
+              v="${GITHUB_REF#refs/tags/v}"
+              if ! printf '%s\n' "$v" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+' \
+                || ! grep -Eqx "version = \"$v\"" Cargo.toml; then
+                echo "::error::$GITHUB_REF is not a release tag of this package"
+                exit 1
+              fi
+              mode="--mode release-tag --tag-version $v" ;;
+            *) echo "::error::cannot tell a branch from a release tag: $GITHUB_REF"; exit 1 ;;
+          esac
+          python3 scripts/advisory-history.py run $mode --dump /tmp/advisories --candidate target/release/kasane-pdf \
             --json /tmp/advisory-history.json
       - name: keep the builds for the next run (main only)
         if: success() && github.ref == 'refs/heads/main'
