@@ -104,7 +104,7 @@ patch release.
   class of input is refused with `max_pattern_tiles`, and `rewrite`
   carries `/OCProperties`.
 
-## Unreleased (0.11.0; additive)
+## 0.11.0 (additive)
 
 - `AnnotationText::shown_text()`, `AnnotationText::note()` and the
   field `AnnotationText::recovered` (the struct is `#[non_exhaustive]`)
@@ -115,6 +115,9 @@ patch release.
   FunctionExtraInputsIgnored, ShadingOutputsTruncated,
   ImageSamplesReadAtDictionarySize}` ([`recovery-mode.md`](recovery-mode.md);
   the enum is `#[non_exhaustive]`).
+- Behaviour: some error messages give a byte offset, an index or the
+  kind of the problem instead of the values they stopped at; the error
+  kinds are unchanged.
 - `cargo semver-checks` against 0.10.0: no update required.
 
 ## 0.10.0

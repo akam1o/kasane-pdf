@@ -279,9 +279,9 @@ impl CffMatrices {
                 .map(|sid| sid as u16)),
             Some(_) => Err(Error::Unsupported {
                 feature: "CFF predefined Expert charset",
-                detail: format!(
-                    "glyph /{name} in a program with the Expert or ExpertSubset charset"
-                ),
+                detail: "a glyph named by the encoding, in a program with the Expert or \
+                         ExpertSubset charset"
+                    .into(),
             }),
             None => Ok(None),
         }

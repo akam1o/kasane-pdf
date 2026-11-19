@@ -463,7 +463,7 @@ fn unknown_operator() {
                     .replace("SECRET", secret(v));
                 page(&format!("{c} {KEPT}"))
             },
-            strict(false, Refused("unknown operator 'zork'")),
+            strict(false, Refused("unknown operator at byte")),
             recovery(true, &[R::IgnoredUnknownOperator], Refused(UNCERTAIN)),
         );
     }
@@ -1031,7 +1031,7 @@ fn invalid_form_xobjects() {
     case(
         "unknown operator inside a form",
         form_page("/BBox [0 0 200 200]", |v| format!("zork {}", shown(v))),
-        strict(false, Refused("unknown operator 'zork'")),
+        strict(false, Refused("unknown operator at byte")),
         recovery(true, &[R::IgnoredUnknownOperator], Refused(UNCERTAIN)),
     );
     case(

@@ -1531,7 +1531,8 @@ fn print_annotation_lines(annots: &[kasane_pdf::AnnotationText]) {
 /// Diagnose what a *future* redaction would face — never modifies the
 /// file. A clean report is **not** a "safe to redact" verdict; the
 /// output names targets, blockers, uncertain positions, unexamined
-/// areas, and shared resources.
+/// areas, and shared resources. It prints the page's text (each
+/// target's code and Unicode): it is as sensitive as the document.
 fn run_preflight(args: &[String]) -> Result<(), Error> {
     // args[0]=input args[1]=page then --rect ×N + --format.
     if args.len() < 2 {
@@ -1620,7 +1621,8 @@ fn preflight_usage() -> String {
      --rect <llx> <lly> <urx> <ury> [--rect …] [--format text|json]\n\
      rect corners are PDF user space (+x right, +y up; ll = lower-left)\n\
      — the diagnosis never modifies the file and a clean report is not \
-     a 'safe to redact' verdict."
+     a 'safe to redact' verdict. It prints the page's text: handle the \
+     output as you handle the document."
         .into()
 }
 

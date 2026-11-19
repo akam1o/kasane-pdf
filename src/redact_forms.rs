@@ -612,9 +612,8 @@ fn check_kept_fields(
                     }
                     if !shows {
                         return Err(refuse(format!(
-                            "field {holder}'s /{} /{} is a state no widget the output shows has",
-                            String::from_utf8_lossy(key),
-                            String::from_utf8_lossy(&n)
+                            "field {holder}'s /{} is a state no widget the output shows has",
+                            String::from_utf8_lossy(key)
                         )));
                     }
                 }

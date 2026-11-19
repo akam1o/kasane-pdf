@@ -183,6 +183,33 @@ class Decide(unittest.TestCase):
         self.assertEqual(ah.decide(r, c, e, ADV, VERSIONS)[0], [])
 
 
+    def test_quiet_inputs_reproduce_by_what_was_printed(self):
+        # A `quiet` input's LEAK counts for the range only when the CLI
+        # printed the marker; one that accepted the input does not show it.
+        r = rows("q.pdf", expect="quiet:M")
+        want = expected("q.pdf", **norm(GOOD))
+        printed = {k: (dict(v, reasons=["printed"]) if v["state"] == "LEAK" else v)
+                   for k, v in cells(**norm(GOOD)).items()}
+        self.assertEqual(ah.decide(r, {"q.pdf": printed}, want, ADV, VERSIONS)[0], [])
+        accepted = {k: (dict(v, reasons=["accepted"]) if v["state"] == "LEAK" else v)
+                    for k, v in cells(**norm(GOOD)).items()}
+        p = ah.decide(r, {"q.pdf": accepted}, want, ADV, VERSIONS)[0]
+        self.assertIn(f"range_not_reproduced:{GHSA}:0.6.0", p)
+        self.assertIn(f"range_not_reproduced:{GHSA}:0.7.0", p)
+        # Other expectations: a LEAK counts as before, reasons or not.
+        self.assertEqual(ah.decide(rows("a.pdf"), {"a.pdf": cells(**norm(GOOD))}, expected("a.pdf", **norm(GOOD)),
+                                   ADV, VERSIONS)[0], [])
+
+    def test_quiet_cells_keep_their_reason(self):
+        saved = ah.car.judge_case
+        try:
+            for reason in ("printed", "accepted"):
+                ah.car.judge_case = lambda *a, reason=reason, **k: {"state": "LEAK", "output": None, "reason": reason}
+                self.assertEqual(ah.judge_cell(None, "k", "s", "redact", "quiet:M", ""),
+                                 {"state": "LEAK", "reasons": [reason]})
+        finally:
+            ah.car.judge_case = saved
+
 class Judge(unittest.TestCase):
     """judge_case with fake CLIs."""
 
@@ -208,6 +235,22 @@ class Judge(unittest.TestCase):
         # the advisory is about; a refused render is REFUSED, not FAST.
         self.assertEqual(self.judge("time.sleep(30)", expect="fast", timeout=1), "SLOW")
         self.assertEqual(self.judge("sys.stderr.write('error [x]: y'); sys.exit(1)", expect="fast"), "REFUSED")
+
+    def test_quiet_refusals(self):
+        # Refused, the marker printed nowhere: REFUSED.
+        refuse = "sys.stderr.write('error [x]: {}'); sys.exit(1)"
+        self.assertEqual(self.judge(refuse.format("y"), expect="quiet:MARKQ"), "REFUSED")
+        # The marker on standard error or standard output: LEAK.
+        self.assertEqual(self.judge(refuse.format("y MARKQ"), expect="quiet:MARKQ"), "LEAK")
+        self.assertEqual(self.judge("print('MARKQ'); " + refuse.format("x"), expect="quiet:MARKQ"), "LEAK")
+        # Accepted what it must refuse: LEAK, whatever it says.
+        self.assertEqual(self.judge("open(out, 'w').write('x'); sys.exit(0)", expect="quiet:MARKQ"), "LEAK")
+        # Not a refusal (an output written, no error line): never REFUSED.
+        self.assertEqual(self.judge("open(out, 'w').write('x'); sys.stderr.write('error [x]: y'); sys.exit(1)",
+                                    expect="quiet:MARKQ"), "CRASH")
+        self.assertEqual(self.judge("sys.exit(1)", expect="quiet:MARKQ"), "CRASH")
+        # Other expectations never read the message.
+        self.assertEqual(self.judge(refuse.format("SECRETX"), expect="safe-bytes:SECRETX"), "REFUSED")
 
     def test_9_success_without_output(self):
         self.assertEqual(self.judge("sys.exit(0)"), "CRASH")

@@ -383,6 +383,10 @@ pub(crate) fn intersects(b: &(f64, f64, f64, f64), r: &Rect) -> bool {
 /// on it. When the walk is interrupted mid-stream the result carries
 /// `incomplete` instead of `Err`, so callers can distinguish
 /// "nothing found" from "could not finish".
+///
+/// The diagnosis carries the document's content — every text target's
+/// character code, Unicode text and position: handle it as you handle
+/// the document.
 pub fn diagnose_redaction(
     doc: &Document,
     page_index: usize,
@@ -2025,7 +2029,7 @@ impl<'a> DiagWalker<'a> {
             | O::EndMarkedContent
             | O::BeginCompatibility
             | O::EndCompatibility => {}
-            O::Unknown { operator, .. } => {
+            O::Unknown { .. } => {
                 // `Unknown` ops reach here inside `BX … EX` and, in
                 // recovery mode, for an unknown operator anywhere or a
                 // known one with the wrong number of operands (R1). What
@@ -2037,10 +2041,9 @@ impl<'a> DiagWalker<'a> {
                 self.push_uncertain(Uncertain {
                     kind: TargetKind::Other,
                     site: self.site(),
-                    reason: format!(
-                        "operator '{}' not interpreted (unknown, or with the wrong number of operands)",
-                        String::from_utf8_lossy(operator)
-                    ),
+                    reason: "an operator not interpreted (unknown, or with the wrong number of \
+                             operands)"
+                        .into(),
                 })?;
             }
         }
@@ -2977,10 +2980,11 @@ impl<'a> DiagWalker<'a> {
         if matches!(e, Error::LimitExceeded { .. }) {
             return Err(e);
         }
+        // `site` says where the glyph is.
         self.push_uncertain(Uncertain {
             kind: TargetKind::Text,
             site: self.text_site(self.code_index),
-            reason: format!("glyph 0x{code:X} — outline lookup failed: {e}"),
+            reason: format!("a glyph's outline cannot be evaluated: {e}"),
         })?;
         // Still advance — the *next* glyph's origin is determined by
         // the font's width table, which is separate from outlines.

@@ -164,9 +164,8 @@ impl<'a> Parser<'a> {
                 let s = std::str::from_utf8(&bytes).map_err(|_| {
                     Error::Parse(format!("startxref value is not ASCII at byte {offset}"))
                 })?;
-                s.parse::<u64>().map_err(|_| {
-                    Error::Parse(format!("invalid startxref offset '{s}' at byte {offset}"))
-                })
+                s.parse::<u64>()
+                    .map_err(|_| Error::Parse(format!("invalid startxref offset at byte {offset}")))
             }
             Some(other) => Err(Error::Parse(format!(
                 "expected startxref offset, found token at byte {}",
@@ -336,10 +335,7 @@ impl<'a> Parser<'a> {
             return Ok(Object::Real(f));
         }
 
-        Err(Error::Parse(format!(
-            "unexpected keyword '{}' at byte {offset}",
-            String::from_utf8_lossy(bytes)
-        )))
+        Err(Error::Parse(format!("unexpected keyword at byte {offset}")))
     }
 
     /// After a dictionary, check whether the `stream` keyword follows; if
@@ -582,25 +578,14 @@ impl<'a> Parser<'a> {
             context: "xref entry type",
         })?;
 
-        let offset = parse_u64_digits(&offset_tok).ok_or_else(|| {
-            Error::Parse(format!(
-                "bad xref entry offset '{}'",
-                String::from_utf8_lossy(&offset_tok)
-            ))
-        })?;
+        let offset = parse_u64_digits(&offset_tok)
+            .ok_or_else(|| Error::Parse("bad xref entry offset".into()))?;
         let generation = parse_u64_digits(&gen_tok)
             .filter(|&g| g <= u32::MAX as u64)
-            .ok_or_else(|| {
-                Error::Parse(format!(
-                    "bad xref entry generation '{}'",
-                    String::from_utf8_lossy(&gen_tok)
-                ))
-            })? as u32;
+            .ok_or_else(|| Error::Parse("bad xref entry generation".into()))?
+            as u32;
         if kind_tok.len() != 1 {
-            return Err(Error::Parse(format!(
-                "bad xref entry type '{}'",
-                String::from_utf8_lossy(&kind_tok)
-            )));
+            return Err(Error::Parse("bad xref entry type".into()));
         }
         Ok(Some(XrefLine {
             offset,

@@ -670,17 +670,12 @@ fn signed_field_in(
             if let Some(v) = fd.get(b"V".as_slice()) {
                 let v = deref_chain(doc, v)?;
                 if let Some(vd) = v.as_dict() {
-                    let name = fd
-                        .get(b"T".as_slice())
-                        .and_then(|o| o.as_string())
-                        .map(|s| String::from_utf8_lossy(s).into_owned())
-                        .unwrap_or_else(|| "unnamed".into());
                     let what = if vd.contains_key(b"ByteRange".as_slice()) {
-                        format!("field {name:?} with /ByteRange")
+                        "a signature field with /ByteRange"
                     } else {
-                        format!("field {name:?} with a signature dictionary")
+                        "a signature field with a signature dictionary"
                     };
-                    return Ok(Some(what));
+                    return Ok(Some(what.into()));
                 }
             }
         }
@@ -835,7 +830,7 @@ fn xfa_checkable(text: &[u8], wide: bool, narrow: bool) -> Result<(), String> {
             });
             let ok = (wide && utf16_name) || (narrow && ascii);
             if !ok {
-                return Err(format!("declared encoding {enc:?}"));
+                return Err("an encoding declaration it cannot read alike".into());
             }
         }
         at += i + 5;
@@ -932,13 +927,14 @@ fn xfa_xml_signature(doc: &Document, xfa: &Object) -> Result<Option<String>, Err
     let signed = |t: &[u8]| find_ci(&expand_char_refs(t), XMLDSIG_MARK).is_some();
     match deref_chain(doc, xfa)? {
         Object::Array(items) => {
-            let mut name = String::from("(unnamed)");
+            let mut name = 0usize;
             let (mut whole, mut any_wide, mut any_narrow) = (Vec::new(), false, false);
             for it in &items {
                 match deref_chain(doc, it)? {
-                    Object::String(s) => name = String::from_utf8_lossy(&s).into_owned(),
+                    // Packets are named by position.
+                    Object::String(_) => name += 1,
                     stream @ Object::Stream { .. } => {
-                        let what = format!("packet {name:?}");
+                        let what = format!("packet {name}");
                         if let Some((t, wide)) = text(&stream, &what)? {
                             if signed(&t) {
                                 return Ok(Some(what));

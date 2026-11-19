@@ -247,7 +247,7 @@ fn check_embedded(bytes: &[u8], limits: &Limits) -> Result<(), Error> {
             let want = want.unwrap_or(ttf_parser::GlyphId(0));
             if got != Some(want) {
                 return Err(mismatch(format!(
-                    "object {r}: code {code} resolves to glyph {got:?}, its name to {want:?}"
+                    "object {r}: a code resolves to another glyph than its name"
                 )));
             }
         }

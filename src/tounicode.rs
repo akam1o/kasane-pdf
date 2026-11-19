@@ -407,7 +407,7 @@ impl<'a> Parser<'a> {
                 if s.parse::<f64>().is_ok() {
                     return Ok(Tok::Real);
                 }
-                Err(Error::Structure(format!("invalid number '{s}'")))
+                Err(Error::Structure("invalid number in ToUnicode CMap".into()))
             }
             c if c.is_ascii_alphabetic() || c == b'_' => {
                 // A bare word — `begincmap`, `endbfchar`, etc.
@@ -421,8 +421,8 @@ impl<'a> Parser<'a> {
                 Ok(Tok::BareWord(word))
             }
             _ => Err(Error::Structure(format!(
-                "unexpected byte 0x{:02X} in ToUnicode CMap at pos {}",
-                self.data[self.pos], self.pos
+                "unexpected byte in ToUnicode CMap at pos {}",
+                self.pos
             ))),
         }
     }
@@ -454,9 +454,9 @@ impl<'a> Parser<'a> {
                     feature: "ToUnicode codespace",
                     detail: format!(
                         "only uniform 1- or 2-byte codespaces are \
-                         supported; got {:?}..{:?}",
-                        String::from_utf8_lossy(lo_bytes),
-                        String::from_utf8_lossy(hi_bytes)
+                         supported; got {}..{} hex digits",
+                        lo_bytes.len(),
+                        hi_bytes.len()
                     ),
                 });
             }
@@ -518,8 +518,9 @@ impl<'a> Parser<'a> {
                 return Err(Error::Unsupported {
                     feature: "ToUnicode source code width",
                     detail: format!(
-                        "code {} does not match the declared {}-byte codespace",
-                        String::from_utf8_lossy(s),
+                        "a bfchar code of {} hex digits does not match the declared {}-byte \
+                         codespace",
+                        s.len(),
                         out.code_len
                     ),
                 });
@@ -769,7 +770,7 @@ fn hex_digits(s: &[u8]) -> Vec<u8> {
 fn hex_uint(s: &[u8]) -> Result<u16, Error> {
     let s = hex_digits(s);
     let s = std::str::from_utf8(&s).map_err(|_| Error::Structure("invalid hex".into()))?;
-    u16::from_str_radix(s, 16).map_err(|_| Error::Structure(format!("invalid hex '{s}'")))
+    u16::from_str_radix(s, 16).map_err(|_| Error::Structure("invalid hex".into()))
 }
 
 /// Decode a hex string to UTF-16BE code units. Odd-length hex
@@ -786,9 +787,8 @@ fn decode_utf16be(hex: &[u8]) -> Result<Vec<u16>, Error> {
         hex_str.to_string()
     };
     for i in (0..padded.len()).step_by(2) {
-        let b = u8::from_str_radix(&padded[i..i + 2], 16).map_err(|_| {
-            Error::Structure(format!("invalid hex in ToUnicode: '{}'", &padded[i..i + 2]))
-        })?;
+        let b = u8::from_str_radix(&padded[i..i + 2], 16)
+            .map_err(|_| Error::Structure("invalid hex in ToUnicode".into()))?;
         bytes.push(b);
     }
     // Must be even length for UTF-16.

@@ -1241,10 +1241,7 @@ impl<'a> ContentParser<'a> {
                         operands: ops,
                     }
                 } else {
-                    return Err(Error::Parse(format!(
-                        "unknown operator '{}' at byte {offset}",
-                        String::from_utf8_lossy(op)
-                    )));
+                    return Err(Error::Parse(format!("unknown operator at byte {offset}")));
                 }
             }
         };
@@ -1764,8 +1761,7 @@ fn word_as_operand(bytes: &[u8], offset: usize) -> Result<Object, Error> {
         b"false" => Ok(Object::Bool(false)),
         b"null" => Ok(Object::Null),
         _ => Err(Error::Parse(format!(
-            "keyword '{}' cannot be an operand at byte {offset}",
-            String::from_utf8_lossy(bytes)
+            "a keyword cannot be an operand at byte {offset}"
         ))),
     }
 }
