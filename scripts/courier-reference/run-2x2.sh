@@ -14,6 +14,9 @@
 set -eu
 SRC=$(cd "$1" && pwd); CORPUS=$(cd "$2" && pwd); OUT=$3; ENV=$4
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
+# The runner reads CORPUS/../manifest.yaml (each file's expected outcome):
+# without it no file is `expect: pass` and the second witness checks none.
+[ -f "$CORPUS/../manifest.yaml" ] || { echo "run-2x2: no manifest.yaml next to $CORPUS" >&2; exit 2; }
 T=${CARGO_TARGET_DIR:-$OUT/target}
 ( cd "$SRC/compat/runner" && CARGO_TARGET_DIR=$T cargo build -q --locked --release --features cjk-fallback )
 ( cd "$SRC" && CARGO_TARGET_DIR=$T/cjk cargo build -q --locked --release --features cjk-fallback --bin kasane-pdf )
