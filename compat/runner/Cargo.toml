@@ -20,7 +20,7 @@ libc = "0.2"
 unicode-normalization = "0.1"
 # Inflate embedded files for the semantic round trip. MIT OR Zlib OR
 # Apache-2.0; already in kasane-pdf's graph.
-miniz_oxide = "0.8"
+miniz_oxide = "0.9"
 
 [features]
 cjk-fallback = ["kasane-pdf/cjk-fallback"]
