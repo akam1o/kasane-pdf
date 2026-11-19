@@ -189,13 +189,22 @@ def differs(a, b, outside):
     return d / n if n else 0.0
 
 
+def qpdf_objects(argv):
+    """qpdf's JSON objects, or None when qpdf cannot read the file."""
+    r = run(["qpdf", "--json=2", *argv])
+    if r.returncode not in (0, 3):
+        return None
+    try:
+        return json.loads(r.stdout)["qpdf"][1]
+    except (ValueError, KeyError, IndexError):
+        return None
+
+
 def embedded_program(pdf):
     """The /FontFile2 stream of the page's font, decoded (qpdf json)."""
-    r = run(["qpdf", "--json=2", "--json-stream-data=inline", "--decode-level=generalized", pdf, "-"])
-    if r.returncode not in (0, 3):
+    objs = qpdf_objects(["--json-stream-data=inline", "--decode-level=generalized", pdf, "-"])
+    if objs is None:
         return None, None
-    doc = json.loads(r.stdout)
-    objs = doc["qpdf"][1]
     fonts = [v["value"] for k, v in objs.items() if isinstance(v.get("value"), dict) and v["value"].get("/Type") == "/Font"]
     if len(fonts) != 1:
         return None, None
@@ -210,9 +219,8 @@ def embedded_program(pdf):
 
 def font_bbox(pdf):
     """The /FontBBox the output's font descriptor declares."""
-    r = run(["qpdf", "--json=2", pdf, "-"])
-    objs = json.loads(r.stdout)["qpdf"][1]
-    for v in objs.values():
+    objs = qpdf_objects([pdf, "-"])
+    for v in (objs or {}).values():
         val = v.get("value")
         if isinstance(val, dict) and val.get("/Type") == "/FontDescriptor":
             return val.get("/FontBBox")
@@ -324,9 +332,10 @@ def failures(name, res, kind):
         if "error" in checks:
             continue
         for k, v in checks.items():
+            # The edge cases keep the word on purpose: only the checks of
+            # its absence and of the public text are not theirs.
             if kind in ("edge-in", "edge-out") and k in ("3_target_not_extracted", "3_no_ink_in_rect",
-                                                         "3_target_not_in_file", "3_file_decoded",
-                                                         "4_public_kept"):
+                                                         "3_target_not_in_file", "4_public_kept"):
                 continue
             if v is not True:
                 f.append(f"{name}: {who}: {k}")
