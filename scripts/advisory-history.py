@@ -88,6 +88,8 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -155,10 +157,23 @@ def in_range(v, rng):
     return True
 
 
-def fetch(url):
-    req = urllib.request.Request(url, headers={"User-Agent": "kasane-pdf advisory-history (maintainer)"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return r.read()
+USER_AGENT = "kasane-pdf advisory-history (https://github.com/akam1o/kasane-pdf)"
+
+
+def fetch(url, tries=5, sleep=time.sleep):
+    """The body at `url`. crates.io answers 429 when a shared runner's
+    address is over its rate: wait (Retry-After, else 2, 4, 8… s) and try
+    again, a few times; any other error, or the last 429, raises."""
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    for i in range(tries):
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                return r.read()
+        except urllib.error.HTTPError as e:
+            if e.code not in (429, 502, 503) or i == tries - 1:
+                raise
+            after = e.headers.get("Retry-After") if e.headers else None
+            sleep(min(int(after), 60) if after and after.isdigit() else 2 ** (i + 1))
 
 
 # ---- old versions from crates.io --------------------------------------------
