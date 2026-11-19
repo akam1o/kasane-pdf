@@ -12,7 +12,10 @@ import argparse, hashlib, json, os, platform, subprocess
 
 
 def out(argv, env=None):
-    r = subprocess.run(argv, capture_output=True, text=True, env=env)
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, env=env)
+    except FileNotFoundError:
+        return f"{argv[0]}: missing"
     return (r.stdout + r.stderr).strip()
 
 
@@ -39,7 +42,8 @@ def main():
                 "libfreetype6", "poppler-utils", "libpoppler*", "poppler-data", "mupdf-tools", "qpdf", "fonts-*"], env)
     doc = {
         "os": osr.get("PRETTY_NAME", "").strip('"'), "machine": platform.machine(),
-        "pdftoppm": out(["pdftoppm", "-v"], env).splitlines()[0], "mutool": out(["mutool", "-v"], env).splitlines()[0],
+        "pdftoppm": (out(["pdftoppm", "-v"], env).splitlines() or [""])[0],
+        "mutool": (out(["mutool", "-v"], env).splitlines() or [""])[0],
         "packages": sorted(l for l in pkgs.splitlines() if l and "no packages found" not in l),
         "fonts": fonts(env),
         "fc_match": {f: out(["fc-match", f], env) for f in ("Courier", "Courier:bold", "Courier:italic",
