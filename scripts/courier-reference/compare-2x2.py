@@ -26,7 +26,10 @@ STAGES = ("parse", "recover", "render", "render_recovered", "text", "rewrite")
 def load(d):
     run = json.load(open(os.path.join(d, "run", "latest.json")))
     att = json.load(open(os.path.join(d, "run", "attribution.json")))
+    fonts = os.path.join(d, "reference-fonts.sha256")
     return {"impl": open(os.path.join(d, "implementation.sha")).read().strip(),
+            "harness": open(os.path.join(d, "harness.sha")).read().strip(),
+            "reference_fonts": open(fonts).read().strip(),
             "env": open(os.path.join(d, "environment")).read().strip(),
             "files": {f["id"]: f for f in run["files"]},
             "att": {(p["id"], p["page"]): p for p in att["pages"]}}
@@ -118,7 +121,14 @@ def main():
             or [runs[k]["env"] for k in ("a_e0", "a_e1", "c_e0", "c_e1")] != ["e0", "e1", "e0", "e1"]:
         print("compare-2x2: the four runs are not A/E0, A/E1, C/E0, C/E1 of two implementations")
         return 2
+    # One harness; no E1 configuration in E0, the same one in both E1 cells.
+    if len({r["harness"] for r in runs.values()}) != 1 or runs["a_e0"]["reference_fonts"] \
+            or runs["c_e0"]["reference_fonts"] or not runs["a_e1"]["reference_fonts"] \
+            or runs["a_e1"]["reference_fonts"] != runs["c_e1"]["reference_fonts"]:
+        print("compare-2x2: the cells were not run with one harness and one E1 configuration")
+        return 2
     doc = {"implementations": {"A": runs["a_e0"]["impl"], "C": runs["c_e0"]["impl"]},
+           "harness": runs["a_e0"]["harness"], "e1_configuration": runs["a_e1"]["reference_fonts"].splitlines(),
            "reference_environment (A/E0 -> A/E1)": delta(runs["a_e0"], runs["a_e1"]),
            "implementation in E1 (A/E1 -> C/E1)": delta(runs["a_e1"], runs["c_e1"]),
            "implementation in E0 (A/E0 -> C/E0)": delta(runs["a_e0"], runs["c_e0"])}

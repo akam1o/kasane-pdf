@@ -20,6 +20,10 @@ mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
 T=${CARGO_TARGET_DIR:-$OUT/target}
 ( cd "$SRC/compat/runner" && CARGO_TARGET_DIR=$T cargo build -q --locked --release --features cjk-fallback )
 ( cd "$SRC" && CARGO_TARGET_DIR=$T/cjk cargo build -q --locked --release --features cjk-fallback --bin kasane-pdf )
+# E0 is the system's configuration: nothing of E1 inherited.
+if [ -n "${FONTCONFIG_FILE:-}${FONTCONFIG_PATH:-}" ] || grep -qs FONTCONFIG_FILE "$(command -v pdftoppm)"; then
+  echo "run-2x2: the inherited environment is not E0 (FONTCONFIG_* set, or pdftoppm is a wrapper)" >&2; exit 2
+fi
 case "$ENV" in
   e0) P=$PATH ;;
   e1) P=$(cd "${5:?E1DIR}" && pwd)/bin:$PATH; [ -x "${P%%:*}/pdftoppm" ] || { echo "no E1 at $5" >&2; exit 2; } ;;
