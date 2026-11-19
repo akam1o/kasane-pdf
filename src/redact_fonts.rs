@@ -69,7 +69,7 @@ struct Written {
 }
 
 /// A hook on the edit before it is written.
-type BeforeRewrite<'h> = dyn FnMut(&mut Edit, &[Written]) -> Result<(), Error> + 'h;
+type BeforeRewrite<'h> = dyn FnMut(&mut Edit, &mut [Written]) -> Result<(), Error> + 'h;
 
 /// [`embed_substitutes`], with `before_rewrite` run on the edit just
 /// before it is written (tests alter the output there).
@@ -226,7 +226,7 @@ fn embed_substitutes_with(
     let Some(mut e) = edit else {
         return Ok(None);
     };
-    before_rewrite(&mut e, &written)?;
+    before_rewrite(&mut e, &mut written)?;
     let (bytes, map) = e.rewrite_with_overrides_mapped(&crate::rewrite::RewriteOverrides {
         javascript_removed: scripts_go,
         ..Default::default()
@@ -239,7 +239,9 @@ fn embed_substitutes_with(
 /// in the rewritten document as this crate reads it: a non-embedded-free
 /// TrueType font whose `/FontFile2` is exactly the substitute's bytes,
 /// with the `/Encoding` and `/Widths` written, each code mapping to the
-/// glyph its `uniXXXX` name designates through the face's (3,1) cmap —
+/// glyph — never `.notdef` — its `uniXXXX` name designates through the
+/// face's (3,1) cmap, from a nonsymbolic descriptor with that program
+/// only —
 /// what readers do for a non-symbolic TrueType font (§9.6.6.4) — so that
 /// the redaction's ink decision, made on this document, is about the
 /// glyphs readers draw. A font the rewrite did not write (unreachable)
@@ -307,6 +309,14 @@ fn check_embedded(
             .map_err(|_| bad("unreadable font descriptor"))?
             .and_then(|o| o.as_dict().cloned())
             .ok_or_else(|| bad("no font descriptor"))?;
+        // Nonsymbolic (glyphs found by name), one program: the written
+        // descriptor, nothing a reader could prefer to it.
+        if fd.get(b"Flags".as_slice()).and_then(|f| f.as_i64()) != Some(32)
+            || fd.contains_key(b"FontFile".as_slice())
+            || fd.contains_key(b"FontFile3".as_slice())
+        {
+            return Err(bad("another font descriptor than the one written"));
+        }
         let program = match fd
             .get(b"FontFile2".as_slice())
             .map(|o| doc.deref(o))
@@ -334,7 +344,8 @@ fn check_embedded(
                 .and_then(|n| n.strip_prefix("uni"))
                 .and_then(|h| u32::from_str_radix(h, 16).ok())
                 .and_then(|u| f.unicode_glyph(u))
-                .unwrap_or(ttf_parser::GlyphId(0));
+                .filter(|g| g.0 != 0)
+                .ok_or_else(|| bad("a code whose name designates no glyph"))?;
             let got = f
                 .glyph_id(code as u8)
                 .map_err(|_| bad("a code that does not resolve"))?;
@@ -424,7 +435,7 @@ mod tests {
     }
 
     /// Embed, altering the edit first; the error's text when refused.
-    fn tampered(alter: &mut dyn FnMut(&mut Edit, &[Written])) -> Result<u64, String> {
+    fn tampered(alter: &mut dyn FnMut(&mut Edit, &mut [Written])) -> Result<u64, String> {
         let d = doc();
         embed_substitutes_with(&d, &Limits::default(), false, &mut |e, w| {
             alter(e, w);
@@ -553,6 +564,52 @@ mod tests {
             .unwrap_err();
             assert!(e.contains("embedding a substitute font"), "{what}: {e}");
         }
+    }
+
+    #[test]
+    fn another_descriptor_is_refused() {
+        for what in 0..3 {
+            let e = tampered(&mut |e, w| {
+                let fd = match font_dict(e, &w[0]).get(b"FontDescriptor".as_slice()) {
+                    Some(Object::Ref(r)) => *r,
+                    _ => panic!("descriptor"),
+                };
+                let Some(Object::Dict(d)) = e.overlay.get_mut(&(fd.number, fd.generation)) else {
+                    panic!("descriptor dict")
+                };
+                match what {
+                    0 => d.insert(b"Flags".to_vec(), Object::Integer(4)),
+                    1 => d.insert(b"FontFile3".to_vec(), Object::Integer(1)),
+                    _ => d.insert(b"FontFile".to_vec(), Object::Integer(1)),
+                };
+            })
+            .unwrap_err();
+            assert!(e.contains("embedding a substitute font"), "{what}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_name_designating_no_glyph_is_refused() {
+        // A name the face has no glyph for, written for a code: readers
+        // would draw .notdef, differently.
+        let e = tampered(&mut |e, w| {
+            let d = font_dict(e, &w[0]);
+            let Some(Object::Dict(enc)) = d.get_mut(b"Encoding".as_slice()) else {
+                panic!("encoding")
+            };
+            let Some(Object::Array(a)) = enc.get_mut(b"Differences".as_slice()) else {
+                panic!("differences")
+            };
+            a[66] = Object::Name(b"uniE000".to_vec());
+            // As if the writer itself had named it: only the glyph check
+            // stands between this and the output.
+            w[0].names[65] = Some("uniE000".into());
+        })
+        .unwrap_err();
+        assert!(
+            e.contains("names no glyph") || e.contains("designates no glyph"),
+            "{e}"
+        );
     }
 
     #[test]
