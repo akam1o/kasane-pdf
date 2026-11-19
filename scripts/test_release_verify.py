@@ -525,19 +525,48 @@ class Production(unittest.TestCase):
         self.assertEqual(e.exception.reason, "exit:renderer_baselines")
 
     def test_model_seed_count(self):
-        ok = ("model (Recovering): Tally { ok: 10, refused: 5 }\n"
+        ok = ("running 2 tests\nmodel (Recovering): Tally { ok: 10, refused: 5 }\n"
               "test generated_documents_are_non_interfering_in_recovery_mode ... ok\n"
               "model: Tally { ok: 17000, refused: 3000 }\ntest generated_documents_are_non_interfering ... ok\n"
-              "test result: ok. 2 passed; 0 failed")
+              "\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 51.87s\n")
         self.assertEqual(self.model(ok)["ok"], 17000)
         self.assertEqual(self.model(ok.replace("17000", "300").replace("3000", "20")), ("failed", "seeds_mismatch"))
         self.assertEqual(self.model(ok.replace("17000", "0").replace("3000", "20000")), ("failed", "seeds_mismatch"))
-        self.assertEqual(self.model("test result: ok. 2 passed; 0 failed"), ("error", "no_summary:redact_model"))
+        self.assertEqual(self.model("test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;"),
+                         ("error", "no_summary:redact_model"))
         # Only one of the two tests ran (a filter, an older file).
         one = ok.replace("test generated_documents_are_non_interfering_in_recovery_mode ... ok\n", "")
         self.assertEqual(self.model(one.replace("2 passed", "1 passed")), ("error", "no_summary:redact_model"))
         self.assertEqual(self.model(ok, code=101), ("failed", "exit:redact_model"))
         self.assertEqual(self.model(ok, code=-11), ("failed", "crashed:redact_model"))
+
+    def test_model_output_must_be_complete(self):
+        ok = ("running 2 tests\nmodel (Recovering): Tally { ok: 10, refused: 5 }\n"
+              "test generated_documents_are_non_interfering_in_recovery_mode ... ok\n"
+              "model: Tally { ok: 17000, refused: 3000 }\ntest generated_documents_are_non_interfering ... ok\n"
+              "\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 51.87s\n")
+        self.assertEqual(self.model(ok)["ok"], 17000)
+        bad = {
+            # A name missing although the count says 2 (the review's case).
+            "a name missing, 2 passed": ok.replace("test generated_documents_are_non_interfering_in_recovery_mode ... ok\n",
+                                                   "test something_else ... ok\n"),
+            "a name twice": ok.replace("test generated_documents_are_non_interfering ... ok\n",
+                                       "test generated_documents_are_non_interfering ... ok\n" * 2),
+            "a third test": ok.replace("\ntest result", "test extra_model ... ok\n\ntest result"),
+            "a test not ok": ok.replace("non_interfering ... ok", "non_interfering ... FAILED"),
+            "a test ignored": ok.replace("0 ignored", "1 ignored"),
+            "a test filtered out": ok.replace("0 filtered out", "1 filtered out"),
+            "cut before the summary": ok.split("\ntest result")[0],
+            "two summaries": ok + "test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;\n",
+            "the tally twice": ok.replace("model: Tally", "model: Tally { ok: 1, refused: 1 }\nmodel: Tally"),
+            "no tally": ok.replace("model: Tally { ok: 17000, refused: 3000 }\n", ""),
+            "empty": "",
+            "not test output": "{\"ok\": 17000}",
+        }
+        for name, text in bad.items():
+            self.assertEqual(self.model(text), ("error", "no_summary:redact_model"), name)
+        # Exit 0 is not enough, and a failing exit wins over a good text.
+        self.assertEqual(self.model(ok, code=101), ("failed", "exit:redact_model"))
 
     def test_verify_redact_counts_a_crash_as_a_crash(self):
         fake = Path(tempfile.mkdtemp()) / "kasane"

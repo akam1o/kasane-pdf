@@ -671,8 +671,13 @@ mod tests {
         assert_eq!(m.predefined_charset_gid("zcaron", 229).unwrap(), Some(228));
         assert_eq!(m.predefined_charset_gid("exclamsmall", 400).unwrap(), None);
         assert!(m.standard_encoding());
-        // charset 1 (Expert): refused, never .notdef.
+        // charset 1 (Expert): refused, never .notdef — and the refusal
+        // names no glyph: the name is the shown code's.
         assert!(mk(&[140, 15]).predefined_charset_gid("space", 9).is_err());
+        let e = mk(&[140, 15])
+            .predefined_charset_gid("Qdummyglyph", 9)
+            .unwrap_err();
+        assert!(!format!("{e} {e:?}").contains("Qdummyglyph"), "{e}");
         // A charset table (offset 30): not predefined.
         assert_eq!(
             mk(&[169, 15]).predefined_charset_gid("space", 9).unwrap(),
