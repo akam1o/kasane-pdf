@@ -187,7 +187,7 @@ class Workflows(unittest.TestCase):
         for name, required, job, old, new in (
                 # The mode no longer passed, a branch no longer main, an
                 # unknown ref no longer refused (guessed as either mode).
-                ("nightly.yml", cw.NIGHTLY_MUST_RUN, "advisory-history", "run $mode", "run"),
+                ("nightly.yml", cw.NIGHTLY_MUST_RUN, "advisory-history", "kasane-pdf $mode", "kasane-pdf"),
                 ("nightly.yml", cw.NIGHTLY_MUST_RUN, "advisory-history", 'mode="--mode main"', 'mode=""'),
                 ("nightly.yml", cw.NIGHTLY_MUST_RUN, "advisory-history", '*) echo "::error::cannot tell',
                  '*) mode="--mode main"; echo "cannot tell'),

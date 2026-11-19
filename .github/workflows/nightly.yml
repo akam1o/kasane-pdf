@@ -247,7 +247,7 @@ jobs:
               mode="--mode release-tag --tag-version $v" ;;
             *) echo "::error::cannot tell a branch from a release tag: $GITHUB_REF"; exit 1 ;;
           esac
-          python3 scripts/advisory-history.py run $mode --dump /tmp/advisories --candidate target/release/kasane-pdf \
+          python3 scripts/advisory-history.py run --dump /tmp/advisories --candidate target/release/kasane-pdf $mode \
             --json /tmp/advisory-history.json
       - name: keep the builds for the next run (main only)
         if: success() && github.ref == 'refs/heads/main'

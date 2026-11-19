@@ -225,7 +225,10 @@ FULL_MUST_RUN = {
 }
 # nightly.yml: the advisory history of every published version.
 NIGHTLY_MUST_RUN = {
-    "advisory-history": ["python3 scripts/advisory-history.py run $mode --dump /tmp/advisories --candidate",
+    # (the command as it was before the modes, which the base branch's
+    # guard requires, then the mode)
+    "advisory-history": ["python3 scripts/advisory-history.py run --dump /tmp/advisories --candidate "
+                         "target/release/kasane-pdf $mode",
                          'refs/heads/*) mode="--mode main"', "*) echo \"::error::cannot tell"],
 }
 # advisory-history-tag.yml: a release tag's own history, judged with this
