@@ -29,8 +29,8 @@ A renderer that is missing, fails or times out is `unverified`, never a
 pass (exit 2). Exit 0: every case as expected; 1: a failure.
 --negative runs the same checks on deliberately broken outputs (another
 font program, another style's, a program that does not decode, a rect
-that misses the secret, one that covers public text) and passes only if
-each is caught.
+that misses the secret, one that covers public text, a file cut in half
+that cannot be decoded) and passes only if each is caught.
 The JSON names cases, renderers and check results only.
 """
 import argparse, hashlib, json, os, re, shutil, subprocess, sys, tempfile, zlib
@@ -226,8 +226,15 @@ def check_output(kasane, src, out, rect, face, tmp):
     base, program = embedded_program(out)
     res["file"]["1_embedded_face"] = base == f"/KasaneCourier-{face}" and program == want
     raw = open(out, "rb").read()
-    dec = run(["qpdf", "--qdf", "--object-streams=disable", "--decode-level=all", out, "-"]).stdout
-    res["file"]["3_target_not_in_file"] = TARGET.encode() not in raw and TARGET.encode() not in dec
+    # A plaintext check of the synthetic word in the file and in its fully
+    # decoded form (beside the renderers' text and ink checks): qpdf must
+    # read and decode the whole file without a warning (a repaired, cut or
+    # damaged file is not one kasane wrote) — otherwise the check fails
+    # rather than passing on what was not read.
+    q = run(["qpdf", "--qdf", "--object-streams=disable", "--decode-level=all", out, "-"])
+    decoded = q.returncode == 0 and q.stdout.rstrip().endswith(b"%%EOF")
+    res["file"]["3_file_decoded"] = decoded
+    res["file"]["3_target_not_in_file"] = decoded and TARGET.encode() not in raw and TARGET.encode() not in q.stdout
     kin, _ = render("kasane", src, tmp + "/in", kasane)
     kout, _ = render("kasane", out, tmp + "/out", kasane)
     try:
@@ -262,7 +269,9 @@ def check_output(kasane, src, out, rect, face, tmp):
         box = box_px(rect, img)
         r["3_no_ink_in_rect"] = ink(img, box, pad=2) == 0
         r["3_target_not_extracted"] = TARGET not in t
-        r["4_public_kept"] = all(p in t for p in PUBLIC)
+        # Every public word, in order.
+        at = [t.find(p) for p in PUBLIC]
+        r["4_public_kept"] = all(i >= 0 for i in at) and at == sorted(at)
         # Away from the rect, the page as kasane drew the input (its
         # substitute, the same font and advances): what was kept is drawn
         # alike, in the same places and styles.
@@ -316,7 +325,8 @@ def failures(name, res, kind):
             continue
         for k, v in checks.items():
             if kind in ("edge-in", "edge-out") and k in ("3_target_not_extracted", "3_no_ink_in_rect",
-                                                         "3_target_not_in_file", "4_public_kept"):
+                                                         "3_target_not_in_file", "3_file_decoded",
+                                                         "4_public_kept"):
                 continue
             if v is not True:
                 f.append(f"{name}: {who}: {k}")
@@ -383,6 +393,12 @@ def negative(kasane, tmp):
     redact(kasane, src, o, (chars[0]["origin"][0] + 0.5, rect[1], rect[2], rect[3]))
     c = check_output(kasane, src, o, rect, face, tmp)
     caught["public_lost"] = all(c[w].get("4_public_kept") is False for w in readers)
+    # A file qpdf cannot decode whole: the byte check must not pass.
+    o = os.path.join(tmp, "cut.pdf")
+    data = open(out, "rb").read()
+    open(o, "wb").write(data[: len(data) // 2])
+    c = check_output(kasane, src, o, rect, face, tmp)
+    caught["file_not_decoded"] = c["file"]["3_file_decoded"] is False and c["file"]["3_target_not_in_file"] is False
     return caught
 
 
