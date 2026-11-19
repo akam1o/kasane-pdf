@@ -530,11 +530,13 @@ class ReleaseCheck(unittest.TestCase):
         self.assertTrue(any("does not name" in p for p in pp("0.11.0", index, None, "t", hist)))
         self.assertTrue(any("no tag" in p for p in pp("0.11.0", index, "t", None, hist)))
         self.assertTrue(any("unreadable" in p for p in pp("0.11.0", index, "t", "t", None)))
-        # Excluded with a reason counts as covered; without one it does not.
+        # The release is judged, never excluded, and every state is one.
         ex = {"versions": ["0.10.0"], "excluded_versions": {"0.11.0": "never built"}, "expected": {"a.pdf": {}}}
-        self.assertEqual(pp("0.11.0", index, "t", "t", ex), [])
-        ex["excluded_versions"]["0.11.0"] = " "
-        self.assertTrue(pp("0.11.0", index, "t", "t", ex))
+        self.assertTrue(any("does not list 0.11.0" in p for p in pp("0.11.0", index, "t", "t", ex)))
+        for state in ("SAFE", "", None, "CRASH", "TIMEOUT"):
+            bad = {"versions": ["0.10.0", "0.11.0"], "expected": {"a.pdf": {"0.10.0": "LEAK", "0.11.0": state}}}
+            self.assertTrue(any("no expected state" in p for p in pp("0.11.0", index, "t", "t", bad)), state)
+        self.assertTrue(pp("0.11.0", index, "t", "t", {"versions": ["0.11.0"], "expected": {}}))
 
 class Projection(unittest.TestCase):
     """scripts/redact-results-projection.py keeps no free text."""

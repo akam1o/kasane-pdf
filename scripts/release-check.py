@@ -202,6 +202,10 @@ def local_problems(repo, sha, results, disclosure=None, disclosure_results=None,
     return problems
 
 
+# The states scripts/advisory-history.py records of an observed version.
+OBSERVED_STATES = ("NA", "LEAK", "SLOW", "REMOVED", "REFUSED", "KEPT", "FAST")
+
+
 def published_problems(version, index, vcs_sha, tag_sha, history):
     """What is missing after publishing `version`: `index` the crates.io
     index lines (dicts), `vcs_sha` the commit the package names (None when
@@ -217,14 +221,17 @@ def published_problems(version, index, vcs_sha, tag_sha, history):
     if not isinstance(history, dict) or not isinstance(history.get("expected"), dict):
         p.append("history.json is unreadable")
         return p
-    excluded = history.get("excluded_versions") or {}
-    if version not in (history.get("versions") or []) and not (
-            isinstance(excluded, dict) and str(excluded.get(version) or "").strip()):
+    # The release just published is judged, not excluded: its package is
+    # what users install.
+    if version not in (history.get("versions") or []):
         p.append(f"history.json does not list {version} (advisory-history.py run --mode main, then update-expected)")
-    elif version in (history.get("versions") or []):
-        missing = [n for n, row in history["expected"].items() if version not in row]
-        if not history["expected"] or missing:
-            p.append(f"history.json has no expected state of {version} for {len(missing)} input(s)")
+    elif not history["expected"]:
+        p.append("history.json has no inputs")
+    else:
+        bad = [n for n, row in history["expected"].items()
+               if not isinstance(row, dict) or row.get(version) not in OBSERVED_STATES]
+        if bad:
+            p.append(f"history.json has no expected state of {version} for {len(bad)} input(s)")
     return p
 
 

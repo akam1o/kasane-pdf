@@ -351,8 +351,8 @@ cd /tmp/rel && ./scripts/fetch-cjk-assets.sh --check && cargo publish
   CI, confirming the local run. Its advisory-history job runs in
   `release-tag` mode (the ref is a `v<version>` tag of this package):
   the tag's own history and build, the release from crates.io giving
-  the build's states, versions published after the tag listed as not
-  judged. A tag made before that mode existed runs its own older
+  the build's states, versions published after the tag (by publication
+  time) listed as not judged. A tag made before that mode existed runs its own older
   workflow; judge it with `gh workflow run advisory-history-tag.yml
   --ref main -f tag=v<version>` (this branch's scripts on the tag's
   build, inputs and history).

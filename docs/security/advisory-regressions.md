@@ -21,11 +21,15 @@ scripts/advisory-history.py run --mode main --dump /tmp/adv --candidate target/r
 
 `--mode` is required. `main` judges every version published on
 crates.io (one history.json does not list is `version_not_covered`).
-`release-tag --tag-version X` judges a release tag with its own history:
-the versions published before X as the tag expects, the tag's build as
-the candidate, X's crates.io package (once published) giving the
+`release-tag --tag-version X` judges a published release tag with its
+own history: the versions published before X as the tag expects, the
+tag's build as the candidate, X's crates.io package giving the
 candidate's state input by input, and the versions published after X
-listed as `after_tag` — not judged, which is not "safe". The nightly
+listed as `after_tag` — not judged, which is not "safe". Before and
+after are by crates.io publication time, not version number (a patch of
+an older line published later is after X). X not published is a
+failure: before publication a release is verified by
+`scripts/release-verify.py`. `update-expected` takes a `main` run only. The nightly
 picks the mode from its ref (a branch: `main`; a `vX.Y.Z` tag of this
 package: `release-tag`; anything else fails); `advisory-history-tag.yml`
 judges a tag with the dispatched branch's scripts.

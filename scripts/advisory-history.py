@@ -19,11 +19,16 @@ expected to be.
   history.json, the inputs and the expectations are the tag's. A
   version published before X must be covered as in `main`; X itself is
   the release, not a history entry; versions published after X are
-  listed as `after_tag` — not judged, never counted as safe. When X is
-  on crates.io, its package is built (checked against the tag as every
-  version is) and must give, input by input, the candidate's state.
-  history.json naming X or a later version, an input or version set
-  that comes out empty, or a malformed range: a failure.
+  listed as `after_tag` — not judged, never counted as safe. X's
+  crates.io package is built (checked against the tag as every version
+  is) and must give, input by input, the candidate's state.
+  "Before" and "after" are by crates.io publication time (the versions
+  API), not by version number: a patch of an older line published after
+  X is after X. X not published (or yanked), a published version without
+  a publication time, history.json naming X or a version published after
+  it, an input or version set that comes out empty, or a malformed
+  range: a failure. Before publication, a release is verified by
+  scripts/release-verify.py's profiles, not this mode.
     scripts/advisory-history.py update-expected --results OUT --expected FILE [--accept]
 
 **Old versions** come from crates.io, never from this checkout: for each
@@ -89,6 +94,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 INDEX = "https://index.crates.io/ka/sa/kasane-pdf"
 CRATE = "https://static.crates.io/crates/kasane-pdf/kasane-pdf-{v}.crate"
+VERSIONS_API = "https://crates.io/api/v1/crates/kasane-pdf/versions"
 SAFE_CANDIDATE = ("REMOVED", "REFUSED", "KEPT", "FAST")
 VULNERABLE = ("LEAK", "SLOW")
 NOT_OBSERVED = ("TIMEOUT", "CRASH", "ERROR")
@@ -544,36 +550,66 @@ def load_expected(path):
 
 
 def build_all(cfg, cache, log, rebuild=False, tag=None):
+    """(records, coverage problems, index, the tag's cut or None)."""
     index = [json.loads(l) for l in fetch(INDEX).decode().splitlines() if l.strip()]
+    cut = tag_cut(index, publication_times(), tag) if tag else None
     recs = {}
     with concurrent.futures.ThreadPoolExecutor(2) as ex:
         built = ex.map(lambda v: build_version(v, cfg, cache, log, index, rebuild), cfg["versions"])
         for v, rec in zip(cfg["versions"], built):
             recs[v] = rec
-    return recs, coverage_problems(cfg, index, tag), index
+    return recs, coverage_problems(cfg, index, cut), index, cut
 
 
 def published_versions(index):
     return {e["vers"] for e in index if not e.get("yanked")}
 
 
-def after_tag(index, tag):
-    """The versions published after the tag's (release-tag mode): not
-    judged against the tag's history."""
-    return sorted((v for v in published_versions(index) if VERSION.match(v) and parse_version(v) > parse_version(tag)),
-                  key=parse_version)
+def publication_times():
+    """{version: when crates.io published it} (the versions API, every
+    page). The index has no dates."""
+    out, url = {}, VERSIONS_API + "?per_page=100"
+    for _ in range(100):
+        d = json.loads(fetch(url))
+        for e in d.get("versions") or []:
+            try:
+                out[e["num"]] = datetime.datetime.fromisoformat(e["created_at"].replace("Z", "+00:00"))
+            except (KeyError, TypeError, ValueError, AttributeError):
+                raise SystemExit("advisory-history: a crates.io version without a publication time")
+        nxt = (d.get("meta") or {}).get("next_page")
+        if not nxt:
+            return out
+        url = VERSIONS_API + nxt
+    raise SystemExit("advisory-history: the crates.io versions API did not end")
 
 
-def coverage_problems(cfg, index, tag=None):
+def tag_cut(index, times, tag):
+    """A release tag's view of crates.io, by publication time (not version
+    order: a patch of an older line can be published after a newer
+    release): {"tag", "before", "after", "problems"}. The tag must be
+    published — its package is what release-tag mode checks the tag's build
+    against."""
+    published = published_versions(index)
+    problems = [f"no_publication_time:{v}" for v in sorted(published - set(times))]
+    if tag not in published or tag not in times:
+        return {"tag": tag, "before": set(), "after": [], "problems": problems + [f"tag_not_published:{tag}"]}
+    t = times[tag]
+    before = {v for v in published if v != tag and v in times and times[v] < t}
+    after = sorted((v for v in published if v != tag and v in times and times[v] >= t), key=lambda v: times[v])
+    return {"tag": tag, "before": before, "after": after, "problems": problems}
+
+
+def coverage_problems(cfg, index, cut=None):
     """Every version published on crates.io (not yanked) is in history.json,
     or excluded there with a reason: a version left out would leave its
-    place in every range unchecked. With a release tag (`tag`), the tag's
-    own version and the ones published after it are not history entries
-    of that tag — and history.json naming them is a failure."""
+    place in every range unchecked. With a release tag (`cut`,
+    tag_cut's), only the versions published before the tag must be; the
+    tag's own version and the ones published after it are not history
+    entries of that tag — and history.json naming them is a failure."""
     published = published_versions(index)
-    if tag is not None:
-        bad_after = [v for v in cfg["versions"] if parse_version(v) >= parse_version(tag)]
-        published = {v for v in published if VERSION.match(v) and parse_version(v) < parse_version(tag)}
+    if cut is not None:
+        bad_after = [v for v in cfg["versions"] if v == cut["tag"] or v in cut["after"]]
+        published = set(cut["before"])
     else:
         bad_after = []
     excluded = cfg.get("excluded_versions") or {}
@@ -586,7 +622,7 @@ def coverage_problems(cfg, index, tag=None):
         if v in cfg["versions"]:
             bad.append(f"excluded_and_tested:{v}")
     listed = set(cfg["versions"]) | {v for v, why in excluded.items() if isinstance(why, str) and why.strip()}
-    return bad + [f"history_version_not_before_tag:{v}" for v in bad_after] + \
+    return bad + (cut["problems"] if cut else []) + [f"history_version_not_before_tag:{v}" for v in bad_after] + \
         [f"version_not_covered:{v}" for v in sorted(published - listed, key=parse_version)] + \
         [f"version_not_published:{v}" for v in sorted(set(cfg["versions"]) - published - set(bad_after),
                                                       key=parse_version)]
@@ -629,7 +665,7 @@ def public_record(rec):
 def cmd_build(a):
     cfg = load_expected(a.expected)
     cache = cache_dir(a)
-    recs, coverage = build_all(cfg, cache, cache / "build.log", a.rebuild)
+    recs, coverage, _, _ = build_all(cfg, cache, cache / "build.log", a.rebuild)
     for v, rec in recs.items():
         print(f"{v:8} {rec['status']:6} {rec.get('problem', '')} {rec.get('binary_sha256', '')[:16]}")
     for p in coverage:
@@ -652,9 +688,9 @@ def cmd_run(a):
     cfg = load_expected(a.expected)
     cache = cache_dir(a)
     log = Path(a.log) if a.log else cache / "build.log"
-    recs, coverage, index = build_all(cfg, cache, log, a.rebuild, tag)
+    recs, coverage, index, cut = build_all(cfg, cache, log, a.rebuild, tag)
     problems = coverage + [x for v, r in recs.items() for x in record_problems(v, r, cfg)]
-    later = after_tag(index, tag) if tag else []
+    later = cut["after"] if cut else []
     tag_rec = None
     if tag and tag in published_versions(index):
         # The release itself, from crates.io: it must be what the tag's
@@ -741,7 +777,7 @@ def cmd_run(a):
         print("  untestable:", u)
     if tag:
         print(f"  mode release-tag {tag}: the release from crates.io "
-              + ("judged" if tag_rec is not None else "not published (the tag's build only)"))
+              + ("judged" if tag_rec is not None else "not published: nothing to check the tag against (failed)"))
         for v in later:
             print(f"  not judged: {v} (published after the tag)")
     for p in problems:
@@ -751,6 +787,10 @@ def cmd_run(a):
 
 def cmd_update(a):
     res = json.loads(Path(a.results).read_text())
+    if res.get("mode") != "main":
+        # A release tag's run judges fewer versions: never the source of
+        # main's expectations.
+        raise SystemExit("advisory-history: update-expected takes a --mode main run only")
     exp = json.loads(Path(a.expected).read_text())
     blocking = [p for p in res["problems"] if p.split(":")[0] in (
         "candidate_unsafe", "not_observed", "range_not_reproduced", "range_outside", "range_no_inputs", "version",

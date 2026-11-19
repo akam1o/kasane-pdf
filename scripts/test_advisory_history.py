@@ -491,7 +491,16 @@ class Modes(unittest.TestCase):
                     "features": [], "builder": ah.BUILDER, "platform": self.plat, "crate_sha256": "c",
                     "commit": "d", "rustc_commit": "e"}
         ah.build_version = lambda v, *a, **k: rec(v)
-        ah.fetch = lambda url: "\n".join(json.dumps({"vers": v}) for v in self.INDEX).encode()
+        # Published in the order of INDEX, a day apart, unless TIMES says.
+        self.TIMES = None
+
+        def fetch(url):
+            if url.startswith(ah.VERSIONS_API):
+                times = self.TIMES or {v: f"2026-01-{i + 1:02d}T00:00:00.000000Z" for i, v in enumerate(self.INDEX)}
+                return json.dumps({"versions": [{"num": v, "created_at": t} for v, t in times.items()],
+                                   "meta": {"next_page": None}}).encode()
+            return "\n".join(json.dumps({"vers": v}) for v in self.INDEX).encode()
+        ah.fetch = fetch
         ah.cache_dir = lambda a: self.d / "cache"
         self.saved_usage = ah.car.usage_of
         ah.car.usage_of = lambda path: "usage: kasane-pdf redact"
@@ -539,16 +548,53 @@ class Modes(unittest.TestCase):
         self.assertIn("version_not_covered:0.8.0", doc["problems"])
         self.assertIn("version_not_covered:0.9.0", doc["problems"])
 
-    def test_16_a_tag_not_yet_published(self):
-        code, doc = self.run_mode("--mode", "release-tag", "--tag-version", "0.9.0")
-        self.assertEqual(code, 1)  # 0.8.0, published before the tag, is not in its history
-        self.assertIn("version_not_covered:0.8.0", doc["problems"])
+    def test_16_a_tag_not_published(self):
+        # Nothing to check the tag's build against: a failure, even with a
+        # history that covers every version before it.
         self.cfg["versions"].append("0.8.0")
         self.cfg["expected"]["a.pdf"]["0.8.0"] = "LEAK"
         self.cfg["advisories"][GHSA]["affected"] = [">= 0.6.0", "< 0.9.0"]
         code, doc = self.run_mode("--mode", "release-tag", "--tag-version", "0.9.0")
-        self.assertEqual((code, doc["problems"]), (0, []))
+        self.assertEqual(code, 1)
+        self.assertIn("tag_not_published:0.9.0", doc["problems"])
         self.assertEqual(doc["tag_release"], {"version": "0.9.0", "published": False})
+        # Yanked is not published either.
+        self.INDEX = ["0.5.0", "0.6.0", "0.7.0"]
+        self.saved_fetch = ah.fetch
+        ah.fetch = lambda url: (self.saved_fetch(url) if url.startswith(ah.VERSIONS_API) else
+                                "\n".join(json.dumps({"vers": v, "yanked": v == "0.8.0"})
+                                          for v in self.INDEX + ["0.8.0"]).encode())
+        self.cfg["versions"].remove("0.8.0")
+        del self.cfg["expected"]["a.pdf"]["0.8.0"]
+        code, doc = self.run_mode("--mode", "release-tag", "--tag-version", "0.8.0")
+        self.assertIn("tag_not_published:0.8.0", doc["problems"])
+
+    def test_19_after_is_by_publication_time(self):
+        # 0.6.1, a patch of the 0.6 line, published after the 0.8.0 tag: not
+        # in that tag's history and not required by it — and not judged.
+        self.INDEX = self.INDEX + ["0.6.1"]
+        code, doc = self.run_mode("--mode", "release-tag", "--tag-version", "0.8.0")
+        self.assertEqual((code, doc["problems"]), (0, []))
+        self.assertEqual(doc["after_tag"], ["0.6.1"])
+        self.assertNotIn("0.6.1", doc["inputs"]["a.pdf"]["cells"])
+        # main still requires it.
+        code, doc = self.run_mode("--mode", "main")
+        self.assertIn("version_not_covered:0.6.1", doc["problems"])
+        # A higher version published before the tag (the tag is the
+        # backport 0.6.1): required by it.
+        self.INDEX = ["0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.6.1"]
+        self.cfg["advisories"][GHSA] = {"affected": [">= 0.6.0", "< 0.6.1"], "patched": "0.6.1"}
+        code, doc = self.run_mode("--mode", "release-tag", "--tag-version", "0.6.1")
+        self.assertIn("version_not_covered:0.8.0", doc["problems"])
+        # A published version without a publication time: a failure.
+        self.TIMES = {"0.5.0": "2026-01-01T00:00:00Z", "0.6.0": "2026-01-02T00:00:00Z",
+                      "0.7.0": "2026-01-03T00:00:00Z", "0.8.0": "2026-01-04T00:00:00Z"}
+        self.INDEX = ["0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.0"]
+        code, doc = self.run_mode("--mode", "release-tag", "--tag-version", "0.8.0")
+        self.assertIn("no_publication_time:0.9.0", doc["problems"])
+        self.TIMES = dict(self.TIMES, **{"0.9.0": "yesterday"})
+        with self.assertRaises(SystemExit):
+            self.run_mode("--mode", "release-tag", "--tag-version", "0.8.0")
 
     def test_17_a_version_before_the_tag_missing(self):
         self.cfg["versions"].remove("0.6.0")
@@ -596,6 +642,16 @@ class Modes(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("no_versions", doc["problems"])
 
+    def test_build_reports(self):
+        exp = self.d / "history.json"
+        exp.write_text(json.dumps(self.cfg))
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(ah.main(["build", "--expected", str(exp)]), 1)  # 0.8.0 not covered
+        self.assertIn("problem: version_not_covered:0.8.0", out.getvalue())
+        self.INDEX = ["0.5.0", "0.6.0", "0.7.0"]
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(ah.main(["build", "--expected", str(exp)]), 0)
+
     def test_24_a_range_it_cannot_read(self):
         for bad in (["~0.6"], [], [">= 0.6"], "<= 0.8.0", [">= 0.6.0", 7]):
             self.cfg["advisories"][GHSA]["affected"] = bad
@@ -617,8 +673,14 @@ class UpdateExpected(unittest.TestCase):
         return r.returncode, json.loads((d / "e.json").read_text()), r.stdout
 
     def results(self, problems=(), **states):
-        return {"problems": list(problems),
+        return {"mode": "main", "problems": list(problems),
                 "inputs": {"a.pdf": {"cells": {k.replace("_", "."): {"state": v} for k, v in states.items()}}}}
+
+    def test_only_a_main_run_updates(self):
+        for mode in ("release-tag", None):
+            res = dict(self.results(**norm(GOOD)), mode=mode)
+            code, doc, out = self.run_update(res, {"expected": {}})
+            self.assertEqual((code, doc["expected"]), (1, {}), mode)
 
     def test_failures_are_not_written_as_expectations(self):
         for p in ("candidate_unsafe:a.pdf:LEAK", f"range_not_reproduced:{GHSA}:0.6.0", "not_observed:a.pdf:0.6.0:CRASH",
