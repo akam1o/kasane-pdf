@@ -353,6 +353,13 @@ pub(crate) fn truetype_substitute_for_embedding(
     if !matches!(face.kind, K::Standard14 | K::Alias) || face.builtin_encoding.is_some() {
         return Ok(None);
     }
+    // The face embedded must be the one the font is drawn with.
+    if f.subst.as_ref().map(|s| s.substitute) != Some(face.name) {
+        return Err(Error::Unsupported {
+            feature: "embedding a substitute font",
+            detail: "the substitute chosen twice differs".into(),
+        });
+    }
     let names: Vec<Option<String>> = (0..=255u8)
         .map(|c| {
             let n = f.glyph_name(c)?;
