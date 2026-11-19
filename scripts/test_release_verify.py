@@ -488,11 +488,17 @@ class Production(unittest.TestCase):
             return e.status, e.reason
 
     def test_model_seed_count(self):
-        ok = "model: Tally { ok: 17000, refused: 3000 }\ntest result: ok. 1 passed; 0 failed"
+        ok = ("model (Recovering): Tally { ok: 10, refused: 5 }\n"
+              "test generated_documents_are_non_interfering_in_recovery_mode ... ok\n"
+              "model: Tally { ok: 17000, refused: 3000 }\ntest generated_documents_are_non_interfering ... ok\n"
+              "test result: ok. 2 passed; 0 failed")
         self.assertEqual(self.model(ok)["ok"], 17000)
         self.assertEqual(self.model(ok.replace("17000", "300").replace("3000", "20")), ("failed", "seeds_mismatch"))
         self.assertEqual(self.model(ok.replace("17000", "0").replace("3000", "20000")), ("failed", "seeds_mismatch"))
-        self.assertEqual(self.model("test result: ok. 1 passed; 0 failed"), ("error", "no_summary:redact_model"))
+        self.assertEqual(self.model("test result: ok. 2 passed; 0 failed"), ("error", "no_summary:redact_model"))
+        # Only one of the two tests ran (a filter, an older file).
+        one = ok.replace("test generated_documents_are_non_interfering_in_recovery_mode ... ok\n", "")
+        self.assertEqual(self.model(one.replace("2 passed", "1 passed")), ("error", "no_summary:redact_model"))
         self.assertEqual(self.model(ok, code=101), ("failed", "exit:redact_model"))
         self.assertEqual(self.model(ok, code=-11), ("failed", "crashed:redact_model"))
 

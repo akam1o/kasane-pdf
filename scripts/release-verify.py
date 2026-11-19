@@ -393,6 +393,9 @@ def check_security_regressions(r, cfg, work):
     return summary
 
 
+MODEL_TESTS = ("generated_documents_are_non_interfering", "generated_documents_are_non_interfering_in_recovery_mode")
+
+
 def check_noninterference(r, cfg, work):
     log = r.logfile("model")
     code = r.run(["cargo", "test", "--locked", "--release", "--test", "redact_model", "--", "--nocapture"],
@@ -401,7 +404,9 @@ def check_noninterference(r, cfg, work):
     m = re.search(r"model: Tally \{ ok: (\d+), refused: (\d+)", text)
     summary = {"seeds": cfg["seeds"], "ok": int(m.group(1)) if m else None, "refused": int(m.group(2)) if m else None}
     need(code, "redact_model")
-    if not m or not re.search(r"test result: ok\. 1 passed; 0 failed", text):
+    # Both tests of the file — strict and recovery mode — passed.
+    if not m or not re.search(r"test result: ok\. 2 passed; 0 failed", text) or not all(
+            re.search(rf"^test {t} \.\.\. ok$", text, re.M) for t in MODEL_TESTS):
         raise CheckFailed("error", "no_summary:redact_model", summary=summary)
     # Two variants per seed: every document of every seed was redacted,
     # not a default seed count (an environment that did not reach the

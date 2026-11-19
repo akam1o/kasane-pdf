@@ -213,7 +213,7 @@ fn asciihex_decode(buf: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
             _ if is_pdf_whitespace(b) => continue,
             _ => {
                 return Err(Error::Parse(format!(
-                    "ASCIIHexDecode: byte 0x{b:02x} at offset {i} is not a hex digit"
+                    "ASCIIHexDecode: the byte at offset {i} is not a hex digit"
                 )))
             }
         };
@@ -301,7 +301,7 @@ fn ascii85_decode(
             _ if is_pdf_whitespace(b) => {}
             _ => {
                 return Err(Error::Parse(format!(
-                    "ASCII85Decode: byte 0x{b:02x} at offset {} is outside `!`..`u`",
+                    "ASCII85Decode: the byte at offset {} is outside `!`..`u`",
                     i - 1
                 )))
             }
@@ -337,8 +337,7 @@ fn runlength_decode(buf: &[u8], limits: &Limits) -> Result<Vec<u8>, Error> {
             let end = i + l + 1;
             if end > buf.len() {
                 return Err(Error::Parse(format!(
-                    "RunLengthDecode: literal run of {} bytes at offset {} overruns the data",
-                    l + 1,
+                    "RunLengthDecode: the literal run at offset {} overruns the data",
                     i - 1
                 )));
             }
@@ -451,7 +450,7 @@ fn lzw_decode(buf: &[u8], parms: Option<&Dict>, limits: &Limits) -> Result<Vec<u
             (p, length[p as usize] + 1)
         } else {
             return Err(Error::Parse(format!(
-                "LZWDecode: code {code} at bit {} is not in the table (next free is {next})",
+                "LZWDecode: the code at bit {} is not in the table",
                 bitpos - width as usize
             )));
         };
@@ -836,11 +835,7 @@ fn png_predictor(data: &[u8], p: &PredictorParms, limits: &Limits) -> Result<Vec
                     cur[i] = cur[i].wrapping_add(paeth(a, b, c));
                 }
             }
-            other => {
-                return Err(Error::Parse(format!(
-                    "PNG predictor row filter {other} is invalid"
-                )))
-            }
+            _ => return Err(Error::Parse("PNG predictor row filter is invalid".into())),
         }
         prev = cur.clone();
         out.extend_from_slice(&cur);

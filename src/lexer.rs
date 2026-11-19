@@ -380,7 +380,7 @@ impl<'a> Lexer<'a> {
                 Some(v) => nibbles.push(v),
                 None => {
                     return Err(Error::Parse(format!(
-                        "invalid character 0x{b:02X} in hexadecimal string at byte {}",
+                        "invalid character in hexadecimal string at byte {}",
                         self.pos - 1
                     )))
                 }

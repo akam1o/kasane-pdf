@@ -512,6 +512,10 @@ impl Document {
     /// appends to the same list; call this after the operation whose
     /// findings you want. Bounded by [`crate::warning::MAX_WARNINGS`];
     /// see [`Document::warnings_dropped`].
+    ///
+    /// A warning can quote what it skipped (an unknown operator, a
+    /// malformed ToUnicode entry): handle warnings as you handle the
+    /// document.
     pub fn take_warnings(&self) -> Vec<crate::Warning> {
         std::mem::take(&mut self.warnings.borrow_mut().list)
     }

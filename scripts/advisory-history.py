@@ -387,6 +387,8 @@ def judge_cell(vr, kasane, src, cli, expect, usage):
     with tempfile.TemporaryDirectory() as tmp:
         r = car.judge_case(kasane, src, cli, expect, tmp, usage)
         cell = {"state": r["state"]}
+        if r["state"] == "LEAK" and expect.startswith("quiet:"):
+            cell["reasons"] = [r.get("reason") or "unknown"]
         if r["state"] == "LEAK" and expect.startswith("safe-text:"):
             cell["reasons"] = ["text:poppler"]
         if r["state"] == "REMOVED" and expect.startswith("safe-text:") and r["output"]:
@@ -432,6 +434,7 @@ def decide(rows, cells, expected, advisories, versions):
     problems = []
     names = {r[0] for r in rows}
     meta = {r[0]: (r[1], r[3]) for r in rows}
+    expects = {n: m[1] for n, m in meta.items()}
     exp = expected.get("expected", {})
     for n in sorted(names):
         if meta[n][0] not in advisories:
@@ -478,7 +481,11 @@ def decide(rows, cells, expected, advisories, versions):
         status = {}
         for v in versions + ["candidate"]:
             states = [cells[n].get(v, {}).get("state") for n in mine]
-            vuln = any(s in VULNERABLE for s in states)
+            # A `quiet` input reproduces its advisory by what the CLI
+            # printed; accepting the input is another finding.
+            vuln = any(s in VULNERABLE and (not expects.get(n, "").startswith("quiet:")
+                                            or "printed" in (cells[n].get(v, {}).get("reasons") or []))
+                       for n, s in zip(mine, states))
             affected = v != "candidate" and in_range(v, adv["affected"])
             if all(s == "NA" for s in states):
                 # That version's CLI has no command for any input: its

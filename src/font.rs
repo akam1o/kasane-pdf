@@ -2103,8 +2103,12 @@ fn load_composite_font(
                         feature: "non-embedded CIDFont",
                         detail: format!(
                         "/FontFile2 or /FontFile3 is required; OS substitution is not performed \
-                         (ordering {:?}; the `cjk-fallback` feature bundles a fallback for Japan1)",
-                        String::from_utf8_lossy(&ordering)
+                         (ordering {}; the `cjk-fallback` feature bundles a fallback for Japan1)",
+                        match ordering.as_slice() {
+                            o @ (b"Identity" | b"Japan1" | b"GB1" | b"CNS1" | b"Korea1" | b"KR"
+                            | b"UCS") => format!("{:?}", String::from_utf8_lossy(o)),
+                            _ => "not a registered one".into(),
+                        }
                     ),
                     });
                 }
@@ -2362,9 +2366,7 @@ fn parse_w_array(doc: &Document, w_obj: Option<&Object>) -> Result<Vec<(u32, u32
                     ));
                 }
                 if clast < c0 || clast > 0xFFFF {
-                    return Err(Error::Structure(format!(
-                        "/W range {c0}..{clast} is invalid"
-                    )));
+                    return Err(Error::Structure("/W has an invalid range".into()));
                 }
                 w.push((c0 as u32, clast as u32, wv));
                 i += 2;

@@ -20,7 +20,13 @@ it for every published version):
   after `qpdf --qdf --object-streams=disable --decode-level=all`, else
   REMOVED; `kept-bytes:T` — KEPT when T is still there (data that must
   stay, a shared action), else LOST; `refused` — LEAK (accepted what it
-  must refuse); `fast` — FAST within 15 s, else SLOW.
+  must refuse); `fast` — FAST within 15 s, else SLOW;
+- `quiet:T` — the CLI must refuse the input and print nothing that
+  contains T: REFUSED when it refused and T is on neither of its
+  streams; LEAK (reason `printed`) when T is on one, or (reason
+  `accepted`) when it completed. The refusal is judged as for every
+  case first (exit 1, an "error [" line, no output), what it printed
+  after that; what it printed is never shown.
   A witness that fails (`pdftotext` not exiting 0, `qpdf` not exiting 0
   or 3 or not writing a PDF) is ERROR, never "absent".
 
@@ -98,14 +104,17 @@ def judge_case(kasane, src, cli, expect, tmp, usage, timeout=60):
     else:
         return dict(res, state="CRASH")
     # A refusal is REFUSED whatever the expectation (a render that is
-    # refused is not a fast render).
+    # refused is not a fast render) — unless a `quiet` input's CLI
+    # printed its marker.
     if result == "refused":
+        if expect.startswith("quiet:") and expect[6:] in (p.stdout or "") + (p.stderr or ""):
+            return dict(res, state="LEAK", reason="printed")
         return dict(res, state="REFUSED")
     if expect == "fast":
         return dict(res, state="FAST" if elapsed <= 15 else "SLOW")
     res["output"] = out
-    if expect == "refused":
-        return dict(res, state="LEAK")
+    if expect == "refused" or expect.startswith("quiet:"):
+        return dict(res, state="LEAK", reason="accepted")
     if expect.startswith("safe-text:"):
         w = subprocess.run(["pdftotext", out, "-"], capture_output=True, text=True)
         if w.returncode != 0:
@@ -147,8 +156,8 @@ def main():
         for name, ghsa, cli, expect in rows:
             r = judge_case(kasane, os.path.join(d, name), cli, expect, tmp, usage)
             state = r["state"]
-            if state == "LEAK" and expect == "refused":
-                verdict = "LEAK (accepted)"
+            if state == "LEAK" and r.get("reason") in ("accepted", "printed"):
+                verdict = f"LEAK ({r['reason']})"
             elif state == "CRASH":
                 verdict = f"CRASH (exit {r['exit']})"
             else:

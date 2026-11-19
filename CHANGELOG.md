@@ -6,6 +6,48 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-19
+
+### Security
+- This version fixes a security issue in redaction. An advisory with the
+  details will be published once it is available on crates.io; upgrading
+  is recommended for every application that uses `redact` or the content
+  removers.
+
+### Added
+- Recovery mode reads more damaged content, each case recorded as a
+  `Warning::RecoveryApplied` (new `RecoveryRule` variants;
+  docs/recovery-mode.md): an operator with the wrong number of operands
+  is kept uninterpreted (`IgnoredWrongOperandCount`); a form XObject
+  without `/BBox` is drawn unclipped (`UnclippedFormWithoutBBox`); a
+  type 2/3 function given more inputs uses the first
+  (`FunctionExtraInputsIgnored`); a shading function with more outputs
+  than its colour space has components uses the first ones
+  (`ShadingOutputsTruncated`); a JBIG2 page or JPEG frame of another size
+  than its image dictionary says is read at the dictionary's size
+  (`ImageSamplesReadAtDictionarySize`, reported as an image
+  approximation). docs/recovery-mode.md states what region redaction
+  does with each.
+- `AnnotationText::shown_text()` (what an annotation's appearance draws)
+  and `AnnotationText::note()` (a markup annotation's comment), the field
+  `AnnotationText::recovered`, and the CLI's `text --annotations`
+  (docs/annotation-text.md).
+
+### Changed
+- The outline work of a render's dashed strokes is bounded together
+  (page, forms, Type 3 glyphs, tiling cells, soft masks and annotation
+  appearances share one budget): a page repeating dashed strokes ends in
+  `Error::Unsupported { feature: "dashed stroke" }` instead of rendering
+  for minutes.
+- Some error messages give a byte offset, an index or the kind of the
+  problem instead of the values they stopped at; branch on
+  `Error::kind()`, not on message text.
+
+### Fixed
+- WinAnsiEncoding's unused codes draw, and extract as, the bullet
+  (ISO 32000-1 Annex D), for every simple font whose encoding is based on
+  it.
+
 ## [0.10.0] - 2026-11-12
 
 0.9.0 was prepared but never released; its changes are part of this
@@ -1374,7 +1416,8 @@ are possible between minor versions and are recorded here.
   1.1 and Adobe CMap resources under BSD-3-Clause (`NOTICE`,
   `docs/third-party.md`).
 
-[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.11.0
 [0.10.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.10.0
 [0.8.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.8.0
 [0.7.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.7.0

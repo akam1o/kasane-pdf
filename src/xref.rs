@@ -520,17 +520,11 @@ fn read_classic_section(
             Some(w) if w == b"trailer" => break,
             Some(first_word) => {
                 let first = parse_u32_word(&first_word).ok_or_else(|| {
-                    Error::Parse(format!(
-                        "bad xref subsection header '{}' near byte {before}",
-                        String::from_utf8_lossy(&first_word)
-                    ))
+                    Error::Parse(format!("bad xref subsection header near byte {before}"))
                 })?;
                 let count = match parser.read_word_token()? {
                     Some(w) => parse_u32_word(&w).ok_or_else(|| {
-                        Error::Parse(format!(
-                            "bad xref subsection count '{}' near byte {before}",
-                            String::from_utf8_lossy(&w)
-                        ))
+                        Error::Parse(format!("bad xref subsection count near byte {before}"))
                     })?,
                     None => {
                         return Err(Error::UnexpectedEof {
