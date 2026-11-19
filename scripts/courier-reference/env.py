@@ -44,7 +44,9 @@ def main():
         "os": osr.get("PRETTY_NAME", "").strip('"'), "machine": platform.machine(),
         "pdftoppm": (out(["pdftoppm", "-v"], env).splitlines() or [""])[0],
         "mutool": (out(["mutool", "-v"], env).splitlines() or [""])[0],
-        "packages": sorted(l for l in pkgs.splitlines() if l and "no packages found" not in l),
+        # Installed packages only (dpkg-query lists known, uninstalled
+        # names with no version).
+        "packages": sorted(l for l in pkgs.splitlines() if len(l.split()) == 2),
         "fonts": fonts(env),
         "fc_match": {f: out(["fc-match", f], env) for f in ("Courier", "Courier:bold", "Courier:italic",
                                                              "Courier New", "Helvetica", "Times", "monospace")},
