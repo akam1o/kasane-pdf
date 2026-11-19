@@ -587,6 +587,26 @@ class ReleaseCheckLocal(unittest.TestCase):
         code, out, log = self.repo.run(ref=s4)
         self.assertTrue(any("outside tests/" in p for p in self.problems(self.r, self.r_out, s4, out, history_results=out)))
 
+    def test_s_may_change_the_renderer_baselines(self):
+        # The new advisory inputs' entries in both renderer baselines are
+        # disclosure material too; any other file there is not.
+        d = self.repo.path / "compat" / "renderers"
+        d.mkdir(parents=True)
+        for platform in ("linux-x86_64", "darwin-arm64"):
+            (d / f"baseline-{platform}.json").write_text("{}\n")
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-qm", "S5")
+        s5 = self.repo.git("rev-parse", "HEAD")
+        code, out, log = self.repo.run(ref=s5)
+        self.assertEqual(code, 0, log)
+        self.assertEqual(self.problems(self.r, self.r_out, s5, out, history_results=out), [])
+        (d / "baseline-other-arch.json").write_text("{}\n")
+        self.repo.git("add", "-A")
+        self.repo.git("commit", "-qm", "S6")
+        s6 = self.repo.git("rev-parse", "HEAD")
+        code, out, log = self.repo.run(ref=s6)
+        self.assertTrue(any("outside tests/" in p for p in self.problems(self.r, self.r_out, s6, out, history_results=out)))
+
     def test_s_not_after_r(self):
         self.assertTrue(any("does not descend" in p for p in self.problems(self.s, self.s_out, self.r, self.r_out)))
         self.assertTrue(any("go together" in p for p in self.problems(self.r, self.r_out, self.s, None)))

@@ -375,6 +375,11 @@ jobs:
           KASANE_ADVISORY_DUMP=/tmp/advisories cargo test --release --test redact_advisories
           python3 scripts/check-advisory-regressions.py target/release/kasane-pdf /tmp/advisories --expect-safe \
             --expected compat/advisories/history.json
+      # Every advisory input has its entry, with the outcome history.json
+      # expects, in both external-renderer baselines (the full gate's
+      # renderer job needs it) — checked here, without a renderer.
+      - name: advisory inputs and the external-renderer baselines agree (linux, macOS)
+        run: python3 scripts/check-renderer-baselines.py --dump /tmp/advisories --platforms linux-x86_64,darwin-arm64
       - name: regression check vs committed baseline
         run: |
           python3 scripts/ci-regression.py check /tmp/smoke/latest.json compat/baselines/fixtures-smoke.json \

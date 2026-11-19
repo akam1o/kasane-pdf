@@ -226,10 +226,15 @@ of R:
   pushed commit message says more.
 - **S — the disclosure commit**: the regression tests, the table rows,
   the full CHANGELOG *Security* section and release notes' *Security*
-  section, with the advisory ids, and the new advisory's range and
-  expected states in `compat/advisories/history.json`. `git diff R S
-  --stat` must list only `tests/`, `docs/`, `CHANGELOG.md` and that file
-  — no source file: the code verified with S's tests is R's.
+  section, with the advisory ids, the new advisory's range and
+  expected states in `compat/advisories/history.json`, and the new
+  inputs' entries in both external-renderer baselines
+  (`compat/renderers/baseline-{linux-x86_64,darwin-arm64}.json`: the
+  full gate's renderer job judges every advisory input against them;
+  `scripts/check-renderer-baselines.py` checks they agree, in the fast
+  gate and in the `disclosure` profile). `git diff R S --stat` must list
+  only `tests/`, `docs/`, `CHANGELOG.md` and those three files — no
+  source file: the code verified with S's tests is R's.
 
 ### B.2 Private verification
 
@@ -255,7 +260,7 @@ reproduction material, no new advisory input) and its
 regression inputs:
 
 ```console
-scripts/release-verify.py run --ref S --profile disclosure   # verify-redact, every advisory input SAFE
+scripts/release-verify.py run --ref S --profile disclosure   # verify-redact, every advisory input SAFE, both renderer baselines, the external renderers
 ```
 
 and the history of every published version on S's inputs, with the new
@@ -363,7 +368,7 @@ worktree must still be the commit, unmodified. The checks:
 
 | check | what | passes when |
 | --- | --- | --- |
-| `security_regressions` | `scripts/verify-redact.py`; every advisory input with `--expect-safe` | all cases as expected, at least 35 and 44 |
+| `security_regressions` | `scripts/verify-redact.py`; every advisory input with `--expect-safe`; `scripts/check-renderer-baselines.py` on the same inputs | all cases as expected, at least 35 and 44; every input with a `redact` command in both renderer baselines with the outcome `history.json` expects, and nothing else there |
 | `noninterference` | `tests/redact_model.rs` at 10,000 seeds, release build | the test passes |
 | `redact_corpus` | `scripts/eval-redact-corpus.py` in four option sets → projection → `scripts/check-redact-corpus.py --strict-pixels` against `compat/redaction/` | 117 runs each; no regression (an `ok` run no longer `ok`, an unexpected run, more words, characters or pixels lost outside the rect, a run missing or new); improvements and changed refusal reasons are listed separately and never make it pass |
 | `compat_corpus` | `kasane-compat run` built with `cjk-fallback` as `nightly.yml` builds it, over the 511 files (Poppler witness, 96 dpi, 20 s per file, full mode, `--rewrite-options carry`) → `scripts/ci-regression.py check` against `compat/baselines/corpus-full.json` | 511 files on both sides (else `incomparable`), no crash or timeout, no regression |
@@ -372,7 +377,9 @@ worktree must still be the commit, unmodified. The checks:
 | `advisory_history` (profile `security-history`) | `scripts/advisory-history.py`: every published version of `compat/advisories/history.json` built from crates.io, every advisory input on each and on the candidate (docs/security/advisory-regressions.md) | every cell as expected, every advisory's range reproduced; versions that cannot be judged (no command) listed as untestable |
 
 The profiles: `release` (the release candidate R is safe), `disclosure`
-(S's new regression tests pass on R's code), `security-history` (the
+(S's new regression tests pass on R's code, and the external renderers
+judge them against S's baselines — what the full gate would run on `main`
+after S), `security-history` (the
 published versions are affected as the advisories say, the candidate is
 not). A normal release needs `release`; a security release all three.
 Private reproduction material can join a `security-history` run

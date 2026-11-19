@@ -643,5 +643,177 @@ echo "Done 1 runs in 0 second(s)"
                 self.assertNotEqual(code, 0, out)
 
 
+crb = load("check_renderer_baselines", "scripts/check-renderer-baselines.py")
+
+
+class RendererBaselines(unittest.TestCase):
+    """scripts/check-renderer-baselines.py on synthetic dumps, histories and
+    baselines: the advisory inputs and both platforms' baselines agree."""
+
+    INPUTS = {  # file: (expectation, commands, candidate state)
+        "a-text.pdf": ("safe-text:S", "redact --page 1 --rect 1 1 2 2", "REMOVED"),
+        "a-refused.pdf": ("refused", "redact --page 1 --rect 1 1 2 2", "REFUSED"),
+        "a-quiet.pdf": ("quiet:M", "redact --page 1 --rect 1 1 2 2|experimental-remove-text 1 --rect 1 1 2 2",
+                        "REFUSED"),
+        "a-kept.pdf": ("kept-bytes:K", "redact --page 1 --rect 1 1 2 2", "KEPT"),
+        "a-render.pdf": ("fast", "render --page 1", "FAST"),  # no redact command: not a renderer case
+    }
+
+    def setUp(self):
+        self.d = Path(tempfile.mkdtemp())
+        self.dump = self.d / "dump"
+        self.dump.mkdir()
+        for f, (expect, cmds, _) in self.INPUTS.items():
+            (self.dump / f"manifest-{f[:-4]}.tsv").write_text(f"{f}\tGHSA-test\t{cmds}\t{expect}\n")
+        self.history = {"expected": {f: {"0.1.0": "LEAK", "candidate": st} for f, (_, _, st) in self.INPUTS.items()}}
+        self.cases = {"vr:other": {"outcome": "ok", "renderers": self.renders()}}
+        for f, (_, cmds, st) in self.INPUTS.items():
+            if "redact " in cmds:
+                out = "refused" if st == "REFUSED" else "ok"
+                self.cases[f"adv:{f[:-4]}"] = {"outcome": out, "renderers": {} if out == "refused" else self.renders()}
+        self.write()
+
+    @staticmethod
+    def renders():
+        return {r: {"changed": 0} for r in ("poppler", "mupdf", "pdfjs")}
+
+    def baseline(self, platform, cases=None):
+        return {"cases": self.cases if cases is None else cases, "dpi": 72, "platform": platform,
+                "reason": "test", "schema_version": 1,
+                "tools": {"poppler": "1", "mupdf": "1", "pdfjs": "1"}}
+
+    def write(self, linux=None, mac=None):
+        (self.d / "history.json").write_text(json.dumps(self.history))
+        for platform, text in (("linux-x86_64", linux), ("darwin-arm64", mac)):
+            (self.d / f"baseline-{platform}.json").write_text(
+                text if isinstance(text, str) else json.dumps(text or self.baseline(platform)))
+
+    def run_check(self, platforms="linux-x86_64,darwin-arm64"):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            code = crb.main(["--dump", str(self.dump), "--history", str(self.d / "history.json"),
+                             "--baselines", str(self.d), "--platforms", platforms])
+        return code, buf.getvalue()
+
+    def with_cases(self, platform, change):
+        cases = json.loads(json.dumps(self.cases))
+        change(cases)
+        return self.baseline(platform, cases)
+
+    def test_consistent(self):
+        self.assertEqual(self.run_check(), (0, "check-renderer-baselines: consistent (linux-x86_64, darwin-arm64)\n"))
+
+    def test_1_a_new_input_without_its_entries(self):
+        (self.dump / "manifest-a-new.tsv").write_text("a-new.pdf\tGHSA-test\tredact --page 1 --rect 1 1 2 2\tquiet:Q\n")
+        self.history["expected"]["a-new.pdf"] = {"0.1.0": "LEAK", "candidate": "REFUSED"}
+        self.write()
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("linux-x86_64:missing:adv:a-new", out)
+        self.assertIn("darwin-arm64:missing:adv:a-new", out)
+
+    def test_2_3_an_entry_missing_or_extra(self):
+        self.write(linux=self.with_cases("linux-x86_64", lambda c: c.pop("adv:a-text")),
+                   mac=self.with_cases("darwin-arm64", lambda c: c.update({"adv:gone": {"outcome": "refused",
+                                                                                        "renderers": {}}})))
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("linux-x86_64:missing:adv:a-text", out)
+        self.assertIn("darwin-arm64:not_an_input:adv:gone", out)
+        self.assertNotIn("darwin-arm64:missing", out)
+
+    def test_4_a_key_twice(self):
+        text = json.dumps(self.baseline("linux-x86_64"))
+        text = text.replace('"cases": {', '"cases": {"adv:a-text": {"outcome": "ok", "renderers": {}}, ', 1)
+        self.write(linux=text)
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("linux-x86_64:unreadable", out)
+        # A manifest listing an input twice cannot run.
+        (self.dump / "manifest-dup.tsv").write_text("a-text.pdf\tGHSA-test\tredact --page 1\tsafe-text:S\n")
+        self.write()
+        self.assertEqual(self.run_check()[0], 2)
+
+    def test_5_order_alone_changes_nothing(self):
+        rev = dict(reversed(list(self.cases.items())))
+        self.write(linux=self.baseline("linux-x86_64", rev))
+        self.assertEqual(self.run_check()[0], 0)
+
+    def test_6_7_each_platform_on_its_own(self):
+        for platform in ("linux-x86_64", "darwin-arm64"):
+            other = "darwin-arm64" if platform == "linux-x86_64" else "linux-x86_64"
+            bad = self.with_cases(platform, lambda c: c.pop("adv:a-quiet"))
+            self.write(**({"linux": bad} if platform == "linux-x86_64" else {"mac": bad}))
+            code, out = self.run_check()
+            self.assertEqual(code, 1, out)
+            self.assertIn(f"{platform}:missing:adv:a-quiet", out)
+            self.assertNotIn(f"{other}:missing", out)
+        # Every platform is required: a file missing is a failure.
+        os.remove(self.d / "baseline-darwin-arm64.json")
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("darwin-arm64:unreadable", out)
+        # And the platforms checked are the known ones only.
+        self.assertEqual(self.run_check("linux-x86_64,windows-x86_64")[0], 2)
+        self.assertEqual(self.run_check("")[0], 2)
+
+    def test_8_an_outcome_that_is_not_one(self):
+        self.write(linux=self.with_cases("linux-x86_64", lambda c: c["adv:a-text"].update(outcome="safe")))
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("linux-x86_64:malformed_case:adv:a-text", out)
+        # The outcome the input must have: refused where history.json
+        # expects the candidate to refuse, and the reverse.
+        self.write(linux=self.with_cases("linux-x86_64", lambda c: c["adv:a-quiet"].update(
+            outcome="ok", renderers=self.renders())))
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("linux-x86_64:outcome:adv:a-quiet:ok!=refused", out)
+        # A candidate state that is no redaction outcome.
+        self.history["expected"]["a-text.pdf"]["candidate"] = "LEAK"
+        self.write()
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("no_outcome:a-text.pdf", out)
+
+    def test_9_refused_with_renders_and_ok_without(self):
+        self.write(linux=self.with_cases("linux-x86_64", lambda c: c["adv:a-refused"].update(
+            renderers=self.renders())),
+                   mac=self.with_cases("darwin-arm64", lambda c: c["adv:a-text"].update(renderers={})))
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("linux-x86_64:refused_with_renders:adv:a-refused", out)
+        self.assertIn("darwin-arm64:ok_without_renders:adv:a-text", out)
+
+    def test_10_not_json_or_not_the_shape(self):
+        self.write(linux="{not json")
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("linux-x86_64:unreadable", out)
+        b = self.baseline("linux-x86_64")
+        b["platform"] = "darwin-arm64"
+        self.write(linux=b)
+        self.assertIn("linux-x86_64:platform_or_schema", self.run_check()[1])
+        b = self.baseline("linux-x86_64")
+        del b["reason"]
+        self.write(linux=b)
+        self.assertIn("linux-x86_64:shape", self.run_check()[1])
+        (self.d / "history.json").write_text("[]")
+        self.assertEqual(self.run_check()[0], 1)
+
+    def test_the_dump_and_the_history_agree(self):
+        del self.history["expected"]["a-kept.pdf"]
+        self.history["expected"]["a-ghost.pdf"] = {"candidate": "REFUSED"}
+        self.write()
+        code, out = self.run_check()
+        self.assertEqual(code, 1, out)
+        self.assertIn("input_not_in_history:a-kept.pdf", out)
+        self.assertIn("history_input_not_dumped:a-ghost.pdf", out)
+        for f in self.dump.iterdir():
+            f.unlink()
+        self.assertEqual(self.run_check()[1].splitlines()[0], "PROBLEM: no_inputs")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(crb.main(["--dump", str(self.d / "absent")]), 2)
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

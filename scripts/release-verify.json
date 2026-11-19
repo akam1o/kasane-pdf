@@ -3,7 +3,7 @@
   "max_age_days": 30,
   "profiles": {
     "release": ["security_regressions", "noninterference", "redact_corpus", "compat_corpus", "external_renderers", "fuzz"],
-    "disclosure": ["security_regressions"],
+    "disclosure": ["security_regressions", "external_renderers"],
     "security-history": ["advisory_history"]
   },
   "checks": {

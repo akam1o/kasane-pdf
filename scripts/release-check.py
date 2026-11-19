@@ -34,9 +34,10 @@ and, for the local part of the gate (scripts/release-verify.py):
     10,000-seed model and the security regressions, run locally;
   * in a security release, --disclosure <S> --disclosure-results DIR2:
     S (the disclosure commit) descends from <sha> (R), changes only
-    tests/, docs/, CHANGELOG.md and compat/advisories/history.json after it,
-    and DIR2 proves S passed the
-    `disclosure` profile (the new advisory regressions). R's evidence and
+    tests/, docs/, CHANGELOG.md, compat/advisories/history.json and the
+    two external-renderer baselines after it, and DIR2 proves S passed the
+    `disclosure` profile (the new advisory regressions, their entries in
+    both renderer baselines, and the external renderers on them). R's evidence and
     S's are checked each against its own commit and profile: one cannot
     stand in for the other. With it, --history-results DIR3: a
     `security-history` run on S (scripts/advisory-history.py — every
@@ -112,7 +113,11 @@ def release_verify():
 S_MAY_CHANGE = ("tests/", "docs/")
 # The new advisory's range and expected states are disclosure material,
 # data read by scripts/advisory-history.py only.
-S_MAY_CHANGE_FILES = ("CHANGELOG.md", "compat/advisories/history.json")
+S_MAY_CHANGE_FILES = ("CHANGELOG.md", "compat/advisories/history.json",
+                      # The new advisory inputs' entries, data read by
+                      # scripts/verify-renderers.py only.
+                      "compat/renderers/baseline-linux-x86_64.json",
+                      "compat/renderers/baseline-darwin-arm64.json")
 
 
 def local_problems(repo, sha, results, disclosure=None, disclosure_results=None, legacy=False,
@@ -144,8 +149,8 @@ def local_problems(repo, sha, results, disclosure=None, disclosure_results=None,
             other = [p for p in changed if not (p.startswith(S_MAY_CHANGE) or p in S_MAY_CHANGE_FILES)]
             if other:
                 problems.append(f"the disclosure commit changes {len(other)} file(s) outside tests/, docs/, "
-                                f"CHANGELOG.md and compat/advisories/history.json: the code verified with its tests "
-                                f"would not be the release's")
+                                f"CHANGELOG.md, compat/advisories/history.json and the renderer baselines: the code "
+                                f"verified with its tests would not be the release's")
         problems += [f"disclosure: {p}" for p in rv.verify(repo, s, disclosure_results, profiles[1])]
         # A security release states which published versions are affected:
         # the history run on S (its new advisory, its range, every
