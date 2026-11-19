@@ -222,7 +222,8 @@ FULL_ONLY_IF = "github.event_name != 'pull_request'"
 FULL_MUST_RUN = {
     "renderers-linux": ["python3 scripts/verify-renderers.py target/release/kasane-pdf /tmp/advisories --json /tmp/renderers.json",
                         "python3 scripts/test_compat_evaluation.py --real target/release/kasane-pdf",
-                        "python3 scripts/test_redact_text_measure.py --real"],
+                        "python3 scripts/test_redact_text_measure.py --real",
+                        "python3 scripts/verify-courier-redaction.py target/release/kasane-pdf --negative"],
 }
 # nightly.yml: the advisory history of every published version.
 NIGHTLY_MUST_RUN = {

@@ -524,6 +524,13 @@ jobs:
         run: python3 scripts/test_compat_evaluation.py --real target/release/kasane-pdf
       - name: the redaction corpus text measurements with the real Poppler and MuPDF (synthetic PDFs)
         run: python3 scripts/test_redact_text_measure.py --real
+      # Courier redacted with its substitute embedded, read by Poppler,
+      # MuPDF and pdf.js: the embedded Kasane Courier drawn, the secret
+      # gone, the public text kept; broken outputs caught (--negative).
+      - name: Courier redaction outputs read by the three renderers (synthetic)
+        run: |
+          python3 scripts/verify-courier-redaction.py target/release/kasane-pdf --negative \
+            --json /tmp/renderers-courier-redaction.json
       - name: a proposed baseline, for review (never committed by CI; not written over a safety failure)
         if: failure()
         run: |
