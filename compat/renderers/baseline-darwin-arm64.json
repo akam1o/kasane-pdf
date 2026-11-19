@@ -131,6 +131,18 @@
     }
    }
   },
+  "adv:4q38-glyph": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:4q38-operator": {
+   "outcome": "refused",
+   "renderers": {}
+  },
+  "adv:4q38-signature": {
+   "outcome": "refused",
+   "renderers": {}
+  },
   "adv:6pgh-goto-A-catalog": {
    "outcome": "refused",
    "renderers": {}
@@ -1630,7 +1642,7 @@
  },
  "dpi": 72,
  "platform": "darwin-arm64",
- "reason": "28 advisory variants added (F: DeviceN, string palette, DefaultRGB, tint via PieceInfo; G: /T /Subj /NM /RC; H: JavaScript, Named, PieceInfo; I: CIDFontType2; the kept shared action is not a redaction case). Each new case is refused, or redacted with no ink left and no secret extracted in any renderer; the only new changed pixels are fqgr-cidfonttype2-bearing's, the same as fqgr-truetype-bearing's (the glyph crossing the rect goes whole, GHSA-I). Before: the initial macOS baseline, whose changed pixels were checked case by case (fqgr-truetype-bearing; text-annotation-removed, the annotation removed by option).",
+ "reason": "adds the three GHSA-4q38-qhh6-c256 advisory inputs (refused); the 110 earlier cases unchanged",
  "schema_version": 1,
  "tools": {
   "mupdf": "1.28.6",
