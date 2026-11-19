@@ -21,6 +21,13 @@
    ],
    "patched": "0.8.0"
   },
+  "GHSA-4q38-qhh6-c256": {
+   "affected": [
+    ">= 0.1.0",
+    "< 0.11.0"
+   ],
+   "patched": "0.11.0"
+  },
   "GHSA-6pgh-gg28-m4w4": {
    "affected": [
     ">= 0.6.0",
@@ -394,6 +401,69 @@
    "0.7.0": "LEAK",
    "0.8.0": "REMOVED",
    "candidate": "REMOVED"
+  },
+  "4q38-glyph.pdf": {
+   "0.1.0": "LEAK",
+   "0.1.1": "LEAK",
+   "0.10.0": "LEAK",
+   "0.2.0": "LEAK",
+   "0.2.1": "LEAK",
+   "0.2.2": "LEAK",
+   "0.3.0": "LEAK",
+   "0.3.1": "LEAK",
+   "0.4.0": "LEAK",
+   "0.4.1": "LEAK",
+   "0.5.0": "LEAK",
+   "0.5.1": "LEAK",
+   "0.5.2": "LEAK",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "4q38-operator.pdf": {
+   "0.1.0": "LEAK",
+   "0.1.1": "LEAK",
+   "0.10.0": "LEAK",
+   "0.2.0": "LEAK",
+   "0.2.1": "LEAK",
+   "0.2.2": "LEAK",
+   "0.3.0": "LEAK",
+   "0.3.1": "LEAK",
+   "0.4.0": "LEAK",
+   "0.4.1": "LEAK",
+   "0.5.0": "LEAK",
+   "0.5.1": "LEAK",
+   "0.5.2": "LEAK",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
+  },
+  "4q38-signature.pdf": {
+   "0.1.0": "LEAK",
+   "0.1.1": "LEAK",
+   "0.10.0": "LEAK",
+   "0.2.0": "LEAK",
+   "0.2.1": "LEAK",
+   "0.2.2": "LEAK",
+   "0.3.0": "LEAK",
+   "0.3.1": "LEAK",
+   "0.4.0": "LEAK",
+   "0.4.1": "LEAK",
+   "0.5.0": "LEAK",
+   "0.5.1": "LEAK",
+   "0.5.2": "LEAK",
+   "0.6.0": "LEAK",
+   "0.6.1": "LEAK",
+   "0.6.2": "LEAK",
+   "0.7.0": "LEAK",
+   "0.8.0": "LEAK",
+   "candidate": "REFUSED"
   },
   "6pgh-goto-A-catalog.pdf": {
    "0.1.0": "NA",

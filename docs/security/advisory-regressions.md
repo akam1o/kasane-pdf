@@ -34,7 +34,7 @@ then gets one state per version:
 
 | state | meaning |
 | --- | --- |
-| `LEAK` | the CLI wrote an output from which the removed data is recovered: text extracted by `pdftotext`, MuPDF or pdf.js, ink left unchanged inside the rect in a Poppler, MuPDF or pdf.js render (text cases), the bytes still in the file after `qpdf --qdf --object-streams=disable --decode-level=all`; or it accepted an input it must refuse |
+| `LEAK` | the CLI wrote an output from which the removed data is recovered: text extracted by `pdftotext`, MuPDF or pdf.js, ink left unchanged inside the rect in a Poppler, MuPDF or pdf.js render (text cases), the bytes still in the file after `qpdf --qdf --object-streams=disable --decode-level=all`; or it accepted an input it must refuse; or, for an input that must be refused printing nothing of it (`quiet:T`), the CLI printed `T` — only that counts as reproducing the advisory, not accepting the input |
 | `SLOW` | the render took longer than 15 s, or did not finish within 60 s (`fast` inputs: the unbounded render is the finding) |
 | `removed` | the output exists and none of those witnesses finds the data |
 | `refused` | a typed refusal (exit 1, an `error [kind]` message) and no output file |
@@ -59,11 +59,13 @@ expectation. The table changes only with
 `scripts/advisory-history.py update-expected`, which prints every cell
 that changes and refuses a failure as an expectation.
 
-Last measured on 2026-11-15 (macOS arm64; the nightly runs it on Linux, where every cell matched).
+Last measured on 2026-11-19 (macOS arm64; the nightly runs it on Linux, where every cell matched on 2026-11-15, before the `4q38` inputs).
 Every affected range matches its advisory; `removed` or `refused` before
 the fix in a few rows means that variant was handled by that version
 (it is kept as a guard for later ones). `candidate` is the build of the
-commit (0.10.0 and later); `v0.10.0` is the published package.
+commit (0.11.0 and later); `v0.10.0` is the published package. The
+`4q38` inputs are refused by every version; before 0.11.0 the refusal's
+message quoted what the input holds (GHSA-4q38-qhh6-c256).
 
 | input | v0.1.0 | v0.1.1 | v0.2.0 | v0.2.1 | v0.2.2 | v0.3.0 | v0.3.1 | v0.4.0 | v0.4.1 | v0.5.0 | v0.5.1 | v0.5.2 | v0.6.0 | v0.6.1 | v0.6.2 | v0.7.0 | v0.8.0 | v0.10.0 | candidate |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -81,6 +83,9 @@ commit (0.10.0 and later); `v0.10.0` is the published package.
 | `3f9j-bfchar` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | refused | refused | refused |
 | `3f9j-length` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | refused | refused | refused |
 | `3f9j-order` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | removed | removed | removed |
+| `4q38-glyph` | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused |
+| `4q38-operator` | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused |
+| `4q38-signature` | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | LEAK | refused |
 | `6pgh-goto-A-catalog` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused |
 | `6pgh-goto-A-next` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused |
 | `6pgh-goto-A-pieceinfo` | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | N/A | LEAK | LEAK | LEAK | LEAK | LEAK | refused | refused |
