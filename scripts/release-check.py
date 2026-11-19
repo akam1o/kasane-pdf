@@ -113,11 +113,35 @@ def release_verify():
 S_MAY_CHANGE = ("tests/", "docs/")
 # The new advisory's range and expected states are disclosure material,
 # data read by scripts/advisory-history.py only.
-S_MAY_CHANGE_FILES = ("CHANGELOG.md", "compat/advisories/history.json",
-                      # The new advisory inputs' entries, data read by
-                      # scripts/verify-renderers.py only.
-                      "compat/renderers/baseline-linux-x86_64.json",
-                      "compat/renderers/baseline-darwin-arm64.json")
+# The new advisory inputs' entries, data read by scripts/verify-renderers.py
+# only — added, never a change to what R's baseline records
+# (baseline_problems).
+S_BASELINES = ("compat/renderers/baseline-linux-x86_64.json", "compat/renderers/baseline-darwin-arm64.json")
+S_MAY_CHANGE_FILES = ("CHANGELOG.md", "compat/advisories/history.json") + S_BASELINES
+
+
+def baseline_problems(path, r_text, s_text):
+    """S may add `adv:` cases to a renderer baseline R has; every case R
+    records, and the platform, renderer versions, dpi and schema, stay as
+    R has them (the reason may say why the cases were added)."""
+    try:
+        r, s = json.loads(r_text), json.loads(s_text)
+    except (TypeError, ValueError):
+        return [f"{path}: not readable at R or at S"]
+    if not isinstance(r, dict) or not isinstance(s, dict) or not isinstance(r.get("cases"), dict) \
+            or not isinstance(s.get("cases"), dict):
+        return [f"{path}: not a baseline at R or at S"]
+    p = []
+    for k in sorted((set(r) | set(s)) - {"cases", "reason"}):
+        if r.get(k) != s.get(k):
+            p.append(f"{path}: {k} changed after R")
+    for name, case in sorted(r["cases"].items()):
+        if s["cases"].get(name) != case:
+            p.append(f"{path}: {name} changed or removed after R")
+    for name in sorted(set(s["cases"]) - set(r["cases"])):
+        if not name.startswith("adv:"):
+            p.append(f"{path}: {name} added after R, not an advisory input")
+    return p
 
 
 def local_problems(repo, sha, results, disclosure=None, disclosure_results=None, legacy=False,
@@ -151,6 +175,10 @@ def local_problems(repo, sha, results, disclosure=None, disclosure_results=None,
                 problems.append(f"the disclosure commit changes {len(other)} file(s) outside tests/, docs/, "
                                 f"CHANGELOG.md, compat/advisories/history.json and the renderer baselines: the code "
                                 f"verified with its tests would not be the release's")
+            for path in (p for p in changed if p in S_BASELINES):
+                show = lambda c: subprocess.run(["git", "-C", str(repo), "show", f"{c}:{path}"], capture_output=True,
+                                                text=True).stdout or None
+                problems += baseline_problems(path, show(sha), show(s))
         problems += [f"disclosure: {p}" for p in rv.verify(repo, s, disclosure_results, profiles[1])]
         # A security release states which published versions are affected:
         # the history run on S (its new advisory, its range, every

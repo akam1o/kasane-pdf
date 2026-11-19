@@ -620,17 +620,38 @@ class ReleaseCheckLocal(unittest.TestCase):
 
     def test_s_may_change_the_renderer_baselines(self):
         # The new advisory inputs' entries in both renderer baselines are
-        # disclosure material too; any other file there is not.
+        # disclosure material too; any other file there is not. R's
+        # baselines exist (this throwaway repo's R had none: S0 adds them).
         d = self.repo.path / "compat" / "renderers"
         d.mkdir(parents=True)
+        base = {"cases": {"vr:a": {"outcome": "ok", "renderers": {}}}, "dpi": 72, "platform": "p", "reason": "r",
+                "schema_version": 1, "tools": {"poppler": "1"}}
         for platform in ("linux-x86_64", "darwin-arm64"):
-            (d / f"baseline-{platform}.json").write_text("{}\n")
+            (d / f"baseline-{platform}.json").write_text(json.dumps(base))
         self.repo.git("add", "-A")
         self.repo.git("commit", "-qm", "S5")
         s5 = self.repo.git("rev-parse", "HEAD")
+        # Added to R's baselines: only new advisory cases.
+        rc = load("release_check", "scripts/release-check.py")
+        added = dict(base, cases=dict(base["cases"], **{"adv:new": {"outcome": "refused", "renderers": {}}}),
+                     reason="adds adv:new")
+        self.assertEqual(rc.baseline_problems("b.json", json.dumps(base), json.dumps(added)), [])
+        for name, s_doc in {
+            "an existing case relaxed": dict(base, cases={"vr:a": {"outcome": "refused", "renderers": {}}}),
+            "an existing case removed": dict(base, cases={}),
+            "a case added that is no advisory input": dict(base, cases=dict(base["cases"], **{"vr:b": {}})),
+            "the renderer versions changed": dict(base, tools={"poppler": "2"}),
+            "the dpi changed": dict(base, dpi=96),
+        }.items():
+            self.assertTrue(rc.baseline_problems("b.json", json.dumps(base), json.dumps(s_doc)), name)
+        self.assertTrue(rc.baseline_problems("b.json", None, json.dumps(base)))
+        self.assertTrue(rc.baseline_problems("b.json", json.dumps(base), "{not json"))
+        s5 = self.repo.git("rev-parse", "HEAD")
         code, out, log = self.repo.run(ref=s5)
         self.assertEqual(code, 0, log)
-        self.assertEqual(self.problems(self.r, self.r_out, s5, out, history_results=out), [])
+        # A disclosure commit adding the baselines R does not have: refused.
+        self.assertTrue(any("not readable at R" in p for p in
+                            self.problems(self.r, self.r_out, s5, out, history_results=out)))
         (d / "baseline-other-arch.json").write_text("{}\n")
         self.repo.git("add", "-A")
         self.repo.git("commit", "-qm", "S6")

@@ -686,7 +686,8 @@ class RendererBaselines(unittest.TestCase):
 
     @staticmethod
     def renders():
-        return {r: {"changed": 0} for r in ("poppler", "mupdf", "pdfjs")}
+        one = {"antialias": 0, "changed": 0, "font_substitution": 0, "snap": 0, "ink_left": 0, "secret_extracted": False}
+        return {r: dict(one) for r in ("poppler", "mupdf", "pdfjs")}
 
     def baseline(self, platform, cases=None):
         return {"cases": self.cases if cases is None else cases, "dpi": 72, "platform": platform,
@@ -795,6 +796,34 @@ class RendererBaselines(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("linux-x86_64:refused_with_renders:adv:a-refused", out)
         self.assertIn("darwin-arm64:ok_without_renders:adv:a-text", out)
+
+    def test_9b_renderer_results_in_their_shape(self):
+        for bad in (None, {}, {"changed": "3"}, {"changed": -1}, {"changed": 1.5}, {"changed": True},
+                    {"changed": None}):
+            def change(c, bad=bad):
+                m = c["adv:a-text"]["renderers"]["poppler"]
+                if bad is None or bad == {}:
+                    c["adv:a-text"]["renderers"]["poppler"] = bad
+                else:
+                    m.update(bad)
+            self.write(linux=self.with_cases("linux-x86_64", change))
+            code, out = self.run_check()
+            self.assertEqual(code, 1, (bad, out))
+            self.assertIn("linux-x86_64:malformed_render:adv:a-text:poppler", out)
+        for change, what in ((lambda m: m.pop("ink_left"), "no ink count"),
+                             (lambda m: m.update(ink_left_not_judged=0), "both ink counts"),
+                             (lambda m: m.update(secret_extracted="no"), "a flag that is no boolean"),
+                             (lambda m: m.update(extra=0), "an unknown field")):
+            self.write(mac=self.with_cases("darwin-arm64", lambda c: change(c["adv:a-text"]["renderers"]["mupdf"])))
+            self.assertIn("darwin-arm64:malformed_render:adv:a-text:mupdf", self.run_check()[1], what)
+        # A baseline that records a leak is no baseline.
+        for leak in ({"ink_left": 3}, {"secret_extracted": True}, {"public_lost": True}):
+            self.write(linux=self.with_cases("linux-x86_64", lambda c: c["adv:a-text"]["renderers"]["pdfjs"].update(leak)))
+            self.assertIn("linux-x86_64:leak_recorded:adv:a-text:pdfjs", self.run_check()[1], leak)
+        b = self.baseline("linux-x86_64")
+        b["dpi"] = 0
+        self.write(linux=b)
+        self.assertIn("linux-x86_64:dpi", self.run_check()[1])
 
     def test_10_not_json_or_not_the_shape(self):
         self.write(linux="{not json")

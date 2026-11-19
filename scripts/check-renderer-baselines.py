@@ -19,7 +19,11 @@ This checks, for every required platform, before anything is run:
   added without its baseline entry (or the reverse) fails;
 - every case's outcome is `ok` or `refused`, `refused` with no renderer
   result (nothing was written, nothing rendered) and `ok` with all
-  three;
+  three, each in verify-renderers.py's shape: the pixel counts
+  (`antialias`, `changed`, `font_substitution`, `snap`, and `ink_left` or
+  `ink_left_not_judged`) non-negative integers, `secret_extracted` and
+  `public_lost` booleans, nothing else — and no recorded leak (ink left,
+  the secret extracted, public text lost);
 - every `adv:` outcome is the one the input must have: `refused` when its
   manifest says so, else the redaction outcome of history.json's
   candidate state (REMOVED, KEPT: `ok`; REFUSED: `refused`) — any other
@@ -85,6 +89,23 @@ def redact_inputs(dump):
     return rows
 
 
+COUNTS = ("antialias", "changed", "font_substitution", "snap")
+FLAGS = ("secret_extracted", "public_lost")
+
+
+def render_ok(m):
+    """One renderer's result as verify-renderers.py records it."""
+    count = lambda v: isinstance(v, int) and not isinstance(v, bool) and v >= 0
+    if not isinstance(m, dict) or not all(count(m.get(k)) for k in COUNTS):
+        return False
+    ink = [k for k in ("ink_left", "ink_left_not_judged") if k in m]
+    if len(ink) != 1 or not count(m[ink[0]]):
+        return False
+    if any(k in m and not isinstance(m[k], bool) for k in FLAGS):
+        return False
+    return set(m) <= set(COUNTS) | set(FLAGS) | {"ink_left", "ink_left_not_judged"}
+
+
 def problems_of(dump, history, baselines, platforms):
     problems = []
     rows = redact_inputs(dump)
@@ -123,6 +144,8 @@ def problems_of(dump, history, baselines, platforms):
             continue
         if b["platform"] != platform or b["schema_version"] != 1:
             problems.append(f"{platform}:platform_or_schema")
+        if not isinstance(b["dpi"], int) or isinstance(b["dpi"], bool) or b["dpi"] <= 0:
+            problems.append(f"{platform}:dpi")
         if not isinstance(b["reason"], str) or not b["reason"].strip():
             problems.append(f"{platform}:no_reason")
         tools = b["tools"]
@@ -141,6 +164,11 @@ def problems_of(dump, history, baselines, platforms):
                 problems.append(f"{platform}:refused_with_renders:{name}")
             if c["outcome"] == "ok" and set(c["renderers"]) != set(RENDERERS):
                 problems.append(f"{platform}:ok_without_renders:{name}")
+            for rd, m in c["renderers"].items():
+                if not render_ok(m):
+                    problems.append(f"{platform}:malformed_render:{name}:{rd}")
+                elif m.get("ink_left") or m.get("secret_extracted") or m.get("public_lost"):
+                    problems.append(f"{platform}:leak_recorded:{name}:{rd}")
         have = {n for n in cases if n.startswith("adv:")}
         for n in sorted(set(want) - have):
             problems.append(f"{platform}:missing:{n}")
