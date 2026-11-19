@@ -676,6 +676,52 @@ class Modes(unittest.TestCase):
             self.run_mode("--mode", "main")
 
 
+class Fetch(unittest.TestCase):
+    """fetch: a rate limit is waited out a few times, then fails; any other
+    error fails at once."""
+
+    def run_fetch(self, codes):
+        import email.message
+        import urllib.error
+        calls, slept = [], []
+
+        class Body:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b"ok"
+
+        def urlopen(req, timeout):
+            calls.append(req.get_header("User-agent"))
+            code = codes[len(calls) - 1]
+            if code == 200:
+                return Body()
+            h = email.message.Message()
+            if code == 429:
+                h["Retry-After"] = "3"
+            raise urllib.error.HTTPError(req.full_url, code, "x", h, None)
+        saved = ah.urllib.request.urlopen
+        ah.urllib.request.urlopen = urlopen
+        try:
+            return ah.fetch("https://example.invalid/x", sleep=slept.append), calls, slept
+        finally:
+            ah.urllib.request.urlopen = saved
+
+    def test_retries(self):
+        import urllib.error
+        body, calls, slept = self.run_fetch([429, 503, 200])
+        self.assertEqual((body, len(calls), slept), (b"ok", 3, [3, 4]))
+        self.assertIn("github.com/akam1o/kasane-pdf", calls[0])
+        with self.assertRaises(urllib.error.HTTPError):
+            self.run_fetch([429] * 5)
+        for code in (403, 404):
+            with self.assertRaises(urllib.error.HTTPError):
+                self.run_fetch([code, 200])
+
 class UpdateExpected(unittest.TestCase):
     def run_update(self, results, old, *flags):
         d = Path(tempfile.mkdtemp())
