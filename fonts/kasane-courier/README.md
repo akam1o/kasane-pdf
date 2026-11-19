@@ -60,10 +60,14 @@ cd - && /tmp/kc/bin/python scripts/build-courier-fallback.py --courier-prime /tm
 python3 scripts/build-courier-fallback.py --check                                       # the committed files only
 ```
 
-The build checks each input's SHA-256, that the merged fonts map
+The build checks each input's SHA-256 and, on the bytes it writes (read
+back), that the merged fonts map
 exactly the characters of both sources, and that every character is
 drawn with its source's outline and bearing and Liberation Mono's
-advance; it fails otherwise.
+advance; it fails otherwise. The fast gate runs `--check` (the
+committed files against the lock), not a rebuild: a rebuild needs the
+pinned Courier Prime inputs and fontTools, and is part of reviewing any
+change to these files.
 
 ## Licence
 

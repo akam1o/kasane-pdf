@@ -220,7 +220,28 @@ def build(style, cp_path, lm_path, subfamily):
     font["post"].formatType = 3.0
     buf = io.BytesIO()
     font.save(buf, reorderTables=True)
-    return buf.getvalue()
+    data = buf.getvalue()
+    verify(style, data, cp_src, lm_src)
+    return data
+
+
+def verify(style, data, cp_src, lm_src):
+    """The bytes written, read back: every character of either source,
+    with its source's outline, bearing and header box, and Liberation
+    Mono's advance."""
+    from fontTools.ttLib import TTFont
+    font = TTFont(io.BytesIO(data))
+    cmap, cp_cmap, lm_cmap = font.getBestCmap(), cp_src.getBestCmap(), lm_src.getBestCmap()
+    if set(cmap) != set(cp_cmap) | set(lm_cmap):
+        raise SystemExit(f"{style}: the font written does not map every character of both sources")
+    for u, g in cmap.items():
+        src, sg = (cp_src, cp_cmap[u]) if u in cp_cmap else (lm_src, lm_cmap[u])
+        a, b = font["glyf"][g], src["glyf"][sg]
+        box = lambda x: tuple(getattr(x, k, None) for k in ("xMin", "yMin", "xMax", "yMax"))
+        adv = lm_src["hmtx"][lm_cmap[u]][0] if u in lm_cmap else 1229
+        if (outlines(font, g) != outlines(src, sg) or font["hmtx"][g][1] != src["hmtx"][sg][1]
+                or box(a) != box(b) or font["hmtx"][g][0] != adv):
+            raise SystemExit(f"{style}: U+{u:04X} is not written as its source has it")
 
 
 def main():
