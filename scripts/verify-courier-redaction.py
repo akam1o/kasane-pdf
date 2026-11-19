@@ -40,11 +40,12 @@ PDFJS = os.path.join(ROOT, "tools", "pdfjs", "render.mjs")
 DPI = 144
 FACES = {s: os.path.join(ROOT, "fonts", "kasane-courier", f"KasaneCourier-{s}.ttf")
          for s in ("Regular", "Bold", "Italic", "BoldItalic")}
-SECRET = "SECRETWORD"
+# The word each case redacts (synthetic).
+TARGET = "REDACTME"
 WIDTHS = "/FirstChar 32 /LastChar 255 /Widths [" + " ".join(["600"] * 224) + "]"
 DIFFS = "<< /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [128 /uni0416 /uni0414 /uni03B1 /uni03A9] >>"
-# The line: public, secret, public with Cyrillic and Greek (codes 128-131).
-LINE = "KEEP " + SECRET + " AFTER \\200\\201\\202\\203"
+# The line: public, the redacted word, public with Cyrillic and Greek (codes 128-131).
+LINE = "KEEP " + TARGET + " AFTER \\200\\201\\202\\203"
 PUBLIC = ["KEEP", "AFTER", "ЖДαΩ"]
 
 
@@ -78,16 +79,16 @@ def truetype(base, weight):
 
 # (name, font dictionary, expected face, rect kind, expected outcome)
 CASES = [
-    ("courier-regular", type1("Courier"), "Regular", "secret", "ok"),
-    ("courier-bold", type1("Courier-Bold"), "Bold", "secret", "ok"),
-    ("courier-oblique", type1("Courier-Oblique", widths=True), "Italic", "secret", "ok"),
-    ("courier-boldoblique", type1("Courier-BoldOblique"), "BoldItalic", "secret", "ok"),
-    ("couriernew-truetype-bold", truetype("CourierNewPSMT", 700), "Bold", "secret", "ok"),
-    ("couriernew-truetype-italic", truetype("CourierNewPS-ItalicMT", 400), "Italic", "secret", "ok"),
+    ("courier-regular", type1("Courier"), "Regular", "word", "ok"),
+    ("courier-bold", type1("Courier-Bold"), "Bold", "word", "ok"),
+    ("courier-oblique", type1("Courier-Oblique", widths=True), "Italic", "word", "ok"),
+    ("courier-boldoblique", type1("Courier-BoldOblique"), "BoldItalic", "word", "ok"),
+    ("couriernew-truetype-bold", truetype("CourierNewPSMT", 700), "Bold", "word", "ok"),
+    ("couriernew-truetype-italic", truetype("CourierNewPS-ItalicMT", 400), "Italic", "word", "ok"),
     ("edge-overlapping", type1("Courier"), "Regular", "edge-in", "ok"),
     ("edge-clear", type1("Courier"), "Regular", "edge-out", "ok"),
     # Not a Courier this mode embeds: refused, no output.
-    ("symbol-refused", "<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>", None, "secret", "refused"),
+    ("symbol-refused", "<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>", None, "word", "refused"),
 ]
 
 
@@ -107,9 +108,10 @@ def kasane_chars(kasane, pdf):
 def rect_for(chars, kind):
     """The rect in user space: over the secret word, or 0.05 pt into /
     past the ink of the K of KEEP's last letter (P)."""
-    s0 = next(i for i, c in enumerate(chars) if c["unicode"] == "S")
-    if kind == "secret":
-        a, b = chars[s0], chars[s0 + len(SECRET) - 1]
+    line = "".join(c["unicode"] or "?" for c in chars)
+    s0 = line.index(TARGET)
+    if kind == "word":
+        a, b = chars[s0], chars[s0 + len(TARGET) - 1]
         return (a["origin"][0] + 0.5, 95.0, b["origin"][0] + b["advance"][0] - 0.5, 115.0)
     p = chars[3]["bounds"]  # the P of KEEP
     dx = -0.05 if kind == "edge-in" else 0.05
@@ -225,7 +227,7 @@ def check_output(kasane, src, out, rect, face, tmp):
     res["file"]["1_embedded_face"] = base == f"/KasaneCourier-{face}" and program == want
     raw = open(out, "rb").read()
     dec = run(["qpdf", "--qdf", "--object-streams=disable", "--decode-level=all", out, "-"]).stdout
-    res["file"]["3_secret_not_in_file"] = SECRET.encode() not in raw and SECRET.encode() not in dec
+    res["file"]["3_target_not_in_file"] = TARGET.encode() not in raw and TARGET.encode() not in dec
     kin, _ = render("kasane", src, tmp + "/in", kasane)
     kout, _ = render("kasane", out, tmp + "/out", kasane)
     try:
@@ -259,7 +261,7 @@ def check_output(kasane, src, out, rect, face, tmp):
                 and f["bbox"] == written_bbox for f in fonts)
         box = box_px(rect, img)
         r["3_no_ink_in_rect"] = ink(img, box, pad=2) == 0
-        r["3_secret_not_extracted"] = SECRET not in t
+        r["3_target_not_extracted"] = TARGET not in t
         r["4_public_kept"] = all(p in t for p in PUBLIC)
         # Away from the rect, the page as kasane drew the input (its
         # substitute, the same font and advances): what was kept is drawn
@@ -292,7 +294,7 @@ def run_case(kasane, case, tmp):
     outcome, err = redact(kasane, src, out, rect)
     res = {"outcome": outcome, "expected": expect}
     if outcome == "refused":
-        res["refusal_quotes_no_secret"] = SECRET.encode() not in err
+        res["refusal_quotes_no_target"] = TARGET.encode() not in err
     if outcome != "ok" or expect != "ok":
         return res, None
     res["checks"] = check_output(kasane, src, out, rect, face, tmp)
@@ -307,14 +309,14 @@ def failures(name, res, kind):
     f = []
     if res["outcome"] != res["expected"]:
         f.append(f"{name}: outcome {res['outcome']}, expected {res['expected']}")
-    if res.get("refusal_quotes_no_secret") is False:
-        f.append(f"{name}: the refusal quotes the secret")
+    if res.get("refusal_quotes_no_target") is False:
+        f.append(f"{name}: the refusal quotes the redacted word")
     for who, checks in (res.get("checks") or {}).items():
         if "error" in checks:
             continue
         for k, v in checks.items():
-            if kind in ("edge-in", "edge-out") and k in ("3_secret_not_extracted", "3_no_ink_in_rect",
-                                                         "3_secret_not_in_file", "4_public_kept"):
+            if kind in ("edge-in", "edge-out") and k in ("3_target_not_extracted", "3_no_ink_in_rect",
+                                                         "3_target_not_in_file", "4_public_kept"):
                 continue
             if v is not True:
                 f.append(f"{name}: {who}: {k}")
@@ -375,8 +377,8 @@ def negative(kasane, tmp):
     o = os.path.join(tmp, "miss.pdf")
     redact(kasane, src, o, miss)
     c = check_output(kasane, src, o, rect, face, tmp)
-    caught["secret_left"] = c["file"]["3_secret_not_in_file"] is False and all(
-        c[w].get("3_no_ink_in_rect") is False and c[w].get("3_secret_not_extracted") is False for w in readers)
+    caught["target_left"] = c["file"]["3_target_not_in_file"] is False and all(
+        c[w].get("3_no_ink_in_rect") is False and c[w].get("3_target_not_extracted") is False for w in readers)
     o = os.path.join(tmp, "cover.pdf")
     redact(kasane, src, o, (chars[0]["origin"][0] + 0.5, rect[1], rect[2], rect[3]))
     c = check_output(kasane, src, o, rect, face, tmp)
