@@ -463,7 +463,7 @@ mod tests {
         let mut names = Vec::new();
         tampered(&mut |_, w| names.extend(w.iter().map(|w| w.name))).unwrap();
         names.sort();
-        assert_eq!(names, ["LiberationMono-Regular", "LiberationSans-Bold"]);
+        assert_eq!(names, ["KasaneCourier-Regular", "LiberationSans-Bold"]);
     }
 
     #[test]
@@ -477,7 +477,7 @@ mod tests {
     #[test]
     fn a_renamed_font_is_checked_all_the_same() {
         // Any name — the check is of what was written, not of names.
-        for base in [&b"Renamed"[..], b"LiberationMono-Regular"] {
+        for base in [&b"Renamed"[..], b"Remapped"] {
             let e = tampered(&mut |e, w| {
                 let d = font_dict(e, &w[0]);
                 if base == b"Renamed" {

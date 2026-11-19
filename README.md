@@ -73,8 +73,9 @@ text in TrueType, Type 1 (eexec and CFF), OpenType, Type 0 / CID and
 Type 3 fonts with rendering modes 0–7, vertical writing, optional
 content, annotation appearance streams and synthesised appearances
 for form fields and markup annotations, `/UserUnit`. Non-embedded
-Standard 14-style fonts draw with bundled Liberation substitutes
-(reported, never silent).
+Standard 14-style fonts draw with bundled substitutes — Liberation,
+and Kasane Courier (Courier Prime with Liberation Mono's characters)
+for Courier — reported, never silent.
 
 **Text extraction** (`extract_text`) — one positioned `CharInfo` per
 character code: origin, advance, glyph bounds, font size, rendering
@@ -567,7 +568,7 @@ reporting security problems privately.
 
 Copyright 2026 akam1o. kasane-pdf is licensed under the
 [Apache License, Version 2.0](LICENSE).
-The bundled Liberation fonts and the font subsets among the test
+The bundled Liberation and Kasane Courier fonts and the font subsets among the test
 fixtures are under the SIL Open Font License 1.1 and are listed in
 [`NOTICE`](NOTICE); all dependencies and their licences are in
 [`docs/third-party.md`](docs/third-party.md).

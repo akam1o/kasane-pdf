@@ -6,6 +6,18 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- Non-embedded Courier and Courier New (a Standard 14 name or its
+  alias, every style) draw with the bundled Kasane Courier — Courier
+  Prime 3.018 with every character it lacks taken from Liberation Mono
+  2.1.5 — instead of Liberation Mono: a Courier design, as readers draw
+  them. Every character drawn before is still drawn, advances and text
+  extraction are unchanged, glyph bounds follow the new outlines; other
+  fixed-pitch fonts keep Liberation Mono. With
+  `RedactOptions::embed_substitute_fonts`, Courier text is embedded as
+  Kasane Courier. `RenderedPage::font_substitutions()` names
+  `KasaneCourier-*`.
+
 ### Fixed
 - `RedactOptions::embed_substitute_fonts`: the check of the rewritten
   document covers every font it embedded, whatever the font's name, and

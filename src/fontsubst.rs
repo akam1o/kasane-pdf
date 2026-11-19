@@ -4,16 +4,22 @@
 //! for the Standard 14 (§9.6.2.2), common in practice for a few more.
 //! Rendering such text needs *some* outline source. This module
 //! chooses one from a fixed set of bundled, licence-clean fonts
-//! (`fonts/liberation/`, SIL OFL 1.1 — see its README for provenance):
+//! (`fonts/liberation/`, `fonts/kasane-courier/`, SIL OFL 1.1 — see
+//! their READMEs for provenance):
 //!
 //! | family requested | substitute |
 //! |---|---|
 //! | Helvetica / Arial | Liberation Sans |
 //! | Times / Times New Roman | Liberation Serif |
-//! | Courier / Courier New | Liberation Mono |
+//! | Courier / Courier New | Kasane Courier |
+//! | another fixed-pitch font | Liberation Mono |
 //!
 //! Liberation is metric-compatible with those families, so advances
-//! match when the PDF omits `/Widths`. Shapes are *not* Adobe's; every
+//! match when the PDF omits `/Widths`. Kasane Courier is Courier Prime
+//! (a Courier design, closer to what readers draw for Courier than
+//! Liberation Mono's sans-serif one) with every character it lacks taken
+//! from Liberation Mono, and Liberation Mono's advances
+//! (`scripts/build-courier-fallback.py`). Shapes are *not* Adobe's; every
 //! substitution is reported through [`FontSubstitution`] so callers
 //! (and the compat runner) can tell a substituted render from a
 //! faithful one.
@@ -210,6 +216,28 @@ const EXTRA_NAMES: &[(&str, u32)] = &[
     ("space", 0x0020),
 ];
 
+macro_rules! courier_data {
+    ($name:literal) => {
+        (
+            $name,
+            include_bytes!(concat!("../fonts/kasane-courier/", $name, ".ttf")) as &'static [u8],
+        )
+    };
+}
+
+/// Courier and Courier New (a Standard 14 name or its alias), indexed
+/// `[bold][italic]`; another fixed-pitch font keeps Liberation Mono.
+const COURIER_FACES: [[FaceData; 2]; 2] = [
+    [
+        courier_data!("KasaneCourier-Regular"),
+        courier_data!("KasaneCourier-Italic"),
+    ],
+    [
+        courier_data!("KasaneCourier-Bold"),
+        courier_data!("KasaneCourier-BoldItalic"),
+    ],
+];
+
 macro_rules! font_data {
     ($name:literal) => {
         (
@@ -372,7 +400,12 @@ pub(crate) fn pick(
         }
     };
 
-    let (name, data) = FACES[family as usize][bold as usize][italic as usize];
+    let (name, data) = match (family, kind) {
+        (SubstFamily::Mono, SubstKind::Standard14 | SubstKind::Alias) => {
+            COURIER_FACES[bold as usize][italic as usize]
+        }
+        _ => FACES[family as usize][bold as usize][italic as usize],
+    };
     let face = Face::parse(data, 0)
         .map_err(|e| Error::Structure(format!("bundled substitute font {name}: {e:?}")))?;
     Ok(Some(SubstFace {
@@ -564,8 +597,13 @@ mod tests {
             pick_name("Times-BoldItalic").name,
             "LiberationSerif-BoldItalic"
         );
-        assert_eq!(pick_name("Courier").name, "LiberationMono-Regular");
-        assert_eq!(pick_name("Courier-Bold").name, "LiberationMono-Bold");
+        assert_eq!(pick_name("Courier").name, "KasaneCourier-Regular");
+        assert_eq!(pick_name("Courier-Bold").name, "KasaneCourier-Bold");
+        assert_eq!(pick_name("Courier-Oblique").name, "KasaneCourier-Italic");
+        assert_eq!(
+            pick_name("Courier-BoldOblique").name,
+            "KasaneCourier-BoldItalic"
+        );
         assert_eq!(pick_name("Courier").kind, SubstKind::Standard14);
     }
 
@@ -586,7 +624,13 @@ mod tests {
             pick_name("TimesNewRomanPS-BoldMT").name,
             "LiberationSerif-Bold"
         );
-        assert_eq!(pick_name("CourierNewPSMT").name, "LiberationMono-Regular");
+        assert_eq!(pick_name("CourierNewPSMT").name, "KasaneCourier-Regular");
+        assert_eq!(
+            pick_name("CourierNewPS-BoldItalicMT").name,
+            "KasaneCourier-BoldItalic"
+        );
+        assert_eq!(pick_name("Courier New,Bold").name, "KasaneCourier-Bold");
+        assert_eq!(pick_name("CourierNew").kind, SubstKind::Alias);
         let s = pick_name("ABCDEF+Helvetica-Bold");
         assert_eq!(s.name, "LiberationSans-Bold");
         assert_eq!(s.base_font, "Helvetica-Bold");
@@ -668,5 +712,88 @@ mod tests {
         assert!(s.glyph_for_name("fi").is_some(), "StandardEncoding fi");
         assert!(s.glyph_for_name("uni00E9").is_some());
         assert!(s.glyph_for_name("nosuchglyph").is_none());
+    }
+
+    /// Kasane Courier draws every character Liberation Mono drew, with
+    /// Liberation Mono's advance, in each style: the Courier substitute
+    /// changed shape, not reach or layout.
+    #[test]
+    fn kasane_courier_keeps_liberation_monos_characters_and_advances() {
+        for (bold, italic) in [(false, false), (true, false), (false, true), (true, true)] {
+            let (kn, kd) = COURIER_FACES[bold as usize][italic as usize];
+            let (ln, ld) = FACES[SubstFamily::Mono as usize][bold as usize][italic as usize];
+            let (k, l) = (Face::parse(kd, 0).unwrap(), Face::parse(ld, 0).unwrap());
+            assert_eq!(k.units_per_em(), l.units_per_em(), "{kn}");
+            let mut n = 0;
+            for sub in l.tables().cmap.unwrap().subtables {
+                if !sub.is_unicode() {
+                    continue;
+                }
+                sub.codepoints(|u| {
+                    let Some(c) = char::from_u32(u) else { return };
+                    let Some(lg) = l.glyph_index(c) else { return };
+                    let kg = k
+                        .glyph_index(c)
+                        .unwrap_or_else(|| panic!("{kn}: U+{u:04X}, which {ln} draws, is missing"));
+                    assert_eq!(
+                        k.glyph_hor_advance(kg),
+                        l.glyph_hor_advance(lg),
+                        "{kn}: U+{u:04X}'s advance"
+                    );
+                    // Ink wherever Liberation Mono has ink.
+                    assert_eq!(
+                        k.glyph_bounding_box(kg).is_some(),
+                        l.glyph_bounding_box(lg).is_some(),
+                        "{kn}: U+{u:04X}'s outline"
+                    );
+                    n += 1;
+                });
+            }
+            assert!(n > 2000, "{kn}: {n}");
+            assert!(k.is_monospaced(), "{kn}");
+        }
+    }
+
+    /// Only Courier and Courier New (a Standard 14 name or its alias)
+    /// take Kasane Courier; another fixed-pitch font, and every other
+    /// family, keeps its face.
+    #[test]
+    fn kasane_courier_is_for_courier_only() {
+        for n in [
+            "Courier",
+            "Courier-Bold",
+            "Courier-Oblique",
+            "Courier-BoldOblique",
+            "CourierNew",
+            "CourierNewPSMT",
+            "CourierNewPS-BoldMT",
+            "Courier New,Italic",
+            "ABCDEF+Courier",
+        ] {
+            assert!(pick_name(n).name.starts_with("KasaneCourier-"), "{n}");
+        }
+        for n in [
+            "Courierish",
+            "CourierPrime",
+            "Courier10Pitch",
+            "LucidaConsole",
+            "Helvetica",
+            "Times-Bold",
+            "Arial",
+        ] {
+            assert!(!pick_name(n).name.starts_with("KasaneCourier-"), "{n}");
+        }
+        let mut d = Dict::new();
+        d.insert(
+            b"Flags".to_vec(),
+            crate::object::Object::Integer(FLAG_FIXED_PITCH | FLAG_NONSYMBOLIC),
+        );
+        assert_eq!(
+            pick(b"SomeTypewriter", Some(&d)).unwrap().unwrap().name,
+            "LiberationMono-Regular"
+        );
+        // Names it cannot read still yield no substitute at all.
+        assert!(pick("Courier\u{e9}".as_bytes(), None).unwrap().is_none());
+        assert!(pick(b"", None).unwrap().is_none());
     }
 }

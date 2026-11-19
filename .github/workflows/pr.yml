@@ -380,6 +380,9 @@ jobs:
       # renderer job needs it) — checked here, without a renderer.
       - name: advisory inputs and the external-renderer baselines agree (linux, macOS)
         run: python3 scripts/check-renderer-baselines.py --dump /tmp/advisories --platforms linux-x86_64,darwin-arm64
+      # The bundled Courier substitute is the build the lock names.
+      - name: Kasane Courier matches its lock
+        run: python3 scripts/build-courier-fallback.py --check
       - name: regression check vs committed baseline
         run: |
           python3 scripts/ci-regression.py check /tmp/smoke/latest.json compat/baselines/fixtures-smoke.json \

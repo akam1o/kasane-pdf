@@ -2143,7 +2143,7 @@ fn redact_usage() -> &'static str {
      refuses instead when any is found. --remove-annotations removes markup annotations meeting a rect whole \
      (with their popups and replies) instead of refusing. \
      --embed-substitute-fonts first replaces non-embedded Times, Helvetica \
-     and Courier fonts by embedded substitutes (Liberation) so their text \
+     and Courier fonts by embedded substitutes (Liberation, Kasane Courier) so their text \
      can be redacted. --remove-javascript removes every JavaScript action \
      and script tree instead of refusing a document that runs scripts. \
      The data the output carries unread (attachments, metadata, unknown \
