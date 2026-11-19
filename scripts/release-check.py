@@ -5,6 +5,15 @@ this exact commit passed the CI parts of the release gate?
 
     scripts/release-check.py <sha> --local-results DIR [--require-nightly] [--no-main]
         [--disclosure <S> --disclosure-results DIR2 --history-results DIR3] [--legacy-local]
+    scripts/release-check.py --published X.Y.Z [<ref>]
+
+The second form is for after publication (docs/releasing.md B.4), before
+S is merged: version X.Y.Z is on crates.io (not yanked), its package's
+`.cargo_vcs_info.json` names the commit of the tag vX.Y.Z, and <ref>'s
+(default HEAD) compat/advisories/history.json lists X.Y.Z with an
+expected state for every input — without that, main's advisory history
+fails (`version_not_covered`). Nothing of it exists before publication,
+so the first form never asks for it.
 
 Reads every workflow run GitHub has for <sha> (`gh api`, all pages) and
 passes only when:
@@ -193,6 +202,72 @@ def local_problems(repo, sha, results, disclosure=None, disclosure_results=None,
     return problems
 
 
+# The states scripts/advisory-history.py records of an observed version.
+OBSERVED_STATES = ("NA", "LEAK", "SLOW", "REMOVED", "REFUSED", "KEPT", "FAST")
+
+
+def published_problems(version, index, vcs_sha, tag_sha, history):
+    """What is missing after publishing `version`: `index` the crates.io
+    index lines (dicts), `vcs_sha` the commit the package names (None when
+    it could not be read), `tag_sha` the tag's commit (None: no tag),
+    `history` the history.json to merge (a dict, None: unreadable)."""
+    p = []
+    if not any(e.get("vers") == version and not e.get("yanked") for e in index):
+        p.append(f"{version} is not on crates.io (or is yanked)")
+    if tag_sha is None:
+        p.append(f"no tag v{version}")
+    elif vcs_sha != tag_sha:
+        p.append(f"the package of {version} does not name the commit of v{version}")
+    if not isinstance(history, dict) or not isinstance(history.get("expected"), dict):
+        p.append("history.json is unreadable")
+        return p
+    # The release just published is judged, not excluded: its package is
+    # what users install.
+    if version not in (history.get("versions") or []):
+        p.append(f"history.json does not list {version} (advisory-history.py run --mode main, then update-expected)")
+    elif not history["expected"]:
+        p.append("history.json has no inputs")
+    else:
+        bad = [n for n, row in history["expected"].items()
+               if not isinstance(row, dict) or row.get(version) not in OBSERVED_STATES]
+        if bad:
+            p.append(f"history.json has no expected state of {version} for {len(bad)} input(s)")
+    return p
+
+
+def check_published(version, ref):
+    import io
+    import tarfile
+    import urllib.request
+    if not __import__("re").fullmatch(r"\d+\.\d+\.\d+", version):
+        sys.exit("release-check: --published needs X.Y.Z")
+    req = lambda url: urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "kasane-pdf release-check"}),
+                                             timeout=60).read()
+    index = [json.loads(l) for l in req("https://index.crates.io/ka/sa/kasane-pdf").decode().splitlines() if l.strip()]
+    vcs = None
+    try:
+        data = req(f"https://static.crates.io/crates/kasane-pdf/kasane-pdf-{version}.crate")
+        with tarfile.open(fileobj=io.BytesIO(data)) as t:
+            f = t.extractfile(f"kasane-pdf-{version}/.cargo_vcs_info.json")
+            vcs = json.loads(f.read())["git"]["sha1"] if f else None
+    except Exception:  # noqa: BLE001 — any failure reads as "not named"
+        vcs = None
+    t = subprocess.run(["git", "rev-parse", "-q", "--verify", f"refs/tags/v{version}^{{commit}}"],
+                       capture_output=True, text=True)
+    tag = t.stdout.strip() if t.returncode == 0 else None
+    h = subprocess.run(["git", "show", f"{ref}:compat/advisories/history.json"], capture_output=True, text=True)
+    try:
+        history = json.loads(h.stdout) if h.returncode == 0 else None
+    except ValueError:
+        history = None
+    problems = published_problems(version, index, vcs, tag, history)
+    for p in problems:
+        print("PROBLEM:", p)
+    if problems:
+        sys.exit(1)
+    print(f"{version}: on crates.io from v{version} ({tag}); {ref}'s advisory history covers it")
+
+
 def gh_all(path, key):
     out = subprocess.run(["gh", "api", "--paginate", "--slurp", path], capture_output=True, text=True,
                          check=True).stdout
@@ -201,6 +276,10 @@ def gh_all(path, key):
 
 def main():
     args = sys.argv[1:]
+    if args[:1] == ["--published"]:
+        if len(args) not in (2, 3):
+            sys.exit(__doc__)
+        return check_published(args[1], args[2] if len(args) == 3 else "HEAD")
     require_nightly = "--require-nightly" in args
     no_main = "--no-main" in args
     legacy = "--legacy-local" in args

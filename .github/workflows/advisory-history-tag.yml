@@ -1,0 +1,86 @@
+# A release tag's advisory history, judged with this branch's scripts.
+#
+# nightly.yml dispatched on a tag runs the tag's own workflow and
+# scripts, which predate what was published after it (a tag never
+# changes). This runs scripts/advisory-history.py --mode release-tag from
+# the dispatched branch on the tag's build, its advisory inputs and its
+# compat/advisories/history.json: every version published before the tag
+# as that history expects, the tag's build as the candidate, the
+# release's crates.io package (when published) giving the candidate's
+# states, and the versions published after the tag listed as not judged.
+# No credentials, no corpus, no private input.
+name: advisory-history-tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "release tag (vX.Y.Z)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  advisory-history-tag:
+    name: advisory history of a release tag (linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+        with:
+          toolchain: "1.92"
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: the tag (a vX.Y.Z tag of this repository, of this package's version)
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          case "$GITHUB_REF" in
+            refs/heads/*) ;;
+            *) echo "::error::dispatch this workflow on a branch (its scripts judge the tag)"; exit 1 ;;
+          esac
+          if ! printf '%s\n' "$TAG" | grep -Eqx 'v[0-9]+\.[0-9]+\.[0-9]+'; then
+            echo "::error::not a release tag name"
+            exit 1
+          fi
+          git rev-parse -q --verify "refs/tags/$TAG^{commit}" > /dev/null || { echo "::error::no such tag"; exit 1; }
+          git worktree add --detach /tmp/tag "refs/tags/$TAG"
+          V="${TAG#v}"
+          grep -Eqx "version = \"$V\"" /tmp/tag/Cargo.toml || { echo "::error::the tag's package is not $V"; exit 1; }
+          echo "V=$V" >> "$GITHUB_ENV"
+      - name: renderers (Poppler, MuPDF, qpdf from apt; pdf.js pinned in tools/pdfjs)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends poppler-utils mupdf-tools qpdf
+          npm ci --no-audit --no-fund --prefix tools/pdfjs
+      - name: published versions built before (each binary checked against its record)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/kasane-pdf/advisory-history
+          key: advisory-history-${{ runner.os }}-tag-${{ inputs.tag }}-${{ github.run_id }}
+          restore-keys: advisory-history-${{ runner.os }}-
+      - name: the tag's build and its advisory inputs
+        working-directory: /tmp/tag
+        run: |
+          cargo build --locked --release --bin kasane-pdf
+          KASANE_ADVISORY_DUMP=/tmp/advisories cargo test --locked --release --test redact_advisories
+      - name: the tag's history, judged
+        run: |
+          python3 scripts/advisory-history.py run --mode release-tag --tag-version "$V" \
+            --expected /tmp/tag/compat/advisories/history.json --dump /tmp/advisories \
+            --candidate /tmp/tag/target/release/kasane-pdf --json /tmp/advisory-history-tag.json
+      - name: results (synthetic inputs, versions, digests)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: advisory-history-tag
+          path: /tmp/advisory-history-tag.json
+          retention-days: 30
+          if-no-files-found: ignore

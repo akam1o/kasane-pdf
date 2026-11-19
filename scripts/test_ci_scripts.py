@@ -165,6 +165,42 @@ class Workflows(unittest.TestCase):
     def step(self, wf, job, text):
         return next(st for st in wf["jobs"][job]["steps"] if text in (st.get("run") or ""))
 
+    def must_run(self, name, required, mutate):
+        path = ROOT / ".github/workflows" / name
+        wf = yaml.safe_load(path.read_text())
+        mutate(wf)
+        cw.problems.clear()
+        with contextlib.redirect_stdout(io.StringIO()):
+            cw.check_must_run(path, wf, required)
+        out = list(cw.problems)
+        cw.problems.clear()
+        return out
+
+    def test_the_history_modes_cannot_be_dropped(self):
+        def edit(job, old, new):
+            def f(wf):
+                st = self.step(wf, job, old)
+                st["run"] = st["run"].replace(old, new)
+            return f
+        self.assertEqual(self.must_run("nightly.yml", cw.NIGHTLY_MUST_RUN, lambda wf: None), [])
+        self.assertEqual(self.must_run("advisory-history-tag.yml", cw.TAG_HISTORY_MUST_RUN, lambda wf: None), [])
+        for name, required, job, old, new in (
+                # The mode no longer passed, a branch no longer main, an
+                # unknown ref no longer refused (guessed as either mode).
+                ("nightly.yml", cw.NIGHTLY_MUST_RUN, "advisory-history", "kasane-pdf $mode", "kasane-pdf"),
+                ("nightly.yml", cw.NIGHTLY_MUST_RUN, "advisory-history", 'mode="--mode main"', 'mode=""'),
+                ("nightly.yml", cw.NIGHTLY_MUST_RUN, "advisory-history", '*) echo "::error::cannot tell',
+                 '*) mode="--mode main"; echo "cannot tell'),
+                # The tag judged in main mode, or with this branch's history
+                # or build instead of the tag's.
+                ("advisory-history-tag.yml", cw.TAG_HISTORY_MUST_RUN, "advisory-history-tag", "--mode release-tag",
+                 "--mode main"),
+                ("advisory-history-tag.yml", cw.TAG_HISTORY_MUST_RUN, "advisory-history-tag",
+                 "--expected /tmp/tag/compat/advisories/history.json", "--expected compat/advisories/history.json"),
+                ("advisory-history-tag.yml", cw.TAG_HISTORY_MUST_RUN, "advisory-history-tag",
+                 "--candidate /tmp/tag/target/release/kasane-pdf", "--candidate target/release/kasane-pdf")):
+            self.assertTrue(self.must_run(name, required, edit(job, old, new)), (name, new))
+
     def test_committed_workflows_pass(self):
         self.assertEqual(self.problems(lambda wf: None), [])
 
@@ -475,6 +511,32 @@ class ReleaseCheck(unittest.TestCase):
         good = runs + [self.run_(2, path="nightly.yml", event="workflow_dispatch")]
         self.assertEqual(self.problems(good, {**jobs, 2: [self.CORPUS_OK]}, nightly=True), [])
 
+
+    def test_after_publication(self):
+        pp = self.rc.published_problems
+        index = [{"vers": "0.10.0"}, {"vers": "0.11.0"}]
+        hist = {"versions": ["0.10.0", "0.11.0"], "expected": {"a.pdf": {"0.10.0": "LEAK", "0.11.0": "REFUSED"}}}
+        self.assertEqual(pp("0.11.0", index, "t", "t", hist), [])
+        # Before the history update: the state the tag's nightly had.
+        old = {"versions": ["0.10.0"], "expected": {"a.pdf": {"0.10.0": "LEAK"}}}
+        self.assertTrue(any("does not list 0.11.0" in p for p in pp("0.11.0", index, "t", "t", old)))
+        # Listed, but an input without its 0.11.0 state.
+        half = {"versions": ["0.10.0", "0.11.0"], "expected": {"a.pdf": {"0.11.0": "REFUSED"}, "b.pdf": {}}}
+        self.assertTrue(any("no expected state of 0.11.0 for 1" in p for p in pp("0.11.0", index, "t", "t", half)))
+        # Not on crates.io, yanked, another commit, no tag, no history.
+        self.assertTrue(pp("0.12.0", index, "t", "t", hist))
+        self.assertTrue(pp("0.11.0", [{"vers": "0.11.0", "yanked": True}], "t", "t", hist))
+        self.assertTrue(any("does not name" in p for p in pp("0.11.0", index, "x", "t", hist)))
+        self.assertTrue(any("does not name" in p for p in pp("0.11.0", index, None, "t", hist)))
+        self.assertTrue(any("no tag" in p for p in pp("0.11.0", index, "t", None, hist)))
+        self.assertTrue(any("unreadable" in p for p in pp("0.11.0", index, "t", "t", None)))
+        # The release is judged, never excluded, and every state is one.
+        ex = {"versions": ["0.10.0"], "excluded_versions": {"0.11.0": "never built"}, "expected": {"a.pdf": {}}}
+        self.assertTrue(any("does not list 0.11.0" in p for p in pp("0.11.0", index, "t", "t", ex)))
+        for state in ("SAFE", "", None, "CRASH", "TIMEOUT"):
+            bad = {"versions": ["0.10.0", "0.11.0"], "expected": {"a.pdf": {"0.10.0": "LEAK", "0.11.0": state}}}
+            self.assertTrue(any("no expected state" in p for p in pp("0.11.0", index, "t", "t", bad)), state)
+        self.assertTrue(pp("0.11.0", index, "t", "t", {"versions": ["0.11.0"], "expected": {}}))
 
 class Projection(unittest.TestCase):
     """scripts/redact-results-projection.py keeps no free text."""
