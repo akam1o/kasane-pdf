@@ -134,9 +134,10 @@ def main():
            "implementation in E0 (A/E0 -> C/E0)": delta(runs["a_e0"], runs["c_e0"])}
     json.dump(doc, open(a.json, "w"), indent=1)
     if a.public:
-        json.dump(public(doc), open(a.public, "w"), indent=1)
+        json.dump({k: (v if k in ("implementations", "harness", "e1_configuration") else public(v))
+                   for k, v in doc.items()}, open(a.public, "w"), indent=1)
     for name, d in doc.items():
-        if name == "implementations":
+        if not (isinstance(d, dict) and "pages" in d):
             continue
         p = d["pages"]
         print(f"{name}: SSIM better {len(p['ssim']['better'])} worse {len(p['ssim']['worse'])} same {p['ssim']['same']}; "
