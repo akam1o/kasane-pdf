@@ -121,7 +121,7 @@ compared with the E1 baseline as the same environment.
 
 `compat/baselines/corpus-full.json` was measured again from the
 nightly's x86_64 run of the implementation without Kasane Courier in E1
-(run 44665674269, commit `e20a6a2`). It differs from the E0 baseline in
+(run 44675455806, commit `f6ddcdd`). It differs from the E0 baseline in
 what E1 changes, and nothing else:
 - the environment (commit, reference);
 - the 9 pages of the 5 Courier files: SSIM and content SSIM, all lower
