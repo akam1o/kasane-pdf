@@ -13,6 +13,8 @@
 #             asks for Courier and Courier New — tested on the pattern as
 #             Poppler builds it, before the system rules — then the
 #             system configuration
+# DIR/profile.json  the profile's name and version (the environment
+#             fingerprint, scripts/compat_env.py, reads it)
 # DIR/bin     pdftoppm, pdftotext, pdftocairo, pdfinfo wrappers running
 #             the system tools with FONTCONFIG_FILE=DIR/fonts.conf — put
 #             DIR/bin first on PATH for a reference process only
@@ -62,6 +64,9 @@ cat > "$DIR/fonts.conf" <<EOF
   <include ignore_missing="no">/etc/fonts/fonts.conf</include>
 </fontconfig>
 EOF
+# What this directory is, for scripts/compat_env.py's fingerprint: raise
+# the version with any change to the rules or the fonts.
+printf '{"profile": "courier-nimbus-mono-ps", "version": 1}\n' > "$DIR/profile.json"
 for t in pdftoppm pdftotext pdftocairo pdfinfo; do
   real=$(command -v "$t" || true)
   [ -n "$real" ] || { echo "setup-e1: no $t" >&2; exit 1; }

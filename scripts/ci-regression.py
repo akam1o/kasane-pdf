@@ -1303,8 +1303,11 @@ def update_baseline(a):
         validate_base(old)
     new = summarize(run, att, env)
     diff = baseline_diff(new, old)
+    ref = env.get("reference") or {}
     print(f"update-baseline: {a.baseline} ({'new file' if old is None else 'replacing'}); environment "
-          + ", ".join(f"{k} {env.get(k)}" for k in ("commit", "os", "arch", "poppler", "mupdf", "features")))
+          + ", ".join(f"{k} {env.get(k)}" for k in ("commit", "os", "arch", "poppler", "mupdf", "features"))
+          + f", reference {ref.get('profile')} v{ref.get('version')} (config {str(ref.get('config_sha256'))[:12]}, "
+          f"fonts {str(ref.get('fonts_sha256'))[:12]})")
     if old is not None and (old.get("meta") or {}).get("env"):
         changed = compat_env.differences(old["meta"]["env"], env)
         print("environment change: " + (", ".join(changed) if changed else "none"))

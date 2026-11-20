@@ -51,8 +51,10 @@ except ImportError:
     if os.environ.get("KASANE_REQUIRE_PILLOW") == "1":
         raise
 
+E0 = {"profile": "system", "version": 1, "config_sha256": "0" * 64, "fonts_sha256": "1" * 64, "font_files": 53,
+      "fontconfig": "2.17.1", "freetype": "libfreetype.so.6.20.5"}
 ENV = {"commit": "c" * 40, "os": "linux-ubuntu-26.04", "arch": "x86_64", "features": "cjk-fallback",
-       "poppler": "26.01.0", "mupdf": "1.27.0", "qpdf": "12.3.2"}
+       "poppler": "26.01.0", "mupdf": "1.27.0", "qpdf": "12.3.2", "reference": E0}
 TOL = dict(ca.TOLERANCE)
 
 
@@ -799,6 +801,124 @@ class InvalidInputs(unittest.TestCase):
                 self.assertEqual(rc, 2, f"{name}: {out}")
                 self.assertIn("INVALID", out, name)
 
+
+ce = load("compat_env")
+
+
+class ReferenceFingerprint(unittest.TestCase):
+    """The reference renderer's fonts are part of the environment: E0 and
+    E1 are never the same, a missing fingerprint never matches, and the
+    same setup elsewhere on disk is the same."""
+
+    E1 = dict(E0, profile="courier-nimbus-mono-ps", config_sha256="2" * 64, fonts_sha256="3" * 64, font_files=57)
+
+    def test_differences(self):
+        d = ce.differences
+        self.assertEqual(d(ENV, dict(ENV)), [])
+        self.assertEqual(d(ENV, dict(ENV, reference=self.E1)), ["reference"])
+        # Missing on one side, on both, or incomplete: never the same.
+        no_ref = {k: v for k, v in ENV.items() if k != "reference"}
+        self.assertEqual(d(no_ref, ENV), ["reference"])
+        self.assertEqual(d(ENV, no_ref), ["reference"])
+        self.assertEqual(d(no_ref, dict(no_ref)), ["reference"])
+        partial = dict(ENV, reference={k: v for k, v in E0.items() if k != "fonts_sha256"})
+        self.assertEqual(d(partial, dict(partial)), ["reference"])
+        self.assertEqual(d(ENV, dict(ENV, reference=dict(E0, config_sha256=None))), ["reference"])
+        # Another architecture is another environment.
+        self.assertEqual(d(ENV, dict(ENV, arch="aarch64")), ["arch"])
+        self.assertIn("reference", ce.incomplete(no_ref, need_mupdf=True))
+        self.assertNotIn("reference", ce.incomplete(ENV, need_mupdf=True))
+
+    def setup_tools(self, d):
+        """Fake fc-conflist / fc-list reading a toy configuration: lines
+        `include PATH` (the files loaded) and `font PATH` (the fonts)."""
+        bin_ = os.path.join(d, "bin")
+        os.makedirs(bin_)
+        conflist = ('#!/bin/sh\nf=${FONTCONFIG_FILE:-/nonexistent}\n[ -f "$f" ] || exit 0\n'
+                    'sed -n "s/^include //p" "$f" | while read -r p; do echo "+ $p: x"; done\n')
+        fclist = ('#!/bin/sh\n[ "$1" = --version ] && { echo "fontconfig version 2.17.1"; exit 0; }\n'
+                  'f=${FONTCONFIG_FILE:-/nonexistent}\n[ -f "$f" ] || exit 0\n'
+                  'sed -n "s/^font //p" "$f"\n'
+                  'for i in $(sed -n "s/^include //p" "$f"); do sed -n "s/^font //p" "$i"; done\n')
+        for n, body in (("fc-conflist", conflist), ("fc-list", fclist)):
+            with open(os.path.join(bin_, n), "w") as fh:
+                fh.write(body)
+            os.chmod(os.path.join(bin_, n), 0o755)
+        return bin_
+
+    def reference_dir(self, root, font=b"nimbus", include=b"rule A", profile=True):
+        """A setup-e1.sh-like directory: fonts.conf, one font, an
+        included rule file, profile.json, a pdftoppm wrapper."""
+        os.makedirs(os.path.join(root, "fonts"))
+        os.makedirs(os.path.join(root, "bin"))
+        with open(os.path.join(root, "fonts", "f.otf"), "wb") as fh:
+            fh.write(font)
+        with open(os.path.join(root, "rules.conf"), "wb") as fh:
+            fh.write(include)
+        with open(os.path.join(root, "fonts.conf"), "w") as fh:
+            fh.write(f"include {root}/rules.conf\nfont {root}/fonts/f.otf\n")
+        if profile:
+            with open(os.path.join(root, "profile.json"), "w") as fh:
+                json.dump({"profile": "courier-nimbus-mono-ps", "version": 1}, fh)
+        w = os.path.join(root, "bin", "pdftoppm")
+        with open(w, "w") as fh:
+            fh.write(f"#!/bin/sh\nFONTCONFIG_FILE={root}/fonts.conf exec /usr/bin/pdftoppm \"$@\"\n")
+        os.chmod(w, 0o755)
+        return w
+
+    def fingerprint(self, wrapper, bin_):
+        old = os.environ.get("PATH", "")
+        os.environ["PATH"] = bin_ + os.pathsep + old
+        try:
+            return ce.reference(wrapper)
+        finally:
+            os.environ["PATH"] = old
+
+    def test_reference_follows_content_not_place(self):
+        with tempfile.TemporaryDirectory() as d:
+            bin_ = self.setup_tools(d)
+            a = self.fingerprint(self.reference_dir(os.path.join(d, "a")), bin_)
+            b = self.fingerprint(self.reference_dir(os.path.join(d, "tmp", "elsewhere", "b")), bin_)
+            self.assertTrue(ce.reference_complete(a), a)
+            self.assertEqual(a, b)  # only the directory differs
+            self.assertEqual((a["profile"], a["version"], a["font_files"]), ("courier-nimbus-mono-ps", 1, 1))
+            font = self.fingerprint(self.reference_dir(os.path.join(d, "c"), font=b"another"), bin_)
+            self.assertNotEqual(a["fonts_sha256"], font["fonts_sha256"])
+            self.assertEqual(a["config_sha256"], font["config_sha256"])
+            rule = self.fingerprint(self.reference_dir(os.path.join(d, "e"), include=b"rule B"), bin_)
+            self.assertNotEqual(a["config_sha256"], rule["config_sha256"])
+            # A configuration that does not declare its profile is not one.
+            undeclared = self.fingerprint(self.reference_dir(os.path.join(d, "f"), profile=False), bin_)
+            self.assertEqual(undeclared["profile"], "undeclared")
+            self.assertNotEqual(a, undeclared)
+
+    def test_corpus_and_attribution_in_other_references(self):
+        f = file("a", [page(1, 0.9)])
+        a = att(("a", 1, "both", 0.0, 0.1))
+        b = cr.summarize(run(f), a, ENV)
+        for other in (dict(ENV, reference=self.E1), {k: v for k, v in ENV.items() if k != "reference"}):
+            rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), env=other),
+                            require_same_env=True)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("attribution measured in another environment or commit than the run: reference", out)
+            # The run itself in another reference than the baseline.
+            rc, out = check(run(f), b, env=other, attribution=att(("a", 1, "both", 0.0, 0.1), env=other),
+                            require_same_env=True)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("reference", out)
+
+    def test_update_baseline_needs_a_reference(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = os.path.join(d, "env.json")
+            with open(env, "w") as fh:
+                json.dump({k: v for k, v in ENV.items() if k != "reference"}, fh)
+            r = os.path.join(d, "r.json")
+            with open(r, "w") as fh:
+                json.dump(run(file("a", [page(1, 0.99)])), fh)
+            rc, out = main_cli("update-baseline", r, os.path.join(d, "b.json"), "--env", env, "--write")
+            self.assertNotEqual(rc, 0, out)
+            self.assertIn("reference", out)
+            self.assertFalse(os.path.exists(os.path.join(d, "b.json")))
 
 class UpdateBaseline(unittest.TestCase):
     def test_explicit_and_protected(self):

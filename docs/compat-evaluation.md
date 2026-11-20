@@ -179,10 +179,19 @@ a macOS run of the same commit. A baseline records its environment
 - commit;
 - OS and architecture;
 - Poppler, MuPDF and qpdf versions;
-- features.
+- features;
+- the reference's fonts (`reference`): Poppler draws a non-embedded font
+  with what fontconfig gives it, so the profile (`system`, or a reference
+  directory's declared profile such as `courier-nimbus-mono-ps`,
+  docs/courier-reference.md), the effective fontconfig configuration
+  (the top-level file and every file it loads, in order, by content),
+  the font files fontconfig lists (by content), and the fontconfig and
+  FreeType versions. Paths inside a reference directory are recorded
+  relative to it.
 
 The numeric measures are compared only when OS, architecture, Poppler,
-MuPDF and features are equal. Otherwise:
+MuPDF, features and the reference are equal; a side without a complete
+reference fingerprint (an older report) is never equal. Otherwise:
 - **without `--require-same-env`** (`release-verify` on a workstation,
   against the Linux baseline): the run prints *"numeric measures not
   compared: the environment differs …"*. The stage checks still run;

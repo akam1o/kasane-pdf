@@ -19,6 +19,17 @@ on:
   schedule:
     - cron: "17 3 * * *"
   workflow_dispatch:
+    inputs:
+      reference_profile:
+        # The Poppler reference's fonts (docs/courier-reference.md): e1,
+        # the baseline's, for every scheduled run; e0 (the runner's own
+        # fonts) for an evaluation run only — its environment fingerprint
+        # differs from the baseline's, so its numeric check fails.
+        description: "reference profile (e1: the baseline's; e0: evaluation only)"
+        required: false
+        default: e1
+        type: choice
+        options: [e1, e0]
 
 permissions:
   contents: read
@@ -46,6 +57,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qpdf poppler-utils poppler-data python3-pip \
             mupdf-tools python3-pil
+      # Poppler's reference fonts: E1 — the runner's own, but Courier and
+      # Courier New (only) drawn with Nimbus Mono PS, through a private
+      # fontconfig configuration and wrappers that only the reference
+      # steps put first on PATH (kasane reads no fontconfig; MuPDF draws
+      # with its built-in fonts). probe.py fails unless E1 changes those
+      # families alone. The environment fingerprint records the profile,
+      # the effective configuration and the fonts.
+      - name: reference fonts (E1 — Courier and Courier New to Nimbus Mono PS, Poppler only)
+        env:
+          PROFILE: ${{ inputs.reference_profile || 'e1' }}
+        run: |
+          case "$PROFILE" in
+            e1)
+              sh scripts/courier-reference/setup-e1.sh /tmp/ref
+              python3 scripts/courier-reference/probe.py /tmp/ref --json /tmp/ref-probe.json
+              echo "REFERENCE_BIN=/tmp/ref/bin" >> "$GITHUB_ENV" ;;
+            e0) echo "REFERENCE_BIN=" >> "$GITHUB_ENV" ;;
+            *) echo "::error::unknown reference profile $PROFILE"; exit 1 ;;
+          esac
       - name: CJK fallback assets (committed; verified against the lock)
         run: ./scripts/fetch-cjk-assets.sh --check
       - name: build runner (with cjk-fallback)
@@ -120,7 +150,7 @@ jobs:
         # enforces it.
         run: |
           mkdir -p /tmp/full
-          ./compat/runner/target/release/kasane-compat run \
+          PATH="${REFERENCE_BIN:+$REFERENCE_BIN:}$PATH" ./compat/runner/target/release/kasane-compat run \
             --corpus compat/corpus --out /tmp/full \
             --with-poppler --dpi 96 --timeout-secs 20 --mode full \
             --rewrite-options carry
@@ -134,6 +164,7 @@ jobs:
         # check fails on it.
         run: |
           cargo build --release --features cjk-fallback --bin kasane-pdf --target-dir target/cjk
+          export PATH="${REFERENCE_BIN:+$REFERENCE_BIN:}$PATH"
           python3 scripts/ci-regression.py env --features cjk-fallback > /tmp/full/env.json
           python3 scripts/compat-attribute.py /tmp/full/latest.json target/cjk/release/kasane-pdf \
             --out /tmp/full/attribution.json --summary /tmp/full/attribution-summary.json \
@@ -149,6 +180,11 @@ jobs:
           if s.get("truncated"):
               print(f"**{s['truncated']} page(s) below the threshold not measured (--max-pages-total)**\n")
           PY
+      # E1 against E0 on every page Poppler draws: a page E1 changes must
+      # be one of a file whose Courier face it replaced (fails otherwise).
+      - name: the reference profile changes Courier pages only (E0 vs E1, ids and counts)
+        if: env.REFERENCE_BIN != ''
+        run: python3 scripts/courier-reference/reference-diff.py compat/corpus /tmp/ref --json /tmp/full/reference-diff.json
       - name: regression check and exact-render quality gate vs committed 511 baseline
         # Fails on any stage / round-trip regression, on a new
         # quality-gate flag (compat/quality-gate.json), on a file missing
@@ -183,6 +219,8 @@ jobs:
             /tmp/full/env.json
             /tmp/full/attribution.json
             /tmp/full/attribution-summary.json
+            /tmp/full/reference-diff.json
+            /tmp/ref-probe.json
           retention-days: 30
 
   # Every published version of compat/advisories/history.json built from
