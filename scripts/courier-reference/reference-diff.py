@@ -5,7 +5,9 @@ E1 changes, and which font files fontconfig gave Poppler for each file.
     scripts/courier-reference/reference-diff.py CORPUS_DIR E1DIR --json OUT [--dpi 96] [--jobs N]
 
 The runner's reference (`pdftoppm -r DPI -gray`), all pages, decoded
-pixels compared (PGM headers and file metadata play no part). A file
+pixels compared (PGM headers and file metadata play no part). Each
+Poppler process is bounded (TIMEOUT seconds, MEMORY bytes of address
+space): a file neither environment draws within them is not compared. A file
 Poppler cannot draw whole (its page count from pdfinfo unknown or not
 reached, or a failing status) is reported as partial or none — compared
 as far as both environments drew it, never counted as fully compared. The JSON
@@ -34,12 +36,22 @@ def matched(trace):
     return files
 
 
+TIMEOUT = 120
+MEMORY = 4 << 30  # per Poppler process: a decompression bomb must not take the machine
+
+
+def _limit():
+    import resource
+    resource.setrlimit(resource.RLIMIT_AS, (MEMORY, MEMORY))
+
+
 def pages(tool, pdf, out, dpi):
     os.makedirs(out, exist_ok=True)
     env = {k: v for k, v in os.environ.items() if k not in ("FONTCONFIG_FILE", "FONTCONFIG_PATH")}
     try:
         r = subprocess.run([tool, "-r", str(dpi), "-gray", pdf, os.path.join(out, "p")], capture_output=True,
-                           text=True, errors="replace", env=dict(env, FC_DEBUG="1"), timeout=600)
+                           text=True, errors="replace", env=dict(env, FC_DEBUG="1"), timeout=TIMEOUT,
+                           preexec_fn=_limit)
     except subprocess.TimeoutExpired:
         return None, None, None
     imgs = {}
@@ -69,8 +81,13 @@ def one(args):
     with tempfile.TemporaryDirectory() as tmp:
         i0, f0, rc0 = pages("pdftoppm", pdf, os.path.join(tmp, "e0"), dpi)
         i1, f1, rc1 = pages(os.path.join(e1, "bin", "pdftoppm"), pdf, os.path.join(tmp, "e1"), dpi)
+    if i0 is None and i1 is None:
+        # Neither environment drew it in time: not compared (a coverage
+        # gap, as a failing status is).
+        return fid, {"pages": 0, "pages_e1": 0, "expected_pages": expected, "status": "timeout",
+                     "coverage": "none", "pages_changed": 0, "changed_pages": [], "e0_fonts": [], "e1_fonts": []}
     if i0 is None or i1 is None:
-        return fid, {"error": "timeout"}
+        return fid, {"error": "timeout_in_one"}
     if rc0 != rc1:
         return fid, {"error": "status_differs", "status": [rc0, rc1]}
     diff = sorted(p for p in set(i0) | set(i1) if i0.get(p) != i1.get(p))
@@ -89,7 +106,7 @@ def main():
     ap.add_argument("e1")
     ap.add_argument("--json", required=True)
     ap.add_argument("--dpi", type=int, default=96)
-    ap.add_argument("--jobs", type=int, default=4)
+    ap.add_argument("--jobs", type=int, default=2)
     a = ap.parse_args()
     pdfs = sorted(glob.glob(os.path.join(a.corpus, "*.pdf")))
     e1 = os.path.abspath(a.e1)
@@ -114,6 +131,7 @@ def main():
                "pages_compared": sum(r.get("pages", 0) for r in res.values()),
                "coverage_complete": cov["complete"], "coverage_partial": cov["partial"], "coverage_none": cov["none"],
                "poppler_status_nonzero": sorted(f"{f}:{r['status']}" for f, r in res.items() if r.get("status")),
+               "limits": {"timeout_s": TIMEOUT, "memory_bytes": MEMORY},
                "expected_pages_known": sum(r["expected_pages"] for r in res.values() if r.get("expected_pages")),
                "files_changed": len(changed), "pages_changed": sum(r["pages_changed"] for r in changed.values()),
                "unexplained": unexplained, "nimbus_used_without_change": nimbus_unchanged,
