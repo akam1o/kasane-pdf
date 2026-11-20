@@ -13,6 +13,12 @@ on:
       - "scripts/courier-reference/**"
       - ".github/workflows/courier-reference.yml"
   workflow_dispatch:
+    inputs:
+      candidate:
+        description: "the implementation C to compare with this commit (A): a branch or commit"
+        required: false
+        default: q3/kasane-courier
+        type: string
 
 permissions:
   contents: read
@@ -43,5 +49,61 @@ jobs:
           path: |
             /tmp/courier-env.json
             /tmp/courier-probe.json
+          retention-days: 30
+          if-no-files-found: ignore
+
+  # The synthetic Courier cases (scripts/courier-reference/synth.py) for A
+  # (this commit) and C (the input), against Poppler in E0 and E1, MuPDF
+  # and pdf.js, at 96 and 150 dpi. Dispatch only.
+  synthetic:
+    name: synthetic Courier cases, A and C in E0 and E1
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch, 2026-10-24
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: E0 — the nightly's verifiers; E1
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qpdf poppler-utils poppler-data python3-pip \
+            mupdf-tools python3-pil
+          sh scripts/courier-reference/setup-e1.sh /tmp/e1
+          python3 -m venv /tmp/venv
+          /tmp/venv/bin/pip install --quiet numpy pillow scikit-image
+          npm ci --no-audit --no-fund --prefix tools/pdfjs
+      - name: A (this commit) and C (the input), built alike
+        env:
+          CANDIDATE: ${{ inputs.candidate }}
+        run: |
+          git fetch --quiet origin "$CANDIDATE"
+          git worktree add --detach /tmp/c FETCH_HEAD
+          cargo build --locked --release --bin kasane-pdf
+          (cd /tmp/c && cargo build --locked --release --bin kasane-pdf)
+          printf '{"A": "%s", "C": "%s", "harness": "%s"}\n' "$(git rev-parse HEAD)" "$(git -C /tmp/c rev-parse HEAD)" \
+            "$(git rev-parse HEAD)" > /tmp/synthetic-shas.json
+          cat /tmp/synthetic-shas.json
+      - name: the cases in E0 and E1 (96 and 150 dpi)
+        run: |
+          python3 scripts/courier-reference/synth.py /tmp/synth
+          export KASANE_A=$PWD/target/release/kasane-pdf KASANE_C=/tmp/c/target/release/kasane-pdf
+          for e in e0 e1; do
+            P=$PATH; [ "$e" = e1 ] && P=/tmp/e1/bin:$PATH
+            for dpi in 96 150; do
+              PATH=$P /tmp/venv/bin/python scripts/courier-reference/compare-synth.py \
+                "/tmp/synthetic-$e-$dpi.json" "$dpi" /tmp/synth/*.pdf
+            done
+          done
+      - name: results (synthetic cases, metrics only)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: courier-reference-synthetic
+          path: /tmp/synthetic-*.json
           retention-days: 30
           if-no-files-found: ignore

@@ -180,11 +180,6 @@ jobs:
           if s.get("truncated"):
               print(f"**{s['truncated']} page(s) below the threshold not measured (--max-pages-total)**\n")
           PY
-      # E1 against E0 on every page Poppler draws: a page E1 changes must
-      # be one of a file whose Courier face it replaced (fails otherwise).
-      - name: the reference profile changes Courier pages only (E0 vs E1, ids and counts)
-        if: env.REFERENCE_BIN != ''
-        run: python3 scripts/courier-reference/reference-diff.py compat/corpus /tmp/ref --json /tmp/full/reference-diff.json
       - name: regression check and exact-render quality gate vs committed 511 baseline
         # Fails on any stage / round-trip regression, on a new
         # quality-gate flag (compat/quality-gate.json), on a file missing
@@ -197,6 +192,13 @@ jobs:
           python3 scripts/ci-regression.py check /tmp/full/latest.json compat/baselines/corpus-full.json \
             --env /tmp/full/env.json --attribution /tmp/full/attribution.json --require-same-env \
             --summary-md "$GITHUB_STEP_SUMMARY"
+      # E1 against E0 on every page Poppler draws (each process bounded in
+      # time and memory): a page E1 changes must be one of a file whose
+      # Courier face it replaced (fails otherwise).
+      - name: the reference profile changes Courier pages only (E0 vs E1, ids and counts)
+        if: always() && env.REFERENCE_BIN != ''
+        timeout-minutes: 45
+        run: python3 scripts/courier-reference/reference-diff.py compat/corpus /tmp/ref --json /tmp/full/reference-diff.json
       - name: redaction corpus results (projection — ids, categories, counts)
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
