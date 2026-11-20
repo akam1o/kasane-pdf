@@ -330,9 +330,10 @@ def check_output(kasane, src, out, rect, face, tmp, edge=None):
             os.remove(ctrl_pdf)
         outcome, _ = redact(kasane, src, ctrl_pdf, NOWHERE)
         name, program = embedded_program(ctrl_pdf) if outcome == "ok" else (None, None)
-        # The control is good only with the same face embedded.
+        # The control is good only with the same face embedded; one that
+        # cannot be made or read is unverified, another face a failure.
         ctrl_ok = name == f"/KasaneCourier-{face}" and program == want
-        res["file"]["E2_control_embeds_face"] = ctrl_ok
+        res["file"]["E2_control_embeds_face"] = (True if ctrl_ok else "unverified" if program is None else False)
         kin_p = glyph_box_px(boxes[0], kin) if kin is not None else None
     for who in ("poppler", "mupdf", "pdfjs"):
         r = {}
@@ -521,6 +522,21 @@ def glyph_as_image(kasane, pdf, bounds, tmp):
             f"/F /AHx ID {''.join(rows)}> EI Q").encode()
 
 
+def only_failing(c, readers, expected):
+    """An edge control caught by the checks meant for it: in every
+    renderer exactly those fail, every other check (and every file check
+    but the secret's, which the edge cases keep) passes, none
+    unverified."""
+    if any(v is not True for k, v in c["file"].items() if k != "3_target_not_in_file"):
+        return False
+    for w in readers:
+        if "error" in c[w] or not all(k in c[w] for k in expected):
+            return False
+        if any((v is not False) if k in expected else (v is not True) for k, v in c[w].items()):
+            return False
+    return True
+
+
 def negative(kasane, tmp):
     """Broken outputs the checks must catch: ({control: caught}, the edge
     controls' check results by renderer)."""
@@ -568,19 +584,13 @@ def negative(kasane, tmp):
     drawn = with_content_appended(out, glyph_as_image(kasane, src, p_bounds, d), d)
     c = check_output(kasane, src, drawn, rect, face, d, edge="edge-in")
     detail["edge_P_drawn_not_extracted"] = c
-    caught["edge_P_drawn_not_extracted"] = (
-        c["file"]["1_embedded_face"] is True and c["file"]["3_file_decoded"] is True
-        and all("error" not in c[w] and c[w]["E1_text_exact"] is True and c[w]["E2_control_P_inked"] is True
-                and c[w]["E3_P_box"] is False for w in readers))
+    caught["edge_P_drawn_not_extracted"] = only_failing(c, readers, {"E3_P_box"})
     # A clear rect that removed the P: the overlapping case's output
     # judged as the clear case's. E1 and E3 are both to catch it.
     _, (src2, _, rect2, _) = run_case(kasane, edge_out, os.path.join(d, "out"))
     c = check_output(kasane, src2, out, rect2, face, os.path.join(d, "out"), edge="edge-out")
     detail["edge_clear_P_removed"] = c
-    caught["edge_clear_P_removed"] = (
-        c["file"]["1_embedded_face"] is True
-        and all("error" not in c[w] and c[w]["E1_text_exact"] is False and c[w]["E2_control_P_inked"] is True
-                and c[w]["E3_P_box"] is False for w in readers))
+    caught["edge_clear_P_removed"] = only_failing(c, readers, {"E1_text_exact", "E3_P_box"})
     return caught, detail
 
 

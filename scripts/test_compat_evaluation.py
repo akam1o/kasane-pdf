@@ -1096,6 +1096,26 @@ class CourierRedactionEdge(unittest.TestCase):
         self.assertEqual(self.v.failures("edge-overlapping", res, "edge-in"), [])
         self.assertIn("poppler.E3_P_box", self.v.unverified(res))
 
+    def test_negative_caught_only_by_its_checks(self):
+        ok = {"E1_text_exact": True, "E2_control_P_inked": True, "E3_P_box": False, "E4_neighbours_kept": True,
+              "5_matches_kasane": True, "2_uses_embedded": True, "6_supplemented_drawn": True}
+        readers = ("poppler", "mupdf", "pdfjs")
+        file = {"1_embedded_face": True, "3_file_decoded": True, "3_target_not_in_file": False,
+                "E2_control_embeds_face": True}
+        c = dict(file=dict(file), **{w: dict(ok) for w in readers})
+        self.assertTrue(self.v.only_failing(c, readers, {"E3_P_box"}))
+        # Caught by something else too, or not by E3, or not checked: not caught.
+        for w, k, v in (("mupdf", "E4_neighbours_kept", False), ("pdfjs", "5_matches_kasane", "unverified"),
+                        ("poppler", "E3_P_box", True), ("poppler", "E1_text_exact", False)):
+            bad = dict(file=dict(file), **{r: dict(ok) for r in readers})
+            bad[w][k] = v
+            self.assertFalse(self.v.only_failing(bad, readers, {"E3_P_box"}), (w, k, v))
+        bad = dict(file=dict(file, E2_control_embeds_face="unverified"), **{r: dict(ok) for r in readers})
+        self.assertFalse(self.v.only_failing(bad, readers, {"E3_P_box"}))
+        bad = dict(file=dict(file), **{r: dict(ok) for r in readers})
+        bad["pdfjs"] = {"error": "unverified"}
+        self.assertFalse(self.v.only_failing(bad, readers, {"E3_P_box"}))
+
 
 class UpdateBaseline(unittest.TestCase):
     def test_explicit_and_protected(self):
