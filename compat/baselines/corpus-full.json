@@ -40225,7 +40225,7 @@
   },
   "env": {
    "arch": "x86_64",
-   "commit": "e20a6a2c0dfbca6d2643bac16814b0a1cfdd6827",
+   "commit": "f6ddcdd72c41aae62dfc5f82d9c78792e4153451",
    "features": "cjk-fallback",
    "mupdf": "1.27.0",
    "os": "linux-ubuntu-26.04",
@@ -40237,6 +40237,7 @@
     "fontconfig": "2.17.1",
     "fonts_sha256": "1db19da5168ff58a1677bca89e375c60e91383151673a0a85df66fe66f31f6cb",
     "freetype": "libfreetype.so.6.20.5",
+    "freetype_sha256": "1e3b06a2f9a1288f4f30af4d014a1164b6747168a2d81c99ecebd978a4a33a16",
     "profile": "courier-nimbus-mono-ps",
     "version": 1
    }
