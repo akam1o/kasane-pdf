@@ -70,7 +70,9 @@ printf '{"profile": "courier-nimbus-mono-ps", "version": 1}\n' > "$DIR/profile.j
 for t in pdftoppm pdftotext pdftocairo pdfinfo; do
   real=$(command -v "$t" || true)
   [ -n "$real" ] || { echo "setup-e1: no $t" >&2; exit 1; }
-  printf '#!/bin/sh\nFONTCONFIG_FILE=%s exec %s "$@"\n' "$DIR/fonts.conf" "$real" > "$DIR/bin/$t"
+  # Exactly this form: scripts/compat_env.py identifies the wrapper by it.
+  printf '#!/bin/sh\nexec /usr/bin/env -u FONTCONFIG_PATH -u FONTCONFIG_SYSROOT FONTCONFIG_FILE=%s %s "$@"\n' \
+    "$DIR/fonts.conf" "$real" > "$DIR/bin/$t"
   chmod +x "$DIR/bin/$t"
 done
 FONTCONFIG_FILE="$DIR/fonts.conf" fc-cache "$DIR/fonts" > /dev/null
