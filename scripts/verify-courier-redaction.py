@@ -522,15 +522,24 @@ def glyph_as_image(kasane, pdf, bounds, tmp):
             f"/F /AHx ID {''.join(rows)}> EI Q").encode()
 
 
+# The checks an edge output has, every one of them (check_output).
+EDGE_FILE_CHECKS = {"1_embedded_face", "3_file_decoded", "3_target_not_in_file", "0_kasane_reads_output",
+                    "E2_control_embeds_face", "5_kasane_unchanged_outside"}
+EDGE_RENDERER_CHECKS = {"2_uses_embedded", "E1_text_exact", "E2_control_P_inked", "E3_P_box", "E4_neighbours_kept",
+                        "5_matches_kasane", "6_supplemented_drawn"}
+
+
 def only_failing(c, readers, expected):
-    """An edge control caught by the checks meant for it: in every
-    renderer exactly those fail, every other check (and every file check
-    but the secret's, which the edge cases keep) passes, none
-    unverified."""
+    """An edge control caught by the checks meant for it: every check is
+    there, in every renderer exactly those fail, every other check (and
+    every file check but the secret's, which the edge cases keep) passes,
+    none unverified."""
+    if set(c.get("file") or {}) != EDGE_FILE_CHECKS:
+        return False
     if any(v is not True for k, v in c["file"].items() if k != "3_target_not_in_file"):
         return False
     for w in readers:
-        if "error" in c[w] or not all(k in c[w] for k in expected):
+        if set(c.get(w) or {}) != EDGE_RENDERER_CHECKS:
             return False
         if any((v is not False) if k in expected else (v is not True) for k, v in c[w].items()):
             return False

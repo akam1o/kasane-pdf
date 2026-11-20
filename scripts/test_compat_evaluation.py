@@ -1101,7 +1101,7 @@ class CourierRedactionEdge(unittest.TestCase):
               "5_matches_kasane": True, "2_uses_embedded": True, "6_supplemented_drawn": True}
         readers = ("poppler", "mupdf", "pdfjs")
         file = {"1_embedded_face": True, "3_file_decoded": True, "3_target_not_in_file": False,
-                "E2_control_embeds_face": True}
+                "E2_control_embeds_face": True, "0_kasane_reads_output": True, "5_kasane_unchanged_outside": True}
         c = dict(file=dict(file), **{w: dict(ok) for w in readers})
         self.assertTrue(self.v.only_failing(c, readers, {"E3_P_box"}))
         # Caught by something else too, or not by E3, or not checked: not caught.
@@ -1114,6 +1114,15 @@ class CourierRedactionEdge(unittest.TestCase):
         self.assertFalse(self.v.only_failing(bad, readers, {"E3_P_box"}))
         bad = dict(file=dict(file), **{r: dict(ok) for r in readers})
         bad["pdfjs"] = {"error": "unverified"}
+        self.assertFalse(self.v.only_failing(bad, readers, {"E3_P_box"}))
+        # A check left out (of a renderer, or of the file) is not caught.
+        for drop in ("E4_neighbours_kept", "2_uses_embedded"):
+            bad = dict(file=dict(file), **{r: dict(ok) for r in readers})
+            del bad["poppler"][drop]
+            self.assertFalse(self.v.only_failing(bad, readers, {"E3_P_box"}), drop)
+        bad = dict(file={}, **{r: {"E3_P_box": False} for r in readers})
+        self.assertFalse(self.v.only_failing(bad, readers, {"E3_P_box"}))
+        bad = dict(file={k: v for k, v in file.items() if k != "1_embedded_face"}, **{r: dict(ok) for r in readers})
         self.assertFalse(self.v.only_failing(bad, readers, {"E3_P_box"}))
 
 
