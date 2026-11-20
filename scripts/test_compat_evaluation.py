@@ -51,8 +51,10 @@ except ImportError:
     if os.environ.get("KASANE_REQUIRE_PILLOW") == "1":
         raise
 
+E0 = {"profile": "system", "version": 1, "config_sha256": "0" * 64, "fonts_sha256": "1" * 64, "font_files": 53,
+      "fontconfig": "2.17.1", "freetype": "libfreetype.so.6.20.5", "freetype_sha256": "4" * 64}
 ENV = {"commit": "c" * 40, "os": "linux-ubuntu-26.04", "arch": "x86_64", "features": "cjk-fallback",
-       "poppler": "26.01.0", "mupdf": "1.27.0", "qpdf": "12.3.2"}
+       "poppler": "26.01.0", "mupdf": "1.27.0", "qpdf": "12.3.2", "reference": E0}
 TOL = dict(ca.TOLERANCE)
 
 
@@ -799,6 +801,232 @@ class InvalidInputs(unittest.TestCase):
                 self.assertEqual(rc, 2, f"{name}: {out}")
                 self.assertIn("INVALID", out, name)
 
+
+ce = load("compat_env")
+
+
+class ReferenceFingerprint(unittest.TestCase):
+    """The reference renderer's fonts are part of the environment: E0 and
+    E1 are never the same, a missing fingerprint never matches, and the
+    same setup elsewhere on disk is the same."""
+
+    E1 = dict(E0, profile="courier-nimbus-mono-ps", config_sha256="2" * 64, fonts_sha256="3" * 64, font_files=57)
+
+    def test_differences(self):
+        d = ce.differences
+        self.assertEqual(d(ENV, dict(ENV)), [])
+        self.assertEqual(d(ENV, dict(ENV, reference=self.E1)), ["reference"])
+        # Missing on one side, on both, or incomplete: never the same.
+        no_ref = {k: v for k, v in ENV.items() if k != "reference"}
+        self.assertEqual(d(no_ref, ENV), ["reference"])
+        self.assertEqual(d(ENV, no_ref), ["reference"])
+        self.assertEqual(d(no_ref, dict(no_ref)), ["reference"])
+        partial = dict(ENV, reference={k: v for k, v in E0.items() if k != "fonts_sha256"})
+        self.assertEqual(d(partial, dict(partial)), ["reference"])
+        self.assertEqual(d(ENV, dict(ENV, reference=dict(E0, config_sha256=None))), ["reference"])
+        # Another architecture is another environment.
+        self.assertEqual(d(ENV, dict(ENV, arch="aarch64")), ["arch"])
+        self.assertIn("reference", ce.incomplete(no_ref, need_mupdf=True))
+        self.assertNotIn("reference", ce.incomplete(ENV, need_mupdf=True))
+        # Malformed or empty fields are incomplete, and so never equal.
+        for bad in (dict(E0, font_files=0), dict(E0, font_files="53"), dict(E0, freetype=None),
+                    {k: v for k, v in E0.items() if k != "freetype"}, dict(E0, config_sha256="<unreadable>"),
+                    dict(E0, fonts_sha256="A" * 64), dict(E0, version=0), dict(E0, version="1"),
+                    dict(E0, profile="unidentified"), dict(E0, profile="")):
+            self.assertFalse(ce.reference_complete(bad), bad)
+            self.assertEqual(d(dict(ENV, reference=bad), dict(ENV, reference=dict(bad))), ["reference"])
+            self.assertIn("reference", ce.incomplete(dict(ENV, reference=bad), need_mupdf=True))
+
+    def setup_tools(self, d):
+        """Fake fc-conflist / fc-list reading a toy configuration: lines
+        `include PATH` (the files loaded) and `font PATH` (the fonts)."""
+        bin_ = os.path.join(d, "bin")
+        os.makedirs(bin_)
+        conflist = ('#!/bin/sh\nf=${FONTCONFIG_FILE:-/nonexistent}\n[ -f "$f" ] || exit 0\n'
+                    'sed -n "s/^include //p" "$f" | while read -r p; do echo "+ $p: x"; done\n')
+        fclist = ('#!/bin/sh\n[ "$1" = --version ] && { echo "fontconfig version 2.17.1"; exit 0; }\n'
+                  'f=${FONTCONFIG_FILE:-/nonexistent}\n[ -f "$f" ] || exit 0\n'
+                  'sed -n "s/^font //p" "$f"\n'
+                  'for i in $(sed -n "s/^include //p" "$f"); do sed -n "s/^font //p" "$i"; done\n')
+        # ldd names the library at $FAKE_FREETYPE (one per test directory).
+        lib = os.path.join(d, "lib", "libfreetype.so.6.20.5")
+        os.makedirs(os.path.dirname(lib))
+        with open(lib, "wb") as fh:
+            fh.write(b"freetype build 1")
+        ldd = f'#!/bin/sh\necho "\tlibfreetype.so.6 => ${{FAKE_FREETYPE:-{lib}}} (0x0)"\n'
+        for n, body in (("fc-conflist", conflist), ("fc-list", fclist), ("ldd", ldd)):
+            with open(os.path.join(bin_, n), "w") as fh:
+                fh.write(body)
+            os.chmod(os.path.join(bin_, n), 0o755)
+        return bin_
+
+    def reference_dir(self, root, font=b"nimbus", include=b"rule A", profile=True):
+        """A setup-e1.sh-like directory: fonts.conf, one font, an
+        included rule file, profile.json, a pdftoppm wrapper."""
+        os.makedirs(os.path.join(root, "fonts"))
+        os.makedirs(os.path.join(root, "bin"))
+        with open(os.path.join(root, "fonts", "f.otf"), "wb") as fh:
+            fh.write(font)
+        with open(os.path.join(root, "rules.conf"), "wb") as fh:
+            fh.write(include)
+        with open(os.path.join(root, "fonts.conf"), "w") as fh:
+            fh.write(f"include {root}/rules.conf\nfont {root}/fonts/f.otf\n")
+        if profile:
+            with open(os.path.join(root, "profile.json"), "w") as fh:
+                json.dump({"profile": "courier-nimbus-mono-ps", "version": 1}, fh)
+        w = os.path.join(root, "bin", "pdftoppm")
+        with open(w, "w") as fh:
+            fh.write(self.wrapper(root))
+        os.chmod(w, 0o755)
+        return w
+
+    BINARY = os.path.realpath(sys.executable)  # any executable binary stands for Poppler
+
+    def wrapper(self, root, binary=None):
+        """setup-e1.sh's wrapper, exactly."""
+        return ("#!/bin/sh\nexec /usr/bin/env -u FONTCONFIG_PATH -u FONTCONFIG_SYSROOT "
+                f"FONTCONFIG_FILE={root}/fonts.conf {binary or self.BINARY} \"$@\"\n")
+
+    def fingerprint(self, wrapper, bin_, **env):
+        saved = dict(os.environ)
+        os.environ["PATH"] = bin_ + os.pathsep + saved.get("PATH", "")
+        for k in ("FONTCONFIG_FILE", "FONTCONFIG_PATH", "FONTCONFIG_SYSROOT"):
+            os.environ.pop(k, None)
+        os.environ.update(env)
+        try:
+            return ce.reference(wrapper)
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+
+    def test_reference_fails_closed(self):
+        with tempfile.TemporaryDirectory() as d:
+            bin_ = self.setup_tools(d)
+            good = self.reference_dir(os.path.join(d, "good"))
+            a = self.fingerprint(good, bin_)
+            self.assertTrue(ce.reference_complete(a), a)
+            # The wrapper clears FONTCONFIG_PATH / FONTCONFIG_SYSROOT, so the
+            # fingerprint does not see them either.
+            self.assertEqual(self.fingerprint(good, bin_, FONTCONFIG_PATH=d, FONTCONFIG_SYSROOT=d), a)
+            root = os.path.join(d, "good")
+
+            def tool(name, body, mode=0o755):
+                p = os.path.join(d, name)
+                with open(p, "w") as fh:
+                    fh.write(body)
+                os.chmod(p, mode)
+                return p
+            w = self.wrapper(root)
+            unidentified = [
+                # Another form, the same file named: not setup-e1.sh's.
+                tool("other", f"#!/bin/sh\nFONTCONFIG_FILE={root}/fonts.conf exec {self.BINARY} \"$@\"\n"),
+                # setup-e1.sh's, plus something else.
+                tool("extra", w + "export FONTCONFIG_FILE=/elsewhere\n"),
+                tool("prefix", "#!/bin/sh\nFONTCONFIG_FILE=/elsewhere; export FONTCONFIG_FILE\n" + w[len("#!/bin/sh\n"):]),
+                # A wrapper of a wrapper.
+                tool("nested", self.wrapper(root, binary=good)),
+                # Paths the shell would not take as one word.
+                tool("meta", w.replace(f"{root}/fonts.conf", f"{root}/fonts.conf;true")),
+                tool("space", w.replace(f"FONTCONFIG_FILE={root}", f"FONTCONFIG_FILE=/a\\ b{root}")),
+                # A script that names no configuration.
+                tool("plain", f"#!/bin/sh\nexec {self.BINARY} \"$@\"\n"),
+                os.path.join(d, "missing"),
+            ]
+            unreadable = tool("unreadable", w, mode=0o000)
+            if not os.access(unreadable, os.R_OK):  # (root reads anything)
+                unidentified.append(unreadable)
+            for t in unidentified:
+                r = self.fingerprint(t, bin_)
+                self.assertEqual(r["profile"], "unidentified", t)
+                self.assertFalse(ce.reference_complete(r), t)
+            # A binary run with a variable the fingerprint does not follow.
+            for k in ("FONTCONFIG_PATH", "FONTCONFIG_SYSROOT"):
+                self.assertFalse(ce.reference_complete(self.fingerprint(self.BINARY, bin_, **{k: d})), k)
+            # A listed font or included file that cannot be read, an empty
+            # font list, an unknown FreeType: incomplete.
+            for name, broken in (("font", os.path.join(root, "fonts", "f.otf")),
+                                 ("include", os.path.join(root, "rules.conf"))):
+                os.rename(broken, broken + ".gone")
+                r = self.fingerprint(good, bin_)
+                self.assertFalse(ce.reference_complete(r), name)
+                os.rename(broken + ".gone", broken)
+            with open(os.path.join(root, "fonts.conf"), "w") as fh:
+                fh.write(f"include {root}/rules.conf\n")
+            self.assertIsNone(self.fingerprint(good, bin_)["font_files"])
+            self.assertFalse(ce.reference_complete(
+                self.fingerprint(good, bin_, FAKE_FREETYPE=os.path.join(d, "no-such-lib.so.6"))))
+            os.remove(os.path.join(bin_, "ldd"))
+            self.assertFalse(ce.reference_complete(self.fingerprint(good, bin_)))
+
+    def test_reference_follows_content_not_place(self):
+        with tempfile.TemporaryDirectory() as d:
+            bin_ = self.setup_tools(d)
+            a = self.fingerprint(self.reference_dir(os.path.join(d, "a")), bin_)
+            b = self.fingerprint(self.reference_dir(os.path.join(d, "tmp", "elsewhere", "b")), bin_)
+            self.assertTrue(ce.reference_complete(a), a)
+            self.assertEqual(a, b)  # only the directory differs
+            self.assertEqual((a["profile"], a["version"], a["font_files"]), ("courier-nimbus-mono-ps", 1, 1))
+            font = self.fingerprint(self.reference_dir(os.path.join(d, "c"), font=b"another"), bin_)
+            self.assertNotEqual(a["fonts_sha256"], font["fonts_sha256"])
+            self.assertEqual(a["config_sha256"], font["config_sha256"])
+            rule = self.fingerprint(self.reference_dir(os.path.join(d, "e"), include=b"rule B"), bin_)
+            self.assertNotEqual(a["config_sha256"], rule["config_sha256"])
+            # A configuration that does not declare its profile is not one.
+            undeclared = self.fingerprint(self.reference_dir(os.path.join(d, "f"), profile=False), bin_)
+            self.assertEqual(undeclared["profile"], "undeclared")
+            self.assertNotEqual(a, undeclared)
+            # Another FreeType build under the same file name.
+            other = os.path.join(d, "lib2", "libfreetype.so.6.20.5")
+            os.makedirs(os.path.dirname(other))
+            with open(other, "wb") as fh:
+                fh.write(b"freetype build 2")
+            ft = self.fingerprint(self.reference_dir(os.path.join(d, "g")), bin_, FAKE_FREETYPE=other)
+            self.assertEqual(ft["freetype"], a["freetype"])
+            self.assertTrue(ce.reference_complete(ft), ft)
+            self.assertEqual(ce.differences({"reference": a}, {"reference": ft}, keys=("reference",)), ["reference"])
+
+    def test_corpus_and_attribution_in_other_references(self):
+        f = file("a", [page(1, 0.9)])
+        a = att(("a", 1, "both", 0.0, 0.1))
+        b = cr.summarize(run(f), a, ENV)
+        for other in (dict(ENV, reference=self.E1), {k: v for k, v in ENV.items() if k != "reference"}):
+            rc, out = check(run(f), b, env=ENV, attribution=att(("a", 1, "both", 0.0, 0.1), env=other),
+                            require_same_env=True)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("attribution measured in another environment or commit than the run: reference", out)
+            # The run itself in another reference than the baseline.
+            rc, out = check(run(f), b, env=other, attribution=att(("a", 1, "both", 0.0, 0.1), env=other),
+                            require_same_env=True)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("reference", out)
+
+    def test_update_baseline_needs_a_reference(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = os.path.join(d, "env.json")
+            with open(env, "w") as fh:
+                json.dump({k: v for k, v in ENV.items() if k != "reference"}, fh)
+            r = os.path.join(d, "r.json")
+            with open(r, "w") as fh:
+                json.dump(run(file("a", [page(1, 0.99)])), fh)
+            rc, out = main_cli("update-baseline", r, os.path.join(d, "b.json"), "--env", env, "--write")
+            self.assertNotEqual(rc, 0, out)
+            self.assertIn("reference", out)
+            self.assertFalse(os.path.exists(os.path.join(d, "b.json")))
+            # An incomplete reference: refused too, and a strict check of a
+            # run with one against a baseline with the same fails.
+            bad = dict(E0, font_files=0, freetype=None)
+            with open(env, "w") as fh:
+                json.dump(dict(ENV, reference=bad), fh)
+            rc, out = main_cli("update-baseline", r, os.path.join(d, "b.json"), "--env", env, "--write",
+                               "--accept-regressions")
+            self.assertNotEqual(rc, 0, out)
+            self.assertFalse(os.path.exists(os.path.join(d, "b.json")))
+            f = file("a", [page(1, 0.9)])
+            a = att(("a", 1, "both", 0.0, 0.1), env=dict(ENV, reference=bad))
+            b = cr.summarize(run(f), a, dict(ENV, reference=bad))
+            rc, out = check(run(f), b, env=dict(ENV, reference=bad), attribution=a, require_same_env=True)
+            self.assertEqual(rc, 1, out)
+            self.assertIn("reference", out)
 
 class UpdateBaseline(unittest.TestCase):
     def test_explicit_and_protected(self):

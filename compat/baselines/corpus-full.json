@@ -3,7 +3,7 @@
   "attribution": {
    "both": 51,
    "mupdf": 11,
-   "neither": 38,
+   "neither": 39,
    "not_comparable": 1,
    "poppler": 51
   },
@@ -274,13 +274,13 @@
     },
     "2": {
      "below": false,
-     "cssim": 0.9836,
-     "ssim": 0.9979
+     "cssim": 0.6939,
+     "ssim": 0.9662
     },
     "3": {
      "below": false,
-     "cssim": 0.8807,
-     "ssim": 0.9721
+     "cssim": 0.8573,
+     "ssim": 0.9666
     },
     "4": {
      "below": false,
@@ -4326,8 +4326,8 @@
    "pages": {
     "1": {
      "below": false,
-     "cssim": 0.9436,
-     "ssim": 0.9979
+     "cssim": 0.9263,
+     "ssim": 0.9973
     },
     "2": {
      "below": false,
@@ -31168,8 +31168,8 @@
    "pages": {
     "1": {
      "below": false,
-     "cssim": 0.9925,
-     "ssim": 0.9992
+     "cssim": 0.7744,
+     "ssim": 0.978
     }
    },
    "policy": {
@@ -32606,7 +32606,16 @@
    "warnings": 0
   },
   "pdfium-text_in_page_marked": {
-   "attribution": {},
+   "attribution": {
+    "1": {
+     "agreement": "neither",
+     "dpx_km": 0.03765,
+     "dpx_kp": 0.0342,
+     "mad_km": 5.27607,
+     "mad_kp": 4.96617,
+     "references_agree": false
+    }
+   },
    "causes": [],
    "expect": "pass",
    "incremental": "pass",
@@ -32620,9 +32629,9 @@
    },
    "pages": {
     "1": {
-     "below": false,
-     "cssim": 0.8508,
-     "ssim": 0.951
+     "below": true,
+     "cssim": 0.6495,
+     "ssim": 0.8873
     }
    },
    "policy": {
@@ -34756,9 +34765,9 @@
     "1": {
      "agreement": "neither",
      "dpx_km": 0.02063,
-     "dpx_kp": 0.0085,
+     "dpx_kp": 0.02716,
      "mad_km": 3.2226,
-     "mad_kp": 1.65476,
+     "mad_kp": 4.04817,
      "references_agree": false
     },
     "10": {
@@ -34804,25 +34813,25 @@
     "2": {
      "agreement": "neither",
      "dpx_km": 0.02207,
-     "dpx_kp": 0.00859,
+     "dpx_kp": 0.02873,
      "mad_km": 3.65695,
-     "mad_kp": 1.65385,
+     "mad_kp": 4.49527,
      "references_agree": false
     },
     "3": {
      "agreement": "neither",
      "dpx_km": 0.02459,
-     "dpx_kp": 0.00843,
+     "dpx_kp": 0.03081,
      "mad_km": 4.01075,
-     "mad_kp": 1.65219,
+     "mad_kp": 4.74565,
      "references_agree": false
     },
     "4": {
      "agreement": "neither",
      "dpx_km": 0.02783,
-     "dpx_kp": 0.00842,
+     "dpx_kp": 0.03393,
      "mad_km": 4.73037,
-     "mad_kp": 1.64991,
+     "mad_kp": 5.42366,
      "references_agree": false
     },
     "5": {
@@ -34880,8 +34889,8 @@
    "pages": {
     "1": {
      "below": true,
-     "cssim": 0.8425,
-     "ssim": 0.9428
+     "cssim": 0.6931,
+     "ssim": 0.8907
     },
     "10": {
      "below": true,
@@ -34910,18 +34919,18 @@
     },
     "2": {
      "below": true,
-     "cssim": 0.8447,
-     "ssim": 0.9428
+     "cssim": 0.7099,
+     "ssim": 0.8947
     },
     "3": {
      "below": true,
-     "cssim": 0.8433,
-     "ssim": 0.943
+     "cssim": 0.645,
+     "ssim": 0.8729
     },
     "4": {
      "below": true,
-     "cssim": 0.8455,
-     "ssim": 0.943
+     "cssim": 0.6661,
+     "ssim": 0.878
     },
     "5": {
      "below": true,
@@ -40207,7 +40216,7 @@
  "meta": {
   "attribution": {
    "max_pages_per_file": null,
-   "pages": 152,
+   "pages": 153,
    "threshold": 0.95,
    "tolerance": {
     "dpx": 0.005,
@@ -40216,12 +40225,22 @@
   },
   "env": {
    "arch": "x86_64",
-   "commit": "22b9ddbf035dc4b5284d451df8dd90a51f5ebaab",
+   "commit": "f6ddcdd72c41aae62dfc5f82d9c78792e4153451",
    "features": "cjk-fallback",
    "mupdf": "1.27.0",
    "os": "linux-ubuntu-26.04",
    "poppler": "26.01.0",
-   "qpdf": "12.3.2"
+   "qpdf": "12.3.2",
+   "reference": {
+    "config_sha256": "593c60ad9b7a0a28804896dbeb088662f1d852617fd82aa91afd4cfd69e37a30",
+    "font_files": 57,
+    "fontconfig": "2.17.1",
+    "fonts_sha256": "1db19da5168ff58a1677bca89e375c60e91383151673a0a85df66fe66f31f6cb",
+    "freetype": "libfreetype.so.6.20.5",
+    "freetype_sha256": "1e3b06a2f9a1288f4f30af4d014a1164b6747168a2d81c99ecebd978a4a33a16",
+    "profile": "courier-nimbus-mono-ps",
+    "version": 1
+   }
   }
  }
 }
