@@ -122,6 +122,7 @@ def main():
     changed = {f: r for f, r in res.items() if r.get("pages_changed")}
     unexplained = sorted(f for f, r in changed.items()
                          if not any(x.startswith(COURIER_E0) for x in set(r["e0_fonts"]) - set(r["e1_fonts"]))
+                         or any(not x.startswith(COURIER_E0) for x in set(r["e0_fonts"]) - set(r["e1_fonts"]))
                          or not any(x.startswith("NimbusMonoPS-") for x in r["e1_fonts"])
                          or set(r["e1_fonts"]) - set(r["e0_fonts"]) - {x for x in r["e1_fonts"] if x.startswith("NimbusMonoPS-")})
     nimbus_unchanged = sorted(f for f, r in res.items() if "error" not in r and not r["pages_changed"]

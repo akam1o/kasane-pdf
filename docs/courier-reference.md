@@ -134,3 +134,15 @@ what E1 changes, and nothing else:
 The rejected file's 2 Poppler pages are in no baseline (kasane renders
 none of it). The 24 files Poppler draws no page of in either environment
 are compared in neither.
+
+What bounds E1 and what does not:
+- The wrappers clear `FONTCONFIG_PATH` and `FONTCONFIG_SYSROOT` and set
+  `FONTCONFIG_FILE`; everything else (the system configuration E1
+  includes, a user configuration it includes in turn, fontconfig's
+  caches) is inherited. The fingerprint is taken with the same
+  environment, so it covers what fontconfig then loads and lists, not
+  what a different environment would.
+- `reference-diff.py` attributes changes per file, by the faces Poppler
+  reports: a changed file must lose a Courier substitute and only such
+  faces, and gain Nimbus Mono PS and nothing else. That is evidence the
+  change is Courier's, not a proof for every pixel of the file.

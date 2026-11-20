@@ -17,9 +17,13 @@ use sees — its profile (`system`, or the profile a reference directory
 such as scripts/courier-reference/setup-e1.sh's declares in its
 profile.json), the effective fontconfig configuration (the top-level
 file and every file it loads, in order, by content), the font files it
-lists (by content), and the fontconfig and FreeType versions. Paths
-inside a reference directory are recorded relative to it, so the same
-setup in another temporary directory has the same fingerprint.
+lists (by content), the fontconfig version and the FreeType library
+the binary loads. Paths inside a reference directory are recorded
+relative to it, so the same setup in another temporary directory has the
+same fingerprint. It fails closed: a tool that is neither a binary nor
+exactly setup-e1.sh's wrapper of one, a binary run with FONTCONFIG_PATH
+or FONTCONFIG_SYSROOT set, a listed file that cannot be read, or an empty
+listing leaves the reference incomplete — never equal to any.
 """
 import hashlib
 import json
@@ -33,7 +37,7 @@ import subprocess
 # numeric comparisons to be meaningful.
 COMPARED = ("os", "arch", "poppler", "mupdf", "features", "reference")
 # The fingerprint fields a reference must have to be compared at all.
-REFERENCE_FIELDS = ("profile", "version", "config_sha256", "fonts_sha256", "font_files", "fontconfig")
+REFERENCE_FIELDS = ("profile", "version", "config_sha256", "fonts_sha256", "font_files", "fontconfig", "freetype")
 
 
 def _version(argv, pattern):
@@ -69,38 +73,84 @@ def _sha(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def _wrapped_config(pdftoppm):
-    """The FONTCONFIG_FILE a wrapper script (setup-e1.sh's bin/) runs the
-    real tool with, or None for a binary."""
+# Variables that change what fontconfig loads without showing in
+# FONTCONFIG_FILE: the wrappers clear them; a binary run with them set is
+# not fingerprinted.
+FONTCONFIG_VARS = ("FONTCONFIG_PATH", "FONTCONFIG_SYSROOT")
+# setup-e1.sh's wrapper, exactly: anything else is not identified.
+WRAPPER = re.compile(rb'#!/bin/sh\nexec /usr/bin/env -u FONTCONFIG_PATH -u FONTCONFIG_SYSROOT FONTCONFIG_FILE=(/[^\s"$`\\\\]+) '
+                     rb'(/[^\s"$`\\\\]+) "\$@"\n')
+BINARY = (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
+
+
+def _head(path, n=4096):
     try:
-        with open(pdftoppm, "rb") as fh:
-            head = fh.read(4096)
+        with open(path, "rb") as fh:
+            return fh.read(n)
     except OSError:
         return None
-    if not head.startswith(b"#!"):
+
+
+def _identify(pdftoppm):
+    """("binary", path), ("wrapper", fonts.conf, binary) for setup-e1.sh's
+    wrapper of a binary, or None: a tool that is missing, unreadable or
+    anything else is not identified, and its reference is incomplete."""
+    head = _head(pdftoppm)
+    if head is None:
         return None
-    m = re.search(rb"FONTCONFIG_FILE=(\S+)", head)
-    return m.group(1).decode() if m else None
+    if head.startswith(BINARY):
+        return ("binary", os.path.realpath(pdftoppm))
+    m = WRAPPER.fullmatch(head)
+    if m:
+        conf, real = (x.decode() for x in m.groups())
+        target = _head(real)
+        if target is not None and target.startswith(BINARY):
+            return ("wrapper", conf, os.path.realpath(real))
+    return None
 
 
-def _freetype():
-    """FreeType's version as the loaded library names it (Linux), or
-    pkg-config's; None when neither tells."""
-    for argv in (["sh", "-c", "ldconfig -p 2>/dev/null | grep -m1 'libfreetype.so.6 '"],):
-        out = _version(argv, r"=>\s*(\S+)")
-        if out:
-            return os.path.basename(os.path.realpath(out))
-    return _version(["pkg-config", "--modversion", "freetype2"], r"(\S+)")
+def _freetype(binary):
+    """The FreeType library the binary loads, by file name (Linux, ldd);
+    None when that cannot be told."""
+    out = _version(["ldd", binary], r"libfreetype\.so\.\d+ => (/\S+)")
+    return os.path.basename(os.path.realpath(out)) if out else None
+
+
+def _read_all(paths):
+    """The bodies of every file, or None if one cannot be read."""
+    out = []
+    for f in paths:
+        try:
+            with open(f, "rb") as fh:
+                out.append((f, fh.read()))
+        except OSError:
+            return None
+    return out
+
+
+INCOMPLETE = {"config_sha256": None, "fonts_sha256": None, "font_files": None, "fontconfig": None, "freetype": None}
 
 
 def reference(pdftoppm="pdftoppm"):
     """The reference renderer's font environment (see the module
-    docstring); fields are None where a tool is missing."""
-    path = shutil.which(pdftoppm) or pdftoppm
+    docstring). Fails closed: a field is None (the reference incomplete,
+    so never equal to any) where a tool is missing or unidentified, a
+    listed file cannot be read, or the output is empty."""
+    tool = _identify(shutil.which(pdftoppm) or pdftoppm)
+    if tool is None:
+        return dict(INCOMPLETE, profile="unidentified", version=0)
     env = {k: v for k, v in os.environ.items() if k != "FC_DEBUG"}
-    conf = _wrapped_config(path) or env.get("FONTCONFIG_FILE")
-    root = None
     profile = {"profile": "system", "version": 1}
+    conf = None
+    if tool[0] == "wrapper":
+        conf = tool[1]
+        for k in FONTCONFIG_VARS:
+            env.pop(k, None)
+    else:
+        if any(env.get(k) for k in FONTCONFIG_VARS):
+            return dict(INCOMPLETE, profile="unidentified", version=0)
+        conf = env.get("FONTCONFIG_FILE")
+    root = None
     if conf:
         env["FONTCONFIG_FILE"] = conf
         root = os.path.dirname(os.path.abspath(conf))
@@ -113,41 +163,31 @@ def reference(pdftoppm="pdftoppm"):
             # but never the system's.
             profile = {"profile": "undeclared", "version": 0}
     rel = (lambda s: s.replace(root, "<reference>")) if root else (lambda s: s)
-    top = conf or "/etc/fonts/fonts.conf"
-    files = [top]
+    out = dict(profile, **INCOMPLETE)
     try:
         r = subprocess.run(["fc-conflist"], capture_output=True, text=True, timeout=60, env=env)
         listed = [l[2:].split(": ", 1)[0] for l in r.stdout.splitlines() if l.startswith("+ ")] if r.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired):
         listed = None
-    config = None
-    if listed is not None:
+    bodies = _read_all([conf or "/etc/fonts/fonts.conf"] + listed) if listed else None
+    if bodies:
         h = hashlib.sha256()
-        for f in files + listed:
-            try:
-                with open(f, "rb") as fh:
-                    body = fh.read()
-            except OSError:
-                body = b"<unreadable>"
+        for f, body in bodies:
             body = rel(body.decode("utf-8", "replace")).encode()
             h.update(rel(f).encode() + b"\0" + _sha(body).encode() + b"\n")
-        config = h.hexdigest()
-    fonts, count = None, None
+        out["config_sha256"] = h.hexdigest()
     try:
         r = subprocess.run(["fc-list", "--format", "%{file}\\n"], capture_output=True, text=True, timeout=120, env=env)
-        if r.returncode == 0:
-            rows = []
-            for f in sorted(set(r.stdout.splitlines())):
-                try:
-                    with open(f, "rb") as fh:
-                        rows.append(f"{rel(f)}\0{_sha(fh.read())}")
-                except OSError:
-                    rows.append(f"{rel(f)}\0<unreadable>")
-            fonts, count = _sha("\n".join(rows).encode()), len(rows)
+        listed = sorted(set(l for l in r.stdout.splitlines() if l)) if r.returncode == 0 else None
     except (OSError, subprocess.TimeoutExpired):
-        pass
-    return dict(profile, config_sha256=config, fonts_sha256=fonts, font_files=count,
-                fontconfig=_version(["fc-list", "--version"], r"version (\S+)"), freetype=_freetype())
+        listed = None
+    bodies = _read_all(listed) if listed else None
+    if bodies:
+        out["fonts_sha256"] = _sha("\n".join(f"{rel(f)}\0{_sha(b)}" for f, b in bodies).encode())
+        out["font_files"] = len(bodies)
+    out["fontconfig"] = _version(["fc-list", "--version"], r"version (\S+)")
+    out["freetype"] = _freetype(tool[-1])
+    return out
 
 
 def environment(commit=None, features="", **tools):
@@ -171,8 +211,20 @@ def _git_head():
         return None
 
 
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
 def reference_complete(ref):
-    return isinstance(ref, dict) and all(ref.get(k) not in (None, "") for k in REFERENCE_FIELDS)
+    """Whether a recorded reference has every field, well formed: a
+    named, identified profile, both hashes, at least one font."""
+    if not isinstance(ref, dict):
+        return False
+    ok = lambda v: isinstance(v, str) and v != ""
+    return (ok(ref.get("profile")) and ref["profile"] not in ("unidentified",)
+            and type(ref.get("version")) is int and ref["version"] >= 1
+            and all(isinstance(ref.get(k), str) and _SHA256.fullmatch(ref[k]) for k in ("config_sha256", "fonts_sha256"))
+            and type(ref.get("font_files")) is int and ref["font_files"] > 0
+            and ok(ref.get("fontconfig")) and ok(ref.get("freetype")))
 
 
 def differences(base, now, keys=COMPARED):

@@ -185,9 +185,14 @@ a macOS run of the same commit. A baseline records its environment
   directory's declared profile such as `courier-nimbus-mono-ps`,
   docs/courier-reference.md), the effective fontconfig configuration
   (the top-level file and every file it loads, in order, by content),
-  the font files fontconfig lists (by content), and the fontconfig and
-  FreeType versions. Paths inside a reference directory are recorded
-  relative to it.
+  the font files fontconfig lists (by content), the fontconfig version
+  and the FreeType library Poppler loads. Paths inside a reference
+  directory are recorded relative to it. The fingerprint fails closed:
+  a `pdftoppm` that is neither a binary nor exactly setup-e1.sh's
+  wrapper of one, a binary run with `FONTCONFIG_PATH` or
+  `FONTCONFIG_SYSROOT` set, a listed file that cannot be read, or an
+  empty listing leaves it incomplete, and an incomplete reference equals
+  none and is refused by `update-baseline`.
 
 The numeric measures are compared only when OS, architecture, Poppler,
 MuPDF, features and the reference are equal; a side without a complete
