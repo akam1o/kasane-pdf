@@ -2616,6 +2616,103 @@ fn non_embedded_standard_14_text_is_redacted_after_embedding() {
     }
 }
 
+/// Courier embeds as Kasane Courier, Liberation Mono's characters
+/// included (Cyrillic, Greek through /Differences): the check after
+/// embedding passes, the text in the rect goes, the rest stays.
+#[test]
+fn courier_embeds_kasane_courier_with_every_character() {
+    let enc =
+        "<< /Type /Encoding /BaseEncoding /WinAnsiEncoding /Differences [128 /uni0416 /uni03B1] >>";
+    // Courier New as a non-embedded TrueType font, its style from the
+    // descriptor (bold) and the name (italic).
+    let widths = vec!["600"; 224].join(" ");
+    let truetype = |base: &str, weight: u32| {
+        format!(
+            "<< /Type /Font /Subtype /TrueType /BaseFont /{base} /Encoding {enc} /FirstChar 32 \
+             /LastChar 255 /Widths [{widths}] /FontDescriptor << /Type /FontDescriptor /FontName /{base} \
+             /Flags 32 /FontWeight {weight} /FontBBox [0 -300 600 900] /ItalicAngle 0 /Ascent 800 \
+             /Descent -200 /CapHeight 600 /StemV 80 >> >>"
+        )
+    };
+    for (font, face) in [
+        (
+            format!("<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding {enc} >>"),
+            "KasaneCourier-Regular",
+        ),
+        (
+            format!("<< /Type /Font /Subtype /Type1 /BaseFont /Courier-Bold /Encoding {enc} >>"),
+            "KasaneCourier-Bold",
+        ),
+        (
+            format!("<< /Type /Font /Subtype /Type1 /BaseFont /Courier-Oblique /Encoding {enc} >>"),
+            "KasaneCourier-Italic",
+        ),
+        (
+            format!(
+                "<< /Type /Font /Subtype /Type1 /BaseFont /Courier-BoldOblique /Encoding {enc} >>"
+            ),
+            "KasaneCourier-BoldItalic",
+        ),
+        (truetype("CourierNewPSMT", 700), "KasaneCourier-Bold"),
+        (
+            truetype("CourierNewPS-ItalicMT", 400),
+            "KasaneCourier-Italic",
+        ),
+    ] {
+        let base = face;
+        let pdf = doc_with(
+            "/Font << /H 50 0 R >>",
+            &[b"BT /H 12 Tf 20 100 Td (PUBLIC SECRETWORD \\200\\201) Tj ET"],
+            vec![(50, font.into_bytes())],
+        );
+        let doc = Document::from_bytes(&pdf).unwrap();
+        let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
+        let rect = (
+            t.chars[7].origin.0 + 0.5,
+            95.0,
+            t.chars[17].origin.0 - 0.5,
+            112.0,
+        );
+        let r = embed_run(&pdf, vec![rect]).unwrap();
+        assert_eq!(r.fonts_embedded, 1, "{base}");
+        assert!(contains(&r.output, format!("/{face}").as_bytes()), "{base}");
+        let text = page_text(&r.output, 0);
+        assert!(
+            !text.contains("SECRET") && text.contains("PUBLIC"),
+            "{base}: {text}"
+        );
+        assert!(text.contains("Жα"), "{base}: {text}");
+    }
+}
+
+/// After embedding, a glyph's ink decides at the edge of a rect: a rect
+/// overlapping the last ink column of a Kasane Courier glyph removes it,
+/// one just past its ink keeps it.
+#[test]
+fn courier_ink_edges_decide_after_embedding() {
+    let pdf = doc_with(
+        "/Font << /H 50 0 R >>",
+        &[b"BT /H 24 Tf 20 100 Td (QZ) Tj ET"],
+        vec![(
+            50,
+            b"<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>"
+                .to_vec(),
+        )],
+    );
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
+    let q = t.chars[0].bounds.unwrap();
+    for (dx, removed) in [(-0.05, true), (0.05, false)] {
+        let rect = (q.2 + dx, q.1, q.2 + dx + 0.5, q.3);
+        // Not reaching Z's ink either.
+        assert!(rect.2 < t.chars[1].bounds.unwrap().0, "{dx}");
+        let r = embed_run(&pdf, vec![rect]).unwrap();
+        let text = page_text(&r.output, 0);
+        assert_eq!(!text.contains('Q'), removed, "{dx}: {text}");
+        assert!(text.contains('Z'), "{dx}: {text}");
+    }
+}
+
 /// Fonts this mode does not embed stay refused.
 #[test]
 fn fonts_not_embedded_by_the_option_stay_refused() {

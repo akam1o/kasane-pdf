@@ -213,6 +213,7 @@ PR_MUST_RUN = {
                      "check-advisory-regressions.py target/release/kasane-pdf /tmp/advisories --expect-safe",
                      "--expected compat/advisories/history.json",
                      "check-renderer-baselines.py --dump /tmp/advisories --platforms linux-x86_64,darwin-arm64",
+                     "scripts/build-courier-fallback.py --check",
                      "scripts/test_ci_scripts.py", "scripts/test_release_verify.py",
                      "scripts/test_advisory_history.py", "scripts/test_compat_analysis.py",
                      "KASANE_REQUIRE_PILLOW=1 python3 scripts/test_compat_evaluation.py",
@@ -226,7 +227,8 @@ FULL_ONLY_IF = "github.event_name != 'pull_request'"
 FULL_MUST_RUN = {
     "renderers-linux": ["python3 scripts/verify-renderers.py target/release/kasane-pdf /tmp/advisories --json /tmp/renderers.json",
                         "python3 scripts/test_compat_evaluation.py --real target/release/kasane-pdf",
-                        "python3 scripts/test_redact_text_measure.py --real"],
+                        "python3 scripts/test_redact_text_measure.py --real",
+                        "python3 scripts/verify-courier-redaction.py target/release/kasane-pdf --negative"],
 }
 # nightly.yml: the advisory history of every published version.
 NIGHTLY_MUST_RUN = {

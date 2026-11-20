@@ -393,6 +393,22 @@ this platform's `compat/renderers/baseline-<os>-<arch>.json` and only
 for the renderer versions it
 was made with.
 
+`scripts/verify-courier-redaction.py` (full gate, Linux) is the same for
+Courier with `--embed-substitute-fonts`, without a baseline: synthetic
+Courier in its four styles and Courier New as a TrueType font, with
+`/Differences` (Greek and Cyrillic from Liberation Mono) and `/Widths`,
+rects over a secret word and just into or just clear of a glyph's ink,
+and a font the option does not embed (refused). Each output must embed
+exactly the expected Kasane Courier program; Poppler (no fontconfig
+lookup), MuPDF (its trace) and pdf.js (no missing or system font) must
+draw that program; no ink and no text of the secret may be left, the
+public text must be kept exactly, and away from the rect each renderer's
+page must match kasane's render of the input. `--negative` breaks
+outputs on purpose (another program, another style, one that does not
+decode, a rect that misses the secret, one over public text) and fails
+unless each is caught. A renderer that cannot run is unverified, not a
+pass.
+
 `scripts/test_release_verify.py` (fast gate) runs the verifier on
 throwaway repositories and checks each way its evidence can be wrong:
 another commit or tree, an older run superseded by a newer one, edited

@@ -334,7 +334,7 @@ fn type1_standard14_substitute_metrics_and_report() {
         ("Helvetica", "LiberationSans-Regular", 667.0),
         ("Helvetica-BoldOblique", "LiberationSans-BoldItalic", 722.0),
         ("Times-Roman", "LiberationSerif-Regular", 722.0),
-        ("Courier-Bold", "LiberationMono-Bold", 600.0),
+        ("Courier-Bold", "KasaneCourier-Bold", 600.0),
     ] {
         let pdf = pdf_std14(b"BT /F0 20 Tf 10 100 Td (A) Tj ET", base);
         let r = render(&pdf).unwrap_or_else(|e| panic!("{base}: {e:?}"));

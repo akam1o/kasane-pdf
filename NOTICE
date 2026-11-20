@@ -18,6 +18,14 @@ License. It is distributed under the SIL Open Font License, Version
     Used unmodified as substitutes for non-embedded Standard 14-style
     fonts; never sold separately.
 
+  * Kasane Courier (fonts/kasane-courier/) — a Modified Version of
+    Courier Prime 3.018, Copyright 2015 The Courier Prime Project
+    Authors (https://github.com/quoteunquoteapps/CourierPrime), and of
+    Liberation Mono 2.1.5 (the notices above), using none of their
+    Reserved Font Names. Licence: fonts/kasane-courier/LICENSE. The
+    substitute for non-embedded Courier and Courier New; never sold
+    separately.
+
   * tests/fixtures/KasaneJP.ttf — a 17-glyph subset of Noto Sans JP
     (notofonts/noto-cjk), Copyright 2014-2021 Adobe
     (http://www.adobe.com/), with Reserved Font Name 'Source'. The

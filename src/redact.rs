@@ -154,17 +154,17 @@ impl RedactOptions {
     /// font (Times, Helvetica, Courier and their metric-compatible
     /// aliases such as Arial), Type 1 or non-symbolic simple TrueType
     /// (ArialMT, TimesNewRomanPSMT …) — document-wide — by a TrueType font
-    /// embedding the bundled substitute (Liberation), with every code's
+    /// embedding the bundled substitute (Liberation; Kasane Courier for
+    /// Courier), with every code's
     /// glyph name and advance written out, so that every reader draws
     /// exactly the embedded glyphs at the same positions. The glyphs'
     /// extent is then known and such text is redacted like any embedded
     /// font's; without this option it is refused, because a reader
     /// draws it with a font of its own choosing.
     ///
-    /// The output then shows Liberation's glyph shapes wherever those
-    /// fonts are used (metric-compatible: the same advances, slightly
-    /// different shapes) and is larger by the embedded programs (about
-    /// 0.3–0.4 MB per face). Symbol, ZapfDingbats, symbolic TrueType
+    /// The output then shows the substitute's glyph shapes wherever those
+    /// fonts are used (the same advances, different shapes) and is
+    /// larger by the embedded programs (about 0.2–0.4 MB per face). Symbol, ZapfDingbats, symbolic TrueType
     /// fonts, other non-embedded fonts and CID fonts are not embedded
     /// and stay refused.
     /// [`Redaction::fonts_embedded`] counts the fonts replaced.
