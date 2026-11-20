@@ -108,14 +108,29 @@ disagree with each other (−0.006 / −0.003; MuPDF better there).
 
 - Nimbus Mono PS is one Courier clone, not Adobe's Courier; E1 measures
   agreement with it, as E0 measures agreement with Liberation Mono.
-- The nightly's environment fingerprint (`ci-regression.py env`: OS,
-  architecture, renderer versions) does not include the reference's font
-  configuration: an E1 run would be compared with an E0 baseline as if
-  the environments were the same. Adopting E1 as the nightly's reference
-  would need the fingerprint to include it, and a reviewed update of
-  `compat/baselines/corpus-full.json` for what E1 changes: the 9 pages
-  of the 5 Courier files (SSIM, content SSIM, the second witness's
-  records of the 5 of them below 0.95). The rejected file's 2 Poppler
-  pages are in no baseline (kasane renders none of it).
 - The evaluation ran on aarch64 against an x86_64 runner; the
   reproduction above bounds the difference.
+
+## The nightly on E1
+
+The nightly's reference is E1. The environment fingerprint
+(`scripts/compat_env.py`, docs/compat-evaluation.md § Environments)
+includes the reference — profile, effective fontconfig configuration,
+font files, fontconfig and FreeType versions — so an E0 run is never
+compared with the E1 baseline as the same environment.
+
+`compat/baselines/corpus-full.json` was measured again from the
+nightly's x86_64 run of the implementation without Kasane Courier in E1
+(run 44665674269, commit `e20a6a2`). It differs from the E0 baseline in
+what E1 changes, and nothing else:
+- the environment (commit, reference);
+- the 9 pages of the 5 Courier files: SSIM and content SSIM, all lower
+  (kasane's current Courier substitute is closer to Liberation Mono
+  than to Nimbus Mono PS);
+- the second witness's Kasane–Poppler measures of the 4 such pages it
+  had (MuPDF's unchanged), and one more page below 0.95 attributed
+  (agreement *neither*).
+
+The rejected file's 2 Poppler pages are in no baseline (kasane renders
+none of it). The 24 files Poppler draws no page of in either environment
+are compared in neither.
