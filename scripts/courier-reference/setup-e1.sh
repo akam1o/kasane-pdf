@@ -70,6 +70,9 @@ printf '{"profile": "courier-nimbus-mono-ps", "version": 1}\n' > "$DIR/profile.j
 for t in pdftoppm pdftotext pdftocairo pdfinfo; do
   real=$(command -v "$t" || true)
   [ -n "$real" ] || { echo "setup-e1: no $t" >&2; exit 1; }
+  case "$DIR$real" in
+    *[!A-Za-z0-9._/+@%,:-]*) echo "setup-e1: $DIR or $real has characters the wrapper cannot carry" >&2; exit 1 ;;
+  esac
   # Exactly this form: scripts/compat_env.py identifies the wrapper by it.
   printf '#!/bin/sh\nexec /usr/bin/env -u FONTCONFIG_PATH -u FONTCONFIG_SYSROOT FONTCONFIG_FILE=%s %s "$@"\n' \
     "$DIR/fonts.conf" "$real" > "$DIR/bin/$t"

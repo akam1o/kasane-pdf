@@ -52,7 +52,7 @@ except ImportError:
         raise
 
 E0 = {"profile": "system", "version": 1, "config_sha256": "0" * 64, "fonts_sha256": "1" * 64, "font_files": 53,
-      "fontconfig": "2.17.1", "freetype": "libfreetype.so.6.20.5"}
+      "fontconfig": "2.17.1", "freetype": "libfreetype.so.6.20.5", "freetype_sha256": "4" * 64}
 ENV = {"commit": "c" * 40, "os": "linux-ubuntu-26.04", "arch": "x86_64", "features": "cjk-fallback",
        "poppler": "26.01.0", "mupdf": "1.27.0", "qpdf": "12.3.2", "reference": E0}
 TOL = dict(ca.TOLERANCE)
@@ -848,7 +848,12 @@ class ReferenceFingerprint(unittest.TestCase):
                   'f=${FONTCONFIG_FILE:-/nonexistent}\n[ -f "$f" ] || exit 0\n'
                   'sed -n "s/^font //p" "$f"\n'
                   'for i in $(sed -n "s/^include //p" "$f"); do sed -n "s/^font //p" "$i"; done\n')
-        ldd = '#!/bin/sh\necho "\tlibfreetype.so.6 => /lib/libfreetype.so.6.20.5 (0x0)"\n'
+        # ldd names the library at $FAKE_FREETYPE (one per test directory).
+        lib = os.path.join(d, "lib", "libfreetype.so.6.20.5")
+        os.makedirs(os.path.dirname(lib))
+        with open(lib, "wb") as fh:
+            fh.write(b"freetype build 1")
+        ldd = f'#!/bin/sh\necho "\tlibfreetype.so.6 => ${{FAKE_FREETYPE:-{lib}}} (0x0)"\n'
         for n, body in (("fc-conflist", conflist), ("fc-list", fclist), ("ldd", ldd)):
             with open(os.path.join(bin_, n), "w") as fh:
                 fh.write(body)
@@ -920,6 +925,9 @@ class ReferenceFingerprint(unittest.TestCase):
                 tool("prefix", "#!/bin/sh\nFONTCONFIG_FILE=/elsewhere; export FONTCONFIG_FILE\n" + w[len("#!/bin/sh\n"):]),
                 # A wrapper of a wrapper.
                 tool("nested", self.wrapper(root, binary=good)),
+                # Paths the shell would not take as one word.
+                tool("meta", w.replace(f"{root}/fonts.conf", f"{root}/fonts.conf;true")),
+                tool("space", w.replace(f"FONTCONFIG_FILE={root}", f"FONTCONFIG_FILE=/a\\ b{root}")),
                 # A script that names no configuration.
                 tool("plain", f"#!/bin/sh\nexec {self.BINARY} \"$@\"\n"),
                 os.path.join(d, "missing"),
@@ -945,6 +953,8 @@ class ReferenceFingerprint(unittest.TestCase):
             with open(os.path.join(root, "fonts.conf"), "w") as fh:
                 fh.write(f"include {root}/rules.conf\n")
             self.assertIsNone(self.fingerprint(good, bin_)["font_files"])
+            self.assertFalse(ce.reference_complete(
+                self.fingerprint(good, bin_, FAKE_FREETYPE=os.path.join(d, "no-such-lib.so.6"))))
             os.remove(os.path.join(bin_, "ldd"))
             self.assertFalse(ce.reference_complete(self.fingerprint(good, bin_)))
 
@@ -965,6 +975,15 @@ class ReferenceFingerprint(unittest.TestCase):
             undeclared = self.fingerprint(self.reference_dir(os.path.join(d, "f"), profile=False), bin_)
             self.assertEqual(undeclared["profile"], "undeclared")
             self.assertNotEqual(a, undeclared)
+            # Another FreeType build under the same file name.
+            other = os.path.join(d, "lib2", "libfreetype.so.6.20.5")
+            os.makedirs(os.path.dirname(other))
+            with open(other, "wb") as fh:
+                fh.write(b"freetype build 2")
+            ft = self.fingerprint(self.reference_dir(os.path.join(d, "g")), bin_, FAKE_FREETYPE=other)
+            self.assertEqual(ft["freetype"], a["freetype"])
+            self.assertTrue(ce.reference_complete(ft), ft)
+            self.assertEqual(ce.differences({"reference": a}, {"reference": ft}, keys=("reference",)), ["reference"])
 
     def test_corpus_and_attribution_in_other_references(self):
         f = file("a", [page(1, 0.9)])
