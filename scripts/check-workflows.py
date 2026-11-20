@@ -92,6 +92,11 @@ def logical_lines(run):
 # nightly.yml full-corpus: the commands of M1 (docs/compat-evaluation.md)
 # and what each must carry. Each runs in a step nothing switches off.
 NIGHTLY_CORPUS_COMMANDS = {
+    # The reference fonts (docs/courier-reference.md): set up and checked,
+    # and put first on PATH for the reference steps.
+    "scripts/courier-reference/setup-e1.sh /tmp/ref": [],
+    "scripts/courier-reference/probe.py /tmp/ref": ["--json"],
+    "kasane-compat run": ['PATH="${REFERENCE_BIN:+$REFERENCE_BIN:}$PATH"'],
     "scripts/ci-regression.py env": [],
     # The redaction corpus (V1): evaluated, projected and compared, the
     # comparison's verdict deciding the step.
