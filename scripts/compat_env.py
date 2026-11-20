@@ -18,8 +18,8 @@ such as scripts/courier-reference/setup-e1.sh's declares in its
 profile.json), the effective fontconfig configuration (the top-level
 file and every file it loads, in order, by content), the font files it
 lists (by content), the fontconfig version and the FreeType library
-the binary loads. Paths inside a reference directory are recorded
-relative to it, so the same setup in another temporary directory has the
+the binary loads (name and content). Paths inside a reference directory
+are recorded relative to it, so the same setup in another temporary directory has the
 same fingerprint. It fails closed: a tool that is neither a binary nor
 exactly setup-e1.sh's wrapper of one, a binary run with FONTCONFIG_PATH
 or FONTCONFIG_SYSROOT set, a listed file that cannot be read, or an empty
@@ -37,7 +37,8 @@ import subprocess
 # numeric comparisons to be meaningful.
 COMPARED = ("os", "arch", "poppler", "mupdf", "features", "reference")
 # The fingerprint fields a reference must have to be compared at all.
-REFERENCE_FIELDS = ("profile", "version", "config_sha256", "fonts_sha256", "font_files", "fontconfig", "freetype")
+REFERENCE_FIELDS = ("profile", "version", "config_sha256", "fonts_sha256", "font_files", "fontconfig", "freetype",
+                    "freetype_sha256")
 
 
 def _version(argv, pattern):
@@ -78,8 +79,10 @@ def _sha(data):
 # not fingerprinted.
 FONTCONFIG_VARS = ("FONTCONFIG_PATH", "FONTCONFIG_SYSROOT")
 # setup-e1.sh's wrapper, exactly: anything else is not identified.
-WRAPPER = re.compile(rb'#!/bin/sh\nexec /usr/bin/env -u FONTCONFIG_PATH -u FONTCONFIG_SYSROOT FONTCONFIG_FILE=(/[^\s"$`\\\\]+) '
-                     rb'(/[^\s"$`\\\\]+) "\$@"\n')
+# Paths of characters the shell takes literally, unquoted (and no "=",
+# which env(1) would take for an assignment).
+WRAPPER = re.compile(rb'#!/bin/sh\nexec /usr/bin/env -u FONTCONFIG_PATH -u FONTCONFIG_SYSROOT FONTCONFIG_FILE=(/[A-Za-z0-9._/+@%,:-]+) '
+                     rb'(/[A-Za-z0-9._/+@%,:-]+) "\$@"\n')
 BINARY = (b"\x7fELF", b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
 
 
@@ -110,10 +113,13 @@ def _identify(pdftoppm):
 
 
 def _freetype(binary):
-    """The FreeType library the binary loads, by file name (Linux, ldd);
-    None when that cannot be told."""
+    """The FreeType library the binary loads (Linux, ldd): its file name
+    and content hash; None for both when that cannot be told or read."""
     out = _version(["ldd", binary], r"libfreetype\.so\.\d+ => (/\S+)")
-    return os.path.basename(os.path.realpath(out)) if out else None
+    body = _read_all([out]) if out else None
+    if not body:
+        return None, None
+    return os.path.basename(os.path.realpath(out)), _sha(body[0][1])
 
 
 def _read_all(paths):
@@ -128,7 +134,8 @@ def _read_all(paths):
     return out
 
 
-INCOMPLETE = {"config_sha256": None, "fonts_sha256": None, "font_files": None, "fontconfig": None, "freetype": None}
+INCOMPLETE = {"config_sha256": None, "fonts_sha256": None, "font_files": None, "fontconfig": None, "freetype": None,
+              "freetype_sha256": None}
 
 
 def reference(pdftoppm="pdftoppm"):
@@ -186,7 +193,7 @@ def reference(pdftoppm="pdftoppm"):
         out["fonts_sha256"] = _sha("\n".join(f"{rel(f)}\0{_sha(b)}" for f, b in bodies).encode())
         out["font_files"] = len(bodies)
     out["fontconfig"] = _version(["fc-list", "--version"], r"version (\S+)")
-    out["freetype"] = _freetype(tool[-1])
+    out["freetype"], out["freetype_sha256"] = _freetype(tool[-1])
     return out
 
 
@@ -222,7 +229,7 @@ def reference_complete(ref):
     ok = lambda v: isinstance(v, str) and v != ""
     return (ok(ref.get("profile")) and ref["profile"] not in ("unidentified",)
             and type(ref.get("version")) is int and ref["version"] >= 1
-            and all(isinstance(ref.get(k), str) and _SHA256.fullmatch(ref[k]) for k in ("config_sha256", "fonts_sha256"))
+            and all(isinstance(ref.get(k), str) and _SHA256.fullmatch(ref[k]) for k in ("config_sha256", "fonts_sha256", "freetype_sha256"))
             and type(ref.get("font_files")) is int and ref["font_files"] > 0
             and ok(ref.get("fontconfig")) and ok(ref.get("freetype")))
 
