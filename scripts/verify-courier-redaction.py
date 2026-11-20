@@ -25,12 +25,29 @@ succeeds or is refused. For an output, and for each renderer:
   6. the glyphs taken from Liberation Mono have ink where kasane draws
      them.
 
-A renderer that is missing, fails or times out is `unverified`, never a
-pass (exit 2). Exit 0: every case as expected; 1: a failure.
+The two edge cases put a rect 0.05 pt into (edge-overlapping) or past
+(edge-clear) the ink of KEEP's last letter, P — not the secret, which
+they keep. Instead of checks 3 and 4, for each renderer:
+
+  E1. the text is exactly the line without that P (overlapping) or the
+      whole line (clear) — whitespace removed, nothing else forgiven;
+  E2. the P's whole ink box (from kasane's glyph bounds of the input,
+      not from the output) has ink in a control: the input redacted
+      with a rect over nothing, the same Kasane Courier embedded;
+  E3. overlapping: no ink is left anywhere in that box; clear: the box
+      is drawn as in the control;
+  E4. the neighbouring letters (the E before, the R after) are drawn as
+      in the control, and check 5 leaves out the P's box only.
+
+A renderer that is missing, fails or times out, or a check it cannot
+make (no control, no box), is `unverified`, never a pass (exit 2).
+Exit 0: every case as expected; 1: a failure.
 --negative runs the same checks on deliberately broken outputs (another
 font program, another style's, a program that does not decode, a rect
 that misses the secret, one that covers public text, a file cut in half
-that cannot be decoded) and passes only if each is caught.
+that cannot be decoded; for the edge: the P taken out of the text but
+still drawn, and a clear rect that removed the P) and passes only if
+each is caught, by the check meant to catch it, in every renderer.
 The JSON names cases, renderers and check results only.
 """
 import argparse, hashlib, json, os, re, shutil, subprocess, sys, tempfile, zlib
@@ -118,6 +135,16 @@ def rect_for(chars, kind):
     return (p[2] + dx, p[1], p[2] + dx + 0.4, p[3])
 
 
+# The line's characters (kasane's order, the space included) the edge
+# checks name: the P of KEEP and its neighbours.
+EDGE_P, EDGE_BEFORE, EDGE_AFTER = 3, 2, 5
+# The line as the renderers' text gives it, whitespace removed.
+LINE_TEXT = "KEEP" + TARGET + "AFTERЖДαΩ"
+EDGE_TEXT = {"edge-in": "KEE" + TARGET + "AFTERЖДαΩ", "edge-out": LINE_TEXT}
+# A rect over nothing on the page: the control keeps every glyph.
+NOWHERE = (300.0, 10.0, 340.0, 20.0)
+
+
 def png_gray(path):
     from PIL import Image
     return Image.open(path).convert("L")
@@ -167,26 +194,60 @@ def ink(img, box, pad=0):
     return sum(1 for v in crop.tobytes() if v < 160)
 
 
-def differs(a, b, outside):
-    """Share of the inked pixels outside `outside` (px box) whose grey
-    differs by more than 64 between a and b, both blurred by one pixel —
-    the renderers' anti-aliasing differs, glyph shapes and places do not:
-    the same embedded font gives 0 here, another one about 0.2."""
+def differs(a, b, outside, margin=3, inside=None):
+    """Share of the inked pixels outside `outside` (px box, `margin` px
+    around it) — or, with `inside`, of those in that px box only — whose
+    grey differs by more than 64 between a and b, both blurred by one
+    pixel: the renderers' anti-aliasing differs, glyph shapes and places
+    do not: the same embedded font gives 0 here, another one about 0.2."""
     from PIL import ImageFilter
     if a.size != b.size:
         return 1.0
     a, b = a.filter(ImageFilter.GaussianBlur(1)), b.filter(ImageFilter.GaussianBlur(1))
     pa, pb = a.load(), b.load()
-    x0, y0, x1, y1 = outside
     n = d = 0
     for y in range(0, a.height):
         for x in range(a.width):
-            if x0 - 3 <= x <= x1 + 3 and y0 - 3 <= y <= y1 + 3:
-                continue
+            if inside is not None:
+                if not (inside[0] <= x < inside[2] and inside[1] <= y < inside[3]):
+                    continue
+            elif outside is not None:
+                x0, y0, x1, y1 = outside
+                if x0 - margin <= x <= x1 + margin and y0 - margin <= y <= y1 + margin:
+                    continue
             if pa[x, y] < 250 or pb[x, y] < 250:
                 n += 1
                 d += abs(pa[x, y] - pb[x, y]) > 64
     return d / n if n else 0.0
+
+
+def glyph_box_px(bounds, img, grow=1):
+    """A glyph's ink box (user space) in px, `grow` px around for the
+    anti-aliasing; None when there is no box."""
+    if not bounds:
+        return None
+    x0, y0, x1, y1 = box_px(bounds, img)
+    return (max(x0 - grow, 0), max(y0 - grow, 0), min(x1 + grow, img.width), min(y1 + grow, img.height))
+
+
+def edge_checks(kind, img, t, ctrl, boxes):
+    """E1-E4 for one renderer (module docstring): True / False, or
+    'unverified' where the control or a box is missing."""
+    r = {"E1_text_exact": t == EDGE_TEXT[kind]}
+    p, before, after = (glyph_box_px(b, img) for b in boxes)
+    if ctrl is None or ctrl.size != img.size or None in (p, before, after):
+        for k in ("E2_control_P_inked", "E3_P_box", "E4_neighbours_kept", "5_matches_kasane"):
+            r[k] = "unverified"
+        return r
+    # A control whose box is blank would let any output pass.
+    r["E2_control_P_inked"] = ink(ctrl, p) >= 40
+    if kind == "edge-in":
+        r["E3_P_box"] = ink(img, p) == 0
+    else:
+        r["E3_P_box"] = ink(img, p) >= 0.8 * ink(ctrl, p) and differs(img, ctrl, None, inside=p) < 0.05
+    r["E4_neighbours_kept"] = all(ink(ctrl, b) >= 40 and differs(img, ctrl, None, inside=b) < 0.05
+                                  for b in (before, after))
+    return r
 
 
 def qpdf_objects(argv):
@@ -227,8 +288,9 @@ def font_bbox(pdf):
     return None
 
 
-def check_output(kasane, src, out, rect, face, tmp):
-    """{renderer or 'file': {check: True / False / 'unverified'}}."""
+def check_output(kasane, src, out, rect, face, tmp, edge=None):
+    """{renderer or 'file': {check: True / False / 'unverified'}}. `edge`:
+    the edge kind, for E1-E4 (module docstring) in place of 3 and 4."""
     res = {"file": {}}
     want = open(FACES[face], "rb").read()
     base, program = embedded_program(out)
@@ -253,6 +315,25 @@ def check_output(kasane, src, out, rect, face, tmp):
     res["file"]["0_kasane_reads_output"] = kout is not None and bool(chars)
     written_bbox = font_bbox(out)
     supplemented = [c["bounds"] for c in chars if c["unicode"] in ("Ж", "Д", "α", "Ω") and c["bounds"]]
+    if edge:
+        # The boxes from the input (kasane's glyph bounds there), and the
+        # control: the input with nothing redacted, the face embedded.
+        try:
+            src_chars = kasane_chars(kasane, src)
+            boxes = [src_chars[i]["bounds"] for i in (EDGE_P, EDGE_BEFORE, EDGE_AFTER)]
+            if "".join(src_chars[i]["unicode"] or "?" for i in (EDGE_BEFORE, EDGE_P, EDGE_AFTER)) != "EPR":
+                boxes = [None] * 3
+        except (RuntimeError, IndexError, KeyError):
+            boxes = [None] * 3
+        ctrl_pdf = os.path.join(tmp, "edge-control.pdf")
+        if os.path.exists(ctrl_pdf):
+            os.remove(ctrl_pdf)
+        outcome, _ = redact(kasane, src, ctrl_pdf, NOWHERE)
+        name, program = embedded_program(ctrl_pdf) if outcome == "ok" else (None, None)
+        # The control is good only with the same face embedded.
+        ctrl_ok = name == f"/KasaneCourier-{face}" and program == want
+        res["file"]["E2_control_embeds_face"] = ctrl_ok
+        kin_p = glyph_box_px(boxes[0], kin) if kin is not None else None
     for who in ("poppler", "mupdf", "pdfjs"):
         r = {}
         try:
@@ -275,19 +356,38 @@ def check_output(kasane, src, out, rect, face, tmp):
                 not f["missingFile"] and not f["invalid"] and f["systemFont"] is None and f["mimetype"]
                 and f["bbox"] == written_bbox for f in fonts)
         box = box_px(rect, img)
-        r["3_no_ink_in_rect"] = ink(img, box, pad=2) == 0
-        r["3_target_not_extracted"] = TARGET not in t
-        # Every public word, in order.
-        at = [t.find(p) for p in PUBLIC]
-        r["4_public_kept"] = all(i >= 0 for i in at) and at == sorted(at)
-        # Away from the rect, the page as kasane drew the input (its
-        # substitute, the same font and advances): what was kept is drawn
-        # alike, in the same places and styles.
-        r["5_matches_kasane"] = kin is not None and differs(img, kin, box) < 0.02
+        if edge:
+            try:
+                ctrl, _ = render(who, ctrl_pdf, os.path.join(tmp, who + "-control"), kasane) if ctrl_ok else (None, None)
+            except (subprocess.TimeoutExpired, OSError):
+                ctrl = None
+            r.update(edge_checks(edge, img, t, ctrl, boxes))
+            # Away from the P's box (and the rect) only, the page as kasane
+            # drew the input.
+            if r.get("5_matches_kasane") != "unverified":
+                p = glyph_box_px(boxes[0], img)
+                u = (min(p[0], box[0]), min(p[1], box[1]), max(p[2], box[2]), max(p[3], box[3]))
+                r["5_matches_kasane"] = kin is not None and differs(img, kin, u, margin=1) < 0.02
+        else:
+            r["3_no_ink_in_rect"] = ink(img, box, pad=2) == 0
+            r["3_target_not_extracted"] = TARGET not in t
+            # Every public word, in order.
+            at = [t.find(p) for p in PUBLIC]
+            r["4_public_kept"] = all(i >= 0 for i in at) and at == sorted(at)
+            # Away from the rect, the page as kasane drew the input (its
+            # substitute, the same font and advances): what was kept is drawn
+            # alike, in the same places and styles.
+            r["5_matches_kasane"] = kin is not None and differs(img, kin, box) < 0.02
         r["6_supplemented_drawn"] = len(supplemented) == 4 and all(ink(img, box_px(b, img)) > 0 for b in supplemented)
         res[who] = r
-    res["file"]["5_kasane_unchanged_outside"] = (kin is not None and kout is not None
-                                                 and differs(kin, kout, box_px(rect, kout)) < 0.02)
+    if edge:
+        res["file"]["5_kasane_unchanged_outside"] = (
+            "unverified" if kin_p is None or kout is None else
+            differs(kin, kout, (min(kin_p[0], box_px(rect, kout)[0]), kin_p[1],
+                                max(kin_p[2], box_px(rect, kout)[2]), kin_p[3]), margin=1) < 0.02)
+    else:
+        res["file"]["5_kasane_unchanged_outside"] = (kin is not None and kout is not None
+                                                     and differs(kin, kout, box_px(rect, kout)) < 0.02)
     return res
 
 
@@ -303,6 +403,7 @@ def redact(kasane, src, out, rect):
 
 def run_case(kasane, case, tmp):
     name, font, face, kind, expect = case
+    os.makedirs(tmp, exist_ok=True)
     src, out = os.path.join(tmp, "in.pdf"), os.path.join(tmp, "out.pdf")
     open(src, "wb").write(pdf_bytes(font))
     if os.path.exists(out):
@@ -314,11 +415,8 @@ def run_case(kasane, case, tmp):
         res["refusal_quotes_no_target"] = TARGET.encode() not in err
     if outcome != "ok" or expect != "ok":
         return res, None
-    res["checks"] = check_output(kasane, src, out, rect, face, tmp)
-    edge_p = None
-    if kind in ("edge-in", "edge-out"):
-        t = text("poppler", out) or ""
-        res["edge_P_removed"] = edge_p = not t.startswith("KEEP")
+    edge = kind if kind in ("edge-in", "edge-out") else None
+    res["checks"] = check_output(kasane, src, out, rect, face, tmp, edge=edge)
     return res, (src, out, rect, face)
 
 
@@ -332,22 +430,25 @@ def failures(name, res, kind):
         if "error" in checks:
             continue
         for k, v in checks.items():
-            # The edge cases keep the word on purpose: only the checks of
-            # its absence and of the public text are not theirs.
-            if kind in ("edge-in", "edge-out") and k in ("3_target_not_extracted", "3_no_ink_in_rect",
-                                                         "3_target_not_in_file", "4_public_kept"):
+            # The edge cases keep the secret on purpose: the file's check
+            # of its absence is not theirs (E1-E4 are).
+            if kind in ("edge-in", "edge-out") and k == "3_target_not_in_file":
                 continue
-            if v is not True:
+            if v is not True and v != "unverified":
                 f.append(f"{name}: {who}: {k}")
-    if kind == "edge-in" and res.get("edge_P_removed") is not True:
-        f.append(f"{name}: the P the rect overlaps is kept")
-    if kind == "edge-out" and res.get("edge_P_removed") is not False:
-        f.append(f"{name}: the P the rect is clear of is removed")
     return f
 
 
 def unverified(res):
-    return [who for who, c in (res.get("checks") or {}).items() if "error" in c]
+    """Renderers that could not be run, and checks that could not be
+    made (`who.check`)."""
+    out = []
+    for who, c in (res.get("checks") or {}).items():
+        if "error" in c:
+            out.append(who)
+        else:
+            out += [f"{who}.{k}" for k, v in c.items() if v == "unverified"]
+    return out
 
 
 def program_object(pdf):
@@ -376,9 +477,54 @@ def with_program(pdf, data, tmp):
     return fixed
 
 
+def page_content_object(pdf):
+    """The object number of the page's (last) content stream (qpdf json)."""
+    objs = qpdf_objects([pdf, "-"])
+    page = next(v["value"] for v in objs.values() if isinstance(v.get("value"), dict)
+                and v["value"].get("/Type") == "/Page")
+    c = page["/Contents"]
+    return int((c[-1] if isinstance(c, list) else c).split()[0])
+
+
+def with_content_appended(pdf, extra, tmp):
+    """`pdf` with `extra` drawn after the page's content (QDF, lengths
+    and xref repaired by fix-qdf)."""
+    n = page_content_object(pdf)
+    q = run(["qpdf", "--qdf", "--object-streams=disable", "--decode-level=all", pdf, "-"]).stdout
+    m = re.search(rb"\n%d 0 obj\n" % n, q)
+    i = q.index(b"stream\n", m.end()) + 7
+    j = q.index(b"endstream", i)
+    body = q[i:j].rstrip(b"\n")
+    p = os.path.join(tmp, "neg-content.qdf")
+    open(p, "wb").write(q[:i] + body + b"\n" + extra + b"\n" + q[j:])
+    fixed = os.path.join(tmp, "neg-content.pdf")
+    with open(fixed, "wb") as fh:
+        subprocess.run(["fix-qdf", p], stdout=fh, check=True, timeout=120)
+    return fixed
+
+
+def glyph_as_image(kasane, pdf, bounds, tmp):
+    """Content drawing the ink kasane renders in `bounds` (user space) of
+    `pdf` as a stencil image there: the glyph drawn, no text."""
+    img, _ = render("kasane", pdf, os.path.join(tmp, "stencil"), kasane)
+    x0, y0, x1, y1 = box_px(bounds, img)
+    crop = img.crop((x0, y0, x1, y1))
+    w, h = crop.size
+    rows = []
+    for y in range(h):
+        bits = "".join("0" if crop.getpixel((x, y)) < 128 else "1" for x in range(w))
+        bits += "0" * (-len(bits) % 8)
+        rows.append("".join(f"{int(bits[k:k + 8], 2):02x}" for k in range(0, len(bits), 8)))
+    s = 72.0 / DPI
+    ux, uy = x0 * s, (img.height - y1) * s
+    return (f"q 0 g {w * s:.4f} 0 0 {h * s:.4f} {ux:.4f} {uy:.4f} cm BI /IM true /W {w} /H {h} /BPC 1 "
+            f"/F /AHx ID {''.join(rows)}> EI Q").encode()
+
+
 def negative(kasane, tmp):
-    """Broken outputs the checks must catch: {control: caught}."""
-    caught = {}
+    """Broken outputs the checks must catch: ({control: caught}, the edge
+    controls' check results by renderer)."""
+    caught, detail = {}, {}
     res, (src, out, rect, face) = run_case(kasane, CASES[0], tmp)
     readers = ("poppler", "mupdf", "pdfjs")
     lib = open(os.path.join(ROOT, "fonts", "liberation", "LiberationMono-Regular.ttf"), "rb").read()
@@ -408,7 +554,34 @@ def negative(kasane, tmp):
     open(o, "wb").write(data[: len(data) // 2])
     c = check_output(kasane, src, o, rect, face, tmp)
     caught["file_not_decoded"] = c["file"]["3_file_decoded"] is False and c["file"]["3_target_not_in_file"] is False
-    return caught
+    # The edge. A P out of the text but still drawn: the overlapping
+    # case's output with the P's ink (kasane's render of the input, as a
+    # stencil image) put back. A readable file, the right face, the text
+    # as it should be — only E3 (the P's box) is to catch it, in each
+    # renderer.
+    edge_in = next(c for c in CASES if c[3] == "edge-in")
+    edge_out = next(c for c in CASES if c[3] == "edge-out")
+    d = os.path.join(tmp, "edge-neg")
+    os.makedirs(d, exist_ok=True)
+    _, (src, out, rect, face) = run_case(kasane, edge_in, d)
+    p_bounds = kasane_chars(kasane, src)[EDGE_P]["bounds"]
+    drawn = with_content_appended(out, glyph_as_image(kasane, src, p_bounds, d), d)
+    c = check_output(kasane, src, drawn, rect, face, d, edge="edge-in")
+    detail["edge_P_drawn_not_extracted"] = c
+    caught["edge_P_drawn_not_extracted"] = (
+        c["file"]["1_embedded_face"] is True and c["file"]["3_file_decoded"] is True
+        and all("error" not in c[w] and c[w]["E1_text_exact"] is True and c[w]["E2_control_P_inked"] is True
+                and c[w]["E3_P_box"] is False for w in readers))
+    # A clear rect that removed the P: the overlapping case's output
+    # judged as the clear case's. E1 and E3 are both to catch it.
+    _, (src2, _, rect2, _) = run_case(kasane, edge_out, os.path.join(d, "out"))
+    c = check_output(kasane, src2, out, rect2, face, os.path.join(d, "out"), edge="edge-out")
+    detail["edge_clear_P_removed"] = c
+    caught["edge_clear_P_removed"] = (
+        c["file"]["1_embedded_face"] is True
+        and all("error" not in c[w] and c[w]["E1_text_exact"] is False and c[w]["E2_control_P_inked"] is True
+                and c[w]["E3_P_box"] is False for w in readers))
+    return caught, detail
 
 
 def main():
@@ -433,8 +606,9 @@ def main():
             print(f"{case[0]:28} {res['outcome']:8} {ok} checks passed"
                   + (f", unverified {unverified(res)}" if unverified(res) else ""), flush=True)
         if a.negative:
-            caught = negative(a.kasane, tmp)
+            caught, detail = negative(a.kasane, tmp)
             doc["negative"] = caught
+            doc["negative_edge_checks"] = detail
             for k, v in caught.items():
                 print(f"negative {k:24} {'caught' if v else 'NOT CAUGHT'}")
                 if not v:

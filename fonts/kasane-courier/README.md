@@ -17,11 +17,23 @@ from **Liberation Mono 2.1.5**, the previous Courier substitute:
 | names | family *Kasane Courier*; none of the Reserved Font Names of the sources (Liberation, Arimo, Tinos, Cousine; Courier Prime 3.018 reserves none) |
 
 Courier Prime is a Courier design (slab serifs, Courier's proportions);
-Liberation Mono's is sans-serif. Readers draw a non-embedded Courier
-with a Courier design too (Apple Courier, Nimbus Mono PS, Foxit
-Fixed), so the substitute is now closer to what they show. Shapes are
-still not Adobe's, and the substitution is reported in
-`RenderedPage::font_substitutions` as before.
+Liberation Mono's is sans-serif. How a reader draws a non-embedded
+Courier depends on the reader and on the substitute fonts it is set up
+with. Against the references measured (docs/courier-reference.md), the
+substitute is closer than Liberation Mono was:
+- Poppler drawing Courier with Nimbus Mono PS (the nightly's E1): 8
+  corpus pages more similar, none less; 22 of 23 synthetic cases more
+  similar, one less (an invalid-name case where the references disagree
+  with each other);
+- MuPDF and pdf.js: 22–23 of the synthetic cases more similar, none
+  less.
+
+Against Poppler drawing Courier with Liberation Mono (the runner's own
+fonts, E0) it is less similar — on the same corpus pages and on 23
+synthetic cases: there the reference itself draws Liberation Mono, the
+previous substitute. None of this is a claim for every reader, setup
+or document. Shapes are still not Adobe's Courier, and the substitution
+is reported in `RenderedPage::font_substitutions` as before.
 
 ## Provenance
 

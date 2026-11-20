@@ -403,11 +403,18 @@ exactly the expected Kasane Courier program; Poppler (no fontconfig
 lookup), MuPDF (its trace) and pdf.js (no missing or system font) must
 draw that program; no ink and no text of the secret may be left, the
 public text must be kept exactly, and away from the rect each renderer's
-page must match kasane's render of the input. `--negative` breaks
+page must match kasane's render of the input. In the two edge cases
+(the rect 0.05 pt into or past the ink of KEEP's P) each renderer's text
+must be exactly the line without that P, or the whole line; the P's
+whole ink box — taken from the input, and inked in a control with the
+same face embedded — must be blank, or drawn as in the control; its
+neighbours must be drawn as in the control. `--negative` breaks
 outputs on purpose (another program, another style, one that does not
-decode, a rect that misses the secret, one over public text) and fails
-unless each is caught. A renderer that cannot run is unverified, not a
-pass.
+decode, a rect that misses the secret, one over public text, a P out of
+the text but still drawn, a clear rect that removed the P) and fails
+unless each is caught by the check meant for it in every renderer. A
+renderer that cannot run, or a check it cannot make, is unverified, not
+a pass.
 
 `scripts/test_release_verify.py` (fast gate) runs the verifier on
 throwaway repositories and checks each way its evidence can be wrong:
