@@ -352,6 +352,8 @@ jobs:
         run: python3 scripts/test_redact_text_measure.py
       - name: the sharded reference diff's own tests (units, a killed unit, attempts; fake Poppler)
         run: python3 scripts/test_reference_diff.py
+      - name: semver-check's parsing and judgement (no tool; scripts/test_semver_check.py)
+        run: python3 scripts/test_semver_check.py
       - name: compatibility evaluation's own tests (second witness, 300 dpi, numeric regressions; fake renderers)
         run: |
           pip3 install --quiet pillow==13.0.0
@@ -431,9 +433,24 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      # The baseline is the newest version on crates.io; a breaking change
-      # needs the minor bump (0.x), which the check then accepts.
-      - run: cargo semver-checks check-release
+      # Detection and judgement apart (scripts/semver-check.py,
+      # docs/api-stability.md): every lint the tool does not call
+      # unnecessary (every breaking-change lint) runs against the newest
+      # release's package from crates.io, whatever the version numbers;
+      # each finding is then allowed or refused by the version change. Not
+      # run is a failure, never a pass.
+      - name: semver-check's own tests (synthetic crates, the real tool)
+        run: KASANE_REQUIRE_SEMVER_CHECKS=1 python3 scripts/test_semver_check.py
+      - name: the public API against the newest release
+        run: python3 scripts/semver-check.py --json /tmp/semver.json --summary-md "$GITHUB_STEP_SUMMARY"
+      - name: findings (lint ids, items, versions)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: semver-check
+          path: /tmp/semver.json
+          retention-days: 30
+          if-no-files-found: ignore
 
   redaction-model:
     name: redaction model (10,000 seeds, release)
