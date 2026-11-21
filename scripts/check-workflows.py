@@ -139,6 +139,15 @@ def check_nightly_measurement(path, wf):
             problem(f"{path.name}:full-corpus: does not run `{cmd}`")
 
 
+def check_semver_baseline(path, wf):
+    """The gate's semver baseline is downloaded from crates.io: an offline
+    package (whose provenance is the caller's word) is for tests only."""
+    for _, st in steps_of(wf):
+        for line in logical_lines(st.get("run")):
+            if "semver-check.py" in line and ("--baseline-crate" in line or "--baseline-sha256" in line):
+                problem(f"{path.name}: semver-check.py runs with a caller-supplied baseline package")
+
+
 def check_no_baseline_writes(path, wf):
     """Baselines change only by a reviewed commit (update-baseline
     --write, run by a person): no workflow writes one."""
@@ -217,7 +226,7 @@ PR_MUST_RUN = {
                      "scripts/test_ci_scripts.py", "scripts/test_release_verify.py",
                      "scripts/test_advisory_history.py", "scripts/test_compat_analysis.py",
                      "KASANE_REQUIRE_PILLOW=1 python3 scripts/test_compat_evaluation.py",
-                     "python3 scripts/test_redact_text_measure.py"],
+                     "python3 scripts/test_redact_text_measure.py", "python3 scripts/test_semver_check.py"],
     "render-fuzz-smoke": ["ci-run-sharded.sh redact_model", "fuzz/ci-run.sh \"$T\" \"fuzz/seeds/$T\"",
                           "-seed=1 -runs=3000"],
 }
@@ -225,6 +234,8 @@ FULL_ONLY_IF = "github.event_name != 'pull_request'"
 # Full-gate jobs whose decisive command must run (unconditionally within
 # the job).
 FULL_MUST_RUN = {
+    "semver": ["KASANE_REQUIRE_SEMVER_CHECKS=1 python3 scripts/test_semver_check.py",
+               "python3 scripts/semver-check.py --json /tmp/semver.json"],
     "renderers-linux": ["python3 scripts/verify-renderers.py target/release/kasane-pdf /tmp/advisories --json /tmp/renderers.json",
                         "python3 scripts/test_compat_evaluation.py --real target/release/kasane-pdf",
                         "python3 scripts/test_redact_text_measure.py --real",
@@ -588,6 +599,7 @@ def main():
         check_pins(path, wf)
         check_no_secret_echo(path, text)
         check_no_baseline_writes(path, wf)
+        check_semver_baseline(path, wf)
         if path.name == "nightly.yml":
             check_nightly(path, wf)
             check_nightly_measurement(path, wf)
