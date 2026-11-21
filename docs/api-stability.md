@@ -10,18 +10,24 @@ breaking changes that the 0.1 audit scheduled (recorded below and in
 package from crates.io (checked against the index's SHA-256), in two
 steps:
 1. *detection* — every lint of cargo-semver-checks runs
-   (`--release-type patch`), whatever the version numbers say.
+   (`--release-type patch`), whatever the version numbers say, but the
+   ones the tool itself calls unnecessary (minor additions at the
+   default level allow, such as `inherent_method_added`: 31 of 260 with
+   0.51.0), which are recorded by name; every breaking-change lint must
+   be listed as run.
    `cargo semver-checks check-release` on its own runs none from 0.11.0
    to 0.12.0 ("major change") and reports success; here a lint that can
    require a major update and did not run, zero checks, a build or
    rustdoc error, or a report that cannot be read is a failure;
 2. *judgement* — each finding by its lint's required update: a breaking
    one (`major`) is allowed only by a version change Cargo treats as
-   incompatible (0.y → 0.y+1) **and** a `## <version>` section here
-   recording it; an addition (`minor`) by any version, as Cargo's 0.x
+   incompatible (0.y → 0.y+1) **and** a `## <version>` section here that
+   names the lint and each item it reports (that the text explains them
+   is checked by the reviewer, not the script); an addition (`minor`) by any version, as Cargo's 0.x
    rules allow. Every finding is listed with the reason it is allowed
-   or refused (the job summary and its `semver-check` artifact);
-   nothing is suppressed.
+   or refused (the job summary and its `semver-check` artifact: lint
+   ids, public item paths, versions, and on a run that did not complete
+   the tail of the tool's output); nothing is suppressed.
 
 Between releases `main` has the released version, so a breaking change
 fails the full gate until the version and this file are changed with it.

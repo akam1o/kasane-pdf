@@ -432,7 +432,8 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Detection and judgement apart (scripts/semver-check.py,
-      # docs/api-stability.md): every lint runs against the newest
+      # docs/api-stability.md): every lint the tool does not call
+      # unnecessary (every breaking-change lint) runs against the newest
       # release's package from crates.io, whatever the version numbers;
       # each finding is then allowed or refused by the version change. Not
       # run is a failure, never a pass.

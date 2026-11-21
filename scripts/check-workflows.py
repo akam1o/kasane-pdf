@@ -139,6 +139,15 @@ def check_nightly_measurement(path, wf):
             problem(f"{path.name}:full-corpus: does not run `{cmd}`")
 
 
+def check_semver_baseline(path, wf):
+    """The gate's semver baseline is downloaded from crates.io: an offline
+    package (whose provenance is the caller's word) is for tests only."""
+    for _, st in steps_of(wf):
+        for line in logical_lines(st.get("run")):
+            if "semver-check.py" in line and ("--baseline-crate" in line or "--baseline-sha256" in line):
+                problem(f"{path.name}: semver-check.py runs with a caller-supplied baseline package")
+
+
 def check_no_baseline_writes(path, wf):
     """Baselines change only by a reviewed commit (update-baseline
     --write, run by a person): no workflow writes one."""
@@ -590,6 +599,7 @@ def main():
         check_pins(path, wf)
         check_no_secret_echo(path, text)
         check_no_baseline_writes(path, wf)
+        check_semver_baseline(path, wf)
         if path.name == "nightly.yml":
             check_nightly(path, wf)
             check_nightly_measurement(path, wf)

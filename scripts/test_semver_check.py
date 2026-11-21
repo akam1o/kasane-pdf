@@ -30,7 +30,8 @@ if not HAVE_TOOL and os.environ.get("KASANE_REQUIRE_SEMVER_CHECKS") == "1":
     raise SystemExit("cargo-semver-checks is required (KASANE_REQUIRE_SEMVER_CHECKS=1)")
 
 REPORT = """\
-    Checking synth v0.1.0 -> v0.2.0 (assume patch change)
+    Checking kasane-pdf v0.1.0 -> v0.2.0 (assume patch change)
+    Starting 2 checks, 1 unnecessary on 10 threads
      Checked [   0.007s] 229 checks: 228 pass, 1 fail, 0 warn, 31 skip
 
 --- failure function_missing: pub fn removed or renamed ---
@@ -39,7 +40,7 @@ Description:
 A publicly-visible function cannot be imported by its prior path.
 
 Failed in:
-  function synth::removed, previously in file /tmp/x/src/lib.rs:2
+  function kasane_pdf::removed, previously in file /tmp/x/src/lib.rs:2
 
      Summary semver requires new major version: 1 major and 0 minor checks failed
 """
@@ -63,22 +64,29 @@ class Versions(unittest.TestCase):
 
 
 class Judgement(unittest.TestCase):
-    def judge(self, text=REPORT, base="0.1.0", cand="0.2.0", sections=("0.2.0",)):
-        return sc.judge(sc.parse_output(text), LEVELS, base, cand, set(sections))
+    SECTION = {"0.2.0": "0.2.0\n\n- `function_missing`: `kasane_pdf::removed` is gone.\n"}
+
+    def judge(self, text=REPORT, base="0.1.0", cand="0.2.0", sections=None):
+        return sc.judge(sc.parse_output(text), LEVELS, base, cand, self.SECTION if sections is None else sections)
 
     def test_parse(self):
         p = sc.parse_output(REPORT)
-        self.assertEqual(p["checking"], ("synth", "0.1.0", "0.2.0", "assume patch change"))
+        self.assertEqual(p["checking"], ("kasane-pdf", "0.1.0", "0.2.0", "assume patch change"))
+        self.assertEqual(p["starting"], (2, 1))
         self.assertEqual(p["checks"], {"total": 2, "pass": 1, "fail": 1, "warn": 0, "skip": 1})
-        self.assertEqual([(f["id"], f["items"]) for f in p["findings"]], [("function_missing", ["function synth::removed"])])
+        self.assertEqual([(f["id"], f["items"]) for f in p["findings"]], [("function_missing", ["function kasane_pdf::removed"])])
 
     def test_breaking_needs_an_incompatible_version_and_its_section(self):
         not_run, judged, refused = self.judge()
         self.assertEqual((not_run, refused), ([], []))
         self.assertTrue(judged[0]["allowed"])
-        self.assertIn("api-stability", self.judge(sections=())[2][0])
+        self.assertIn("api-stability", self.judge(sections={})[2][0])
+        # A section that does not name the lint, or the item: refused.
+        for text in ("0.2.0\n\nSomething else changed.\n", "0.2.0\n\n`function_missing` somewhere.\n"):
+            self.assertTrue(self.judge(sections={"0.2.0": text})[2], text)
         for cand in ("0.1.1", "0.1.0"):
-            not_run, _, refused = self.judge(cand=cand, text=REPORT.replace("v0.2.0", f"v{cand}"))
+            not_run, _, refused = self.judge(cand=cand, text=REPORT.replace("v0.2.0", f"v{cand}"),
+                                             sections={cand: self.SECTION["0.2.0"]})
             self.assertEqual(not_run, [])
             self.assertTrue(refused and "incompatible version change" in refused[0], refused)
 
@@ -101,10 +109,73 @@ class Judgement(unittest.TestCase):
             "a breaking lint did not run": REPORT.replace("FAIL [   0.000s]       major        function_missing\n", ""),
             "undescribed failure": REPORT.replace("--- failure function_missing", "--- note function_missing"),
             "unknown lint": REPORT.replace("function_missing", "lint_from_the_future"),
+            "another crate": REPORT.replace("Checking kasane-pdf", "Checking synth"),
+            "undescribed warning": REPORT.replace("1 pass, 1 fail, 0 warn", "0 pass, 1 fail, 1 warn").replace(
+                "PASS [   0.000s]       minor        function_marked_deprecated",
+                "WARN [   0.000s]       minor        function_marked_deprecated"),
+            "unknown passing lint": REPORT + "        PASS [   0.000s]       major        lint_from_the_future\n",
+            "mislevelled": REPORT.replace("minor        function_marked_deprecated", "major        function_marked_deprecated"),
+            "listed twice": REPORT + "        PASS [   0.000s]       minor        function_marked_deprecated\n",
+            "summary": REPORT.replace("semver requires new major version", "no semver update required"),
+            "not the unnecessary ones": REPORT.replace("1 unnecessary", "0 unnecessary"),
+            "no starting line": REPORT.replace("    Starting 2 checks, 1 unnecessary on 10 threads\n", ""),
         }
         for name, text in cases.items():
             not_run, _, _ = self.judge(text=text)
             self.assertTrue(not_run, name)
+
+
+FAKE = r"""#!/usr/bin/env python3
+import sys
+REPORT = %r
+args = sys.argv[1:]
+if args[:1] == ["--version"]:
+    print("cargo-semver-checks 0.51.0 (fake)")
+elif args[:1] == ["--list"]:
+    print("id type description\n== ==== ===")
+    for i, l in %r.items():
+        print(i, l, "x")
+else:
+    out, err = REPORT.split("\n--- ", 1) if "\n--- " in REPORT else (REPORT, "")
+    sys.stderr.write(out)
+    sys.stdout.write(("--- " + err) if err else "")
+    sys.exit(%d)
+"""
+
+
+@unittest.skipUnless(shutil.which("cargo"), "cargo not installed")
+class ExitStatus(unittest.TestCase):
+    """Only 0 without failing checks and 100 with a full report count;
+    another status after a plausible report did not run."""
+
+    def run_fake(self, status, report=REPORT):
+        with tempfile.TemporaryDirectory() as d:
+            tool = os.path.join(d, "tool")
+            with open(tool, "w") as fh:
+                fh.write(FAKE % (report, LEVELS, status))
+            os.chmod(tool, 0o755)
+            pkgs = {}
+            for name, v in (("base", "0.1.0"), ("cand", "0.2.0")):
+                root = os.path.join(d, name)
+                EndToEnd.write(root, v, "pub fn kept() {}\n", sections={"0.2.0": Judgement.SECTION["0.2.0"]})
+                pkgs[name] = root
+            crate = os.path.join(d, "kasane-pdf-0.1.0.crate")
+            with sc.tarfile.open(crate, "w:gz") as t:
+                t.add(pkgs["base"], arcname="kasane-pdf-0.1.0")
+            sha = sc.hashlib.sha256(open(crate, "rb").read()).hexdigest()
+            out = os.path.join(d, "o.json")
+            rc = sc.main(["--manifest-dir", pkgs["cand"], "--baseline-crate", crate, "--baseline-sha256", sha,
+                          "--tool", tool, "--json", out])
+            return rc, sc.json.load(open(out))
+
+    def test_status(self):
+        rc, doc = self.run_fake(100)
+        self.assertEqual(rc, 0, doc)  # a full report, the finding allowed by 0.1 -> 0.2 and its section
+        for status in (101, 1, 2):
+            rc, doc = self.run_fake(status)
+            self.assertEqual(rc, 2, (status, doc))
+        rc, doc = self.run_fake(0)  # failing checks with exit 0
+        self.assertEqual(rc, 2, doc)
 
 
 @unittest.skipUnless(HAVE_TOOL, "cargo-semver-checks not installed (KASANE_REQUIRE_SEMVER_CHECKS=1 makes this a failure)")
@@ -121,7 +192,7 @@ class EndToEnd(unittest.TestCase):
         shutil.rmtree(cls.tmp, ignore_errors=True)
 
     @staticmethod
-    def write(root, version, lib, sections=()):
+    def write(root, version, lib, sections=None):
         os.makedirs(os.path.join(root, "src"), exist_ok=True)
         os.makedirs(os.path.join(root, "docs"), exist_ok=True)
         with open(os.path.join(root, "Cargo.toml"), "w") as fh:
@@ -138,7 +209,7 @@ class EndToEnd(unittest.TestCase):
         with open(os.path.join(root, "src", "lib.rs"), "w") as fh:
             fh.write(lib)
         with open(os.path.join(root, "docs", "api-stability.md"), "w") as fh:
-            fh.write("# API\n\n" + "".join(f"## {s}\n\n" for s in sections))
+            fh.write("# API\n\n" + "".join(f"## {v}\n\n{t}\n" for v, t in (sections or {}).items()))
 
     @classmethod
     def package(cls, root, version, lib):
@@ -149,7 +220,7 @@ class EndToEnd(unittest.TestCase):
         shutil.copy(src, dst)
         return dst, sc.hashlib.sha256(open(dst, "rb").read()).hexdigest()
 
-    def check(self, version, lib, sections=(), crate=None, sha=None, name="cand"):
+    def check(self, version, lib, sections=None, crate=None, sha=None, name="cand"):
         root = os.path.join(self.tmp, name)
         shutil.rmtree(root, ignore_errors=True)
         self.write(root, version, lib, sections)
@@ -173,11 +244,14 @@ class EndToEnd(unittest.TestCase):
         rc, doc, _ = self.check("0.2.0", lib)
         self.assertEqual(rc, 1, doc)  # detected; no api-stability section
         self.assertEqual([f["id"] for f in doc["findings"]], ["function_missing"])
-        rc, doc, _ = self.check("0.2.0", lib, sections=("0.2.0",))
+        rc, doc, _ = self.check("0.2.0", lib, sections={"0.2.0": "Removed."})
+        self.assertEqual(rc, 1, doc)  # a section that names neither the lint nor the item
+        named = "`function_missing`: `kasane_pdf::removed` removed."
+        rc, doc, _ = self.check("0.2.0", lib, sections={"0.2.0": named})
         self.assertEqual(rc, 0, doc)  # detected and allowed, listed
         self.assertEqual([(f["id"], f["allowed"]) for f in doc["findings"]], [("function_missing", True)])
         for v in ("0.1.1", "0.1.0"):
-            rc, doc, _ = self.check(v, lib, sections=(v,))
+            rc, doc, _ = self.check(v, lib, sections={v: named})
             self.assertEqual(rc, 1, (v, doc))
 
     def test_an_addition_in_a_patch(self):

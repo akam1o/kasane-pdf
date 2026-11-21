@@ -10,29 +10,38 @@ changed (detection), and whether the version change allows it
 numbers which lints to run: from 0.11.0 to 0.12.0 it runs none
 ("major change", every lint skipped) and reports success. Here:
 
-- **Detection** always runs every lint (`--release-type patch`), whatever
-  the versions, against the baseline's published package: the `.crate`
-  downloaded from crates.io and checked against the index's SHA-256
-  (or, offline, a given file and its expected SHA-256), unpacked outside
-  the checkout. A baseline that is the checkout itself, or inside it
-  (its own `target/package/*.crate`), is refused. The baseline and the candidate having the same version (main
-  between releases) is normal.
-  Every lint that can require a major update must have run (the tool
-  lists each with `-vv`); the ones it leaves out are its "unnecessary"
-  minor ones (additions, default level allow), recorded by name.
+- **Detection** runs, whatever the versions, every lint the tool does not
+  call unnecessary (`--release-type patch`, `-vv`), against the baseline's
+  published package: the `.crate` downloaded from crates.io and checked
+  against the index's SHA-256, unpacked outside the checkout. Every lint
+  that can require a major update must be listed as run; the ones left
+  out must be exactly the tool's "unnecessary" count (minor additions,
+  default level allow), recorded by name. A baseline that is the checkout
+  itself, or inside it (its own `target/package/*.crate`), is refused;
+  the baseline and the candidate having the same version (main between
+  releases) is normal. A `--baseline-crate` file's provenance is the
+  caller's word (tests, offline use): the gate always downloads
+  (check-workflows.py).
 - **Judgement**, per finding, by its lint's required update
   (`cargo semver-checks --list`): a `major` lint (a breaking change) is
   allowed only by a version change Cargo treats as incompatible (0.y →
-  0.y+1, or a major bump), and then only with a `## <version>` section in
-  docs/api-stability.md; a `minor` lint (an addition) is allowed by any
-  version, as Cargo's rules for 0.x allow it in a patch. Every finding is
-  listed, the allowed ones as allowed and why — nothing is suppressed.
+  0.y+1, or a major bump), and then only when docs/api-stability.md's
+  `## <version>` section names the lint and each item (whether its text
+  explains them is the reviewer's call); a `minor` lint (an addition) is
+  allowed by any version, as Cargo's rules for 0.x allow it in a patch.
+  Every finding is listed, the allowed ones as allowed and why — nothing
+  is suppressed.
 
-Not run, failed, or not parsed (the tool missing, a build or rustdoc
-error, no "Checking … (assume patch change)" line, zero checks run, a
-check count that does not add up, an unknown lint) is exit 2, never a
-pass. A finding the version does not allow is exit 1. Exit 0: every
-lint ran and every finding is allowed.
+Not run, failed, or not parsed is exit 2, never a pass: the tool or its
+`--list` missing or failing, a build or rustdoc error, an exit status
+other than 0 (no failing check) or 100 (failing checks, fully reported),
+another crate, mode or versions than asked, zero checks, per-lint states
+that do not add up to the totals, failures or warnings described that are
+not the ones listed, an unknown, duplicated or mislevelled lint, left-out
+lints that are not the tool's "unnecessary" ones or include a
+breaking-change lint, a summary that does not match. A finding the
+version does not allow is exit 1. Exit 0: the analysis ran in full and
+every finding is allowed.
 
 What it does not see is what cargo-semver-checks has no lint for — a
 function parameter's type, for one (docs/api-stability.md).
@@ -59,8 +68,11 @@ CHECKED = re.compile(r"^\s*Checked \[[^\]]*\] (\d+) checks?: (\d+) pass(?:, (\d+
                      re.M)
 FINDING = re.compile(r"^--- (failure|warning) ([a-z0-9_]+): (.*) ---$", re.M)
 SUMMARY = re.compile(r"^\s*Summary (.+)$", re.M)
-# `-vv`: one line per lint that ran.
+# `-vv`: one line per lint that ran, and how many it left out.
 RAN = re.compile(r"^\s*(PASS|FAIL|WARN) \[[^\]]*\]\s+(major|minor)\s+([a-z0-9_]+)\s*$", re.M)
+STARTING = re.compile(r"^\s*Starting (\d+) checks?, (\d+) unnecessary\b", re.M)
+# The tool's exit status with failing checks (0 without).
+FINDINGS_EXIT = 100
 
 
 def parse_version(v):
@@ -110,26 +122,40 @@ def parse_output(text):
     m = SUMMARY.search(text)
     if m:
         out["summary"] = m.group(1).strip()
-    out["ran"] = {m.group(3): (m.group(1), m.group(2)) for m in RAN.finditer(text)}
+    ran = [(m.group(3), m.group(1), m.group(2)) for m in RAN.finditer(text)]
+    out["ran"] = {i: (state, level) for i, state, level in ran}
+    out["ran_duplicates"] = sorted({i for i, _, _ in ran if sum(1 for j, _, _ in ran if j == i) > 1})
+    m = STARTING.search(text)
+    if m:
+        out["starting"] = (int(m.group(1)), int(m.group(2)))
     return out
 
 
 def lint_levels(tool):
+    """{lint: 'major' | 'minor'} from `--list`; {} unless it ran and every
+    row parsed."""
     r = subprocess.run(tool + ["--list"], capture_output=True, text=True, timeout=120)
+    if r.returncode:
+        return {}
     levels = {}
     for line in r.stdout.splitlines():
         p = line.split()
         if len(p) >= 2 and p[1] in ("major", "minor"):
+            if p[0] in levels:
+                return {}
             levels[p[0]] = p[1]
     return levels
 
 
-def judge(parsed, levels, base_version, cand_version, stability_sections):
-    """(problems_not_run, findings judged, verdict problems)."""
+def judge(parsed, levels, base_version, cand_version, stability_sections, crate=CRATE):
+    """(problems_not_run, findings judged, verdict problems).
+    `stability_sections`: {version: that section's text}."""
     not_run = []
     ch = parsed.get("checking")
     if not ch:
         not_run.append("no 'Checking <crate> vX -> vY (...)' line: the analysis did not run")
+    elif ch[0] != crate:
+        not_run.append(f"the tool checked {ch[0]}, not {crate}")
     elif ch[3] != "assume patch change":
         not_run.append(f"the tool ran as '{ch[3]}', not every lint ('assume patch change')")
     elif (ch[1], ch[2]) != (base_version, cand_version):
@@ -145,16 +171,40 @@ def judge(parsed, levels, base_version, cand_version, stability_sections):
     # tool's "unnecessary" additions (default level allow) — never a
     # breaking-change lint.
     ran = parsed.get("ran") or {}
-    if c and len(ran) != c["total"]:
-        not_run.append(f"{c['total']} checks reported, {len(ran)} listed")
+    if parsed.get("ran_duplicates"):
+        not_run.append(f"lints listed twice: {', '.join(parsed['ran_duplicates'])}")
+    unknown = sorted(set(ran) - set(levels))
+    if unknown:
+        not_run.append(f"lints unknown to `--list`: {', '.join(unknown)}")
+    wrong = sorted(i for i, (_, lv) in ran.items() if i in levels and levels[i] != lv)
+    if wrong:
+        not_run.append(f"lints listed at another level than `--list`: {', '.join(wrong)}")
+    states = {k: sorted(i for i, (st, _) in ran.items() if st == k) for k in ("PASS", "FAIL", "WARN")}
+    if c:
+        if len(ran) != c["total"]:
+            not_run.append(f"{c['total']} checks reported, {len(ran)} listed")
+        for k, n in (("PASS", c["pass"]), ("FAIL", c["fail"]), ("WARN", c["warn"])):
+            if len(states[k]) != n:
+                not_run.append(f"{n} {k} reported, {len(states[k])} listed")
     skipped = sorted(set(levels) - set(ran))
     parsed["skipped"] = skipped
     unrun = [l for l in skipped if levels[l] == "major"]
     if unrun:
         not_run.append(f"breaking-change lints did not run: {', '.join(unrun)}")
-    failures = [f for f in parsed["findings"] if f["kind"] == "failure"]
-    if c and len(failures) != c["fail"]:
-        not_run.append(f"{c['fail']} failing checks reported, {len(failures)} described")
+    st = parsed.get("starting")
+    if not st:
+        not_run.append("no 'Starting N checks, M unnecessary' line")
+    elif c and (st[0] != c["total"] or st[1] != len(skipped) or c["skip"] != st[1]):
+        not_run.append(f"the left-out lints are not the tool's unnecessary ones: starting {st}, skipped {len(skipped)}")
+    for kind, state in (("failure", "FAIL"), ("warning", "WARN")):
+        described = sorted(f["id"] for f in parsed["findings"] if f["kind"] == kind)
+        if described != states[state]:
+            not_run.append(f"{kind}s described {described} are not the lints listed {state} {states[state]}")
+    summary = parsed.get("summary") or ""
+    if c and c["fail"] == 0 and summary != "no semver update required":
+        not_run.append(f"summary '{summary}' with no failing check")
+    if c and c["fail"] > 0 and not summary.startswith("semver requires"):
+        not_run.append(f"summary '{summary}' with failing checks")
     kind = bump(base_version, cand_version)
     if kind in (None, "downgrade"):
         not_run.append(f"versions not comparable: {base_version} -> {cand_version}")
@@ -168,8 +218,16 @@ def judge(parsed, levels, base_version, cand_version, stability_sections):
         elif level == "minor":
             j["allowed"], j["why"] = True, "an addition: allowed by any version (Cargo's 0.x rules)"
         elif kind == "incompatible" and cand_version in stability_sections:
-            j["allowed"], j["why"] = True, (f"breaking: allowed by {base_version} -> {cand_version}, "
-                                            f"recorded in docs/api-stability.md § {cand_version}")
+            text = stability_sections[cand_version]
+            missing = [x for x in [f["id"]] + [item_path(i) or i for i in f["items"]] if x not in text]
+            if missing or not f["items"]:
+                j["allowed"], j["why"] = False, (f"breaking: {base_version} -> {cand_version} allows it, but "
+                                                 f"docs/api-stability.md § {cand_version} does not name "
+                                                 f"{', '.join(missing) or 'the items (none reported)'}")
+            else:
+                j["allowed"], j["why"] = True, (f"breaking: allowed by {base_version} -> {cand_version}; "
+                                                f"docs/api-stability.md § {cand_version} names the lint and "
+                                                f"the items (its text is for the reviewer to judge)")
         elif kind == "incompatible":
             j["allowed"], j["why"] = False, (f"breaking: {base_version} -> {cand_version} allows it, but "
                                              f"docs/api-stability.md has no '## {cand_version}' section")
@@ -182,12 +240,25 @@ def judge(parsed, levels, base_version, cand_version, stability_sections):
     return not_run, judged, refused
 
 
+def item_path(item):
+    """The path an item of "Failed in" names (`function kasane_pdf::f` ->
+    `kasane_pdf::f`), or None."""
+    m = re.search(r"([A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+)", item)
+    return m.group(1) if m else None
+
+
 def stability_sections(path):
+    """{version: the text of its `## <version>` section}."""
     try:
         text = open(path, encoding="utf-8").read()
     except OSError:
-        return set()
-    return set(re.findall(r"^## (\d+\.\d+\.\d+)\b", text, re.M))
+        return {}
+    out = {}
+    for part in re.split(r"^## ", text, flags=re.M)[1:]:
+        m = re.match(r"(\d+\.\d+\.\d+)\b", part)
+        if m:
+            out[m.group(1)] = part
+    return out
 
 
 def published(version=None):
@@ -254,7 +325,9 @@ def run(a):
             doc["problems_not_run"].append("the baseline would be unpacked inside the checkout")
             return doc
         if a.baseline_crate:
-            crate, want, source = a.baseline_crate, a.baseline_sha256, "file"
+            # Offline: the caller vouches for where the file comes from;
+            # never used by the gate (check-workflows.py).
+            crate, want, source = a.baseline_crate, a.baseline_sha256, "file (caller-supplied provenance)"
             version = None
             # The checkout's own package (target/package/…) is not a release.
             if inside(crate, cand):
@@ -296,14 +369,12 @@ def run(a):
         doc["checks"] = parsed.get("checks")
         doc["summary"] = parsed.get("summary")
         not_run, judged, refused = judge(parsed, levels, bversion, cand_version,
-                                         stability_sections(os.path.join(cand, a.stability_doc)))
-        # Nonzero is a finding only with its report: findings and "semver
-        # requires …" (0.51 exits 100 then); any other nonzero did not run.
-        reported = bool(parsed["findings"]) and (parsed.get("summary") or "").startswith("semver requires")
-        if p.returncode != 0 and not reported:
-            not_run.append(f"cargo semver-checks exited {p.returncode} without a report of findings")
-        if p.returncode == 0 and any(f["kind"] == "failure" for f in parsed["findings"]):
-            not_run.append("exit 0 with failing checks")
+                                         stability_sections(os.path.join(cand, a.stability_doc)), crate=name)
+        # 0 without failing checks, FINDINGS_EXIT with them; anything else
+        # (a crash after part of a report, for one) did not run.
+        fails = (parsed.get("checks") or {}).get("fail")
+        if (p.returncode, bool(fails)) not in ((0, False), (FINDINGS_EXIT, True)):
+            not_run.append(f"cargo semver-checks exited {p.returncode} with {fails} failing checks")
         doc["problems_not_run"] += not_run
         doc["findings"] = judged
         doc["skipped_lints"] = parsed.get("skipped")
