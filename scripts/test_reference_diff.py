@@ -288,6 +288,41 @@ class Units(Fixture):
         self.assertTrue(r["diagnostics"]["e0"]["timeout"])
 
 
+class IsolationTrace(unittest.TestCase):
+    """isolation-probe.py's reading of strace output: every open form, a
+    relative path, an arbitrary configuration file outside the reference."""
+
+    def test_trace(self):
+        ip = load("isolation-probe")
+        with tempfile.TemporaryDirectory() as d:
+            root = os.path.join(os.path.realpath(d), "ref")
+            log = os.path.join(d, "s.log")
+            open(log, "w").write(
+                f'12 openat(AT_FDCWD, "{root}/fonts/a.ttf", O_RDONLY) = 3\n'
+                '12 open("/tmp/rogue.conf", O_RDONLY) = 4\n'
+                '12 openat(AT_FDCWD, "rel/x.otf", O_RDONLY) = 5\n'
+                '12 openat2(AT_FDCWD, "/etc/fonts/local.conf", {flags=O_RDONLY}, 24) = 6\n'
+                '12 openat(AT_FDCWD, "/usr/share/fontconfig/conf.avail/10-a.conf", O_RDONLY) = 7\n'
+                '12 openat(AT_FDCWD, "/usr/lib/libfoo.so.1", O_RDONLY) = 8\n'
+                '12 openat(AT_FDCWD, "/usr/share/fonts/missing.ttf", O_RDONLY) = -1 ENOENT (No such file)\n'
+                f'12 openat(7</etc/secret>, "secret.conf", O_RDONLY) = 9</etc/secret/secret.conf>\n'
+                f'12 openat(8<{root}/conf.d>, "10-a.conf", O_RDONLY) = 10\n'
+                '12 openat(11, "unknown.conf", O_RDONLY) = 12\n')
+            opened, parsed, attempted = ip.outside_font_access(log, root, cwd=root)
+            self.assertIn("/etc/secret/secret.conf", opened)  # a descriptor outside, cwd inside
+            self.assertIn("<fd 11>/unknown.conf", opened)  # a descriptor the trace does not resolve
+            self.assertNotIn(f"{root}/conf.d/10-a.conf", opened)  # a descriptor inside
+            self.assertNotIn(f"{root}/rel/x.otf", opened)  # relative to a cwd inside
+            opened, parsed, attempted = ip.outside_font_access(log, root, cwd="/work")
+            self.assertIn("/work/rel/x.otf", opened)
+            self.assertTrue({"/tmp/rogue.conf", "/etc/fonts/local.conf"} <= set(opened))
+            self.assertEqual(parsed, ["/usr/share/fontconfig/conf.avail/10-a.conf"])
+            self.assertEqual(attempted, ["/usr/share/fonts/missing.ttf"])
+            # Described-only by fc-conflist (`-`): counted apart, not opened.
+            opened, parsed, _ = ip.outside_font_access(log, root, parse_only={"/etc/fonts/local.conf"}, cwd="/work")
+            self.assertNotIn("/etc/fonts/local.conf", opened)
+
+
 class Monitor(unittest.TestCase):
     def test_samples_are_saved_as_taken(self):
         with tempfile.TemporaryDirectory() as d:

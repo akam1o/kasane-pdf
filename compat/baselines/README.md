@@ -8,7 +8,8 @@ smoke run; nightly: the full corpus).
 | file | source run | population |
 |---|---|---|
 | `fixtures-smoke.json` | `kasane-compat run --corpus tests/fixtures --mode smoke --with-poppler` | the 66 deterministic fixtures under `tests/fixtures/` |
-| `corpus-full.json` | the nightly job: runner built with `--features cjk-fallback` on ubuntu-latest, `kasane-compat run --corpus compat/corpus --mode full --with-poppler --dpi 96 --timeout-secs 20` | the 511-file real-world corpus (`compat/manifest.yaml`) |
+| `corpus-full.json` | the nightly job: runner built with `--features cjk-fallback` on ubuntu-latest, `kasane-compat run --corpus compat/corpus --mode full --with-poppler --dpi 96 --timeout-secs 20`, Poppler's reference E2 | the 511-file real-world corpus (`compat/manifest.yaml`) |
+| `corpus-full-darwin-arm64.json` | the same run on macOS arm64 (Homebrew Poppler and MuPDF) with E2, and the second witness: release-verify's strict comparison on that platform | the same corpus |
 
 ## Updating a baseline
 
@@ -22,7 +23,19 @@ A baseline that records numeric measures (per-page SSIM, the second
 witness) also records its environment, and is compared numerically
 only with runs of that environment.
 
-The current `corpus-full.json` (v0.11.0 Phase 1) was armed from the
+Both corpus baselines now come from A — the product of `f6ddcdd`
+(before Kasane Courier) — measured with the reference E2
+(docs/courier-reference.md § E2): `corpus-full.json` from the nightly's
+x86_64 run 44943629308 (branch `eval/e2-a`, commit `ff21992`: that
+product with the E2 harness), identical to its E1 predecessor but the
+environment; `corpus-full-darwin-arm64.json` from the same commit run
+on macOS 26 arm64 (Poppler 26.10.0, MuPDF 1.28.6, E2 built there from the
+same lock), which a second run with E2 in another directory matches
+strictly. Re-measure: dispatch the nightly on such a branch,
+then `update-baseline` from its artifacts; on macOS, the steps of
+`release-verify.py`'s strict check run by hand with that commit.
+
+Earlier: `corpus-full.json` (v0.11.0 Phase 1) was armed from the
 nightly run on the Phase 1 branch (commit `ae88f27`, Linux, Poppler
 26.01.0, MuPDF 1.27.0, `cjk-fallback`). Stage classes are those of the
 `e7d52aa` nightly; it adds the environment, per-page SSIM and the

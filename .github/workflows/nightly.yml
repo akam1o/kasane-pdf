@@ -21,15 +21,18 @@ on:
   workflow_dispatch:
     inputs:
       reference_profile:
-        # The Poppler reference's fonts (docs/courier-reference.md): e1,
-        # the baseline's, for every scheduled run; e0 (the runner's own
-        # fonts) for an evaluation run only — its environment fingerprint
-        # differs from the baseline's, so its numeric check fails.
-        description: "reference profile (e1: the baseline's; e0: evaluation only)"
+        # The Poppler reference's fonts (docs/courier-reference.md): e2,
+        # the baseline's — E1's fonts and rules built only from pinned
+        # packages, isolated from the runner's fontconfig — for every
+        # scheduled run; e1 (the runner's configuration plus the Courier
+        # rules) and e0 (the runner's own fonts) for an evaluation run
+        # only — their fingerprints differ from the baseline's, so their
+        # numeric check fails.
+        description: "reference profile (e2: the baseline's; e1, e0: evaluation only)"
         required: false
-        default: e1
+        default: e2
         type: choice
-        options: [e1, e0]
+        options: [e2, e1, e0]
       reference_diff_fault:
         # A test of the reference diff's recovery (docs/courier-reference.md
         # § A lost runner): on attempt 1 only, unit 2.2's process is killed
@@ -67,7 +70,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qpdf poppler-utils poppler-data python3-pip \
-            mupdf-tools python3-pil
+            mupdf-tools python3-pil strace
       # Poppler's reference fonts: E1 — the runner's own, but Courier and
       # Courier New (only) drawn with Nimbus Mono PS, through a private
       # fontconfig configuration and wrappers that only the reference
@@ -75,11 +78,20 @@ jobs:
       # with its built-in fonts). probe.py fails unless E1 changes those
       # families alone. The environment fingerprint records the profile,
       # the effective configuration and the fonts.
-      - name: reference fonts (E1 — Courier and Courier New to Nimbus Mono PS, Poppler only)
+      # E2 (the default): the same fonts and rules, built from the pinned
+      # packages of scripts/courier-reference/e2-inputs.json alone, with
+      # nothing of the runner's fontconfig (setup-e2.py); isolation-probe.py
+      # fails unless Poppler, traced, uses only them.
+      - name: reference fonts (E2 — E1 isolated from the runner; Poppler only)
         env:
-          PROFILE: ${{ inputs.reference_profile || 'e1' }}
+          PROFILE: ${{ inputs.reference_profile || 'e2' }}
         run: |
           case "$PROFILE" in
+            e2)
+              python3 scripts/courier-reference/setup-e2.py /tmp/ref
+              python3 scripts/courier-reference/probe.py /tmp/ref --json /tmp/ref-probe.json
+              python3 scripts/courier-reference/isolation-probe.py /tmp/ref --json /tmp/ref-isolation.json
+              echo "REFERENCE_BIN=/tmp/ref/bin" >> "$GITHUB_ENV" ;;
             e1)
               sh scripts/courier-reference/setup-e1.sh /tmp/ref
               python3 scripts/courier-reference/probe.py /tmp/ref --json /tmp/ref-probe.json
@@ -229,6 +241,7 @@ jobs:
             /tmp/full/attribution.json
             /tmp/full/attribution-summary.json
             /tmp/ref-probe.json
+            /tmp/ref-isolation.json
           retention-days: 30
 
   # E1 against E0 on every page Poppler draws: a page E1 changes must be
@@ -240,10 +253,10 @@ jobs:
   # The verdict joins the newest complete attempt of each unit — never
   # parts of two — and fails unless all 12 are there and agree.
   reference-diff:
-    name: reference diff E0 vs E1 (shard ${{ matrix.shard }}/4)
+    name: reference diff E0 vs the reference (shard ${{ matrix.shard }}/4)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: ${{ vars.KASANE_CORPUS_ENABLED == 'true' && (inputs.reference_profile || 'e1') == 'e1' }}
+    if: ${{ vars.KASANE_CORPUS_ENABLED == 'true' && (inputs.reference_profile || 'e2') != 'e0' }}
     strategy:
       fail-fast: false
       matrix:
@@ -255,9 +268,16 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qpdf poppler-utils poppler-data python3-pip \
             mupdf-tools python3-pil
-      - name: reference fonts (E1)
+      - name: the reference fonts (E2, or E1 when dispatched so)
         id: ref
-        run: sh scripts/courier-reference/setup-e1.sh /tmp/ref
+        env:
+          PROFILE: ${{ inputs.reference_profile || 'e2' }}
+        run: |
+          case "$PROFILE" in
+            e2) python3 scripts/courier-reference/setup-e2.py /tmp/ref ;;
+            e1) sh scripts/courier-reference/setup-e1.sh /tmp/ref ;;
+            *) echo "::error::no reference diff for $PROFILE"; exit 1 ;;
+          esac
       - name: fetch corpus from the private store
         id: fetch
         env:
@@ -274,7 +294,7 @@ jobs:
           mkdir -p /tmp/rd
           nohup python3 scripts/courier-reference/monitor.py /tmp/rd/monitor.jsonl --path / --path /tmp \
             > /dev/null 2>&1 &
-      - name: unit {{ matrix.shard }}.1 (E0 vs E1)
+      - name: unit {{ matrix.shard }}.1 (E0 vs the reference)
         # Every unit runs whatever the others did — but only on the fetched,
         # checked corpus and E1 (each file is checked again against the
         # manifest).
@@ -303,7 +323,7 @@ jobs:
           path: /tmp/rd/reference-diff-s${{ matrix.shard }}-c1-a${{ github.run_attempt }}/
           retention-days: 30
           if-no-files-found: ignore
-      - name: unit {{ matrix.shard }}.2 (E0 vs E1)
+      - name: unit {{ matrix.shard }}.2 (E0 vs the reference)
         # Every unit runs whatever the others did — but only on the fetched,
         # checked corpus and E1 (each file is checked again against the
         # manifest).
@@ -332,7 +352,7 @@ jobs:
           path: /tmp/rd/reference-diff-s${{ matrix.shard }}-c2-a${{ github.run_attempt }}/
           retention-days: 30
           if-no-files-found: ignore
-      - name: unit {{ matrix.shard }}.3 (E0 vs E1)
+      - name: unit {{ matrix.shard }}.3 (E0 vs the reference)
         # Every unit runs whatever the others did — but only on the fetched,
         # checked corpus and E1 (each file is checked again against the
         # manifest).
@@ -367,7 +387,7 @@ jobs:
     needs: reference-diff
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    if: ${{ always() && vars.KASANE_CORPUS_ENABLED == 'true' && (inputs.reference_profile || 'e1') == 'e1' }}
+    if: ${{ always() && vars.KASANE_CORPUS_ENABLED == 'true' && (inputs.reference_profile || 'e2') != 'e0' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: every attempt's units

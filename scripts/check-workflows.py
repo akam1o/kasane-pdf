@@ -96,6 +96,9 @@ NIGHTLY_CORPUS_COMMANDS = {
     # and put first on PATH for the reference steps.
     "scripts/courier-reference/setup-e1.sh /tmp/ref": [],
     "scripts/courier-reference/probe.py /tmp/ref": ["--json"],
+    # E2, the default: built from the lock, and checked to be isolated.
+    "scripts/courier-reference/setup-e2.py /tmp/ref": [],
+    "scripts/courier-reference/isolation-probe.py /tmp/ref": ["--json"],
     "kasane-compat run": ['PATH="${REFERENCE_BIN:+$REFERENCE_BIN:}$PATH"'],
     "scripts/ci-regression.py env": [],
     # The redaction corpus (V1): evaluated, projected and compared, the

@@ -40,6 +40,7 @@
       "runner_args": ["--with-poppler", "--dpi", "96", "--timeout-secs", "20", "--mode", "full", "--rewrite-options", "carry"],
       "runner_features": ["cjk-fallback"],
       "baseline": "compat/baselines/corpus-full.json",
+      "platform_baseline": "compat/baselines/corpus-full-{platform}.json",
       "files": 511
     },
     "external_renderers": {

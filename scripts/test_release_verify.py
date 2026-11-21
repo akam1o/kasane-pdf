@@ -594,6 +594,90 @@ class Production(unittest.TestCase):
         self.assertNotRegex(r.stdout, r"\bok +\S+: refused")
 
 
+class StrictPlatform(unittest.TestCase):
+    """compat_corpus: with this platform's baseline committed, the run is
+    made with E2 and compared strictly with it; without, it is not, and
+    says so (`strict: incomparable`)."""
+
+    def runner(self, strict_code=0, fail=()):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        src = d / "src"
+        (src / "compat" / "baselines").mkdir(parents=True)
+        (src / "compat" / "baselines" / "corpus-full.json").write_text('{"aggregate": {"files": 2}}')
+        (d / "out" / "logs").mkdir(parents=True)
+
+        class R:
+            env = {"CARGO_TARGET_DIR": str(d / "target"), "PATH": "/usr/bin:/bin"}
+            corpus, ran = d / "corpus", []
+
+            def logfile(self, suffix):
+                return d / "out" / "logs" / f"compat_corpus-{suffix}.log"
+
+            def run(self, argv, cwd=None, env=None, log=None):
+                cmd = " ".join(str(a) for a in argv)
+                self.ran.append((cmd, env))
+                if "kasane-compat" in cmd:
+                    out = Path(argv[argv.index("--out") + 1])
+                    (out / "latest.json").write_text("{}")
+                if any(f in cmd for f in fail):
+                    return 1
+                return strict_code if "--require-same-env" in cmd else 0
+        r = R()
+        r.src = src
+        return r, src, d / "work"
+
+    def check(self, r, work):
+        real = rv.subprocess.run
+        rv_sub = rv.subprocess
+
+        def fake(argv, cwd=None, stdout=None, **kw):
+            if "summarize" in argv:
+                stdout.write('{"aggregate": {"files": 2}}')
+            elif "rev-parse" in argv:
+                return real(["echo", "c" * 40], capture_output=True, text=True)
+            return real(["true"])
+        rv_sub.run = fake
+        old_which = rv.shutil.which
+        rv.shutil.which = lambda t: "/bin/" + t
+        old_tv = rv.tool_versions
+        rv.tool_versions = lambda *a: {"poppler": "x"}
+        try:
+            work.mkdir(parents=True, exist_ok=True)
+            cfg = {"baseline": "compat/baselines/corpus-full.json", "files": 2, "runner_features": ["cjk-fallback"],
+                   "runner_args": [], "platform_baseline": "compat/baselines/corpus-full-{platform}.json"}
+            return rv.check_compat_corpus(r, cfg, work)
+        finally:
+            rv_sub.run = real
+            rv.shutil.which = old_which
+            rv.tool_versions = old_tv
+
+    def test_without_a_platform_baseline(self):
+        r, src, work = self.runner()
+        s = self.check(r, work)
+        self.assertEqual(s["strict"], "incomparable")
+        self.assertFalse(any("setup-e2.py" in c or "--require-same-env" in c for c, _ in r.ran))
+
+    def test_with_a_platform_baseline(self):
+        r, src, work = self.runner()
+        (src / "compat" / "baselines" / f"corpus-full-{rv.platform_key()}.json").write_text("{}")
+        s = self.check(r, work)
+        self.assertEqual(s["strict"], "passed")
+        cmds = [c for c, _ in r.ran]
+        self.assertTrue(any("setup-e2.py" in c for c in cmds) and any("isolation-probe.py" in c for c in cmds))
+        run_env = next(e for c, e in r.ran if "kasane-compat" in c)
+        self.assertTrue(run_env["PATH"].startswith(str(work / "ref" / "bin")))
+        strict = next(c for c in cmds if "--require-same-env" in c)
+        self.assertIn(f"corpus-full-{rv.platform_key()}.json", strict)
+        # A strict regression, or a reference that is not isolated: failed.
+        for kw in ({"strict_code": 1}, {"fail": ("isolation-probe.py",)}):
+            r, src, work = self.runner(**kw)
+            (src / "compat" / "baselines" / f"corpus-full-{rv.platform_key()}.json").write_text("{}")
+            with self.assertRaises(rv.CheckFailed) as e:
+                self.check(r, work)
+            self.assertEqual(e.exception.status, "failed", kw)
+
+
 class ReleaseCheckLocal(unittest.TestCase):
     """release-check.py's local part: R's and S's evidence, each its own."""
 
