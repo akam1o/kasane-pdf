@@ -51,8 +51,10 @@ except ImportError:
     if os.environ.get("KASANE_REQUIRE_PILLOW") == "1":
         raise
 
-E0 = {"profile": "system", "version": 1, "config_sha256": "0" * 64, "fonts_sha256": "1" * 64, "font_files": 53,
-      "fontconfig": "2.17.1", "freetype": "libfreetype.so.6.20.5", "freetype_sha256": "4" * 64}
+E0 = {"schema": 2, "profile": "system", "version": 1, "isolation": "system", "inputs_sha256": None,
+      "config_sha256": "0" * 64, "fonts_sha256": "1" * 64, "font_files": 53, "fontconfig": "2.17.1",
+      "fontconfig_lib": "libfontconfig.so.1.16.1", "fontconfig_lib_sha256": "5" * 64,
+      "freetype": "libfreetype.so.6.20.5", "freetype_sha256": "4" * 64}
 ENV = {"commit": "c" * 40, "os": "linux-ubuntu-26.04", "arch": "x86_64", "features": "cjk-fallback",
        "poppler": "26.01.0", "mupdf": "1.27.0", "qpdf": "12.3.2", "reference": E0}
 TOL = dict(ca.TOLERANCE)
@@ -853,7 +855,11 @@ class ReferenceFingerprint(unittest.TestCase):
         os.makedirs(os.path.dirname(lib))
         with open(lib, "wb") as fh:
             fh.write(b"freetype build 1")
-        ldd = f'#!/bin/sh\necho "\tlibfreetype.so.6 => ${{FAKE_FREETYPE:-{lib}}} (0x0)"\n'
+        fc = os.path.join(d, "lib", "libfontconfig.so.1.16.1")
+        with open(fc, "wb") as fh:
+            fh.write(b"fontconfig build 1")
+        ldd = (f'#!/bin/sh\necho "\tlibfreetype.so.6 => ${{FAKE_FREETYPE:-{lib}}} (0x0)"\n'
+               f'echo "\tlibfontconfig.so.1 => ${{FAKE_FONTCONFIG:-{fc}}} (0x0)"\n')
         for n, body in (("fc-conflist", conflist), ("fc-list", fclist), ("ldd", ldd)):
             with open(os.path.join(bin_, n), "w") as fh:
                 fh.write(body)
@@ -957,6 +963,83 @@ class ReferenceFingerprint(unittest.TestCase):
                 self.fingerprint(good, bin_, FAKE_FREETYPE=os.path.join(d, "no-such-lib.so.6"))))
             os.remove(os.path.join(bin_, "ldd"))
             self.assertFalse(ce.reference_complete(self.fingerprint(good, bin_)))
+
+    def test_schema_2_fields(self):
+        ok = ce.reference_complete
+        self.assertTrue(ok(E0))
+        # An older report's reference (schema 1, or none): incomplete.
+        for bad in ({k: v for k, v in E0.items() if k not in ("schema", "isolation", "inputs_sha256",
+                                                                "fontconfig_lib", "fontconfig_lib_sha256")},
+                    dict(E0, schema=1), dict(E0, schema="2"), dict(E0, isolation=None), dict(E0, isolation="sandbox"),
+                    dict(E0, fontconfig_lib_sha256=None), dict(E0, inputs_sha256="6" * 64),
+                    dict(E0, isolation="isolated"), dict(E0, isolation="isolated", inputs_sha256="x")):
+            self.assertFalse(ok(bad), bad)
+        self.assertTrue(ok(dict(E0, isolation="isolated", inputs_sha256="6" * 64)))
+
+    def isolated_dir(self, root, font=b"nimbus", inputs=b'{"lock": 1}', profile="isolated", outside=None):
+        """A setup-e2.py-like directory: its own fonts.conf, font, included
+        file, inputs.json, profile.json, HOME and the isolated wrapper."""
+        for sub in ("fonts", "bin", "home"):
+            os.makedirs(os.path.join(root, sub))
+        with open(os.path.join(root, "fonts", "f.otf"), "wb") as fh:
+            fh.write(font)
+        with open(os.path.join(root, "rules.conf"), "wb") as fh:
+            fh.write(b"rule A")
+        with open(os.path.join(root, "fonts.conf"), "w") as fh:
+            fh.write(f"include {root}/rules.conf\nfont {root}/fonts/f.otf\n" + (outside or ""))
+        with open(os.path.join(root, "inputs.json"), "wb") as fh:
+            fh.write(inputs)
+        with open(os.path.join(root, "profile.json"), "w") as fh:
+            json.dump({"profile": "courier-nimbus-mono-ps-isolated", "version": 1, "isolation": profile,
+                       "inputs_sha256": ce._sha(b'{"lock": 1}')}, fh)
+        w = os.path.join(root, "bin", "pdftoppm")
+        clear = " ".join(f"-u {v}" for v in ce.CLEARED)
+        with open(w, "w") as fh:
+            fh.write(f"#!/bin/sh\nexec /usr/bin/env {clear} HOME={root}/home FONTCONFIG_FILE={root}/fonts.conf "
+                     f'{self.BINARY} "$@"\n')
+        os.chmod(w, 0o755)
+        return w
+
+    def test_an_isolated_reference_is_checked_not_trusted(self):
+        with tempfile.TemporaryDirectory() as d:
+            bin_ = self.setup_tools(d)
+            a = self.fingerprint(self.isolated_dir(os.path.join(d, "a")), bin_)
+            self.assertTrue(ce.reference_complete(a), a)
+            self.assertEqual((a["isolation"], a["inputs_sha256"]), ("isolated", ce._sha(b'{"lock": 1}')))
+            b = self.fingerprint(self.isolated_dir(os.path.join(d, "tmp", "else", "b")), bin_)
+            self.assertEqual(a, b)  # the directory alone
+            # A font or a configuration file outside it: not isolated.
+            other = os.path.join(d, "system-font.otf")
+            open(other, "wb").write(b"host")
+            inc = os.path.join(d, "host.conf")
+            open(inc, "wb").write(b"rule host")
+            for name, extra in (("font", f"font {other}\n"), ("include", f"include {inc}\n")):
+                r = self.fingerprint(self.isolated_dir(os.path.join(d, name), outside=extra), bin_)
+                self.assertEqual(r["profile"], "unidentified", name)
+                self.assertFalse(ce.reference_complete(r), name)
+            # The lock it names is not the one it has.
+            r = self.fingerprint(self.isolated_dir(os.path.join(d, "lock"), inputs=b'{"lock": 2}'), bin_)
+            self.assertEqual(r["profile"], "unidentified")
+            # The isolated wrapper on a profile that does not say isolated.
+            r = self.fingerprint(self.isolated_dir(os.path.join(d, "claim"), profile="inherits-system"), bin_)
+            self.assertEqual(r["profile"], "unidentified")
+            # E1's wrapper (no HOME of its own) on an isolated profile.
+            root = os.path.join(d, "e1form")
+            w = self.isolated_dir(root)
+            with open(w, "w") as fh:
+                fh.write(self.wrapper(root))
+            self.assertEqual(self.fingerprint(w, bin_)["profile"], "unidentified")
+            # Another fontconfig library: another reference.
+            fc2 = os.path.join(d, "lib2", "libfontconfig.so.1.16.1")
+            os.makedirs(os.path.dirname(fc2))
+            open(fc2, "wb").write(b"fontconfig build 2")
+            r = self.fingerprint(self.isolated_dir(os.path.join(d, "fc")), bin_, FAKE_FONTCONFIG=fc2)
+            self.assertTrue(ce.reference_complete(r))
+            self.assertEqual(ce.differences({"reference": a}, {"reference": r}, keys=("reference",)), ["reference"])
+            # E0 / E1 / E2 are three references.
+            e1 = self.fingerprint(self.reference_dir(os.path.join(d, "e1")), bin_)
+            self.assertEqual(e1["isolation"], "inherits-system")
+            self.assertNotEqual(ce.differences({"reference": a}, {"reference": e1}, keys=("reference",)), [])
 
     def test_reference_follows_content_not_place(self):
         with tempfile.TemporaryDirectory() as d:

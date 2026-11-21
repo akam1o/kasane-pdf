@@ -10,11 +10,16 @@ For each probe font (a one-page synthetic PDF, the font not embedded)
 read from its trace — not `fc-match`, which does not see the pattern
 Poppler builds. Then the page is rendered in both environments.
 
+Files are compared by content (SHA-256), not by path: E1 uses the
+system's files, the isolated E2 (setup-e2.py) its own copies of them.
 Fails (exit 1) unless: every Courier / Courier New probe draws, in E1,
-the Nimbus Mono PS file of its style from E1DIR/fonts; every other probe
-matches the same file in E0 and E1 and renders the same pixels; no probe
-in E0 matches a file of E1DIR; the system font list (`fc-list`) is the
-same with and without E1 set up. Exit 2: a tool is missing.
+the Nimbus Mono PS file of its style from E1DIR; every other probe
+matches a file of the same content in E0 and E1 and renders the same
+pixels; no probe in E0 matches a file of E1DIR; the system font list
+(`fc-list`) is the same with and without E1 set up; E1's fonts are E0's
+and the four Nimbus Mono PS faces, by content. Exit 2: a tool is
+missing. (Whether a reference is isolated from the machine is
+isolation-probe.py's to tell.)
 """
 import argparse, hashlib, json, os, re, shutil, subprocess, sys, tempfile
 
@@ -102,6 +107,11 @@ def main():
         print("probe: pdftoppm, fc-list or the E1 wrapper missing")
         return 2
     env = {k: v for k, v in os.environ.items() if k not in ("FONTCONFIG_FILE", "FONTCONFIG_PATH", "FC_DEBUG")}
+    digest = lambda f: hashlib.sha256(open(f, "rb").read()).hexdigest() if os.path.isfile(f) else f
+    # The environment E1's wrappers give fontconfig (E2's: its own HOME).
+    e1env = dict(env, FONTCONFIG_FILE=os.path.join(e1, "fonts.conf"))
+    if os.path.isdir(os.path.join(e1, "home")):
+        e1env["HOME"] = os.path.join(e1, "home")
     fclist = lambda e: sorted(subprocess.run(["fc-list", "--format", "%{file}\\n"], capture_output=True, text=True,
                                              env=e).stdout.splitlines())
     e0_fonts = fclist(env)
@@ -116,17 +126,22 @@ def main():
             if any(f.startswith(e1 + "/") for f in f0):
                 problems.append(f"{base}: E0 matched a file of E1")
             if base in COURIER:
-                want = os.path.join(e1, "fonts", f"NimbusMonoPS-{COURIER[base]}.otf")
-                if not f1 or any(f != want for f in f1):
-                    problems.append(f"{base}: E1 drew {f1}, not {os.path.basename(want)}")
-            elif f0 != f1 or img0 != img1:
+                want = f"NimbusMonoPS-{COURIER[base]}.otf"
+                if not f1 or any(os.path.basename(f) != want or not f.startswith(e1 + "/") for f in f1):
+                    problems.append(f"{base}: E1 drew {f1}, not {want} of E1")
+            elif [digest(f) for f in f0] != [digest(f) for f in f1] or img0 != img1:
                 problems.append(f"{base}: E1 differs from E0 ({f0} -> {f1}, same pixels {img0 == img1})")
     if fclist(env) != e0_fonts:
         problems.append("the system font list changed")
-    e1_fonts = fclist(dict(env, FONTCONFIG_FILE=os.path.join(e1, "fonts.conf")))
-    added = sorted(set(e1_fonts) - set(e0_fonts))
-    if added != sorted(os.path.join(e1, "fonts", f"NimbusMonoPS-{s}.otf") for s in ("Regular", "Bold", "Italic", "BoldItalic")):
+    e1_fonts = fclist(e1env)
+    e0_by = {digest(f): f for f in e0_fonts}
+    added = sorted(f for f in e1_fonts if digest(f) not in e0_by)
+    lacking = sorted(f for d, f in e0_by.items() if d not in {digest(x) for x in e1_fonts})
+    if sorted(os.path.basename(f) for f in added) != sorted(f"NimbusMonoPS-{s}.otf" for s in ("Regular", "Bold", "Italic", "BoldItalic")) \
+            or any(not f.startswith(e1 + "/") for f in added):
         problems.append(f"E1 adds other fonts than the four Nimbus Mono PS files: {added}")
+    if lacking:
+        problems.append(f"E1 lacks fonts E0 has: {lacking}")
     doc = {"probes": rows, "e0_font_count": len(e0_fonts), "e1_added": added, "problems": problems,
            "fonts_conf_sha256": hashlib.sha256(open(os.path.join(e1, "fonts.conf"), "rb").read()).hexdigest()}
     json.dump(doc, open(a.json, "w"), indent=1)

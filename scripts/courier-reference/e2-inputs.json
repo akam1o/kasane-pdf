@@ -1,0 +1,560 @@
+{
+ "schema_version": 1,
+ "snapshot": "https://snapshot.ubuntu.com/ubuntu/20261120T000000Z",
+ "packages": [
+  {
+   "name": "fontconfig-config",
+   "version": "2.17.1-3ubuntu1",
+   "arch": "amd64",
+   "path": "pool/main/f/fontconfig/fontconfig-config_2.17.1-3ubuntu1_amd64.deb",
+   "sha256": "304cc61f61b94399453db02e1032d9f74a0bd737307acb4ed847f8da9406b8c1",
+   "size": 38454
+  },
+  {
+   "name": "fonts-dejavu-core",
+   "version": "2.37-8build1",
+   "arch": "all",
+   "path": "pool/main/f/fonts-dejavu/fonts-dejavu-core_2.37-8build1_all.deb",
+   "sha256": "f4606b12eb41ddf7932d3a1ebc2019f9bbf90d0824943a2dc0c77a00f43019f2",
+   "size": 834166
+  },
+  {
+   "name": "fonts-dejavu-extra",
+   "version": "2.37-8build1",
+   "arch": "all",
+   "path": "pool/main/f/fonts-dejavu/fonts-dejavu-extra_2.37-8build1_all.deb",
+   "sha256": "4ace5d598c94873a989611744ff99d0697e0c33ffa617b9a478bee16245524f9",
+   "size": 1944282
+  },
+  {
+   "name": "fonts-dejavu-mono",
+   "version": "2.37-8build1",
+   "arch": "all",
+   "path": "pool/main/f/fonts-dejavu/fonts-dejavu-mono_2.37-8build1_all.deb",
+   "sha256": "bf5ad873961972ea8f1299ef99c1854715e68d9aa798830fb78c5b222ddeb4b9",
+   "size": 502164
+  },
+  {
+   "name": "fonts-lato",
+   "version": "2.015-1build1",
+   "arch": "all",
+   "path": "pool/main/f/fonts-lato/fonts-lato_2.015-1build1_all.deb",
+   "sha256": "e7c28afec4d16c1960ae87aec69b0c2f06bb376b7af80f4cf42843cf9ec75ac8",
+   "size": 2779356
+  },
+  {
+   "name": "fonts-liberation",
+   "version": "1:2.1.5-3build1",
+   "arch": "all",
+   "path": "pool/main/f/fonts-liberation/fonts-liberation_2.1.5-3build1_all.deb",
+   "sha256": "47f156bc945cfc69cf2f2a0c19b8c82b67a685738d3846673462de6a73266e1b",
+   "size": 1604662
+  },
+  {
+   "name": "fonts-noto-color-emoji",
+   "version": "2.051-1build1",
+   "arch": "all",
+   "path": "pool/main/f/fonts-noto-color-emoji/fonts-noto-color-emoji_2.051-1build1_all.deb",
+   "sha256": "040b1e0a0700c849b9ce59d97878019e16720d18063f7d0585d906ea609d7235",
+   "size": 9967220
+  },
+  {
+   "name": "fonts-urw-base35",
+   "version": "20200910-8build1",
+   "arch": "all",
+   "path": "pool/main/f/fonts-urw-base35/fonts-urw-base35_20200910-8build1_all.deb",
+   "sha256": "be59254289c670d5c6580ce381995292aa05c9dd4bc5fa65b9dbaa527b55adda",
+   "size": 10937814
+  }
+ ],
+ "fonts_conf": {
+  "package": "fontconfig-config",
+  "member": "etc/fonts/fonts.conf",
+  "sha256": "93a23ba073996edb8b42d6c89ebc2ec5fd2101ce82cb65ba0db358dabf55ca22"
+ },
+ "conf_d": [
+  {
+   "name": "10-hinting-slight.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/10-hinting-slight.conf",
+   "sha256": "d138eca2bac3f78d45ff7cfb649ad792caa4a6e61f73cea7cf0ea54b091f1ef4"
+  },
+  {
+   "name": "10-scale-bitmap-fonts.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/10-scale-bitmap-fonts.conf",
+   "sha256": "df8e99abb6f82384c61978906a45a95794940545da95790d87f01d9391e0894b"
+  },
+  {
+   "name": "10-sub-pixel-rgb.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/10-sub-pixel-rgb.conf",
+   "sha256": "e4cfc04f5fc5093d2ba20c40f8709c9dfc099997313d0f96bc8256597a15d057"
+  },
+  {
+   "name": "10-yes-antialias.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/10-yes-antialias.conf",
+   "sha256": "e6d82a642d1b37f7d24dc37f938b999f00ff7aa4303b2602d04164d53f221005"
+  },
+  {
+   "name": "11-lcdfilter-default.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/11-lcdfilter-default.conf",
+   "sha256": "76aec9d8dac48faabe1bbde9e887cfb09fa45f30be5f8826e945a394a0097e48"
+  },
+  {
+   "name": "20-unhint-small-dejavu-lgc-sans-mono.conf",
+   "package": "fonts-dejavu-mono",
+   "member": "etc/fonts/conf.avail/20-unhint-small-dejavu-lgc-sans-mono.conf",
+   "sha256": "0a6b0f1c1f5d1c06a811b517a3d2690700bba8e961cd55dd2c7648cde3605a21"
+  },
+  {
+   "name": "20-unhint-small-dejavu-lgc-sans.conf",
+   "package": "fonts-dejavu-core",
+   "member": "etc/fonts/conf.avail/20-unhint-small-dejavu-lgc-sans.conf",
+   "sha256": "144619057c0a040de247c74cf09f230d737b9c1c534f3ba8804fdd3ddeded8b0"
+  },
+  {
+   "name": "20-unhint-small-dejavu-lgc-serif.conf",
+   "package": "fonts-dejavu-core",
+   "member": "etc/fonts/conf.avail/20-unhint-small-dejavu-lgc-serif.conf",
+   "sha256": "977c24eb43f10d21263bbdb624649e5edf63147bd7bb4f84db97ce7d53bb9054"
+  },
+  {
+   "name": "20-unhint-small-dejavu-sans-mono.conf",
+   "package": "fonts-dejavu-mono",
+   "member": "etc/fonts/conf.avail/20-unhint-small-dejavu-sans-mono.conf",
+   "sha256": "3e90c9c36beef46f10d1529251f8683b9c4ac900695adbb4a23a4b6036f938a5"
+  },
+  {
+   "name": "20-unhint-small-dejavu-sans.conf",
+   "package": "fonts-dejavu-core",
+   "member": "etc/fonts/conf.avail/20-unhint-small-dejavu-sans.conf",
+   "sha256": "0d9c177b6a85daa9957ed6750d4eb26122604da18d340e7ba31e6f4d24f963ed"
+  },
+  {
+   "name": "20-unhint-small-dejavu-serif.conf",
+   "package": "fonts-dejavu-core",
+   "member": "etc/fonts/conf.avail/20-unhint-small-dejavu-serif.conf",
+   "sha256": "68777b1705ec7a05a86430def4be093668e84e305cc7e11291df52403a7318cc"
+  },
+  {
+   "name": "20-unhint-small-vera.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/20-unhint-small-vera.conf",
+   "sha256": "278732c68c16177f2aa3c7e4ea318b9f720aee13a433c32eb15ba626806c609d"
+  },
+  {
+   "name": "30-metric-aliases.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/30-metric-aliases.conf",
+   "sha256": "3baf25c82e1a14c606d45c212296852be06ae9795d60e84aab573226151450a2"
+  },
+  {
+   "name": "40-nonlatin.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/40-nonlatin.conf",
+   "sha256": "9c56aeed6490db1d29602d7f8e028742b5e7a0268eaaa60de2fde582c6403715"
+  },
+  {
+   "name": "45-generic.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/45-generic.conf",
+   "sha256": "24de9f68189d544bb4cc084d9bd8f3a59d8b988a9dc44b11e9877d5add5fc948"
+  },
+  {
+   "name": "45-latin.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/45-latin.conf",
+   "sha256": "b46e539c25dfd5531c8fcf4f22c3d156b09272ffbc6f8a83a8eeb7431c09aee5"
+  },
+  {
+   "name": "48-spacing.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/48-spacing.conf",
+   "sha256": "99d839cd8aa28854e8f54f26e7200b6e57951f39f56791a0ed473662488bcef6"
+  },
+  {
+   "name": "49-sansserif.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/49-sansserif.conf",
+   "sha256": "7849a11ce5243e8bb3d06bcad558737a8682e5122e73c8e427f4c011a2054818"
+  },
+  {
+   "name": "57-dejavu-sans-mono.conf",
+   "package": "fonts-dejavu-mono",
+   "member": "etc/fonts/conf.avail/57-dejavu-sans-mono.conf",
+   "sha256": "1f2ead86f8203d809abfc9d88d92b04316edd67b6291795ea74ea8a0c3c2e04d"
+  },
+  {
+   "name": "57-dejavu-sans.conf",
+   "package": "fonts-dejavu-core",
+   "member": "etc/fonts/conf.avail/57-dejavu-sans.conf",
+   "sha256": "f6285e2d336f93086acfa2ac7895ef75ef5ff34f833ba5a63c09fb2841aedc27"
+  },
+  {
+   "name": "57-dejavu-serif.conf",
+   "package": "fonts-dejavu-core",
+   "member": "etc/fonts/conf.avail/57-dejavu-serif.conf",
+   "sha256": "7c596f7e202090ded38fded904c4a17d5a189b6c9cc914a2e88554116f6474ca"
+  },
+  {
+   "name": "58-dejavu-lgc-sans-mono.conf",
+   "package": "fonts-dejavu-mono",
+   "member": "etc/fonts/conf.avail/58-dejavu-lgc-sans-mono.conf",
+   "sha256": "807e5222c6d11a72ad527ebc088f42daf2a807e7718c8f7ff227cbfecafd3d70"
+  },
+  {
+   "name": "58-dejavu-lgc-sans.conf",
+   "package": "fonts-dejavu-core",
+   "member": "etc/fonts/conf.avail/58-dejavu-lgc-sans.conf",
+   "sha256": "ecde2093f005c73d7da21cdd7b80c791910050609db36cb5eea84a4ba8da5cef"
+  },
+  {
+   "name": "58-dejavu-lgc-serif.conf",
+   "package": "fonts-dejavu-core",
+   "member": "etc/fonts/conf.avail/58-dejavu-lgc-serif.conf",
+   "sha256": "e685632c3edbb6868a7ca5275e7c71f25486a8cfd16113a478194a5631205619"
+  },
+  {
+   "name": "60-generic.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/60-generic.conf",
+   "sha256": "195bc8605dd23289d42c10d79cc13a5ce4a4b3cf965df5b30ecc0b7149bb951f"
+  },
+  {
+   "name": "60-latin.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/60-latin.conf",
+   "sha256": "14dc2bfaff9ad3cfda5050870364b30cd3331f385311635759d6dca90e8c0c54"
+  },
+  {
+   "name": "65-fonts-persian.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/65-fonts-persian.conf",
+   "sha256": "c675fab143a3638346874798be45f51f6878ebec591b4362d83cfffb828ec4ca"
+  },
+  {
+   "name": "65-nonlatin.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/65-nonlatin.conf",
+   "sha256": "ed3ef35f996f16cbd6829bc165246e9e94e4980e7ab2f9b283e27585bd2a3c5a"
+  },
+  {
+   "name": "69-unifont.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/69-unifont.conf",
+   "sha256": "fa97c0cf5f79d70e2dc3dc48155d4c9220cd7c6a8bc95b89c4ebcc517f97479e"
+  },
+  {
+   "name": "70-no-bitmaps-except-emoji.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/70-no-bitmaps-except-emoji.conf",
+   "sha256": "bb5df65896bf3011b2f2935b63ab12db1ecf078674ff73a533123445f122a92b"
+  },
+  {
+   "name": "80-delicious.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/80-delicious.conf",
+   "sha256": "34f27b7fe9cd83b2b6d46f16ef9c477412f2d7ef63634f86b9b38b79bc4f81ad"
+  },
+  {
+   "name": "90-synthetic.conf",
+   "package": "fontconfig-config",
+   "member": "usr/share/fontconfig/conf.avail/90-synthetic.conf",
+   "sha256": "cdd0aac7840c664a7127b64db66bdfe8dc22be3774d10bc22f4a41c98de5d85e"
+  }
+ ],
+ "excluded_conf_d": [
+  "50-user.conf",
+  "51-local.conf"
+ ],
+ "fonts": [
+  {
+   "package": "fonts-urw-base35",
+   "member": "usr/share/fonts/opentype/urw-base35/NimbusMonoPS-Bold.otf",
+   "sha256": "f036d05d2168c7f71cb11d31e81d11133f3d09711e24ebde19d08a24842384d5"
+  },
+  {
+   "package": "fonts-urw-base35",
+   "member": "usr/share/fonts/opentype/urw-base35/NimbusMonoPS-BoldItalic.otf",
+   "sha256": "a67ed9e364c933c79fc3ce88e17a0265334697c184b065407e754d43cbbf6d0a"
+  },
+  {
+   "package": "fonts-urw-base35",
+   "member": "usr/share/fonts/opentype/urw-base35/NimbusMonoPS-Italic.otf",
+   "sha256": "7f1f85498027e07befadd3c7592518909b9e8c7f96ee5615e0b21be0c399c4b4"
+  },
+  {
+   "package": "fonts-urw-base35",
+   "member": "usr/share/fonts/opentype/urw-base35/NimbusMonoPS-Regular.otf",
+   "sha256": "4f225ca8e13acb16f733ce741693105e527d5f7a5443901b9ecc190fca4e149b"
+  },
+  {
+   "package": "fonts-dejavu-extra",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuMathTeXGyre.ttf",
+   "sha256": "f98d7f2ad03cdceffb8bcee71eed84055d15b0098b4b1f5a22653ba5931d3da5"
+  },
+  {
+   "package": "fonts-dejavu-core",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+   "sha256": "e1d733afbbfce842a1b43dced0c9885a76a4e67290dc7e690c4e9b76ebfc7d23"
+  },
+  {
+   "package": "fonts-dejavu-extra",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf",
+   "sha256": "db536b2436d5823489aec205adfaee70629633dbe6c5c2d135ac6934e522e905"
+  },
+  {
+   "package": "fonts-dejavu-extra",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSans-ExtraLight.ttf",
+   "sha256": "09a73dc31624ae9e759fd1187c8cbf37e320a74ce8d931d1ae0f735b0e41a2e5"
+  },
+  {
+   "package": "fonts-dejavu-extra",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf",
+   "sha256": "e6bb3d31b3afd8070753da4bac76ac6f97d99743d0bf070d7fe01336a1f1ae42"
+  },
+  {
+   "package": "fonts-dejavu-core",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+   "sha256": "b4c632e3cdf9acc7f28758fb5a323c8524d7fc6660d46904d9b6cbe2809c419c"
+  },
+  {
+   "package": "fonts-dejavu-extra",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf",
+   "sha256": "5a3bb1f72d8861c272498b80f1fe075163b4ea37bb27dd9cdd7b985e59b0286e"
+  },
+  {
+   "package": "fonts-dejavu-extra",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-BoldOblique.ttf",
+   "sha256": "f9e5ad7d71d5f3c47b5e1e97939cdf9e1cadc812fd416242611548f9a576bf6a"
+  },
+  {
+   "package": "fonts-dejavu-extra",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Oblique.ttf",
+   "sha256": "da4fff3a7830ac5e17b2401b83ed74d7661d2cd5b176c6108f31c620d951addb"
+  },
+  {
+   "package": "fonts-dejavu-extra",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSansCondensed.ttf",
+   "sha256": "24111144e604b4328c34f1e7f9a6bee725963bdbafceaf644a348e95037add26"
+  },
+  {
+   "package": "fonts-dejavu-mono",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
+   "sha256": "2d67eed9b325ee2e69f906ce4f3f6264d5105230a13352c8494daad4f17b12c8"
+  },
+  {
+   "package": "fonts-dejavu-mono",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSansMono-BoldOblique.ttf",
+   "sha256": "3e19ce950e77f59d5d3607c4a4ed6a5152933f88937a4e0e7586ee5d5319aa5c"
+  },
+  {
+   "package": "fonts-dejavu-mono",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSansMono-Oblique.ttf",
+   "sha256": "a033f17e7e42934146337ab2858f7bae5e10c59708d810f1fca0bc81dd543cae"
+  },
+  {
+   "package": "fonts-dejavu-mono",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+   "sha256": "a54dca07c76d6289e717e75e0a58c0128f6d7269ef3faf76417c9d7d3bba37ab"
+  },
+  {
+   "package": "fonts-dejavu-core",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+   "sha256": "3f704f75238454f68a8202e5098cb0687887480dd63d3dc20b34bdbdfa9d9f3f"
+  },
+  {
+   "package": "fonts-dejavu-extra",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSerif-BoldItalic.ttf",
+   "sha256": "f2c39b5964cb27d94bd4c02504cc4471f8c80571abb8df7923c51d13afdca989"
+  },
+  {
+   "package": "fonts-dejavu-extra",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf",
+   "sha256": "730469e7a8dce387a760160f05e62ddf021870bd277505bbc5b250e909edeabf"
+  },
+  {
+   "package": "fonts-dejavu-core",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+   "sha256": "a52c2a69dfc93d0b511b98c1019a57eb3d6a62d328bdf1387f00851b02e3a315"
+  },
+  {
+   "package": "fonts-dejavu-extra",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSerifCondensed-Bold.ttf",
+   "sha256": "5c1e7bd74154206816ac85a9544831753e09ebf573c374500ede873ea2c1344f"
+  },
+  {
+   "package": "fonts-dejavu-extra",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSerifCondensed-BoldItalic.ttf",
+   "sha256": "1875f0ddf38fc49805c8fd6a1e033bc43c6b25a347f452ed7296a5a30549d6b3"
+  },
+  {
+   "package": "fonts-dejavu-extra",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSerifCondensed-Italic.ttf",
+   "sha256": "a9be76c39fe6235cba88bba6075ea1e69e54094943b0259a36690f3cbf24f4fa"
+  },
+  {
+   "package": "fonts-dejavu-extra",
+   "member": "usr/share/fonts/truetype/dejavu/DejaVuSerifCondensed.ttf",
+   "sha256": "fc2e46c44851eaa57e9b552c931aae1bb06e8400e42ec7fc0bfb5045afa6b697"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-Black.ttf",
+   "sha256": "4ed66fa3928ae769205635c916b4f9e6a63f6a77f5d9693ac31a83d0d96ae1ef"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-BlackItalic.ttf",
+   "sha256": "0ae5310fe1ed156ab6af26a8c0be61aee44c166896765d5a9473670ad9c28dbc"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-Bold.ttf",
+   "sha256": "bf1b8130069b44b9148eeece35e5423bedac49777ba746615b826b8276574a7b"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-BoldItalic.ttf",
+   "sha256": "e2f9244fdcd20840f2480f91370cea885bf99230c49d153199fa64853ad74b69"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-Hairline.ttf",
+   "sha256": "80dc280e8a05b80d7a566a15b379bba422a776e5bc58b92a9b8f3a9bbea7eb03"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-HairlineItalic.ttf",
+   "sha256": "9e469d156b0471556f202358939cc7fd2cab421659e3a3638136431d3c46ec8b"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-Heavy.ttf",
+   "sha256": "4ce7ec20cd9c391b271b4149ad8cf5a71301d98965403f14fc5530d017146dbb"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-HeavyItalic.ttf",
+   "sha256": "4c9af8df580f1b7a2e3336d69b225a38364a636dc014d8fd9c2b72adea68dd2d"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-Italic.ttf",
+   "sha256": "8c863f833b12bc8486671d26e3a58b13b0f9eaff1d6b10398e7c107a9b7ee05a"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-Light.ttf",
+   "sha256": "e9d59afb6d9cb9cf6e8d8159d4639d5b577e29efc64a15182f228659cfc1e818"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-LightItalic.ttf",
+   "sha256": "8926c41622b7400d7f6f7dbf31cea50495f31230cf40904b8b83e634bf3cf6c6"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-Medium.ttf",
+   "sha256": "be8bbf7105500e8fc1f9429307fb396905a0e6cff63fe1eb751bb319d0f1b0db"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-MediumItalic.ttf",
+   "sha256": "0739be048a122e3abb0cb731b49f6c07ac212a54eb182ebaa25a65829d5ac0cf"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-Regular.ttf",
+   "sha256": "6f6940be0835c3ddec9199e5fc42be4cbc61ebcfd58c623fdf719366253f1780"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-Semibold.ttf",
+   "sha256": "2dc5d31e2cf1e29f3430eb2dfa1ba9911e08ee401b61dd12f40e0acb047a17a3"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-SemiboldItalic.ttf",
+   "sha256": "0aa594079c213d1dba417a2fc34b8170445d0f03af02a3b35f16b9b775eef398"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-Thin.ttf",
+   "sha256": "11b51a8bb6361be3e4642de40b49c210ecb4a19b8bf630f3335ff07813726f3b"
+  },
+  {
+   "package": "fonts-lato",
+   "member": "usr/share/fonts/truetype/lato/Lato-ThinItalic.ttf",
+   "sha256": "c8ad5351e800f8286890a4c8a57d849207cb930287caeb40c4ffbe538f2f3e0e"
+  },
+  {
+   "package": "fonts-liberation",
+   "member": "usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
+   "sha256": "50464e64aaadea741fb9516748aee296d570439406be11d63df22294e77ba867"
+  },
+  {
+   "package": "fonts-liberation",
+   "member": "usr/share/fonts/truetype/liberation/LiberationMono-BoldItalic.ttf",
+   "sha256": "291872531f0e8013df602c412fc570241860e41b1fa1b7972537c27a19024d4d"
+  },
+  {
+   "package": "fonts-liberation",
+   "member": "usr/share/fonts/truetype/liberation/LiberationMono-Italic.ttf",
+   "sha256": "35c3116d4366eb0e58494d8e432d4ee0c60c5735c7f775ffc096008bd2907c74"
+  },
+  {
+   "package": "fonts-liberation",
+   "member": "usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+   "sha256": "d18235f1e874771f4eaec3ddd6ddb4db849d334bdc6930c5c2185d9344834e62"
+  },
+  {
+   "package": "fonts-liberation",
+   "member": "usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+   "sha256": "b72c65e551d653b54217ffad0d1454ce0657e4e8d4a28bcc79e0acd2598f4bf3"
+  },
+  {
+   "package": "fonts-liberation",
+   "member": "usr/share/fonts/truetype/liberation/LiberationSans-BoldItalic.ttf",
+   "sha256": "64263238517af60213cdb469165fc7e9acd0c09c35f4155f924a379f97125a57"
+  },
+  {
+   "package": "fonts-liberation",
+   "member": "usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf",
+   "sha256": "4ccb79043bd3a6d131b5a53901abb21261b1417f6052b38a9fa9716a4e5a3d81"
+  },
+  {
+   "package": "fonts-liberation",
+   "member": "usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+   "sha256": "075e71be4c58beda172ecb574a799308f04c3d054c6a5b7434954d3b0f1b28d8"
+  },
+  {
+   "package": "fonts-liberation",
+   "member": "usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+   "sha256": "bb033fae52dcbf67a55494a08829aaa788324624d72a195af7f93da3061c928f"
+  },
+  {
+   "package": "fonts-liberation",
+   "member": "usr/share/fonts/truetype/liberation/LiberationSerif-BoldItalic.ttf",
+   "sha256": "10ec0fa22bc6f12a239d600c051752884d155997aafd19ebc24c4f4a8d2b98d0"
+  },
+  {
+   "package": "fonts-liberation",
+   "member": "usr/share/fonts/truetype/liberation/LiberationSerif-Italic.ttf",
+   "sha256": "c1882fbb05e78537b9c39dad3c07c4f231c987a3747b20c8745737aed50cd488"
+  },
+  {
+   "package": "fonts-liberation",
+   "member": "usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
+   "sha256": "350f4ffd773cae53560c63dca3d89a5070595614fde12f772bf43feb63d81064"
+  },
+  {
+   "package": "fonts-noto-color-emoji",
+   "member": "usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+   "sha256": "9fd0a3d0ce84d77e3185dfbae77bd1abf3926aa49a032e354d076c4f17151f10"
+  }
+ ]
+}

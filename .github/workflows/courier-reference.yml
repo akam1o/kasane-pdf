@@ -52,6 +52,44 @@ jobs:
           retention-days: 30
           if-no-files-found: ignore
 
+  # E2's isolation on a throwaway runner (scripts/courier-reference/
+  # isolation-test.py): another directory, cold and warm caches, a polluted
+  # user and a polluted machine (rules in /etc/fonts/local.conf and the
+  # template directory, a font in /usr/share/fonts, shared caches rebuilt)
+  # change nothing of E2 while E0 and E1 do change; a font missing or of
+  # other content, a configuration changed, a package not the lock's are
+  # detected. Poppler traced with strace throughout.
+  isolation:
+    name: E2 isolated from the machine (strace, pollution, negatives)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: the nightly's verifiers, strace
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qpdf poppler-utils poppler-data python3-pip \
+            mupdf-tools python3-pil strace
+      - name: E1, for the positive control
+        run: sh scripts/courier-reference/setup-e1.sh /tmp/e1
+      - name: the cases (this runner is discarded after; the machine's files it adds are removed)
+        run: python3 scripts/courier-reference/isolation-test.py /tmp/iso --json /tmp/isolation-test.json --pollute-host --e1 /tmp/e1
+      - name: E2 recorded (fingerprint, probes; basenames, counts, hashes)
+        if: always()
+        run: |
+          python3 scripts/courier-reference/setup-e2.py /tmp/e2 --debs /tmp/iso/debs
+          python3 scripts/courier-reference/isolation-probe.py /tmp/e2 --json /tmp/isolation-probe.json
+      - name: results
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: courier-reference-isolation
+          path: |
+            /tmp/isolation-test.json
+            /tmp/isolation-probe.json
+          retention-days: 30
+          if-no-files-found: ignore
+
   # The synthetic Courier cases (scripts/courier-reference/synth.py) for A
   # (this commit) and C (the input), against Poppler in E0 and E1, MuPDF
   # and pdf.js, at 96 and 150 dpi. Dispatch only.
