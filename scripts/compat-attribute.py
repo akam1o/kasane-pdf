@@ -342,6 +342,12 @@ def main(argv=None):
     print(f"compat-attribute: {len(rows)} pages of {files} files below SSIM {a.threshold}: "
           + ", ".join(f"{k} {v}" for k, v in s["agreement"].items())
           + (f"; {truncated} more not measured (--max-pages-total)" if truncated else ""))
+    # A page whose PDF was not there was not measured: never a result
+    # (KASANE_CORPUS_DIR, or compat/corpus of this checkout).
+    missing = sum(1 for r in rows if r.get("reason") == "not_fetched")
+    if missing:
+        print(f"compat-attribute: {missing} page(s) not measured: their PDF is not in the corpus directory")
+        return 2
     return 0
 
 

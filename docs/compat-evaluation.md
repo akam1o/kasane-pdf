@@ -187,12 +187,19 @@ a macOS run of the same commit. A baseline records its environment
   (the top-level file and every file it loads, in order, by content),
   the font files fontconfig lists (by content), the fontconfig version
   and the FreeType library Poppler loads. Paths inside a reference
-  directory are recorded relative to it. The fingerprint fails closed:
-  a `pdftoppm` that is neither a binary nor exactly setup-e1.sh's
-  wrapper of one, a binary run with `FONTCONFIG_PATH` or
-  `FONTCONFIG_SYSROOT` set, a listed file that cannot be read, or an
-  empty listing leaves it incomplete, and an incomplete reference equals
-  none and is refused by `update-baseline`.
+  directory are recorded relative to it. Schema 2 adds the isolation
+  (`system`, `inherits-system` — E1, which includes the machine's
+  configuration — or `isolated` — E2, which does not), the SHA-256 of
+  the lock an isolated reference was built from (checked against its
+  directory), and the fontconfig library by content beside FreeType's
+  (ldd on Linux; on macOS `otool -L`, `@rpath` resolved). The
+  fingerprint fails closed: a `pdftoppm` that is neither a binary nor
+  exactly setup-e1.sh's or setup-e2.py's wrapper of one, a binary run
+  with `FONTCONFIG_PATH` or `FONTCONFIG_SYSROOT` set, an isolated
+  reference whose fontconfig loads or lists a file outside it, a listed
+  file that cannot be read, an empty listing, or a reference of another
+  schema (an older report) leaves it incomplete, and an incomplete
+  reference equals none and is refused by `update-baseline`.
 
 The numeric measures are compared only when OS, architecture, Poppler,
 MuPDF, features and the reference are equal; a side without a complete
@@ -200,7 +207,14 @@ reference fingerprint (an older report) is never equal. Otherwise:
 - **without `--require-same-env`** (`release-verify` on a workstation,
   against the Linux baseline): the run prints *"numeric measures not
   compared: the environment differs …"*. The stage checks still run;
-  the numeric ones are reported as not compared, never as passed.
+  the numeric ones are reported as not compared, never as passed. Where
+  the commit has a baseline of the workstation's own platform
+  (`compat/baselines/corpus-full-<os>-<arch>.json`, measured there with
+  E2), `release-verify`'s `compat_corpus` runs the corpus with E2 and
+  also compares it strictly with that baseline (environment, second
+  witness, `--require-same-env`): its `strict` result. Without one,
+  `strict` is `incomparable` — the Linux nightly remains the only strict
+  comparison.
 - **with `--require-same-env`** (the nightly): the difference is a
   regression. So are a run without `--env`, and a run without
   `--attribution` when the baseline has attribution. An update of the

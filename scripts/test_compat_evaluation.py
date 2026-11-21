@@ -673,6 +673,20 @@ class InvalidInputsM2(unittest.TestCase):
                                    self.write(d, f"a-{name}.json", a), "--write")
                 self.assertEqual(rc, 2, f"{name}: {out}")
                 self.assertFalse(os.path.exists(out_b), name)
+            # A page whose PDF was missing (not_fetched): not a measurement.
+            gone = att(("a", 1, "neither", *OPEN), ("a", 2, "neither", *OPEN), cap=None)
+            gone["pages"][0].update(agreement="not_comparable", reason="not_fetched", r300=None, m72={},
+                                    references_agree=None)
+            gone["pages"][0]["class"] = "not_comparable"
+            rc, out = main_cli("update-baseline", r, out_b, "--env", env, "--attribution",
+                               self.write(d, "a-gone.json", gone), "--write")
+            self.assertEqual(rc, 2, out)
+            self.assertIn("not_fetched", out)
+            self.assertFalse(os.path.exists(out_b))
+            regs, usable = cr.attribution_usable({"attribution": {"threshold": 0.95, "tolerance": gone["tolerance"]}},
+                                                 ENV, gone)
+            self.assertFalse(usable)
+            self.assertTrue(any("not_fetched" in x for x in regs))
             capped = att(("a", 1, "neither", *OPEN), ("a", 2, "neither", *OPEN), cap=8)
             rc, out = main_cli("update-baseline", r, out_b, "--env", env, "--attribution",
                                self.write(d, "a-capped.json", capped), "--write")
@@ -1432,7 +1446,9 @@ class Witnesses(unittest.TestCase):
                         os.environ.pop(k, None)
                     else:
                         os.environ[k] = v
-            self.assertEqual(rc, 0)
+            # Written whole, but exit 2: a page (not-in-the-corpus) was not
+            # measured.
+            self.assertEqual(rc, 2)
             with open(out) as fh:
                 rows = {r["id"]: r for r in json.load(fh)["pages"]}
             # Only the strict pages below the threshold.
