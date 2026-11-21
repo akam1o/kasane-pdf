@@ -165,8 +165,11 @@ def check_reference_diff(path, wf):
         for opt in ("scripts/courier-reference/reference-diff.py", '--shard "$SHARD/4"', "--progress", "--json"):
             if opt not in line:
                 problem(f"{path.name}:reference-diff: unit {c} runs without `{opt}`")
-        if str(st.get("if", "")).replace("${{", "").replace("}}", "").strip() != "always()" or st.get("continue-on-error"):
-            problem(f"{path.name}:reference-diff: unit {c} must run `if: always()`, never continue-on-error")
+        cond = str(st.get("if", "")).replace("${{", "").replace("}}", "").strip()
+        if cond != "always() && steps.fetch.outcome == 'success' && steps.ref.outcome == 'success'" \
+                or st.get("continue-on-error"):
+            problem(f"{path.name}:reference-diff: unit {c} must run always once the corpus and E1 are ready, "
+                    "never continue-on-error")
         i = steps.index(st)
         up = steps[i + 1] if i + 1 < len(steps) else {}
         if not str(up.get("uses", "")).startswith("actions/upload-artifact@") or up.get("if") != "always()" \

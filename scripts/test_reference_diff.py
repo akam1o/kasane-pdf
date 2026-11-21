@@ -87,15 +87,25 @@ class Fixture(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def add(self, name, **cfg):
-        with open(os.path.join(self.corpus, name + ".pdf"), "w") as fh:
+    def add(self, name, manifest=True, **cfg):
+        path = os.path.join(self.corpus, name + ".pdf")
+        with open(path, "w") as fh:
             fh.write(" ".join(f"{k}={v}" for k, v in cfg.items()))
+        if manifest:
+            self.files[name] = rd.hashlib.sha256(open(path, "rb").read()).hexdigest()
+        self.write_manifest()
+
+    def write_manifest(self):
+        self.manifest = os.path.join(self.tmp, "manifest.yaml")
+        with open(self.manifest, "w") as fh:
+            fh.write("version: 1\nfiles:\n" + "".join(f"- id: {i}\n  sha256: {h}\n" for i, h in self.files.items()))
 
     def unit(self, out, shard=None, chunk=None, attempt=1, wait=True):
         d = os.path.join(out, f"reference-diff-s{(shard or '1/1')[0]}-c{(chunk or '1/1')[0]}-a{attempt}")
         os.makedirs(d, exist_ok=True)
         argv = [sys.executable, os.path.join(CR, "reference-diff.py"), self.corpus, self.e1,
-                "--json", os.path.join(d, "unit.json"), "--progress", os.path.join(d, "progress.jsonl"), "--jobs", "1"]
+                "--json", os.path.join(d, "unit.json"), "--progress", os.path.join(d, "progress.jsonl"), "--jobs", "1",
+                "--manifest", self.manifest]
         if shard:
             argv += ["--shard", shard, "--chunk", chunk]
         env = dict(self.env, GITHUB_SHA="c" * 40, GITHUB_RUN_ID="7", GITHUB_RUN_ATTEMPT=str(attempt))
@@ -136,7 +146,8 @@ class Units(Fixture):
         self.assertEqual(set(diag["e0"]), {"rss_kb", "out_bytes"})
 
     def test_selection_partitions_the_corpus(self):
-        pdfs = sorted(os.path.join(self.corpus, f) for f in os.listdir(self.corpus))
+        pdfs = sorted((os.path.join(self.corpus, f) for f in os.listdir(self.corpus)),
+                      key=lambda p: os.path.basename(p))
         for n, m in ((1, 1), (3, 2), (4, 3), (12, 1)):
             got = [p for s in range(1, n + 1) for c in range(1, m + 1) for p in rd.select(pdfs, (s, n), (c, m))]
             self.assertEqual(sorted(got), pdfs, (n, m))
@@ -206,6 +217,52 @@ class Units(Fixture):
         json.dump(good, open(path, "w"))
         rc, doc = self.merged(out, 3, 1)  # a unit missing
         self.assertEqual(rc, 2)
+
+    def test_the_corpus_is_the_manifests(self):
+        out = os.path.join(self.tmp, "art")
+        # A file the manifest lists that is missing — in every unit's view.
+        os.remove(os.path.join(self.corpus, "f1.pdf"))
+        for s in (1, 2):
+            p, d = self.unit(out, f"{s}/2", "1/1")
+        rc, doc = self.merged(out, 2, 1)
+        self.assertEqual(rc, 2, doc)
+        self.assertFalse(doc["complete"])
+        # The same name and size, other bytes.
+        shutil.rmtree(out)
+        self.add("f1", pages=2, courier=0)  # back, as the manifest has it
+        path = os.path.join(self.corpus, "f2.pdf")
+        data = open(path, "rb").read()
+        open(path, "wb").write(data[:-1] + (b"0" if data[-1:] != b"0" else b"1"))
+        p, d = self.unit(out)
+        self.assertEqual(p.returncode, 2)
+        self.assertFalse(json.load(open(os.path.join(d, "unit.json")))["complete"])
+        self.assertEqual(self.merged(out, 1, 1)[0], 2)
+        # A file the manifest does not list is not part of the corpus.
+        open(path, "wb").write(data)
+        shutil.rmtree(out)
+        self.add("extra", manifest=False, pages=1)
+        p, d = self.unit(out)
+        self.assertEqual(p.returncode, 0)
+        self.assertNotIn("extra", json.load(open(os.path.join(d, "unit.json")))["files"])
+
+    def test_an_empty_corpus_is_never_complete(self):
+        self.files = {}
+        self.write_manifest()
+        p, d = self.unit(os.path.join(self.tmp, "art"))
+        self.assertNotEqual(p.returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(d, "unit.json")))
+
+    def test_the_verdict_names_the_attempts_it_took(self):
+        out = os.path.join(self.tmp, "art")
+        self.unit(out, attempt=2)
+        # An older attempt with other metadata, superseded: not reported.
+        d = os.path.join(out, "reference-diff-s1-c1-a1")
+        os.makedirs(d)
+        good = json.load(open(os.path.join(out, "reference-diff-s1-c1-a2", "unit.json")))
+        json.dump(dict(good, harness_sha256="9" * 64, run=dict(good["run"], attempt="1")), open(os.path.join(d, "unit.json"), "w"))
+        rc, doc = self.merged(out, 1, 1)
+        self.assertEqual((rc, doc["attempts"]), (0, {"1.1": 2}))
+        self.assertEqual((doc["harness_sha256"], doc["run"]["attempt"]), (good["harness_sha256"], "2"))
 
     def test_an_unexplained_change_fails(self):
         self.add("odd", pages=1, other=1)

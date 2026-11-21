@@ -3,7 +3,7 @@
 E1 changes, and which font files fontconfig gave Poppler for each file.
 
     scripts/courier-reference/reference-diff.py CORPUS_DIR E1DIR --json OUT [--dpi 96] [--jobs N]
-        [--shard I/N] [--chunk J/M] [--progress FILE]
+        [--manifest compat/manifest.yaml] [--shard I/N] [--chunk J/M] [--progress FILE]
 
 The runner's reference (`pdftoppm -r DPI -gray`), all pages, decoded
 pixels compared by their SHA-256 (PGM headers and file metadata play no
@@ -19,6 +19,11 @@ evaluation record, its counts for the public report. A file whose pages
 E1 changes must be one whose E0 trace matched a Liberation Mono or
 DejaVu Sans Mono face that E1 replaced for Courier — anything else is
 listed as unexplained.
+
+**The corpus** is the manifest's (`--manifest`, default
+compat/manifest.yaml): every id it lists, each file checked against its
+SHA-256 before it is used. A file missing or not the manifest's is an
+error of the unit, which is then not complete — never a smaller corpus.
 
 **Units.** `--shard I/N` takes the files whose index in the sorted corpus
 is I-1 modulo N, `--chunk J/M` the J-th of M consecutive parts of those:
@@ -203,11 +208,32 @@ def select(pdfs, shard, chunk):
     return mine[(j - 1) * size: j * size]
 
 
-def corpus_digest(pdfs):
+def manifest_files(path):
+    """[(id, sha256)] of the manifest, sorted as the corpus is (by file
+    name, `.pdf` included)."""
+    import yaml
+    with open(path) as fh:
+        m = yaml.safe_load(fh)
+    rows = [(str(e["id"]), str(e["sha256"])) for e in m["files"]]
+    if not rows or len({i for i, _ in rows}) != len(rows):
+        raise SystemExit("reference-diff: the manifest lists no file, or one twice")
+    return sorted(rows, key=lambda r: r[0] + ".pdf")
+
+
+def corpus_digest(rows):
+    """The corpus by content: the manifest's ids and SHA-256s."""
     h = hashlib.sha256()
-    for p in pdfs:
-        h.update(f"{os.path.basename(p)}\0{os.path.getsize(p)}\n".encode())
+    for i, sha in rows:
+        h.update(f"{i}\0{sha}\n".encode())
     return h.hexdigest()
+
+
+def verified(path, want):
+    try:
+        with open(path, "rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest() == want
+    except OSError:
+        return False
 
 
 def harness_digest():
@@ -236,9 +262,12 @@ def main():
     ap.add_argument("--shard")
     ap.add_argument("--chunk")
     ap.add_argument("--progress")
+    ap.add_argument("--manifest", default=os.path.join(os.path.dirname(os.path.dirname(HERE)), "compat", "manifest.yaml"))
     a = ap.parse_args()
     shard, chunk = fraction(a.shard, "shard"), fraction(a.chunk, "chunk")
-    pdfs = sorted(glob.glob(os.path.join(a.corpus, "*.pdf")))
+    rows = manifest_files(a.manifest)
+    want_sha = dict(rows)
+    pdfs = [os.path.join(a.corpus, i + ".pdf") for i, _ in rows]
     e1 = os.path.abspath(a.e1)
     # E0 is the system's Poppler: not E1's wrapper through PATH.
     real = shutil.which("pdftoppm")
@@ -247,7 +276,7 @@ def main():
         return 2
     mine = select(pdfs, shard, chunk)
     unit = {"shard": list(shard), "chunk": list(chunk), "files": [os.path.splitext(os.path.basename(p))[0] for p in mine]}
-    head = {"unit": unit, "corpus": {"files": len(pdfs), "sha256": corpus_digest(pdfs)}, "dpi": a.dpi,
+    head = {"unit": unit, "corpus": {"files": len(rows), "sha256": corpus_digest(rows)}, "dpi": a.dpi,
             "harness_sha256": harness_digest(), "references": fingerprints(e1),
             "run": {k: os.environ.get(v) for k, v in (("commit", "GITHUB_SHA"), ("run_id", "GITHUB_RUN_ID"),
                                                        ("attempt", "GITHUB_RUN_ATTEMPT"))}}
@@ -260,12 +289,19 @@ def main():
             os.fsync(prog.fileno())
     record(dict(head, event="start", time=time.time()))
     res, t0 = {}, time.monotonic()
+    # Every file of the unit is the manifest's, or the unit is not complete.
+    bad = [p for p in mine if not verified(p, want_sha[os.path.splitext(os.path.basename(p))[0]])]
+    for p in bad:
+        fid = os.path.splitext(os.path.basename(p))[0]
+        res[fid] = {"error": "not_the_manifest_file"}
+        record({"event": "file", "id": fid, "time": time.time(), "error": "not_the_manifest_file"})
+    mine = [p for p in mine if p not in bad]
     with concurrent.futures.ThreadPoolExecutor(a.jobs) as ex:
         for fid, r in ex.map(one, [(p, e1, a.dpi) for p in mine]):
             res[fid] = r
             record({"event": "file", "id": fid, "time": time.time(), "coverage": r.get("coverage"),
                     "error": r.get("error"), "diagnostics": r.get("diagnostics")})
-    complete = sorted(res) == sorted(unit["files"])
+    complete = sorted(res) == sorted(unit["files"]) and not bad
     summary = summarize(res)
     doc = dict(head, complete=complete, seconds=round(time.monotonic() - t0, 1), summary=summary, files=res)
     with open(a.json + ".tmp", "w") as fh:
@@ -273,6 +309,8 @@ def main():
     os.replace(a.json + ".tmp", a.json)  # never a half-written unit
     record({"event": "end", "time": time.time(), "complete": complete})
     print(json.dumps({k: (v if not isinstance(v, list) else len(v)) for k, v in summary.items()}))
+    if not complete:
+        return 2
     return 1 if summary["unexplained"] or summary["errors"] else 0
 
 

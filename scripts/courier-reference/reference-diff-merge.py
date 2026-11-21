@@ -12,7 +12,8 @@ result, written whole at its end), `progress.jsonl` and `monitor.jsonl`
 unit.json is complete is taken; a unit is never assembled from two
 attempts. The result is the full corpus only when:
 - every unit is there and complete;
-- every unit names the same corpus (file count and digest), harness
+- the corpus is not empty, and every unit names the same one (the
+  manifest's file count and digest of ids and SHA-256s), harness
   digest, DPI, commit and run, and the same E0 and E1 fingerprints;
 - the units' files are disjoint, each the one its index selects, and
   together the whole corpus.
@@ -96,7 +97,7 @@ def merge(units, shards, chunks):
             provenance[f"{s}.{c}"] = a
     if problems:
         return None, problems, provenance, partial
-    first = next(iter(taken.values()))
+    first = taken[(1, 1)]
     for (s, c), u in taken.items():
         for k in SAME:
             if u.get(k) != first.get(k):
@@ -107,6 +108,8 @@ def merge(units, shards, chunks):
         if sorted(u.get("files") or {}) != sorted(u["unit"]["files"]):
             problems.append(f"unit {s}.{c}: its results are not the files it took")
     n = first["corpus"]["files"]
+    if not n:
+        problems.append("the corpus is empty")
     names = sorted(f for u in taken.values() for f in u["unit"]["files"])
     if len(names) != len(set(names)):
         problems.append("a file is in two units")
@@ -127,7 +130,7 @@ def merge(units, shards, chunks):
     res = {}
     for u in taken.values():
         res.update(u["files"])
-    return res, [], provenance, partial
+    return res, first, provenance, partial
 
 
 def main():
@@ -139,10 +142,12 @@ def main():
     ap.add_argument("--summary-md")
     a = ap.parse_args()
     units = load(a.artifacts)
-    res, problems, provenance, partial = merge(units, a.shards, a.chunks)
+    res, first, provenance, partial = merge(units, a.shards, a.chunks)
+    problems = [] if res is not None else first
     doc = {"complete": res is not None, "problems": problems, "attempts": provenance, "incomplete_attempts": partial}
     if res is not None:
-        first = next(e["unit"] for att in units.values() for e in att.values() if e["unit"])
+        # The metadata of a selected unit (1.1), which every other selected
+        # unit was checked to share — never of an attempt not taken.
         doc.update({k: first.get(k) for k in SAME}, run=first.get("run"), summary=rd.summarize(res), files=res)
     with open(a.json, "w") as fh:
         json.dump(doc, fh, indent=1)
