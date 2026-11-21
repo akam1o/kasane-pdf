@@ -40225,7 +40225,7 @@
   },
   "env": {
    "arch": "x86_64",
-   "commit": "4be6f804064e0d79a1b37d2bf95770396e5b3043",
+   "commit": "ff219924494a5090b036d0315ade6e6d9fbfde5f",
    "features": "cjk-fallback",
    "mupdf": "1.27.0",
    "os": "linux-ubuntu-26.04",
@@ -40242,6 +40242,7 @@
     "freetype_sha256": "1e3b06a2f9a1288f4f30af4d014a1164b6747168a2d81c99ecebd978a4a33a16",
     "inputs_sha256": "b762e5a279034fde7e5a718f342635ca1fca8a824df01882ec53ddf1176216a7",
     "isolation": "isolated",
+    "poppler_build_sha256": "21362dc67f8ec2ec3e850c176b91851ad1e91ea2c1065eac36e24e62b85c8eca",
     "profile": "courier-nimbus-mono-ps-isolated",
     "schema": 2,
     "version": 1

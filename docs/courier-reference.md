@@ -212,8 +212,20 @@ baseline's product (`f6ddcdd`, branch `eval/e2-a`, evaluation only), C =
 and the second witness's 153 pages; A/E2 → C/E2 the same 8 SSIM
 improvements, none worse, as in E1. A/E1 on this harness equals the run
 the E1 baseline came from (44675455806) on all 1,148 pages.
-`corpus-full.json` was then measured again from A/E2 (run 44938439276):
-only its environment changed (the reference, schema 2). E1 and E0 remain
+`corpus-full.json` was then measured again from A/E2 (run 44943629308,
+`ff21992`; its measures identical to the first A/E2 run 44938439276):
+only its environment changed (the reference, schema 2).
+
+On macOS 26 arm64 (Homebrew Poppler 26.10.0, MuPDF 1.28.6) E2 is built
+from the same lock; `corpus-full-darwin-arm64.json` is A measured there.
+Against it: A again, with E2 in another directory, no regression; C
+the same 8 SSIM improvements, none worse; C with the machine's fonts,
+the Linux runs, an E2 with one font changed, an environment lacking a
+fingerprint field — environment differs, a regression; a page made worse
+— a regression. A macOS fingerprint is never a Linux one (OS, versions,
+libraries by content). Only macOS 26 arm64 was measured: another macOS,
+architecture or Homebrew build is another environment, without a
+baseline. E1 and E0 remain
 for evaluation runs (`reference_profile`); their fingerprints differ from
 the baseline's.
 
