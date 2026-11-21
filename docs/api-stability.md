@@ -104,6 +104,25 @@ patch release.
   class of input is refused with `max_pattern_tiles`, and `rewrite`
   carries `/OCProperties`.
 
+## 0.12.0 (behaviour)
+
+- No signature changes: no public item is added, removed or changed
+  (`cargo semver-checks` against 0.11.0: no update required).
+- Behaviour that callers can observe changes, hence the minor version:
+  - non-embedded Courier and Courier New (a Standard 14 name or its
+    alias, every style) draw with Kasane Courier instead of Liberation
+    Mono: their pixels and glyph bounds follow the new outlines (and so
+    does which glyphs a redaction rect near their edge touches);
+    advances and extracted text are unchanged; other fixed-pitch fonts
+    keep Liberation Mono;
+  - `RenderedPage::font_substitutions()` names `KasaneCourier-*` faces
+    for them (the `SubstKind` is unchanged);
+  - `RedactOptions::embed_substitute_fonts` embeds Kasane Courier for
+    Courier text, named `KasaneCourier-*` in the output.
+- The check `embed_substitute_fonts` makes of its output covers every
+  font it embedded, whatever its name (a fix; no released output was
+  affected).
+
 ## 0.11.0 (additive)
 
 - `AnnotationText::shown_text()`, `AnnotationText::note()` and the
