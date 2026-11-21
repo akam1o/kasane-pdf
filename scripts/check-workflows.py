@@ -217,7 +217,7 @@ PR_MUST_RUN = {
                      "scripts/test_ci_scripts.py", "scripts/test_release_verify.py",
                      "scripts/test_advisory_history.py", "scripts/test_compat_analysis.py",
                      "KASANE_REQUIRE_PILLOW=1 python3 scripts/test_compat_evaluation.py",
-                     "python3 scripts/test_redact_text_measure.py"],
+                     "python3 scripts/test_redact_text_measure.py", "python3 scripts/test_semver_check.py"],
     "render-fuzz-smoke": ["ci-run-sharded.sh redact_model", "fuzz/ci-run.sh \"$T\" \"fuzz/seeds/$T\"",
                           "-seed=1 -runs=3000"],
 }
@@ -225,6 +225,8 @@ FULL_ONLY_IF = "github.event_name != 'pull_request'"
 # Full-gate jobs whose decisive command must run (unconditionally within
 # the job).
 FULL_MUST_RUN = {
+    "semver": ["KASANE_REQUIRE_SEMVER_CHECKS=1 python3 scripts/test_semver_check.py",
+               "python3 scripts/semver-check.py --json /tmp/semver.json"],
     "renderers-linux": ["python3 scripts/verify-renderers.py target/release/kasane-pdf /tmp/advisories --json /tmp/renderers.json",
                         "python3 scripts/test_compat_evaluation.py --real target/release/kasane-pdf",
                         "python3 scripts/test_redact_text_measure.py --real",
