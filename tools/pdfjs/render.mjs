@@ -3,6 +3,7 @@
 //   node render.mjs render <in.pdf> <dpi> <out.ppm>   page 1 as binary PPM (RGB on white)
 //   node render.mjs text <in.pdf>                       page 1's text, one item per line
 //   node render.mjs version                             pdfjs-dist's version
+//   node render.mjs fonts <in.pdf>                      page 1's fonts as pdf.js loads them (JSON)
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import { createCanvas, DOMMatrix, ImageData, Path2D } from '@napi-rs/canvas';
@@ -14,7 +15,7 @@ if (mode === 'version') {
   console.log(require('pdfjs-dist/package.json').version);
   process.exit(0);
 }
-const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
+const { getDocument, OPS } = await import('pdfjs-dist/legacy/build/pdf.mjs');
 const doc = await getDocument({
   data: new Uint8Array(fs.readFileSync(file)),
   disableFontFace: true,
@@ -37,7 +38,24 @@ if (mode === 'text') {
   const rgb = Buffer.alloc(c.width * c.height * 3);
   for (let i = 0; i < c.width * c.height; i++) for (let k = 0; k < 3; k++) rgb[i * 3 + k] = rgba[i * 4 + k];
   fs.writeFileSync(out, Buffer.concat([Buffer.from(`P6\n${c.width} ${c.height}\n255\n`), rgb]));
+} else if (mode === 'fonts') {
+  // The fonts the page's text is drawn with: the name pdf.js loaded and
+  // whether it had to stand in for a program it did not find.
+  const ops = await page.getOperatorList();
+  const used = new Set();
+  for (let i = 0; i < ops.fnArray.length; i++) if (ops.fnArray[i] === OPS.setFont) used.add(ops.argsArray[i][0]);
+  const fonts = [...used].map((id) => {
+    const f = page.commonObjs.get(id);
+    return {
+      missingFile: !!f.missingFile,
+      invalid: !!f.isInvalidPDFjsFont,
+      systemFont: f.systemFontInfo ?? null,
+      mimetype: f.mimetype ?? null,
+      bbox: f.bbox ?? null,
+    };
+  });
+  process.stdout.write(JSON.stringify(fonts) + '\n');
 } else {
-  console.error('usage: render.mjs render|text|version ...');
+  console.error('usage: render.mjs render|text|version|fonts ...');
   process.exit(2);
 }

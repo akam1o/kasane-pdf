@@ -1028,6 +1028,104 @@ class ReferenceFingerprint(unittest.TestCase):
             self.assertEqual(rc, 1, out)
             self.assertIn("reference", out)
 
+
+@unittest.skipUnless(HAVE_PIL, "Pillow not installed (KASANE_REQUIRE_PILLOW=1 makes this a failure)")
+class CourierRedactionEdge(unittest.TestCase):
+    """scripts/verify-courier-redaction.py's edge checks (E1-E4) fail
+    closed: a missing control or box is unverified, a blank control or a
+    blank output does not pass, the P's box is judged whole."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.v = load("verify-courier-redaction")
+
+    # User-space boxes (144 dpi: 2 px a point) of the E, the P, the R.
+    P, E, R = (45.0, 100.0, 52.0, 108.0), (37.0, 100.0, 44.0, 108.0), (62.0, 100.0, 69.0, 108.0)
+
+    def page(self, *boxes):
+        from PIL import Image, ImageDraw
+        img = Image.new("L", (720, 320), 255)
+        d = ImageDraw.Draw(img)
+        for b in boxes:
+            x0, y0, x1, y1 = self.v.box_px(b, img)
+            d.rectangle((x0 + 2, y0 + 2, x1 - 3, y1 - 3), fill=0)
+        return img
+
+    def check(self, kind, out, ctrl, t=None, boxes=None):
+        t = self.v.EDGE_TEXT[kind] if t is None else t
+        return self.v.edge_checks(kind, out, t, ctrl, boxes or (self.P, self.E, self.R))
+
+    def test_overlapping(self):
+        ctrl = self.page(self.E, self.P, self.R)
+        ok = self.check("edge-in", self.page(self.E, self.R), ctrl)
+        self.assertEqual(set(ok.values()), {True}, ok)
+        # The P still drawn: E3 alone.
+        r = self.check("edge-in", ctrl, ctrl)
+        self.assertEqual((r["E1_text_exact"], r["E3_P_box"], r["E4_neighbours_kept"]), (True, False, True))
+        # A blank output: no P, but no neighbours either.
+        self.assertFalse(self.check("edge-in", self.page(), ctrl)["E4_neighbours_kept"])
+        # A neighbour lost with the P.
+        self.assertFalse(self.check("edge-in", self.page(self.R), ctrl)["E4_neighbours_kept"])
+
+    def test_clear(self):
+        ctrl = self.page(self.E, self.P, self.R)
+        ok = self.check("edge-out", ctrl, ctrl)
+        self.assertEqual(set(ok.values()), {True}, ok)
+        r = self.check("edge-out", self.page(self.E, self.R), ctrl, t=self.v.EDGE_TEXT["edge-in"])
+        self.assertEqual((r["E1_text_exact"], r["E3_P_box"]), (False, False))
+
+    def test_text_exact(self):
+        ctrl = self.page(self.E, self.P, self.R)
+        out = self.page(self.E, self.R)
+        want = self.v.EDGE_TEXT["edge-in"]
+        for t in (None, "", want[:-1], want + "P", "KEEP" + want[3:], want.replace("AFTER", "AFTRE")):
+            self.assertIs(self.v.edge_checks("edge-in", out, t, ctrl, (self.P, self.E, self.R))["E1_text_exact"],
+                          False, t)
+
+    def test_fails_closed(self):
+        ctrl = self.page(self.E, self.P, self.R)
+        out = self.page(self.E, self.R)
+        image_checks = ("E2_control_P_inked", "E3_P_box", "E4_neighbours_kept", "5_matches_kasane")
+        for r in (self.check("edge-in", out, None), self.check("edge-in", out, ctrl, boxes=(None, self.E, self.R)),
+                  self.check("edge-in", out, ctrl.resize((100, 100)))):
+            self.assertEqual({r[k] for k in image_checks}, {"unverified"}, r)
+        # A blank control: nothing to compare the P's box with.
+        self.assertFalse(self.check("edge-in", out, self.page())["E2_control_P_inked"])
+        # Unverified is reported, and is not a failure nor a pass.
+        res = {"outcome": "ok", "expected": "ok", "checks": {"file": {}, "poppler": self.check("edge-in", out, None)}}
+        self.assertEqual(self.v.failures("edge-overlapping", res, "edge-in"), [])
+        self.assertIn("poppler.E3_P_box", self.v.unverified(res))
+
+    def test_negative_caught_only_by_its_checks(self):
+        ok = {"E1_text_exact": True, "E2_control_P_inked": True, "E3_P_box": False, "E4_neighbours_kept": True,
+              "5_matches_kasane": True, "2_uses_embedded": True, "6_supplemented_drawn": True}
+        readers = ("poppler", "mupdf", "pdfjs")
+        file = {"1_embedded_face": True, "3_file_decoded": True, "3_target_not_in_file": False,
+                "E2_control_embeds_face": True, "0_kasane_reads_output": True, "5_kasane_unchanged_outside": True}
+        c = dict(file=dict(file), **{w: dict(ok) for w in readers})
+        self.assertTrue(self.v.only_failing(c, readers, {"E3_P_box"}))
+        # Caught by something else too, or not by E3, or not checked: not caught.
+        for w, k, v in (("mupdf", "E4_neighbours_kept", False), ("pdfjs", "5_matches_kasane", "unverified"),
+                        ("poppler", "E3_P_box", True), ("poppler", "E1_text_exact", False)):
+            bad = dict(file=dict(file), **{r: dict(ok) for r in readers})
+            bad[w][k] = v
+            self.assertFalse(self.v.only_failing(bad, readers, {"E3_P_box"}), (w, k, v))
+        bad = dict(file=dict(file, E2_control_embeds_face="unverified"), **{r: dict(ok) for r in readers})
+        self.assertFalse(self.v.only_failing(bad, readers, {"E3_P_box"}))
+        bad = dict(file=dict(file), **{r: dict(ok) for r in readers})
+        bad["pdfjs"] = {"error": "unverified"}
+        self.assertFalse(self.v.only_failing(bad, readers, {"E3_P_box"}))
+        # A check left out (of a renderer, or of the file) is not caught.
+        for drop in ("E4_neighbours_kept", "2_uses_embedded"):
+            bad = dict(file=dict(file), **{r: dict(ok) for r in readers})
+            del bad["poppler"][drop]
+            self.assertFalse(self.v.only_failing(bad, readers, {"E3_P_box"}), drop)
+        bad = dict(file={}, **{r: {"E3_P_box": False} for r in readers})
+        self.assertFalse(self.v.only_failing(bad, readers, {"E3_P_box"}))
+        bad = dict(file={k: v for k, v in file.items() if k != "1_embedded_face"}, **{r: dict(ok) for r in readers})
+        self.assertFalse(self.v.only_failing(bad, readers, {"E3_P_box"}))
+
+
 class UpdateBaseline(unittest.TestCase):
     def test_explicit_and_protected(self):
         with tempfile.TemporaryDirectory() as d:

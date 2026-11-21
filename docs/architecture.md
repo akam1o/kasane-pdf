@@ -367,7 +367,10 @@ struct, which never moves or mutates that buffer (each site carries a
 - Bundled font data is **not** under the Apache licence:
   `fonts/liberation/` — Liberation Sans/Serif/Mono 2.1.5 (SIL Open
   Font License 1.1, unmodified, provenance and SHA-256 in its README)
-  as the substitutes for non-embedded Standard 14-style fonts; two
+  as the substitutes for non-embedded Standard 14-style fonts, and
+  `fonts/kasane-courier/` (OFL 1.1, Courier Prime 3.018 with Liberation
+  Mono's characters, built by `scripts/build-courier-fallback.py`) for
+  Courier and Courier New; two
   OFL font subsets among the test fixtures (`NOTICE`,
   `tests/fixtures/README.md`). The OFL permits bundling the fonts in
   software, including sold software, as long as the fonts are not
