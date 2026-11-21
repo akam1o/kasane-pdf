@@ -6,12 +6,16 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-21
+
 ### Changed
 - Non-embedded Courier and Courier New (a Standard 14 name or its
   alias, every style) draw with the bundled Kasane Courier — Courier
   Prime 3.018 with every character it lacks taken from Liberation Mono
-  2.1.5 — instead of Liberation Mono: a Courier design, as readers draw
-  them. Every character drawn before is still drawn, advances and text
+  2.1.5 — instead of Liberation Mono: a Courier design (how a reader
+  draws a non-embedded Courier depends on its own substitute fonts;
+  `fonts/kasane-courier/README.md` gives the references compared, and
+  the shapes are not Adobe's Courier). Every character drawn before is still drawn, advances and text
   extraction are unchanged, glyph bounds follow the new outlines; other
   fixed-pitch fonts keep Liberation Mono. With
   `RedactOptions::embed_substitute_fonts`, Courier text is embedded as
@@ -1445,7 +1449,8 @@ are possible between minor versions and are recorded here.
   1.1 and Adobe CMap resources under BSD-3-Clause (`NOTICE`,
   `docs/third-party.md`).
 
-[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/akam1o/kasane-pdf/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.12.0
 [0.11.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.11.0
 [0.10.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.10.0
 [0.8.0]: https://github.com/akam1o/kasane-pdf/releases/tag/v0.8.0

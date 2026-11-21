@@ -2,13 +2,15 @@
 
 Three things are always the same commit: the one the release gate
 verified, the one the tag points at, and the source of the crate on
-crates.io (its `.cargo_vcs_info.json` records it). crates.io publishes
-are permanent — a version can be yanked, never replaced — and a pushed
-tag is never moved or deleted, so everything is verified before those
-steps. What is written after publication (a CHANGELOG *Security*
-section, advisory regression tests) goes into a **new** commit on
-`main`; the GitHub Release's body may be edited, the tag and the crate
-never are.
+crates.io (its `.cargo_vcs_info.json` records it). In a normal release
+(A) that commit is the merge commit of the preparation pull request on
+`main`; in a security release (B), the release commit R. crates.io
+publishes are permanent — a version can be yanked, never replaced — and
+a pushed tag is never moved or deleted, so everything is verified before
+those steps. What is written after publication (the advisory history of
+the new version, a CHANGELOG *Security* section, advisory regression
+tests) goes into a **new** commit on `main`; the GitHub Release's body
+may be edited, the tag and the crate never are.
 
 - **A. Normal release** — no undisclosed vulnerability is fixed.
 - **B. Security release** — the release fixes vulnerabilities that are
@@ -21,8 +23,9 @@ never are.
 Every row must have passed **on the commit that will be tagged**; a
 change after it (code or docs) means running it again on the new
 commit. A run on another commit — last night's nightly on `main`, a
-pull request's run — does not count. Never record a check as passed
-that did not run on this commit.
+pull request's run, the preparation branch's head before its merge
+(A.1) — does not count. Never record a check as passed that did not run
+on this commit.
 
 | check | where it runs | counts when |
 | --- | --- | --- |
@@ -46,11 +49,11 @@ request's workflows with the base branch's definition, so a pull
 request cannot weaken `gate` and report it green (docs/testing.md, *CI
 gates*). Force pushes and deletion are off. Administrators are not
 included (`enforce_admins` off): the maintainer can still push to
-`main` — used only to fast-forward it to a release commit whose full
-gate is green (A.3, B.3), and to land a change the guard refuses by
-design (a fork's change to the CI). Everything else is merged through
-the pull request (`gh pr merge <n> --merge`), never by a local merge
-pushed to `main`.
+`main` — used only to fast-forward it to a security release's commit
+whose full gate is green (B.3), and to land a change the guard refuses
+by design (a fork's change to the CI). Everything else, a normal
+release's preparation included (A.2), is merged through the pull request
+(`gh pr merge <n> --merge`), never by a local merge pushed to `main`.
 
 `pr-guard.yml` runs on `pull_request_target`, which GitHub blocks by
 default in public repositories (from 2026-12-02). A repository Actions
@@ -85,13 +88,28 @@ checks are verified by hand.
 
 ## A. Normal release
 
-### A.1 Release candidate
+A normal release goes through a pull request, like any change. Its
+commits:
+
+| stage | commit | what it is for |
+| --- | --- | --- |
+| preparation pull request | its head `H` | review, and the pull request's and the branch's checks before the merge |
+| after the merge | the merge commit `M` on `main` | the release gate, the local verification, the package contents |
+| tag, crate | the same `M` | gate verified = tag = crate's source |
+| after publication | a later commit `S` on `main` | the advisory history of the new version (A.6); the tag and the crate are not touched |
+
+A result on `H` is never a result on `M`, nor one on an earlier commit
+(a nightly of `main` before the merge, an evaluation branch) one on
+either.
+
+### A.1 Preparation pull request (`H`)
 
 Work on a branch `release/v<version>-prep` from `main`:
 
 - `Cargo.toml`: `version`, `rust-version`, metadata, the `include` list;
-  no `publish = false`. `cargo update -p kasane-pdf` (and in `fuzz/`,
-  whose lock is not committed).
+  no `publish = false`. `cargo update -p kasane-pdf` (and in
+  `compat/runner/`; in `fuzz/`, whose lock is not committed): the lock
+  changes in kasane-pdf's own version only.
 - `CHANGELOG.md`: move *Unreleased* into `## [<version>] - <date>`; keep
   an empty *Unreleased*; update the compare links at the bottom. A
   version prepared but never published is folded into the next one and
@@ -102,53 +120,87 @@ Work on a branch `release/v<version>-prep` from `main`:
 - `docs/releases/v<version>.md`: the release notes (overview, newly
   supported, fixes, verification, tests, performance, corpus —
   stating that the corpus is one evaluation set, not a success rate —,
-  compatibility).
+  compatibility). They describe the gate, not its results: the commit
+  they are in cannot name itself, and the gate runs after them. `M` and
+  the results go into the pull request and the GitHub Release (A.5).
 - `docs/api-stability.md`, `docs/limitations.md`, the feature files and
   `docs/redaction-safety-model.md` brought up to date.
 - `scripts/fetch-cjk-assets.sh --check`.
 
-Push the branch: a push to `release/**` runs the full gate and CodeQL
-on that commit. Dispatch the corpus on it:
-`gh workflow run nightly.yml --ref release/v<version>-prep`. Run the
-local verification on the same commit:
-`scripts/release-verify.py run --ref <sha>` (about 30 minutes).
+Not in it: `<version>` in `compat/advisories/history.json` — no history
+can name a version before it is on crates.io (A.6).
 
-### A.2 Release gate and approval
+Push the branch and open the pull request against `main`. The push to
+`release/**` runs the full gate and `codeql-release.yml` on `H`; the
+pull request runs its checks (the fast gate on GitHub's merge of `H`
+into `main`, and `workflow guard`). They show that the preparation is
+sound before it is merged; they are not the release gate. The nightly
+and the local verification wait for `M`. Review; a change to the branch
+is a new `H`, checked again.
 
-Run the rows of *The release gate* on the branch's head `<sha>`, then
+### A.2 Merge (`M`)
+
+Once `H` is reviewed and green, and its merge approved:
 
 ```console
-scripts/release-check.py <sha> --require-nightly --local-results <DIR of the run>
+gh pr merge <n> --merge --match-head-commit <H>
+git fetch origin && git rev-parse origin/main        # = M, its parents main and H
 ```
 
-Approval is an explicit decision: the SHA, the version, the crate's file
-list and size, and that the crates.io token is available.
+No other pull request is merged into `main` from here until the tag is
+pushed (A.4): `M` is the release candidate.
 
-### A.3 main, tag, crates.io
+### A.3 Release gate on `M` and approval
+
+Every row of *The release gate*, on `M`:
 
 ```console
-scripts/release-check.py <sha> --require-nightly --local-results <DIR>   # once more, right before
-git push origin <sha>:main                           # a fast-forward: main = <sha>
-git tag -a v<version> -m "kasane-pdf <version>" <sha>
+# the push of M to main ran pr.yml (the full gate) on it
+gh workflow run codeql-release.yml --ref main         # while main = M; check the run's head is M
+gh workflow run nightly.yml --ref main                # the same
+scripts/release-verify.py run --ref <M>               # about 30 minutes
+scripts/release-check.py <M> --require-nightly --local-results <DIR of the run>
+```
+
+and the package contents from a clean checkout of `M`. `release-check.py`
+needs `origin/main` to be an ancestor of `M` — with `main` = `M`, it is.
+`--no-main` is for a patch release from an older tag (*Patch releases*
+below), never a way round a `main` that has moved.
+
+If `main` has moved past `M` (something was merged after all):
+`release-check.py` refuses `M`, and `M` is not tagged. List what came in
+(`git log --oneline M..origin/main`) and decide it explicitly: the
+release is then cut from the new head of `main` — a new `M`, with every
+row of the gate run again on it — and when the new commits change what
+the release contains, the CHANGELOG and the release notes are brought up
+to date first, by a pull request whose merge is that new `M`. The
+published version never silently includes, or leaves out, a commit.
+
+Approval is an explicit decision: `M`, the version, the crate's file
+list and size, and that the crates.io token is available.
+
+### A.4 Tag, crates.io
+
+```console
+scripts/release-check.py <M> --require-nightly --local-results <DIR>   # once more, right before
+git tag -a v<version> -m "kasane-pdf <version>" <M>
 git push origin v<version>
-git rev-parse v<version>^{}                          # = <sha>
+git rev-parse v<version>^{}                          # = M
 git worktree add --detach /tmp/rel v<version>
 cd /tmp/rel && ./scripts/fetch-cjk-assets.sh --check && cargo publish
 ```
 
-The push to `main` runs `pr.yml` once more on the same commit; it is not
-waited for (the release branch's run is the gate), but a failure there
-is handled as in *If something goes wrong*.
-
 Then: `https://crates.io/api/v1/crates/kasane-pdf` lists `<version>`;
 `curl -sL https://static.crates.io/crates/kasane-pdf/kasane-pdf-<version>.crate | tar -xzO kasane-pdf-<version>/.cargo_vcs_info.json`
-records `<sha>`.
+records `M`. A failure of `main`'s CI after the tag, or of any step, is
+handled as in *If something goes wrong*.
 
-### A.4 GitHub Release, after publishing
+### A.5 GitHub Release, after publishing
 
 After the crate is on crates.io (a Release never precedes the crate it
 describes). Title `v<version>`; the body is the release notes with links
-made absolute to the tag, then GitHub's generated list:
+made absolute to the tag, the commit `M` and the gate's runs, then
+GitHub's generated list:
 
 ```console
 gh release create v<version> --verify-tag --title "v<version>" \
@@ -163,6 +215,35 @@ No binary assets. Then:
   build and run with default features and with
   `--features kasane-pdf/cjk-fallback`.
 - Delete the merged release branches.
+
+### A.6 The advisory history of the new version (`S`)
+
+Once the crate can be downloaded, `main`'s advisory history (the
+nightly's *advisory history* job) fails with
+`version_not_covered:<version>` until `compat/advisories/history.json`
+covers it. A normal release needs this as much as a security one; it
+is a new commit, never part of the tag:
+
+1. The published package is the release: the `.crate` from
+   `static.crates.io` records `M` in `.cargo_vcs_info.json`, and
+   `git rev-parse v<version>^{}` is `M`.
+2. On a branch from `main`, add `<version>` to `history.json`'s
+   `versions`, run `scripts/advisory-history.py run --mode main …` —
+   it builds every listed version, the new one included, from its
+   crates.io package (checked against its tag), never from the checkout
+   — and `scripts/advisory-history.py update-expected` to record the
+   new version's states as measured on that package (it must give the
+   candidate's states input by input). The states of the versions
+   already listed are not rewritten: a change there is a finding, not
+   an update (`git diff` shows the new version's entries only).
+3. A pull request; it merges when green, and its merge is `S`.
+4. `scripts/release-check.py --published <version> <S>`: the version is
+   on crates.io from the tag's commit and `S`'s history covers it,
+   every input with its state. Then `gh workflow run nightly.yml --ref
+   main`: its advisory history passes again.
+
+A candidate build's results are never recorded as the published
+package's: the history runs on the package downloaded from crates.io.
 
 ## B. Security release
 
@@ -327,7 +408,7 @@ cd /tmp/rel && ./scripts/fetch-cjk-assets.sh --check && cargo publish
    `gh api -X PATCH repos/akam1o/kasane-pdf/security-advisories/<GHSA-id> -f state=published`;
    check each (state, severity and vector, affected range, patched
    version, references).
-3. The GitHub Release (A.4's command), its body the release notes plus
+3. The GitHub Release (A.5's command), its body the release notes plus
    the *Security* section: each advisory's id and link, and that the
    crate's own CHANGELOG has the general entry only.
 4. The advisory history of the new version, on S — now that it can be
@@ -356,7 +437,7 @@ cd /tmp/rel && ./scripts/fetch-cjk-assets.sh --check && cargo publish
   workflow; judge it with `gh workflow run advisory-history-tag.yml
   --ref main -f tag=v<version>` (this branch's scripts on the tag's
   build, inputs and history).
-- docs.rs, the clean consumer, branch clean-up as in A.4.
+- docs.rs, the clean consumer, branch clean-up as in A.5.
 - The global GitHub Advisory Database lists the advisories after
   GitHub's review (hours to days); check that its entries match.
 
@@ -533,7 +614,7 @@ undone, when users must be told, and when it needs a person.
 
 | case | go on? | retry | cannot be undone | tell users | by hand |
 | --- | --- | --- | --- | --- | --- |
-| **The full gate fails on R** (before the tag) | stop | an infrastructure failure (runner lost, download error): `gh run rerun <id> --failed`, then `release-check.py` again | in B, R's code is public — the advisories stay drafts | no (nothing released) | a real failure: fix, new R (and S), B.2 again, push the new R; keep the window short |
+| **The full gate fails on R or M** (before the tag) | stop | an infrastructure failure (runner lost, download error): `gh run rerun <id> --failed`, then `release-check.py` again | in B, R's code is public — the advisories stay drafts | no (nothing released) | a real failure — in A: a fix by pull request, its merge the new M, the gate again (A.3); in B: fix, new R (and S), B.2 again, push the new R; keep the window short |
 | **CI fails on `main` after the push** (same SHA, gate was green on the branch) | the gate already passed on R: a flake is re-run; a real difference (a cache, a runner change) is investigated | `gh run rerun --failed` | `main` = R stays (no force push) | only if the version is published and the failure is real | seen before the tag: stop and fix as above; tagged but not published: the version is skipped if the source must change (the tag stays); published: fix forward in a patch release |
 | **The tag push fails** | stop until it is pushed | the push (network, permission) — after an unclear failure, `git ls-remote origin refs/tags/v<version>` first | — | no | a tag pushed on the wrong commit is never moved or deleted: that version is skipped (not published), the next patch version is released, the CHANGELOG says the skipped one was never released |
 | **`cargo publish` fails** | stop the disclosure | before upload (a check, network, token): fix outside the source, publish again from the same tag | the tag (pushed), and the version if the upload went through | no | check `https://crates.io/api/v1/crates/kasane-pdf/<version>` before retrying (an upload may have succeeded and only the wait failed); a fix in the source means a new version (the tag stays, the version is skipped) |

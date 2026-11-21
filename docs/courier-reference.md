@@ -1,12 +1,22 @@
 # Courier reference environments (evaluation, not a gate)
 
-The Courier substitute (Kasane Courier, #58) changes what kasane draws
-for non-embedded Courier and Courier New. Whether that is "better"
-depends on what the reference draws for the same fonts, and the
-nightly's Poppler draws them with Liberation Mono — the face #58
-replaces. This page separates the reference environment from the
-implementation. It changes no gate, no baseline and no workflow the
-nightly runs.
+The Courier substitute (Kasane Courier, #58, released in 0.12.0)
+changes what kasane draws for non-embedded Courier and Courier New.
+Whether that is "better" depends on what the reference draws for the
+same fonts. When this evaluation was made, the nightly's Poppler drew
+them with the runner's own fonts, Liberation Mono — the face #58
+replaces (E0 below). This page separates the reference environment from
+the implementation; the 2×2 and its results are that evaluation, made
+before the nightly moved.
+
+Today the nightly's quality comparison (the 511-file corpus, the second
+witness and the strict check against `compat/baselines/corpus-full.json`)
+uses E1 (*The nightly on E1*, below). The redaction corpus in the same
+job, and the external-renderer and Courier redaction checks of the full
+gate (`scripts/verify-renderers.py`, `scripts/verify-courier-redaction.py`),
+keep the system's fonts: what they check — that nothing redacted is
+drawn or extracted, that readers draw the embedded program — does not
+depend on which face a reader picks for a non-embedded Courier.
 
 ## Environments
 
@@ -98,7 +108,10 @@ Mono is the outlier); in E1, C turns two of them back to
 has no regression and 8 improvements; against an E0 baseline built from
 A/E0, C/E0 has today's 21.
 
-Synthetic (25 cases, 96 and 150 dpi), C against A: MuPDF and pdf.js
+Synthetic (25 cases, 96 and 150 dpi: 23 in Courier or Courier New and
+two controls — another fixed-pitch font and Helvetica — that A and C
+draw identically), C against A, SSIM of the text area, differences
+within 0.001 counted as the same: MuPDF and pdf.js
 better on 22–23 cases, worse on none, in both environments (their
 references do not depend on E0/E1); Poppler worse on 23 in E0 and better
 on 22 in E1, worse on one — an invalid-name case where the references

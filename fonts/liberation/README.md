@@ -8,7 +8,8 @@ These twelve TrueType files are the **Liberation Fonts**, version
 |---|---|
 | Helvetica, Arial | Liberation Sans |
 | Times, Times New Roman | Liberation Serif |
-| Courier, Courier New | Liberation Mono |
+| Courier, Courier New | Liberation Mono until 0.11; since 0.12, Kasane Courier (`fonts/kasane-courier/`: Courier Prime with Liberation Mono's other characters and its advances) |
+| other fixed-pitch fonts | Liberation Mono |
 
 Liberation Sans/Serif/Mono are metric-compatible with Arial / Times
 New Roman / Courier New (and therefore with Helvetica / Times /
