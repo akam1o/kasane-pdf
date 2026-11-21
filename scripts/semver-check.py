@@ -73,6 +73,9 @@ RAN = re.compile(r"^\s*(PASS|FAIL|WARN) \[[^\]]*\]\s+(major|minor)\s+([a-z0-9_]+
 STARTING = re.compile(r"^\s*Starting (\d+) checks?, (\d+) unnecessary\b", re.M)
 # The tool's exit status with failing checks (0 without).
 FINDINGS_EXIT = 100
+REQUIRES = re.compile(r"semver requires new (major|minor) version: (\d+) major and (\d+) minor checks? failed")
+# A lint id or a Rust path, whole (docs/api-stability.md is matched by these).
+TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*")
 
 
 def parse_version(v):
@@ -203,8 +206,12 @@ def judge(parsed, levels, base_version, cand_version, stability_sections, crate=
     summary = parsed.get("summary") or ""
     if c and c["fail"] == 0 and summary != "no semver update required":
         not_run.append(f"summary '{summary}' with no failing check")
-    if c and c["fail"] > 0 and not summary.startswith("semver requires"):
-        not_run.append(f"summary '{summary}' with failing checks")
+    if c and c["fail"] > 0:
+        m = REQUIRES.fullmatch(summary)
+        by_level = {lv: sum(1 for i in states["FAIL"] if levels.get(i) == lv) for lv in ("major", "minor")}
+        want = "major" if by_level["major"] else "minor"
+        if not m or (m.group(1), int(m.group(2)), int(m.group(3))) != (want, by_level["major"], by_level["minor"]):
+            not_run.append(f"summary '{summary}' does not match the failing lints listed {by_level}")
     kind = bump(base_version, cand_version)
     if kind in (None, "downgrade"):
         not_run.append(f"versions not comparable: {base_version} -> {cand_version}")
@@ -218,8 +225,10 @@ def judge(parsed, levels, base_version, cand_version, stability_sections, crate=
         elif level == "minor":
             j["allowed"], j["why"] = True, "an addition: allowed by any version (Cargo's 0.x rules)"
         elif kind == "incompatible" and cand_version in stability_sections:
-            text = stability_sections[cand_version]
-            missing = [x for x in [f["id"]] + [item_path(i) or i for i in f["items"]] if x not in text]
+            # Whole tokens: `function_missing_extra` does not name
+            # `function_missing`, nor `kasane_pdf::f_extra` `kasane_pdf::f`.
+            named = set(TOKEN.findall(stability_sections[cand_version]))
+            missing = [x for x in [f["id"]] + [item_path(i) or i for i in f["items"]] if x not in named]
             if missing or not f["items"]:
                 j["allowed"], j["why"] = False, (f"breaking: {base_version} -> {cand_version} allows it, but "
                                                  f"docs/api-stability.md § {cand_version} does not name "

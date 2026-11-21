@@ -82,7 +82,11 @@ class Judgement(unittest.TestCase):
         self.assertTrue(judged[0]["allowed"])
         self.assertIn("api-stability", self.judge(sections={})[2][0])
         # A section that does not name the lint, or the item: refused.
-        for text in ("0.2.0\n\nSomething else changed.\n", "0.2.0\n\n`function_missing` somewhere.\n"):
+        for text in ("0.2.0\n\nSomething else changed.\n", "0.2.0\n\n`function_missing` somewhere.\n",
+                     # prefixes of the lint and the item are not them
+                     "0.2.0\n\n`function_missing_extra`: `kasane_pdf::removed_extra`.\n",
+                     "0.2.0\n\n`function_missing`: `kasane_pdf::removed_extra`.\n",
+                     "0.2.0\n\n`function_missing_x`: `kasane_pdf::removed`.\n"):
             self.assertTrue(self.judge(sections={"0.2.0": text})[2], text)
         for cand in ("0.1.1", "0.1.0"):
             not_run, _, refused = self.judge(cand=cand, text=REPORT.replace("v0.2.0", f"v{cand}"),
@@ -117,6 +121,9 @@ class Judgement(unittest.TestCase):
             "mislevelled": REPORT.replace("minor        function_marked_deprecated", "major        function_marked_deprecated"),
             "listed twice": REPORT + "        PASS [   0.000s]       minor        function_marked_deprecated\n",
             "summary": REPORT.replace("semver requires new major version", "no semver update required"),
+            "summary level": REPORT.replace("semver requires new major version", "semver requires new minor version"),
+            "summary counts": REPORT.replace("1 major and 0 minor", "0 major and 999 minor"),
+            "summary form": REPORT.replace("1 major and 0 minor checks failed", "something failed"),
             "not the unnecessary ones": REPORT.replace("1 unnecessary", "0 unnecessary"),
             "no starting line": REPORT.replace("    Starting 2 checks, 1 unnecessary on 10 threads\n", ""),
         }
