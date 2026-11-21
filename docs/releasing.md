@@ -233,7 +233,7 @@ is a new commit, never part of the tag:
    crates.io package (checked against its tag), never from the
    checkout. This first run has no expected states for the new version
    and ends `incomplete` (exit 3); its only problems may be
-   `no_expectation:<version>:…`, one per input — anything else is a
+   `no_expectation:<input>:<version>`, one per input — anything else is a
    finding to investigate first. `scripts/advisory-history.py
    update-expected --results <that run's JSON> --expected
    compat/advisories/history.json` then writes the observed states
