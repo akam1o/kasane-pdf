@@ -62,7 +62,15 @@ def wrapper_env(root):
 TEMPLATES = ("/usr/share/fontconfig/conf.avail", "/opt/homebrew/share/fontconfig/conf.avail")
 
 
-def outside_font_access(log, root, parse_only=()):
+# Opened outside the reference and not about fonts: the process's own
+# input and output, libraries, the C library's and Poppler's data.
+NOT_FONT = ("/proc/", "/sys/", "/dev/", "/etc/ld.so", "/usr/lib/locale/", "/usr/share/locale/",
+            "/usr/lib/x86_64-linux-gnu/gconv/", "/usr/lib/aarch64-linux-gnu/gconv/", "/etc/localtime",
+            "/usr/share/poppler/", "/etc/nsswitch.conf", "/etc/passwd", "/etc/group", "/usr/share/zoneinfo/",
+            "/etc/gnutls/", "/usr/share/coreutils/")
+
+
+def outside_font_access(log, root, parse_only=(), cwd=None, own=()):
     """(opened, parsed, attempted): font, configuration and cache paths
     outside root the process opened (shared libraries aside); the
     configuration files it read only to describe them — fontconfig's
@@ -70,15 +78,21 @@ def outside_font_access(log, root, parse_only=()):
     `parse_only`); and paths it tried and could not open."""
     opened, templates, attempted = set(), set(), set()
     for line in open(log, errors="replace"):
-        m = re.search(r'(?:openat|open|openat2)\((?:AT_FDCWD|\d+), "([^"]+)"[^)]*\)\s*=\s*(-?\d+)', line)
+        # open("p", …), openat(AT_FDCWD|fd, "p", …), openat2(…) — after
+        # strace's pid prefix.
+        m = re.search(r'\b(?:open|openat|openat2)\((?:(?:AT_FDCWD|-?\d+), )?"([^"]+)"[^)]*\)\s*=\s*(-?\d+)', line)
         if not m:
             continue
         path, rc = m.group(1), int(m.group(2))
-        real = os.path.realpath(path) if rc >= 0 else path
-        if real.startswith(root + os.sep) or re.search(r"\.so(\.\d+)*$", real):
+        if not os.path.isabs(path):
+            path = os.path.join(cwd or os.getcwd(), path)
+        real = os.path.realpath(path) if rc >= 0 else os.path.normpath(path)
+        if real.startswith(root + os.sep) or re.search(r"\.so(\.\d+)*$", real) or any(real == o or real.startswith(o + os.sep) for o in own) \
+                or any(x.startswith(p) or x == p.rstrip("/") for p in NOT_FONT for x in (path, real)):
             continue
-        if not (real.lower().endswith(FONT_EXT) or any(p in real for p in FONT_PLACES) or "fontconfig" in real):
-            continue
+        # Anything else outside: a font, a configuration (any .conf or
+        # XML, wherever), a cache — or a file of unknown purpose, which
+        # is reported as opened too.
         if rc < 0:
             attempted.add(path)
         elif any(real == t or real.startswith(t + "/") for t in TEMPLATES) or path in parse_only or real in parse_only:
@@ -127,7 +141,7 @@ def main():
             if base in probe.COURIER and row["matched"] != [f"NimbusMonoPS-{probe.COURIER[base]}.otf"]:
                 problems.append(f"{base}: drew {row['matched']}, not Nimbus Mono PS {probe.COURIER[base]}")
             if strace:
-                opened, parsed, attempted = outside_font_access(log, root, described)
+                opened, parsed, attempted = outside_font_access(log, root, described, own=(os.path.realpath(tmp),))
                 row["opened_outside"], row["attempted_outside"] = opened, attempted
                 row["parse_only_reads"] = len(parsed)
                 if opened:

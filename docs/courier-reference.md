@@ -191,7 +191,10 @@ fontconfig:
   the lock's. fontconfig reads, whatever its configuration, its
   compiled-in template directory and what those templates include to
   describe them as not enabled (`fc-conflist`'s `-`): such reads are
-  counted, not failures — `isolation-test.py` puts rules there.
+  counted, not failures. The trace shows they are read, not that they are
+  not applied: that is shown by behaviour — `isolation-test.py` puts
+  rules there and E2 does not change — and by fontconfig's own list of
+  what it applies (`+`), which must be E2's.
 - `isolation-test.py` (`courier-reference.yml`, on a runner):
   another directory, cold and warm caches, a polluted user (`HOME`,
   `XDG_CONFIG_HOME`, `FONTCONFIG_PATH`, a font in `~/.fonts`), a
@@ -214,10 +217,11 @@ only its environment changed (the reference, schema 2). E1 and E0 remain
 for evaluation runs (`reference_profile`); their fingerprints differ from
 the baseline's.
 
-What E2 does not isolate: Poppler itself, its FreeType and fontconfig
-libraries and their compiled-in defaults (recorded by content in the
-fingerprint, not pinned), and anything a font program needs that is not
-a font.
+What E2 does not isolate: Poppler itself (its binary and libpoppler),
+its FreeType and fontconfig libraries and their compiled-in defaults —
+recorded by content in the fingerprint (schema 2), not pinned: another
+build is another reference, never repaired — and anything a font
+program needs that is not a font.
 
 ## A lost runner
 
