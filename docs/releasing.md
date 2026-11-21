@@ -228,14 +228,20 @@ is a new commit, never part of the tag:
    `static.crates.io` records `M` in `.cargo_vcs_info.json`, and
    `git rev-parse v<version>^{}` is `M`.
 2. On a branch from `main`, add `<version>` to `history.json`'s
-   `versions`, run `scripts/advisory-history.py run --mode main …` —
+   `versions` and run `scripts/advisory-history.py run --mode main …`:
    it builds every listed version, the new one included, from its
-   crates.io package (checked against its tag), never from the checkout
-   — and `scripts/advisory-history.py update-expected` to record the
-   new version's states as measured on that package (it must give the
-   candidate's states input by input). The states of the versions
-   already listed are not rewritten: a change there is a finding, not
-   an update (`git diff` shows the new version's entries only).
+   crates.io package (checked against its tag), never from the
+   checkout. This first run has no expected states for the new version
+   and ends `incomplete` (exit 3); its only problems may be
+   `no_expectation:<version>:…`, one per input — anything else is a
+   finding to investigate first. `scripts/advisory-history.py
+   update-expected --results <that run's JSON> --expected
+   compat/advisories/history.json` then writes the observed states
+   (the new version must give the candidate's states input by input).
+   It rewrites the whole table, so check `git diff`: only the new
+   version's entries may appear; a change to a version already listed
+   is a finding, not an update, and is not committed. Run the history
+   once more: it must pass.
 3. A pull request; it merges when green, and its merge is `S`.
 4. `scripts/release-check.py --published <version> <S>`: the version is
    on crates.io from the tag's commit and `S`'s history covers it,

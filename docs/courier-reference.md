@@ -14,9 +14,13 @@ witness and the strict check against `compat/baselines/corpus-full.json`)
 uses E1 (*The nightly on E1*, below). The redaction corpus in the same
 job, and the external-renderer and Courier redaction checks of the full
 gate (`scripts/verify-renderers.py`, `scripts/verify-courier-redaction.py`),
-keep the system's fonts: what they check — that nothing redacted is
-drawn or extracted, that readers draw the embedded program — does not
-depend on which face a reader picks for a non-embedded Courier.
+keep the system's fonts. An output that embeds its fonts is read with
+the embedded program, whatever the system's fonts; but where these
+checks render an input, or an output that still has a non-embedded
+font, with Poppler (the redaction corpus compares the input's and the
+output's renders), those measurements depend on the system's fonts, and
+their baselines (`compat/redaction/`, `compat/renderers/`) were made
+with them.
 
 ## Environments
 
