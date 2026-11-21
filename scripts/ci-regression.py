@@ -743,6 +743,11 @@ def attribution_usable(meta, env, attribution):
     if attribution.get("truncated"):
         regs.append(f"attribution incomplete: {attribution['truncated']} page(s) below the threshold "
                     "not measured (--max-pages-total)")
+    # A page whose PDF was missing was not measured (compat-attribute
+    # exits 2 on it): never equal to a baseline that has the same gap.
+    gone = sum(1 for p in attribution.get("pages") or [] if p.get("reason") == "not_fetched")
+    if gone:
+        regs.append(f"attribution incomplete: {gone} page(s) not measured, their PDF missing (not_fetched)")
     return regs, not regs
 
 
@@ -1292,6 +1297,9 @@ def update_baseline(a):
                           "baseline records every page below the threshold")
         if att.get("truncated"):
             raise Invalid(f"the attribution is truncated ({att['truncated']} page(s) not measured)")
+        gone = sum(1 for p in att.get("pages") or [] if p.get("reason") == "not_fetched")
+        if gone:
+            raise Invalid(f"the attribution has {gone} page(s) not measured, their PDF missing (not_fetched)")
         have = {(r["id"], r["page"]) for r in att["pages"]}
         want = expected_attribution(run, att["threshold"], att.get("max_pages_per_file"))
         if have != want:

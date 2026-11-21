@@ -11,7 +11,8 @@ before the nightly moved.
 
 Today the nightly's quality comparison (the 511-file corpus, the second
 witness and the strict check against `compat/baselines/corpus-full.json`)
-uses E1 (*The nightly on E1*, below). The redaction corpus in the same
+uses E2, E1 isolated from the runner (*E2*, below; before it, E1:
+*The nightly on E1*). The redaction corpus in the same
 job, and the external-renderer and Courier redaction checks of the full
 gate (`scripts/verify-renderers.py`, `scripts/verify-courier-redaction.py`),
 keep the system's fonts. An output that embeds its fonts is read with
@@ -163,6 +164,64 @@ What bounds E1 and what does not:
   reports: a changed file must lose a Courier substitute and only such
   faces, and gain Nimbus Mono PS and nothing else. That is evidence the
   change is Courier's, not a proof for every pixel of the file.
+
+## E2: E1 isolated from the machine
+
+E1 included the runner's `/etc/fonts/fonts.conf` — and through it the
+per-user and local configuration (`50-user.conf`, `51-local.conf`) — and
+shared fontconfig's caches, so a change on the machine could change the
+reference. E2 has E1's fonts and rules and nothing of the machine's
+fontconfig:
+- `scripts/courier-reference/setup-e2.py` builds it from the packages
+  `e2-inputs.json` pins (snapshot.ubuntu.com 2026-11-20:
+  fontconfig-config, the six font packages of the runner, and
+  fonts-urw-base35 for Nimbus Mono PS), each `.deb` and each file taken
+  from it checked by SHA-256, read in Python (no dpkg: the same on
+  macOS): the runner's 53 fonts and the four Nimbus Mono PS faces,
+  fontconfig-config's configuration files but `50-user.conf` and
+  `51-local.conf`, a `fonts.conf` naming only its own font directories,
+  include and cache, E1's Courier rules first. The wrappers clear
+  `FONTCONFIG_PATH`, `FONTCONFIG_SYSROOT` and the `XDG_*` variables and
+  give the process an empty `HOME`. `e2-make-lock.py` writes the lock
+  from an inventory of a reference machine.
+- `isolation-probe.py` checks what Poppler does, not what the wrapper
+  sets: every font it matches (FC_DEBUG) is E2's, Courier is E2's Nimbus
+  Mono PS, nothing outside E2 is opened (strace, Linux), and
+  fontconfig's enabled configuration and font list are E2's and exactly
+  the lock's. fontconfig reads, whatever its configuration, its
+  compiled-in template directory and what those templates include to
+  describe them as not enabled (`fc-conflist`'s `-`): such reads are
+  counted, not failures. The trace shows they are read, not that they are
+  not applied: that is shown by behaviour — `isolation-test.py` puts
+  rules there and E2 does not change — and by fontconfig's own list of
+  what it applies (`+`), which must be E2's.
+- `isolation-test.py` (`courier-reference.yml`, on a runner):
+  another directory, cold and warm caches, a polluted user (`HOME`,
+  `XDG_CONFIG_HOME`, `FONTCONFIG_PATH`, a font in `~/.fonts`), a
+  polluted machine (`/etc/fonts/local.conf`, the template directory, a
+  font in `/usr/share/fonts`, the shared caches rebuilt) change nothing
+  of E2, while E0 and E1 change on the same machine (the positive
+  controls); a font missing or of other content and a configuration
+  file changed are detected (probe and fingerprint), a package that is
+  not its lock's is refused.
+
+Measured on the runner (x86_64), one harness (`dc0869e`), A = the
+baseline's product (`f6ddcdd`, branch `eval/e2-a`, evaluation only), C =
+`main`'s (Kasane Courier): A/E1 → A/E2 and C/E1 → C/E2 identical on all
+1,148 strict-render pages, every file's classes, verdicts and text F1,
+and the second witness's 153 pages; A/E2 → C/E2 the same 8 SSIM
+improvements, none worse, as in E1. A/E1 on this harness equals the run
+the E1 baseline came from (44675455806) on all 1,148 pages.
+`corpus-full.json` was then measured again from A/E2 (run 44938439276):
+only its environment changed (the reference, schema 2). E1 and E0 remain
+for evaluation runs (`reference_profile`); their fingerprints differ from
+the baseline's.
+
+What E2 does not isolate: Poppler itself (its binary and libpoppler),
+its FreeType and fontconfig libraries and their compiled-in defaults —
+recorded by content in the fingerprint (schema 2), not pinned: another
+build is another reference, never repaired — and anything a font
+program needs that is not a font.
 
 ## A lost runner
 

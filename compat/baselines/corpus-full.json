@@ -40225,20 +40225,25 @@
   },
   "env": {
    "arch": "x86_64",
-   "commit": "f6ddcdd72c41aae62dfc5f82d9c78792e4153451",
+   "commit": "4be6f804064e0d79a1b37d2bf95770396e5b3043",
    "features": "cjk-fallback",
    "mupdf": "1.27.0",
    "os": "linux-ubuntu-26.04",
    "poppler": "26.01.0",
    "qpdf": "12.3.2",
    "reference": {
-    "config_sha256": "593c60ad9b7a0a28804896dbeb088662f1d852617fd82aa91afd4cfd69e37a30",
+    "config_sha256": "5f969bb6ffad46813de2bb389d64c24ac5f446abf8c17311b65ac2c4cf99fb7d",
     "font_files": 57,
     "fontconfig": "2.17.1",
-    "fonts_sha256": "1db19da5168ff58a1677bca89e375c60e91383151673a0a85df66fe66f31f6cb",
+    "fontconfig_lib": "libfontconfig.so.1.16.1",
+    "fontconfig_lib_sha256": "1c0edcb00ca244b2d50649d8e49aacfb1607a49879d7ce255b787d961241b0d5",
+    "fonts_sha256": "3f9283eecd09a846ed66ece387612526df02d73c9b0cfcb069799bd85831c7f9",
     "freetype": "libfreetype.so.6.20.5",
     "freetype_sha256": "1e3b06a2f9a1288f4f30af4d014a1164b6747168a2d81c99ecebd978a4a33a16",
-    "profile": "courier-nimbus-mono-ps",
+    "inputs_sha256": "b762e5a279034fde7e5a718f342635ca1fca8a824df01882ec53ddf1176216a7",
+    "isolation": "isolated",
+    "profile": "courier-nimbus-mono-ps-isolated",
+    "schema": 2,
     "version": 1
    }
   }

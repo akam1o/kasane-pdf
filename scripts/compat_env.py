@@ -30,7 +30,8 @@ fontconfig), `inherits-system` (a reference directory that includes it:
 E1), `isolated` (scripts/courier-reference/setup-e2.py's E2, nothing of
 the machine's fontconfig) — the lock an isolated reference was built
 from (its SHA-256, checked against the directory's inputs.json), and the
-fontconfig library by name and content beside FreeType's (ldd on Linux;
+fontconfig library by name and content beside FreeType's, and Poppler's
+build (the pdftoppm binary and the libpoppler it loads) by content (ldd on Linux;
 on macOS otool -L followed through the libraries it names). An isolated
 reference whose fontconfig loads a configuration file or lists a font
 outside its directory is not one: incomplete. A reference of another
@@ -50,7 +51,8 @@ import sys
 COMPARED = ("os", "arch", "poppler", "mupdf", "features", "reference")
 # The fingerprint fields a reference must have to be compared at all.
 REFERENCE_FIELDS = ("schema", "profile", "version", "isolation", "config_sha256", "fonts_sha256", "font_files",
-                    "fontconfig", "fontconfig_lib", "fontconfig_lib_sha256", "freetype", "freetype_sha256")
+                    "fontconfig", "fontconfig_lib", "fontconfig_lib_sha256", "freetype", "freetype_sha256",
+                    "poppler_build_sha256")
 # 2: the isolation, the lock of an isolated reference, the fontconfig
 # library by content. A reference of another schema (an older report) is
 # incomplete: never compared, never upgraded by guessing.
@@ -234,7 +236,7 @@ def _read_all(paths):
 
 INCOMPLETE = {"schema": SCHEMA, "isolation": None, "inputs_sha256": None, "config_sha256": None, "fonts_sha256": None,
               "font_files": None, "fontconfig": None, "fontconfig_lib": None, "fontconfig_lib_sha256": None,
-              "freetype": None, "freetype_sha256": None}
+              "freetype": None, "freetype_sha256": None, "poppler_build_sha256": None}
 
 
 def reference(pdftoppm="pdftoppm"):
@@ -316,6 +318,12 @@ def reference(pdftoppm="pdftoppm"):
     out["fontconfig"] = _version(["fc-list", "--version"], r"version (\S+)")
     out["freetype"], out["freetype_sha256"] = _library(tool[-1], "libfreetype")
     out["fontconfig_lib"], out["fontconfig_lib_sha256"] = _library(tool[-1], "libfontconfig")
+    # Poppler itself by content — the pdftoppm binary and the libpoppler
+    # it loads: two builds of one version string are two references.
+    poppler = _library(tool[-1], "libpoppler")[1]
+    exe = _read_all([tool[-1]])
+    if poppler and exe:
+        out["poppler_build_sha256"] = _sha((_sha(exe[0][1]) + poppler).encode())
     return out
 
 
@@ -355,7 +363,8 @@ def reference_complete(ref):
             and type(ref.get("version")) is int and ref["version"] >= 1
             and ref.get("isolation") in ISOLATION
             and (sha("inputs_sha256") if ref["isolation"] == "isolated" else ref.get("inputs_sha256") is None)
-            and all(sha(k) for k in ("config_sha256", "fonts_sha256", "freetype_sha256", "fontconfig_lib_sha256"))
+            and all(sha(k) for k in ("config_sha256", "fonts_sha256", "freetype_sha256", "fontconfig_lib_sha256",
+                                     "poppler_build_sha256"))
             and type(ref.get("font_files")) is int and ref["font_files"] > 0
             and ok(ref.get("fontconfig")) and ok(ref.get("freetype")) and ok(ref.get("fontconfig_lib")))
 

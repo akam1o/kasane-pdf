@@ -517,10 +517,41 @@ def check_redact_corpus(r, cfg, work):
     return summary
 
 
+def platform_key():
+    """<os>-<arch> as the renderer baselines name it (darwin-arm64,
+    linux-x86_64)."""
+    import platform as _p
+    m = _p.machine().lower()
+    return f"{_p.system().lower()}-{m.replace('aarch64', 'arm64') if _p.system() == 'Darwin' else m}"
+
+
+def strict_reference(r, cfg, work):
+    """The isolated reference E2 (scripts/courier-reference/setup-e2.py),
+    built and checked, for the strict comparison with this platform's
+    baseline; None when the commit has no baseline for this platform."""
+    base = Path(r.src) / cfg["platform_baseline"].format(platform=platform_key())
+    if not base.is_file():
+        return None, None
+    if not shutil.which("mutool"):
+        raise CheckFailed("error", "tool_missing")
+    ref = work / "ref"
+    debs = Path(os.path.expanduser("~/.cache/kasane-pdf/e2-debs"))
+    need(r.run([sys.executable, "scripts/courier-reference/setup-e2.py", str(ref), "--debs", str(debs)],
+               log=r.logfile("reference")), "reference")
+    need(r.run([sys.executable, "scripts/courier-reference/isolation-probe.py", str(ref), "--json",
+                str(work / "isolation.json")], log=r.logfile("reference")), "isolation")
+    return base, ref
+
+
 def check_compat_corpus(r, cfg, work):
     baseline = Path(r.src) / cfg["baseline"]
     if not baseline.is_file():
         raise CheckFailed("incomparable", "no_baseline")
+    # This platform's own baseline, measured here with E2: the strict,
+    # numeric comparison (environment fingerprints equal). The Linux one
+    # above is compared loosely: another platform, numbers not compared.
+    strict_base, ref = strict_reference(r, cfg, work)
+    renv = {"PATH": f"{ref / 'bin'}{os.pathsep}{r.env.get('PATH', os.environ.get('PATH', ''))}"} if ref else None
     # As nightly.yml builds it; --locked: a stale lock fails here instead
     # of being rewritten in the worktree.
     need(r.run(["cargo", "build", "--locked", "--release", *[x for f in cfg.get("runner_features", []) for x in ("--features", f)]],
@@ -528,7 +559,8 @@ def check_compat_corpus(r, cfg, work):
     runner = Path(r.env["CARGO_TARGET_DIR"]) / "release" / "kasane-compat"
     out = work / "run"
     out.mkdir(parents=True, exist_ok=True)
-    need(r.run([str(runner), "run", "--corpus", str(r.corpus), "--out", str(out), *cfg["runner_args"]]), "runner")
+    need(r.run([str(runner), "run", "--corpus", str(r.corpus), "--out", str(out), *cfg["runner_args"]], env=renv),
+         "runner")
     latest = out / "latest.json"
     if not latest.is_file():
         raise CheckFailed("error", "no_report")
@@ -551,7 +583,37 @@ def check_compat_corpus(r, cfg, work):
         raise CheckFailed("failed", "crash_or_timeout", summary=summary)
     if code != 0:
         raise CheckFailed("failed", "regression", summary=summary)
+    summary["strict"] = strict_check(r, cfg, work, latest, strict_base, renv) if strict_base else "incomparable"
+    if summary["strict"] != "passed" and strict_base:
+        raise CheckFailed("failed", "regression", summary=summary)
     return summary
+
+
+def strict_check(r, cfg, work, latest, base, renv):
+    """The run against this platform's baseline with --require-same-env:
+    the environment (E2's fingerprint included) and the second witness,
+    as nightly.yml does on Linux."""
+    feats = [x for f in cfg.get("runner_features", []) for x in ("--features", f)]
+    tdir = Path(r.env["CARGO_TARGET_DIR"]) / "cjk"
+    need(r.run(["cargo", "build", "--locked", "--release", *feats, "--bin", "kasane-pdf", "--target-dir", str(tdir)]),
+         "build_cli")
+    commit = subprocess.run(["git", "-C", str(r.src), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+    features = ",".join(cfg.get("runner_features", []))
+    env_json = work / "env.json"
+    with open(env_json, "w") as fh:
+        code = subprocess.run([sys.executable, "scripts/ci-regression.py", "env", "--features", features,
+                               "--commit", commit], cwd=r.src, stdout=fh, env={**r.env, **renv}).returncode
+    need(code, "env")
+    att = work / "attribution.json"
+    need(r.run([sys.executable, "scripts/compat-attribute.py", str(latest), str(tdir / "release" / "kasane-pdf"),
+                "--out", str(att), "--summary", str(work / "attribution-summary.json"), "--features", features,
+                "--commit", commit, "--jobs", "4"], env={**renv, "KASANE_CORPUS_DIR": str(r.corpus)},
+               log=r.logfile("attribution")), "attribution")
+    code = r.run([sys.executable, "scripts/ci-regression.py", "check", str(latest), str(base), "--env", str(env_json),
+                  "--attribution", str(att), "--require-same-env"], log=r.logfile("strict"))
+    if code is None:
+        raise CheckFailed("timeout", "timeout")
+    return "passed" if code == 0 else "failed"
 
 
 def check_external_renderers(r, cfg, work):
@@ -1109,7 +1171,7 @@ SCHEMAS = {
          "improvements": INT, "reason_changes": INT, "lost": {k: INT for k in LOST_KEYS}})},
     "compat_corpus": {"corpus": CORPUS_SCHEMA, **{k: INT for k in (
         "files", "crash", "timeout", "quality_flag", "quality_report", "quality_exempt", "roundtrip_full",
-        "incremental_pass")}},
+        "incremental_pass")}, "strict": STATUS},
     "external_renderers": {"cases": INT, "renderer_runs": INT, "leaks": INT, "losses": INT, "problems": INT,
                            "outcomes": {k: INT for k in ("ok", "refused", "crash", "timeout")},
                            "pixels": {k: INT for k in ("antialias", "snap", "font_substitution", "changed")}},

@@ -152,22 +152,25 @@ def main():
             RULE.format(fam="Nimbus Mono PS", to="DejaVu Sans").split("<fontconfig>", 1)[1]
         host = {"/etc/fonts/local.conf": local,
                 "/usr/share/fontconfig/conf.avail/99-kasane-test.conf": RULE.format(fam="Courier", to="DejaVu Sans")}
-        for path, body in host.items():
+        font_dir = "/usr/share/fonts/truetype/kasane-test"
+        for path in list(host) + [font_dir]:
             if os.path.exists(path):
                 raise SystemExit(f"isolation-test: {path} exists; not overwriting it")
-            tmp = os.path.join(work, "host.conf")
-            open(tmp, "w").write(body)
-            subprocess.run(sudo + ["cp", tmp, path], check=True)
-            created.append(path)
-        font_dir = "/usr/share/fonts/truetype/kasane-test"
-        if os.path.exists(font_dir):
-            raise SystemExit(f"isolation-test: {font_dir} exists")
-        subprocess.run(sudo + ["mkdir", "-p", font_dir], check=True)
-        created.append(font_dir)
-        subprocess.run(sudo + ["cp", lib, os.path.join(font_dir, "kasane-test-host.ttf")], check=True)
-        subprocess.run(sudo + ["fc-cache", "-f"], check=True, capture_output=True)
-        subprocess.run(["fc-cache", "-f"], check=True, capture_output=True)
+        # Every file is recorded as soon as it exists, inside the try: a
+        # failure part-way still removes what was added.
         try:
+            for path, body in host.items():
+                tmp = os.path.join(work, "host.conf")
+                open(tmp, "w").write(body)
+                created.append(path)
+                subprocess.run(sudo + ["cp", tmp, path], check=True)
+            created.append(font_dir)
+            subprocess.run(sudo + ["mkdir", "-p", font_dir], check=True)
+            subprocess.run(sudo + ["cp", lib, os.path.join(font_dir, "kasane-test-host.ttf")], check=True)
+            if os.environ.get("KASANE_ISOLATION_TEST_FAIL_AFTER_FIRST"):  # the cleanup's own test
+                raise subprocess.CalledProcessError(1, "injected")
+            subprocess.run(sudo + ["fc-cache", "-f"], check=True, capture_output=True)
+            subprocess.run(["fc-cache", "-f"], check=True, capture_output=True)
             rc, doc = probe(base, os.path.join(work, "host.json"), env=env)
             case("a polluted machine: the same", rc == 0 and view(doc) == view(ref) and fingerprint(base, env) == fp)
             e0_after = courier_pixels(shutil.which("pdftoppm"), work)
@@ -199,6 +202,22 @@ def main():
         "<!-- changed -->\n"))
     case("a configuration file changed: detected", rc == 1 and f["config_sha256"] != fp["config_sha256"],
          problems=doc.get("problems"))
+    # A configuration outside E2 included — an arbitrary file, or one of
+    # the machine's templates applied: detected.
+    rogue = os.path.join(work, "rogue.conf")
+    open(rogue, "w").write("<fontconfig></fontconfig>\n")
+    tmpl = next((os.path.join(t, f) for t in ("/usr/share/fontconfig/conf.avail", "/opt/homebrew/share/fontconfig/conf.avail")
+                 if os.path.isdir(t) for f in sorted(os.listdir(t)) if f.endswith(".conf")), None)
+    for name, target in (("an outside configuration included", rogue), ("a machine template applied", tmpl)):
+        if target is None:
+            case(name + ": detected", False, why="no template directory on this machine")
+            continue
+        def inc(d, target=target):
+            p = os.path.join(d, "fonts.conf")
+            s = open(p).read()
+            open(p, "w").write(s.replace("</fontconfig>", f'\t<include ignore_missing="no">{target}</include>\n</fontconfig>'))
+        rc, doc, f = broken(name.replace(" ", "-"), inc)
+        case(name + ": detected", rc == 1 and f["profile"] == "unidentified", problems=doc.get("problems"))
     # A package that is not its lock's.
     cache = os.path.join(work, "bad-debs")
     shutil.rmtree(cache, ignore_errors=True)

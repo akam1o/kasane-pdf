@@ -54,7 +54,7 @@ except ImportError:
 E0 = {"schema": 2, "profile": "system", "version": 1, "isolation": "system", "inputs_sha256": None,
       "config_sha256": "0" * 64, "fonts_sha256": "1" * 64, "font_files": 53, "fontconfig": "2.17.1",
       "fontconfig_lib": "libfontconfig.so.1.16.1", "fontconfig_lib_sha256": "5" * 64,
-      "freetype": "libfreetype.so.6.20.5", "freetype_sha256": "4" * 64}
+      "freetype": "libfreetype.so.6.20.5", "freetype_sha256": "4" * 64, "poppler_build_sha256": "7" * 64}
 ENV = {"commit": "c" * 40, "os": "linux-ubuntu-26.04", "arch": "x86_64", "features": "cjk-fallback",
        "poppler": "26.01.0", "mupdf": "1.27.0", "qpdf": "12.3.2", "reference": E0}
 TOL = dict(ca.TOLERANCE)
@@ -673,6 +673,20 @@ class InvalidInputsM2(unittest.TestCase):
                                    self.write(d, f"a-{name}.json", a), "--write")
                 self.assertEqual(rc, 2, f"{name}: {out}")
                 self.assertFalse(os.path.exists(out_b), name)
+            # A page whose PDF was missing (not_fetched): not a measurement.
+            gone = att(("a", 1, "neither", *OPEN), ("a", 2, "neither", *OPEN), cap=None)
+            gone["pages"][0].update(agreement="not_comparable", reason="not_fetched", r300=None, m72={},
+                                    references_agree=None)
+            gone["pages"][0]["class"] = "not_comparable"
+            rc, out = main_cli("update-baseline", r, out_b, "--env", env, "--attribution",
+                               self.write(d, "a-gone.json", gone), "--write")
+            self.assertEqual(rc, 2, out)
+            self.assertIn("not_fetched", out)
+            self.assertFalse(os.path.exists(out_b))
+            regs, usable = cr.attribution_usable({"attribution": {"threshold": 0.95, "tolerance": gone["tolerance"]}},
+                                                 ENV, gone)
+            self.assertFalse(usable)
+            self.assertTrue(any("not_fetched" in x for x in regs))
             capped = att(("a", 1, "neither", *OPEN), ("a", 2, "neither", *OPEN), cap=8)
             rc, out = main_cli("update-baseline", r, out_b, "--env", env, "--attribution",
                                self.write(d, "a-capped.json", capped), "--write")
@@ -855,11 +869,15 @@ class ReferenceFingerprint(unittest.TestCase):
         os.makedirs(os.path.dirname(lib))
         with open(lib, "wb") as fh:
             fh.write(b"freetype build 1")
+        pl = os.path.join(d, "lib", "libpoppler.so.156")
+        with open(pl, "wb") as fh:
+            fh.write(b"poppler build 1")
         fc = os.path.join(d, "lib", "libfontconfig.so.1.16.1")
         with open(fc, "wb") as fh:
             fh.write(b"fontconfig build 1")
         ldd = (f'#!/bin/sh\necho "\tlibfreetype.so.6 => ${{FAKE_FREETYPE:-{lib}}} (0x0)"\n'
-               f'echo "\tlibfontconfig.so.1 => ${{FAKE_FONTCONFIG:-{fc}}} (0x0)"\n')
+               f'echo "\tlibfontconfig.so.1 => ${{FAKE_FONTCONFIG:-{fc}}} (0x0)"\n'
+               f'echo "\tlibpoppler.so.156 => ${{FAKE_POPPLER:-{pl}}} (0x0)"\n')
         for n, body in (("fc-conflist", conflist), ("fc-list", fclist), ("ldd", ldd)):
             with open(os.path.join(bin_, n), "w") as fh:
                 fh.write(body)
@@ -1036,6 +1054,14 @@ class ReferenceFingerprint(unittest.TestCase):
             r = self.fingerprint(self.isolated_dir(os.path.join(d, "fc")), bin_, FAKE_FONTCONFIG=fc2)
             self.assertTrue(ce.reference_complete(r))
             self.assertEqual(ce.differences({"reference": a}, {"reference": r}, keys=("reference",)), ["reference"])
+            # Another Poppler build (the same version string): another reference.
+            pl2 = os.path.join(d, "lib2", "libpoppler.so.156")
+            open(pl2, "wb").write(b"poppler build 2")
+            r = self.fingerprint(self.isolated_dir(os.path.join(d, "pl")), bin_, FAKE_POPPLER=pl2)
+            self.assertTrue(ce.reference_complete(r))
+            self.assertNotEqual(r["poppler_build_sha256"], a["poppler_build_sha256"])
+            self.assertEqual(ce.differences({"reference": a}, {"reference": r}, keys=("reference",)), ["reference"])
+            self.assertFalse(ce.reference_complete(dict(a, poppler_build_sha256=None)))
             # E0 / E1 / E2 are three references.
             e1 = self.fingerprint(self.reference_dir(os.path.join(d, "e1")), bin_)
             self.assertEqual(e1["isolation"], "inherits-system")
@@ -1432,7 +1458,9 @@ class Witnesses(unittest.TestCase):
                         os.environ.pop(k, None)
                     else:
                         os.environ[k] = v
-            self.assertEqual(rc, 0)
+            # Written whole, but exit 2: a page (not-in-the-corpus) was not
+            # measured.
+            self.assertEqual(rc, 2)
             with open(out) as fh:
                 rows = {r["id"]: r for r in json.load(fh)["pages"]}
             # Only the strict pages below the threshold.
