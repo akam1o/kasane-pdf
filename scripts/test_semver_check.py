@@ -97,7 +97,8 @@ class Judgement(unittest.TestCase):
     def test_an_addition_is_allowed_and_listed(self):
         text = (REPORT.replace("function_missing: pub fn removed or renamed", "function_marked_deprecated: fn deprecated")
                 .replace("FAIL [   0.000s]       major        function_missing", "PASS [   0.000s]       major        function_missing")
-                .replace("PASS [   0.000s]       minor        function_marked_deprecated", "FAIL [   0.000s]       minor        function_marked_deprecated"))
+                .replace("PASS [   0.000s]       minor        function_marked_deprecated", "FAIL [   0.000s]       minor        function_marked_deprecated")
+                .replace("new major version: 1 major and 0 minor", "new minor version: 0 major and 1 minor"))
         not_run, judged, refused = self.judge(text=text.replace("v0.2.0", "v0.1.1"), cand="0.1.1")
         self.assertEqual((not_run, refused), ([], []))
         self.assertEqual((judged[0]["level"], judged[0]["allowed"]), ("minor", True))
