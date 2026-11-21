@@ -139,6 +139,55 @@ def check_nightly_measurement(path, wf):
             problem(f"{path.name}:full-corpus: does not run `{cmd}`")
 
 
+# nightly.yml's reference diff: the shards and units the verdict expects.
+REFERENCE_DIFF_SHARDS, REFERENCE_DIFF_CHUNKS = 4, 3
+
+
+def check_reference_diff(path, wf):
+    """Every unit runs, is saved whatever happened, and the verdict joins
+    exactly the units the jobs make; the recovery test is never the
+    default."""
+    jobs = wf.get("jobs") or {}
+    job, verdict = jobs.get("reference-diff") or {}, jobs.get("reference-diff-verdict") or {}
+    shards = ((job.get("strategy") or {}).get("matrix") or {}).get("shard")
+    if shards != list(range(1, REFERENCE_DIFF_SHARDS + 1)):
+        problem(f"{path.name}:reference-diff: matrix shard is {shards}, not 1..{REFERENCE_DIFF_SHARDS}")
+    if (job.get("strategy") or {}).get("fail-fast") is not False:
+        problem(f"{path.name}:reference-diff: fail-fast must be false (one lost shard must not cancel the others)")
+    steps = job.get("steps") or []
+    for c in range(1, REFERENCE_DIFF_CHUNKS + 1):
+        run = [st for st in steps if f"--chunk {c}/{REFERENCE_DIFF_CHUNKS}" in (st.get("run") or "")]
+        if len(run) != 1:
+            problem(f"{path.name}:reference-diff: no single step runs unit chunk {c}/{REFERENCE_DIFF_CHUNKS}")
+            continue
+        st = run[0]
+        line = " ".join(logical_lines(st["run"]))
+        for opt in ("scripts/courier-reference/reference-diff.py", '--shard "$SHARD/4"', "--progress", "--json"):
+            if opt not in line:
+                problem(f"{path.name}:reference-diff: unit {c} runs without `{opt}`")
+        if str(st.get("if", "")).replace("${{", "").replace("}}", "").strip() != "always()" or st.get("continue-on-error"):
+            problem(f"{path.name}:reference-diff: unit {c} must run `if: always()`, never continue-on-error")
+        i = steps.index(st)
+        up = steps[i + 1] if i + 1 < len(steps) else {}
+        if not str(up.get("uses", "")).startswith("actions/upload-artifact@") or up.get("if") != "always()" \
+                or f"-c{c}-a${{{{ github.run_attempt }}}}" not in str((up.get("with") or {}).get("name")):
+            problem(f"{path.name}:reference-diff: unit {c} is not saved right after it, always, per attempt")
+    merge = [l for st in verdict.get("steps") or [] for l in logical_lines(st.get("run"))
+             if "reference-diff-merge.py" in l]
+    want = f"--shards {REFERENCE_DIFF_SHARDS} --chunks {REFERENCE_DIFF_CHUNKS}"
+    if len(merge) != 1 or want not in merge[0] or "|| true" in merge[0]:
+        problem(f"{path.name}:reference-diff-verdict: does not run reference-diff-merge.py {want}")
+    for st in verdict.get("steps") or []:
+        if "reference-diff-merge.py" in (st.get("run") or "") and ("if" in st or st.get("continue-on-error")):
+            problem(f"{path.name}:reference-diff-verdict: the merge step can be switched off")
+    if "reference-diff" not in str(verdict.get("needs")) or "always()" not in str(verdict.get("if", "")):
+        problem(f"{path.name}:reference-diff-verdict: must need reference-diff and run always")
+    fault = ((((wf.get("on") or wf.get(True) or {}).get("workflow_dispatch") or {}).get("inputs") or {})
+             .get("reference_diff_fault") or {})
+    if fault and fault.get("default") != "none":
+        problem(f"{path.name}: reference_diff_fault must default to none")
+
+
 def check_no_baseline_writes(path, wf):
     """Baselines change only by a reviewed commit (update-baseline
     --write, run by a person): no workflow writes one."""
@@ -217,7 +266,7 @@ PR_MUST_RUN = {
                      "scripts/test_ci_scripts.py", "scripts/test_release_verify.py",
                      "scripts/test_advisory_history.py", "scripts/test_compat_analysis.py",
                      "KASANE_REQUIRE_PILLOW=1 python3 scripts/test_compat_evaluation.py",
-                     "python3 scripts/test_redact_text_measure.py"],
+                     "python3 scripts/test_redact_text_measure.py", "python3 scripts/test_reference_diff.py"],
     "render-fuzz-smoke": ["ci-run-sharded.sh redact_model", "fuzz/ci-run.sh \"$T\" \"fuzz/seeds/$T\"",
                           "-seed=1 -runs=3000"],
 }
@@ -591,6 +640,7 @@ def main():
         if path.name == "nightly.yml":
             check_nightly(path, wf)
             check_nightly_measurement(path, wf)
+            check_reference_diff(path, wf)
             check_must_run(path, wf, NIGHTLY_MUST_RUN)
         if path.name == "advisory-history-tag.yml":
             check_must_run(path, wf, TAG_HISTORY_MUST_RUN)

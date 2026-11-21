@@ -163,3 +163,48 @@ What bounds E1 and what does not:
   reports: a changed file must lose a Courier substitute and only such
   faces, and gain Nimbus Mono PS and nothing else. That is evidence the
   change is Courier's, not a proof for every pixel of the file.
+
+## A lost runner
+
+Twice the nightly's runner was lost during the reference diff (run
+44675455806 and 44837826657, attempt 1 each: "The hosted runner lost
+communication with the server", 4–5 minutes into a step that takes
+about 4.5 minutes; both re-runs passed). The cause is not known: nothing
+the runner kept says what happened. What was measured since (511 files,
+Poppler at 96 dpi, the container of the 2×2): Poppler writes at most
+124 MB of pages for one file and 1.4 GB for the corpus, its processes
+peak at about 1 GB; the script held both references' pages of a file in
+memory (164 MB at its peak) — not enough, on its own, to take a 16 GB
+runner, so no cause is claimed.
+
+What changed is what a loss leaves behind and what it costs:
+- the diff has its own jobs (`reference-diff`, `reference-diff-verdict`),
+  beside the corpus job, whose reports no longer wait on it;
+- 4 shards on 4 runners, each in 3 units run one after another; every
+  unit is uploaded as soon as it ends (`reference-diff-s<I>-c<J>-a<attempt>`:
+  `unit.json` — the unit's result, written whole when it ends —
+  `progress.jsonl`, one line per file as it is done, fsynced, with its
+  time, each Poppler process's peak RSS and the bytes it wrote, and
+  `monitor.jsonl`, the runner's memory, swap, load, free disk and three
+  largest processes every 10 s, `scripts/courier-reference/monitor.py`);
+- pages are compared by the SHA-256 of their pixels, never held in
+  memory (164 → 61 MB at the script's peak, the time unchanged);
+- the verdict (`reference-diff-merge.py`) takes, for each of the 12
+  units, the newest attempt that completed — never parts of two — and
+  checks that they cover the corpus once and agree (corpus digest,
+  harness digest, DPI, commit and run, E0 and E1 fingerprints). A unit
+  missing or incomplete fails it (exit 2), with what the lost attempt
+  saved: files done, the last file, the last resource sample.
+
+What is kept is what was uploaded before the loss: the last unit saved
+and its samples, not the minutes after it. A run whose verdict failed on
+a lost unit is re-run once, `gh run rerun <id> --failed` (only the failed
+shard and the verdict run again; attempt 1's artifacts stay). If the
+same unit is lost again, read both attempts' progress and monitor files
+before anything else; a third attempt is not a fix. A unit that fails
+on its own (an unexplained change, an error) is a result, not a loss:
+never re-run to make it pass.
+
+`nightly.yml`'s dispatch input `reference_diff_fault` kills unit 2.2's
+process on attempt 1 (a process, not a runner): the test that the verdict
+fails, keeps what was saved, and passes after `rerun --failed`.

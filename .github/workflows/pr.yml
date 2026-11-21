@@ -350,6 +350,8 @@ jobs:
         run: python3 scripts/test_compat_analysis.py
       - name: redaction corpus text measurements' own tests (Poppler / MuPDF states, fail-closed; fake tools)
         run: python3 scripts/test_redact_text_measure.py
+      - name: the sharded reference diff's own tests (units, a killed unit, attempts; fake Poppler)
+        run: python3 scripts/test_reference_diff.py
       - name: compatibility evaluation's own tests (second witness, 300 dpi, numeric regressions; fake renderers)
         run: |
           pip3 install --quiet pillow==13.0.0
