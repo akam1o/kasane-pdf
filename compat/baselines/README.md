@@ -26,10 +26,12 @@ only with runs of that environment.
 Both corpus baselines now come from A — the product of `f6ddcdd`
 (before Kasane Courier) — measured with the reference E2
 (docs/courier-reference.md § E2): `corpus-full.json` from the nightly's
-x86_64 run 44938439276 (branch `eval/e2-a`, commit `4be6f80`: that
+x86_64 run 44943629308 (branch `eval/e2-a`, commit `ff21992`: that
 product with the E2 harness), identical to its E1 predecessor but the
 environment; `corpus-full-darwin-arm64.json` from the same commit run
-on macOS 26 arm64. Re-measure: dispatch the nightly on such a branch,
+on macOS 26 arm64 (Poppler 26.10.0, MuPDF 1.28.6, E2 built there from the
+same lock), which a second run with E2 in another directory matches
+strictly. Re-measure: dispatch the nightly on such a branch,
 then `update-baseline` from its artifacts; on macOS, the steps of
 `release-verify.py`'s strict check run by hand with that commit.
 

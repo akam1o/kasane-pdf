@@ -80,12 +80,23 @@ def outside_font_access(log, root, parse_only=(), cwd=None, own=()):
     for line in open(log, errors="replace"):
         # open("p", …), openat(AT_FDCWD|fd, "p", …), openat2(…) — after
         # strace's pid prefix.
-        m = re.search(r'\b(?:open|openat|openat2)\((?:(?:AT_FDCWD|-?\d+), )?"([^"]+)"[^)]*\)\s*=\s*(-?\d+)', line)
+        # strace -y annotates descriptors with their path: `7</dir>`.
+        m = re.search(r'\b(?:open|openat|openat2)\((?:(AT_FDCWD|-?\d+)(?:<([^>]*)>)?, )?"([^"]+)"[^)]*\)\s*=\s*(-?\d+)',
+                      line)
         if not m:
             continue
-        path, rc = m.group(1), int(m.group(2))
+        fd, fdpath, path, rc = m.group(1), m.group(2), m.group(3), int(m.group(4))
         if not os.path.isabs(path):
-            path = os.path.join(cwd or os.getcwd(), path)
+            if fd is None or fd == "AT_FDCWD":
+                base = fdpath or cwd or os.getcwd()
+            elif fdpath:
+                base = fdpath
+            else:
+                # A descriptor whose directory the trace does not say:
+                # never assumed inside — reported as opened outside.
+                opened.add(f"<fd {fd}>/{path}")
+                continue
+            path = os.path.join(base, path)
         real = os.path.realpath(path) if rc >= 0 else os.path.normpath(path)
         if real.startswith(root + os.sep) or re.search(r"\.so(\.\d+)*$", real) or any(real == o or real.startswith(o + os.sep) for o in own) \
                 or any(x.startswith(p) or x == p.rstrip("/") for p in NOT_FONT for x in (path, real)):
@@ -129,7 +140,7 @@ def main():
             argv = [tool, "-r", "72", "-gray", "-singlefile", pdf, out]
             log = os.path.join(tmp, "strace.log")
             if strace:
-                argv = [strace, "-f", "-qq", "-e", "trace=open,openat,openat2", "-o", log] + argv
+                argv = [strace, "-f", "-qq", "-y", "-e", "trace=open,openat,openat2", "-o", log] + argv
             r = subprocess.run(argv, capture_output=True, text=True, env=dict(os.environ, FC_DEBUG="1"), timeout=120)
             if r.returncode:
                 problems.append(f"{base}: pdftoppm failed ({r.returncode})")
