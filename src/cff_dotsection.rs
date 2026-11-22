@@ -16,9 +16,10 @@
 //! the subroutines a charstring calls, in the order it calls them. A
 //! subroutine read with two different stem counts at a mask, a call the
 //! tokeniser cannot resolve, a malformed structure or more work than
-//! [`MAX_TOKENS`] leaves the program as it is (`None`); a glyph whose
-//! own walk fails (a call it cannot resolve) is left as it is and the
-//! others rewritten. Every Private DICT and Subrs INDEX is written once,
+//! [`MAX_TOKENS`] leaves the program as it is (`None`); a glyph the
+//! interpreter itself stops on where the walk stops (a call with an
+//! empty stack or out of range, a truncated charstring, nesting past
+//! the limit) is left as it is and the others rewritten. Every Private DICT and Subrs INDEX is written once,
 //! however many font dicts name it, and the result is refused if it is
 //! not within twice the input and a megabyte.
 
@@ -32,8 +33,8 @@ const MAX_DEPTH: usize = 10;
 
 /// `program` with every `dotsection` removed, or `None` when it has none
 /// or cannot be rewritten exactly (see the module documentation).
-/// A glyph the walk cannot read (an unresolvable call, a font dict out
-/// of range) is left as it is; the others are still rewritten.
+/// A glyph the interpreter refuses where the walk stops is left as it
+/// is; the others are still rewritten.
 pub(crate) fn without_dotsection(program: &[u8]) -> Option<Vec<u8>> {
     if !program.windows(2).any(|w| w == [12, 0]) {
         return None;
@@ -44,18 +45,20 @@ pub(crate) fn without_dotsection(program: &[u8]) -> Option<Vec<u8>> {
         tokens: 0,
         cuts: HashMap::new(),
         stems_at_mask: HashMap::new(),
-        conflict: false,
     };
     for i in 0..cff.charstrings.len() {
         let Some(private) = cff.private_for(i) else {
             continue;
         };
         let mut st = State::default();
-        if walk.body(Body::Glyph(i), private, &mut st, 0).is_none() {
-            if walk.tokens > MAX_TOKENS || walk.conflict {
-                return None;
+        match walk.body(Body::Glyph(i), private, &mut st, 0) {
+            Ok(_) => {}
+            Err(Stop::Abort) => return None,
+            // The interpreter refuses this glyph where the walk stopped,
+            // before any later subroutine: nothing of it is rewritten.
+            Err(Stop::Invalid) => {
+                walk.cuts.remove(&Body::Glyph(i));
             }
-            walk.cuts.remove(&Body::Glyph(i));
         }
     }
     if walk.cuts.values().all(|c| c.is_empty()) {
@@ -92,8 +95,15 @@ struct Walk<'a> {
     cuts: HashMap<Body, Vec<usize>>,
     /// For a subroutine with a mask: the stem count it was read with.
     stems_at_mask: HashMap<(Body, usize), usize>,
-    /// A subroutine read two ways: nothing can be rewritten.
-    conflict: bool,
+}
+
+/// Why a walk stopped: the interpreter stops there too (`Invalid`: the
+/// glyph is left as it is, the others rewritten), or the walk cannot
+/// follow what the interpreter does (`Abort`: the whole program is left
+/// as it is).
+enum Stop {
+    Invalid,
+    Abort,
 }
 
 /// Whether the body ended the glyph (`endchar`) or returned.
@@ -103,33 +113,35 @@ enum End {
 }
 
 impl Walk<'_> {
-    fn body(&mut self, b: Body, private: usize, st: &mut State, depth: usize) -> Option<End> {
+    fn body(&mut self, b: Body, private: usize, st: &mut State, depth: usize) -> Result<End, Stop> {
         if depth > MAX_DEPTH {
-            return None;
+            return Err(Stop::Invalid);
         }
         let data = match b {
-            Body::Glyph(i) => self.cff.charstrings.get(i)?,
-            Body::Global(i) => self.cff.gsubrs.get(i)?,
-            Body::Local(set, i) => self.cff.subr_sets.get(set)?.get(i)?,
-        };
+            Body::Glyph(i) => self.cff.charstrings.get(i),
+            Body::Global(i) => self.cff.gsubrs.get(i),
+            Body::Local(set, i) => self.cff.subr_sets.get(set).and_then(|s| s.get(i)),
+        }
+        .ok_or(Stop::Invalid)?;
+        let byte = |k: usize| data.get(k).copied().ok_or(Stop::Invalid);
         let mut cuts = Vec::new();
         let mut i = 0usize;
         let mut ended = None;
         while i < data.len() {
             self.tokens += 1;
             if self.tokens > MAX_TOKENS {
-                return None;
+                return Err(Stop::Abort);
             }
             let v = data[i];
             match v {
                 28 => {
-                    let n = i16::from_be_bytes([*data.get(i + 1)?, *data.get(i + 2)?]);
+                    let n = i16::from_be_bytes([byte(i + 1)?, byte(i + 2)?]);
                     st.args += 1;
                     st.last = Some(n as i32);
                     i += 3;
                 }
                 255 => {
-                    data.get(i + 4)?;
+                    byte(i + 4)?;
                     st.args += 1;
                     st.last = None; // 16.16 fixed: never a subroutine index
                     i += 5;
@@ -141,59 +153,70 @@ impl Walk<'_> {
                 }
                 247..=250 => {
                     st.args += 1;
-                    st.last = Some((v as i32 - 247) * 256 + *data.get(i + 1)? as i32 + 108);
+                    st.last = Some((v as i32 - 247) * 256 + byte(i + 1)? as i32 + 108);
                     i += 2;
                 }
                 251..=254 => {
                     st.args += 1;
-                    st.last = Some(-(v as i32 - 251) * 256 - *data.get(i + 1)? as i32 - 108);
+                    st.last = Some(-(v as i32 - 251) * 256 - byte(i + 1)? as i32 - 108);
                     i += 2;
                 }
                 12 => {
-                    let op = *data.get(i + 1)?;
-                    if op == 0 {
+                    if byte(i + 1)? == 0 {
                         cuts.push(i);
                     }
                     st.args = 0;
+                    st.last = None;
                     i += 2;
                 }
                 1 | 3 | 18 | 23 => {
                     // hstem vstem hstemhm vstemhm (a width first, if odd)
                     st.stems += st.args / 2;
                     st.args = 0;
+                    st.last = None;
                     i += 1;
                 }
                 19 | 20 => {
                     // hintmask cntrmask: stems given before them are vstems.
                     st.stems += st.args / 2;
                     st.args = 0;
+                    st.last = None;
                     if matches!(b, Body::Global(_) | Body::Local(..)) {
                         match self.stems_at_mask.insert((b, i), st.stems) {
-                            Some(n) if n != st.stems => {
-                                self.conflict = true;
-                                return None;
-                            }
+                            Some(n) if n != st.stems => return Err(Stop::Abort),
                             _ => {}
                         }
                     }
                     i += 1 + st.stems.div_ceil(8);
                     if i > data.len() {
-                        return None;
+                        return Err(Stop::Invalid);
                     }
                 }
                 10 | 29 => {
-                    // callsubr callgsubr: the index is the last number.
-                    let n = st.last.take()?;
-                    st.args = st.args.checked_sub(1)?;
+                    // callsubr callgsubr: the index is the last number. An
+                    // empty stack, no subroutines or an index out of range
+                    // stop the interpreter too (the glyph is invalid); an
+                    // index the walk did not read (a 16.16 number) is not
+                    // modelled.
+                    if st.args == 0 {
+                        return Err(Stop::Invalid);
+                    }
+                    let n = st.last.take().ok_or(Stop::Abort)?;
+                    st.args -= 1;
                     let (subrs, target) = if v == 10 {
-                        let set = self.cff.privates.get(private)?.subrs?;
-                        (self.cff.subr_sets.get(set)?.len(), Body::Local(set, 0))
+                        let set = self
+                            .cff
+                            .privates
+                            .get(private)
+                            .and_then(|p| p.subrs)
+                            .ok_or(Stop::Invalid)?;
+                        (self.cff.subr_sets[set].len(), Body::Local(set, 0))
                     } else {
                         (self.cff.gsubrs.len(), Body::Global(0))
                     };
-                    let idx = usize::try_from(n + bias(subrs)).ok()?;
+                    let idx = usize::try_from(n + bias(subrs)).map_err(|_| Stop::Invalid)?;
                     if idx >= subrs {
-                        return None;
+                        return Err(Stop::Invalid);
                     }
                     let target = match target {
                         Body::Local(p, _) => Body::Local(p, idx),
@@ -223,18 +246,15 @@ impl Walk<'_> {
             }
         }
         match self.cuts.insert(b, cuts.clone()) {
-            Some(old) if old != cuts => {
-                self.conflict = true;
-                return None;
-            }
+            Some(old) if old != cuts => return Err(Stop::Abort),
             _ => {}
         }
-        match (b, ended) {
-            (Body::Glyph(_), _) => Some(End::EndChar),
-            (_, Some(e)) => Some(e),
+        Ok(match (b, ended) {
+            (Body::Glyph(_), _) => End::EndChar,
+            (_, Some(e)) => e,
             // A subroutine running off its end returns.
-            (_, None) => Some(End::Return),
-        }
+            (_, None) => End::Return,
+        })
     }
 }
 
@@ -933,6 +953,43 @@ mod tests {
     }
 
     #[test]
+    fn a_call_the_walk_cannot_follow_leaves_every_glyph_alone() {
+        // The review's case: S0's mask is one byte for glyph 1 (2 stems),
+        // three for glyph 2 (18 stems), so its 12 0 is a dotsection for
+        // one and mask data for the other. Glyph 2 reaches S0 by an index
+        // left on the stack below S1's: the walk cannot follow it, so
+        // nothing is rewritten and glyph 2 reads as before.
+        let s0 = glyph(&[&[19, 0xff, 12, 0], PATH, &[11]]);
+        let s1 = vec![11];
+        let g1 = vec![139, 149, 139, 149, 1, 32, 10, 14];
+        let mut g2 = Vec::new();
+        for op in [18u8, 23] {
+            for _ in 0..9 {
+                g2.extend_from_slice(&[139, 149]);
+            }
+            g2.push(op);
+        }
+        g2.extend_from_slice(&[32, 33, 10, 10, 14]);
+        let p = program(&[vec![14], g1, g2], &[s0, s1]);
+        let before = outline(&p, 2);
+        assert!(before.is_some());
+        assert_eq!(without_dotsection(&p), None);
+    }
+
+    #[test]
+    fn a_glyph_the_interpreter_refuses_is_skipped() {
+        // Glyph 2 calls with an empty stack: refused by the interpreter
+        // there, before any subroutine; glyph 1 is still rewritten.
+        let p = program(
+            &[vec![14], glyph(&[PATH, &[12, 0], &[14]]), vec![10, 14]],
+            &[],
+        );
+        let q = without_dotsection(&p).expect("rewritten");
+        assert_eq!(outline(&q, 1), Some(3));
+        assert_eq!(outline(&q, 2), outline(&p, 2));
+    }
+
+    #[test]
     fn a_top_dict_with_an_offset_operator_twice_is_left_alone() {
         let p = program(&[vec![14], glyph(&[PATH, &[12, 0], &[14]])], &[]);
         // The Top DICT with its CharStrings operator twice: six bytes
@@ -1018,6 +1075,7 @@ mod tests {
         );
         assert!(t.elapsed().as_secs() < 5);
         assert_eq!(Cff::parse(&q).unwrap().privates.len(), 1);
+        assert!(ttf_parser::cff::Table::parse(&q).is_some());
     }
 
     #[test]
