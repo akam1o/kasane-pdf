@@ -80,6 +80,7 @@ mod annot_appearance;
 mod annot_text;
 pub mod audit;
 mod bilevel;
+mod cff_dotsection;
 mod cff_matrix;
 mod cjk;
 mod cmap;

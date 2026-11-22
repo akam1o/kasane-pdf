@@ -13,10 +13,23 @@ versions follow [Semantic Versioning](https://semver.org/).
   content painted under it redacted as any other. Such a page was
   refused whatever the mask ("a soft mask is not handled"). A mask
   whose group meets a rect, paints a shading or with a pattern, or
-  draws anything that cannot be bounded, is still refused, as is a mask the redaction leaves with nothing
-  painted under it (the output would carry its group unused).
+  draws anything that cannot be bounded, is still refused, as is a mask
+  the redaction leaves with nothing painted under it (the output would
+  carry its group unused).
 
 ### Fixed
+- CFF glyphs whose charstrings carry `dotsection` (the Type 1 hint the
+  Type 2 format keeps as deprecated, to be ignored — Adobe TN 5177) are
+  drawn; they were drawn empty, the charstring refused by the outline
+  interpreter. Programs converted from Type 1 fonts keep it in glyphs
+  with dots and accents (`i`, `!`, accented letters). The program is
+  rewritten once, in memory, with the operator removed from every
+  charstring and subroutine (tokenised as the interpreter reads them,
+  hint-mask bytes and seac components included); a program that cannot
+  be rewritten exactly, or would take more than 16 million tokens, is
+  left as it was (a glyph the interpreter itself refuses is left alone,
+  the others rewritten). Bare CFF (`/Type1C`, `/CIDFontType0C`);
+  OpenType-wrapped CFF is not rewritten.
 - Dense tiling patterns (more than 64 tiles in a fill) are drawn from
   a periodic texture of one step of the tiling, rendered once at up to
   8 pixels per device pixel and averaged over each device pixel's
