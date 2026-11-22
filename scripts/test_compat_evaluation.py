@@ -386,6 +386,76 @@ class ReviewedDifferences(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         self.assertNotIn("ACCEPTED", out)
 
+    def test_blank_or_incomplete_evidence_never_applies(self):
+        env = {k: ENV[k] for k in cr.compat_env.COMPARED}
+        for over, why in [
+            ({"reason": "   "}, "evidence missing: reason"),
+            ({"review": "\t"}, "evidence missing: review"),
+            ({"sha256": "x" * 64}, "sha256 is not a SHA-256"),
+            ({"env": {k: v for k, v in env.items() if k != "mupdf"}}, "evidence missing: env mupdf"),
+            ({"env": dict(env, os=" ")}, "evidence missing: env os"),
+            ({"env": dict(env, reference={k: v for k, v in E0.items() if k != "fonts_sha256"})},
+             "evidence missing: env reference.fonts_sha256"),
+            ({"baseline": float("nan")}, "not a reviewed measure or value"),
+            ({"metric": "ssim"}, None),  # not an entry for this measure: nothing applies
+        ]:
+            rc, out = self.go(self.file(), self.att(kp=(0.02, 3.6)), self.entries(**over))
+            self.assertEqual(rc, 1, (over, out))
+            self.assertNotIn("ACCEPTED", out)
+            if why:
+                self.assertIn(why, out)
+
+    def test_a_baseline_update_still_needs_the_regression_accepted(self):
+        found = []
+        b = cr.summarize(run(self.file()), self.att(), ENV)
+        with contextlib.redirect_stdout(io.StringIO()):
+            rc = cr.check(run(self.file(cssim=0.85)), b, env=ENV, attribution=self.att(kp=(0.02, 3.6)),
+                          require_same_env=True, collect=found, reviewed_differences=self.entries())
+        self.assertEqual(rc, 0)
+        self.assertEqual(sorted(found), ["a: open page 1 differs more from Poppler (mad_kp 3.0 -> 3.6)",
+                                         "a: page 1 content SSIM 0.9 -> 0.85"])
+        with tempfile.TemporaryDirectory() as d:
+            def w(n, o):
+                with open(os.path.join(d, n), "w") as fh:
+                    json.dump(o, fh)
+                return os.path.join(d, n)
+            bp, envp = w("base.json", b), w("env.json", ENV)
+            r, a = w("run.json", run(self.file(cssim=0.85))), w("att.json", self.att(kp=(0.02, 3.6)))
+            saved = cr.load_reviewed
+            cr.load_reviewed = self.entries
+            try:
+                rc, out = main_cli("update-baseline", r, bp, "--env", envp, "--attribution", a, "--write")
+                self.assertEqual(rc, 1, out)
+                self.assertIn("regressions against the current baseline (2;", out)
+                with open(bp) as fh:
+                    self.assertEqual(json.load(fh), b)
+                rc, out = main_cli("update-baseline", r, bp, "--env", envp, "--attribution", a, "--write",
+                                   "--accept-regressions")
+                self.assertEqual(rc, 0, out)
+                # The updated baseline is the new origin: the entry's baseline
+                # value is stale, and a further drop is a regression.
+                rc, out = check(run(self.file(cssim=0.84)), json.load(open(bp)), env=ENV,
+                                attribution=self.att(kp=(0.02, 4.2)), require_same_env=True,
+                                reviewed_differences=self.entries())
+                self.assertEqual(rc, 1, out)
+                self.assertIn("another baseline value", out)
+            finally:
+                cr.load_reviewed = saved
+
+    def test_the_ledger_records_the_acceptance(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "ledger.json")
+            b = cr.summarize(run(self.file()), self.att(), ENV)
+            rc, out = check(run(self.file()), b, env=ENV, attribution=self.att(kp=(0.02, 3.6)),
+                            require_same_env=True, ledger_path=p, reviewed_differences=self.entries())
+            self.assertEqual(rc, 0, out)
+            with open(p) as fh:
+                led = json.load(fh)
+            (e,) = [e for e in led if e["id"] == "a" and e["page"] == 1]
+            self.assertEqual(len(e["decisions"]), 1, e)
+            self.assertTrue(e["decisions"][0].startswith("ACCEPTED (reviewed, limited): a: open page 1 differs "
+                                                         "more from Poppler (mad_kp 3.0 -> 3.6)"), e)
+
     def test_the_committed_differences_are_complete(self):
         entries = cr.load_reviewed()
         self.assertEqual(len(entries), 2)

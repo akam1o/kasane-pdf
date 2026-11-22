@@ -247,9 +247,14 @@ entry did not apply (another input, an input of unknown identity,
 another environment, another baseline value, past the reviewed value,
 evidence missing). Every other measure of the page — the other witness,
 `dpx` beside `mad`, page SSIM, the agreement, a page that becomes
-`not_comparable` — and every other page stay gated. The baseline itself
-is not changed; measuring it again makes an entry's baseline value stale
-and the entry no longer applies.
+`not_comparable` — and every other page stay gated. An entry with
+evidence missing or blank (any field, an environment field of either
+side, a SHA-256 that is not one) never applies. The ledger (`--ledger`)
+records the acceptance beside the page's other decisions. The baseline
+itself is not changed: `update-baseline` still counts an accepted
+difference as a regression (`--accept-regressions` after review), and a
+baseline measured again makes an entry's baseline value stale, so the
+entry no longer applies.
 
 ## 4. Baselines
 
