@@ -1400,6 +1400,23 @@ fn dashed_stroke(
     h: u32,
     spent: &mut DashBudget,
 ) -> Result<DashedStroke, Error> {
+    dashed_stroke_charged(path, stroke, dash_array, ts, w, h, spent, true)
+}
+
+/// [`dashed_stroke`], with `stroke` only charged for (its outline bounds
+/// the work) when `cover` is false: every segment is returned, whatever
+/// that width would cover — the stroke drawn is another.
+#[allow(clippy::too_many_arguments)]
+fn dashed_stroke_charged(
+    path: &tiny_skia::Path,
+    stroke: &Stroke,
+    dash_array: &[f64],
+    ts: Transform,
+    w: u32,
+    h: u32,
+    spent: &mut DashBudget,
+    cover: bool,
+) -> Result<DashedStroke, Error> {
     let Some(dash) = &stroke.dash else {
         return Ok(DashedStroke::Undashed);
     };
@@ -1459,7 +1476,8 @@ fn dashed_stroke(
         y1 = y1.max(dy);
     }
     let diag = ((x1 - x0).powi(2) + (y1 - y0).powi(2)).sqrt();
-    let covers = stroke.line_cap != tiny_skia::LineCap::Butt
+    let covers = cover
+        && stroke.line_cap != tiny_skia::LineCap::Butt
         && s_min > 0.0
         && diag.is_finite()
         && half * s_min >= COVER_SLACK * diag + 2.0;
@@ -6839,7 +6857,9 @@ impl<'a> Renderer<'a> {
                     .into(),
             });
         }
-        let path = match dashed_stroke(
+        // Charged only: the covering shortcut holds for `charged`, not
+        // for the hairline drawn, so every segment is kept.
+        let path = match dashed_stroke_charged(
             path,
             &charged,
             dash,
@@ -6847,6 +6867,7 @@ impl<'a> Renderer<'a> {
             self.pixmap.width(),
             self.pixmap.height(),
             &mut self.dash_work,
+            false,
         )? {
             DashedStroke::Undashed => path.clone(),
             DashedStroke::Nothing => return Ok(()),

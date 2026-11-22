@@ -575,3 +575,18 @@ fn a_blend_mode_inside_overlapping_cells_blends_tile_by_tile() {
     let (a, b) = (draw(&pat, 72.0), draw(&plain, 72.0));
     assert!(max_diff(&a, &b, 72.0) <= 3.0, "{}", max_diff(&a, &b, 72.0));
 }
+
+#[test]
+fn every_dash_of_a_hairline_in_the_texture_is_drawn() {
+    // A vertical round-capped dashed width-0 line in a cell 0.00101 pt
+    // wide (a fraction of a texture pixel): charged as the outline the
+    // rasteriser gets, it is still drawn dash by dash — its dashes cover
+    // the column, so the region is dark, not reduced to one dash.
+    let dense = pattern_page(
+        "/BBox [0 0 0.00101 4] /XStep 0.00101 /YStep 4",
+        "0 0 0 RG 0 w 1 J [0.5 0.5] 0 d 0 0 m 0 4 l S",
+        "",
+    );
+    let r = draw(&dense, 96.0);
+    assert!(mean(&r, 96.0) < 60.0, "{}", mean(&r, 96.0));
+}
