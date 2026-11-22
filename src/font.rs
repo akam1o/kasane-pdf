@@ -164,6 +164,9 @@ pub(crate) struct Type1Font {
     /// Lazily-built CFF table over `program` (same borrow pattern as
     /// `SimpleFont::face`).
     cff: RefCell<Option<CffTable<'static>>>,
+    /// The CFF program without `dotsection` (`cff_dotsection`), when it
+    /// has one: the table `cff` parses.
+    cff_program: std::cell::OnceCell<Option<Vec<u8>>>,
     /// The program's `FontMatrix` (Top DICT and Font DICTs), read on
     /// first use — see [`crate::cff_matrix`].
     cff_matrices: RefCell<Option<crate::cff_matrix::CffMatrices>>,
@@ -799,6 +802,7 @@ fn load_type1_font(doc: &Document, dict: &Dict, limits: &Limits) -> Result<Rc<Ty
         tounicode,
         builtin_cff_encoding: builtin,
         cff: RefCell::new(None),
+        cff_program: std::cell::OnceCell::new(),
         cff_matrices: RefCell::new(None),
         subst,
         has_widths,
@@ -1490,10 +1494,16 @@ impl Type1Font {
                 {
                     let mut slot = self.cff.borrow_mut();
                     if slot.is_none() {
+                        let program = self
+                            .cff_program
+                            .get_or_init(|| crate::cff_dotsection::without_dotsection(program))
+                            .as_deref()
+                            .unwrap_or(program);
                         let t = CffTable::parse(program)
                             .ok_or_else(|| Error::Structure("invalid CFF program".into()))?;
-                        // SAFETY: `t` borrows `self.program`; `self` owns
-                        // both and `program` never moves or mutates.
+                        // SAFETY: `t` borrows `self.program` or
+                        // `self.cff_program`; `self` owns them and neither
+                        // moves or mutates once set.
                         let t: CffTable<'static> = unsafe { std::mem::transmute(t) };
                         *slot = Some(t);
                     }
@@ -1881,6 +1891,9 @@ pub(crate) struct CompositeFont {
     face: RefCell<Option<Face<'static>>>,
     /// Bare CFF table over `program` (`CidProgram::Cff`) — lazy.
     cff: RefCell<Option<CffTable<'static>>>,
+    /// The CFF program without `dotsection` (`cff_dotsection`), when it
+    /// has one: the table `cff` parses.
+    cff_program: std::cell::OnceCell<Option<Vec<u8>>>,
     /// The program's `FontMatrix` (Top DICT and Font DICTs), read on
     /// first use — see [`crate::cff_matrix`].
     cff_matrices: RefCell<Option<crate::cff_matrix::CffMatrices>>,
@@ -2302,6 +2315,7 @@ fn load_composite_font(
         tounicode,
         face: RefCell::new(None),
         cff: RefCell::new(None),
+        cff_program: std::cell::OnceCell::new(),
         cff_matrices: RefCell::new(None),
         cid_gid: RefCell::new(None),
         collection: if registry == b"Adobe" {
@@ -2406,10 +2420,16 @@ impl CompositeFont {
         {
             let mut slot = self.cff.borrow_mut();
             if slot.is_none() {
-                let t = CffTable::parse(&self.program).ok_or_else(|| {
+                let program = self
+                    .cff_program
+                    .get_or_init(|| crate::cff_dotsection::without_dotsection(&self.program))
+                    .as_deref()
+                    .unwrap_or(&self.program);
+                let t = CffTable::parse(program).ok_or_else(|| {
                     Error::Structure("/FontFile3 is not a valid CFF program".into())
                 })?;
-                // SAFETY: as for `face` — `program` is owned and immutable.
+                // SAFETY: as for `face` — `program` and `cff_program`
+                // are owned and immutable once set.
                 let t: CffTable<'static> = unsafe { std::mem::transmute(t) };
                 *slot = Some(t);
             }

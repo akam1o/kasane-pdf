@@ -7,6 +7,16 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- CFF glyphs whose charstrings carry `dotsection` (the Type 1 hint the
+  Type 2 format keeps as deprecated, to be ignored — Adobe TN 5177) are
+  drawn; they were drawn empty, the charstring refused by the outline
+  interpreter. Programs converted from Type 1 fonts keep it in glyphs
+  with dots and accents (`i`, `!`, accented letters). The program is
+  rewritten once, in memory, with the operator removed from every
+  charstring and subroutine (tokenised as the interpreter reads them,
+  hint-mask bytes included); a program that cannot be rewritten exactly,
+  or would take more than 4 million tokens, is left as it was. Bare CFF
+  (`/Type1C`, `/CIDFontType0C`); OpenType-wrapped CFF is not rewritten.
 - Dense tiling patterns (more than 64 tiles in a fill) are drawn from
   a periodic texture of one step of the tiling, rendered once at up to
   8 pixels per device pixel and averaged over each device pixel's
