@@ -795,6 +795,33 @@ pub(crate) struct DiagGs {
     tiling: [Option<Vec<u8>>; 2],
 }
 
+impl DiagGs {
+    /// The initial graphics state (§8.4.1) under `ctm`.
+    fn initial(ctm: crate::matrix::Matrix) -> DiagGs {
+        DiagGs {
+            ctm,
+            clip: None,
+            clip_exact: true,
+            clip_holes: Vec::new(),
+            stroke: StrokeState {
+                width: 1.0,
+                cap: 0,
+                join: 0,
+                miter_limit: 10.0,
+                dash: None,
+                opaque: (true, true),
+                adjust: false,
+                fill_opaque: true,
+            },
+            text: TextState {
+                h_scale: 1.0,
+                ..Default::default()
+            },
+            tiling: [None, None],
+        }
+    }
+}
+
 /// `pub(crate)` — `remove_text` walks the same content with the
 /// same state tracking to find which codes land inside the rect. The
 /// walker is *not* a public API; callers go through
@@ -996,27 +1023,7 @@ impl<'a> DiagWalker<'a> {
             limits,
             rects,
             contents_refs: contents_refs(page),
-            gs: DiagGs {
-                ctm: crate::matrix::Matrix::IDENTITY,
-                clip: None,
-                clip_exact: true,
-                clip_holes: Vec::new(),
-                stroke: StrokeState {
-                    width: 1.0,
-                    cap: 0,
-                    join: 0,
-                    miter_limit: 10.0,
-                    dash: None,
-                    opaque: (true, true),
-                    adjust: false,
-                    fill_opaque: true,
-                },
-                text: TextState {
-                    h_scale: 1.0,
-                    ..Default::default()
-                },
-                tiling: [None, None],
-            },
+            gs: DiagGs::initial(crate::matrix::Matrix::IDENTITY),
             gs_stack: Vec::new(),
             resources,
             form_path: Vec::new(),
@@ -1104,6 +1111,7 @@ impl<'a> DiagWalker<'a> {
             return Ok(Some("not a dictionary"));
         };
         let mut st = self.gs.stroke.clone();
+        let mut mask = None;
         for (k, v) in d {
             let v = self.doc.deref(v)?;
             match k.as_slice() {
@@ -1152,7 +1160,7 @@ impl<'a> DiagWalker<'a> {
                 }
                 b"SMask" => {
                     if v.as_name() != Some(b"None".as_slice()) {
-                        return Ok(Some("a soft mask is not handled"));
+                        mask = Some(v);
                     }
                 }
                 b"Font" => return Ok(Some("/Font is not handled")),
@@ -1168,8 +1176,89 @@ impl<'a> DiagWalker<'a> {
                 _ => {}
             }
         }
+        if let Some(m) = mask {
+            if let Some(why) = self.soft_mask_blocker(&m)? {
+                return Ok(Some(why));
+            }
+        }
         self.gs.stroke = st;
         Ok(None)
+    }
+
+    /// Redaction: why the soft mask `m` of an ExtGState cannot be kept
+    /// as it is, or `None`. Its group is content (§11.6.5.2), drawn into
+    /// the mask under the CTM in effect at `gs`: walked here as a form
+    /// from the initial graphics state, it may draw nothing that meets
+    /// a rect — the group's own `/BBox` included, and whatever its clip
+    /// or `/BBox` hides (a clip hides ink, not data) — and nothing in it
+    /// may be uncertain or blocked. The mask is then kept whole, never
+    /// edited: what the walk found is dropped, its sites kept (an object
+    /// the mask draws is used elsewhere than the page's content).
+    fn soft_mask_blocker(&mut self, m: &Object) -> Result<Option<&'static str>, Error> {
+        let Some(md) = m.as_dict() else {
+            return Ok(Some("a soft mask that is not a dictionary"));
+        };
+        if !matches!(
+            md.get(b"S".as_slice()).and_then(|o| o.as_name()),
+            Some(b"Luminosity" | b"Alpha")
+        ) {
+            return Ok(Some(
+                "a soft mask whose /S is neither /Luminosity nor /Alpha",
+            ));
+        }
+        let Some(g) = md.get(b"G".as_slice()) else {
+            return Ok(Some("a soft mask without a group (/G)"));
+        };
+        let g_ref = g.as_ref();
+        let group = self.doc.deref(g)?;
+        let Some((gd, raw)) = group.as_stream() else {
+            return Ok(Some("a soft mask whose group is not a stream"));
+        };
+        if gd.get(b"Subtype".as_slice()).and_then(|o| o.as_name()) != Some(b"Form") {
+            return Ok(Some("a soft mask whose group is not a form XObject"));
+        }
+        let (gd, raw) = (gd.clone(), raw.to_vec());
+        let marks = (
+            self.targets.len(),
+            self.uncertain.len(),
+            self.blockers.len(),
+        );
+        let fresh = DiagGs::initial(self.gs.ctm);
+        let saved_gs = std::mem::replace(&mut self.gs, fresh);
+        let saved_text = (self.text_tm, self.text_tlm, self.in_text, self.code_index);
+        let saved_path = (
+            self.path_bounds.take(),
+            self.path_has_point,
+            self.pending_clip.take(),
+            self.path_rects.take(),
+            self.path_single_rect,
+        );
+        let saved_uncertain = std::mem::replace(&mut self.uncertain_state, false);
+        self.in_text = false;
+        self.path_has_point = false;
+        self.path_rects = Some(Vec::new());
+        self.path_single_rect = false;
+        let r = self.do_form(&gd, &raw, b"SMask", g_ref);
+        self.gs = saved_gs;
+        (self.text_tm, self.text_tlm, self.in_text, self.code_index) = saved_text;
+        (
+            self.path_bounds,
+            self.path_has_point,
+            self.pending_clip,
+            self.path_rects,
+            self.path_single_rect,
+        ) = saved_path;
+        self.uncertain_state = saved_uncertain;
+        r?;
+        let meets = self.targets[marks.0..].iter().any(|t| !t.hits.is_empty())
+            || self.uncertain.len() > marks.1
+            || self.blockers.len() > marks.2;
+        self.targets.truncate(marks.0);
+        self.uncertain.truncate(marks.1);
+        self.blockers.truncate(marks.2);
+        Ok(meets.then_some(
+            "a soft mask whose group draws inside a rect, or draws what cannot be bounded",
+        ))
     }
 
     /// The tiling patterns in force count as used by what is kept.

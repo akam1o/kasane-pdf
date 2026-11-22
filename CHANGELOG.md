@@ -6,6 +6,16 @@ versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Redaction: a page that sets a soft mask with `gs` is redacted when the
+  mask's group draws nothing that meets a rect (its `/BBox` included,
+  and content its `/BBox` or a clip hides): the mask is kept whole, the
+  content painted under it redacted as any other. Such a page was
+  refused whatever the mask ("a soft mask is not handled"). A mask
+  whose group meets a rect, or draws anything that cannot be bounded,
+  is still refused, as is a mask the redaction leaves with nothing
+  painted under it (the output would carry its group unused).
+
 ### Fixed
 - Dense tiling patterns (more than 64 tiles in a fill) are drawn from
   a periodic texture of one step of the tiling, rendered once at up to
