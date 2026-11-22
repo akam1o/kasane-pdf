@@ -671,6 +671,106 @@ pub fn pixmap_to_png(pixmap: &Pixmap) -> Result<Vec<u8>, Error> {
 /// `max_reference_depth` budget, like every other read of the page.
 const BLEND_SCAN_BUDGET: usize = 16_384;
 
+/// The bounded walk of `page_may_blend` and `resources_may_blend`.
+struct BlendScan<'a> {
+    doc: &'a Document,
+    seen: std::collections::HashSet<IndirectRef>,
+    budget: usize,
+    exhausted: bool,
+}
+impl BlendScan<'_> {
+    /// Resolve `o`, charging the budget; `None` for an object seen
+    /// before, an unreadable one, or an exhausted budget.
+    fn value(&mut self, o: &Object) -> Option<Object> {
+        if let Some(r) = o.as_ref() {
+            if !self.seen.insert(r) {
+                return None;
+            }
+            if self.budget == 0 {
+                self.exhausted = true;
+                return None;
+            }
+            self.budget -= 1;
+        }
+        // A pre-scan records no warning: an undefined object (null
+        // by §7.3.10) is read quietly; the renderer warns if it
+        // reaches it.
+        match self.doc.deref_defined(o) {
+            Ok(v) => Some(v),
+            Err(Error::MissingReference(_)) => Some(Object::Null),
+            Err(_) => None,
+        }
+    }
+    /// An indirect object already scanned (shared resources and
+    /// appearances are scanned once).
+    fn seen_before(&self, o: &Object) -> bool {
+        o.as_ref().is_some_and(|r| self.seen.contains(&r))
+    }
+    /// The values of the dictionary `key` of `rd`.
+    fn entries(&mut self, rd: &Dict, key: &[u8]) -> Vec<Object> {
+        rd.get(key)
+            .and_then(|o| self.value(o))
+            .and_then(|o| o.as_dict().map(|d| d.values().cloned().collect()))
+            .unwrap_or_default()
+    }
+    /// `true` if a non-Normal blend mode is reachable from `res`.
+    fn resources(&mut self, res: &Object) -> bool {
+        let Some(res) = self.value(res) else {
+            return self.exhausted;
+        };
+        let Some(rd) = res.as_dict() else {
+            return false;
+        };
+        for gs in self.entries(rd, b"ExtGState") {
+            let Some(gs) = self.value(&gs) else {
+                if self.exhausted {
+                    return true;
+                }
+                continue;
+            };
+            if let Some(bm) = gs.as_dict().and_then(|d| d.get(b"BM".as_slice())) {
+                match parse_blend_mode(bm) {
+                    Ok(tiny_skia::BlendMode::SourceOver) => {}
+                    _ => return true,
+                }
+            }
+        }
+        for key in [&b"XObject"[..], b"Pattern", b"Font"] {
+            for x in self.entries(rd, key) {
+                let Some(x) = self.value(&x) else {
+                    if self.exhausted {
+                        return true;
+                    }
+                    continue;
+                };
+                let d = match &x {
+                    Object::Stream { dict, .. } => dict,
+                    Object::Dict(d) => d,
+                    _ => continue,
+                };
+                if let Some(r) = d.get(b"Resources".as_slice()) {
+                    if self.resources(r) {
+                        return true;
+                    }
+                }
+            }
+        }
+        self.exhausted
+    }
+}
+
+/// Whether a non-Normal blend mode is reachable from resources `res`
+/// (a tiling cell's): as `page_may_blend`, within the same budget.
+fn resources_may_blend(doc: &Document, res: &Object) -> bool {
+    let mut scan = BlendScan {
+        doc,
+        seen: std::collections::HashSet::new(),
+        budget: BLEND_SCAN_BUDGET,
+        exhausted: false,
+    };
+    scan.resources(res)
+}
+
 /// Whether anything on `page` can be painted with a blend mode other
 /// than Normal: an `/ExtGState` with such a `/BM` in the page resources
 /// or in the resources of a form XObject, pattern, Type 3 font or
@@ -680,93 +780,7 @@ const BLEND_SCAN_BUDGET: usize = 16_384;
 /// shortcut). An unreadable resource entry is skipped: drawing it would
 /// fail the render anyway.
 fn page_may_blend(doc: &Document, page: &Page) -> bool {
-    struct Scan<'a> {
-        doc: &'a Document,
-        seen: std::collections::HashSet<IndirectRef>,
-        budget: usize,
-        exhausted: bool,
-    }
-    impl Scan<'_> {
-        /// Resolve `o`, charging the budget; `None` for an object seen
-        /// before, an unreadable one, or an exhausted budget.
-        fn value(&mut self, o: &Object) -> Option<Object> {
-            if let Some(r) = o.as_ref() {
-                if !self.seen.insert(r) {
-                    return None;
-                }
-                if self.budget == 0 {
-                    self.exhausted = true;
-                    return None;
-                }
-                self.budget -= 1;
-            }
-            // A pre-scan records no warning: an undefined object (null
-            // by §7.3.10) is read quietly; the renderer warns if it
-            // reaches it.
-            match self.doc.deref_defined(o) {
-                Ok(v) => Some(v),
-                Err(Error::MissingReference(_)) => Some(Object::Null),
-                Err(_) => None,
-            }
-        }
-        /// An indirect object already scanned (shared resources and
-        /// appearances are scanned once).
-        fn seen_before(&self, o: &Object) -> bool {
-            o.as_ref().is_some_and(|r| self.seen.contains(&r))
-        }
-        /// The values of the dictionary `key` of `rd`.
-        fn entries(&mut self, rd: &Dict, key: &[u8]) -> Vec<Object> {
-            rd.get(key)
-                .and_then(|o| self.value(o))
-                .and_then(|o| o.as_dict().map(|d| d.values().cloned().collect()))
-                .unwrap_or_default()
-        }
-        /// `true` if a non-Normal blend mode is reachable from `res`.
-        fn resources(&mut self, res: &Object) -> bool {
-            let Some(res) = self.value(res) else {
-                return self.exhausted;
-            };
-            let Some(rd) = res.as_dict() else {
-                return false;
-            };
-            for gs in self.entries(rd, b"ExtGState") {
-                let Some(gs) = self.value(&gs) else {
-                    if self.exhausted {
-                        return true;
-                    }
-                    continue;
-                };
-                if let Some(bm) = gs.as_dict().and_then(|d| d.get(b"BM".as_slice())) {
-                    match parse_blend_mode(bm) {
-                        Ok(tiny_skia::BlendMode::SourceOver) => {}
-                        _ => return true,
-                    }
-                }
-            }
-            for key in [&b"XObject"[..], b"Pattern", b"Font"] {
-                for x in self.entries(rd, key) {
-                    let Some(x) = self.value(&x) else {
-                        if self.exhausted {
-                            return true;
-                        }
-                        continue;
-                    };
-                    let d = match &x {
-                        Object::Stream { dict, .. } => dict,
-                        Object::Dict(d) => d,
-                        _ => continue,
-                    };
-                    if let Some(r) = d.get(b"Resources".as_slice()) {
-                        if self.resources(r) {
-                            return true;
-                        }
-                    }
-                }
-            }
-            self.exhausted
-        }
-    }
-    let mut scan = Scan {
+    let mut scan = BlendScan {
         doc,
         seen: std::collections::HashSet::new(),
         budget: BLEND_SCAN_BUDGET,
@@ -1998,6 +2012,17 @@ struct TexturePlan {
 /// paint into one step of the tiling along that axis (1: no overlap).
 fn tiling_reach(extent: f64, step: f64) -> f64 {
     ((extent / step) * (1.0 - 1e-9)).ceil().max(1.0)
+}
+
+/// The smallest and largest stretch (singular values) of the linear
+/// part of `ts`.
+fn stretch(ts: Transform) -> (f64, f64) {
+    let (a, b, c, d) = (ts.sx as f64, ts.ky as f64, ts.kx as f64, ts.sy as f64);
+    let p = a * a + b * b + c * c + d * d;
+    let q = (a * d - b * c).abs();
+    let s_max = ((p + (p * p - 4.0 * q * q).max(0.0).sqrt()) / 2.0).sqrt();
+    let s_min = if s_max > 0.0 { q / s_max } else { 0.0 };
+    (s_min, s_max)
 }
 
 /// The bytes of a `width` × `height` periodic texture and its
@@ -6663,10 +6688,11 @@ impl<'a> Renderer<'a> {
         // overlap, §8.7.3.1). It costs that many cell executions, counted
         // as tiles; it is used when there are more tiles than DIRECT_TILES
         // and it executes fewer cells than the tiles it replaces.
-        // Overlapping cells under a blend mode other than Normal are
-        // painted tile by tile: blending each onto what is below is not
-        // the blend of their composite (source-over, which the texture
-        // uses, composes either way).
+        // Overlapping cells blended other than Normal — by the fill's
+        // blend mode or by one the cell's own content can select
+        // (`resources_may_blend`) — are painted tile by tile: blending
+        // each onto what is below is not the blend of their composite
+        // (source-over, which the texture uses, composes either way).
         let wrapped =
             tiling_reach(bb.urx - bb.llx, tp.xstep) * tiling_reach(bb.ury - bb.lly, tp.ystep);
         let texture = (cell_w.is_finite()
@@ -6675,9 +6701,11 @@ impl<'a> Renderer<'a> {
             && cell_h >= 1e-3
             && tiles > DIRECT_TILES as f64
             && wrapped < tiles
-            && (wrapped == 1.0 || self.gs.blend_mode == tiny_skia::BlendMode::SourceOver))
-            .then(|| self.texture_plan(cell_w, cell_h))
-            .flatten();
+            && (wrapped == 1.0
+                || (self.gs.blend_mode == tiny_skia::BlendMode::SourceOver
+                    && !resources_may_blend(self.doc, &tp.resources))))
+        .then(|| self.texture_plan(cell_w, cell_h))
+        .flatten();
         let direct = texture.is_none();
         {
             let n = if direct { tiles as u64 } else { wrapped as u64 };
@@ -6791,9 +6819,29 @@ impl<'a> Renderer<'a> {
         ts: Transform,
     ) -> Result<(), Error> {
         let dash = self.gs.dash.as_ref().map_or(&[][..], |d| &d.0);
+        // Charged as the outline the rasteriser gets: one device pixel is
+        // up to `stretch(device_to_target).1` pixels of the target, which
+        // a user-space width reaches through `ts` at its shortest stretch.
+        let (_, target_px) = stretch(self.device_to_target);
+        let (ts_min, _) = stretch(ts);
+        if !(ts_min > 0.0 && target_px.is_finite()) {
+            return Ok(());
+        }
+        let charged = Stroke {
+            width: (target_px / ts_min) as f32,
+            ..stroke.clone()
+        };
+        if !charged.width.is_finite() {
+            return Err(Error::Unsupported {
+                feature: "dashed stroke",
+                detail: "a dashed stroke whose segments would take too long to rasterise \
+                         (outline edges) is not drawn"
+                    .into(),
+            });
+        }
         let path = match dashed_stroke(
             path,
-            stroke,
+            &charged,
             dash,
             ts,
             self.pixmap.width(),
@@ -9131,6 +9179,22 @@ mod tests {
             let c = sat.average(x, y, 10.0, 6.0);
             assert!((c[0] - mean).abs() < 1e-6, "({x}, {y}): {}", c[0]);
         }
+    }
+
+    #[test]
+    fn stretch_is_the_singular_values() {
+        let (lo, hi) = stretch(Transform::from_row(4.0, 0.0, 0.0, 1.0, 9.0, 9.0));
+        assert!((lo - 1.0).abs() < 1e-9 && (hi - 4.0).abs() < 1e-9);
+        let r = Transform::from_row(0.6, 0.8, -0.8, 0.6, 0.0, 0.0).pre_scale(3.0, 0.5);
+        let (lo, hi) = stretch(r);
+        assert!(
+            (lo - 0.5).abs() < 1e-5 && (hi - 3.0).abs() < 1e-5,
+            "{lo} {hi}"
+        );
+        assert_eq!(
+            stretch(Transform::from_row(1.0, 2.0, 2.0, 4.0, 0.0, 0.0)).0,
+            0.0
+        );
     }
 
     #[test]

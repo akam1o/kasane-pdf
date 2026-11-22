@@ -534,3 +534,44 @@ fn a_dense_cell_painting_with_its_own_pattern_is_still_a_cycle() {
         Err(Error::CycleDetected { .. })
     ));
 }
+
+#[test]
+fn a_blend_mode_inside_overlapping_cells_blends_tile_by_tile() {
+    // The cell selects /Multiply itself, over a grey page: each tile
+    // multiplies what is below, as the squares drawn one by one.
+    let ext = "/ExtGState << /M << /BM /Multiply >> >>";
+    let pat = pattern_page_with(
+        "/BBox [0 0 6 6] /XStep 4 /YStep 4",
+        "/M gs 0.5 g 0 0 6 6 re f",
+        ext,
+        "",
+        "0.6 g 0 0 200 200 re f",
+    );
+    let mut squares = String::new();
+    for j in 0..=48 {
+        for i in 0..=48 {
+            squares.push_str(&format!("{} {} 6 6 re f ", i * 4, j * 4));
+        }
+    }
+    let plain = build_pdf(&[
+        (1, b"<< /Type /Catalog /Pages 2 0 R >>".to_vec()),
+        (2, b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec()),
+        (
+            3,
+            format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] /Contents 4 0 R \
+                 /Resources << {ext} >> >>"
+            )
+            .into_bytes(),
+        ),
+        (
+            4,
+            stream_obj(
+                "",
+                format!("0.6 g 0 0 200 200 re f q {REGION} W n /M gs 0.5 g {squares} Q").as_bytes(),
+            ),
+        ),
+    ]);
+    let (a, b) = (draw(&pat, 72.0), draw(&plain, 72.0));
+    assert!(max_diff(&a, &b, 72.0) <= 3.0, "{}", max_diff(&a, &b, 72.0));
+}
