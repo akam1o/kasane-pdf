@@ -13,15 +13,19 @@
 //! Charstrings are tokenised as the interpreter reads them: numbers,
 //! operators, and the mask bytes after `hintmask` / `cntrmask`, whose
 //! length follows from the stem hints declared before them — through
-//! the subroutines a charstring calls, in the order it calls them. A
-//! subroutine read with two different stem counts at a mask, a call the
-//! tokeniser cannot resolve, a malformed structure or more work than
-//! [`MAX_TOKENS`] leaves the program as it is (`None`); a glyph the
-//! interpreter itself stops on where the walk stops (a call with an
-//! empty stack or out of range, a truncated charstring, nesting past
-//! the limit) is left as it is and the others rewritten. Every Private DICT and Subrs INDEX is written once,
-//! however many font dicts name it, and the result is refused if it is
-//! not within twice the input and a megabyte.
+//! the subroutines a charstring calls and the glyphs a seac composite
+//! names, in the order the interpreter reads them, with the stems it
+//! carries. A body read more than once must have the operator at the
+//! same places in every reading (then removing it leaves each reading
+//! as it was). A body two readings disagree on, a call the walk cannot
+//! follow, a dotsection with operands, a malformed structure or more
+//! work than [`MAX_TOKENS`] leaves the program as it is (`None`); a
+//! glyph the interpreter itself stops on where the walk stops (a
+//! reserved or unsupported operator, a call with an empty stack or out
+//! of range, a truncated charstring, nesting past the limit) is left as
+//! it is and the others rewritten. Every Private DICT and Subrs INDEX is
+//! written once, however many font dicts name it, and the result is
+//! refused if it is not within twice the input and a megabyte.
 
 use std::collections::HashMap;
 
@@ -44,7 +48,7 @@ pub(crate) fn without_dotsection(program: &[u8]) -> Option<Vec<u8>> {
         cff: &cff,
         tokens: 0,
         cuts: HashMap::new(),
-        stems_at_mask: HashMap::new(),
+        in_seac: false,
     };
     for i in 0..cff.charstrings.len() {
         let Some(private) = cff.private_for(i) else {
@@ -80,21 +84,27 @@ enum Body {
 
 #[derive(Default)]
 struct State {
-    /// Numbers on the argument stack.
-    args: usize,
-    /// The last number pushed (a subroutine call's index).
-    last: Option<i32>,
+    /// The argument stack: each number's value, `None` for a 16.16
+    /// number (never an index or a code).
+    stack: Vec<Option<i32>>,
     /// Stem hints declared so far.
     stems: usize,
+    /// Whether the glyph's width was given (as the interpreter decides:
+    /// an extra first operand of a stem, mask or move operator, or of
+    /// `endchar`).
+    width: bool,
 }
+
+/// The Type 2 argument stack limit.
+const MAX_ARGS: usize = 48;
 
 struct Walk<'a> {
     cff: &'a Cff<'a>,
     tokens: usize,
     /// Byte offsets of each `dotsection` (its escape byte) per body.
     cuts: HashMap<Body, Vec<usize>>,
-    /// For a subroutine with a mask: the stem count it was read with.
-    stems_at_mask: HashMap<(Body, usize), usize>,
+    /// Inside a seac component (a nested seac is not followed).
+    in_seac: bool,
 }
 
 /// Why a walk stopped: the interpreter stops there too (`Invalid`: the
@@ -136,60 +146,67 @@ impl Walk<'_> {
             match v {
                 28 => {
                     let n = i16::from_be_bytes([byte(i + 1)?, byte(i + 2)?]);
-                    st.args += 1;
-                    st.last = Some(n as i32);
+                    push(st, Some(n as i32))?;
                     i += 3;
                 }
                 255 => {
                     byte(i + 4)?;
-                    st.args += 1;
-                    st.last = None; // 16.16 fixed: never a subroutine index
+                    push(st, None)?;
                     i += 5;
                 }
                 32..=246 => {
-                    st.args += 1;
-                    st.last = Some(v as i32 - 139);
+                    push(st, Some(v as i32 - 139))?;
                     i += 1;
                 }
                 247..=250 => {
-                    st.args += 1;
-                    st.last = Some((v as i32 - 247) * 256 + byte(i + 1)? as i32 + 108);
+                    push(st, Some((v as i32 - 247) * 256 + byte(i + 1)? as i32 + 108))?;
                     i += 2;
                 }
                 251..=254 => {
-                    st.args += 1;
-                    st.last = Some(-(v as i32 - 251) * 256 - byte(i + 1)? as i32 - 108);
+                    push(
+                        st,
+                        Some(-(v as i32 - 251) * 256 - byte(i + 1)? as i32 - 108),
+                    )?;
                     i += 2;
                 }
                 12 => {
-                    if byte(i + 1)? == 0 {
+                    let op = byte(i + 1)?;
+                    // Only the flex operators and dotsection are read.
+                    if !matches!(op, 0 | 34..=37) {
+                        return Err(Stop::Invalid);
+                    }
+                    if op == 0 {
+                        // dotsection takes no operands; the interpreter
+                        // keeps any before it once it is cut.
+                        if !st.stack.is_empty() {
+                            return Err(Stop::Abort);
+                        }
                         cuts.push(i);
                     }
-                    st.args = 0;
-                    st.last = None;
+                    st.stack.clear();
                     i += 2;
                 }
                 1 | 3 | 18 | 23 => {
                     // hstem vstem hstemhm vstemhm (a width first, if odd)
-                    st.stems += st.args / 2;
-                    st.args = 0;
-                    st.last = None;
+                    st.width |= st.stack.len() % 2 == 1;
+                    st.stems += st.stack.len() / 2;
+                    st.stack.clear();
                     i += 1;
                 }
                 19 | 20 => {
                     // hintmask cntrmask: stems given before them are vstems.
-                    st.stems += st.args / 2;
-                    st.args = 0;
-                    st.last = None;
-                    if matches!(b, Body::Global(_) | Body::Local(..)) {
-                        match self.stems_at_mask.insert((b, i), st.stems) {
-                            Some(n) if n != st.stems => return Err(Stop::Abort),
-                            _ => {}
-                        }
-                    }
+                    st.width |= st.stack.len() % 2 == 1;
+                    st.stems += st.stack.len() / 2;
+                    st.stack.clear();
                     i += 1 + st.stems.div_ceil(8);
                     if i > data.len() {
-                        return Err(Stop::Invalid);
+                        // A glyph without endchar is refused; a subroutine
+                        // whose mask runs past its end returns.
+                        if let Body::Glyph(_) = b {
+                            return Err(Stop::Invalid);
+                        }
+                        ended = Some(End::Return);
+                        break;
                     }
                 }
                 10 | 29 => {
@@ -198,11 +215,7 @@ impl Walk<'_> {
                     // stop the interpreter too (the glyph is invalid); an
                     // index the walk did not read (a 16.16 number) is not
                     // modelled.
-                    if st.args == 0 {
-                        return Err(Stop::Invalid);
-                    }
-                    let n = st.last.take().ok_or(Stop::Abort)?;
-                    st.args -= 1;
+                    let n = st.stack.pop().ok_or(Stop::Invalid)?.ok_or(Stop::Abort)?;
                     let (subrs, target) = if v == 10 {
                         let set = self
                             .cff
@@ -234,17 +247,50 @@ impl Walk<'_> {
                     break;
                 }
                 14 => {
+                    // endchar with four operands (five with a width) is
+                    // seac: the interpreter reads the base glyph, then the
+                    // accent, carrying this glyph's stems — so are they
+                    // walked here (Adobe TN 5177, appendix C).
+                    if st.stack.len() == 4 || (!st.width && st.stack.len() == 5) {
+                        let n = st.stack.len();
+                        let codes = (st.stack[n - 2], st.stack[n - 1]);
+                        let (Some(bchar), Some(achar)) = codes else {
+                            return Err(Stop::Abort);
+                        };
+                        if self.in_seac || self.cff.fd_select.is_some() {
+                            return Err(Stop::Abort);
+                        }
+                        let base = self.cff.seac_glyph(bchar)?;
+                        let accent = self.cff.seac_glyph(achar)?;
+                        st.stack.clear();
+                        self.in_seac = true;
+                        if depth >= MAX_DEPTH {
+                            return Err(Stop::Invalid);
+                        }
+                        let r = self
+                            .body(Body::Glyph(base), private, st, depth + 1)
+                            .and_then(|_| self.body(Body::Glyph(accent), private, st, depth + 1));
+                        self.in_seac = false;
+                        r?;
+                    }
                     ended = Some(End::EndChar);
                     break;
                 }
+                0 | 2 | 9 | 13 | 15 | 16 | 17 => return Err(Stop::Invalid),
                 0..=31 => {
+                    // rmoveto with 3, hmoveto / vmoveto with 2: a width.
+                    let n = st.stack.len();
+                    st.width |= (v == 21 && n == 3) || (matches!(v, 4 | 22) && n == 2);
                     // Any other operator clears the stack.
-                    st.args = 0;
-                    st.last = None;
+                    st.stack.clear();
                     i += 1;
                 }
             }
         }
+        // A body read more than once (a subroutine, a seac component),
+        // perhaps with other stems at its masks: every reading must find
+        // the operator at the same places — then removing them leaves each
+        // reading as it was, less the operators.
         match self.cuts.insert(b, cuts.clone()) {
             Some(old) if old != cuts => return Err(Stop::Abort),
             _ => {}
@@ -256,6 +302,16 @@ impl Walk<'_> {
             (_, None) => End::Return,
         })
     }
+}
+
+/// Push a number, within the argument stack limit (the interpreter
+/// refuses the glyph past it).
+fn push(st: &mut State, v: Option<i32>) -> Result<(), Stop> {
+    if st.stack.len() >= MAX_ARGS {
+        return Err(Stop::Invalid);
+    }
+    st.stack.push(v);
+    Ok(())
 }
 
 /// The subroutine index bias (Type 2 §4.7).
@@ -579,6 +635,55 @@ impl<'a> Cff<'a> {
             fd_dicts,
             fd_select,
         })
+    }
+
+    /// The glyph a seac operand names, as the interpreter finds it: the
+    /// code through StandardEncoding to a standard string, then the
+    /// charset (ISOAdobe: codes up to 228 only; Expert charsets: none).
+    fn seac_glyph(&self, code: i32) -> Result<usize, Stop> {
+        let code = u8::try_from(code).map_err(|_| Stop::Invalid)?;
+        let sid = crate::encodings::STANDARD[code as usize]
+            .and_then(|n| crate::cff_matrix::ISO_ADOBE.iter().position(|s| *s == n))
+            .unwrap_or(0);
+        let gid = match arg(&self.top, CHARSET)
+            .and_then(|v| v.first().copied())
+            .unwrap_or(0)
+        {
+            0 => (code <= 228).then_some(sid),
+            1 | 2 => None,
+            _ if sid == 0 => Some(0),
+            _ => self.charset_gid(sid as u16),
+        };
+        gid.filter(|&g| g < self.charstrings.len())
+            .ok_or(Stop::Invalid)
+    }
+
+    /// The glyph a custom charset gives string `sid` (formats 0, 1, 2).
+    fn charset_gid(&self, sid: u16) -> Option<usize> {
+        let b = self.table(CHARSET)??;
+        let n = self.charstrings.len();
+        match b[0] {
+            0 => (0..n.saturating_sub(1))
+                .position(|k| b.get(1 + 2 * k..3 + 2 * k) == Some(&sid.to_be_bytes()[..]))
+                .map(|k| k + 1),
+            f => {
+                let (step, mut i, mut gid) = (if f == 1 { 3 } else { 4 }, 1usize, 1usize);
+                while gid < n {
+                    let first = u16::from_be_bytes([*b.get(i)?, *b.get(i + 1)?]);
+                    let left = if f == 1 {
+                        *b.get(i + 2)? as usize
+                    } else {
+                        u16::from_be_bytes([*b.get(i + 2)?, *b.get(i + 3)?]) as usize
+                    };
+                    if first <= sid && (sid as usize) <= first as usize + left {
+                        return Some(gid + (sid - first) as usize);
+                    }
+                    gid += left + 1;
+                    i += step;
+                }
+                None
+            }
+        }
     }
 
     /// The Private DICT (by index in `privates`) glyph `g` runs under.
@@ -921,23 +1026,22 @@ mod tests {
     }
 
     #[test]
-    fn a_subroutine_read_with_two_stem_counts_at_a_mask_is_left_alone() {
-        // The subroutine's mask is one byte after 2 stems, two after 10.
-        let sub = glyph(&[&[19, 0xff], &[12, 0], &[11]]);
+    fn a_subroutine_read_two_ways_is_left_alone() {
+        // The subroutine's mask is one byte after 2 stems (its 12 0 then
+        // a dotsection), three after 18 (12 0 mask data): the readings
+        // disagree on where the operator is, so nothing is rewritten.
+        let sub = glyph(&[&[19, 0xff, 12, 0], PATH, &[11]]);
         let call0 = [32u8, 10];
         let two = glyph(&[&[139, 149, 139, 149, 1], &call0, &[14]]);
-        let mut ten = Vec::new();
-        for n in [
-            0, 10, 20, 10, 40, 10, 60, 10, 80, 10, 0, 10, 20, 10, 40, 10, 60, 10, 80, 10,
-        ] {
-            ten.push((n + 139) as u8);
+        let mut many = Vec::new();
+        for _ in 0..18 {
+            many.extend_from_slice(&[139, 149]);
         }
-        ten.push(1);
-        let ten = glyph(&[&ten, &call0, &[14]]);
-        assert_eq!(
-            without_dotsection(&program(&[vec![14], two, ten], &[sub])),
-            None
-        );
+        many.push(1);
+        let many = glyph(&[&many, &call0, &[14]]);
+        let p = program(&[vec![14], two, many], &[sub]);
+        assert!(outline(&p, 2).is_some());
+        assert_eq!(without_dotsection(&p), None);
     }
 
     #[test]
@@ -974,6 +1078,74 @@ mod tests {
         let before = outline(&p, 2);
         assert!(before.is_some());
         assert_eq!(without_dotsection(&p), None);
+    }
+
+    #[test]
+    fn a_mask_past_a_subroutine_end_returns() {
+        // The review's case: S1 is a lone hintmask; with 18 stems its
+        // mask runs past S1's end, where the interpreter returns and goes
+        // on to S0 with 18 stems (a 3-byte mask: S0's 12 0 is data).
+        let s0 = glyph(&[&[19, 0xff, 12, 0], PATH, &[11]]);
+        let s1 = vec![19];
+        let g1 = vec![139, 149, 139, 149, 1, 32, 10, 14];
+        let mut g2 = Vec::new();
+        for op in [18u8, 23] {
+            for _ in 0..9 {
+                g2.extend_from_slice(&[139, 149]);
+            }
+            g2.push(op);
+        }
+        g2.extend_from_slice(&[33, 10, 32, 10, 14]);
+        let p = program(&[vec![14], g1, g2], &[s0, s1]);
+        assert_eq!(without_dotsection(&p), None);
+    }
+
+    /// 130 glyphs (glyph *g* named standard string *g*: 34 is `A`, 125
+    /// `acute`), `.notdef` empty but for those given.
+    fn seac_program(given: &[(usize, Vec<u8>)]) -> Vec<u8> {
+        let mut glyphs = vec![vec![14]; 130];
+        for (g, cs) in given {
+            glyphs[*g] = cs.clone();
+        }
+        program(&glyphs, &[])
+    }
+
+    #[test]
+    fn seac_components_are_read_with_the_composites_stems() {
+        // `endchar` with 0 0 65 194: base `A` (code 65), accent `acute`
+        // (code 194, StandardEncoding). The review's case: `A` declares 16
+        // stems, so the accent's mask is three bytes read as a component
+        // and one read alone — its 12 0 is data in one reading: nothing
+        // is rewritten.
+        let mut a = Vec::new();
+        for _ in 0..16 {
+            a.extend_from_slice(&[139, 149]);
+        }
+        a.push(1);
+        a.extend_from_slice(PATH);
+        a.push(14);
+        let acute = glyph(&[&[139, 149, 139, 149, 18, 19, 0xff, 12, 0], PATH, &[14]]);
+        let seac = vec![139, 139, 204, 28, 0, 194, 14];
+        let p = seac_program(&[(1, seac.clone()), (34, a), (125, acute)]);
+        assert_eq!(without_dotsection(&p), None);
+        // Without masks: the accent's dotsection is cut, the composite and
+        // the accent both drawn.
+        let acute = glyph(&[PATH, &[12, 0], &[14]]);
+        let a = glyph(&[PATH, &[14]]);
+        let p = seac_program(&[(1, seac), (34, a), (125, acute)]);
+        assert!(outline(&p, 1).is_none());
+        let q = without_dotsection(&p).expect("rewritten");
+        assert!(outline(&q, 1).is_some());
+        assert_eq!(outline(&q, 125), Some(3));
+    }
+
+    #[test]
+    fn a_dotsection_with_operands_is_left_alone() {
+        let operands = glyph(&[&[139, 12, 0], PATH, &[14]]);
+        assert_eq!(
+            without_dotsection(&program(&[vec![14], operands], &[])),
+            None
+        );
     }
 
     #[test]

@@ -334,7 +334,7 @@ impl CffMatrices {
 }
 
 /// The ISOAdobe charset (TN 5176 Appendix C): standard strings 0–228.
-const ISO_ADOBE: [&str; 229] = [
+pub(crate) const ISO_ADOBE: [&str; 229] = [
     ".notdef",
     "space",
     "exclam",
