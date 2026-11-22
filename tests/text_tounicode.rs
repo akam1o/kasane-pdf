@@ -319,6 +319,46 @@ fn tounicode_missing_entry_unresolved() {
 }
 
 #[test]
+fn tounicode_later_definition_overrides_earlier() {
+    // A CMap is read in order and a code defined again takes the later
+    // definition: a whole-range identity mapping first, then bfchar and
+    // bfrange entries for some of its codes (as Poppler, MuPDF and
+    // pdfium read it). Codes defined once keep their only mapping.
+    let cmap = b"begincmap
+        1 begincodespacerange
+        <00> <FF>
+        endcodespacerange
+        1 beginbfrange
+        <00> <FF> <0000>
+        endbfrange
+        2 beginbfchar
+        <41> <00F3>
+        <42> <20AC>
+        endbfchar
+        1 beginbfrange
+        <70> <71> <00E9>
+        endbfrange
+        1 beginbfchar
+        <41> <00E1>
+        endbfchar
+        endcmap";
+    let pdf = pdf_with_font(b"BT /F1 20 Tf 10 80 Td (ABCpq) Tj ET", Some(cmap));
+    let doc = Document::from_bytes(&pdf).unwrap();
+    let t = extract_text(&doc, &doc.pages()[0], &TextOptions::default()).unwrap();
+    let got: Vec<_> = t.chars.iter().map(|c| c.unicode.as_deref()).collect();
+    assert_eq!(
+        got,
+        [
+            Some("\u{E1}"),
+            Some("\u{20AC}"),
+            Some("C"),
+            Some("\u{E9}"),
+            Some("\u{EA}")
+        ]
+    );
+}
+
+#[test]
 fn tounicode_usecmap_refused() {
     // /UseCMap in the ToUnicode stream dict → Unsupported.
     // Build the font dict with a ToUnicode stream that carries

@@ -7,6 +7,12 @@ versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Text extraction: a `/ToUnicode` CMap that defines a code more than
+  once (a whole-range mapping refined by later `bfchar` or `bfrange`
+  entries) gives the code its later definition, as the CMap is read in
+  order and as the encoding CMaps already were; the first definition was
+  kept. Rendering is unchanged; the extracted text — and what
+  `redact`'s text checks search — follows the later mapping.
 - Tiling patterns whose `/BBox` exceeds the step only by the rounding of
   reals written to a few decimals (TikZ / PGF patterns) are no longer
   treated as overlapping tiles: they are drawn from the cached cell like
