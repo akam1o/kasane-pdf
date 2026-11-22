@@ -197,20 +197,27 @@ class Reviewed:
         return None
 
     def accepts(self, fid, pg, metric, was, now, line, record=None):
+        """Whether an entry for this measure of this page applies (each
+        environment has its own); otherwise why none did."""
+        whys = []
         for e in self.entries:
-            if e.get("id") == fid and e.get("page") == pg and e.get("metric") == metric:
-                why = self.why_not(e, was, now)
-                if why:
-                    self.refused.append(f"{line}: reviewed difference not applied ({why})")
-                    return False
-                msg = (f"{line} — accepted within the reviewed difference ({metric} {e['baseline']} -> "
-                       f"{'at most' if REVIEWED_METRICS[metric] == 'max' else 'at least'} {e['reviewed']}; "
-                       f"{e['review']})")
-                self.accepted.append(msg)
-                self.original.append(line)
-                if record is not None:
-                    record.append(msg)
-                return True
+            if not (isinstance(e, dict) and e.get("id") == fid and e.get("page") == pg
+                    and e.get("metric") == metric):
+                continue
+            why = self.why_not(e, was, now)
+            if why:
+                whys.append(why)
+                continue
+            msg = (f"{line} — accepted within the reviewed difference ({metric} {e['baseline']} -> "
+                   f"{'at most' if REVIEWED_METRICS[metric] == 'max' else 'at least'} {e['reviewed']}; "
+                   f"{e['review']})")
+            self.accepted.append(msg)
+            self.original.append(line)
+            if record is not None:
+                record.append(msg)
+            return True
+        if whys:
+            self.refused.append(f"{line}: reviewed difference not applied ({'; '.join(whys)})")
         return False
 
 
