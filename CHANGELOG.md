@@ -15,7 +15,9 @@ versions follow [Semantic Versioning](https://semver.org/).
   rewritten once, in memory, with the operator removed from every
   charstring and subroutine (tokenised as the interpreter reads them,
   hint-mask bytes included); a program that cannot be rewritten exactly,
-  or would take more than 4 million tokens, is left as it was. Bare CFF
+  or would take more than 16 million tokens, is left as it was
+  (a glyph whose own charstring cannot be read is left alone, the others
+  rewritten). Bare CFF
   (`/Type1C`, `/CIDFontType0C`); OpenType-wrapped CFF is not rewritten.
 - Dense tiling patterns (more than 64 tiles in a fill) are drawn from
   a periodic texture of one step of the tiling, rendered once at up to

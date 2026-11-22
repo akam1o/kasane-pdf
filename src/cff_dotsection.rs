@@ -16,18 +16,24 @@
 //! the subroutines a charstring calls, in the order it calls them. A
 //! subroutine read with two different stem counts at a mask, a call the
 //! tokeniser cannot resolve, a malformed structure or more work than
-//! [`MAX_TOKENS`] leaves the program as it is (`None`).
+//! [`MAX_TOKENS`] leaves the program as it is (`None`); a glyph whose
+//! own walk fails (a call it cannot resolve) is left as it is and the
+//! others rewritten. Every Private DICT and Subrs INDEX is written once,
+//! however many font dicts name it, and the result is refused if it is
+//! not within twice the input and a megabyte.
 
 use std::collections::HashMap;
 
 /// Tokens read across the whole program before giving up (each
 /// subroutine call is followed, so a program can cost more than its size).
-const MAX_TOKENS: usize = 4_000_000;
+const MAX_TOKENS: usize = 16_000_000;
 /// The Type 2 limit on subroutine nesting.
 const MAX_DEPTH: usize = 10;
 
 /// `program` with every `dotsection` removed, or `None` when it has none
 /// or cannot be rewritten exactly (see the module documentation).
+/// A glyph the walk cannot read (an unresolvable call, a font dict out
+/// of range) is left as it is; the others are still rewritten.
 pub(crate) fn without_dotsection(program: &[u8]) -> Option<Vec<u8>> {
     if !program.windows(2).any(|w| w == [12, 0]) {
         return None;
@@ -38,20 +44,30 @@ pub(crate) fn without_dotsection(program: &[u8]) -> Option<Vec<u8>> {
         tokens: 0,
         cuts: HashMap::new(),
         stems_at_mask: HashMap::new(),
+        conflict: false,
     };
-    for (i, private) in (0..cff.charstrings.len()).map(|i| (i, cff.private_for(i))) {
-        let private = private?;
+    for i in 0..cff.charstrings.len() {
+        let Some(private) = cff.private_for(i) else {
+            continue;
+        };
         let mut st = State::default();
-        walk.body(Body::Glyph(i), private, &mut st, 0)?;
+        if walk.body(Body::Glyph(i), private, &mut st, 0).is_none() {
+            if walk.tokens > MAX_TOKENS || walk.conflict {
+                return None;
+            }
+            walk.cuts.remove(&Body::Glyph(i));
+        }
     }
     if walk.cuts.values().all(|c| c.is_empty()) {
         return None;
     }
-    cff.rebuild(&walk.cuts)
+    let out = cff.rebuild(&walk.cuts)?;
+    // Never much larger than the input: everything is written once.
+    (out.len() <= program.len().saturating_mul(2).saturating_add(1 << 20)).then_some(out)
 }
 
 /// A charstring body: a glyph, a global subroutine, or a local
-/// subroutine of a Private DICT (by its index in `Cff::privates`).
+/// subroutine (of a Subrs INDEX, by its index in `Cff::subr_sets`).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Body {
     Glyph(usize),
@@ -76,6 +92,8 @@ struct Walk<'a> {
     cuts: HashMap<Body, Vec<usize>>,
     /// For a subroutine with a mask: the stem count it was read with.
     stems_at_mask: HashMap<(Body, usize), usize>,
+    /// A subroutine read two ways: nothing can be rewritten.
+    conflict: bool,
 }
 
 /// Whether the body ended the glyph (`endchar`) or returned.
@@ -92,7 +110,7 @@ impl Walk<'_> {
         let data = match b {
             Body::Glyph(i) => self.cff.charstrings.get(i)?,
             Body::Global(i) => self.cff.gsubrs.get(i)?,
-            Body::Local(p, i) => self.cff.privates.get(p)?.subrs.get(i)?,
+            Body::Local(set, i) => self.cff.subr_sets.get(set)?.get(i)?,
         };
         let mut cuts = Vec::new();
         let mut i = 0usize;
@@ -151,7 +169,10 @@ impl Walk<'_> {
                     st.args = 0;
                     if matches!(b, Body::Global(_) | Body::Local(..)) {
                         match self.stems_at_mask.insert((b, i), st.stems) {
-                            Some(n) if n != st.stems => return None,
+                            Some(n) if n != st.stems => {
+                                self.conflict = true;
+                                return None;
+                            }
                             _ => {}
                         }
                     }
@@ -165,8 +186,8 @@ impl Walk<'_> {
                     let n = st.last.take()?;
                     st.args = st.args.checked_sub(1)?;
                     let (subrs, target) = if v == 10 {
-                        let s = &self.cff.privates.get(private)?.subrs;
-                        (s.len(), Body::Local(private, 0))
+                        let set = self.cff.privates.get(private)?.subrs?;
+                        (self.cff.subr_sets.get(set)?.len(), Body::Local(set, 0))
                     } else {
                         (self.cff.gsubrs.len(), Body::Global(0))
                     };
@@ -202,7 +223,10 @@ impl Walk<'_> {
             }
         }
         match self.cuts.insert(b, cuts.clone()) {
-            Some(old) if old != cuts => return None,
+            Some(old) if old != cuts => {
+                self.conflict = true;
+                return None;
+            }
             _ => {}
         }
         match (b, ended) {
@@ -240,7 +264,7 @@ fn index(d: &[u8], at: usize) -> Option<(Vec<&[u8]>, usize)> {
         let s = d.get(offs_at + k * size..offs_at + (k + 1) * size)?;
         Some(s.iter().fold(0usize, |a, &b| (a << 8) | b as usize))
     };
-    let base = offs_at + (count + 1) * size - 1;
+    let base = offs_at.checked_add((count + 1) * size)? - 1;
     let mut items = Vec::with_capacity(count);
     let mut prev = off(0)?;
     for k in 1..=count {
@@ -248,10 +272,10 @@ fn index(d: &[u8], at: usize) -> Option<(Vec<&[u8]>, usize)> {
         if next < prev || prev == 0 {
             return None;
         }
-        items.push(d.get(base + prev..base + next)?);
+        items.push(d.get(base.checked_add(prev)?..base.checked_add(next)?)?);
         prev = next;
     }
-    Some((items, base + prev))
+    Some((items, base.checked_add(prev)?))
 }
 
 /// INDEX bytes for `items` (4-byte offsets: simple and always enough).
@@ -367,9 +391,11 @@ fn write_dict(ops: &[Entry], set: &HashMap<u16, Vec<i64>>) -> Vec<u8> {
     out
 }
 
-struct Private<'a> {
+/// A Private DICT (each written once, however many font dicts name it).
+struct Private {
     dict: Dict,
-    subrs: Vec<&'a [u8]>,
+    /// Its Subrs INDEX, by index in `Cff::subr_sets`.
+    subrs: Option<usize>,
 }
 
 struct Cff<'a> {
@@ -380,10 +406,14 @@ struct Cff<'a> {
     strings: &'a [u8],
     gsubrs: Vec<&'a [u8]>,
     charstrings: Vec<&'a [u8]>,
-    /// The Top DICT's Private DICT, or a CID font's FDArray ones.
-    privates: Vec<Private<'a>>,
-    /// CID-keyed: the FDArray font dicts and the FDSelect bytes.
-    fd_dicts: Vec<Dict>,
+    /// The Top DICT's Private DICT, or a CID font's FDArray ones —
+    /// distinct ones only (by offset and size).
+    privates: Vec<Private>,
+    /// The Subrs INDEXes, distinct by offset.
+    subr_sets: Vec<Vec<&'a [u8]>>,
+    /// CID-keyed: the FDArray font dicts with the Private each names,
+    /// and the FDSelect bytes with each glyph's font dict.
+    fd_dicts: Vec<(Dict, usize)>,
     fd_select: Option<(&'a [u8], Vec<u8>)>,
 }
 
@@ -392,11 +422,18 @@ const ENCODING: u16 = 16;
 const CHARSTRINGS: u16 = 17;
 const PRIVATE: u16 = 18;
 const SUBRS: u16 = 19;
+const ROS: u16 = 1230;
 const FDARRAY: u16 = 1236;
 const FDSELECT: u16 = 1237;
 
 fn arg(d: &[Entry], op: u16) -> Option<&[i64]> {
     d.iter().find(|(o, _, _)| *o == op).map(|(_, _, n)| &n[..])
+}
+
+/// Whether `d` has operator `op` at most once (a reader takes the last,
+/// this rewrite the first).
+fn once(d: &[Entry], op: u16) -> bool {
+    d.iter().filter(|(o, _, _)| *o == op).count() <= 1
 }
 
 impl<'a> Cff<'a> {
@@ -415,48 +452,97 @@ impl<'a> Cff<'a> {
         let (gsubrs, _) = index(d, strings_end)?;
         let cs_at = usize::try_from(*arg(&top, CHARSTRINGS)?.first()?).ok()?;
         let (charstrings, _) = index(d, cs_at)?;
-        let read_private = |pd: &[i64]| -> Option<Private<'a>> {
+        for op in [
+            CHARSET,
+            ENCODING,
+            CHARSTRINGS,
+            PRIVATE,
+            ROS,
+            FDARRAY,
+            FDSELECT,
+        ] {
+            if !once(&top, op) {
+                return None;
+            }
+        }
+        let mut privates: Vec<Private> = Vec::new();
+        let mut subr_sets: Vec<Vec<&'a [u8]>> = Vec::new();
+        let mut private_at: HashMap<(usize, usize), usize> = HashMap::new();
+        let mut set_at: HashMap<usize, usize> = HashMap::new();
+        let mut read_private = |pd: &[i64]| -> Option<usize> {
+            if pd.len() != 2 {
+                return None;
+            }
             let (size, at) = (usize::try_from(pd[0]).ok()?, usize::try_from(pd[1]).ok()?);
+            if let Some(&p) = private_at.get(&(size, at)) {
+                return Some(p);
+            }
             let dct = dict(d.get(at..at.checked_add(size)?)?)?;
+            if !once(&dct, SUBRS) {
+                return None;
+            }
             let subrs = match arg(&dct, SUBRS).and_then(|v| v.first().copied()) {
-                Some(off) => index(d, at.checked_add(usize::try_from(off).ok()?)?)?.0,
-                None => Vec::new(),
+                Some(off) => {
+                    let set_pos = at.checked_add(usize::try_from(off).ok()?)?;
+                    Some(match set_at.get(&set_pos) {
+                        Some(&k) => k,
+                        None => {
+                            subr_sets.push(index(d, set_pos)?.0);
+                            set_at.insert(set_pos, subr_sets.len() - 1);
+                            subr_sets.len() - 1
+                        }
+                    })
+                }
+                None => None,
             };
-            Some(Private { dict: dct, subrs })
+            privates.push(Private { dict: dct, subrs });
+            private_at.insert((size, at), privates.len() - 1);
+            Some(privates.len() - 1)
         };
-        let mut privates = Vec::new();
         let mut fd_dicts = Vec::new();
         let mut fd_select = None;
-        if let Some(fda) = arg(&top, FDARRAY) {
-            let (fds, _) = index(d, usize::try_from(*fda.first()?).ok()?)?;
+        // CID-keyed exactly when the Top DICT has ROS, as readers decide;
+        // then its font dicts hold the Private DICTs, never the Top DICT.
+        if arg(&top, ROS).is_some() {
+            if arg(&top, PRIVATE).is_some() {
+                return None;
+            }
+            let (fds, _) = index(d, usize::try_from(*arg(&top, FDARRAY)?.first()?).ok()?)?;
+            // FDSelect holds one byte per font dict.
+            if fds.len() > 256 {
+                return None;
+            }
             for fd in fds {
                 let fdd = dict(fd)?;
-                let pd = arg(&fdd, PRIVATE)?;
-                if pd.len() != 2 {
+                if !once(&fdd, PRIVATE) {
                     return None;
                 }
-                privates.push(read_private(pd)?);
-                fd_dicts.push(fdd);
+                let p = read_private(arg(&fdd, PRIVATE)?)?;
+                fd_dicts.push((fdd, p));
             }
             let at = usize::try_from(*arg(&top, FDSELECT)?.first()?).ok()?;
             let n = charstrings.len();
             let bytes = match *d.get(at)? {
-                0 => d.get(at..at + 1 + n)?,
+                0 => d.get(at..at.checked_add(1)?.checked_add(n)?)?,
                 3 => {
                     let ranges = u16::from_be_bytes([*d.get(at + 1)?, *d.get(at + 2)?]) as usize;
-                    d.get(at..at + 3 + 3 * ranges + 2)?
+                    d.get(at..at.checked_add(5 + 3 * ranges)?)?
                 }
                 _ => return None,
             };
             let map = fd_map(bytes, n)?;
             fd_select = Some((bytes, map));
         } else {
+            if arg(&top, FDARRAY).is_some() || arg(&top, FDSELECT).is_some() {
+                return None;
+            }
             match arg(&top, PRIVATE) {
-                Some(pd) if pd.len() == 2 => privates.push(read_private(pd)?),
-                Some(_) => return None,
+                Some(pd) => {
+                    read_private(pd)?;
+                }
                 None => privates.push(Private {
                     dict: Vec::new(),
-                    subrs: Vec::new(),
+                    subrs: None,
                 }),
             }
         }
@@ -469,6 +555,7 @@ impl<'a> Cff<'a> {
             gsubrs,
             charstrings,
             privates,
+            subr_sets,
             fd_dicts,
             fd_select,
         })
@@ -480,7 +567,7 @@ impl<'a> Cff<'a> {
             None => Some(0),
             Some((_, map)) => {
                 let fd = *map.get(g)? as usize;
-                (fd < self.privates.len()).then_some(fd)
+                self.fd_dicts.get(fd).map(|(_, p)| *p)
             }
         }
     }
@@ -590,35 +677,58 @@ impl<'a> Cff<'a> {
         }
         set.insert(CHARSTRINGS, vec![at(&tail)]);
         write_index(&mut tail, &charstrings);
-        // Each Private DICT, its Subrs right after it.
-        let mut private_at = Vec::new();
-        for (p, private) in self.privates.iter().enumerate() {
-            let subrs: Vec<Vec<u8>> = (0..private.subrs.len())
-                .map(|i| cut(Body::Local(p, i), private.subrs[i]))
+        // Each Private DICT once, then each Subrs INDEX once (a Private's
+        // Subrs offset is relative to it: positive, after them all).
+        let sizes: Vec<usize> = self
+            .privates
+            .iter()
+            .map(|p| {
+                let mut pset = HashMap::new();
+                if p.subrs.is_some() {
+                    pset.insert(SUBRS, vec![0]);
+                }
+                write_dict(&p.dict, &pset).len()
+            })
+            .collect();
+        let privates_at = at(&tail);
+        let mut set_pos = privates_at + sizes.iter().sum::<usize>() as i64;
+        let mut sets_at = Vec::new();
+        let mut sets = Vec::new();
+        for (k, subrs) in self.subr_sets.iter().enumerate() {
+            let items: Vec<Vec<u8>> = subrs
+                .iter()
+                .enumerate()
+                .map(|(i, b)| cut(Body::Local(k, i), b))
                 .collect();
-            // A Subrs entry, even of an empty INDEX, keeps one after it.
-            let has_subrs = arg(&private.dict, SUBRS).is_some();
+            let mut bytes = Vec::new();
+            write_index(&mut bytes, &items);
+            sets_at.push(set_pos);
+            set_pos += bytes.len() as i64;
+            sets.push(bytes);
+        }
+        let mut private_at = Vec::new();
+        for (p, size) in self.privates.iter().zip(&sizes) {
+            let here = at(&tail);
             let mut pset = HashMap::new();
-            if has_subrs {
-                pset.insert(SUBRS, vec![0]);
+            if let Some(k) = p.subrs {
+                pset.insert(SUBRS, vec![sets_at[k] - here]);
             }
-            let size = write_dict(&private.dict, &pset).len();
-            if has_subrs {
-                pset.insert(SUBRS, vec![size as i64]);
+            let bytes = write_dict(&p.dict, &pset);
+            if bytes.len() != *size {
+                return None;
             }
-            let bytes = write_dict(&private.dict, &pset);
-            private_at.push((bytes.len() as i64, at(&tail)));
+            private_at.push((bytes.len() as i64, here));
             tail.extend_from_slice(&bytes);
-            if has_subrs {
-                write_index(&mut tail, &subrs);
-            }
+        }
+        for bytes in sets {
+            tail.extend_from_slice(&bytes);
         }
         if let Some((select, _)) = &self.fd_select {
             let fds: Vec<Vec<u8>> = self
                 .fd_dicts
                 .iter()
-                .zip(&private_at)
-                .map(|(fd, &(size, off))| {
+                .map(|(fd, p)| {
+                    let (size, off) = private_at[*p];
                     write_dict(fd, &HashMap::from([(PRIVATE, vec![size, off])]))
                 })
                 .collect();
@@ -811,6 +921,106 @@ mod tests {
     }
 
     #[test]
+    fn a_glyph_that_cannot_be_read_leaves_the_others_rewritten() {
+        // Glyph 2 calls a subroutine that does not exist.
+        let p = program(
+            &[vec![14], glyph(&[PATH, &[12, 0], &[14]]), vec![32, 10, 14]],
+            &[],
+        );
+        let q = without_dotsection(&p).expect("rewritten");
+        assert_eq!(outline(&q, 1), Some(3));
+        assert_eq!(Cff::parse(&q).unwrap().charstrings[2], &[32, 10, 14][..]);
+    }
+
+    #[test]
+    fn a_top_dict_with_an_offset_operator_twice_is_left_alone() {
+        let p = program(&[vec![14], glyph(&[PATH, &[12, 0], &[14]])], &[]);
+        // The Top DICT with its CharStrings operator twice: six bytes
+        // more, every offset after it shifted by six.
+        let c = Cff::parse(&p).unwrap();
+        let strings_at = c.strings.as_ptr() as usize - p.as_ptr() as usize;
+        let shift = 6;
+        let mut top: Dict = c.top.clone();
+        top.push(top.iter().find(|e| e.0 == CHARSTRINGS).unwrap().clone());
+        let private = arg(&c.top, PRIVATE).unwrap();
+        let fixed = HashMap::from([
+            (CHARSET, vec![arg(&c.top, CHARSET).unwrap()[0] + shift]),
+            (
+                CHARSTRINGS,
+                vec![arg(&c.top, CHARSTRINGS).unwrap()[0] + shift],
+            ),
+            (PRIVATE, vec![private[0], private[1] + shift]),
+        ]);
+        let mut q = c.header.to_vec();
+        q.extend_from_slice(c.names);
+        write_index(&mut q, &[write_dict(&top, &fixed)]);
+        q.extend_from_slice(&p[strings_at..]);
+        assert_eq!(
+            ttf_parser::cff::Table::parse(&q).map(|t| t.number_of_glyphs()),
+            Some(2)
+        );
+        assert!(Cff::parse(&q).is_none());
+        assert_eq!(without_dotsection(&q), None);
+    }
+
+    #[test]
+    fn many_font_dicts_sharing_a_private_dict_are_written_once() {
+        // A CID-keyed program: K font dicts naming one Private DICT whose
+        // Subrs INDEX has 65 535 empty entries (the review's case: written
+        // per font dict, a few hundred KB grew to gigabytes).
+        let k = 256usize;
+        let charstrings = vec![vec![139, 139, 21, 12, 0, 14]];
+        let mut subrs = vec![0xff, 0xff, 1];
+        subrs.extend(std::iter::repeat_n(1u8, 65_536));
+        let mut head = vec![1, 0, 4, 4];
+        head.extend(idx(&[b"T".to_vec()]));
+        let top_len = 7 + 6 + 6 + 7 + 7;
+        let after_top = head.len() + 2 + 1 + 8 + top_len;
+        let mut tail = idx(&[b"Adobe".to_vec(), b"Identity".to_vec()]);
+        tail.extend(idx(&[]));
+        let charset_at = after_top + tail.len();
+        tail.extend_from_slice(&[0]);
+        let cs_at = after_top + tail.len();
+        tail.extend(idx(&charstrings));
+        let private_at = after_top + tail.len();
+        let mut private = Vec::new();
+        int5(&mut private, 6);
+        private.push(19);
+        tail.extend_from_slice(&private);
+        tail.extend_from_slice(&subrs);
+        let mut fd = Vec::new();
+        int5(&mut fd, private.len());
+        int5(&mut fd, private_at);
+        fd.push(18);
+        let fdarray_at = after_top + tail.len();
+        tail.extend(idx(&vec![fd; k]));
+        let fdselect_at = after_top + tail.len();
+        tail.extend_from_slice(&[0, 0]);
+        let mut top = vec![0xf8, 0x1b, 0xf8, 0x1c, 139, 12, 30];
+        int5(&mut top, charset_at);
+        top.push(15);
+        int5(&mut top, cs_at);
+        top.push(17);
+        int5(&mut top, fdarray_at);
+        top.extend_from_slice(&[12, 36]);
+        int5(&mut top, fdselect_at);
+        top.extend_from_slice(&[12, 37]);
+        assert_eq!(top.len(), top_len);
+        head.extend(idx(&[top]));
+        head.extend(tail);
+        let t = std::time::Instant::now();
+        let q = without_dotsection(&head).expect("rewritten");
+        assert!(
+            q.len() < head.len() + 65_536 * 3,
+            "{} from {}",
+            q.len(),
+            head.len()
+        );
+        assert!(t.elapsed().as_secs() < 5);
+        assert_eq!(Cff::parse(&q).unwrap().privates.len(), 1);
+    }
+
+    #[test]
     fn malformed_or_runaway_programs_are_left_alone() {
         let p = program(&[vec![14], glyph(&[PATH, &[12, 0], &[14]])], &[]);
         for cut in [4, 20, p.len() / 2, p.len() - 3] {
@@ -835,7 +1045,7 @@ mod tests {
             });
         }
         let glyphs: Vec<Vec<u8>> = std::iter::once(vec![14])
-            .chain((0..4000).map(|_| glyph(&[&[32, 10], &[14]])))
+            .chain((0..20_000).map(|_| glyph(&[&[32, 10], &[14]])))
             .collect();
         let t = std::time::Instant::now();
         assert_eq!(without_dotsection(&program(&glyphs, &subrs)), None);
