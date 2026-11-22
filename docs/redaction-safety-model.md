@@ -49,8 +49,9 @@ property cannot be decided).
   names an appearance stream does not resolve in its own resources,
   annotations whose appearance is not placed by `/Rect`, a soft mask set
   by `gs` whose group draws anything that meets a rect (its `/BBox`
-  included, and what its `/BBox` or a clip hides) or anything that
-  cannot be bounded.
+  included, and what its `/BBox` or a clip hides), paints a shading or
+  with a pattern (their data reach past what they paint), or draws
+  anything that cannot be bounded.
 - **G** — A soft mask set by `gs` whose group draws nothing that meets a
   rect is kept whole: its group, read under the CTM of the `gs` from the
   initial graphics state, is never edited. Content painted under it is

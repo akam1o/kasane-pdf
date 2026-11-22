@@ -12,8 +12,8 @@ versions follow [Semantic Versioning](https://semver.org/).
   and content its `/BBox` or a clip hides): the mask is kept whole, the
   content painted under it redacted as any other. Such a page was
   refused whatever the mask ("a soft mask is not handled"). A mask
-  whose group meets a rect, or draws anything that cannot be bounded,
-  is still refused, as is a mask the redaction leaves with nothing
+  whose group meets a rect, paints a shading or with a pattern, or
+  draws anything that cannot be bounded, is still refused, as is a mask the redaction leaves with nothing
   painted under it (the output would carry its group unused).
 
 ### Fixed

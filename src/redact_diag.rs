@@ -875,6 +875,11 @@ pub(crate) struct DiagWalker<'a> {
     /// `uncertain` until `Q` or a form's end restores known state.
     /// `gs`/`sh`/`Pattern` colours and `Unknown` ops set this.
     uncertain_state: bool,
+    /// Inside a soft mask's group (`soft_mask_blocker`), and whether
+    /// it painted a shading or with a pattern: data a clip of the
+    /// group may hide anywhere, so the mask is refused.
+    in_mask: u32,
+    mask_unbounded: bool,
     /// `pub(crate)` — `remove_text` reads the per-code targets.
     pub(crate) targets: Vec<Target>,
     /// `pub(crate)` — `remove_text` refuses on any uncertain entry.
@@ -1042,6 +1047,8 @@ impl<'a> DiagWalker<'a> {
             text_tlm: crate::matrix::Matrix::IDENTITY,
             in_text: false,
             uncertain_state: false,
+            in_mask: 0,
+            mask_unbounded: false,
             targets: Vec::new(),
             uncertain: Vec::new(),
             blockers: Vec::new(),
@@ -1193,7 +1200,9 @@ impl<'a> DiagWalker<'a> {
     /// or `/BBox` hides (a clip hides ink, not data) — and nothing in it
     /// may be uncertain or blocked. The mask is then kept whole, never
     /// edited: what the walk found is dropped, its sites kept (an object
-    /// the mask draws is used elsewhere than the page's content).
+    /// the mask draws is used elsewhere than the page's content). A
+    /// shading or a pattern colour in the group refuses it too: their
+    /// data reach past what they are seen to paint.
     fn soft_mask_blocker(&mut self, m: &Object) -> Result<Option<&'static str>, Error> {
         let Some(md) = m.as_dict() else {
             return Ok(Some("a soft mask that is not a dictionary"));
@@ -1234,6 +1243,9 @@ impl<'a> DiagWalker<'a> {
             self.path_single_rect,
         );
         let saved_uncertain = std::mem::replace(&mut self.uncertain_state, false);
+        let saved_op = self.op_index;
+        let saved_unbounded = std::mem::replace(&mut self.mask_unbounded, false);
+        self.in_mask += 1;
         self.in_text = false;
         self.path_has_point = false;
         self.path_rects = Some(Vec::new());
@@ -1249,8 +1261,12 @@ impl<'a> DiagWalker<'a> {
             self.path_single_rect,
         ) = saved_path;
         self.uncertain_state = saved_uncertain;
+        self.op_index = saved_op;
+        self.in_mask -= 1;
+        let unbounded = std::mem::replace(&mut self.mask_unbounded, saved_unbounded);
         r?;
-        let meets = self.targets[marks.0..].iter().any(|t| !t.hits.is_empty())
+        let meets = unbounded
+            || self.targets[marks.0..].iter().any(|t| !t.hits.is_empty())
             || self.uncertain.len() > marks.1
             || self.blockers.len() > marks.2;
         self.targets.truncate(marks.0);
@@ -1618,6 +1634,19 @@ impl<'a> DiagWalker<'a> {
                     limit: "max_diag_exec_ops",
                     max: self.limits.max_diag_exec_ops,
                 });
+            }
+            if self.in_mask > 0 && !self.mask_unbounded {
+                use crate::content::Operation as O;
+                self.mask_unbounded = match op {
+                    O::Shading(_) => true,
+                    O::SetColorSpaceStroke(n) | O::SetColorSpaceFill(n) => {
+                        is_pattern_name(self.doc, &self.resources, n)?
+                    }
+                    O::SetColorStroke(v) | O::SetColorFill(v) => {
+                        v.iter().any(|o| matches!(o, Object::Name(_)))
+                    }
+                    _ => false,
+                };
             }
             self.exec(op)?;
         }

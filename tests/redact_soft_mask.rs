@@ -64,7 +64,8 @@ fn page(content: &str, bbox: &str, group: &str) -> Vec<u8> {
                 &format!(
                     "/Type /XObject /Subtype /Form /BBox [{bbox}] \
                      /Group << /S /Transparency /CS /DeviceGray >> \
-                     /Resources << /Font << /F1 20 0 R >> /XObject << /Fx 31 0 R >> >>"
+                     /Resources << /Font << /F1 20 0 R >> /XObject << /Fx 31 0 R >> \
+                     /Shading << /S0 32 0 R >> /Pattern << /P0 33 0 R >> >>"
                 ),
                 group.as_bytes(),
             ),
@@ -76,6 +77,14 @@ fn page(content: &str, bbox: &str, group: &str) -> Vec<u8> {
                 b"1 g 55 95 20 10 re f",
             ),
         ),
+        // An axial shading whose axis lies inside the rect.
+        (
+            32,
+            b"<< /ShadingType 2 /ColorSpace /DeviceGray /Coords [60 100 150 100] \
+              /Function << /FunctionType 2 /Domain [0 1] /C0 [0] /C1 [1] /N 1 >> >>"
+                .to_vec(),
+        ),
+        (33, b"<< /PatternType 2 /Shading 32 0 R >>".to_vec()),
     ];
     objs.extend(font_objs());
     build_pdf(&objs)
@@ -186,12 +195,14 @@ fn a_mask_whose_group_meets_a_rect_is_refused() {
 }
 
 #[test]
-fn a_mask_with_content_that_cannot_be_bounded_is_refused() {
-    // A shading fill in the group fills its clip: not bounded here.
-    let pdf = page(
-        &format!("q /GM gs 0 0 40 40 re f Q {SECRET}"),
-        "0 0 40 40",
-        "/Sh0 sh",
-    );
-    assert!(run(&pdf).is_err());
+fn a_mask_painting_a_shading_or_a_pattern_is_refused() {
+    // Their data (here an axis inside the rect) reach past what the
+    // group's /BBox lets them paint.
+    for group in ["/S0 sh", "/Pattern cs /P0 scn 0 0 10 10 re f"] {
+        refused_for_the_mask(run(&page(
+            &format!("q /GM gs 0 0 40 40 re f Q {SECRET}"),
+            "0 0 40 40",
+            group,
+        )));
+    }
 }
